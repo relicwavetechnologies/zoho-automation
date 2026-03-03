@@ -137,6 +137,22 @@ export default function Sidebar({
               Chat
             </button>
 
+            <button
+              type="button"
+              onClick={() => onNavigate("/settings/profile")}
+              className="w-full rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-hover"
+              style={{
+                backgroundColor: pathname.startsWith("/settings")
+                  ? "var(--bg-elevated)"
+                  : "transparent",
+                color: pathname.startsWith("/settings")
+                  ? "var(--text-primary)"
+                  : "var(--text-secondary)",
+              }}
+            >
+              Settings
+            </button>
+
             {isAdmin ? (
               <>
                 <button
@@ -355,7 +371,7 @@ export default function Sidebar({
               <DialogTrigger asChild>
                 <DropdownMenuItem onSelect={(event) => event.preventDefault()}>
                   <Settings className="mr-2 h-4 w-4" />
-                  Profile/Settings
+                  Conversation Settings
                 </DropdownMenuItem>
               </DialogTrigger>
               <DialogContent className="border" style={{ borderColor: "var(--border-default)", backgroundColor: "var(--bg-surface)" }}>
@@ -405,6 +421,10 @@ export default function Sidebar({
                 )}
               </DialogContent>
             </Dialog>
+            <DropdownMenuItem onClick={() => onNavigate("/settings/profile")}>
+              <Settings className="mr-2 h-4 w-4" />
+              Open Settings
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={onLogout}>
               <LogOut className="mr-2 h-4 w-4" />
               Logout

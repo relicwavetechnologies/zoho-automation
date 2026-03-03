@@ -13,6 +13,9 @@ model User {
   last_name         String         @db.VarChar(100)
   email             String         @unique @db.VarChar(255)
   password_hash     String         @db.VarChar(255)
+  avatar_url        String?        @db.VarChar(2048)
+  auth_provider     String         @default("local") @db.VarChar(30)
+  last_password_change_at DateTime? @db.Timestamptz
   google_sub        String?        @unique @db.VarChar(255)
   is_email_verified Boolean        @default(false)
   created_at        DateTime       @default(now()) @db.Timestamptz
@@ -21,6 +24,7 @@ model User {
   memberships       Membership[]
   invites_sent      Invite[]       @relation("InviteSender")
   audit_logs        AuditLog[]     @relation("AuditActor")
+  password_reset_tokens PasswordResetToken[]
 }
 
 model Organization {
@@ -168,4 +172,14 @@ model Message {
   content         String
   created_at      DateTime     @default(now()) @db.Timestamptz
   conversation    Conversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+}
+
+model PasswordResetToken {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String   @db.Uuid
+  token_hash String   @unique @db.VarChar(255)
+  expires_at DateTime @db.Timestamptz
+  used_at    DateTime? @db.Timestamptz
+  created_at DateTime @default(now()) @db.Timestamptz
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
 }

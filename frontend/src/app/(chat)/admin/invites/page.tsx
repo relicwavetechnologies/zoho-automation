@@ -165,8 +165,12 @@ export default function AdminInvitesPage() {
             ) : filtered.length === 0 ? (
               <tr><td className="px-4 py-4" colSpan={5}>No invites</td></tr>
             ) : (
-              filtered.map((invite) => (
-                <tr key={invite.invite_id} className="border-t" style={{ borderColor: "var(--border-subtle)" }}>
+              filtered.map((invite, index) => (
+                <tr
+                  key={`${invite.invite_id || invite.email}-${index}`}
+                  className="border-t"
+                  style={{ borderColor: "var(--border-subtle)" }}
+                >
                   <td className="px-4 py-3">{invite.email}</td>
                   <td className="px-4 py-3">{invite.role_key}</td>
                   <td className="px-4 py-3">{invite.status}</td>

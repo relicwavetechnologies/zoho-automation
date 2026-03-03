@@ -51,3 +51,31 @@ export async function sendInviteMagicLinkEmail(params: {
     text,
   });
 }
+
+export async function sendPasswordResetEmail(params: {
+  to: string;
+  resetLink: string;
+  expiresInMinutes: number;
+}) {
+  const tx = getTransporter();
+  const subject = 'Password reset requested';
+  const text = [
+    'We received a request to reset your password.',
+    `Use this link to reset it (expires in ${params.expiresInMinutes} minutes):`,
+    params.resetLink,
+    'If you did not request this, you can ignore this email.',
+  ].join('\n');
+
+  if (!tx) {
+    // eslint-disable-next-line no-console
+    console.info(`SMTP not configured. Password reset link for ${params.to}: ${params.resetLink}`);
+    return;
+  }
+
+  await tx.sendMail({
+    from: config.smtp.from,
+    to: params.to,
+    subject,
+    text,
+  });
+}

@@ -27,30 +27,45 @@ const ROLE_RANK: Record<string, number> = {
 
 const ROLE_DEFAULTS: Record<string, Record<string, PolicyDecision>> = {
   owner: {
+    'chat.message.send': allow(),
+    'chat.context.add': allow(),
+    'chat.voice.input': allow(),
     get_current_time: allow(),
     'zoho.clients.read': allow(),
     'zoho.invoices.read': allow(),
     'zoho.invoice.write': approvalRequired(),
   },
   admin: {
+    'chat.message.send': allow(),
+    'chat.context.add': allow(),
+    'chat.voice.input': allow(),
     get_current_time: allow(),
     'zoho.clients.read': allow(),
     'zoho.invoices.read': allow(),
     'zoho.invoice.write': approvalRequired(),
   },
   manager: {
+    'chat.message.send': allow(),
+    'chat.context.add': allow(),
+    'chat.voice.input': allow(),
     get_current_time: allow(),
     'zoho.clients.read': allow(),
     'zoho.invoices.read': allow(),
     'zoho.invoice.write': deny('requires_higher_role', 'This action requires a higher role.'),
   },
   member: {
+    'chat.message.send': allow(),
+    'chat.context.add': allow(),
+    'chat.voice.input': allow(),
     get_current_time: allow(),
     'zoho.clients.read': allow(),
     'zoho.invoices.read': deny('tool_not_permitted', 'Your role does not allow this tool.'),
     'zoho.invoice.write': deny('requires_higher_role', 'This action requires a higher role.'),
   },
   viewer: {
+    'chat.message.send': allow(),
+    'chat.context.add': allow(),
+    'chat.voice.input': allow(),
     get_current_time: allow(),
     'zoho.clients.read': deny('tool_not_permitted', 'Your role does not allow this tool.'),
     'zoho.invoices.read': deny('tool_not_permitted', 'Your role does not allow this tool.'),
@@ -182,6 +197,11 @@ export async function resolvePolicyForUser(params: {
 
   if (toolSetting && !toolSetting.is_enabled) {
     return deny('tool_disabled_org_level', 'This tool is disabled at organization level.');
+  }
+
+  // Baseline product behavior: active members must be able to send chat messages.
+  if (params.toolKey === 'chat.message.send') {
+    return allow();
   }
 
   const permission = await prisma.roleToolPermission.findUnique({

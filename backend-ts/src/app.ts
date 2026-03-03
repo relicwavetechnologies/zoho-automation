@@ -35,6 +35,8 @@ import zohoRouter from './modules/integrations/zoho.routes';
 import auditRouter from './modules/audit/audit.routes';
 import { listAuditLogs } from './modules/audit/audit.controller';
 import rbacRouter, { getSessionCapabilities } from './modules/rbac/rbac.routes';
+import profileRouter from './modules/profile/profile.routes';
+import accountRouter from './modules/account/account.routes';
 
 export const app = express();
 
@@ -48,9 +50,11 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/auth', authRouter);
+app.use('/account', accountRouter);
 
 app.get('/session/bootstrap', requireAuth, asyncHandler(sessionBootstrap));
 app.get('/session/capabilities', requireAuth, requireOrgAccess, asyncHandler(getSessionCapabilities));
+app.use('/me', requireAuth, profileRouter);
 
 app.use('/org', requireAuth, orgRouter);
 app.get('/onboarding/status', requireAuth, asyncHandler(orgStatus));

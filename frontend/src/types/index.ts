@@ -5,7 +5,11 @@ export type ReasonCode =
   | "requires_higher_role"
   | "approval_required"
   | "not_org_member"
-  | "policy_conflict";
+  | "policy_conflict"
+  | "invalid_reset_token"
+  | "expired_reset_token"
+  | "password_not_supported_for_provider"
+  | "validation_error";
 
 export interface User {
   id: string;
@@ -13,16 +17,21 @@ export interface User {
   last_name: string;
   email: string;
   created_at?: string;
+  updated_at?: string;
   is_email_verified?: boolean;
+  avatar_url?: string | null;
+  auth_provider?: string;
 }
 
 export interface Organization {
   id: string;
   name: string;
+  slug?: string;
 }
 
 export interface Membership {
   role_key: string;
+  role_name?: string;
   status: "active" | "pending" | "revoked" | string;
 }
 
@@ -45,6 +54,27 @@ export interface SessionBootstrap {
   organization: Organization | null;
   membership: Membership | null;
   capabilities?: Capabilities;
+}
+
+export interface ProfileDto {
+  user: User;
+  workspace: {
+    id: string;
+    name: string;
+    slug: string;
+  };
+  membership: {
+    role_key: string;
+    role_name: string;
+    status: string;
+  };
+}
+
+export interface SecurityDto {
+  auth_provider: string;
+  password_enabled: boolean;
+  mfa_enabled: boolean;
+  last_password_change_at: string | null;
 }
 
 export interface Conversation {

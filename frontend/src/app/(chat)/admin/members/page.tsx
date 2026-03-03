@@ -25,6 +25,18 @@ export default function AdminMembersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const getMemberId = (member: MemberRecord) =>
+    member.member_id || member.id || member.user_id || member.user?.id || "";
+
+  const getMemberName = (member: MemberRecord) => {
+    const first = member.first_name || member.user?.first_name || "";
+    const last = member.last_name || member.user?.last_name || "";
+    return `${first} ${last}`.trim() || "Unknown member";
+  };
+
+  const getMemberEmail = (member: MemberRecord) =>
+    member.email || member.user?.email || "No email";
+
   const load = async () => {
     if (!token) return;
     setLoading(true);
@@ -42,7 +54,8 @@ export default function AdminMembersPage() {
       const nextAssignments: Record<string, MemberRoleAssignment[]> = {};
       await Promise.all(
         memberList.map(async (member) => {
-          const memberId = member.member_id || member.user_id;
+          const memberId = getMemberId(member);
+          if (!memberId) return;
           try {
             nextAssignments[memberId] = await api.rbac.members.roles.get(token, memberId);
           } catch {
@@ -74,14 +87,16 @@ export default function AdminMembersPage() {
 
   const assignRole = async (member: MemberRecord, roleId: string) => {
     if (!token) return;
-    const memberId = member.member_id || member.user_id;
+    const memberId = getMemberId(member);
+    if (!memberId || !roleId) return;
 
     const previous = assignments[memberId] || [];
     const next = [{ member_id: memberId, role_id: roleId, status: "active" }];
     setAssignments((prev) => ({ ...prev, [memberId]: next }));
 
     try {
-      const result = await api.rbac.members.roles.put(token, memberId, next);
+      const updated = await api.rbac.members.roles.put(token, memberId, roleId, "active");
+      const result = [{ member_id: updated.member_id, role_id: updated.role_id, status: updated.status }];
       setAssignments((prev) => ({ ...prev, [memberId]: result }));
       uiToast.success("Member role updated");
     } catch (error) {
@@ -154,17 +169,17 @@ export default function AdminMembersPage() {
               </tr>
             ) : (
               filtered.map((member, index) => {
-                const memberId = member.member_id || member.user_id;
-                const rowKey = `${member.member_id || member.user_id || member.email}-${index}`;
+                const memberId = getMemberId(member);
+                const rowKey = `${memberId || getMemberEmail(member)}-${index}`;
                 const assignment = assignments[memberId]?.[0];
 
                 return (
                   <tr key={rowKey} className="border-t" style={{ borderColor: "var(--border-subtle)" }}>
                     <td className="px-4 py-3">
                       <p style={{ color: "var(--text-primary)" }}>
-                        {member.first_name} {member.last_name}
+                        {getMemberName(member)}
                       </p>
-                      <p style={{ color: "var(--text-tertiary)" }}>{member.email}</p>
+                      <p style={{ color: "var(--text-tertiary)" }}>{getMemberEmail(member)}</p>
                     </td>
                     <td className="px-4 py-3">
                       <select

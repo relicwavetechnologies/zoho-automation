@@ -7,7 +7,6 @@ import ApprovalConfirmDialog from "@/components/shared/ApprovalConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
 import { api, type RoleDto, type ToolPermissionDto } from "@/lib/api";
-import { denyMessage } from "@/lib/deny";
 import { uiToast } from "@/lib/toast";
 
 export default function AdminToolsPage() {
@@ -153,7 +152,7 @@ export default function AdminToolsPage() {
       </div>
 
       <p className="mt-2 text-xs" style={{ color: "var(--text-tertiary)" }}>
-        Denied updates fallback to previous values ({denyMessage("policy_conflict")}).
+        If an update is denied, the UI reverts to the previous value to keep state consistent.
       </p>
     </div>
   );

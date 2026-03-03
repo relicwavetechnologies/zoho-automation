@@ -17,8 +17,13 @@ export async function listMembers(req: Request, res: Response) {
   return res.status(200).json(
     members.map((m) => ({
       id: m.id,
+      member_id: m.id,
+      user_id: m.user.id,
       role_key: m.role_key,
       status: m.status,
+      email: m.user.email,
+      first_name: m.user.first_name,
+      last_name: m.user.last_name,
       user: {
         id: m.user.id,
         email: m.user.email,

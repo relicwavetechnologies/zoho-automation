@@ -5,6 +5,8 @@ import type {
   Message,
   Model,
   Organization,
+  ProfileDto,
+  SecurityDto,
   SessionBootstrap,
   User,
 } from "@/types";
@@ -120,13 +122,20 @@ export interface IntegrationStatusDto {
 }
 
 export interface MemberRecord {
-  user_id: string;
-  email: string;
-  first_name: string;
-  last_name: string;
+  id?: string;
+  user_id?: string;
+  email?: string;
+  first_name?: string;
+  last_name?: string;
   role_key: string;
   status: string;
   member_id?: string;
+  user?: {
+    id: string;
+    email: string;
+    first_name: string;
+    last_name: string;
+  };
 }
 
 export interface AuditRecord {
@@ -165,6 +174,37 @@ export const api = {
         url.searchParams.set("redirect_to", redirectTo);
       }
       return url.toString();
+    },
+  },
+  me: {
+    profile: {
+      get: (token: string) => apiFetch<ProfileDto>("/me/profile", { token }),
+      update: (
+        token: string,
+        data: { first_name: string; last_name: string; avatar_url?: string | null }
+      ) =>
+        apiFetch<ProfileDto>("/me/profile", {
+          method: "PATCH",
+          token,
+          body: JSON.stringify(data),
+        }),
+    },
+    security: {
+      get: (token: string) => apiFetch<SecurityDto>("/me/security", { token }),
+    },
+  },
+  account: {
+    password: {
+      resetRequest: (email: string) =>
+        apiFetch<{ message: string }>("/account/password/reset/request", {
+          method: "POST",
+          body: JSON.stringify({ email }),
+        }),
+      resetConfirm: (token: string, newPassword: string) =>
+        apiFetch<{ status: "success" }>("/account/password/reset/confirm", {
+          method: "POST",
+          body: JSON.stringify({ token, new_password: newPassword }),
+        }),
     },
   },
   session: {
@@ -244,12 +284,15 @@ export const api = {
       roles: {
         get: (token: string, memberId: string) =>
           apiFetch<MemberRoleAssignment[]>(`/rbac/members/${memberId}/roles`, { token }),
-        put: (token: string, memberId: string, assignments: MemberRoleAssignment[]) =>
-          apiFetch<MemberRoleAssignment[]>(`/rbac/members/${memberId}/roles`, {
-            method: "PUT",
-            token,
-            body: JSON.stringify({ assignments }),
-          }),
+        put: (token: string, memberId: string, roleId: string, status: string = "active") =>
+          apiFetch<{ member_id: string; role_id: string; status: string }>(
+            `/rbac/members/${memberId}/roles`,
+            {
+              method: "PUT",
+              token,
+              body: JSON.stringify({ role_id: roleId, status }),
+            }
+          ),
       },
     },
     policy: {
@@ -341,6 +384,11 @@ export const authRegister = api.auth.register;
 export const authMe = api.auth.me;
 export const authSessionBootstrap = api.auth.sessionBootstrap;
 export const authGoogleStartUrl = api.auth.getGoogleStartUrl;
+export const getMyProfile = api.me.profile.get;
+export const updateMyProfile = api.me.profile.update;
+export const getMySecurity = api.me.security.get;
+export const requestPasswordReset = api.account.password.resetRequest;
+export const confirmPasswordReset = api.account.password.resetConfirm;
 export const listConversations = api.conversations.list;
 export const createConversation = api.conversations.create;
 export const getConversation = api.conversations.get;

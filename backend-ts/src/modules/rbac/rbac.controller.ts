@@ -207,8 +207,13 @@ export async function getRolePermissions(req: Request, res: Response) {
     orderBy: { tool_key: 'asc' },
   });
 
+  // Skip unknown legacy keys so UI updates don't fail on stale rows.
+  const knownPermissions = permissions.filter((p) =>
+    TOOL_CATALOG.includes(p.tool_key as (typeof TOOL_CATALOG)[number]),
+  );
+
   return res.status(200).json(
-    permissions.map((p) => ({
+    knownPermissions.map((p) => ({
       role_id: p.role_id,
       tool_key: p.tool_key,
       can_execute: p.can_execute,

@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { Loader2 } from "lucide-react";
 
 import { authGoogleStartUrl } from "@/lib/api";
@@ -68,6 +69,12 @@ export default function LoginPage() {
             </span>
           )}
         </Button>
+
+        <div className="mt-4 text-center">
+          <Link href="/forgot-password" className="text-sm underline" style={{ color: "var(--text-secondary)" }}>
+            Forgot password?
+          </Link>
+        </div>
       </div>
     </div>
   );
