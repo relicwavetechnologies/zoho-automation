@@ -7,6 +7,7 @@ import { AppHttpError } from '../../middlewares/error.middleware';
 
 interface OAuthStatePayload {
   nonce: string;
+  redirect_to?: string;
   iat: number;
   exp: number;
 }
@@ -44,9 +45,15 @@ function cleanupExpiredExchangeTokens() {
 
 setInterval(cleanupExpiredExchangeTokens, 60_000).unref();
 
-export function createOAuthState(): string {
+export function createOAuthState(redirectTo?: string): string {
+  const safeRedirect =
+    redirectTo && redirectTo.startsWith('/') && !redirectTo.startsWith('//')
+      ? redirectTo
+      : undefined;
+
   const payload: OAuthStatePayload = {
     nonce: crypto.randomBytes(16).toString('hex'),
+    ...(safeRedirect ? { redirect_to: safeRedirect } : {}),
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + 10 * 60,
   };
@@ -54,9 +61,9 @@ export function createOAuthState(): string {
   return jwt.sign(payload, config.jwtSecret);
 }
 
-export function verifyOAuthState(state: string): void {
+export function verifyOAuthState(state: string): OAuthStatePayload {
   try {
-    jwt.verify(state, config.jwtSecret);
+    return jwt.verify(state, config.jwtSecret) as OAuthStatePayload;
   } catch {
     throw new AppHttpError(400, 'Invalid OAuth state');
   }

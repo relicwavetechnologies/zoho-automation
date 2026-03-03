@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import { Request, Response } from 'express';
 
 import { AppHttpError } from '../../middlewares/error.middleware';
@@ -33,10 +34,25 @@ export async function orgStatus(req: Request, res: Response) {
 
 export async function createOrganizationOnboarding(req: Request, res: Response) {
   const userId = req.userId!;
-  const name = (req.body?.name ?? '').trim();
+  const name = String(req.body?.name ?? req.body?.organization_name ?? '').trim();
+  const password = String(req.body?.password ?? '').trim();
 
   if (!name) {
     throw new AppHttpError(400, 'Organization name is required');
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, password_hash: true },
+  });
+
+  if (!user) {
+    throw new AppHttpError(401, 'User not found');
+  }
+
+  const mustSetPassword = user.password_hash.startsWith('oauth:');
+  if (mustSetPassword && password.length < 8) {
+    throw new AppHttpError(400, 'Password must be at least 8 characters during onboarding');
   }
 
   const existing = await prisma.membership.findFirst({
@@ -52,6 +68,13 @@ export async function createOrganizationOnboarding(req: Request, res: Response) 
   }
 
   const created = await prisma.$transaction(async (tx) => {
+    if (mustSetPassword) {
+      await tx.user.update({
+        where: { id: userId },
+        data: { password_hash: await bcrypt.hash(password, 12) },
+      });
+    }
+
     const organization = await tx.organization.create({ data: { name } });
 
     const ownerRole = await tx.role.findFirst({

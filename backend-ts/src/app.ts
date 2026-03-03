@@ -14,8 +14,9 @@ import { streamHandler } from './modules/messages/stream.handler';
 import { asyncHandler } from './utils/async-handler';
 import { requireOrgAccess, requireRole } from './middlewares/org.middleware';
 import orgRouter from './modules/org/org.routes';
+import { createOrganizationOnboarding, orgStatus } from './modules/org/org.controller';
 import invitesRouter from './modules/invites/invites.routes';
-import { acceptInvite } from './modules/invites/invites.controller';
+import { acceptInvite, validateInvite } from './modules/invites/invites.controller';
 import adminRouter from './modules/admin/admin.routes';
 import {
   createRole,
@@ -32,6 +33,7 @@ import capabilityRouter from './modules/capabilities/capabilities.routes';
 import { policyCheck } from './modules/capabilities/capabilities.controller';
 import zohoRouter from './modules/integrations/zoho.routes';
 import auditRouter from './modules/audit/audit.routes';
+import { listAuditLogs } from './modules/audit/audit.controller';
 import rbacRouter, { getSessionCapabilities } from './modules/rbac/rbac.routes';
 
 export const app = express();
@@ -51,12 +53,15 @@ app.get('/session/bootstrap', requireAuth, asyncHandler(sessionBootstrap));
 app.get('/session/capabilities', requireAuth, requireOrgAccess, asyncHandler(getSessionCapabilities));
 
 app.use('/org', requireAuth, orgRouter);
+app.get('/onboarding/status', requireAuth, asyncHandler(orgStatus));
+app.post('/onboarding/organization', requireAuth, asyncHandler(createOrganizationOnboarding));
 
 app.use('/conversations', requireAuth, requireOrgAccess, conversationsRouter);
 app.use('/conversations/:id/messages', requireAuth, requireOrgAccess, messagesRouter);
 app.get('/conversations/:id/stream', requireAuth, requireOrgAccess, asyncHandler(streamHandler));
 app.post('/conversations/:id/stream', requireAuth, requireOrgAccess, asyncHandler(streamHandler));
 
+app.get('/invites/validate', asyncHandler(validateInvite));
 app.post('/invites/accept', requireAuth, asyncHandler(acceptInvite));
 app.use('/invites', requireAuth, requireOrgAccess, invitesRouter);
 app.use('/admin', requireAuth, requireOrgAccess, adminRouter);
@@ -83,6 +88,7 @@ app.post('/policy/check', requireAuth, requireOrgAccess, asyncHandler(policyChec
 app.use('/rbac', requireAuth, requireOrgAccess, rbacRouter);
 app.use('/integrations/zoho', requireAuth, requireOrgAccess, zohoRouter);
 app.use('/audit', requireAuth, requireOrgAccess, requireRole(['owner', 'admin']), auditRouter);
+app.get('/admin/audit', requireAuth, requireOrgAccess, requireRole(['owner', 'admin']), asyncHandler(listAuditLogs));
 
 app.use('/models', modelsRouter);
 

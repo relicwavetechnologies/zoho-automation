@@ -283,6 +283,9 @@ export async function putRolePermissions(req: Request, res: Response) {
 export async function getMemberRoles(req: Request, res: Response) {
   const organizationId = req.organizationId!;
   const memberId = req.params.member_id;
+  if (!memberId || memberId === 'undefined') {
+    throw new AppHttpError(400, 'member_id is required');
+  }
 
   const membership = await prisma.membership.findFirst({
     where: {
@@ -316,6 +319,9 @@ export async function putMemberRoles(req: Request, res: Response) {
   const roleId = String(req.body?.role_id ?? '').trim();
   const status = String(req.body?.status ?? 'active').trim();
 
+  if (!memberId || memberId === 'undefined') {
+    throw new AppHttpError(400, 'member_id is required');
+  }
   if (!roleId) throw new AppHttpError(400, 'role_id is required');
 
   const membership = await prisma.membership.findFirst({

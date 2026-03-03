@@ -179,8 +179,9 @@ export async function me(req: Request, res: Response) {
   return res.status(200).json(mapUser(user));
 }
 
-export async function googleStart(_req: Request, res: Response) {
-  const state = createOAuthState();
+export async function googleStart(req: Request, res: Response) {
+  const redirectTo = typeof req.query.redirect_to === 'string' ? req.query.redirect_to : undefined;
+  const state = createOAuthState(redirectTo);
   const url = buildGoogleAuthUrl(state);
   return res.redirect(url);
 }
@@ -193,7 +194,7 @@ export async function googleCallback(req: Request, res: Response) {
     throw new AppHttpError(400, 'Missing OAuth code or state');
   }
 
-  verifyOAuthState(state);
+  const statePayload = verifyOAuthState(state);
 
   const tokens = await exchangeCodeForTokens(code);
   const googleUser = await fetchGoogleUserInfo(tokens.access_token);
@@ -222,6 +223,9 @@ export async function googleCallback(req: Request, res: Response) {
   const exchangeToken = createExchangeToken(user.id);
   const redirectUrl = new URL('/callback', config.appBaseUrl);
   redirectUrl.searchParams.set('exchange_token', exchangeToken);
+  if (statePayload.redirect_to) {
+    redirectUrl.searchParams.set('next', statePayload.redirect_to);
+  }
 
   return res.redirect(redirectUrl.toString());
 }
