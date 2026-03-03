@@ -97,6 +97,19 @@ body {
   * {
     @apply border-border outline-ring/50;
   }
+
+  input,
+  textarea,
+  select {
+    color: var(--text-primary);
+    caret-color: var(--text-primary);
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--text-tertiary);
+    opacity: 1;
+  }
 }
 
 ::placeholder {

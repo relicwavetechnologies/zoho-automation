@@ -153,12 +153,13 @@ export default function AdminMembersPage() {
                 </td>
               </tr>
             ) : (
-              filtered.map((member) => {
+              filtered.map((member, index) => {
                 const memberId = member.member_id || member.user_id;
+                const rowKey = `${member.member_id || member.user_id || member.email}-${index}`;
                 const assignment = assignments[memberId]?.[0];
 
                 return (
-                  <tr key={member.user_id} className="border-t" style={{ borderColor: "var(--border-subtle)" }}>
+                  <tr key={rowKey} className="border-t" style={{ borderColor: "var(--border-subtle)" }}>
                     <td className="px-4 py-3">
                       <p style={{ color: "var(--text-primary)" }}>
                         {member.first_name} {member.last_name}
