@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { prisma } from '../../utils/prisma';
 import { logAudit } from '../../utils/audit';
-import { resolvePolicy } from '../policy/policy.service';
+import { resolvePolicyForUser } from '../policy/policy.service';
 
 interface IncomingMessagePart {
   type: string;
@@ -91,13 +91,17 @@ export async function streamHandler(req: Request, res: Response) {
         description: 'Get the current date and time in UTC',
         inputSchema: z.object({}),
         execute: async () => {
-          const policy = await resolvePolicy({
+          const policy = await resolvePolicyForUser({
             organizationId,
-            roleKey,
+            userId,
             toolKey: 'get_current_time',
+            action: 'execute',
           });
+          const approvalToken = (req.headers['x-approval-token'] as string | undefined)?.trim();
+          const hasApproval = approvalToken === `approve:get_current_time:${conversationId}`;
 
-          if (!policy.allowed || policy.requires_approval) {
+          if (!policy.allowed) {
+            const blockedForApproval = policy.requires_approval && !hasApproval;
             await logAudit({
               organizationId,
               actorUserId: userId,
@@ -105,13 +109,19 @@ export async function streamHandler(req: Request, res: Response) {
               targetType: 'tool',
               targetId: 'get_current_time',
               metadata: {
-                reason: policy.allowed ? 'requires_approval' : policy.reason,
+                reason_code: blockedForApproval ? 'approval_required' : policy.reason_code,
                 requires_approval: policy.requires_approval,
               },
             });
-            return `Tool execution denied: ${
-              policy.allowed ? 'requires_approval' : policy.reason
-            }`;
+            return JSON.stringify({
+              error: 'policy_denied',
+              allowed: false,
+              reason_code: blockedForApproval ? 'approval_required' : policy.reason_code,
+              reason_message: blockedForApproval
+                ? 'Approval token required before execution.'
+                : policy.reason_message,
+              requires_approval: blockedForApproval,
+            });
           }
 
           await logAudit({

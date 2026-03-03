@@ -118,7 +118,7 @@ export async function acceptInvite(req: Request, res: Response) {
   }
 
   await prisma.$transaction(async (tx) => {
-    await tx.membership.upsert({
+    const membership = await tx.membership.upsert({
       where: {
         user_id_organization_id: {
           user_id: userId,
@@ -133,6 +133,31 @@ export async function acceptInvite(req: Request, res: Response) {
       },
       update: {
         role_key: invite.role_key,
+        status: 'active',
+      },
+    });
+
+    const role = await tx.role.findFirst({
+      where: {
+        key: invite.role_key,
+        OR: [{ organization_id: invite.organization_id }, { organization_id: null }],
+      },
+      orderBy: { organization_id: 'desc' },
+    });
+
+    if (!role) {
+      throw new AppHttpError(400, 'invalid_role');
+    }
+
+    await tx.memberRole.upsert({
+      where: { membership_id: membership.id },
+      create: {
+        membership_id: membership.id,
+        role_id: role.id,
+        status: 'active',
+      },
+      update: {
+        role_id: role.id,
         status: 'active',
       },
     });

@@ -12,10 +12,20 @@ import type {
   ChatMessage as UiChatMessage,
   ToolInvocation as UiToolInvocation,
 } from "@/components/chat/types";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/context/AuthContext";
 import { useConversationChat } from "@/hooks/useConversationChat";
 import { api } from "@/lib/api";
+import { denyMessage } from "@/lib/deny";
 import { uiToast } from "@/lib/toast";
 import type { Model } from "@/types";
 
@@ -23,15 +33,20 @@ export default function ConversationPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { token, user, isLoading: isAuthLoading } = useAuth();
+  const { token, user, isLoading: isAuthLoading, refreshCapabilities } = useAuth();
   const initialPromptHandledRef = useRef(false);
 
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("gpt-4.1-mini");
   const [isLoading, setIsLoading] = useState(true);
-  const { allowed: canSendMessage, reason: sendReason } = useCapability("chat.message.send");
-  const { allowed: canAddContext, reason: addContextReason } = useCapability("chat.context.add");
-  const { allowed: canUseVoice, reason: voiceReason } = useCapability("chat.voice.input");
+  const [awaitingApproval, setAwaitingApproval] = useState(false);
+  const {
+    allowed: canSendMessage,
+    reasonCode: sendReasonCode,
+    requiresApproval: sendRequiresApproval,
+  } = useCapability("chat.message.send");
+  const { allowed: canAddContext, reasonCode: addContextReason } = useCapability("chat.context.add");
+  const { allowed: canUseVoice, reasonCode: voiceReason } = useCapability("chat.voice.input");
 
   const {
     messages,
@@ -93,9 +108,15 @@ export default function ConversationPage() {
   const submitFromInput = async () => {
     if (!input.trim()) return;
     if (!canSendMessage) {
-      uiToast.error(sendReason || "tool_not_permitted");
+      uiToast.error(denyMessage(sendReasonCode));
       return;
     }
+
+    if (sendRequiresApproval) {
+      setAwaitingApproval(true);
+      return;
+    }
+
     await handleSubmit();
   };
 
@@ -168,6 +189,39 @@ export default function ConversationPage() {
         canUseVoice={canUseVoice}
         voiceReason={voiceReason}
       />
+
+      <Dialog open={awaitingApproval} onOpenChange={setAwaitingApproval}>
+        <DialogContent
+          className="border"
+          style={{ borderColor: "var(--border-default)", backgroundColor: "var(--bg-surface)" }}
+        >
+          <DialogHeader>
+            <DialogTitle>Approval-required action</DialogTitle>
+            <DialogDescription>
+              This action is marked as approval-required. Confirm to submit.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setAwaitingApproval(false)}>
+              Cancel
+            </Button>
+            <Button
+              style={{ backgroundColor: "var(--accent)", color: "#fff" }}
+              onClick={async () => {
+                setAwaitingApproval(false);
+                try {
+                  await handleSubmit();
+                } catch (error) {
+                  uiToast.error(error instanceof Error ? error.message : "Unable to connect");
+                  await refreshCapabilities();
+                }
+              }}
+            >
+              Continue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

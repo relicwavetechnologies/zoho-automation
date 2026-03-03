@@ -231,7 +231,7 @@ export async function putRolePermissions(req: Request, res: Response) {
     throw new AppHttpError(400, 'permissions array is required');
   }
 
-  const upserts = permissions.map((item) => {
+  const upserts = permissions.map((item: any) => {
     const toolKey = String(item?.tool_key ?? '').trim();
     if (!TOOL_CATALOG.includes(toolKey as (typeof TOOL_CATALOG)[number])) {
       throw new AppHttpError(400, `Invalid tool_key: ${toolKey}`);

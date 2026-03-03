@@ -54,11 +54,31 @@ export async function createOrganizationOnboarding(req: Request, res: Response) 
   const created = await prisma.$transaction(async (tx) => {
     const organization = await tx.organization.create({ data: { name } });
 
+    const ownerRole = await tx.role.findFirst({
+      where: {
+        key: 'owner',
+        OR: [{ organization_id: organization.id }, { organization_id: null }],
+      },
+      orderBy: { organization_id: 'desc' },
+    });
+
+    if (!ownerRole) {
+      throw new AppHttpError(500, 'Owner role not seeded');
+    }
+
     const membership = await tx.membership.create({
       data: {
         user_id: userId,
         organization_id: organization.id,
         role_key: 'owner',
+        status: 'active',
+      },
+    });
+
+    await tx.memberRole.create({
+      data: {
+        membership_id: membership.id,
+        role_id: ownerRole.id,
         status: 'active',
       },
     });

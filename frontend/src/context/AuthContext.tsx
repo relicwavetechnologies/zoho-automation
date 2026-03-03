@@ -15,9 +15,10 @@ import {
   authMe,
   authRegister,
   authSessionBootstrap,
+  api,
 } from "@/lib/api";
 import { clearStoredToken, getStoredToken, setStoredToken } from "@/lib/auth";
-import type { Capabilities, Membership, Organization, User } from "@/types";
+import type { Capabilities, Membership, Organization, SessionBootstrap, User } from "@/types";
 
 interface AuthContextValue {
   user: User | null;
@@ -34,16 +35,61 @@ interface AuthContextValue {
   ) => Promise<void>;
   completeOAuthLogin: (token: string) => Promise<void>;
   refreshSession: () => Promise<void>;
+  refreshCapabilities: () => Promise<void>;
   logout: () => void;
   isLoading: boolean;
 }
 
 const EMPTY_CAPABILITIES: Capabilities = {
-  tools_allowed: [],
-  tools_blocked: [],
+  roles: [],
+  tools: {
+    allowed: [],
+    blocked: [],
+    approval_required: [],
+  },
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+
+function normalizeCapabilities(
+  raw:
+    | Capabilities
+    | SessionBootstrap["capabilities"]
+    | { tools_allowed?: string[]; tools_blocked?: Array<{ tool?: string; reason?: string }> }
+    | null
+    | undefined
+): Capabilities {
+  if (!raw) return EMPTY_CAPABILITIES;
+
+  if ("tools" in raw && raw.tools) {
+    return {
+      roles: raw.roles || [],
+      tools: {
+        allowed: raw.tools.allowed || [],
+        blocked: raw.tools.blocked || [],
+        approval_required: raw.tools.approval_required || [],
+      },
+    };
+  }
+
+  const legacy = raw as {
+    tools_allowed?: string[];
+    tools_blocked?: Array<{ tool?: string; reason?: string }>;
+  };
+
+  return {
+    roles: [],
+    tools: {
+      allowed: legacy.tools_allowed || [],
+      blocked: (legacy.tools_blocked || []).map((item) => ({
+        tool_key: item.tool || "unknown",
+        reason_code: (item.reason as Capabilities["tools"]["blocked"][number]["reason_code"]) ||
+          "tool_not_permitted",
+      })),
+      approval_required: [],
+    },
+  };
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -54,23 +100,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const loadSession = useCallback(async (sessionToken: string) => {
+  const refreshCapabilities = useCallback(async () => {
+    const currentToken = token || getStoredToken();
+    if (!currentToken) return;
+
     try {
-      const bootstrap = await authSessionBootstrap(sessionToken);
-      setToken(sessionToken);
-      setUser(bootstrap.user);
-      setOrganization(bootstrap.organization);
-      setMembership(bootstrap.membership);
-      setCapabilities(bootstrap.capabilities || EMPTY_CAPABILITIES);
+      const latest = await api.session.capabilities(currentToken);
+      setCapabilities(normalizeCapabilities(latest));
     } catch {
-      const me = await authMe(sessionToken);
-      setToken(sessionToken);
-      setUser(me);
-      setOrganization(null);
-      setMembership(null);
-      setCapabilities(EMPTY_CAPABILITIES);
+      // keep existing capabilities; backend may not support endpoint yet
     }
-  }, []);
+  }, [token]);
+
+  const loadSession = useCallback(
+    async (sessionToken: string) => {
+      try {
+        const bootstrap = await authSessionBootstrap(sessionToken);
+        setToken(sessionToken);
+        setUser(bootstrap.user);
+        setOrganization(bootstrap.organization);
+        setMembership(bootstrap.membership);
+        setCapabilities(normalizeCapabilities(bootstrap.capabilities));
+
+        try {
+          const latestCapabilities = await api.session.capabilities(sessionToken);
+          setCapabilities(normalizeCapabilities(latestCapabilities));
+        } catch {
+          // fallback to bootstrap capabilities
+        }
+      } catch {
+        const me = await authMe(sessionToken);
+        setToken(sessionToken);
+        setUser(me);
+        setOrganization(null);
+        setMembership(null);
+        setCapabilities(EMPTY_CAPABILITIES);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -104,11 +172,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [loadSession]);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const response = await authLogin(email, password);
-    setStoredToken(response.token);
-    await loadSession(response.token);
-  }, [loadSession]);
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const response = await authLogin(email, password);
+      setStoredToken(response.token);
+      await loadSession(response.token);
+    },
+    [loadSession]
+  );
 
   const register = useCallback(
     async (
@@ -159,6 +230,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       register,
       completeOAuthLogin,
       refreshSession,
+      refreshCapabilities,
       logout,
       isLoading,
     }),
@@ -172,6 +244,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       register,
       completeOAuthLogin,
       refreshSession,
+      refreshCapabilities,
       logout,
       isLoading,
     ]

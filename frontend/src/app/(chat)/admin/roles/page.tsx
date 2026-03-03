@@ -1,27 +1,29 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/context/AuthContext";
 import { api, type RoleDto } from "@/lib/api";
+import { denyMessage } from "@/lib/deny";
 import { uiToast } from "@/lib/toast";
 
 export default function AdminRolesPage() {
-  const { token } = useAuth();
+  const { token, refreshCapabilities } = useAuth();
   const [roles, setRoles] = useState<RoleDto[]>([]);
   const [keyInput, setKeyInput] = useState("");
   const [nameInput, setNameInput] = useState("");
-  const [cloneFrom, setCloneFrom] = useState("");
+  const [cloneFromRoleId, setCloneFromRoleId] = useState("");
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
     if (!token) return;
     setLoading(true);
     try {
-      setRoles(await api.admin.roles.list(token));
+      setRoles(await api.rbac.roles.list(token));
     } catch (error) {
       uiToast.error(error instanceof Error ? error.message : "Unable to connect");
     } finally {
@@ -37,53 +39,66 @@ export default function AdminRolesPage() {
     event.preventDefault();
     if (!token || !keyInput.trim() || !nameInput.trim()) return;
     try {
-      await api.admin.roles.create(token, {
+      await api.rbac.roles.create(token, {
         key: keyInput.trim(),
         name: nameInput.trim(),
-        clone_from: cloneFrom || undefined,
+        clone_from_role_id: cloneFromRoleId || undefined,
       });
       setKeyInput("");
       setNameInput("");
-      setCloneFrom("");
+      setCloneFromRoleId("");
       uiToast.success("Role created");
       await load();
     } catch (error) {
       uiToast.error(error instanceof Error ? error.message : "Unable to connect");
+      await refreshCapabilities();
     }
   };
 
   const renameRole = async (role: RoleDto, name: string) => {
     if (!token || !name.trim()) return;
     try {
-      await api.admin.roles.update(token, role.id, { name: name.trim() });
+      await api.rbac.roles.update(token, role.id, { name: name.trim() });
       await load();
       uiToast.success("Role updated");
     } catch (error) {
       uiToast.error(error instanceof Error ? error.message : "Unable to connect");
+      await refreshCapabilities();
     }
   };
 
   const deleteRole = async (role: RoleDto) => {
     if (!token || role.is_system) return;
     try {
-      await api.admin.roles.remove(token, role.id);
+      await api.rbac.roles.remove(token, role.id);
       await load();
       uiToast.success("Role deleted");
     } catch (error) {
       uiToast.error(error instanceof Error ? error.message : "Unable to connect");
+      await refreshCapabilities();
     }
   };
 
   return (
     <div className="mx-auto w-full max-w-[980px] p-6">
-      <h1 className="text-2xl font-semibold" style={{ color: "var(--text-primary)" }}>
-        Roles
-      </h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold" style={{ color: "var(--text-primary)" }}>
+          Roles
+        </h1>
+        <Link href="/admin/audit" className="text-sm underline" style={{ color: "var(--text-secondary)" }}>
+          View audit references
+        </Link>
+      </div>
+
       <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
-        Create custom roles, edit names, or clone from an existing role.
+        Manage system/custom roles with RBAC policy constraints.
       </p>
 
-      <form onSubmit={createRole} className="mt-4 grid grid-cols-1 gap-3 rounded-xl border p-4 md:grid-cols-4" style={{ borderColor: "var(--border-subtle)", backgroundColor: "var(--bg-surface)" }}>
+      <form
+        onSubmit={createRole}
+        className="mt-4 grid grid-cols-1 gap-3 rounded-xl border p-4 md:grid-cols-4"
+        style={{ borderColor: "var(--border-subtle)", backgroundColor: "var(--bg-surface)" }}
+      >
         <div className="space-y-2">
           <Label>Role key</Label>
           <Input value={keyInput} onChange={(event) => setKeyInput(event.target.value)} placeholder="billing_manager" />
@@ -93,11 +108,16 @@ export default function AdminRolesPage() {
           <Input value={nameInput} onChange={(event) => setNameInput(event.target.value)} placeholder="Billing Manager" />
         </div>
         <div className="space-y-2">
-          <Label>Clone from</Label>
-          <select className="h-9 rounded-md border px-2" value={cloneFrom} onChange={(event) => setCloneFrom(event.target.value)} style={{ borderColor: "var(--border-default)", backgroundColor: "var(--bg-elevated)", color: "var(--text-primary)" }}>
+          <Label>Clone from role</Label>
+          <select
+            className="h-9 rounded-md border px-2"
+            value={cloneFromRoleId}
+            onChange={(event) => setCloneFromRoleId(event.target.value)}
+            style={{ borderColor: "var(--border-default)", backgroundColor: "var(--bg-elevated)", color: "var(--text-primary)" }}
+          >
             <option value="">None</option>
             {roles.map((role) => (
-              <option key={role.id} value={role.key}>{role.name}</option>
+              <option key={role.id} value={role.id}>{role.name}</option>
             ))}
           </select>
         </div>
@@ -125,6 +145,10 @@ export default function AdminRolesPage() {
           </tbody>
         </table>
       </div>
+
+      <p className="mt-2 text-xs" style={{ color: "var(--text-tertiary)" }}>
+        Denied actions are mapped using standard reason codes ({denyMessage("tool_not_permitted")}).
+      </p>
     </div>
   );
 }

@@ -6,8 +6,18 @@ import { useRouter } from "next/navigation";
 import ChatInput from "@/components/chat/ChatInput";
 import { useCapability } from "@/components/shared/CapabilityGate";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
+import { denyMessage } from "@/lib/deny";
 import { uiToast } from "@/lib/toast";
 import type { Model } from "@/types";
 
@@ -15,12 +25,18 @@ const prompts = ["Explain a concept", "Help me write", "Review my code"];
 
 export default function EmptyStatePage() {
   const router = useRouter();
-  const { user, token } = useAuth();
+  const { user, token, refreshCapabilities } = useAuth();
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState("gpt-4.1-mini");
-  const { allowed: canSendMessage, reason: sendReason } = useCapability("chat.message.send");
-  const { allowed: canAddContext, reason: addContextReason } = useCapability("chat.context.add");
-  const { allowed: canUseVoice, reason: voiceReason } = useCapability("chat.voice.input");
+  const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
+
+  const {
+    allowed: canSendMessage,
+    reasonCode: sendReasonCode,
+    requiresApproval: sendRequiresApproval,
+  } = useCapability("chat.message.send");
+  const { allowed: canAddContext, reasonCode: addContextReason } = useCapability("chat.context.add");
+  const { allowed: canUseVoice, reasonCode: voiceReason } = useCapability("chat.voice.input");
 
   useEffect(() => {
     if (!token) return;
@@ -50,12 +66,18 @@ export default function EmptyStatePage() {
     return "Good evening";
   }, []);
 
-  const startConversation = async (message: string) => {
+  const startConversation = async (message: string, bypassApproval = false) => {
     if (!token) return;
     if (!canSendMessage) {
-      uiToast.error(sendReason || "tool_not_permitted");
+      uiToast.error(denyMessage(sendReasonCode));
       return;
     }
+
+    if (sendRequiresApproval && !bypassApproval) {
+      setQueuedMessage(message);
+      return;
+    }
+
     try {
       const conversation = await api.conversations.create(token, {
         model: selectedModel,
@@ -64,6 +86,7 @@ export default function EmptyStatePage() {
       router.push(`/${conversation.id}?q=${encodeURIComponent(message)}`);
     } catch (error) {
       uiToast.error(error instanceof Error ? error.message : "Unable to connect");
+      await refreshCapabilities();
     }
   };
 
@@ -110,6 +133,37 @@ export default function EmptyStatePage() {
         canUseVoice={canUseVoice}
         voiceReason={voiceReason}
       />
+
+      <Dialog open={Boolean(queuedMessage)} onOpenChange={(open) => !open && setQueuedMessage(null)}>
+        <DialogContent
+          className="border"
+          style={{ borderColor: "var(--border-default)", backgroundColor: "var(--bg-surface)" }}
+        >
+          <DialogHeader>
+            <DialogTitle>Approval-required action</DialogTitle>
+            <DialogDescription>
+              This tool is marked as approval-required. Confirm to continue.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setQueuedMessage(null)}>
+              Cancel
+            </Button>
+            <Button
+              style={{ backgroundColor: "var(--accent)", color: "#fff" }}
+              onClick={() => {
+                const payload = queuedMessage;
+                setQueuedMessage(null);
+                if (payload) {
+                  void startConversation(payload, true);
+                }
+              }}
+            >
+              Continue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

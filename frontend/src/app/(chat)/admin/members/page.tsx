@@ -1,19 +1,26 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/context/AuthContext";
-import { api, type MemberRecord } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  type MemberRecord,
+  type MemberRoleAssignment,
+  type RoleDto,
+} from "@/lib/api";
+import { denyMessage } from "@/lib/deny";
 import { uiToast } from "@/lib/toast";
 
-const ROLE_OPTIONS = ["owner", "admin", "manager", "member", "viewer"];
-const STATUS_OPTIONS = ["active", "suspended", "invited", "disabled"];
-
 export default function AdminMembersPage() {
-  const { token } = useAuth();
+  const { token, refreshCapabilities } = useAuth();
   const [members, setMembers] = useState<MemberRecord[]>([]);
+  const [roles, setRoles] = useState<RoleDto[]>([]);
+  const [assignments, setAssignments] = useState<Record<string, MemberRoleAssignment[]>>({});
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -22,8 +29,29 @@ export default function AdminMembersPage() {
     if (!token) return;
     setLoading(true);
     setError(null);
+
     try {
-      setMembers(await api.admin.members.list(token));
+      const [memberList, roleList] = await Promise.all([
+        api.admin.members.list(token),
+        api.rbac.roles.list(token),
+      ]);
+
+      setMembers(memberList);
+      setRoles(roleList);
+
+      const nextAssignments: Record<string, MemberRoleAssignment[]> = {};
+      await Promise.all(
+        memberList.map(async (member) => {
+          const memberId = member.member_id || member.user_id;
+          try {
+            nextAssignments[memberId] = await api.rbac.members.roles.get(token, memberId);
+          } catch {
+            nextAssignments[memberId] = [];
+          }
+        })
+      );
+
+      setAssignments(nextAssignments);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unable to connect";
       setError(msg);
@@ -40,35 +68,53 @@ export default function AdminMembersPage() {
     const q = search.trim().toLowerCase();
     if (!q) return members;
     return members.filter((member) =>
-      `${member.first_name} ${member.last_name} ${member.email} ${member.role_key}`.toLowerCase().includes(q)
+      `${member.first_name} ${member.last_name} ${member.email}`.toLowerCase().includes(q)
     );
   }, [members, search]);
 
-  const updateMember = async (userId: string, payload: { role_key?: string; status?: string }) => {
+  const assignRole = async (member: MemberRecord, roleId: string) => {
     if (!token) return;
+    const memberId = member.member_id || member.user_id;
+
+    const previous = assignments[memberId] || [];
+    const next = [{ member_id: memberId, role_id: roleId, status: "active" }];
+    setAssignments((prev) => ({ ...prev, [memberId]: next }));
+
     try {
-      const updated = await api.admin.members.update(token, userId, payload);
-      setMembers((prev) => prev.map((item) => (item.user_id === userId ? updated : item)));
-      uiToast.success("Member updated");
-    } catch (err) {
-      uiToast.error(err instanceof Error ? err.message : "Unable to connect");
+      const result = await api.rbac.members.roles.put(token, memberId, next);
+      setAssignments((prev) => ({ ...prev, [memberId]: result }));
+      uiToast.success("Member role updated");
+    } catch (error) {
+      setAssignments((prev) => ({ ...prev, [memberId]: previous }));
+      if (error instanceof ApiError && error.reasonCode) {
+        uiToast.error(denyMessage(error.reasonCode));
+      } else {
+        uiToast.error(error instanceof Error ? error.message : "Unable to connect");
+      }
+      await refreshCapabilities();
     }
   };
 
   return (
     <div className="mx-auto w-full max-w-[980px] p-6">
-      <h1 className="text-2xl font-semibold" style={{ color: "var(--text-primary)" }}>
-        Members
-      </h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold" style={{ color: "var(--text-primary)" }}>
+          Member Role Assignment
+        </h1>
+        <Link href="/admin/audit" className="text-sm underline" style={{ color: "var(--text-secondary)" }}>
+          View audit references
+        </Link>
+      </div>
+
       <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
-        Search members and update role/status.
+        Assign roles per member and show backend-forbidden errors clearly.
       </p>
 
       <div className="mt-4 flex gap-2">
         <Input
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search by name, email, role"
+          placeholder="Search by name or email"
           className="border"
           style={{ borderColor: "var(--border-default)", backgroundColor: "var(--bg-surface)" }}
         />
@@ -85,82 +131,65 @@ export default function AdminMembersPage() {
           <thead style={{ backgroundColor: "var(--bg-elevated)", color: "var(--text-secondary)" }}>
             <tr>
               <th className="px-4 py-3 text-left">Member</th>
-              <th className="px-4 py-3 text-left">Role</th>
+              <th className="px-4 py-3 text-left">Assigned role</th>
               <th className="px-4 py-3 text-left">Status</th>
-              <th className="px-4 py-3 text-left">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td className="px-4 py-4" colSpan={4} style={{ color: "var(--text-secondary)" }}>
-                  Loading members...
-                </td>
+                <td className="px-4 py-4" colSpan={3}>Loading members...</td>
               </tr>
             ) : error ? (
               <tr>
-                <td className="px-4 py-4" colSpan={4} style={{ color: "var(--error)" }}>
+                <td className="px-4 py-4" colSpan={3} style={{ color: "var(--error)" }}>
                   {error}
                 </td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td className="px-4 py-4" colSpan={4} style={{ color: "var(--text-secondary)" }}>
+                <td className="px-4 py-4" colSpan={3} style={{ color: "var(--text-secondary)" }}>
                   No members found
                 </td>
               </tr>
             ) : (
-              filtered.map((member) => (
-                <tr key={member.user_id} className="border-t" style={{ borderColor: "var(--border-subtle)" }}>
-                  <td className="px-4 py-3">
-                    <p style={{ color: "var(--text-primary)" }}>
-                      {member.first_name} {member.last_name}
-                    </p>
-                    <p style={{ color: "var(--text-tertiary)" }}>{member.email}</p>
-                  </td>
-                  <td className="px-4 py-3">
-                    <select
-                      className="rounded-md border px-2 py-1"
-                      value={member.role_key}
-                      onChange={(event) => void updateMember(member.user_id, { role_key: event.target.value })}
-                      style={{
-                        borderColor: "var(--border-default)",
-                        backgroundColor: "var(--bg-elevated)",
-                        color: "var(--text-primary)",
-                      }}
-                    >
-                      {ROLE_OPTIONS.map((role) => (
-                        <option key={role} value={role}>
-                          {role}
+              filtered.map((member) => {
+                const memberId = member.member_id || member.user_id;
+                const assignment = assignments[memberId]?.[0];
+
+                return (
+                  <tr key={member.user_id} className="border-t" style={{ borderColor: "var(--border-subtle)" }}>
+                    <td className="px-4 py-3">
+                      <p style={{ color: "var(--text-primary)" }}>
+                        {member.first_name} {member.last_name}
+                      </p>
+                      <p style={{ color: "var(--text-tertiary)" }}>{member.email}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <select
+                        className="rounded-md border px-2 py-1"
+                        value={assignment?.role_id || ""}
+                        onChange={(event) => void assignRole(member, event.target.value)}
+                        style={{
+                          borderColor: "var(--border-default)",
+                          backgroundColor: "var(--bg-elevated)",
+                          color: "var(--text-primary)",
+                        }}
+                      >
+                        <option value="" disabled>
+                          Select role
                         </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="px-4 py-3">
-                    <select
-                      className="rounded-md border px-2 py-1"
-                      value={member.status}
-                      onChange={(event) => void updateMember(member.user_id, { status: event.target.value })}
-                      style={{
-                        borderColor: "var(--border-default)",
-                        backgroundColor: "var(--bg-elevated)",
-                        color: "var(--text-primary)",
-                      }}
-                    >
-                      {STATUS_OPTIONS.map((status) => (
-                        <option key={status} value={status}>
-                          {status}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="px-4 py-3">
-                    <Button variant="ghost" onClick={() => void updateMember(member.user_id, {})}>
-                      Sync
-                    </Button>
-                  </td>
-                </tr>
-              ))
+                        {roles.map((role) => (
+                          <option key={role.id} value={role.id}>
+                            {role.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-4 py-3">{assignment?.status || member.status || "active"}</td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

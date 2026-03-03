@@ -213,12 +213,93 @@ export async function resolvePolicy(params: {
   roleKey: string;
   toolKey: string;
 }): Promise<{ allowed: boolean; reason: string; requires_approval: boolean }> {
+  const toolSetting = await prisma.organizationToolSetting.findUnique({
+    where: {
+      organization_id_tool_key: {
+        organization_id: params.organizationId,
+        tool_key: params.toolKey,
+      },
+    },
+  });
+
+  if (toolSetting && !toolSetting.is_enabled) {
+    return {
+      allowed: false,
+      reason: 'tool_disabled_org_level',
+      requires_approval: false,
+    };
+  }
+
+  const role = await prisma.role.findFirst({
+    where: {
+      key: params.roleKey,
+      OR: [{ organization_id: params.organizationId }, { organization_id: null }],
+    },
+    orderBy: { organization_id: 'desc' },
+  });
+
+  if (role) {
+    const permission = await prisma.roleToolPermission.findUnique({
+      where: {
+        role_id_tool_key: {
+          role_id: role.id,
+          tool_key: params.toolKey,
+        },
+      },
+    });
+
+    if (permission) {
+      if (!permission.can_execute) {
+        return {
+          allowed: false,
+          reason: 'tool_not_permitted',
+          requires_approval: false,
+        };
+      }
+
+      if (permission.requires_approval) {
+        return {
+          allowed: false,
+          reason: 'approval_required',
+          requires_approval: true,
+        };
+      }
+
+      return {
+        allowed: true,
+        reason: 'allowed',
+        requires_approval: false,
+      };
+    }
+  }
+
   const fallback = fallbackPolicy(params.roleKey, params.toolKey);
   return {
     allowed: fallback.allowed,
     reason: fallback.reason_code,
     requires_approval: fallback.requires_approval,
   };
+}
+
+export async function capabilitiesForRole(params: { organizationId: string; roleKey: string }) {
+  const tools_allowed: string[] = [];
+  const tools_blocked: Array<{ tool: string; reason: string }> = [];
+
+  for (const toolKey of TOOL_CATALOG) {
+    const policy = await resolvePolicy({
+      organizationId: params.organizationId,
+      roleKey: params.roleKey,
+      toolKey,
+    });
+
+    if (policy.allowed) {
+      tools_allowed.push(toolKey);
+    } else {
+      tools_blocked.push({ tool: toolKey, reason: policy.reason });
+    }
+  }
+
+  return { tools_allowed, tools_blocked };
 }
 
 export async function capabilitiesForUser(params: { organizationId: string; userId: string }) {
