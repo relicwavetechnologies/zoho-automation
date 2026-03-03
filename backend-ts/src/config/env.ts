@@ -16,5 +16,5 @@ export const config = {
   googleClientSecret: required('GOOGLE_CLIENT_SECRET'),
   googleRedirectUri: required('GOOGLE_REDIRECT_URI'),
   appBaseUrl: required('APP_BASE_URL'),
-  port: parseInt(process.env.PORT ?? process.env.SERVER_PORT ?? '8080', 10),
+  port: parseInt(process.env.PORT ?? process.env.SERVER_PORT ?? '8000', 10),
 };

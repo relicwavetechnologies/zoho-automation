@@ -220,7 +220,7 @@ export async function googleCallback(req: Request, res: Response) {
   });
 
   const exchangeToken = createExchangeToken(user.id);
-  const redirectUrl = new URL('/auth/callback', config.appBaseUrl);
+  const redirectUrl = new URL('/callback', config.appBaseUrl);
   redirectUrl.searchParams.set('exchange_token', exchangeToken);
 
   return res.redirect(redirectUrl.toString());

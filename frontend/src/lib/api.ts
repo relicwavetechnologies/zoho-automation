@@ -153,7 +153,12 @@ export const api = {
       }),
     me: (token: string) => apiFetch<User>("/auth/me", { token }),
     sessionBootstrap: (token: string) =>
-      apiFetch<SessionBootstrap>("/auth/session/bootstrap", { token }),
+      apiFetch<SessionBootstrap>("/session/bootstrap", { token }),
+    sessionExchange: (exchange_token: string) =>
+      apiFetch<{ token: string }>("/auth/session/exchange", {
+        method: "POST",
+        body: JSON.stringify({ exchange_token }),
+      }),
     getGoogleStartUrl: (redirectTo?: string) => {
       const url = new URL(`${API_URL}/auth/google/start`);
       if (redirectTo) {

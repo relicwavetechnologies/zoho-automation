@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { useAuth } from "@/context/AuthContext";
+import { api } from "@/lib/api";
 
 export default function OAuthCallbackPage() {
   const router = useRouter();
@@ -12,6 +13,7 @@ export default function OAuthCallbackPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const token = searchParams.get("token");
+  const exchangeToken = searchParams.get("exchange_token");
   const backendError = searchParams.get("error");
   const nextPath = useMemo(() => searchParams.get("next") || "/", [searchParams]);
 
@@ -21,19 +23,27 @@ export default function OAuthCallbackPage() {
       return;
     }
 
-    if (!token) {
+    const sessionToken = token?.trim();
+    const oauthExchangeToken = exchangeToken?.trim();
+
+    if (!sessionToken && !oauthExchangeToken) {
       setErrorMessage("Missing OAuth token");
       return;
     }
 
-    completeOAuthLogin(token)
-      .then(() => {
-        router.replace(nextPath);
-      })
-      .catch((error: unknown) => {
-        setErrorMessage(error instanceof Error ? error.message : "Unable to connect");
-      });
-  }, [backendError, token, completeOAuthLogin, router, nextPath]);
+    const complete = async () => {
+      const finalToken = sessionToken
+        ? sessionToken
+        : (await api.auth.sessionExchange(oauthExchangeToken!)).token;
+
+      await completeOAuthLogin(finalToken);
+      router.replace(nextPath);
+    };
+
+    complete().catch((error: unknown) => {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to connect");
+    });
+  }, [backendError, token, exchangeToken, completeOAuthLogin, router, nextPath]);
 
   if (errorMessage) {
     return (
