@@ -36,6 +36,17 @@ const runPerUserDeterministically = async (userId: string, fn: () => Promise<voi
 const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
   const { taskId, message } = job.data;
   const configuredEngine = getConfiguredOrchestrationEngineId();
+  logger.info('lark.runtime.job.started', {
+    requestId: message.trace?.requestId,
+    channel: message.channel,
+    eventId: message.trace?.eventId,
+    messageId: message.messageId,
+    chatId: message.chatId,
+    userId: message.userId,
+    taskId,
+    jobId: job.id,
+    textHash: message.trace?.textHash,
+  });
   const task = await buildTaskWithConfiguredEngine(taskId, message);
 
   runtimeTaskStore.update(taskId, {
@@ -99,6 +110,18 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     engineUsed,
     status: result.status,
   });
+  logger.info('lark.runtime.job.completed', {
+    requestId: message.trace?.requestId,
+    channel: message.channel,
+    eventId: message.trace?.eventId,
+    messageId: message.messageId,
+    chatId: message.chatId,
+    userId: message.userId,
+    taskId,
+    jobId: job.id,
+    status: result.status,
+    textHash: message.trace?.textHash,
+  });
 };
 
 let worker: Worker<OrchestrationJobData, void, typeof ORCHESTRATION_JOB_NAME> | null = null;
@@ -149,6 +172,18 @@ export const startOrchestrationWorker = (): Worker<OrchestrationJobData, void, t
     logger.error('Orchestration task failed', {
       taskId: job?.data.taskId,
       jobId: job?.id,
+      error: classifiedError,
+    });
+    logger.error('lark.runtime.job.failed', {
+      requestId: job?.data.message.trace?.requestId,
+      channel: job?.data.message.channel,
+      eventId: job?.data.message.trace?.eventId,
+      messageId: job?.data.message.messageId,
+      chatId: job?.data.message.chatId,
+      userId: job?.data.message.userId,
+      taskId: job?.data.taskId,
+      jobId: job?.id,
+      textHash: job?.data.message.trace?.textHash,
       error: classifiedError,
     });
   });

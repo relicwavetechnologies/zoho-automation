@@ -105,7 +105,7 @@ const sanitize = (value: unknown, depth = 0): unknown => {
   return next;
 };
 
-const shouldLog = (level: LogLevel, options?: LogOptions): boolean => {
+const shouldLog = (level: LogLevel, options?: LogOptions, randomFn: () => number = Math.random): boolean => {
   if (options?.always) {
     return true;
   }
@@ -119,7 +119,7 @@ const shouldLog = (level: LogLevel, options?: LogOptions): boolean => {
     return true;
   }
 
-  return Math.random() < sampleRate;
+  return randomFn() < sampleRate;
 };
 
 const emit = (level: LogLevel, message: string, meta?: unknown, options?: LogOptions): void => {
@@ -166,4 +166,10 @@ export const logger = {
       sampleRate: options?.sampleRate ?? config.LOG_SUCCESS_SAMPLE_RATE,
       always: options?.always,
     }),
+};
+
+export const __test__ = {
+  sanitize,
+  clampSampleRate,
+  shouldLog,
 };

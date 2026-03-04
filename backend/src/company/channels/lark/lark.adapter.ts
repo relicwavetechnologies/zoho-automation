@@ -8,6 +8,7 @@ import type { NormalizedIncomingMessageDTO } from '../../contracts';
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
 import type { LarkWebhookEnvelope } from './lark.types';
+import { buildLarkTraceMeta } from './lark-observability';
 import { larkTenantTokenService, LarkTenantTokenService } from './lark-tenant-token.service';
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
@@ -108,6 +109,18 @@ const isTokenInvalidFailure = (response: LarkResponseLike, payload: Record<strin
   return message.includes('tenant_access_token') && (message.includes('invalid') || message.includes('expired'));
 };
 
+const buildEgressTraceMeta = (input: {
+  chatId?: string;
+  messageId?: string;
+  correlationId?: string;
+}): Record<string, unknown> =>
+  buildLarkTraceMeta({
+    channel: 'lark',
+    chatId: input.chatId,
+    messageId: input.messageId,
+    taskId: input.correlationId,
+  });
+
 export class LarkChannelAdapter implements ChannelAdapter {
   public readonly channel = 'lark' as const;
 
@@ -174,9 +187,11 @@ export class LarkChannelAdapter implements ChannelAdapter {
     });
 
     if (!result.ok) {
-      logger.warn('lark.send.failed', {
-        chatId: input.chatId,
-        correlationId: input.correlationId,
+      logger.warn('lark.egress.send.failed', {
+        ...buildEgressTraceMeta({
+          chatId: input.chatId,
+          correlationId: input.correlationId,
+        }),
         error: result.result.error,
       });
       return result.result;
@@ -190,11 +205,11 @@ export class LarkChannelAdapter implements ChannelAdapter {
       messageId: readString(data?.message_id),
       providerResponse: result.payload,
     };
-    logger.success('lark.send.success', {
+    logger.success('lark.egress.send.success', buildEgressTraceMeta({
       chatId: input.chatId,
-      correlationId: input.correlationId,
       messageId: outbound.messageId,
-    });
+      correlationId: input.correlationId,
+    }));
     return outbound;
   }
 
@@ -210,9 +225,11 @@ export class LarkChannelAdapter implements ChannelAdapter {
     });
 
     if (!result.ok) {
-      logger.warn('lark.update.failed', {
-        messageId: input.messageId,
-        correlationId: input.correlationId,
+      logger.warn('lark.egress.update.failed', {
+        ...buildEgressTraceMeta({
+          messageId: input.messageId,
+          correlationId: input.correlationId,
+        }),
         error: result.result.error,
       });
       return result.result;
@@ -224,10 +241,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
       messageId: input.messageId,
       providerResponse: result.payload,
     };
-    logger.success('lark.update.success', {
+    logger.success('lark.egress.update.success', buildEgressTraceMeta({
       messageId: input.messageId,
       correlationId: input.correlationId,
-    });
+    }));
     return outbound;
   }
 

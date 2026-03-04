@@ -50,6 +50,37 @@ Use this map for V1 switch tasks so implementation stays aligned with the same a
 | 10-rollout-safe-switch-and-rollback-drill | 19, 20, 47 |
 | 11-e2e-langgraph-validation-and-release-gate | 19, 20, 47 |
 
+# Architecture Reference Map (V1 Production Hardening -> Plan Sections)
+
+Use this map for current V1 production-hardening execution tasks.
+
+| Task | Primary Plan Sections |
+|---|---|
+| 00-v1-scope-and-guardrails | 1, 4, 45, 47 |
+| 01-env-contract-and-bootstrap-health | 4, 10, 18 |
+| 02-lark-ingress-contract-hardening | 2, 14, 17 |
+| 03-lark-security-and-idempotency-hardening | 2, 16, 22 |
+| 04-lark-delivery-observability | 10, 18, 46 |
+| 05-bullmq-runtime-safety | 25, 26 |
+| 06-engine-switch-and-rollback-contract | 3, 4, 25, 47 |
+| 07-langgraph-route-node-determinism | 3, 5, 6 |
+| 08-langgraph-plan-node-determinism | 3, 5, 6 |
+| 09-langgraph-hitl-gate-state-machine | 12, 16, 17 |
+| 10-agent-bridge-contract-and-retries | 5, 7, 11 |
+| 11-synthesis-and-response-node-contract | 3, 10, 17 |
+| 12-checkpoint-recovery-determinism | 16, 25 |
+| 13-zoho-oauth-token-lifecycle-real | 14, 33, 36 |
+| 14-zoho-historical-sync-real-read | 35, 36 |
+| 15-zoho-delta-sync-real-read-events | 37, 39 |
+| 16-qdrant-external-adapter | 35, 36, 45 |
+| 17-embedding-provider-and-batching | 3, 7, 10 |
+| 18-retrieval-grounding-in-zoho-agent | 7, 14, 35 |
+| 19-admin-runtime-observability-and-controls | 23, 24, 46 |
+| 20-langsmith-tracing-redaction | 10, 46 |
+| 21-failure-injection-resilience-suite | 19, 20, 46 |
+| 22-e2e-release-gate-matrix | 19, 20, 47 |
+| 23-rollback-drill-and-ops-runbook | 19, 20, 47 |
+
 ## Companion Context Docs
 
 - Current consolidated status: `/docs/APP-STATUS-2026-03-05.md`

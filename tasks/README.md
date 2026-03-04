@@ -62,7 +62,9 @@ Task programs (for example `tasks/v0-emiac`) should also include:
 
 1. Completed historical task programs were folded/archived from `tasks/`.
 2. Use `tasks/templates` as the baseline when starting the next execution program.
-3. Current architecture/runtime state is documented in:
+3. Active execution program:
+   - `tasks/v1-production-hardening`
+4. Current architecture/runtime state is documented in:
    - `/docs/APP-STATUS-2026-03-05.md`
 
 ## Quality Gate For Task Completion

@@ -1,12 +1,14 @@
 import config from './config';
 import { initializeOrchestrationRuntime, shutdownOrchestrationRuntime } from './company/queue/runtime';
 import loaders from './loaders';
+import { runBootstrapHealthChecks } from './loaders/bootstrap-health';
 import { logger } from './utils/logger';
 
 let isShuttingDown = false;
 
 const startServer = async () => {
   try {
+    await runBootstrapHealthChecks();
     await initializeOrchestrationRuntime();
     const app = await loaders();
 

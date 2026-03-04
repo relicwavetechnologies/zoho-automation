@@ -85,7 +85,8 @@ test('verifyLarkWebhookRequest accepts valid signature mode', () => {
   });
 
   try {
-    const timestamp = String(Math.floor(Date.now() / 1000));
+    const nowSeconds = 1_700_000_000;
+    const timestamp = String(nowSeconds);
     const rawBody = JSON.stringify({ type: 'event_callback' });
     const signature = crypto
       .createHmac('sha256', 'secret-1')
@@ -101,6 +102,8 @@ test('verifyLarkWebhookRequest accepts valid signature mode', () => {
       parsedBody: {
         type: 'event_callback',
       },
+    }, {
+      now: () => nowSeconds * 1000,
     });
 
     assert.equal(result.ok, true);
@@ -109,7 +112,109 @@ test('verifyLarkWebhookRequest accepts valid signature mode', () => {
   }
 });
 
-test('verifyLarkWebhookRequest falls back to verification token mode when signature headers exist but secret missing', () => {
+test('verifyLarkWebhookRequest rejects missing signature headers when signing secret mode is active', () => {
+  const restore = setEnv({
+    LARK_WEBHOOK_SIGNING_SECRET: 'secret-1',
+  });
+
+  try {
+    const result = verifyLarkWebhookRequest({
+      headers: {},
+      rawBody: '{}',
+      parsedBody: {},
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'signature_required');
+  } finally {
+    restore();
+  }
+});
+
+test('verifyLarkWebhookRequest rejects malformed signature timestamp', () => {
+  const restore = setEnv({
+    LARK_WEBHOOK_SIGNING_SECRET: 'secret-1',
+  });
+
+  try {
+    const result = verifyLarkWebhookRequest({
+      headers: {
+        'x-lark-request-timestamp': 'not-a-number',
+        'x-lark-signature': 'abc',
+      },
+      rawBody: '{}',
+      parsedBody: {},
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_timestamp');
+  } finally {
+    restore();
+  }
+});
+
+test('verifyLarkWebhookRequest rejects stale signatures by replay window', () => {
+  const restore = setEnv({
+    LARK_WEBHOOK_SIGNING_SECRET: 'secret-1',
+    LARK_WEBHOOK_MAX_SKEW_SECONDS: '60',
+  });
+
+  try {
+    const nowSeconds = 1_700_000_000;
+    const staleTimestamp = String(nowSeconds - 120);
+    const rawBody = JSON.stringify({ type: 'event_callback' });
+    const signature = crypto
+      .createHmac('sha256', 'secret-1')
+      .update(`${staleTimestamp}:${rawBody}`)
+      .digest('hex');
+
+    const result = verifyLarkWebhookRequest({
+      headers: {
+        'x-lark-request-timestamp': staleTimestamp,
+        'x-lark-signature': signature,
+      },
+      rawBody,
+      parsedBody: { type: 'event_callback' },
+    }, {
+      now: () => nowSeconds * 1000,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'replay_window_exceeded');
+  } finally {
+    restore();
+  }
+});
+
+test('verifyLarkWebhookRequest rejects invalid signature digest in signature mode', () => {
+  const restore = setEnv({
+    LARK_WEBHOOK_SIGNING_SECRET: 'secret-1',
+  });
+
+  try {
+    const nowSeconds = 1_700_000_000;
+    const timestamp = String(nowSeconds);
+    const rawBody = JSON.stringify({ type: 'event_callback' });
+
+    const result = verifyLarkWebhookRequest({
+      headers: {
+        'x-lark-request-timestamp': timestamp,
+        'x-lark-signature': 'deadbeef',
+      },
+      rawBody,
+      parsedBody: { type: 'event_callback' },
+    }, {
+      now: () => nowSeconds * 1000,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_signature');
+  } finally {
+    restore();
+  }
+});
+
+test('verifyLarkWebhookRequest uses verification token mode when signing secret is not configured', () => {
   const restore = setEnv({
     LARK_VERIFICATION_TOKEN: 'token-abc',
   });

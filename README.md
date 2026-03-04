@@ -32,6 +32,10 @@ All implementation tasks must map back to this plan by section number.
 Current implementation status:
 - [docs/APP-STATUS-2026-03-05.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/docs/APP-STATUS-2026-03-05.md)
 
+Active V1 execution program:
+- [tasks/v1-production-hardening/README.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/tasks/v1-production-hardening/README.md)
+- [tasks/v1-production-hardening/CONTEXT.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/tasks/v1-production-hardening/CONTEXT.md)
+
 ## Design Rules For Scalability (V0 -> V1 -> V2)
 
 1. Keep channel logic behind `ChannelAdapter` interfaces.

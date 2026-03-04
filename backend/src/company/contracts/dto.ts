@@ -14,6 +14,12 @@ export type NormalizedIncomingMessageDTO = {
   timestamp: string;
   text: string;
   rawEvent: unknown;
+  trace?: {
+    requestId?: string;
+    eventId?: string;
+    textHash?: string;
+    receivedAt?: string;
+  };
 };
 
 export type OrchestrationTaskDTO = {

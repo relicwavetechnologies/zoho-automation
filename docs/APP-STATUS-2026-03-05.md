@@ -156,6 +156,13 @@ Important runtime flags currently used:
 1. BullMQ job ID formatting issue fixed (`:` removed/sanitized) to prevent enqueue 500 errors.
 2. Webhook verifier updated to fall back to token mode when signing secret is not configured.
 3. Logging layer upgraded to prevent silent failures during testing and rollout.
+4. Env contract + bootstrap health preflight added:
+   - strict schema validation with deterministic startup errors
+   - warning channel for fallback-mode configuration
+   - startup dependency checks for database and Redis before worker/app startup
+5. Lark ingress contract parser added:
+   - deterministic parse branches for url verification, supported message callbacks, ignored valid callbacks, and invalid payloads
+   - webhook route now returns explicit 202 ignore reasons for valid unsupported callbacks instead of generic normalization failures
 
 ## Recommended Next Engineering Phase
 1. Complete final E2E validation matrix in live-like environment.
