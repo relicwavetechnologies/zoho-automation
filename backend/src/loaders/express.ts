@@ -12,6 +12,7 @@ import exampleRoutes from '../modules/example/example.routes';
 import rbacRoutes from '../modules/rbac/rbac.routes';
 import userRoutes from '../modules/user/user.routes';
 import { errorMiddleware } from '../middlewares/error.middleware';
+import { requestContextMiddleware, requestLoggingMiddleware } from '../middlewares/request-logging.middleware';
 
 const allowedOrigins = config.CORS_ALLOWED_ORIGINS.split(',')
   .map((origin) => origin.trim())
@@ -37,6 +38,8 @@ const corsMiddleware = (req: Request, res: Response, next: NextFunction): void =
 };
 
 const expressLoader = async (app: Application): Promise<void> => {
+  app.use(requestContextMiddleware);
+  app.use(requestLoggingMiddleware);
   app.use(corsMiddleware);
   app.use(
     express.json({

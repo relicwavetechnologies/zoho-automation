@@ -48,7 +48,7 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     routeIntent: undefined,
   });
 
-  logger.info('orchestration.task.route', {
+  logger.debug('orchestration.task.route', {
     taskId,
     messageId: message.messageId,
     configuredEngine,
@@ -92,7 +92,7 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     });
   }
 
-  logger.info('orchestration.task.complete', {
+  logger.success('orchestration.task.complete', {
     taskId,
     messageId: message.messageId,
     configuredEngine,
@@ -142,7 +142,7 @@ export const startOrchestrationWorker = (): Worker<OrchestrationJobData, void, t
   );
 
   worker.on('completed', (job) => {
-    logger.info('Orchestration task completed', { taskId: job.data.taskId, jobId: job.id });
+    logger.success('orchestration.worker.job.completed', { taskId: job.data.taskId, jobId: job.id });
   });
   worker.on('failed', (job, error) => {
     const classifiedError = classifyRuntimeError(error);

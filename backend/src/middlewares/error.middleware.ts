@@ -7,23 +7,41 @@ import { logger } from '../utils/logger';
 
 export const errorMiddleware = (
   err: Error,
-  _req: Request,
+  req: Request,
   res: Response<ApiErrorResponse>,
   _next: NextFunction,
 ) => {
+  const requestId = (req as Request & { requestId?: string }).requestId;
+  const baseMeta = {
+    requestId: requestId ?? 'missing_request_id',
+    method: req.method,
+    path: req.originalUrl || req.url,
+  };
+
   if (err instanceof HttpException) {
-    logger.warn('Handled HttpException', { status: err.status, message: err.message });
+    logger.warn('http.error.handled_http_exception', {
+      ...baseMeta,
+      status: err.status,
+      message: err.message,
+      code: 'HTTP_EXCEPTION',
+    });
     return res.status(err.status).json({ success: false, message: err.message });
   }
 
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
     if (err.code === 'P2002') {
-      logger.warn('Handled Prisma unique constraint error', { code: err.code, meta: err.meta });
+      logger.warn('http.error.prisma_unique_constraint', {
+        ...baseMeta,
+        code: err.code,
+        prismaMeta: err.meta,
+      });
       return res.status(409).json({ success: false, message: 'Resource already exists' });
     }
   }
 
-  logger.error('Unhandled error', err);
+  logger.error('http.error.unhandled', {
+    ...baseMeta,
+    error: err,
+  });
   return res.status(500).json({ success: false, message: 'Internal Server Error' });
 };
-

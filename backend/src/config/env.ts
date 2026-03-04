@@ -12,6 +12,9 @@ const getEnv = (key: string, defaultValue?: string): string => {
 
 export const PORT = parseInt(getEnv('PORT', '8000'), 10);
 export const NODE_ENV = getEnv('NODE_ENV', 'development');
+export const LOG_LEVEL = getEnv('LOG_LEVEL', 'info');
+export const LOG_SUCCESS_SAMPLE_RATE = Number(getEnv('LOG_SUCCESS_SAMPLE_RATE', '0.25'));
+export const LOG_INCLUDE_STACK = getEnv('LOG_INCLUDE_STACK', 'true').toLowerCase() === 'true';
 export const DATABASE_URL = getEnv('DATABASE_URL', '');
 export const JWT_SECRET = getEnv('JWT_SECRET', 'changeme');
 export const ADMIN_JWT_SECRET = getEnv('ADMIN_JWT_SECRET', JWT_SECRET);

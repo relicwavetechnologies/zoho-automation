@@ -9,9 +9,8 @@ export const createApp = async (): Promise<Application> => {
 
   await expressLoader(app);
 
-  logger.info(`Express initialized in ${config.NODE_ENV} mode`);
+  logger.info('express.initialized', { nodeEnv: config.NODE_ENV }, { always: true });
 
   return app;
 };
-
 

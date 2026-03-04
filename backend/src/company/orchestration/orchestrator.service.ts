@@ -65,7 +65,7 @@ export class OrchestratorService {
         correlationId: randomUUID(),
       };
 
-      logger.info('orchestration.agent.dispatch.start', {
+      logger.debug('orchestration.agent.dispatch.start', {
         taskId: task.taskId,
         messageId: task.messageId,
         agentKey,
@@ -123,7 +123,7 @@ export class OrchestratorService {
         });
       }
 
-      logger.info('orchestration.agent.dispatch.finish', {
+      logger.success('orchestration.agent.dispatch.finish', {
         taskId: task.taskId,
         messageId: task.messageId,
         agentKey,

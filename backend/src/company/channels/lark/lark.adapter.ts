@@ -6,6 +6,7 @@ import type {
 } from '../base/channel-adapter';
 import type { NormalizedIncomingMessageDTO } from '../../contracts';
 import config from '../../../config';
+import { logger } from '../../../utils/logger';
 import type { LarkWebhookEnvelope } from './lark.types';
 import { larkTenantTokenService, LarkTenantTokenService } from './lark-tenant-token.service';
 
@@ -173,17 +174,28 @@ export class LarkChannelAdapter implements ChannelAdapter {
     });
 
     if (!result.ok) {
+      logger.warn('lark.send.failed', {
+        chatId: input.chatId,
+        correlationId: input.correlationId,
+        error: result.result.error,
+      });
       return result.result;
     }
 
     const data = asRecord(result.payload.data);
-    return {
+    const outbound: ChannelOutboundResult = {
       channel: this.channel,
-      status: 'sent',
+      status: 'sent' as const,
       chatId: input.chatId,
       messageId: readString(data?.message_id),
       providerResponse: result.payload,
     };
+    logger.success('lark.send.success', {
+      chatId: input.chatId,
+      correlationId: input.correlationId,
+      messageId: outbound.messageId,
+    });
+    return outbound;
   }
 
   public async updateMessage(input: ChannelUpdateMessage): Promise<ChannelOutboundResult> {
@@ -198,15 +210,25 @@ export class LarkChannelAdapter implements ChannelAdapter {
     });
 
     if (!result.ok) {
+      logger.warn('lark.update.failed', {
+        messageId: input.messageId,
+        correlationId: input.correlationId,
+        error: result.result.error,
+      });
       return result.result;
     }
 
-    return {
+    const outbound: ChannelOutboundResult = {
       channel: this.channel,
-      status: 'updated',
+      status: 'updated' as const,
       messageId: input.messageId,
       providerResponse: result.payload,
     };
+    logger.success('lark.update.success', {
+      messageId: input.messageId,
+      correlationId: input.correlationId,
+    });
+    return outbound;
   }
 
   private async requestWithTokenRetry(input: {
@@ -224,6 +246,12 @@ export class LarkChannelAdapter implements ChannelAdapter {
     try {
       token = await this.tokenService.getAccessToken();
     } catch (error) {
+        logger.error('lark.token.unavailable', {
+          context: input.context,
+          chatId: input.chatId,
+          messageId: input.messageId,
+          error,
+        });
         return {
           ok: false,
           result: {
@@ -243,9 +271,21 @@ export class LarkChannelAdapter implements ChannelAdapter {
 
       let firstAttempt = await this.performRequest(input, token);
       if (!firstAttempt.response.ok && isTokenInvalidFailure(firstAttempt.response, firstAttempt.payload)) {
+        logger.warn('lark.token.refresh.required', {
+          context: input.context,
+          statusCode: firstAttempt.response.status,
+          responseCode: firstAttempt.payload.code,
+          responseMessage: firstAttempt.payload.msg,
+        });
         try {
           token = await this.tokenService.getAccessToken({ forceRefresh: true });
         } catch (error) {
+          logger.error('lark.token.refresh.failed', {
+            context: input.context,
+            chatId: input.chatId,
+            messageId: input.messageId,
+            error,
+          });
           return {
             ok: false,
             result: {
@@ -267,6 +307,15 @@ export class LarkChannelAdapter implements ChannelAdapter {
       }
 
       if (!firstAttempt.response.ok) {
+        logger.error('lark.api.request_failed', {
+          context: input.context,
+          statusCode: firstAttempt.response.status,
+          statusText: firstAttempt.response.statusText,
+          responseCode: firstAttempt.payload.code,
+          responseMessage: firstAttempt.payload.msg,
+          chatId: input.chatId,
+          messageId: input.messageId,
+        });
         return {
           ok: false,
           result: buildApiErrorResult({

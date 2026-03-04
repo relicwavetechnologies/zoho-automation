@@ -3,7 +3,6 @@ import { logger } from '../utils/logger';
 
 export const initDatabase = async (): Promise<void> => {
   await prisma.$connect();
-  logger.info('Database connected via Prisma');
+  logger.info('database.connected', { client: 'prisma' }, { always: true });
 };
-
 

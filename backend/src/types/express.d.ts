@@ -19,6 +19,6 @@ declare module 'express-serve-static-core' {
       expiresAt: string;
     };
     rawBody?: string;
+    requestId?: string;
   }
 }
-
