@@ -17,6 +17,16 @@ const queue = new Queue<OrchestrationJobData, void, typeof ORCHESTRATION_JOB_NAM
   connection: redisConnection.getClient(),
 });
 
+const buildSafeJobId = (...parts: Array<string | number>): string =>
+  parts
+    .map((part) =>
+      String(part)
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]/g, '_'),
+    )
+    .filter((part) => part.length > 0)
+    .join('__');
+
 export const enqueueOrchestrationTask = async (
   message: NormalizedIncomingMessageDTO,
 ): Promise<RuntimeTaskSnapshot> => {
@@ -38,7 +48,7 @@ export const enqueueOrchestrationTask = async (
       message,
     },
     {
-      jobId: `${message.channel}:${message.messageId}`,
+      jobId: buildSafeJobId(message.channel, message.messageId),
       removeOnComplete: 500,
       removeOnFail: 500,
     },
@@ -71,7 +81,7 @@ export const requeueOrchestrationTask = async (
       message,
     },
     {
-      jobId: `${message.channel}:${message.messageId}:recover:${taskId}:${Date.now()}`,
+      jobId: buildSafeJobId(message.channel, message.messageId, 'recover', taskId, Date.now()),
       removeOnComplete: 500,
       removeOnFail: 500,
     },

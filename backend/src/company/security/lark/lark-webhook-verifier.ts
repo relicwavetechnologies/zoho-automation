@@ -54,14 +54,9 @@ export const verifyLarkWebhookRequest = (
   const timestamp = readHeader(input.headers['x-lark-request-timestamp']);
   const signature = readHeader(input.headers['x-lark-signature']);
 
-  // Signature mode: if signature headers are present and a signing secret exists, enforce HMAC verification.
-  if (timestamp || signature) {
-    if (!signingSecret) {
-      return {
-        ok: false,
-        reason: 'missing_verification_config',
-      };
-    }
+  // Signature mode: if signature headers are present and signing secret exists, enforce HMAC verification.
+  // If secret is not configured, gracefully fall back to verification-token mode below.
+  if ((timestamp || signature) && signingSecret) {
 
     if (!timestamp || !signature) {
       return {

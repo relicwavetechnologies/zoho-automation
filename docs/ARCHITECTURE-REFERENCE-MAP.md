@@ -2,6 +2,10 @@
 
 Use this map so every agent can jump from a task to exact architecture sections.
 
+Note:
+- Historical task program folders were folded/removed from `tasks/`.
+- This map is preserved as historical traceability for section mapping only.
+
 | Task | Primary Plan Sections |
 |---|---|
 | 00-v0-scope-and-guardrails | 1, 4, 45, 47 |
@@ -48,9 +52,7 @@ Use this map for V1 switch tasks so implementation stays aligned with the same a
 
 ## Companion Context Docs
 
-- Shared V0 context: `/tasks/v0-emiac/CONTEXT.md`
-- V0 scope guardrails baseline: `/tasks/v0-emiac/00-v0-scope-and-guardrails/context.md`
-- Shared V1 context: `/tasks/v1-langgraph-direct-switch/CONTEXT.md`
+- Current consolidated status: `/docs/APP-STATUS-2026-03-05.md`
 - DTO/sync contracts: `/docs/V0-DTO-SYNC-CONTRACT.md`
 - LangGraph runtime contract: `/docs/V1-LANGGRAPH-RUNTIME-CONTRACT.md`
 - Master architecture: `/docs/EMIAC-Architecture-Planning-v3.0.md`

@@ -109,7 +109,28 @@ test('verifyLarkWebhookRequest accepts valid signature mode', () => {
   }
 });
 
-test('verifyLarkWebhookRequest requires config when signature headers exist but secret missing', () => {
+test('verifyLarkWebhookRequest falls back to verification token mode when signature headers exist but secret missing', () => {
+  const restore = setEnv({
+    LARK_VERIFICATION_TOKEN: 'token-abc',
+  });
+
+  try {
+    const result = verifyLarkWebhookRequest({
+      headers: {
+        'x-lark-request-timestamp': String(Math.floor(Date.now() / 1000)),
+        'x-lark-signature': 'abc',
+      },
+      rawBody: JSON.stringify({ token: 'token-abc' }),
+      parsedBody: { token: 'token-abc' },
+    });
+
+    assert.equal(result.ok, true);
+  } finally {
+    restore();
+  }
+});
+
+test('verifyLarkWebhookRequest rejects when signature secret missing and no token mode config', () => {
   const restore = setEnv({});
 
   try {
