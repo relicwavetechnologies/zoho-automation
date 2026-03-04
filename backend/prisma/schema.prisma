@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
@@ -8,12 +9,211 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  password  String
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String            @id @default(uuid())
+  email            String            @unique
+  password         String
+  name             String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  adminMemberships AdminMembership[]
+  adminSessions    AdminSession[]
 }
 
+model Company {
+  id              String           @id @default(uuid())
+  name            String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  zohoConnections ZohoConnection[]
+  zohoSyncJobs    ZohoSyncJob[]
+  adminMemberships AdminMembership[]
+  adminSessions    AdminSession[]
+  invites          CompanyInvite[]
+}
 
+model AdminMembership {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, role, isActive])
+  @@index([companyId, role, isActive])
+}
+
+model AdminSession {
+  id        String   @id @default(uuid())
+  sessionId String   @unique @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role      String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, role, expiresAt])
+  @@index([companyId, role, expiresAt])
+}
+
+model ZohoConnection {
+  id          String      @id @default(uuid())
+  companyId   String
+  company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  environment String      @default("prod")
+  status      String
+  connectedAt DateTime
+  scopes      String[]
+  lastSyncAt  DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  syncJobs    ZohoSyncJob[]
+  vectorDocs  VectorDocument[]
+
+  @@unique([companyId, environment])
+}
+
+model ZohoSyncJob {
+  id            String         @id @default(uuid())
+  companyId     String
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connectionId  String
+  connection    ZohoConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  jobType       String
+  status        String
+  progressPercent Int       @default(0)
+  checkpoint    String?
+  totalBatches  Int?
+  processedBatches Int      @default(0)
+  retryCount    Int           @default(0)
+  maxAttempts   Int           @default(3)
+  queuedAt      DateTime       @default(now())
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  correlationId String?
+  payload       Json?
+  errorMessage  String?
+  events        ZohoSyncJobEvent[]
+
+  @@index([companyId, status])
+  @@index([connectionId, jobType, status])
+}
+
+model ZohoDeltaEvent {
+  id         String   @id @default(uuid())
+  companyId  String
+  eventKey   String   @unique
+  sourceType String
+  sourceId   String
+  operation  String
+  changedAt  DateTime
+  payload    Json?
+  status     String
+  attempts   Int      @default(0)
+  lastError  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([companyId, status])
+}
+
+model ZohoSyncJobEvent {
+  id         String      @id @default(uuid())
+  jobId      String
+  job        ZohoSyncJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  fromStatus String?
+  toStatus   String
+  message    String?
+  payload    Json?
+  createdAt  DateTime    @default(now())
+
+  @@index([jobId, createdAt])
+}
+
+model VectorDocument {
+  id           String      @id @default(uuid())
+  companyId    String
+  connectionId String
+  connection   ZohoConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  sourceType   String
+  sourceId     String
+  chunkIndex   Int
+  contentHash  String
+  payload      Json
+  embedding    Float[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@unique([companyId, sourceType, sourceId, chunkIndex])
+  @@index([companyId, sourceType])
+}
+
+model IngressIdempotencyKey {
+  id        String   @id @default(uuid())
+  channel   String
+  messageId String   @unique
+  createdAt DateTime @default(now())
+
+  @@index([channel, createdAt])
+}
+
+model RbacPermission {
+  id        String   @id @default(uuid())
+  role      String
+  action    String
+  allowed   Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+  updatedBy String
+
+  @@unique([role, action])
+  @@index([role, allowed])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  actorId   String
+  companyId String?
+  action    String
+  outcome   String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+}
+
+model AdminControlState {
+  id        String   @id @default(uuid())
+  controlKey String
+  companyId String?
+  value     String
+  updatedBy String
+  updatedAt DateTime @updatedAt
+
+  @@unique([controlKey, companyId])
+  @@index([companyId, updatedAt])
+}
+
+model CompanyInvite {
+  id         String   @id @default(uuid())
+  companyId  String
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  email      String
+  role       String
+  status     String
+  token      String   @unique
+  invitedBy  String
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([companyId, status, createdAt])
+}

@@ -30,3 +30,7 @@ Cross-cutting boundaries:
 Disallowed pattern:
 
 - Raw channel payload types imported by `orchestration`, `agents`, `queue`, or `state`.
+
+## V0 Route Entry
+
+- Lark webhook entry is mounted at `/webhooks/lark/events` and must normalize payloads via the channel adapter before any orchestration handoff.

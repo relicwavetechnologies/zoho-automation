@@ -7,7 +7,7 @@
 - Run end-to-end smoke scenarios and produce explicit release go/no-go checklist.
 
 ## Dependency
-- 03 through 11
+- 03 through 11, 15-delta-sync-and-onboarding-validation, 21-e2e-admin-dashboard-validation
 
 ## Reference Docs
 - README.md (repo overview and V0/V1/V2 boundaries)

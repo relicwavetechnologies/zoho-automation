@@ -28,6 +28,8 @@ V0 is not the full 17-agent platform. V0 is the stable core spine.
 3. Queue-based execution with idempotency and checkpointing.
 4. HITL for write/destructive actions.
 5. Keep architecture forward-compatible for V1 without rewrites.
+6. Company onboarding must support Zoho connection and asynchronous historical backfill into vector DB (Qdrant path) with checkpointed ingestion.
+7. V0 includes a separate admin dashboard track (React root app) for super-admin and company-admin control of RBAC, audit logs, users/invites, and onboarding controls.
 
 ## Required Working Rules
 1. Claim item in `todo.md` before implementing.

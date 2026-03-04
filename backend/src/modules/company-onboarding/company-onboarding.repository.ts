@@ -1,0 +1,125 @@
+import type { Company, ZohoConnection } from '../../generated/prisma';
+
+import { BaseRepository } from '../../core/repository';
+import { prisma } from '../../utils/prisma';
+
+export class CompanyOnboardingRepository extends BaseRepository {
+  findCompanyById(companyId: string): Promise<Company | null> {
+    return prisma.company.findUnique({
+      where: { id: companyId },
+    });
+  }
+
+  createCompany(name: string): Promise<Company> {
+    return prisma.company.create({
+      data: { name },
+    });
+  }
+
+  upsertZohoConnection(input: {
+    companyId: string;
+    environment: string;
+    status: string;
+    connectedAt: Date;
+    scopes: string[];
+  }): Promise<ZohoConnection> {
+    return prisma.zohoConnection.upsert({
+      where: {
+        companyId_environment: {
+          companyId: input.companyId,
+          environment: input.environment,
+        },
+      },
+      create: {
+        companyId: input.companyId,
+        environment: input.environment,
+        status: input.status,
+        connectedAt: input.connectedAt,
+        scopes: input.scopes,
+      },
+      update: {
+        status: input.status,
+        connectedAt: input.connectedAt,
+        scopes: input.scopes,
+      },
+    });
+  }
+
+  findSyncJobById(jobId: string) {
+    return prisma.zohoSyncJob.findUnique({
+      where: { id: jobId },
+      include: {
+        events: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+  }
+
+  findLatestConnectionForCompany(companyId: string) {
+    return prisma.zohoConnection.findFirst({
+      where: {
+        companyId,
+        status: 'CONNECTED',
+      },
+      orderBy: {
+        connectedAt: 'desc',
+      },
+    });
+  }
+
+  findLifecycleSnapshot(companyId: string) {
+    return prisma.company.findUnique({
+      where: {
+        id: companyId,
+      },
+      include: {
+        zohoConnections: {
+          orderBy: {
+            connectedAt: 'desc',
+          },
+          take: 1,
+        },
+        zohoSyncJobs: {
+          orderBy: {
+            queuedAt: 'desc',
+          },
+          take: 20,
+        },
+      },
+    });
+  }
+
+  countVectorDocuments(companyId: string): Promise<number> {
+    return prisma.vectorDocument.count({
+      where: {
+        companyId,
+      },
+    });
+  }
+
+  countPendingDeltaEvents(companyId: string): Promise<number> {
+    return prisma.zohoDeltaEvent.count({
+      where: {
+        companyId,
+        status: {
+          in: ['queued', 'retry_pending'],
+        },
+      },
+    });
+  }
+
+  findLatestHistoricalJob(companyId: string) {
+    return prisma.zohoSyncJob.findFirst({
+      where: {
+        companyId,
+        jobType: 'historical',
+      },
+      orderBy: {
+        queuedAt: 'desc',
+      },
+    });
+  }
+}
+
+export const companyOnboardingRepository = new CompanyOnboardingRepository();

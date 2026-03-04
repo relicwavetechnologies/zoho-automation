@@ -102,6 +102,44 @@ type CheckpointDTO = {
 };
 ```
 
+### 8) ZohoConnectionDTO
+```ts
+type ZohoConnectionDTO = {
+  companyId: string;
+  status: 'PENDING' | 'CONNECTED' | 'FAILED' | 'DISCONNECTED';
+  connectedAt?: string; // ISO-8601
+  lastSyncAt?: string;  // ISO-8601
+  scopes?: string[];
+};
+```
+
+### 9) IngestionJobDTO
+```ts
+type IngestionJobDTO = {
+  jobId: string;
+  companyId: string;
+  source: 'zoho';
+  mode: 'historical_full' | 'delta';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  progressPercent: number;
+  checkpoint?: string;
+  startedAt?: string;   // ISO-8601
+  completedAt?: string; // ISO-8601
+};
+```
+
+### 10) VectorUpsertDTO
+```ts
+type VectorUpsertDTO = {
+  companyId: string;
+  sourceType: 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+  sourceId: string;
+  chunkIndex: number;
+  contentHash: string;
+  payload: Record<string, unknown>;
+};
+```
+
 ## Required Sync Rules (Anti-Drift)
 
 1. `messageId` is the idempotency key at ingress.
@@ -111,6 +149,9 @@ type CheckpointDTO = {
 5. HITL state changes must be atomic (`pending -> confirmed/cancelled/expired`).
 6. Agent results are append-only in history log; latest snapshot can be derived view.
 7. Never mutate normalized inbound DTO after queue enqueue.
+8. Zoho onboarding connect must enqueue ingestion job asynchronously.
+9. Historical ingestion is resumable from checkpoint.
+10. Delta ingestion is idempotent by source event key.
 
 ## Recommended Redis Key Pattern (V0)
 

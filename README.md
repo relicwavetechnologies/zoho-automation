@@ -16,6 +16,9 @@ This repository contains the backend foundation and execution plan for an extens
 
 The canonical architecture plan lives here:
 - [docs/EMIAC-Architecture-Planning-v3.0.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/docs/EMIAC-Architecture-Planning-v3.0.md)
+- [docs/ARCHITECTURE-REFERENCE-MAP.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/docs/ARCHITECTURE-REFERENCE-MAP.md)
+- [docs/V0-DTO-SYNC-CONTRACT.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/docs/V0-DTO-SYNC-CONTRACT.md)
+- [docs/LARK-IDENTITY-VERIFICATION-FLOW.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/docs/LARK-IDENTITY-VERIFICATION-FLOW.md)
 
 All implementation tasks must map back to this plan by section number.
 
@@ -23,7 +26,7 @@ All implementation tasks must map back to this plan by section number.
 
 | Version | Goal | Scope | Extensibility Focus |
 |---|---|---|---|
-| V0 | Working foundation on Lark | Core orchestration flow, queue, idempotency, Redis checkpointing, basic agents, HITL for writes | Introduce stable adapter/registry interfaces from day 1 |
+| V0 | Working foundation on Lark | Core orchestration flow, queue, idempotency, Redis checkpointing, basic agents, HITL for writes, Zoho onboarding + async vector ingestion, admin dashboard control plane | Introduce stable adapter/registry interfaces from day 1 |
 | V1 | Product-ready expansion | Better routing, richer agent set, RBAC hardening, file handling, stronger retries/fallbacks | Add second channel (Slack/WhatsApp) without core rewrites |
 | V2 | Enterprise scale | Multi-tenant hardening, advanced security/compliance, proactive intelligence, deep observability | Per-tenant feature flags and faster integration rollout |
 

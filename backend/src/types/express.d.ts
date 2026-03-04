@@ -11,7 +11,14 @@ declare module 'express-serve-static-core' {
     user?: {
       id: string;
     };
+    adminSession?: {
+      userId: string;
+      sessionId: string;
+      role: 'SUPER_ADMIN' | 'COMPANY_ADMIN';
+      companyId?: string;
+      expiresAt: string;
+    };
+    rawBody?: string;
   }
 }
-
 

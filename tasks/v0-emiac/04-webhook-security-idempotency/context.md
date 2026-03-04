@@ -7,7 +7,7 @@
 - Add signature verification, timestamp replay check, and message idempotency gate before queue dispatch.
 
 ## Dependency
-- 03-channel-abstraction-and-lark-adapter
+- 15-delta-sync-and-onboarding-validation
 
 ## Reference Docs
 - README.md (repo overview and V0/V1/V2 boundaries)
