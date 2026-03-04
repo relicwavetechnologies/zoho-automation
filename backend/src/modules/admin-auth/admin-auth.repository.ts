@@ -31,8 +31,66 @@ export class AdminAuthRepository extends BaseRepository {
     });
   }
 
+  createCompany(name: string) {
+    return prisma.company.create({
+      data: { name },
+    });
+  }
+
+  createCompanyAdminSignup(data: {
+    email: string;
+    password: string;
+    name?: string;
+    companyName: string;
+  }): Promise<{
+    user: User;
+    company: { id: string; name: string };
+  }> {
+    return prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          email: data.email,
+          password: data.password,
+          name: data.name,
+        },
+      });
+
+      const company = await tx.company.create({
+        data: { name: data.companyName },
+        select: { id: true, name: true },
+      });
+
+      await tx.adminMembership.create({
+        data: {
+          userId: user.id,
+          companyId: company.id,
+          role: 'COMPANY_ADMIN',
+          isActive: true,
+        },
+      });
+
+      return { user, company };
+    });
+  }
+
+  findInviteByToken(inviteToken: string) {
+    return prisma.companyInvite.findUnique({
+      where: { token: inviteToken },
+    });
+  }
+
   createUser(data: { email: string; password: string; name?: string }): Promise<User> {
     return prisma.user.create({ data });
+  }
+
+  updateUserPasswordAndName(userId: string, data: { password: string; name?: string }): Promise<User> {
+    return prisma.user.update({
+      where: { id: userId },
+      data: {
+        password: data.password,
+        ...(data.name ? { name: data.name } : {}),
+      },
+    });
   }
 
   createAdminMembership(data: {
@@ -49,17 +107,11 @@ export class AdminAuthRepository extends BaseRepository {
     });
   }
 
-  upsertCompanyAdminMembership(userId: string, companyId: string): Promise<AdminMembership> {
+  upsertMembership(userId: string, companyId: string, role: string): Promise<AdminMembership> {
     return prisma.$transaction(async (tx) => {
       const existing = await tx.adminMembership.findFirst({
-        where: {
-          userId,
-          companyId,
-          role: 'COMPANY_ADMIN',
-        },
-        orderBy: {
-          createdAt: 'desc',
-        },
+        where: { userId, companyId, role },
+        orderBy: { createdAt: 'desc' },
       });
 
       if (existing) {
@@ -73,11 +125,15 @@ export class AdminAuthRepository extends BaseRepository {
         data: {
           userId,
           companyId,
-          role: 'COMPANY_ADMIN',
+          role,
           isActive: true,
         },
       });
     });
+  }
+
+  upsertCompanyAdminMembership(userId: string, companyId: string): Promise<AdminMembership> {
+    return this.upsertMembership(userId, companyId, 'COMPANY_ADMIN');
   }
 
   findActiveMembership(input: {
@@ -129,6 +185,16 @@ export class AdminAuthRepository extends BaseRepository {
       },
       data: {
         revokedAt: new Date(),
+      },
+    });
+  }
+
+  acceptInvite(inviteId: string) {
+    return prisma.companyInvite.update({
+      where: { id: inviteId },
+      data: {
+        status: 'accepted',
+        acceptedAt: new Date(),
       },
     });
   }

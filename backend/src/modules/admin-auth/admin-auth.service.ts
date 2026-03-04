@@ -3,11 +3,12 @@ import jwt from 'jsonwebtoken';
 import config from '../../config';
 import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
+import { Prisma } from '../../generated/prisma';
 import type {
   AdminNavItemDTO,
   AdminSessionDTO,
   SuperAdminBootstrapDTO,
-} from '../../emiac/contracts';
+} from '../../company/contracts';
 import { comparePassword, hashPassword } from '../../utils/bcrypt';
 import { AdminLoginResult } from './admin-auth.model';
 import { AdminAuthRepository, adminAuthRepository } from './admin-auth.repository';
@@ -15,6 +16,8 @@ import { BootstrapSuperAdminDto } from './dto/bootstrap-super-admin.dto';
 import { GrantCompanyAdminDto } from './dto/grant-company-admin.dto';
 import { LoginCompanyAdminDto } from './dto/login-company-admin.dto';
 import { LoginSuperAdminDto } from './dto/login-super-admin.dto';
+import { SignupCompanyAdminDto } from './dto/signup-company-admin.dto';
+import { SignupMemberInviteDto } from './dto/signup-member-invite.dto';
 
 const buildSessionExpiry = (): Date =>
   new Date(Date.now() + config.ADMIN_SESSION_TTL_MINUTES * 60 * 1000);
@@ -98,7 +101,79 @@ export class AdminAuthService extends BaseService {
       throw new HttpException(403, 'User is not an active company-admin for this company');
     }
 
-    return this.issueSession(user.id, 'COMPANY_ADMIN', payload.companyId);
+    if (!membership.companyId) {
+      throw new HttpException(500, 'Company-admin membership missing company scope');
+    }
+
+    return this.issueSession(user.id, 'COMPANY_ADMIN', membership.companyId);
+  }
+
+  async signupCompanyAdmin(payload: SignupCompanyAdminDto): Promise<AdminLoginResult> {
+    const hashedPassword = await hashPassword(payload.password);
+    let userId: string;
+    let companyId: string;
+    try {
+      const result = await this.repository.createCompanyAdminSignup({
+        email: payload.email,
+        password: hashedPassword,
+        name: payload.name,
+        companyName: payload.companyName,
+      });
+      userId = result.user.id;
+      companyId = result.company.id;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new HttpException(409, 'Email already exists');
+      }
+      throw error;
+    }
+
+    return this.issueSession(userId, 'COMPANY_ADMIN', companyId);
+  }
+
+  async signupFromInvite(payload: SignupMemberInviteDto): Promise<{
+    accepted: true;
+    role: string;
+    companyId: string;
+    userId: string;
+    email: string;
+  }> {
+    const invite = await this.repository.findInviteByToken(payload.inviteToken);
+    if (!invite) {
+      throw new HttpException(404, 'Invite token not found');
+    }
+
+    if (invite.status !== 'pending') {
+      throw new HttpException(409, 'Invite is no longer active');
+    }
+
+    if (invite.expiresAt.getTime() < Date.now()) {
+      throw new HttpException(410, 'Invite has expired');
+    }
+
+    const hashedPassword = await hashPassword(payload.password);
+    const existingUser = await this.repository.findUserByEmail(invite.email);
+    const user = existingUser
+      ? await this.repository.updateUserPasswordAndName(existingUser.id, {
+        password: hashedPassword,
+        name: payload.name,
+      })
+      : await this.repository.createUser({
+        email: invite.email,
+        password: hashedPassword,
+        name: payload.name,
+      });
+
+    await this.repository.upsertMembership(user.id, invite.companyId, invite.role);
+    await this.repository.acceptInvite(invite.id);
+
+    return {
+      accepted: true,
+      role: invite.role,
+      companyId: invite.companyId,
+      userId: user.id,
+      email: user.email,
+    };
   }
 
   async resolveAdminSession(sessionId: string): Promise<AdminSessionDTO | null> {
@@ -159,9 +234,9 @@ export class AdminAuthService extends BaseService {
         roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
       },
       {
-        id: 'companies',
-        label: 'Companies',
-        path: '/companies',
+        id: 'workspaces',
+        label: 'Workspaces',
+        path: '/workspaces',
         roles: ['SUPER_ADMIN'],
       },
       {

@@ -11,6 +11,8 @@ import { bootstrapSuperAdminSchema } from './dto/bootstrap-super-admin.dto';
 import { grantCompanyAdminSchema } from './dto/grant-company-admin.dto';
 import { loginCompanyAdminSchema } from './dto/login-company-admin.dto';
 import { loginSuperAdminSchema } from './dto/login-super-admin.dto';
+import { signupCompanyAdminSchema } from './dto/signup-company-admin.dto';
+import { signupMemberInviteSchema } from './dto/signup-member-invite.dto';
 
 class AdminAuthController extends BaseController {
   constructor(private readonly service: AdminAuthService = adminAuthService) {
@@ -61,6 +63,34 @@ class AdminAuthController extends BaseController {
       outcome: 'success',
     });
     return res.json(ApiResponse.success(result, 'Company-admin login successful'));
+  };
+
+  signupCompanyAdmin = async (req: Request, res: Response) => {
+    const payload = signupCompanyAdminSchema.parse(req.body);
+    const result = await this.service.signupCompanyAdmin(payload);
+    await auditService.recordLog({
+      actorId: result.session.userId,
+      companyId: result.session.companyId,
+      action: 'admin.auth.signup_company_admin',
+      outcome: 'success',
+    });
+    return res.status(201).json(ApiResponse.success(result, 'Company-admin signup successful'));
+  };
+
+  signupFromInvite = async (req: Request, res: Response) => {
+    const payload = signupMemberInviteSchema.parse(req.body);
+    const result = await this.service.signupFromInvite(payload);
+    await auditService.recordLog({
+      actorId: result.userId,
+      companyId: result.companyId,
+      action: 'workspace.invite.accept',
+      outcome: 'success',
+      metadata: {
+        role: result.role,
+        email: result.email,
+      },
+    });
+    return res.status(201).json(ApiResponse.success(result, 'Invite accepted'));
   };
 
   grantCompanyAdminMembership = async (req: Request, res: Response) => {

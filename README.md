@@ -1,4 +1,4 @@
-# EMIAC Agentic Orchestration Engine
+# Agentic Orchestration Engine
 
 This repository contains the backend foundation and execution plan for an extensible agent orchestration platform.
 

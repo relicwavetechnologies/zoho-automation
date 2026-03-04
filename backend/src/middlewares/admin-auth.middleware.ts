@@ -26,6 +26,14 @@ type AdminRequest = Request & {
   };
 };
 
+type AdminMiddleware = (req: AdminRequest, res: Response, next: NextFunction) => Promise<void> | void;
+
+const withErrorForwarding =
+  (middleware: AdminMiddleware) =>
+    (req: AdminRequest, res: Response, next: NextFunction): void => {
+      Promise.resolve(middleware(req, res, next)).catch(next);
+    };
+
 const readBearerToken = (req: AdminRequest): string => {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
@@ -36,7 +44,7 @@ const readBearerToken = (req: AdminRequest): string => {
 };
 
 export const requireAdminSession = () => {
-  return async (req: AdminRequest, _res: Response, next: NextFunction) => {
+  return withErrorForwarding(async (req: AdminRequest, _res: Response, next: NextFunction) => {
     const token = readBearerToken(req);
 
     let decoded: AdminJwtPayload;
@@ -53,22 +61,22 @@ export const requireAdminSession = () => {
 
     req.adminSession = session;
     return next();
-  };
+  });
 };
 
 export const requireAdminRole = (...roles: AdminRole[]) => {
-  return (req: AdminRequest, _res: Response, next: NextFunction) => {
+  return withErrorForwarding((req: AdminRequest, _res: Response, next: NextFunction) => {
     const role = req.adminSession?.role;
     if (!role || !roles.includes(role)) {
       throw new HttpException(403, 'Insufficient admin role for this route');
     }
 
     return next();
-  };
+  });
 };
 
 export const requireCompanyScope = () => {
-  return (req: AdminRequest, _res: Response, next: NextFunction) => {
+  return withErrorForwarding((req: AdminRequest, _res: Response, next: NextFunction) => {
     const requestedCompanyId = req.params.companyId;
     const session = req.adminSession;
 
@@ -89,11 +97,11 @@ export const requireCompanyScope = () => {
     }
 
     throw new HttpException(403, 'Company scope mismatch for company-admin session');
-  };
+  });
 };
 
 export const requireRbacAction = (actionId: RbacAction) => {
-  return async (req: AdminRequest, _res: Response, next: NextFunction) => {
+  return withErrorForwarding(async (req: AdminRequest, _res: Response, next: NextFunction) => {
     const session = req.adminSession;
     if (!session) {
       throw new HttpException(401, 'Admin session required');
@@ -105,5 +113,5 @@ export const requireRbacAction = (actionId: RbacAction) => {
     }
 
     return next();
-  };
+  });
 };

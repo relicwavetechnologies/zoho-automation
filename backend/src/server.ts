@@ -1,9 +1,11 @@
 import config from './config';
+import { initializeOrchestrationRuntime, shutdownOrchestrationRuntime } from './company/queue/runtime';
 import loaders from './loaders';
 import { logger } from './utils/logger';
 
 const startServer = async () => {
   try {
+    await initializeOrchestrationRuntime();
     const app = await loaders();
 
     app.listen(config.PORT, () => {
@@ -15,6 +17,23 @@ const startServer = async () => {
   }
 };
 
-void startServer();
+const gracefulShutdown = async () => {
+  try {
+    await shutdownOrchestrationRuntime();
+  } catch (error) {
+    logger.error('Failed to shutdown orchestration runtime cleanly', error);
+  } finally {
+    process.exit(0);
+  }
+};
 
+process.on('SIGINT', () => {
+  void gracefulShutdown();
+});
+
+process.on('SIGTERM', () => {
+  void gracefulShutdown();
+});
+
+void startServer();
 

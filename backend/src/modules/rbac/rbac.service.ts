@@ -12,8 +12,8 @@ const DEFAULT_PERMISSION_MATRIX: Record<string, Record<string, boolean>> = {
     'rbac.permissions.write': false,
     'rbac.assignments.write': false,
     'onboarding.manage': true,
-    'audit.read': false,
-    'system.controls.write': false,
+    'audit.read': true,
+    'system.controls.write': true,
   },
 };
 

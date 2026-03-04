@@ -1,4 +1,4 @@
-# EMIAC Agentic Orchestration Engine
+# Agentic Orchestration Engine
 ### Architecture & Planning Document — v3.0 (Merged)
 
 > **v3.0 Merge Note:** This document merges two parallel architecture plans. Conflicts resolved explicitly in Section 31. Sections 31–47 are net-new additions from the merge. Sections 1–30 remain unchanged except where noted.
@@ -406,4 +406,4 @@ This plan drives phased delivery from V0 to V2.
 
 This file anchors the full v3.0 plan in-repo for execution alignment. The complete original narrative discussed in collaboration remains the source intent; implementation tasks in `/tasks` are derived from it with explicit scope slicing.
 
-*Document version 3.0 — EMIAC Technologies Limited*
+*Document version 3.0*

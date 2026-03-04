@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { Request, Response, NextFunction } from 'express';
 import { HttpException } from '../../core/http-exception';
 import { requireAdminRole, requireAdminSession } from '../../middlewares/admin-auth.middleware';
+import { asyncHandler } from '../../utils/async-handler';
 import { companyOnboardingController } from './company-onboarding.controller';
 
 const router = Router();
@@ -42,9 +43,17 @@ const enforceBodyCompanyScope = (req: Request, _res: Response, next: NextFunctio
 
 router.use(requireAdminSession(), requireAdminRole('SUPER_ADMIN', 'COMPANY_ADMIN'));
 
-router.post('/zoho/connect', enforceBodyCompanyScope, companyOnboardingController.connectZoho);
-router.get('/zoho/sync/jobs/:jobId', companyOnboardingController.getHistoricalSyncStatus);
-router.post('/zoho/sync/delta', enforceBodyCompanyScope, companyOnboardingController.processDeltaSyncEvent);
-router.get('/zoho/lifecycle/:companyId/validate', enforceBodyCompanyScope, companyOnboardingController.validateLifecycle);
+router.post('/zoho/connect', enforceBodyCompanyScope, asyncHandler(companyOnboardingController.connectZoho));
+router.get('/zoho/sync/jobs/:jobId', asyncHandler(companyOnboardingController.getHistoricalSyncStatus));
+router.post(
+  '/zoho/sync/delta',
+  enforceBodyCompanyScope,
+  asyncHandler(companyOnboardingController.processDeltaSyncEvent),
+);
+router.get(
+  '/zoho/lifecycle/:companyId/validate',
+  enforceBodyCompanyScope,
+  asyncHandler(companyOnboardingController.validateLifecycle),
+);
 
 export default router;

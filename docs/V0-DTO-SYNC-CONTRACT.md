@@ -140,6 +140,55 @@ type VectorUpsertDTO = {
 };
 ```
 
+### 11) MemberDTO (Admin Dashboard)
+```ts
+type MemberDTO = {
+  userId: string;
+  companyId: string;
+  roleId: string;
+  email?: string;
+  name?: string;
+  createdAt: string; // ISO-8601
+};
+```
+
+### 12) InviteDTO (Admin Dashboard)
+```ts
+type InviteDTO = {
+  inviteId: string;
+  companyId: string;
+  email: string;
+  roleId: 'MEMBER' | 'COMPANY_ADMIN';
+  status: 'pending' | 'accepted' | 'cancelled';
+  invitedBy: string;
+  expiresAt: string; // ISO-8601
+  acceptedAt?: string; // ISO-8601
+  createdAt: string; // ISO-8601
+};
+```
+
+### 13) CompanyOnboardingStatusDTO (Admin Dashboard)
+```ts
+type CompanyOnboardingStatusDTO = {
+  companyId: string;
+  connection: {
+    status: 'PENDING' | 'CONNECTED' | 'FAILED' | 'DISCONNECTED';
+    connectedAt: string;
+    scopes: string[];
+    lastSyncAt?: string;
+  } | null;
+  historicalSync: {
+    jobId: string;
+    status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+    progressPercent: number;
+    checkpoint?: string;
+    queuedAt: string;
+    startedAt?: string;
+    finishedAt?: string;
+  } | null;
+};
+```
+
 ## Required Sync Rules (Anti-Drift)
 
 1. `messageId` is the idempotency key at ingress.
@@ -152,6 +201,8 @@ type VectorUpsertDTO = {
 8. Zoho onboarding connect must enqueue ingestion job asynchronously.
 9. Historical ingestion is resumable from checkpoint.
 10. Delta ingestion is idempotent by source event key.
+11. Invite issuance/cancellation and onboarding connect/disconnect must be server-authorized and audit logged.
+12. Dashboard onboarding progress must be rendered from backend status APIs; client-side progress synthesis is not allowed.
 
 ## Recommended Redis Key Pattern (V0)
 

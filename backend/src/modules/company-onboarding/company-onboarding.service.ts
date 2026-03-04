@@ -1,9 +1,9 @@
 import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
-import { IngestionJobDTO, ZohoConnectionDTO } from '../../emiac/contracts';
-import { zohoConnectionAdapter } from '../../emiac/integrations/zoho';
-import { zohoSyncProducer } from '../../emiac/queue/producer';
-import { runZohoDeltaSyncWorker, runZohoHistoricalSyncWorker } from '../../emiac/queue/workers';
+import { IngestionJobDTO, ZohoConnectionDTO } from '../../company/contracts';
+import { zohoConnectionAdapter } from '../../company/integrations/zoho';
+import { zohoSyncProducer } from '../../company/queue/producer';
+import { runZohoDeltaSyncWorker, runZohoHistoricalSyncWorker } from '../../company/queue/workers';
 import {
   CompanyOnboardingRepository,
   companyOnboardingRepository,
@@ -172,23 +172,32 @@ export class CompanyOnboardingService extends BaseService {
       companyId,
       connection: connection
         ? {
-            status: connection.status,
-            connectedAt: connection.connectedAt.toISOString(),
-            scopes: connection.scopes,
-            lastSyncAt: connection.lastSyncAt?.toISOString(),
-          }
+          status: connection.status,
+          connectedAt: connection.connectedAt.toISOString(),
+          scopes: connection.scopes,
+          lastSyncAt: connection.lastSyncAt?.toISOString(),
+        }
         : null,
       historicalSync: historicalJob
         ? {
-            jobId: historicalJob.id,
-            status: historicalJob.status,
-            progressPercent: historicalJob.progressPercent,
-            checkpoint: historicalJob.checkpoint ?? undefined,
-            queuedAt: historicalJob.queuedAt.toISOString(),
-            startedAt: historicalJob.startedAt?.toISOString(),
-            finishedAt: historicalJob.finishedAt?.toISOString(),
-          }
+          jobId: historicalJob.id,
+          status: historicalJob.status,
+          progressPercent: historicalJob.progressPercent,
+          checkpoint: historicalJob.checkpoint ?? undefined,
+          queuedAt: historicalJob.queuedAt.toISOString(),
+          startedAt: historicalJob.startedAt?.toISOString(),
+          finishedAt: historicalJob.finishedAt?.toISOString(),
+        }
         : null,
+    };
+  }
+
+  async disconnectZoho(companyId: string) {
+    const result = await this.repository.disconnectCompanyConnections(companyId);
+    return {
+      companyId,
+      disconnected: result.count > 0,
+      affectedConnections: result.count,
     };
   }
 

@@ -5,23 +5,26 @@ import {
   requireAdminSession,
   requireCompanyScope,
 } from '../../middlewares/admin-auth.middleware';
+import { asyncHandler } from '../../utils/async-handler';
 import { adminAuthController } from './admin-auth.controller';
 
 const router = Router();
 
-router.post('/bootstrap-super-admin', adminAuthController.bootstrapSuperAdmin);
-router.post('/login/super-admin', adminAuthController.loginSuperAdmin);
-router.post('/login/company-admin', adminAuthController.loginCompanyAdmin);
+router.post('/bootstrap-super-admin', asyncHandler(adminAuthController.bootstrapSuperAdmin));
+router.post('/login/super-admin', asyncHandler(adminAuthController.loginSuperAdmin));
+router.post('/login/company-admin', asyncHandler(adminAuthController.loginCompanyAdmin));
+router.post('/signup/company-admin', asyncHandler(adminAuthController.signupCompanyAdmin));
+router.post('/signup/member-invite', asyncHandler(adminAuthController.signupFromInvite));
 router.post(
   '/memberships/company-admin',
   requireAdminSession(),
   requireAdminRole('SUPER_ADMIN'),
-  adminAuthController.grantCompanyAdminMembership,
+  asyncHandler(adminAuthController.grantCompanyAdminMembership),
 );
 
-router.get('/me', requireAdminSession(), adminAuthController.me);
-router.get('/capabilities', requireAdminSession(), adminAuthController.capabilities);
-router.post('/logout', requireAdminSession(), adminAuthController.logout);
+router.get('/me', requireAdminSession(), asyncHandler(adminAuthController.me));
+router.get('/capabilities', requireAdminSession(), asyncHandler(adminAuthController.capabilities));
+router.post('/logout', requireAdminSession(), asyncHandler(adminAuthController.logout));
 
 router.get('/protected/super-admin', requireAdminSession(), requireAdminRole('SUPER_ADMIN'), (_req, res) => {
   res.json({ success: true, message: 'Super-admin protected route access granted' });

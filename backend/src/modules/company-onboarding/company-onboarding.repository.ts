@@ -120,6 +120,18 @@ export class CompanyOnboardingRepository extends BaseRepository {
       },
     });
   }
+
+  disconnectCompanyConnections(companyId: string) {
+    return prisma.zohoConnection.updateMany({
+      where: {
+        companyId,
+        status: 'CONNECTED',
+      },
+      data: {
+        status: 'DISCONNECTED',
+      },
+    });
+  }
 }
 
 export const companyOnboardingRepository = new CompanyOnboardingRepository();

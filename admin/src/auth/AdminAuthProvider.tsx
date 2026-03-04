@@ -9,15 +9,17 @@ type AdminAuthContextValue = {
   navItems: AdminNavItem[];
   loading: boolean;
   loginSuperAdmin: (email: string, password: string) => Promise<void>;
-  loginCompanyAdmin: (email: string, password: string, companyId: string) => Promise<void>;
+  loginCompanyAdmin: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 };
 
-const TOKEN_KEY = 'emiac_admin_token';
+const TOKEN_KEY = 'control_plane_admin_token';
 
 const AdminAuthContext = createContext<AdminAuthContextValue | null>(null);
 
-const readStoredToken = (): string | null => localStorage.getItem(TOKEN_KEY);
+const readStoredToken = (): string | null => {
+  return localStorage.getItem(TOKEN_KEY);
+};
 
 export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [token, setToken] = useState<string | null>(readStoredToken);
@@ -40,7 +42,13 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
       api.get<{ navItems: AdminNavItem[] }>('/api/admin/auth/capabilities', activeToken),
     ]);
     setSession(resolvedSession);
-    setNavItems(capabilities.navItems);
+    setNavItems(
+      capabilities.navItems.map((item) => ({
+        ...item,
+        label: item.label === 'Companies' ? 'Workspaces' : item.label,
+        path: item.path === '/companies' ? '/workspaces' : item.path,
+      })),
+    );
   };
 
   useEffect(() => {
@@ -75,10 +83,10 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
     await fetchSession(result.token);
   };
 
-  const loginCompanyAdmin = async (email: string, password: string, companyId: string) => {
+  const loginCompanyAdmin = async (email: string, password: string) => {
     const result = await api.post<{ token: string; session: AdminSession }>(
       '/api/admin/auth/login/company-admin',
-      { email, password, companyId },
+      { email, password },
     );
     persistToken(result.token);
     await fetchSession(result.token);

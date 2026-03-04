@@ -19,3 +19,17 @@
   Update: Implemented channel adapter abstraction and Lark adapter under `backend/src/emiac/channels`, added immutable inbound normalization to `NormalizedIncomingMessageDTO`, added outbound send/update paths with provider result mapping, and wired webhook entry route `/webhooks/lark/events` via express loader.
   Blockers: None.
   Next: Task 04 can add signature verification and ingress idempotency around the Lark webhook entry path.
+
+- Timestamp: 2026-03-04 19:31:00 IST
+  Actor: codex
+  Status: in_progress
+  Update: Reopened Task 03 scope to replace static `LARK_BOT_TENANT_ACCESS_TOKEN` dependency with automatic tenant token lifecycle management (fetch/cache/proactive refresh/retry/fallback) inside the Lark adapter boundary.
+  Blockers: None.
+  Next: Implement token service + adapter integration, then add unit tests and docs updates.
+
+- Timestamp: 2026-03-04 19:39:10 IST
+  Actor: codex
+  Status: completed
+  Update: Added `lark-tenant-token.service.ts` with automatic `tenant_access_token/internal` fetch, in-memory cache with proactive refresh buffer, bounded retry/backoff, and static-token fallback compatibility. Integrated token service into `LarkChannelAdapter` send/update with forced refresh and single retry on 401/token-invalid responses. Added unit tests (`backend/tests/lark-tenant-token.service.test.cjs`, `backend/tests/lark-channel-adapter.token-retry.test.cjs`) and test script `pnpm -C backend test:unit:lark`; all tests pass. Updated env docs in `ENV_REQUIREMENTS.MD` for auto mode preference and fallback notes.
+  Blockers: None.
+  Next: Continue Task 12 release smoke checklist completion using updated Lark token lifecycle baseline.

@@ -1,5 +1,5 @@
-import type { ZohoConnectionDTO } from '../../emiac/contracts';
-import type { IngestionJobDTO } from '../../emiac/contracts';
+import type { ZohoConnectionDTO } from '../../company/contracts';
+import type { IngestionJobDTO } from '../../company/contracts';
 
 export type CompanyOnboardingConnectResult = {
   companyId: string;

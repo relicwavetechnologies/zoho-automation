@@ -1,9 +1,25 @@
+import { toast } from '../components/ui/use-toast';
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 type ApiResponse<T> = {
   success: boolean;
   data: T;
   message?: string;
+};
+
+const extractErrorMessage = async (response: Response): Promise<string> => {
+  const raw = await response.text();
+  if (!raw) {
+    return `HTTP ${response.status}`;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as { message?: string; meta?: { message?: string } };
+    return parsed.meta?.message || parsed.message || raw;
+  } catch {
+    return raw;
+  }
 };
 
 const request = async <T>(path: string, init: RequestInit = {}, token?: string): Promise<T> => {
@@ -19,8 +35,13 @@ const request = async <T>(path: string, init: RequestInit = {}, token?: string):
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `HTTP ${response.status}`);
+    const errorMsg = await extractErrorMessage(response);
+    toast({
+      title: `Error ${response.status}`,
+      description: errorMsg,
+      variant: 'destructive',
+    });
+    throw new Error(errorMsg);
   }
 
   const body = (await response.json()) as ApiResponse<T>;

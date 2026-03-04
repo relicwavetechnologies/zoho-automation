@@ -2,9 +2,9 @@
 
 ## Work Items
 - [x] Status: done | Owner: codex | Task: Confirm detailed implementation plan and claim ownership.
-- [x] Status: done | Owner: codex | Task: Implement core code changes for this task.
-- [x] Status: done | Owner: codex | Task: Add/update tests or verification steps.
-- [x] Status: done | Owner: codex | Task: Update docs/comments impacted by the change.
+- [x] Status: done | Owner: codex | Task: Implement Lark tenant access token auto-management in adapter boundary.
+- [x] Status: done | Owner: codex | Task: Add unit tests for token cache/refresh and adapter token retry behavior.
+- [x] Status: done | Owner: codex | Task: Update env docs/config notes for auto mode with manual fallback compatibility.
 - [x] Status: done | Owner: codex | Task: Final review and mark acceptance criteria complete.
 
 ## Status Legend

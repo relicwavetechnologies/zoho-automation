@@ -2,6 +2,10 @@ import { Request, Response } from 'express';
 
 import { ApiResponse } from '../../core/api-response';
 import { BaseController } from '../../core/controller';
+import {
+  connectOnboardingSchema,
+  disconnectOnboardingSchema,
+} from './dto/connect-onboarding.dto';
 import { createInviteSchema } from './dto/create-invite.dto';
 import { CompanyAdminService, companyAdminService } from './company-admin.service';
 
@@ -60,6 +64,36 @@ class CompanyAdminController extends BaseController {
 
     const result = await this.service.cancelInvite(session, inviteId);
     return res.json(ApiResponse.success(result, 'Invite cancelled'));
+  };
+
+  getOnboardingStatus = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getOnboardingStatus(session, companyId);
+    return res.json(ApiResponse.success(result, 'Onboarding status loaded'));
+  };
+
+  connectOnboarding = async (req: Request, res: Response) => {
+    const payload = connectOnboardingSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.connectOnboarding(session, payload);
+    return res.status(202).json(ApiResponse.success(result, 'Zoho connected and sync queued'));
+  };
+
+  disconnectOnboarding = async (req: Request, res: Response) => {
+    const payload = disconnectOnboardingSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.disconnectOnboarding(session, payload);
+    return res.json(ApiResponse.success(result, 'Zoho disconnected'));
   };
 }
 

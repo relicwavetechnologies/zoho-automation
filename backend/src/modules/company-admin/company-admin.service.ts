@@ -3,7 +3,9 @@ import { randomUUID } from 'crypto';
 import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
 import { auditService } from '../audit/audit.service';
+import { companyOnboardingService } from '../company-onboarding/company-onboarding.service';
 import { CompanyAdminRepository, companyAdminRepository } from './company-admin.repository';
+import { ConnectOnboardingDto, DisconnectOnboardingDto } from './dto/connect-onboarding.dto';
 import { CreateInviteDto } from './dto/create-invite.dto';
 
 export type SessionScope = {
@@ -52,6 +54,10 @@ export class CompanyAdminService extends BaseService {
 
   async createInvite(session: SessionScope, payload: CreateInviteDto) {
     const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
+    if (session.role === 'COMPANY_ADMIN' && payload.roleId !== 'MEMBER') {
+      throw new HttpException(403, 'Company-admin can invite only MEMBER role');
+    }
+
     const company = await this.repository.findCompany(scopedCompanyId);
     if (!company) {
       throw new HttpException(404, 'Company not found');
@@ -131,6 +137,74 @@ export class CompanyAdminService extends BaseService {
       inviteId: cancelled.id,
       status: cancelled.status,
     };
+  }
+
+  async getOnboardingStatus(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    return companyOnboardingService.getCompanyOnboardingStatus(scopedCompanyId);
+  }
+
+  async connectOnboarding(session: SessionScope, payload: ConnectOnboardingDto) {
+    const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
+    try {
+      const result = await companyOnboardingService.connectZoho({
+        companyId: scopedCompanyId,
+        authorizationCode: payload.authorizationCode,
+        scopes: payload.scopes,
+        environment: payload.environment,
+      });
+      await auditService.recordLog({
+        actorId: session.userId,
+        companyId: scopedCompanyId,
+        action: 'company.onboarding.zoho.connect',
+        outcome: 'success',
+        metadata: {
+          environment: payload.environment,
+          syncJobId: result.initialSync.jobId,
+        },
+      });
+      return result;
+    } catch (error) {
+      await auditService.recordLog({
+        actorId: session.userId,
+        companyId: scopedCompanyId,
+        action: 'company.onboarding.zoho.connect',
+        outcome: 'failure',
+        metadata: {
+          environment: payload.environment,
+          reason: error instanceof Error ? error.message : 'unknown_error',
+        },
+      });
+      throw error;
+    }
+  }
+
+  async disconnectOnboarding(session: SessionScope, payload: DisconnectOnboardingDto) {
+    const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
+    try {
+      const result = await companyOnboardingService.disconnectZoho(scopedCompanyId);
+      await auditService.recordLog({
+        actorId: session.userId,
+        companyId: scopedCompanyId,
+        action: 'company.onboarding.zoho.disconnect',
+        outcome: 'success',
+        metadata: {
+          affectedConnections: result.affectedConnections,
+        },
+      });
+      return result;
+    } catch (error) {
+      await auditService.recordLog({
+        actorId: session.userId,
+        companyId: scopedCompanyId,
+        action: 'company.onboarding.zoho.disconnect',
+        outcome: 'failure',
+        metadata: {
+          reason: error instanceof Error ? error.message : 'unknown_error',
+        },
+      });
+      throw error;
+    }
   }
 }
 

@@ -5,33 +5,34 @@ import {
   requireAdminSession,
   requireRbacAction,
 } from '../../middlewares/admin-auth.middleware';
+import { asyncHandler } from '../../utils/async-handler';
 import { rbacController } from './rbac.controller';
 
 const router = Router();
 
 router.use(requireAdminSession());
 
-router.get('/actions', requireRbacAction('rbac.permissions.read'), rbacController.listActions);
-router.get('/permissions', requireRbacAction('rbac.permissions.read'), rbacController.listPermissions);
+router.get('/actions', requireRbacAction('rbac.permissions.read'), asyncHandler(rbacController.listActions));
+router.get('/permissions', requireRbacAction('rbac.permissions.read'), asyncHandler(rbacController.listPermissions));
 router.put(
   '/permissions',
   requireAdminRole('SUPER_ADMIN'),
   requireRbacAction('rbac.permissions.write'),
-  rbacController.updatePermission,
+  asyncHandler(rbacController.updatePermission),
 );
 
-router.get('/assignments', requireRbacAction('rbac.permissions.read'), rbacController.listAssignments);
+router.get('/assignments', requireRbacAction('rbac.permissions.read'), asyncHandler(rbacController.listAssignments));
 router.post(
   '/assignments',
   requireAdminRole('SUPER_ADMIN'),
   requireRbacAction('rbac.assignments.write'),
-  rbacController.createAssignment,
+  asyncHandler(rbacController.createAssignment),
 );
 router.delete(
   '/assignments',
   requireAdminRole('SUPER_ADMIN'),
   requireRbacAction('rbac.assignments.write'),
-  rbacController.revokeAssignment,
+  asyncHandler(rbacController.revokeAssignment),
 );
 
 export default router;

@@ -1,4 +1,4 @@
-import type { AdminSessionDTO } from '../../emiac/contracts';
+import type { AdminSessionDTO } from '../../company/contracts';
 
 export type AdminLoginResult = {
   token: string;
