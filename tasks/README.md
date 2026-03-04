@@ -58,6 +58,13 @@ Task programs (for example `tasks/v0-emiac`) should also include:
 3. Cross-task dependencies must be recorded in both task `context.md` files.
 4. Never start dependent task implementation before dependency status is explicit.
 
+## Cross-Program Rules (`v0-emiac` + `v1-langgraph-direct-switch`)
+
+1. `v0-emiac` remains the production baseline until V1 release gate passes.
+2. `v1-langgraph-direct-switch` must stay backward-compatible with existing V0 DTOs/APIs.
+3. Runtime/admin control authorization remains backend-enforced in both programs.
+4. Any V1 task that changes runtime behavior must include rollback notes in its `progress.md`.
+
 ## Quality Gate For Task Completion
 
 A task is complete only when all are true:

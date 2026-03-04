@@ -26,6 +26,7 @@ larkWebhookRoutes.post('/events', async (req, res, next) => {
     const verification = verifyLarkWebhookRequest({
       headers: req.headers,
       rawBody,
+      parsedBody: req.body,
     });
     if (!verification.ok) {
       return res.status(401).json({

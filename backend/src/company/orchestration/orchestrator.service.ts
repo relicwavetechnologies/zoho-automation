@@ -10,57 +10,27 @@ import type {
   OrchestrationTaskDTO,
 } from '../contracts';
 import { classifyRuntimeError, runWithRetryPolicy } from '../observability';
-
-const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {
-  const normalized = text.toLowerCase();
-  if (normalized.includes('delete') || normalized.includes('remove') || normalized.includes('write')) {
-    return 4;
-  }
-  if (normalized.includes('sync') || normalized.includes('onboard') || normalized.includes('workflow')) {
-    return 3;
-  }
-  if (normalized.trim().length <= 40) {
-    return 1;
-  }
-  return 2;
-};
-
-const WRITE_INTENT_KEYWORDS = ['delete', 'remove', 'drop', 'overwrite', 'destroy', 'write'];
-
-const buildPlan = (complexityLevel: 1 | 2 | 3 | 4 | 5, text: string): string[] => {
-  const normalized = text.toLowerCase();
-  const asksZoho = normalized.includes('zoho') || normalized.includes('deal') || normalized.includes('contact');
-  const base = complexityLevel >= 4
-    ? ['route.classify', 'agent.invoke.risk-check', 'agent.invoke.response', 'agent.invoke.lark-response', 'synthesis.compose']
-    : ['route.classify', 'agent.invoke.response', 'agent.invoke.lark-response', 'synthesis.compose'];
-
-  if (asksZoho) {
-    return ['route.classify', 'agent.invoke.zoho-read', 'agent.invoke.lark-response', 'synthesis.compose'];
-  }
-
-  if (normalized.includes('unknown_agent')) {
-    return ['route.classify', 'agent.invoke.unknown', 'synthesis.compose'];
-  }
-
-  return base;
-};
+import {
+  buildHitlSummary,
+  buildPlanFromIntent,
+  classifyComplexityLevel,
+  detectRouteIntent,
+  requiresHumanConfirmation,
+  synthesizeFromAgentResults,
+} from './routing-heuristics';
 
 export class OrchestratorService {
   requiresHumanConfirmation(messageText: string): boolean {
-    const normalized = messageText.toLowerCase();
-    return WRITE_INTENT_KEYWORDS.some((keyword) => normalized.includes(keyword));
+    return requiresHumanConfirmation(messageText);
   }
 
   buildHitlSummary(messageText: string): string {
-    const summary = messageText.trim();
-    if (summary.length <= 160) {
-      return summary;
-    }
-    return `${summary.slice(0, 157)}...`;
+    return buildHitlSummary(messageText);
   }
 
   async buildTask(taskId: string, message: NormalizedIncomingMessageDTO): Promise<OrchestrationTaskDTO> {
     const complexityLevel = classifyComplexityLevel(message.text);
+    const intent = detectRouteIntent(message.text);
     return {
       taskId,
       messageId: message.messageId,
@@ -69,7 +39,7 @@ export class OrchestratorService {
       status: 'running',
       complexityLevel,
       orchestratorModel: 'v0-rule-router',
-      plan: buildPlan(complexityLevel, message.text),
+      plan: buildPlanFromIntent(intent, complexityLevel, message.text),
       executionMode: 'sequential',
     };
   }
@@ -166,27 +136,7 @@ export class OrchestratorService {
   }
 
   synthesize(task: OrchestrationTaskDTO, message: NormalizedIncomingMessageDTO, agentResults: AgentResultDTO[]) {
-    const failed = agentResults.find((result) => result.status === 'failed');
-    if (failed) {
-      return {
-        taskStatus: 'failed' as const,
-        text: `Request could not be completed: ${failed.message}`,
-      };
-    }
-
-    const zohoResult = agentResults.find((result) => result.agentKey === 'zoho-read' && result.status === 'success');
-    if (zohoResult?.result) {
-      const count = typeof zohoResult.result.total === 'number' ? zohoResult.result.total : 'unknown';
-      return {
-        taskStatus: 'done' as const,
-        text: `Zoho data read complete. Total records available: ${count}.`,
-      };
-    }
-
-    return {
-      taskStatus: 'done' as const,
-      text: `Processed (${task.executionMode}) for message ${message.messageId}. Plan: ${task.plan.join(' -> ')}`,
-    };
+    return synthesizeFromAgentResults(task, message, agentResults);
   }
 }
 

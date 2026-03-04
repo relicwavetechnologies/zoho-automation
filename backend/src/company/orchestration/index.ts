@@ -3,5 +3,6 @@ export const ORCHESTRATION_BOUNDARY = {
   responsibility: 'Task planning, routing, and dispatch independent of channel payloads.',
 };
 
+export * from './engine';
 export * from './orchestrator.service';
 export * from './runtime-task.store';

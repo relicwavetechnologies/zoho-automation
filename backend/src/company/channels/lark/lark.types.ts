@@ -1,4 +1,10 @@
 export type LarkWebhookEnvelope = {
+  type?: string;
+  challenge?: string;
+  token?: string;
+  header?: {
+    token?: string;
+  };
   event?: {
     sender?: {
       sender_id?: {

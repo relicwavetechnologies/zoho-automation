@@ -9,6 +9,7 @@ const router = Router();
 router.use(requireAdminSession(), requireRbacAction('system.controls.write'));
 router.get('/tasks', asyncHandler(adminRuntimeController.listTasks));
 router.get('/tasks/:taskId', asyncHandler(adminRuntimeController.getTask));
+router.get('/tasks/:taskId/trace', asyncHandler(adminRuntimeController.getTaskTrace));
 router.post('/tasks/:taskId/control', asyncHandler(adminRuntimeController.controlTask));
 router.post('/tasks/:taskId/recover', asyncHandler(adminRuntimeController.recoverTask));
 

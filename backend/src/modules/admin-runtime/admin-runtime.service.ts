@@ -18,6 +18,35 @@ export class AdminRuntimeService extends BaseService {
     return task;
   }
 
+  async getTaskTrace(taskId: string, limit = 100) {
+    const task = await orchestrationRuntime.getTask(taskId);
+    if (!task) {
+      throw new HttpException(404, 'Task not found');
+    }
+
+    const history = await checkpointRepository.getHistory(taskId, Math.max(1, Math.min(500, limit)));
+    return {
+      taskId,
+      engine: task.engine ?? 'legacy',
+      graphThreadId: task.graphThreadId ?? task.taskId,
+      latestNode: task.graphNode ?? task.currentStep ?? null,
+      transitions: history.map((entry) => {
+        const runtimeMeta =
+          entry.state.runtimeMeta && typeof entry.state.runtimeMeta === 'object'
+            ? (entry.state.runtimeMeta as Record<string, unknown>)
+            : undefined;
+        return {
+          version: entry.version,
+          node: entry.node,
+          updatedAt: entry.updatedAt,
+          engine: typeof runtimeMeta?.engine === 'string' ? runtimeMeta.engine : task.engine ?? 'legacy',
+          graphNode: typeof runtimeMeta?.node === 'string' ? runtimeMeta.node : undefined,
+          graphThreadId: typeof runtimeMeta?.threadId === 'string' ? runtimeMeta.threadId : undefined,
+        };
+      }),
+    };
+  }
+
   async controlTask(taskId: string, payload: ControlTaskDto) {
     const signal = payload.action === 'pause' ? 'paused' : payload.action === 'resume' ? 'running' : 'cancelled';
     const task = await orchestrationRuntime.control(taskId, signal);

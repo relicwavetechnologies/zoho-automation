@@ -1,5 +1,6 @@
 import type { OrchestrationTaskStatus } from '../contracts/status';
 import type { AgentResultDTO } from '../contracts';
+import type { OrchestrationEngineId } from './engine/types';
 
 export type RuntimeTaskSnapshot = {
   taskId: string;
@@ -16,6 +17,11 @@ export type RuntimeTaskSnapshot = {
   latestSynthesis?: string;
   agentResultsHistory?: AgentResultDTO[];
   hitlActionId?: string;
+  engine?: OrchestrationEngineId;
+  graphThreadId?: string;
+  graphNode?: string;
+  graphStepHistory?: string[];
+  routeIntent?: string;
   updatedAt: string;
   createdAt: string;
   controlSignal: 'running' | 'paused' | 'cancelled';

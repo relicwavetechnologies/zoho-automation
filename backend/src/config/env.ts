@@ -40,3 +40,16 @@ export const LARK_TENANT_TOKEN_RETRY_BASE_DELAY_MS = parseInt(
   getEnv('LARK_TENANT_TOKEN_RETRY_BASE_DELAY_MS', '250'),
   10,
 );
+export const LARK_VERIFICATION_TOKEN = getEnv('LARK_VERIFICATION_TOKEN', '');
+export const LARK_ENCRYPT_KEY = getEnv('LARK_ENCRYPT_KEY', '');
+export const LARK_WEBHOOK_SIGNING_SECRET = getEnv('LARK_WEBHOOK_SIGNING_SECRET', '');
+export const LARK_WEBHOOK_MAX_SKEW_SECONDS = parseInt(getEnv('LARK_WEBHOOK_MAX_SKEW_SECONDS', '300'), 10);
+export const ORCHESTRATION_ENGINE = getEnv('ORCHESTRATION_ENGINE', 'langgraph');
+export const ORCHESTRATION_LEGACY_ROLLBACK_ENABLED =
+  getEnv('ORCHESTRATION_LEGACY_ROLLBACK_ENABLED', 'true').toLowerCase() === 'true';
+export const OPENAI_ROUTER_MODEL = getEnv('OPENAI_ROUTER_MODEL', 'gpt-4o-mini');
+export const OPENAI_PLANNER_MODEL = getEnv('OPENAI_PLANNER_MODEL', 'gpt-4o-mini');
+export const OPENAI_SYNTHESIS_MODEL = getEnv('OPENAI_SYNTHESIS_MODEL', 'gpt-4o-mini');
+export const OPENAI_TEMPERATURE = Number(getEnv('OPENAI_TEMPERATURE', '0.1'));
+export const LANGSMITH_TRACING = getEnv('LANGSMITH_TRACING', '');
+export const LANGSMITH_API_KEY = getEnv('LANGSMITH_API_KEY', '');

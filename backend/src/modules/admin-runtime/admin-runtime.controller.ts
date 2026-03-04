@@ -22,6 +22,12 @@ class AdminRuntimeController extends BaseController {
     return res.json(ApiResponse.success(result, 'Runtime task loaded'));
   };
 
+  getTaskTrace = async (req: Request, res: Response) => {
+    const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : 100;
+    const result = await this.service.getTaskTrace(req.params.taskId, Number.isFinite(limit) ? limit : 100);
+    return res.json(ApiResponse.success(result, 'Runtime task trace loaded'));
+  };
+
   controlTask = async (req: Request, res: Response) => {
     const payload = controlTaskSchema.parse(req.body);
     const taskId = req.params.taskId;

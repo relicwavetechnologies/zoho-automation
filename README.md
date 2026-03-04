@@ -9,6 +9,7 @@ This repository contains the backend foundation and execution plan for an extens
 /docs                  Architecture and planning source documents
 /tasks                 Execution tasks for team collaboration
 /tasks/v0-emiac        Numbered V0 implementation tasks
+/tasks/v1-langgraph-direct-switch  Numbered V1 direct-switch tasks (LangGraph + LangChain)
 /tasks/templates       Reusable task file templates
 ```
 
@@ -27,8 +28,12 @@ All implementation tasks must map back to this plan by section number.
 | Version | Goal | Scope | Extensibility Focus |
 |---|---|---|---|
 | V0 | Working foundation on Lark | Core orchestration flow, queue, idempotency, Redis checkpointing, basic agents, HITL for writes, Zoho onboarding + async vector ingestion, admin dashboard control plane | Introduce stable adapter/registry interfaces from day 1 |
-| V1 | Product-ready expansion | Better routing, richer agent set, RBAC hardening, file handling, stronger retries/fallbacks | Add second channel (Slack/WhatsApp) without core rewrites |
+| V1 | Direct orchestrator switch to LangGraph runtime | LangGraph execution engine, LangChain OpenAI routing/planning/synthesis, rollback-safe legacy path, runtime observability metadata | Preserve DTO/API compatibility while upgrading orchestration core |
 | V2 | Enterprise scale | Multi-tenant hardening, advanced security/compliance, proactive intelligence, deep observability | Per-tenant feature flags and faster integration rollout |
+
+V1 program execution source:
+- [tasks/v1-langgraph-direct-switch/README.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/tasks/v1-langgraph-direct-switch/README.md)
+- [tasks/v1-langgraph-direct-switch/CONTEXT.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/tasks/v1-langgraph-direct-switch/CONTEXT.md)
 
 ## Design Rules For Scalability (V0 -> V1 -> V2)
 
