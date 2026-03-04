@@ -21,5 +21,6 @@ Use this map so every agent can jump from a task to exact architecture sections.
 ## Companion Context Docs
 
 - Shared V0 context: `/tasks/v0-emiac/CONTEXT.md`
+- V0 scope guardrails baseline: `/tasks/v0-emiac/00-v0-scope-and-guardrails/context.md`
 - DTO/sync contracts: `/docs/V0-DTO-SYNC-CONTRACT.md`
 - Master architecture: `/docs/EMIAC-Architecture-Planning-v3.0.md`

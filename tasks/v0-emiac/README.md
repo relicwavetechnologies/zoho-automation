@@ -8,6 +8,10 @@ Canonical source plan:
 Self-contained execution rule:
 - Each task folder context.md includes architecture slice, DTO baseline, sync rules, touchpoints, and validation so an agent can start from that folder alone.
 
+Global guardrail baseline:
+- V0 scope boundaries, mandatory architecture seams, and frozen status vocabulary are defined in [`00-v0-scope-and-guardrails/context.md`](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/tasks/v0-emiac/00-v0-scope-and-guardrails/context.md).
+- All tasks 01-12 must treat that file as a non-optional constraint source in addition to their local context.
+
 ## Work Contract
 
 1. Do not start coding in a task before claiming an item in that task's todo.md.

@@ -29,6 +29,46 @@
 - Keep channel, integration, orchestrator, and agent logic separated.
 - Do not let platform-specific payload shape leak into core orchestrator contracts.
 
+## Frozen V0 In-Scope (Must Be Deliverable In V0)
+- Lark as the only production channel for ingress and response in V0.
+- Normalized inbound message contract and queue handoff with idempotency by `messageId`.
+- BullMQ-based orchestration runtime with pause/resume/cancel control primitives.
+- Base orchestrator routing for complexity levels L1-L3 only.
+- Agent registry and base agent contract with V0-safe status reporting.
+- Minimal agents for V0 value path: Zoho read flow and Lark response flow.
+- HITL confirmation gate for write/update/delete/execute actions.
+- Redis checkpoint persistence and resume from highest checkpoint version.
+- Baseline observability, retry behavior, and error taxonomy required for safe operations.
+- E2E smoke validation and release checklist for V0 readiness.
+
+## Frozen Out-Of-Scope (Explicitly Not V0)
+- Additional channels (Slack, WhatsApp, email, voice) beyond Lark.
+- Deep multi-tenant controls, enterprise compliance add-ons, and advanced RBAC hardening.
+- Proactive intelligence, autonomous long-running planning, and advanced memory systems.
+- Rich file-processing pipelines and heavy document intelligence workflows.
+- V1/V2 scale optimizations that are not required for a stable V0 production slice.
+
+## Mandatory Architectural Boundaries
+- Channel adapters normalize provider payloads and hide platform-specific schemas.
+- Orchestrator consumes normalized DTOs only and never raw channel webhook payloads.
+- Agent implementations execute via registry contract and never bypass orchestrator state updates.
+- Integration adapter logic remains outside channel and orchestrator packages.
+- Queue and checkpoint layers own execution state transitions; business logic cannot mutate checkpoint versions directly.
+- HITL transition handling must be atomic and isolated from non-gated action flows.
+
+## Frozen Runtime Status Vocabularies
+- `OrchestrationTaskDTO.status`: `pending | running | hitl | done | failed | cancelled`
+- `AgentResultDTO.status`: `success | failed | needs_context | hitl_paused | timed_out_partial`
+- `HITLActionDTO.status`: `pending | confirmed | cancelled | expired`
+- No status additions, renames, or semantic drift without simultaneous updates to this file and `docs/V0-DTO-SYNC-CONTRACT.md`.
+
+## Phase Gates For Downstream Tasks
+- Task 01+ must preserve V0 boundary separation and must not leak Lark payload shape into orchestration core.
+- Task 03+ must preserve adapter-first design even when only one channel exists in V0.
+- Task 06+ must enforce allowed orchestration transitions only (`pending -> running -> hitl/running -> done/failed/cancelled`).
+- Task 09 must enforce HITL gating only for write-class actions defined in contract.
+- Task 12 signoff must reject release if any V1/V2-only feature is marked required for V0.
+
 ## V0 DTO Contract Snapshot (Use Exactly)
 - NormalizedIncomingMessageDTO fields: channel, userId, chatId, chatType, messageId, timestamp, text, rawEvent.
 - OrchestrationTaskDTO fields: taskId, messageId, userId, chatId, status, complexityLevel, orchestratorModel, plan, executionMode.
@@ -60,6 +100,8 @@
 
 ## Validation
 - Dependency graph is coherent; no V1 or V2 feature marked as V0 required.
+- All runtime status vocabularies match the DTO contract source document.
+- Global V0 guardrail reference is reachable from every task via `tasks/v0-emiac/README.md`.
 
 ## Definition Of Done
 - V0 boundary list approved and referenced by all task folders.
