@@ -75,6 +75,8 @@ class AdminRuntimeController extends BaseController {
           taskId,
           recoveredFromVersion: result.recoveredFromVersion,
           recoveredFromNode: result.recoveredFromNode,
+          recoveryMode: result.recoveryMode,
+          resumeDecisionReason: result.resumeDecisionReason,
         },
       });
       return res.status(202).json(ApiResponse.success(result, 'Runtime task recovery queued'));

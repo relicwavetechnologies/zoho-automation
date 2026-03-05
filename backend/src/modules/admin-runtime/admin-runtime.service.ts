@@ -1,13 +1,47 @@
 import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
 import type { NormalizedIncomingMessageDTO } from '../../company/contracts';
+import { decideCheckpointRecovery } from '../../company/orchestration/langgraph/checkpoint-recovery';
 import { orchestrationRuntime } from '../../company/queue/runtime';
 import { checkpointRepository } from '../../company/state/checkpoint';
+import { hitlActionRepository } from '../../company/state/hitl/hitl-action.repository';
 import { ControlTaskDto } from './dto/control-task.dto';
 
 export class AdminRuntimeService extends BaseService {
+  private normalizeEngineMeta<T extends Record<string, unknown>>(task: T): T & {
+    configuredEngine: string;
+    engineUsed: string;
+    rolledBackFrom: string | null;
+    rollbackReasonCode: string | null;
+    engine: string;
+  } {
+    const configuredEngine =
+      typeof task.configuredEngine === 'string'
+        ? task.configuredEngine
+        : typeof task.engine === 'string'
+          ? task.engine
+          : 'legacy';
+    const engineUsed =
+      typeof task.engineUsed === 'string'
+        ? task.engineUsed
+        : typeof task.engine === 'string'
+          ? task.engine
+          : configuredEngine;
+    const rolledBackFrom = typeof task.rolledBackFrom === 'string' ? task.rolledBackFrom : null;
+    const rollbackReasonCode = typeof task.rollbackReasonCode === 'string' ? task.rollbackReasonCode : null;
+
+    return {
+      ...task,
+      configuredEngine,
+      engineUsed,
+      rolledBackFrom,
+      rollbackReasonCode,
+      engine: engineUsed,
+    };
+  }
+
   async listTasks(limit = 30) {
-    return orchestrationRuntime.listRecent(limit);
+    return orchestrationRuntime.listRecent(limit).map((task) => this.normalizeEngineMeta(task));
   }
 
   async getTask(taskId: string) {
@@ -15,7 +49,7 @@ export class AdminRuntimeService extends BaseService {
     if (!task) {
       throw new HttpException(404, 'Task not found');
     }
-    return task;
+    return this.normalizeEngineMeta(task);
   }
 
   async getTaskTrace(taskId: string, limit = 100) {
@@ -25,9 +59,15 @@ export class AdminRuntimeService extends BaseService {
     }
 
     const history = await checkpointRepository.getHistory(taskId, Math.max(1, Math.min(500, limit)));
+    const normalizedTask = this.normalizeEngineMeta(task);
+
     return {
       taskId,
-      engine: task.engine ?? 'legacy',
+      configuredEngine: normalizedTask.configuredEngine,
+      engineUsed: normalizedTask.engineUsed,
+      rolledBackFrom: normalizedTask.rolledBackFrom,
+      rollbackReasonCode: normalizedTask.rollbackReasonCode,
+      engine: normalizedTask.engine,
       graphThreadId: task.graphThreadId ?? task.taskId,
       latestNode: task.graphNode ?? task.currentStep ?? null,
       transitions: history.map((entry) => {
@@ -35,13 +75,37 @@ export class AdminRuntimeService extends BaseService {
           entry.state.runtimeMeta && typeof entry.state.runtimeMeta === 'object'
             ? (entry.state.runtimeMeta as Record<string, unknown>)
             : undefined;
+        const route =
+          entry.state.route && typeof entry.state.route === 'object'
+            ? (entry.state.route as Record<string, unknown>)
+            : undefined;
+        const planValidationErrors = Array.isArray(entry.state.planValidationErrors)
+          ? (entry.state.planValidationErrors as string[])
+          : undefined;
         return {
           version: entry.version,
           node: entry.node,
           updatedAt: entry.updatedAt,
-          engine: typeof runtimeMeta?.engine === 'string' ? runtimeMeta.engine : task.engine ?? 'legacy',
+          configuredEngine: normalizedTask.configuredEngine,
+          engineUsed: typeof runtimeMeta?.engine === 'string' ? runtimeMeta.engine : normalizedTask.engineUsed,
+          rolledBackFrom: normalizedTask.rolledBackFrom,
+          rollbackReasonCode: normalizedTask.rollbackReasonCode,
+          engine: typeof runtimeMeta?.engine === 'string' ? runtimeMeta.engine : normalizedTask.engineUsed,
           graphNode: typeof runtimeMeta?.node === 'string' ? runtimeMeta.node : undefined,
           graphThreadId: typeof runtimeMeta?.threadId === 'string' ? runtimeMeta.threadId : undefined,
+          retryCount: typeof runtimeMeta?.retryCount === 'number' ? runtimeMeta.retryCount : undefined,
+          routeIntent: typeof route?.intent === 'string' ? route.intent : undefined,
+          routeSource: typeof route?.source === 'string' ? route.source : undefined,
+          routeFallbackReasonCode:
+            typeof route?.fallbackReasonCode === 'string' ? route.fallbackReasonCode : undefined,
+          planSource: typeof entry.state.planSource === 'string' ? entry.state.planSource : undefined,
+          planValidationErrors,
+          synthesisSource: typeof entry.state.synthesisSource === 'string' ? entry.state.synthesisSource : undefined,
+          responseDeliveryStatus:
+            typeof entry.state.responseDeliveryStatus === 'string' ? entry.state.responseDeliveryStatus : undefined,
+          recoveryMode: typeof entry.state.recoveryMode === 'string' ? entry.state.recoveryMode : undefined,
+          resumeDecisionReason:
+            typeof entry.state.resumeDecisionReason === 'string' ? entry.state.resumeDecisionReason : undefined,
         };
       }),
     };
@@ -67,6 +131,12 @@ export class AdminRuntimeService extends BaseService {
     if (!latest) {
       throw new HttpException(404, 'No checkpoint found for task');
     }
+
+    const pendingHitlAction = latest.node === 'hitl.requested' ? await hitlActionRepository.getByTaskId(taskId) : null;
+    const recoveryDecision = decideCheckpointRecovery({
+      latestCheckpoint: latest,
+      hasPendingHitlAction: Boolean(pendingHitlAction && pendingHitlAction.status === 'pending'),
+    });
 
     const state = latest.state;
     const requiredKeys: Array<keyof NormalizedIncomingMessageDTO> = [
@@ -96,12 +166,28 @@ export class AdminRuntimeService extends BaseService {
       rawEvent: { recovered: true, fromCheckpointVersion: latest.version },
     };
 
-    await orchestrationRuntime.requeue(taskId, message);
+    const checkpointTrace = state.trace;
+    if (checkpointTrace && typeof checkpointTrace === 'object') {
+      const trace = checkpointTrace as Record<string, unknown>;
+      message.trace = {
+        requestId: typeof trace.requestId === 'string' ? trace.requestId : undefined,
+        eventId: typeof trace.eventId === 'string' ? trace.eventId : undefined,
+        textHash: typeof trace.textHash === 'string' ? trace.textHash : undefined,
+        receivedAt: typeof trace.receivedAt === 'string' ? trace.receivedAt : undefined,
+      };
+    }
+
+    if (!recoveryDecision.shouldReturnCompleted) {
+      await orchestrationRuntime.requeue(taskId, message);
+    }
+
     return {
       taskId,
       recoveredFromVersion: latest.version,
       recoveredFromNode: latest.node,
-      status: 'requeued',
+      recoveryMode: recoveryDecision.recoveryMode,
+      resumeDecisionReason: recoveryDecision.resumeDecisionReason,
+      status: recoveryDecision.shouldReturnCompleted ? 'already_completed' : 'requeued',
     };
   }
 }

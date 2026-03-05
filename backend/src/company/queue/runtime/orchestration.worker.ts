@@ -15,6 +15,7 @@ import {
   ORCHESTRATION_QUEUE_NAME,
   type OrchestrationJobData,
 } from './orchestration.queue';
+import { QueueTaskTimeoutError, withTaskTimeout } from './queue-safety';
 import { redisConnection } from './redis.connection';
 
 const userLocks = new Map<string, Promise<void>>();
@@ -55,7 +56,11 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     executionMode: task.executionMode,
     orchestratorModel: task.orchestratorModel,
     plan: task.plan,
+    configuredEngine,
     engine: configuredEngine,
+    engineUsed: undefined,
+    rolledBackFrom: undefined,
+    rollbackReasonCode: undefined,
     routeIntent: undefined,
   });
 
@@ -68,46 +73,71 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
   });
 
   const latestCheckpoint = await checkpointRepository.getLatest(taskId);
-  const { result, engineUsed, rolledBackFrom } = await executeTaskWithConfiguredEngine({
+  const { result, configuredEngine: selectedEngine, engineUsed, rolledBackFrom, rollbackReasonCode } = await executeTaskWithConfiguredEngine({
     task,
     message,
     latestCheckpoint,
   });
 
-  runtimeTaskStore.update(taskId, {
-    status: result.status,
-    complexityLevel: result.task.complexityLevel,
-    executionMode: result.task.executionMode,
-    orchestratorModel: result.task.orchestratorModel,
-    plan: result.task.plan,
-    currentStep: result.currentStep,
-    latestSynthesis: result.latestSynthesis,
-    hitlActionId: result.hitlAction?.actionId,
-    engine: engineUsed,
-    graphThreadId: result.runtimeMeta?.threadId,
-    graphNode: result.runtimeMeta?.node,
-    graphStepHistory: result.runtimeMeta?.stepHistory,
-    routeIntent: result.runtimeMeta?.routeIntent,
-    agentResultsHistory: [
-      ...(runtimeTaskStore.get(taskId)?.agentResultsHistory ?? []),
-      ...(result.agentResults ?? []),
-    ],
+  const applyExecutionResultToTask = (input: {
+    taskId: string;
+    result: typeof result;
+    selectedEngine: typeof selectedEngine;
+    engineUsed: typeof engineUsed;
+    rolledBackFrom: typeof rolledBackFrom;
+    rollbackReasonCode: typeof rollbackReasonCode;
+  }) =>
+    runtimeTaskStore.update(input.taskId, {
+      status: input.result.status,
+      complexityLevel: input.result.task.complexityLevel,
+      executionMode: input.result.task.executionMode,
+      orchestratorModel: input.result.task.orchestratorModel,
+      plan: input.result.task.plan,
+      currentStep: input.result.currentStep,
+      latestSynthesis: input.result.latestSynthesis,
+      hitlActionId: input.result.hitlAction?.actionId,
+      configuredEngine: input.selectedEngine,
+      engine: input.engineUsed,
+      engineUsed: input.engineUsed,
+      rolledBackFrom: input.rolledBackFrom,
+      rollbackReasonCode: input.rollbackReasonCode,
+      graphThreadId: input.result.runtimeMeta?.threadId,
+      graphNode: input.result.runtimeMeta?.node,
+      graphStepHistory: input.result.runtimeMeta?.stepHistory,
+      routeIntent: input.result.runtimeMeta?.routeIntent,
+      agentResultsHistory: [
+        ...(runtimeTaskStore.get(input.taskId)?.agentResultsHistory ?? []),
+        ...(input.result.agentResults ?? []),
+      ],
+    });
+
+  applyExecutionResultToTask({
+    taskId,
+    result,
+    selectedEngine,
+    engineUsed,
+    rolledBackFrom,
+    rollbackReasonCode,
   });
 
   if (rolledBackFrom) {
     logger.warn('orchestration.task.engine.rollback', {
       taskId,
       messageId: message.messageId,
-      configuredEngine: rolledBackFrom,
+      configuredEngine: selectedEngine,
       engineUsed,
+      rolledBackFrom,
+      rollbackReasonCode,
     });
   }
 
   logger.success('orchestration.task.complete', {
     taskId,
     messageId: message.messageId,
-    configuredEngine,
+    configuredEngine: selectedEngine,
     engineUsed,
+    rolledBackFrom,
+    rollbackReasonCode,
     status: result.status,
   });
   logger.info('lark.runtime.job.completed', {
@@ -123,6 +153,30 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     textHash: message.trace?.textHash,
   });
 };
+
+export const runOrchestrationJobWithSafety = async (
+  job: Job<OrchestrationJobData>,
+  processor: (job: Job<OrchestrationJobData>) => Promise<void> = processTask,
+): Promise<void> =>
+  withTaskTimeout(
+    processor(job),
+    config.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS,
+    {
+      taskId: job.data.taskId,
+      messageId: job.data.message.messageId,
+      channel: job.data.message.channel,
+      requestId: job.data.message.trace?.requestId,
+      jobId: job.id,
+    },
+  );
+
+const buildWorkerOptions = (connection = redisConnection.getClient()) => ({
+  connection,
+  concurrency: Math.max(1, config.ORCHESTRATION_WORKER_CONCURRENCY),
+  lockDuration: config.ORCHESTRATION_QUEUE_LOCK_DURATION_MS,
+  stalledInterval: config.ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS,
+  maxStalledCount: config.ORCHESTRATION_QUEUE_MAX_STALLED_COUNT,
+});
 
 let worker: Worker<OrchestrationJobData, void, typeof ORCHESTRATION_JOB_NAME> | null = null;
 
@@ -140,7 +194,7 @@ export const startOrchestrationWorker = (): Worker<OrchestrationJobData, void, t
 
       await runPerUserDeterministically(job.data.message.userId, async () => {
         try {
-          await processTask(job);
+          await runOrchestrationJobWithSafety(job);
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown orchestration worker failure';
           if (message.includes('Task cancelled via control signal')) {
@@ -149,6 +203,16 @@ export const startOrchestrationWorker = (): Worker<OrchestrationJobData, void, t
           }
 
           runtimeTaskStore.update(job.data.taskId, { status: 'failed' });
+          if (error instanceof QueueTaskTimeoutError) {
+            logger.error('queue.worker.timeout', {
+              taskId: job.data.taskId,
+              messageId: job.data.message.messageId,
+              channel: job.data.message.channel,
+              requestId: job.data.message.trace?.requestId,
+              jobId: job.id,
+              timeoutMs: error.timeoutMs,
+            });
+          }
           logger.error('orchestration.task.error', {
             taskId: job.data.taskId,
             messageId: job.data.message.messageId,
@@ -158,10 +222,7 @@ export const startOrchestrationWorker = (): Worker<OrchestrationJobData, void, t
         }
       });
     },
-    {
-      connection: redisConnection.getClient(),
-      concurrency: Math.max(1, config.ORCHESTRATION_WORKER_CONCURRENCY),
-    },
+    buildWorkerOptions(),
   );
 
   worker.on('completed', (job) => {
@@ -187,6 +248,9 @@ export const startOrchestrationWorker = (): Worker<OrchestrationJobData, void, t
       error: classifiedError,
     });
   });
+  worker.on('error', (error) => {
+    logger.error('queue.worker.error', { error });
+  });
 
   return worker;
 };
@@ -197,4 +261,52 @@ export const stopOrchestrationWorker = async (): Promise<void> => {
   }
   await worker.close();
   worker = null;
+};
+
+export const __test__ = {
+  buildWorkerOptions,
+  applyExecutionResultToTask: (input: {
+    taskId: string;
+    result: {
+      status: 'pending' | 'running' | 'hitl' | 'done' | 'failed' | 'cancelled';
+      task: {
+        complexityLevel?: 1 | 2 | 3 | 4 | 5;
+        executionMode?: 'sequential' | 'parallel' | 'mixed';
+        orchestratorModel?: string;
+        plan: string[];
+      };
+      currentStep?: string;
+      latestSynthesis?: string;
+      hitlAction?: { actionId: string };
+      runtimeMeta?: { threadId?: string; node?: string; stepHistory?: string[]; routeIntent?: string };
+      agentResults?: Array<Record<string, unknown>>;
+    };
+    selectedEngine: 'legacy' | 'langgraph';
+    engineUsed: 'legacy' | 'langgraph';
+    rolledBackFrom?: 'legacy' | 'langgraph';
+    rollbackReasonCode?: string;
+  }) =>
+    runtimeTaskStore.update(input.taskId, {
+      status: input.result.status,
+      complexityLevel: input.result.task.complexityLevel,
+      executionMode: input.result.task.executionMode,
+      orchestratorModel: input.result.task.orchestratorModel,
+      plan: input.result.task.plan,
+      currentStep: input.result.currentStep,
+      latestSynthesis: input.result.latestSynthesis,
+      hitlActionId: input.result.hitlAction?.actionId,
+      configuredEngine: input.selectedEngine,
+      engine: input.engineUsed,
+      engineUsed: input.engineUsed,
+      rolledBackFrom: input.rolledBackFrom,
+      rollbackReasonCode: input.rollbackReasonCode,
+      graphThreadId: input.result.runtimeMeta?.threadId,
+      graphNode: input.result.runtimeMeta?.node,
+      graphStepHistory: input.result.runtimeMeta?.stepHistory,
+      routeIntent: input.result.runtimeMeta?.routeIntent,
+      agentResultsHistory: [
+        ...(runtimeTaskStore.get(input.taskId)?.agentResultsHistory ?? []),
+        ...((input.result.agentResults as any[]) ?? []),
+      ],
+    }),
 };

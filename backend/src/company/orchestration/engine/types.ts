@@ -10,6 +10,19 @@ import type { OrchestrationTaskStatus } from '../../contracts/status';
 
 export type OrchestrationEngineId = 'legacy' | 'langgraph';
 
+export type RollbackReasonCode =
+  | 'llm_unavailable'
+  | 'llm_invalid_output'
+  | 'checkpoint_io'
+  | 'agent_runtime'
+  | 'unknown'
+  | 'non_eligible';
+
+export type RollbackDecision = {
+  eligible: boolean;
+  reasonCode: RollbackReasonCode;
+};
+
 export type OrchestrationExecutionResult = {
   task: OrchestrationTaskDTO;
   status: OrchestrationTaskStatus;

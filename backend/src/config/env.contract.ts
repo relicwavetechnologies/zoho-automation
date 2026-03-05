@@ -22,6 +22,12 @@ export type ValidatedEnv = {
   CORS_ALLOWED_ORIGINS: string;
   REDIS_URL: string;
   ORCHESTRATION_WORKER_CONCURRENCY: number;
+  ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS: number;
+  ORCHESTRATION_QUEUE_ADD_BASE_DELAY_MS: number;
+  ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS: number;
+  ORCHESTRATION_QUEUE_LOCK_DURATION_MS: number;
+  ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS: number;
+  ORCHESTRATION_QUEUE_MAX_STALLED_COUNT: number;
   HITL_TIMEOUT_SECONDS: number;
   CHECKPOINT_TTL_SECONDS: number;
   RETRY_MAX_ATTEMPTS: number;
@@ -356,6 +362,48 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       value: readString(parsedRaw.ORCHESTRATION_WORKER_CONCURRENCY, '2'),
       defaultValue: 2,
       min: 1,
+      issues,
+    }),
+    ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS: parseInteger({
+      key: 'ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS',
+      value: readString(parsedRaw.ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS, '3'),
+      defaultValue: 3,
+      min: 1,
+      issues,
+    }),
+    ORCHESTRATION_QUEUE_ADD_BASE_DELAY_MS: parseInteger({
+      key: 'ORCHESTRATION_QUEUE_ADD_BASE_DELAY_MS',
+      value: readString(parsedRaw.ORCHESTRATION_QUEUE_ADD_BASE_DELAY_MS, '200'),
+      defaultValue: 200,
+      min: 0,
+      issues,
+    }),
+    ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS: parseInteger({
+      key: 'ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS',
+      value: readString(parsedRaw.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS, '120000'),
+      defaultValue: 120000,
+      min: 1000,
+      issues,
+    }),
+    ORCHESTRATION_QUEUE_LOCK_DURATION_MS: parseInteger({
+      key: 'ORCHESTRATION_QUEUE_LOCK_DURATION_MS',
+      value: readString(parsedRaw.ORCHESTRATION_QUEUE_LOCK_DURATION_MS, '60000'),
+      defaultValue: 60000,
+      min: 5000,
+      issues,
+    }),
+    ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS: parseInteger({
+      key: 'ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS',
+      value: readString(parsedRaw.ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS, '30000'),
+      defaultValue: 30000,
+      min: 1000,
+      issues,
+    }),
+    ORCHESTRATION_QUEUE_MAX_STALLED_COUNT: parseInteger({
+      key: 'ORCHESTRATION_QUEUE_MAX_STALLED_COUNT',
+      value: readString(parsedRaw.ORCHESTRATION_QUEUE_MAX_STALLED_COUNT, '1'),
+      defaultValue: 1,
+      min: 0,
       issues,
     }),
     HITL_TIMEOUT_SECONDS: parseInteger({

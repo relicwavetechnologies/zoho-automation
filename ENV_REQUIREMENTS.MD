@@ -28,6 +28,12 @@ Notes:
 NODE_ENV=development
 ADMIN_SESSION_TTL_MINUTES=480
 ORCHESTRATION_WORKER_CONCURRENCY=2
+ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS=3
+ORCHESTRATION_QUEUE_ADD_BASE_DELAY_MS=200
+ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS=120000
+ORCHESTRATION_QUEUE_LOCK_DURATION_MS=60000
+ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS=30000
+ORCHESTRATION_QUEUE_MAX_STALLED_COUNT=1
 ORCHESTRATION_ENGINE=langgraph
 ORCHESTRATION_LEGACY_ROLLBACK_ENABLED=true
 LOG_LEVEL=info
@@ -52,6 +58,14 @@ Notes:
 - If `OPENAI_API_KEY` is not set, runtime falls back to deterministic routing/planning/synthesis heuristics.
 - `ORCHESTRATION_ENGINE=langgraph` is the V1 default; use `legacy` for manual rollback mode.
 - Keep `ORCHESTRATION_LEGACY_ROLLBACK_ENABLED=true` during first release cycle.
+- Engine rollback contract:
+  - `ORCHESTRATION_ENGINE` selects configured engine deterministically.
+  - `ORCHESTRATION_LEGACY_ROLLBACK_ENABLED` only enables fallback for eligible LangGraph runtime failures.
+  - Non-eligible failures (for example auth/config/programming contract errors) fail fast and do not fallback.
+- Queue runtime safety knobs:
+  - `ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS` and `ORCHESTRATION_QUEUE_ADD_BASE_DELAY_MS` control enqueue retry for transient Redis/network errors.
+  - `ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS` caps per-job processing runtime.
+  - `ORCHESTRATION_QUEUE_LOCK_DURATION_MS`, `ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS`, and `ORCHESTRATION_QUEUE_MAX_STALLED_COUNT` harden worker stall/recovery behavior.
 - If `OPENAI_API_KEY` is set, all three model ids must be non-empty:
   - `OPENAI_ROUTER_MODEL`
   - `OPENAI_PLANNER_MODEL`

@@ -18,6 +18,10 @@ export type RuntimeTaskSnapshot = {
   agentResultsHistory?: AgentResultDTO[];
   hitlActionId?: string;
   engine?: OrchestrationEngineId;
+  configuredEngine?: OrchestrationEngineId;
+  engineUsed?: OrchestrationEngineId;
+  rolledBackFrom?: OrchestrationEngineId;
+  rollbackReasonCode?: string;
   graphThreadId?: string;
   graphNode?: string;
   graphStepHistory?: string[];
