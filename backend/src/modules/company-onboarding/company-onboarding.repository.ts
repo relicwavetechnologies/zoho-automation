@@ -1,4 +1,4 @@
-import type { Company, ZohoConnection } from '../../generated/prisma';
+import type { Company, Prisma, ZohoConnection } from '../../generated/prisma';
 
 import { BaseRepository } from '../../core/repository';
 import { prisma } from '../../utils/prisma';
@@ -22,6 +22,12 @@ export class CompanyOnboardingRepository extends BaseRepository {
     status: string;
     connectedAt: Date;
     scopes: string[];
+    accessTokenEncrypted: string;
+    refreshTokenEncrypted?: string;
+    tokenCipherVersion: number;
+    accessTokenExpiresAt: Date;
+    refreshTokenExpiresAt?: Date;
+    tokenMetadata?: Record<string, unknown>;
   }): Promise<ZohoConnection> {
     return prisma.zohoConnection.upsert({
       where: {
@@ -36,11 +42,27 @@ export class CompanyOnboardingRepository extends BaseRepository {
         status: input.status,
         connectedAt: input.connectedAt,
         scopes: input.scopes,
+        accessTokenEncrypted: input.accessTokenEncrypted,
+        refreshTokenEncrypted: input.refreshTokenEncrypted,
+        tokenCipherVersion: input.tokenCipherVersion,
+        accessTokenExpiresAt: input.accessTokenExpiresAt,
+        refreshTokenExpiresAt: input.refreshTokenExpiresAt,
+        tokenMetadata: input.tokenMetadata as Prisma.InputJsonValue | undefined,
+        tokenFailureCode: null,
+        lastTokenRefreshAt: new Date(),
       },
       update: {
         status: input.status,
         connectedAt: input.connectedAt,
         scopes: input.scopes,
+        accessTokenEncrypted: input.accessTokenEncrypted,
+        refreshTokenEncrypted: input.refreshTokenEncrypted,
+        tokenCipherVersion: input.tokenCipherVersion,
+        accessTokenExpiresAt: input.accessTokenExpiresAt,
+        refreshTokenExpiresAt: input.refreshTokenExpiresAt,
+        tokenMetadata: input.tokenMetadata as Prisma.InputJsonValue | undefined,
+        tokenFailureCode: null,
+        lastTokenRefreshAt: new Date(),
       },
     });
   }

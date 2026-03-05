@@ -5,7 +5,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "build": "prisma generate && tsc",
+    "build": "prisma generate && tsc && mkdir -p dist/generated && cp -R src/generated/prisma dist/generated/prisma",
     "start": "node dist/server.js",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "prisma:generate": "prisma generate",
@@ -15,7 +15,8 @@
     "lark:token": "node scripts/generate-lark-tenant-token.cjs",
     "test:unit:config": "node --test tests/env-contract.test.cjs && node --test tests/bootstrap-health.test.cjs",
     "test:unit:lark": "node --test tests/lark-*.test.cjs",
-    "test:unit:v1": "node --test tests/langgraph-*.test.cjs tests/langchain-*.test.cjs"
+    "test:unit:v1": "node --test tests/langgraph-*.test.cjs tests/langchain-*.test.cjs",
+    "test:unit:zoho": "node --test tests/zoho-*.test.cjs tests/qdrant*.test.cjs tests/embedding*.test.cjs"
   },
   "dependencies": {
     "@langchain/core": "^1.1.30",

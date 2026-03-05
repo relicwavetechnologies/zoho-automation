@@ -71,6 +71,14 @@ model ZohoConnection {
   connectedAt DateTime
   scopes      String[]
   lastSyncAt  DateTime?
+  accessTokenEncrypted String?
+  refreshTokenEncrypted String?
+  tokenCipherVersion Int @default(1)
+  accessTokenExpiresAt DateTime?
+  refreshTokenExpiresAt DateTime?
+  tokenFailureCode String?
+  lastTokenRefreshAt DateTime?
+  tokenMetadata Json?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
   syncJobs    ZohoSyncJob[]

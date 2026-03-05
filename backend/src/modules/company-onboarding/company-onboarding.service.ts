@@ -2,6 +2,8 @@ import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
 import { IngestionJobDTO, ZohoConnectionDTO } from '../../company/contracts';
 import { zohoConnectionAdapter } from '../../company/integrations/zoho';
+import { ZohoIntegrationError } from '../../company/integrations/zoho/zoho.errors';
+import { qdrantAdapter } from '../../company/integrations/vector';
 import { zohoSyncProducer } from '../../company/queue/producer';
 import { runZohoDeltaSyncWorker, runZohoHistoricalSyncWorker } from '../../company/queue/workers';
 import {
@@ -24,14 +26,23 @@ export class CompanyOnboardingService extends BaseService {
 
   async connectZoho(payload: ZohoConnectDto): Promise<CompanyOnboardingConnectResult> {
     const companyId = await this.resolveCompanyId(payload.companyId, payload.companyName);
-
-    const adapterResult = await zohoConnectionAdapter.connect(
-      {
-        authorizationCode: payload.authorizationCode,
-        scopes: payload.scopes,
-      },
-      companyId,
-    );
+    let adapterResult;
+    try {
+      adapterResult = await zohoConnectionAdapter.connect(
+        {
+          authorizationCode: payload.authorizationCode,
+          scopes: payload.scopes,
+          environment: payload.environment,
+        },
+        companyId,
+      );
+    } catch (error) {
+      if (error instanceof ZohoIntegrationError) {
+        const status = error.code === 'auth_failed' ? 400 : 503;
+        throw new HttpException(status, `Zoho connect failed: ${error.code}`);
+      }
+      throw error;
+    }
 
     if (adapterResult.status !== 'CONNECTED') {
       throw new HttpException(400, 'Zoho connection failed');
@@ -43,6 +54,14 @@ export class CompanyOnboardingService extends BaseService {
       status: adapterResult.status,
       connectedAt: new Date(adapterResult.connectedAt),
       scopes: adapterResult.scopes,
+      accessTokenEncrypted: adapterResult.tokenState.accessTokenEncrypted,
+      refreshTokenEncrypted: adapterResult.tokenState.refreshTokenEncrypted,
+      tokenCipherVersion: adapterResult.tokenState.tokenCipherVersion,
+      accessTokenExpiresAt: new Date(adapterResult.tokenState.accessTokenExpiresAt),
+      refreshTokenExpiresAt: adapterResult.tokenState.refreshTokenExpiresAt
+        ? new Date(adapterResult.tokenState.refreshTokenExpiresAt)
+        : undefined,
+      tokenMetadata: adapterResult.tokenState.tokenMetadata,
     });
 
     const queued = await zohoSyncProducer.enqueueInitialHistoricalSync({
@@ -60,6 +79,21 @@ export class CompanyOnboardingService extends BaseService {
       connectedAt: connection.connectedAt.toISOString(),
       scopes: connection.scopes,
       lastSyncAt: connection.lastSyncAt?.toISOString(),
+      tokenHealth: {
+        status: connection.tokenFailureCode
+          ? 'failed'
+          : connection.accessTokenExpiresAt && connection.accessTokenExpiresAt.getTime() <= Date.now()
+            ? 'expired'
+            : connection.accessTokenExpiresAt &&
+                connection.accessTokenExpiresAt.getTime() - Date.now() <= 5 * 60 * 1000
+              ? 'expiring'
+              : connection.accessTokenExpiresAt
+                ? 'healthy'
+                : 'unknown',
+        accessTokenExpiresAt: connection.accessTokenExpiresAt?.toISOString(),
+        lastRefreshAt: connection.lastTokenRefreshAt?.toISOString(),
+        failureCode: connection.tokenFailureCode ?? undefined,
+      },
     };
 
     return {
@@ -134,7 +168,7 @@ export class CompanyOnboardingService extends BaseService {
   async validateOnboardingLifecycle(companyId: string): Promise<OnboardingLifecycleValidationResult> {
     const [snapshot, vectorDocumentCount, deltaPendingCount] = await Promise.all([
       this.repository.findLifecycleSnapshot(companyId),
-      this.repository.countVectorDocuments(companyId),
+      qdrantAdapter.countByCompany(companyId).catch(() => 0),
       this.repository.countPendingDeltaEvents(companyId),
     ]);
 
@@ -163,9 +197,11 @@ export class CompanyOnboardingService extends BaseService {
   }
 
   async getCompanyOnboardingStatus(companyId: string) {
-    const [connection, historicalJob] = await Promise.all([
+    const [connection, historicalJob, vectorHealth, indexedCount] = await Promise.all([
       this.repository.findLatestConnectionForCompany(companyId),
       this.repository.findLatestHistoricalJob(companyId),
+      qdrantAdapter.health(),
+      qdrantAdapter.countByCompany(companyId).catch(() => 0),
     ]);
 
     return {
@@ -176,6 +212,21 @@ export class CompanyOnboardingService extends BaseService {
           connectedAt: connection.connectedAt.toISOString(),
           scopes: connection.scopes,
           lastSyncAt: connection.lastSyncAt?.toISOString(),
+          tokenHealth: {
+            status: connection.tokenFailureCode
+              ? 'failed'
+              : connection.accessTokenExpiresAt && connection.accessTokenExpiresAt.getTime() <= Date.now()
+                ? 'expired'
+                : connection.accessTokenExpiresAt &&
+                    connection.accessTokenExpiresAt.getTime() - Date.now() <= 5 * 60 * 1000
+                  ? 'expiring'
+                  : connection.accessTokenExpiresAt
+                    ? 'healthy'
+                    : 'unknown',
+            accessTokenExpiresAt: connection.accessTokenExpiresAt?.toISOString(),
+            lastRefreshAt: connection.lastTokenRefreshAt?.toISOString(),
+            failureCode: connection.tokenFailureCode ?? undefined,
+          },
         }
         : null,
       historicalSync: historicalJob
@@ -189,6 +240,12 @@ export class CompanyOnboardingService extends BaseService {
           finishedAt: historicalJob.finishedAt?.toISOString(),
         }
         : null,
+      vectorIndex: {
+        backend: vectorHealth.backend,
+        collection: vectorHealth.collection,
+        indexedCount,
+        healthy: vectorHealth.ok,
+      },
     };
   }
 

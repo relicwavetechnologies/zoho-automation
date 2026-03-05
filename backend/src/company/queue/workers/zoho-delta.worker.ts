@@ -2,6 +2,9 @@ import { createHash } from 'crypto';
 
 import type { Prisma } from '../../../generated/prisma';
 import { qdrantAdapter } from '../../integrations/vector';
+import { zohoDataClient } from '../../integrations/zoho/zoho-data.client';
+import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
+import { embeddingService } from '../../integrations/embedding';
 import { prisma } from '../../../utils/prisma';
 import { logger } from '../../../utils/logger';
 
@@ -9,18 +12,6 @@ const MAX_DELTA_BATCH = 25;
 
 const hashContent = (content: string): string =>
   createHash('sha256').update(content).digest('hex');
-
-const createPseudoEmbedding = (content: string): number[] => {
-  const hash = hashContent(content);
-  const embedding: number[] = [];
-
-  for (let index = 0; index < 24; index += 1) {
-    const slice = hash.slice(index * 2, index * 2 + 2);
-    embedding.push(parseInt(slice, 16) / 255);
-  }
-
-  return embedding;
-};
 
 const createChunks = (payload: Record<string, unknown>): string[] => {
   const raw = JSON.stringify(payload);
@@ -103,13 +94,25 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
       sourceId: parsed.sourceId,
     });
   } else {
-    const basePayload = parsed.payload ?? {
+    const connection = await prisma.zohoConnection.findUnique({
+      where: { id: job.connectionId },
+      select: { environment: true },
+    });
+    const latestPayload = await zohoDataClient.fetchRecordBySource({
+      companyId: job.companyId,
+      environment: connection?.environment ?? 'prod',
+      sourceType: parsed.sourceType,
+      sourceId: parsed.sourceId,
+    });
+    const basePayload = latestPayload ?? parsed.payload ?? {
       sourceId: parsed.sourceId,
       operation: parsed.operation,
       generated: true,
+      reason: 'missing_upstream_payload',
     };
 
     const chunks = createChunks(basePayload);
+    const embeddings = await embeddingService.embed(chunks);
     await qdrantAdapter.upsertVectors(
       chunks.map((chunk, index) => ({
         companyId: job.companyId,
@@ -122,7 +125,7 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
           ...basePayload,
           _chunk: chunk,
         },
-        embedding: createPseudoEmbedding(chunk),
+        embedding: embeddings[index],
       })),
     );
   }
@@ -156,7 +159,7 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
   });
 };
 
-const failDeltaJobWithRetry = async (jobId: string, reason: string): Promise<void> => {
+const failDeltaJobWithRetry = async (jobId: string, reason: string, failureCode?: string): Promise<void> => {
   const job = await prisma.zohoSyncJob.findUnique({ where: { id: jobId } });
   if (!job) {
     return;
@@ -182,7 +185,7 @@ const failDeltaJobWithRetry = async (jobId: string, reason: string): Promise<voi
         attempts: {
           increment: 1,
         },
-        lastError: reason,
+        lastError: failureCode ? `${failureCode}:${reason}` : reason,
       },
     }),
   ]);
@@ -227,7 +230,8 @@ export const runZohoDeltaSyncWorker = async (companyId?: string): Promise<void> 
       await processDeltaJob(job.id);
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'Unknown delta worker error';
-      await failDeltaJobWithRetry(job.id, reason);
+      const failureCode = error instanceof ZohoIntegrationError ? error.code : undefined;
+      await failDeltaJobWithRetry(job.id, reason, failureCode);
     }
   }
 };

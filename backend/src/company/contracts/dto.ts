@@ -88,6 +88,12 @@ export type ZohoConnectionDTO = {
   connectedAt: string;
   scopes: string[];
   lastSyncAt?: string;
+  tokenHealth?: {
+    status: 'healthy' | 'expiring' | 'expired' | 'failed' | 'unknown';
+    accessTokenExpiresAt?: string;
+    lastRefreshAt?: string;
+    failureCode?: string;
+  };
 };
 
 export type IngestionJobDTO = {

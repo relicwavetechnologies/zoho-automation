@@ -44,6 +44,18 @@ export type ValidatedEnv = {
   LARK_ENCRYPT_KEY: string;
   LARK_WEBHOOK_SIGNING_SECRET: string;
   LARK_WEBHOOK_MAX_SKEW_SECONDS: number;
+  ZOHO_CLIENT_ID: string;
+  ZOHO_CLIENT_SECRET: string;
+  ZOHO_REDIRECT_URI: string;
+  ZOHO_ACCOUNTS_BASE_URL: string;
+  ZOHO_API_BASE_URL: string;
+  ZOHO_TOKEN_ENCRYPTION_KEY: string;
+  QDRANT_URL: string;
+  QDRANT_API_KEY: string;
+  QDRANT_COLLECTION: string;
+  QDRANT_TIMEOUT_MS: number;
+  EMBEDDING_PROVIDER: 'openai' | 'fallback';
+  OPENAI_EMBEDDING_MODEL: string;
   ORCHESTRATION_ENGINE: 'langgraph' | 'legacy';
   ORCHESTRATION_LEGACY_ROLLBACK_ENABLED: boolean;
   OPENAI_ROUTER_MODEL: string;
@@ -52,6 +64,7 @@ export type ValidatedEnv = {
   OPENAI_TEMPERATURE: number;
   LANGSMITH_TRACING: string;
   LANGSMITH_API_KEY: string;
+  LANGSMITH_PROJECT: string;
 };
 
 export type EnvValidationResult = {
@@ -280,6 +293,21 @@ const parseOrchestrationEngine = (value: string, issues: EnvValidationIssue[]): 
   return 'langgraph';
 };
 
+const parseEmbeddingProvider = (value: string, issues: EnvValidationIssue[]): ValidatedEnv['EMBEDDING_PROVIDER'] => {
+  if (value === 'openai' || value === 'fallback') {
+    return value;
+  }
+
+  issues.push({
+    key: 'EMBEDDING_PROVIDER',
+    code: 'invalid_enum',
+    message: 'EMBEDDING_PROVIDER must be openai or fallback',
+    severity: 'error',
+  });
+
+  return 'openai';
+};
+
 const requireNonEmpty = (key: string, value: string, issues: EnvValidationIssue[]): string => {
   if (value.length === 0) {
     issues.push({
@@ -470,6 +498,24 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     LARK_ENCRYPT_KEY: readString(parsedRaw.LARK_ENCRYPT_KEY),
     LARK_WEBHOOK_SIGNING_SECRET: readString(parsedRaw.LARK_WEBHOOK_SIGNING_SECRET),
     LARK_WEBHOOK_MAX_SKEW_SECONDS: larkWebhookMaxSkewSeconds,
+    ZOHO_CLIENT_ID: readString(parsedRaw.ZOHO_CLIENT_ID),
+    ZOHO_CLIENT_SECRET: readString(parsedRaw.ZOHO_CLIENT_SECRET),
+    ZOHO_REDIRECT_URI: readString(parsedRaw.ZOHO_REDIRECT_URI),
+    ZOHO_ACCOUNTS_BASE_URL: readString(parsedRaw.ZOHO_ACCOUNTS_BASE_URL, 'https://accounts.zoho.com'),
+    ZOHO_API_BASE_URL: readString(parsedRaw.ZOHO_API_BASE_URL, 'https://www.zohoapis.com'),
+    ZOHO_TOKEN_ENCRYPTION_KEY: readString(parsedRaw.ZOHO_TOKEN_ENCRYPTION_KEY),
+    QDRANT_URL: readString(parsedRaw.QDRANT_URL, 'http://127.0.0.1:6333'),
+    QDRANT_API_KEY: readString(parsedRaw.QDRANT_API_KEY),
+    QDRANT_COLLECTION: readString(parsedRaw.QDRANT_COLLECTION, 'zoho_automation_docs'),
+    QDRANT_TIMEOUT_MS: parseInteger({
+      key: 'QDRANT_TIMEOUT_MS',
+      value: readString(parsedRaw.QDRANT_TIMEOUT_MS, '5000'),
+      defaultValue: 5000,
+      min: 1000,
+      issues,
+    }),
+    EMBEDDING_PROVIDER: parseEmbeddingProvider(readString(parsedRaw.EMBEDDING_PROVIDER, 'openai'), issues),
+    OPENAI_EMBEDDING_MODEL: readString(parsedRaw.OPENAI_EMBEDDING_MODEL, 'text-embedding-3-small'),
     ORCHESTRATION_ENGINE: parseOrchestrationEngine(readString(parsedRaw.ORCHESTRATION_ENGINE, 'langgraph'), issues),
     ORCHESTRATION_LEGACY_ROLLBACK_ENABLED: parseBoolean({
       key: 'ORCHESTRATION_LEGACY_ROLLBACK_ENABLED',
@@ -483,6 +529,7 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     OPENAI_TEMPERATURE: openAiTemperature,
     LANGSMITH_TRACING: readString(parsedRaw.LANGSMITH_TRACING),
     LANGSMITH_API_KEY: readString(parsedRaw.LANGSMITH_API_KEY),
+    LANGSMITH_PROJECT: readString(parsedRaw.LANGSMITH_PROJECT),
   };
 
   if (!config.REDIS_URL.startsWith('redis://') && !config.REDIS_URL.startsWith('rediss://')) {
@@ -505,6 +552,51 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       key: 'LARK_APP_ID,LARK_APP_SECRET',
       code: 'paired_required',
       message: 'LARK_APP_ID and LARK_APP_SECRET must be set together',
+      severity: 'error',
+    });
+  }
+
+  const hasZohoClientId = config.ZOHO_CLIENT_ID.length > 0;
+  const hasZohoClientSecret = config.ZOHO_CLIENT_SECRET.length > 0;
+  const hasZohoRedirectUri = config.ZOHO_REDIRECT_URI.length > 0;
+  const hasZohoTokenKey = config.ZOHO_TOKEN_ENCRYPTION_KEY.length > 0;
+  const hasAnyZohoAuthConfig = hasZohoClientId || hasZohoClientSecret || hasZohoRedirectUri || hasZohoTokenKey;
+
+  if (hasAnyZohoAuthConfig) {
+    if (!hasZohoClientId || !hasZohoClientSecret || !hasZohoRedirectUri) {
+      warnings.push({
+        key: 'ZOHO_CLIENT_ID,ZOHO_CLIENT_SECRET,ZOHO_REDIRECT_URI',
+        code: 'paired_required',
+        message: 'ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, and ZOHO_REDIRECT_URI should be set together',
+        severity: 'warning',
+      });
+    }
+
+    if (!hasZohoTokenKey) {
+      warnings.push({
+        key: 'ZOHO_TOKEN_ENCRYPTION_KEY',
+        code: 'missing_value',
+        message: 'ZOHO_TOKEN_ENCRYPTION_KEY should be set when Zoho OAuth is configured',
+        severity: 'warning',
+      });
+    }
+  }
+
+  try {
+    const parsedQdrant = new URL(config.QDRANT_URL);
+    if (parsedQdrant.protocol !== 'http:' && parsedQdrant.protocol !== 'https:') {
+      issues.push({
+        key: 'QDRANT_URL',
+        code: 'invalid_protocol',
+        message: 'QDRANT_URL must be http:// or https://',
+        severity: 'error',
+      });
+    }
+  } catch {
+    issues.push({
+      key: 'QDRANT_URL',
+      code: 'invalid_url',
+      message: 'QDRANT_URL must be a valid URL',
       severity: 'error',
     });
   }
@@ -553,6 +645,15 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       key: 'OPENAI_API_KEY',
       code: 'fallback_mode',
       message: 'OPENAI_API_KEY is missing; orchestration will use deterministic fallback mode',
+      severity: 'warning',
+    });
+  }
+
+  if (config.EMBEDDING_PROVIDER === 'openai' && !hasOpenAiApiKey) {
+    warnings.push({
+      key: 'EMBEDDING_PROVIDER,OPENAI_API_KEY',
+      code: 'embedding_provider_fallback',
+      message: 'EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is missing; embeddings will fall back deterministically',
       severity: 'warning',
     });
   }

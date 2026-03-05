@@ -1,38 +1,71 @@
 import type { AgentInvokeInputDTO } from '../../contracts';
-import { zohoHistoricalAdapter } from '../../integrations/zoho';
+import { CompanyContextResolutionError, companyContextResolver, zohoRetrievalService } from '../support';
 import { BaseAgent } from '../base';
-
-const pickCompanyId = (input: AgentInvokeInputDTO): string => {
-  const scopedCompanyId = input.contextPacket.companyId;
-  if (typeof scopedCompanyId === 'string' && scopedCompanyId.trim().length > 0) {
-    return scopedCompanyId;
-  }
-  return `demo-${input.taskId.slice(0, 8)}`;
-};
 
 export class ZohoReadAgent extends BaseAgent {
   readonly key = 'zoho-read';
 
   async invoke(input: AgentInvokeInputDTO) {
-    const companyId = pickCompanyId(input);
-    const batch = await zohoHistoricalAdapter.fetchHistoricalBatch({
-      companyId,
-      pageSize: 3,
-    });
-
-    return this.success(
-      input,
-      `Zoho read completed (${batch.records.length} records sampled)`,
-      {
+    const startedAt = Date.now();
+    try {
+      const companyId = await companyContextResolver.resolveCompanyId({
+        companyId: input.contextPacket.companyId,
+      });
+      const matches = await zohoRetrievalService.query({
         companyId,
-        total: batch.total,
-        nextCursor: batch.nextCursor ?? null,
-        records: batch.records.map((record) => ({
-          sourceType: record.sourceType,
-          sourceId: record.sourceId,
-        })),
-      },
-      { latencyMs: 6, apiCalls: 1 },
-    );
+        text: input.objective,
+        limit: 4,
+      });
+
+      if (matches.length === 0) {
+        return this.success(
+          input,
+          'No grounded Zoho records found for this query yet.',
+          {
+            companyId,
+            sources: [],
+          },
+          { latencyMs: Date.now() - startedAt, apiCalls: 2 },
+        );
+      }
+
+      const topSources = matches.map((match) => `${match.sourceType}:${match.sourceId}#${match.chunkIndex}`);
+      return this.success(
+        input,
+        `Grounded Zoho context found from ${topSources.length} sources.`,
+        {
+          companyId,
+          sources: topSources,
+          topScore: matches[0].score,
+          records: matches.map((match) => ({
+            sourceType: match.sourceType,
+            sourceId: match.sourceId,
+            chunkIndex: match.chunkIndex,
+            score: match.score,
+          })),
+        },
+        { latencyMs: Date.now() - startedAt, apiCalls: 2 },
+      );
+    } catch (error) {
+      if (error instanceof CompanyContextResolutionError) {
+        return this.failure(
+          input,
+          error.message,
+          error.code,
+          error.message,
+          false,
+          { latencyMs: Date.now() - startedAt, apiCalls: 1 },
+        );
+      }
+
+      return this.failure(
+        input,
+        'Zoho retrieval failed',
+        'embedding_unavailable',
+        error instanceof Error ? error.message : 'unknown_error',
+        true,
+        { latencyMs: Date.now() - startedAt, apiCalls: 1 },
+      );
+    }
   }
 }

@@ -71,18 +71,18 @@ Notes:
   - `OPENAI_PLANNER_MODEL`
   - `OPENAI_SYNTHESIS_MODEL`
 
-## V1 Production Hardening (Planned/Task-Gated Additions)
+## V1 Zoho + Qdrant + Retrieval Runtime (Tasks 13–18 Implemented)
 
 ```env
-QDRANT_URL=
+QDRANT_URL=http://127.0.0.1:6333
 QDRANT_API_KEY=
-QDRANT_COLLECTION=
+QDRANT_COLLECTION=zoho_automation_docs
 QDRANT_TIMEOUT_MS=5000
 ZOHO_CLIENT_ID=
 ZOHO_CLIENT_SECRET=
 ZOHO_REDIRECT_URI=
-ZOHO_ACCOUNTS_BASE_URL=
-ZOHO_API_BASE_URL=
+ZOHO_ACCOUNTS_BASE_URL=https://accounts.zoho.com
+ZOHO_API_BASE_URL=https://www.zohoapis.com
 ZOHO_TOKEN_ENCRYPTION_KEY=
 EMBEDDING_PROVIDER=openai
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
@@ -90,9 +90,17 @@ LANGSMITH_PROJECT=
 ```
 
 Notes:
-- These are introduced through `tasks/v1-production-hardening` and should be enforced as required only when the corresponding task is completed.
-- Keep `EMBEDDING_PROVIDER=fallback` available for non-network local testing paths.
-- `LANGSMITH_TRACING` and `LANGSMITH_API_KEY` remain optional toggles.
+- `QDRANT_URL` must be a valid `http://` or `https://` URL.
+- `QDRANT_COLLECTION` and `QDRANT_TIMEOUT_MS` are active runtime settings for vector index/search paths.
+- Zoho OAuth connect flow now uses real code exchange and encrypted token storage.
+- If any Zoho OAuth variable is set, these should be set together:
+  - `ZOHO_CLIENT_ID`
+  - `ZOHO_CLIENT_SECRET`
+  - `ZOHO_REDIRECT_URI`
+  - `ZOHO_TOKEN_ENCRYPTION_KEY` (strongly recommended; warning when missing)
+- `EMBEDDING_PROVIDER` supports `openai` and `fallback`.
+- If `EMBEDDING_PROVIDER=openai` without `OPENAI_API_KEY`, runtime logs a warning and falls back deterministically.
+- `LANGSMITH_PROJECT` is additive metadata only for now; tracing rollout remains optional.
 
 ## Lark Integration (Only Needed For Real Lark Webhooks/Messaging)
 

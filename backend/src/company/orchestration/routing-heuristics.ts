@@ -83,10 +83,13 @@ export const synthesizeFromAgentResults = (
 
   const zohoResult = agentResults.find((result) => result.agentKey === 'zoho-read' && result.status === 'success');
   if (zohoResult?.result) {
-    const count = typeof zohoResult.result.total === 'number' ? zohoResult.result.total : 'unknown';
+    const sources = Array.isArray(zohoResult.result.sources)
+      ? (zohoResult.result.sources as string[]).slice(0, 3)
+      : [];
+    const sourceText = sources.length > 0 ? ` Sources: ${sources.join(', ')}.` : '';
     return {
       taskStatus: 'done',
-      text: `Zoho data read complete. Total records available: ${count}.`,
+      text: `Zoho data read complete.${sourceText}`,
     };
   }
 

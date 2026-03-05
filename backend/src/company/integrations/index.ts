@@ -5,3 +5,4 @@ export const INTEGRATIONS_BOUNDARY = {
 
 export * from './zoho';
 export * from './vector';
+export * from './embedding';
