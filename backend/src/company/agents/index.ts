@@ -1,4 +1,11 @@
-import { LarkResponseAgent, ResponseAgent, RiskCheckAgent, ZohoActionAgent, ZohoReadAgent } from './implementations';
+import {
+  LarkResponseAgent,
+  OutreachReadAgent,
+  ResponseAgent,
+  RiskCheckAgent,
+  ZohoActionAgent,
+  ZohoReadAgent,
+} from './implementations';
 import { AgentRegistry } from './registry';
 
 export const AGENTS_BOUNDARY = {
@@ -14,6 +21,7 @@ const registry = new AgentRegistry();
 registry.register(new ResponseAgent());
 registry.register(new RiskCheckAgent());
 registry.register(new ZohoReadAgent());
+registry.register(new OutreachReadAgent());
 registry.register(new ZohoActionAgent());
 registry.register(new LarkResponseAgent());
 

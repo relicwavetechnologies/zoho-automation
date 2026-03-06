@@ -57,6 +57,8 @@ export type ValidatedEnv = {
   MCP_MAX_RETRIES: number;
   MCP_RETRY_BASE_DELAY_MS: number;
   MCP_SECRET_ENCRYPTION_KEY: string;
+  OUTREACH_API_URL: string;
+  OUTREACH_API_TIMEOUT_MS: number;
   QDRANT_URL: string;
   QDRANT_API_KEY: string;
   QDRANT_COLLECTION: string;
@@ -573,6 +575,14 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       issues,
     }),
     MCP_SECRET_ENCRYPTION_KEY: readString(parsedRaw.MCP_SECRET_ENCRYPTION_KEY),
+    OUTREACH_API_URL: readString(parsedRaw.OUTREACH_API_URL, 'https://agents.outreachdeal.com/webhook/dummy-data'),
+    OUTREACH_API_TIMEOUT_MS: parseInteger({
+      key: 'OUTREACH_API_TIMEOUT_MS',
+      value: readString(parsedRaw.OUTREACH_API_TIMEOUT_MS, '10000'),
+      defaultValue: 10000,
+      min: 1000,
+      issues,
+    }),
     QDRANT_URL: readString(parsedRaw.QDRANT_URL, 'http://127.0.0.1:6333'),
     QDRANT_API_KEY: readString(parsedRaw.QDRANT_API_KEY),
     QDRANT_COLLECTION: readString(parsedRaw.QDRANT_COLLECTION, 'zoho_automation_docs'),
@@ -674,6 +684,25 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
         severity: 'warning',
       });
     }
+  }
+
+  try {
+    const parsedOutreach = new URL(config.OUTREACH_API_URL);
+    if (parsedOutreach.protocol !== 'http:' && parsedOutreach.protocol !== 'https:') {
+      issues.push({
+        key: 'OUTREACH_API_URL',
+        code: 'invalid_protocol',
+        message: 'OUTREACH_API_URL must be http:// or https://',
+        severity: 'error',
+      });
+    }
+  } catch {
+    issues.push({
+      key: 'OUTREACH_API_URL',
+      code: 'invalid_url',
+      message: 'OUTREACH_API_URL must be a valid URL',
+      severity: 'error',
+    });
   }
 
   try {

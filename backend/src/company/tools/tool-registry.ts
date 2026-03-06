@@ -41,6 +41,24 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
+    id: 'read-outreach-publishers',
+    name: 'Read Outreach Publishers',
+    description:
+      'Fetch outreach publisher inventory using structured filters such as client URL, DA/DR, country, and pricing.',
+    category: 'search',
+    engines: ['mastra', 'langgraph'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'outreach-agent',
+    name: 'Outreach Agent',
+    description:
+      'Delegate to the outreach specialist agent for publisher filtering and SEO inventory queries.',
+    category: 'search',
+    engines: ['mastra', 'langgraph'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
     id: 'search-agent',
     name: 'Search Agent',
     description: 'Search indexed CRM context to answer general knowledge queries.',
@@ -96,6 +114,7 @@ export const TOOL_REGISTRY_MAP = new Map(TOOL_REGISTRY.map((t) => [t.id, t]));
 export const LANGGRAPH_AGENT_TOOL_MAP: Record<string, string> = {
   'zoho-read': 'zoho-read',
   'zoho-action': 'zoho-action',
+  'outreach-read': 'read-outreach-publishers',
   response: 'response',
   'risk-check': 'risk-check',
   'lark-response': 'lark-response',

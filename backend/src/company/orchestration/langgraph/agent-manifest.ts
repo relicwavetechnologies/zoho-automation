@@ -8,6 +8,7 @@ export type AgentManifestEntry = {
 // Descriptions for known agent keys – extend as you add agents.
 const AGENT_DESCRIPTIONS: Record<string, string> = {
     'zoho-read': 'Reads CRM data (contacts, deals, accounts, leads) from Zoho.',
+    'outreach-read': 'Reads outreach publisher inventory with URL and DA/DR filters.',
     'zoho-action': 'Executes approved Zoho side-effect actions through provider adapter.',
     'lark-response': 'Sends a formatted message reply to the Lark chat.',
     response: 'Generates a general-purpose text reply for the user.',

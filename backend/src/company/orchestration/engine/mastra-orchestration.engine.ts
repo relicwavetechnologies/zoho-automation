@@ -4,6 +4,7 @@ import { resolveChannelAdapter } from '../../channels';
 import { mastra } from '../../integrations/mastra';
 import { logger } from '../../../utils/logger';
 import { checkpointRepository } from '../../state/checkpoint';
+import { conversationMemoryStore } from '../../state/conversation';
 import { orchestratorService } from '../orchestrator.service';
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import type { AiRole } from '../../tools/tool-registry';
@@ -15,6 +16,35 @@ const AGENT_GENERATE_TIMEOUT_MS = 50_000;
 const PROGRESS_MIN_INITIAL_CHARS = 20;
 const PROGRESS_MIN_UPDATE_DELTA_CHARS = 24;
 const PROGRESS_MIN_UPDATE_INTERVAL_MS = 900;
+const HISTORY_CONTEXT_MESSAGE_LIMIT = 14;
+const HISTORY_PREFIX_LIMIT = 12;
+
+const buildHistoryAwarePrompt = (
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  currentMessageText: string,
+): string => {
+  const normalizedCurrent = currentMessageText.trim();
+  const contextOnly = history.filter(
+    (entry, index) =>
+      !(index === history.length - 1 && entry.role === 'user' && entry.content.trim() === normalizedCurrent),
+  );
+
+  if (contextOnly.length === 0) {
+    return currentMessageText;
+  }
+
+  const transcript = contextOnly
+    .slice(-HISTORY_PREFIX_LIMIT)
+    .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.content}`)
+    .join('\n');
+
+  return [
+    'Conversation context from this same chat (most recent first-order history):',
+    transcript,
+    '',
+    `Current user message: ${currentMessageText}`,
+  ].join('\n');
+};
 
 /** Race an async value against a hard deadline. */
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -114,6 +144,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     });
 
     const companyId = message.trace?.companyId ?? '';
+    const conversationKey = `${message.channel}:${message.trace?.larkTenantKey ?? 'no_tenant'}:${message.chatId}`;
     const userRole = (message.trace?.userRole ?? 'MEMBER') as AiRole;
     const allowedToolIds = companyId
       ? await toolPermissionService.getAllowedTools(companyId, userRole)
@@ -130,6 +161,13 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     requestContext.set('requestId', message.trace?.requestId ?? '');
     requestContext.set('allowedToolIds', allowedToolIds);
 
+    conversationMemoryStore.addUserMessage(conversationKey, message.messageId, message.text);
+    const contextMessages = conversationMemoryStore.getContextMessages(
+      conversationKey,
+      HISTORY_CONTEXT_MESSAGE_LIMIT,
+    );
+    const historyAwarePrompt = buildHistoryAwarePrompt(contextMessages, message.text);
+
     // ── Agent generate with hard timeout ────────────────────────────────────
     // Without this the call hangs until the upstream HTTP gateway kills it
     // (at ~12 s in the logs), which then triggers a retry, which spawns
@@ -140,7 +178,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     let streamResult;
     try {
       streamResult = await withTimeout(
-        agent.stream([{ role: 'user', content: message.text }], { requestContext }),
+        agent.stream([{ role: 'user', content: historyAwarePrompt }], { requestContext }),
         AGENT_GENERATE_TIMEOUT_MS,
         'supervisorAgent.stream',
       );
@@ -214,6 +252,9 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       if (toolNames.includes('search-agent')) {
         return `Understood. I’m searching indexed CRM context for "${objective}" now. I’ll update you in a moment.`;
       }
+      if (toolNames.includes('outreach-agent')) {
+        return `Understood. I’m checking outreach publisher data for "${objective}" now. I’ll share results shortly.`;
+      }
       return `Understood. I’m working on "${objective}" now and will update you as I make progress.`;
     };
 
@@ -284,6 +325,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     });
 
     const finalText = fullText.trim().length > 0 ? fullText : 'Done.';
+    conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, finalText);
 
     if (progressMessageId) {
       await channelAdapter.updateMessage({

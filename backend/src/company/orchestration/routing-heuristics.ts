@@ -1,6 +1,20 @@
 import type { AgentResultDTO, NormalizedIncomingMessageDTO, OrchestrationTaskDTO } from '../contracts';
 
 export const WRITE_INTENT_KEYWORDS = ['delete', 'remove', 'drop', 'overwrite', 'destroy', 'write'];
+const OUTREACH_QUERY_KEYWORDS = [
+  'outreach',
+  'publisher',
+  'guest post',
+  'domain authority',
+  'domain rating',
+  'da ',
+  'dr ',
+];
+
+const isOutreachQuery = (text: string): boolean => {
+  const normalized = text.toLowerCase();
+  return OUTREACH_QUERY_KEYWORDS.some((keyword) => normalized.includes(keyword));
+};
 
 export const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {
   const normalized = text.toLowerCase();
@@ -18,7 +32,12 @@ export const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {
 
 export const detectRouteIntent = (text: string): 'zoho_read' | 'write_intent' | 'general' => {
   const normalized = text.toLowerCase();
-  if (normalized.includes('zoho') || normalized.includes('deal') || normalized.includes('contact')) {
+  if (
+    normalized.includes('zoho') ||
+    normalized.includes('deal') ||
+    normalized.includes('contact') ||
+    isOutreachQuery(normalized)
+  ) {
     return 'zoho_read';
   }
   if (WRITE_INTENT_KEYWORDS.some((keyword) => normalized.includes(keyword))) {
@@ -35,6 +54,9 @@ export const buildPlanFromIntent = (
   const normalized = text.toLowerCase();
 
   if (intent === 'zoho_read') {
+    if (isOutreachQuery(normalized)) {
+      return ['route.classify', 'agent.invoke.outreach-read', 'agent.invoke.lark-response', 'synthesis.compose'];
+    }
     return ['route.classify', 'agent.invoke.zoho-read', 'agent.invoke.lark-response', 'synthesis.compose'];
   }
 
@@ -106,6 +128,21 @@ export const synthesizeFromAgentResults = (
     return {
       taskStatus: 'done',
       text: `Zoho action '${actionName}' executed.${sourceText}`,
+    };
+  }
+
+  const outreachResult = agentResults.find(
+    (result) => result.agentKey === 'outreach-read' && result.status === 'success',
+  );
+  if (outreachResult?.result) {
+    const answer = typeof outreachResult.result.answer === 'string' ? outreachResult.result.answer.trim() : '';
+    const sourceRefs = Array.isArray(outreachResult.result.sourceRefs)
+      ? (outreachResult.result.sourceRefs as Array<{ id?: string }>).map((entry) => entry?.id).filter(Boolean).slice(0, 3)
+      : [];
+    const sourceText = sourceRefs.length > 0 ? ` Sources: ${sourceRefs.join(', ')}.` : '';
+    return {
+      taskStatus: 'done',
+      text: answer.length > 0 ? answer : `Outreach publisher lookup complete.${sourceText}`,
     };
   }
 

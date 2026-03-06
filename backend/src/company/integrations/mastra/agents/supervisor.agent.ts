@@ -3,6 +3,7 @@ import { openai } from '@ai-sdk/openai';
 
 import { zohoAgentTool } from '../tools/zoho-agent.tool';
 import { searchAgentTool } from '../tools/search-agent.tool';
+import { outreachAgentTool } from '../tools/outreach-agent.tool';
 
 export const supervisorAgent = new Agent({
   id: 'supervisor',
@@ -11,6 +12,7 @@ export const supervisorAgent = new Agent({
 
 Routing rules:
 - CRM data queries (deals, contacts, tickets, pipeline, risk analysis, health reports, recommendations) → use zoho-agent tool
+- Outreach/publisher/SEO inventory queries (client URL, DA/DR, publisher filtering) → use outreach-agent tool
 - General context search → use search-agent tool
 - Greetings or capability questions → answer directly without using any tool
 
@@ -24,5 +26,5 @@ CRITICAL RULES — follow strictly:
 Always give natural, concise, conversational responses grounded in real data.
 Never fabricate CRM records or numbers.`,
   model: openai('gpt-4o'),
-  tools: { zohoAgentTool, searchAgentTool },
+  tools: { zohoAgentTool, outreachAgentTool, searchAgentTool },
 });

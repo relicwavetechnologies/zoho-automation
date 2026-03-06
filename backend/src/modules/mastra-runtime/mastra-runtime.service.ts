@@ -22,7 +22,7 @@ type GenerateResponse = {
   };
 };
 
-const KNOWN_AGENTS = ['supervisorAgent', 'zohoAgent', 'searchAgent'] as const;
+const KNOWN_AGENTS = ['supervisorAgent', 'zohoAgent', 'outreachAgent', 'searchAgent'] as const;
 
 const asString = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
 
@@ -85,7 +85,7 @@ export class MastraRuntimeService {
     requestContext.set('channel', asString(raw['channel']));
 
     // mastra.getAgent accepts the registered agent key — cast since we validated above
-    const agent = mastra.getAgent(agentId as 'supervisorAgent' | 'zohoAgent' | 'searchAgent');
+    const agent = mastra.getAgent(agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent');
     // Pass objective as a plain string — MessageListInput accepts string
     const result = await agent.generate(objective, { requestContext });
 
@@ -118,7 +118,7 @@ export class MastraRuntimeService {
     requestContext.set('requestId', asString(raw['requestId'] ?? requestId));
     requestContext.set('channel', asString(raw['channel']));
 
-    const agent = mastra.getAgent(agentId as 'supervisorAgent' | 'zohoAgent' | 'searchAgent');
+    const agent = mastra.getAgent(agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent');
     return agent.stream(objective, { requestContext });
   }
 }
