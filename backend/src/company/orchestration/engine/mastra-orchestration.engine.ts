@@ -12,6 +12,9 @@ import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExe
 // Maximum time (ms) we wait for the LLM agent to respond before aborting.
 // Keep this shorter than any upstream HTTP gateway timeout.
 const AGENT_GENERATE_TIMEOUT_MS = 50_000;
+const PROGRESS_MIN_INITIAL_CHARS = 20;
+const PROGRESS_MIN_UPDATE_DELTA_CHARS = 24;
+const PROGRESS_MIN_UPDATE_INTERVAL_MS = 900;
 
 /** Race an async value against a hard deadline. */
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -152,8 +155,11 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       throw err;
     }
 
-    // ── Handle steps and tool calls for progress updates ─────────────────────
+    // ── Handle steps and text stream for natural progress updates ────────────
     let progressMessageId: string | undefined;
+    let progressPreviewText = '';
+    let lastPushedPreviewText = '';
+    let lastPushAt = 0;
 
     // Collect the final text and handle streams
     let fullText = '';
@@ -161,30 +167,91 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     // We run the text stream and step stream concurrently
     const [stream, stepStream] = [streamResult.textStream, (streamResult as any).stepsStream];
 
+    const pushProgress = async (force = false): Promise<void> => {
+      const preview = progressPreviewText.trim();
+      if (!preview) {
+        return;
+      }
+
+      const now = Date.now();
+      const enoughForFirstMessage = preview.length >= PROGRESS_MIN_INITIAL_CHARS;
+      const hasMeaningfulDelta =
+        Math.abs(preview.length - lastPushedPreviewText.length) >= PROGRESS_MIN_UPDATE_DELTA_CHARS;
+      const intervalElapsed = now - lastPushAt >= PROGRESS_MIN_UPDATE_INTERVAL_MS;
+
+      if (!force) {
+        if (!progressMessageId && !enoughForFirstMessage) {
+          return;
+        }
+        if (progressMessageId && !hasMeaningfulDelta && !intervalElapsed) {
+          return;
+        }
+      }
+
+      if (!progressMessageId) {
+        const outbound = await channelAdapter.sendMessage({
+          chatId: message.chatId,
+          text: preview,
+          correlationId: task.taskId,
+        });
+        progressMessageId = outbound.messageId;
+      } else {
+        await channelAdapter.updateMessage({
+          messageId: progressMessageId,
+          text: preview,
+          correlationId: task.taskId,
+        });
+      }
+      lastPushedPreviewText = preview;
+      lastPushAt = now;
+    };
+
+    const buildToolProgressFallback = (toolNames: string[]): string => {
+      const objective = message.text.trim();
+      if (toolNames.includes('zoho-agent')) {
+        return `Understood. I’m checking Zoho CRM data for "${objective}" now. I’ll share the results shortly.`;
+      }
+      if (toolNames.includes('search-agent')) {
+        return `Understood. I’m searching indexed CRM context for "${objective}" now. I’ll update you in a moment.`;
+      }
+      return `Understood. I’m working on "${objective}" now and will update you as I make progress.`;
+    };
+
     // Listen to steps to send progress updates to the user
-    (async () => {
+    const stepListenerPromise = (async () => {
       try {
         if (stepStream) {
           for await (const step of stepStream) {
             const toolCalls = (step as any).toolCalls || [];
             if (toolCalls.length > 0) {
-              const toolNames = toolCalls.map((tc: any) => tc.toolName).join(', ');
-              const text = `🔍 Working on it... (Using: ${toolNames})`;
+              const toolNames = toolCalls
+                .map((tc: any) => (typeof tc?.toolName === 'string' ? tc.toolName : ''))
+                .filter(Boolean);
 
+              // Preferred path: push model-authored acknowledgement streamed from the agent.
+              if (progressPreviewText.trim().length >= PROGRESS_MIN_INITIAL_CHARS) {
+                await pushProgress(true);
+                continue;
+              }
+
+              // Safety fallback when a tool starts before the model streams text.
+              const fallback = buildToolProgressFallback(toolNames);
               if (!progressMessageId) {
-                const res = await channelAdapter.sendMessage({
+                const outbound = await channelAdapter.sendMessage({
                   chatId: message.chatId,
-                  text,
+                  text: fallback,
                   correlationId: task.taskId,
                 });
-                progressMessageId = res.messageId;
+                progressMessageId = outbound.messageId;
               } else {
                 await channelAdapter.updateMessage({
                   messageId: progressMessageId,
-                  text,
+                  text: fallback,
                   correlationId: task.taskId,
                 });
               }
+              lastPushedPreviewText = fallback;
+              lastPushAt = Date.now();
             }
           }
         }
@@ -195,7 +262,11 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
 
     for await (const delta of stream) {
       fullText += delta;
+      progressPreviewText += delta;
+      await pushProgress(false);
     }
+    await pushProgress(true);
+    await stepListenerPromise;
 
     await checkpointRepository.save(task.taskId, 'synthesis.complete', {
       status: 'done',
@@ -212,16 +283,18 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       textHash: message.trace?.textHash,
     });
 
+    const finalText = fullText.trim().length > 0 ? fullText : 'Done.';
+
     if (progressMessageId) {
       await channelAdapter.updateMessage({
         messageId: progressMessageId,
-        text: fullText,
+        text: finalText,
         correlationId: task.taskId,
       });
     } else {
       await channelAdapter.sendMessage({
         chatId: message.chatId,
-        text: fullText,
+        text: finalText,
         correlationId: task.taskId,
       });
     }
@@ -237,7 +310,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       task,
       status: 'done',
       currentStep: 'synthesis.compose',
-      latestSynthesis: fullText,
+      latestSynthesis: finalText,
       runtimeMeta: {
         engine: 'mastra',
         node: 'synthesis.complete',
