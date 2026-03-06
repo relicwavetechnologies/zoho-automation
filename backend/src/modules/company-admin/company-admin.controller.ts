@@ -5,6 +5,10 @@ import { BaseController } from '../../core/controller';
 import {
   connectOnboardingSchema,
   disconnectOnboardingSchema,
+  triggerHistoricalSyncSchema,
+  zohoAuthorizeUrlQuerySchema,
+  upsertLarkBindingSchema,
+  upsertZohoOAuthConfigSchema,
 } from './dto/connect-onboarding.dto';
 import { createInviteSchema } from './dto/create-invite.dto';
 import { CompanyAdminService, companyAdminService } from './company-admin.service';
@@ -94,6 +98,181 @@ class CompanyAdminController extends BaseController {
     }
     const result = await this.service.disconnectOnboarding(session, payload);
     return res.json(ApiResponse.success(result, 'Zoho disconnected'));
+  };
+
+  triggerHistoricalSync = async (req: Request, res: Response) => {
+    const payload = triggerHistoricalSyncSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.triggerHistoricalSync(session, payload);
+    return res.status(202).json(ApiResponse.success(result, 'Historical sync triggered'));
+  };
+
+  upsertLarkBinding = async (req: Request, res: Response) => {
+    const payload = upsertLarkBindingSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.upsertLarkBinding(session, payload);
+    return res.status(201).json(ApiResponse.success(result, 'Lark tenant binding saved'));
+  };
+
+  getProviderStatus = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getProviderStatus(session, companyId);
+    return res.json(ApiResponse.success(result, 'Zoho provider status loaded'));
+  };
+
+  getZohoOAuthConfigStatus = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getZohoOAuthConfigStatus(session, companyId);
+    return res.json(ApiResponse.success(result, 'Zoho OAuth config status loaded'));
+  };
+
+  getZohoAuthorizeUrl = async (req: Request, res: Response) => {
+    const query = zohoAuthorizeUrlQuerySchema.parse(req.query);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getZohoAuthorizeUrl(session, {
+      companyId: query.companyId,
+      scopes: query.scopes,
+      environment: query.environment ?? 'prod',
+    });
+    return res.json(ApiResponse.success(result, 'Zoho OAuth authorize URL generated'));
+  };
+
+  upsertZohoOAuthConfig = async (req: Request, res: Response) => {
+    const payload = upsertZohoOAuthConfigSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.upsertZohoOAuthConfig(session, payload);
+    return res.status(201).json(ApiResponse.success(result, 'Zoho OAuth app credentials saved'));
+  };
+
+  deleteZohoOAuthConfig = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.deleteZohoOAuthConfig(session, companyId);
+    return res.json(ApiResponse.success(result, 'Zoho OAuth app credentials removed'));
+  };
+
+  listChannelIdentities = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const channel = typeof req.query.channel === 'string' ? req.query.channel : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.listChannelIdentities(session, companyId, channel);
+    return res.json(ApiResponse.success(result, 'Channel identities loaded'));
+  };
+
+  getToolPermissions = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getToolPermissions(session, companyId);
+    return res.json(ApiResponse.success(result, 'Tool permissions loaded'));
+  };
+
+  updateToolPermission = async (req: Request, res: Response) => {
+    const { toolId, role } = req.params;
+    const { enabled } = req.body;
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ success: false, message: '`enabled` must be a boolean' });
+    }
+    const result = await this.service.updateToolPermission(session, toolId, role as any, enabled, companyId);
+    return res.json(ApiResponse.success(result, 'Tool permission updated'));
+  };
+
+  setLarkUserRole = async (req: Request, res: Response) => {
+    const { identityId } = req.params;
+    const { aiRole } = req.body;
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    if (typeof aiRole !== 'string' || aiRole.trim().length === 0) {
+      return res.status(400).json({ success: false, message: '`aiRole` must be a non-empty role slug' });
+    }
+    const result = await this.service.setLarkUserRole(session, identityId, aiRole.trim(), companyId);
+    return res.json(ApiResponse.success(result, 'Lark user AI role updated'));
+  };
+
+  listAiRoles = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.listAiRoles(session, companyId);
+    return res.json(ApiResponse.success(result, 'AI roles loaded'));
+  };
+
+  createAiRole = async (req: Request, res: Response) => {
+    const { slug, displayName } = req.body;
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    if (typeof slug !== 'string' || typeof displayName !== 'string') {
+      return res.status(400).json({ success: false, message: '`slug` and `displayName` are required strings' });
+    }
+    const result = await this.service.createAiRole(session, slug, displayName, companyId);
+    return res.status(201).json(ApiResponse.success(result, 'AI role created'));
+  };
+
+  updateAiRole = async (req: Request, res: Response) => {
+    const { roleId } = req.params;
+    const { displayName } = req.body;
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    if (typeof displayName !== 'string') {
+      return res.status(400).json({ success: false, message: '`displayName` is required' });
+    }
+    const result = await this.service.updateAiRole(session, roleId, displayName, companyId);
+    return res.json(ApiResponse.success(result, 'AI role updated'));
+  };
+
+  deleteAiRole = async (req: Request, res: Response) => {
+    const { roleId } = req.params;
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.deleteAiRole(session, roleId, companyId);
+    return res.json(ApiResponse.success(result, 'AI role deleted'));
   };
 }
 

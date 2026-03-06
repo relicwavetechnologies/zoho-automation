@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { Settings2, Users, LayoutDashboard, Shield, ChevronRight } from 'lucide-react';
+import { Settings2, Users, LayoutDashboard, Shield, ChevronRight, Plug, KeyRound } from 'lucide-react';
 import type { AdminNavItem } from '../../auth/types';
 import { Badge } from '../ui/badge';
 import { ScrollArea } from '../ui/scroll-area';
@@ -10,6 +10,8 @@ const iconMap: Record<string, React.ReactNode> = {
   Members: <Users strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
   Controls: <Settings2 strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
   RBAC: <Shield strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
+  Integrations: <Plug strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
+  'Tool Access': <KeyRound strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
 };
 
 interface SidebarProps {

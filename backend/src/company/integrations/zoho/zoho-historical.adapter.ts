@@ -1,4 +1,5 @@
-import { ZOHO_DEFAULT_PAGE_SIZE, zohoDataClient } from './zoho-data.client';
+import { ZOHO_DEFAULT_PAGE_SIZE } from './zoho-data.client';
+import { resolveZohoProvider } from './zoho-provider.resolver';
 
 export type ZohoHistoricalSourceType = 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
 
@@ -23,9 +24,16 @@ export type ZohoHistoricalFetchResult = {
 
 export class ZohoHistoricalAdapter {
   async fetchHistoricalBatch(input: ZohoHistoricalFetchInput): Promise<ZohoHistoricalFetchResult> {
-    const page = await zohoDataClient.fetchHistoricalPage({
+    const resolved = await resolveZohoProvider({
       companyId: input.companyId,
       environment: input.environment,
+    });
+    const page = await resolved.adapter.fetchHistoricalPage({
+      context: {
+        companyId: input.companyId,
+        environment: resolved.environment,
+        connectionId: resolved.connectionId,
+      },
       cursor: input.cursor,
       pageSize: input.pageSize > 0 ? input.pageSize : ZOHO_DEFAULT_PAGE_SIZE,
     });

@@ -28,11 +28,20 @@ import {
 import {
   buildLangGraphAgentInvocations,
   dispatchLangGraphAgents,
+  dispatchLangGraphAgentsParallel,
+  dispatchSingleAgent,
 } from '../langgraph/agent-bridge';
+import { buildAgentManifest, formatManifestForPrompt } from '../langgraph/agent-manifest';
 import { resolveHitlTransition } from '../langgraph/hitl-state-machine';
 import { resolvePlanContract } from '../langgraph/plan-contract';
 import { resolveRouteContract } from '../langgraph/route-contract';
 import { resolveSynthesisContract } from '../langgraph/synthesis-contract';
+import {
+  buildSupervisorPrompt,
+  buildTier1Prompt,
+  resolveSupervisorDecision,
+  resolveTier1Decision,
+} from '../langgraph/supervisor-contract';
 import type { LangGraphRouteState, LangGraphState, LangGraphSynthesisState } from '../langgraph/langgraph.types';
 import {
   buildHitlSummary,
@@ -45,8 +54,9 @@ import {
 import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
 
 type NodeName =
+  | 'tier1.fast_path'
   | 'route.classify'
-  | 'plan.build'
+  | 'supervisor.decide'
   | 'hitl.gate'
   | 'agent.dispatch'
   | 'error.classify_retry'
@@ -54,10 +64,14 @@ type NodeName =
   | 'response.send'
   | 'finalize.task';
 
-type LangGraphRuntimeState = LangGraphState;
+type LangGraphRuntimeState = LangGraphState & {
+  supervisorReply?: string; // populated when supervisor decides FINISH
+  supervisorLoopCount?: number; // guard against infinite loops
+};
 
+const NODE_TIER1_FAST_PATH: NodeName = 'tier1.fast_path';
 const NODE_ROUTE_CLASSIFY: NodeName = 'route.classify';
-const NODE_PLAN_BUILD: NodeName = 'plan.build';
+const NODE_SUPERVISOR_DECIDE: NodeName = 'supervisor.decide';
 const NODE_HITL_GATE: NodeName = 'hitl.gate';
 const NODE_AGENT_DISPATCH: NodeName = 'agent.dispatch';
 const NODE_ERROR_CLASSIFY_RETRY: NodeName = 'error.classify_retry';
@@ -65,6 +79,7 @@ const NODE_SYNTHESIS_COMPOSE: NodeName = 'synthesis.compose';
 const NODE_RESPONSE_SEND: NodeName = 'response.send';
 const NODE_FINALIZE_TASK: NodeName = 'finalize.task';
 const MAX_AGENT_DISPATCH_RETRIES = 1;
+const MAX_SUPERVISOR_LOOP_ITERATIONS = 6; // safety guard
 
 const stateAnnotation = Annotation.Root({
   task: Annotation<OrchestrationTaskDTO>(),
@@ -82,6 +97,8 @@ const stateAnnotation = Annotation.Root({
   runtimeMeta: Annotation<LangGraphRuntimeState['runtimeMeta']>(),
   errors: Annotation<ErrorDTO[]>(),
   finalStatus: Annotation<OrchestrationTaskStatus | undefined>(),
+  supervisorReply: Annotation<string | undefined>(),
+  supervisorLoopCount: Annotation<number | undefined>(),
 });
 
 const appendNode = (state: LangGraphRuntimeState, node: NodeName): LangGraphRuntimeState['runtimeMeta'] => {
@@ -196,12 +213,12 @@ const buildCompletedResultFromCheckpoint = (input: {
     },
     errors: status === 'failed'
       ? [
-          {
-            type: 'UNKNOWN_ERROR',
-            classifiedReason: input.decision.resumeDecisionReason,
-            retriable: false,
-          },
-        ]
+        {
+          type: 'UNKNOWN_ERROR',
+          classifiedReason: input.decision.resumeDecisionReason,
+          retriable: false,
+        },
+      ]
       : undefined,
   };
 };
@@ -276,7 +293,7 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
       status: 'running',
       complexityLevel,
       orchestratorModel: openAiOrchestrationModels.isEnabled()
-        ? `langgraph-router:${config.OPENAI_ROUTER_MODEL}`
+        ? `langgraph-router:${config.GROQ_API_KEY ? config.GROQ_ROUTER_MODEL : config.OPENAI_ROUTER_MODEL}`
         : 'langgraph-router:fallback',
       plan: buildPlanFromIntent(intent, complexityLevel, message.text),
       executionMode: 'sequential',
@@ -382,11 +399,13 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
       errors: [],
     };
 
+    console.log(`\n[ENGINE] 🟢 Started orchestration task ${task.taskId.slice(0, 8)} for message: "${message.text}"`);
+
     const result = (await this.graph.invoke(initialState)) as LangGraphRuntimeState;
     const status = result.finalStatus ?? result.synthesis?.taskStatus ?? 'failed';
     const runtimeMeta = result.runtimeMeta;
 
-    return {
+    const output: OrchestrationExecutionResult = {
       task: {
         ...result.task,
         complexityLevel: result.route.complexityLevel,
@@ -406,6 +425,10 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
       },
       errors: result.errors.length > 0 ? result.errors : undefined,
     };
+
+    console.log(`[ENGINE] 🏁 Task ${task.taskId.slice(0, 8)} finished with status: ${status}\n`);
+
+    return output;
   }
 
   private buildGraph(): any {
@@ -423,6 +446,8 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
           rawLlmOutput: await openAiOrchestrationModels.invokePrompt('router', prompt),
           messageText: state.message.text,
         });
+
+        console.log(`[ROUTER] 🚦 Intent: ${routeResolution.route.intent} | Mode: ${routeResolution.route.executionMode} | Complexity: ${routeResolution.route.complexityLevel}`);
 
         const runtimeMeta = appendNode(state, NODE_ROUTE_CLASSIFY);
         logger.info('langgraph.route.resolved', {
@@ -469,73 +494,72 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
           },
         };
       })
-      .addNode(NODE_PLAN_BUILD, async (state: LangGraphRuntimeState) => {
+      .addNode(NODE_SUPERVISOR_DECIDE, async (state: LangGraphRuntimeState) => {
         await runtimeControlSignalsRepository.assertRunnableAtBoundary(state.task.taskId);
 
-        const prompt = [
-          'Build orchestration plan steps and return JSON only.',
-          'Shape: {"plan":["route.classify","agent.invoke.response","agent.invoke.lark-response","synthesis.compose"]}',
-          `Intent: ${state.route.intent}`,
-          `Complexity: ${state.route.complexityLevel}`,
-          `Text: ${state.message.text}`,
-        ].join('\n');
+        const runtimeMeta = appendNode(state, NODE_SUPERVISOR_DECIDE);
+        const loopCount = (state.supervisorLoopCount ?? 0) + 1;
 
-        const planResolution = resolvePlanContract({
-          rawLlmOutput: await openAiOrchestrationModels.invokePrompt('planner', prompt),
-          route: state.route,
+        const manifest = buildAgentManifest();
+        const manifestText = formatManifestForPrompt(manifest);
+        const priorResults = state.agentResults.map((r) => ({
+          agentKey: r.agentKey,
+          status: r.status,
+          summary: r.status === 'failed'
+            ? (r.error?.classifiedReason ?? r.message)
+            : JSON.stringify(r.result ?? r.message).slice(0, 300),
+        }));
+
+        const prompt = buildSupervisorPrompt({
           messageText: state.message.text,
+          manifest,
+          priorResults,
         });
 
-        if (planResolution.source === 'fallback') {
-          logger.warn('langgraph.plan.fallback', {
-            taskId: state.task.taskId,
-            messageId: state.message.messageId,
-            validationErrors: planResolution.validationErrors,
-          });
+        const rawDecision = await openAiOrchestrationModels.invokeSupervisor(prompt);
+        const decision = resolveSupervisorDecision({
+          rawLlmOutput: rawDecision,
+          availableAgentKeys: manifest.map((m) => m.key),
+          fallbackReply: `Processed your request. ${priorResults.length > 0 ? 'Here is what I found.' : 'Please try again.'}`,
+        });
+
+        if (decision.finish) {
+          console.log(`[SUPERVISOR] 🧠 Loop ${loopCount}: FINISH -> "${decision.reply.slice(0, 50)}..."`);
+        } else {
+          console.log(`[SUPERVISOR] 🧠 Loop ${loopCount}: Decided next agent is -> ${decision.next}`);
         }
 
-        const task = {
-          ...state.task,
-          complexityLevel: state.route.complexityLevel,
-          executionMode: state.route.executionMode,
-          plan: planResolution.plan,
-          orchestratorModel: openAiOrchestrationModels.isEnabled()
-            ? `langgraph-router:${config.OPENAI_ROUTER_MODEL}|planner:${config.OPENAI_PLANNER_MODEL}`
-            : 'langgraph-fallback',
-        };
+        logger.info('langgraph.supervisor.decision', {
+          taskId: state.task.taskId,
+          loopCount,
+          next: decision.next,
+          finish: decision.finish,
+          manifestKeys: manifestText,
+        });
 
-        const runtimeMeta = appendNode(state, NODE_PLAN_BUILD);
-        const invocations = buildLangGraphAgentInvocations(task, state.message);
+        await checkpointRepository.save(state.task.taskId, NODE_SUPERVISOR_DECIDE, {
+          ...toCheckpointState({ ...state, runtimeMeta }, NODE_SUPERVISOR_DECIDE),
+          loopCount,
+          next: decision.next,
+          finish: decision.finish,
+        });
 
-        await checkpointRepository.save(
-          state.task.taskId,
-          NODE_PLAN_BUILD,
-          toCheckpointState(
-            {
-              ...state,
-              task,
-              plan: planResolution.plan,
-              planSource: planResolution.source,
-              planValidationErrors: planResolution.validationErrors,
-              runtimeMeta,
-            },
-            NODE_PLAN_BUILD,
-            {
-              plan: planResolution.plan,
-              executionMode: state.route.executionMode,
-              complexityLevel: state.route.complexityLevel,
-              planSource: planResolution.source,
-              planValidationErrors: planResolution.validationErrors,
-            },
-          ),
-        );
+        if (decision.finish) {
+          const synthesis: LangGraphSynthesisState = { text: decision.reply, taskStatus: 'done' };
+          return {
+            synthesis,
+            synthesisSource: 'llm',
+            finalStatus: 'done',
+            supervisorReply: decision.reply,
+            supervisorLoopCount: loopCount,
+            runtimeMeta,
+          };
+        }
 
+        // Supervisor chose an agent — build a single invocation with prior results
         return {
-          task,
-          plan: planResolution.plan,
-          planSource: planResolution.source,
-          planValidationErrors: planResolution.validationErrors,
-          agentInvocations: invocations,
+          plan: [`route.classify`, `agent.invoke.${decision.next}`, `synthesis.compose`],
+          supervisorLoopCount: loopCount,
           runtimeMeta,
         };
       })
@@ -584,6 +608,8 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
               `Expires at: ${created.expiresAt}`,
             correlationId: state.task.taskId,
           });
+
+          console.log(`[HITL] ✋ Requested human confirmation for Action ID: ${created.actionId}`);
         }
 
         await checkpointRepository.save(state.task.taskId, 'hitl.waiting', {
@@ -647,14 +673,21 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
         const runtimeMeta = appendNode(state, NODE_AGENT_DISPATCH);
         const invocations = state.agentInvocations.length > 0
           ? state.agentInvocations
-          : buildLangGraphAgentInvocations(state.task, state.message);
+          : buildLangGraphAgentInvocations(state.task, state.message, state.agentResults);
 
-        const agentResults = await dispatchLangGraphAgents({
-          task: state.task,
-          message: state.message,
-          invocations,
-          attempt: (runtimeMeta.retryCount ?? 0) + 1,
-        });
+        const agentResults = state.route.executionMode === 'parallel'
+          ? await dispatchLangGraphAgentsParallel({
+            task: state.task,
+            message: state.message,
+            invocations,
+            attempt: (runtimeMeta.retryCount ?? 0) + 1,
+          })
+          : await dispatchLangGraphAgents({
+            task: state.task,
+            message: state.message,
+            invocations,
+            attempt: (runtimeMeta.retryCount ?? 0) + 1,
+          });
 
         await checkpointRepository.save(state.task.taskId, 'agent.dispatch.complete', {
           ...toCheckpointState({ ...state, agentInvocations: invocations, agentResults, runtimeMeta }, NODE_AGENT_DISPATCH),
@@ -711,7 +744,7 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
         const nextRetryCount = retryCount + 1;
         const invocations = state.agentInvocations.length > 0
           ? state.agentInvocations
-          : buildLangGraphAgentInvocations(state.task, state.message);
+          : buildLangGraphAgentInvocations(state.task, state.message, state.agentResults);
 
         let retriedResults: AgentResultDTO[];
         try {
@@ -784,6 +817,33 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
         await runtimeControlSignalsRepository.assertRunnableAtBoundary(state.task.taskId);
 
         const runtimeMeta = appendNode(state, NODE_SYNTHESIS_COMPOSE);
+
+        // ── Short-circuit: supervisor already produced a quality NL reply ──────
+        if (state.supervisorReply && state.synthesis?.taskStatus === 'done') {
+          await checkpointRepository.save(state.task.taskId, 'synthesis.complete', {
+            ...toCheckpointState(
+              { ...state, synthesis: state.synthesis, synthesisSource: 'llm', runtimeMeta },
+              NODE_SYNTHESIS_COMPOSE,
+            ),
+            status: 'done',
+            text: state.supervisorReply,
+            synthesisSource: 'supervisor_passthrough',
+            synthesisValidationErrors: [],
+          });
+
+          logger.debug('langgraph.synthesis.passthrough', {
+            taskId: state.task.taskId,
+            replyLength: state.supervisorReply.length,
+          });
+
+          return {
+            synthesis: state.synthesis,
+            synthesisSource: 'llm',
+            finalStatus: 'done',
+            runtimeMeta,
+          };
+        }
+        // ── Full LLM synthesis (no supervisor reply available) ─────────────────
         const deterministic = state.synthesis ?? synthesizeFromAgentResults(state.task, state.message, state.agentResults);
         const prompt = [
           'Synthesize final runtime response and return JSON only.',
@@ -949,17 +1009,73 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
           runtimeMeta,
         };
       })
-      .addEdge(START, NODE_ROUTE_CLASSIFY)
-      .addEdge(NODE_ROUTE_CLASSIFY, NODE_PLAN_BUILD)
-      .addEdge(NODE_PLAN_BUILD, NODE_HITL_GATE)
+      .addNode(NODE_TIER1_FAST_PATH, async (state: LangGraphRuntimeState) => {
+        await runtimeControlSignalsRepository.assertRunnableAtBoundary(state.task.taskId);
+
+        const runtimeMeta = appendNode(state, NODE_TIER1_FAST_PATH);
+        const prompt = buildTier1Prompt(state.message.text);
+        const rawOutput = await openAiOrchestrationModels.invokeTier1(prompt);
+        const decision = resolveTier1Decision(rawOutput);
+
+        if (decision.done) {
+          console.log(`[TIER-1] ⚡ Fast-path matched! Replying directly: "${decision.reply.slice(0, 50)}..."`);
+        }
+
+        logger.info('langgraph.tier1.decision', {
+          taskId: state.task.taskId,
+          messageId: state.message.messageId,
+          done: decision.done,
+        });
+
+        if (decision.done) {
+          await checkpointRepository.save(state.task.taskId, NODE_TIER1_FAST_PATH, {
+            ...toCheckpointState({ ...state, runtimeMeta }, NODE_TIER1_FAST_PATH),
+            tier1Done: true,
+            reply: decision.reply,
+          });
+          return {
+            synthesis: { text: decision.reply, taskStatus: 'done' as const },
+            synthesisSource: 'llm',
+            finalStatus: 'done',
+            supervisorReply: decision.reply,
+            runtimeMeta,
+          };
+        }
+
+        await checkpointRepository.save(state.task.taskId, NODE_TIER1_FAST_PATH, {
+          ...toCheckpointState({ ...state, runtimeMeta }, NODE_TIER1_FAST_PATH),
+          tier1Done: false,
+        });
+        return { runtimeMeta };
+      })
+      .addEdge(START, NODE_TIER1_FAST_PATH)
+      .addConditionalEdges(NODE_TIER1_FAST_PATH, (state: any) =>
+        state.finalStatus === 'done' ? NODE_SYNTHESIS_COMPOSE : NODE_ROUTE_CLASSIFY,
+      )
+      .addEdge(NODE_ROUTE_CLASSIFY, NODE_SUPERVISOR_DECIDE)
+      // supervisor.decide is the loop hub: all routing decisions flow through one conditional edge
+      .addConditionalEdges(NODE_SUPERVISOR_DECIDE, (state: any) => {
+        if (state.finalStatus === 'done' || (state.supervisorLoopCount ?? 0) >= MAX_SUPERVISOR_LOOP_ITERATIONS) {
+          return NODE_SYNTHESIS_COMPOSE;
+        }
+        // On the first pass (from route.classify), run HITL check before dispatching
+        const needsHitl = !state.agentResults?.length && state.route?.intent === 'write_intent';
+        return needsHitl ? NODE_HITL_GATE : NODE_AGENT_DISPATCH;
+      }, {
+        [NODE_SYNTHESIS_COMPOSE]: NODE_SYNTHESIS_COMPOSE,
+        [NODE_HITL_GATE]: NODE_HITL_GATE,
+        [NODE_AGENT_DISPATCH]: NODE_AGENT_DISPATCH,
+      })
       .addConditionalEdges(NODE_HITL_GATE, (state: any) =>
         state.finalStatus === 'cancelled' ? NODE_FINALIZE_TASK : NODE_AGENT_DISPATCH,
       )
       .addConditionalEdges(NODE_AGENT_DISPATCH, (state: any) => {
         const hasFailure = state.agentResults.some((result: any) => result.status === 'failed');
-        return hasFailure ? NODE_ERROR_CLASSIFY_RETRY : NODE_SYNTHESIS_COMPOSE;
+        return hasFailure ? NODE_ERROR_CLASSIFY_RETRY : NODE_SUPERVISOR_DECIDE;
       })
-      .addEdge(NODE_ERROR_CLASSIFY_RETRY, NODE_SYNTHESIS_COMPOSE)
+      .addConditionalEdges(NODE_ERROR_CLASSIFY_RETRY, (state: any) =>
+        state.finalStatus === 'failed' ? NODE_SYNTHESIS_COMPOSE : NODE_SUPERVISOR_DECIDE,
+      )
       .addEdge(NODE_SYNTHESIS_COMPOSE, NODE_RESPONSE_SEND)
       .addEdge(NODE_RESPONSE_SEND, NODE_FINALIZE_TASK)
       .addEdge(NODE_FINALIZE_TASK, END)

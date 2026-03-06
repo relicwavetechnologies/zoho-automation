@@ -1,0 +1,146 @@
+{
+  "generatedAt": "2026-03-05T10:02:01.959Z",
+  "overallStatus": "FAIL",
+  "allowWaivers": true,
+  "waiverValidationErrors": [],
+  "scenarios": [
+    {
+      "id": "build_backend",
+      "name": "Backend build",
+      "command": "pnpm -C backend build",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 4014,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "> enterprise-express-backend-template@1.0.0 build /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend\n> prisma generate && tsc && mkdir -p dist/generated && cp -R src/generated/prisma dist/generated/prisma\nPrisma schema loaded from prisma/schema.prisma\n✔ Generated Prisma Client (v6.19.0) to ./src/generated/prisma in 125ms\nStart by importing your Prisma Client (See: https://pris.ly/d/importing-client)\nTip: Need your database queries to be 1000x faster? Accelerate offers you that and more: https://pris.ly/tip-2-accelerate",
+        "stderrTail": "Environment variables loaded from .env"
+      }
+    },
+    {
+      "id": "unit_lark",
+      "name": "Lark unit suite",
+      "command": "pnpm -C backend test:unit:lark",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 287,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "  ...\n# Subtest: verifyLarkWebhookRequest rejects malformed signature timestamp\nok 32 - verifyLarkWebhookRequest rejects malformed signature timestamp\n  ---\n  duration_ms: 0.077834\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest rejects stale signatures by replay window\nok 33 - verifyLarkWebhookRequest rejects stale signatures by replay window\n  ---\n  duration_ms: 0.093416\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest rejects invalid signature digest in signature mode\nok 34 - verifyLarkWebhookRequest rejects invalid signature digest in signature mode\n  ---\n  duration_ms: 0.071375\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest uses verification token mode when signing secret is not configured\nok 35 - verifyLarkWebhookRequest uses verification token mode when signing secret is not configured\n  ---\n  duration_ms: 0.065291\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest rejects when signature secret missing and no token mode config\nok 36 - verifyLarkWebhookRequest rejects when signature secret missing and no token mode config\n  ---\n  duration_ms: 0.23575\n  type: 'test'\n  ...\n1..36\n# tests 36\n# suites 0\n# pass 36\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 117.53525",
+        "stderrTail": ""
+      }
+    },
+    {
+      "id": "unit_v1",
+      "name": "V1 orchestration unit suite",
+      "command": "pnpm -C backend test:unit:v1",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 1098,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "# \u001b[2m15:32:07\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mlanggraph.supervisor.decision\u001b[0m  \u001b[2mtaskId=task-synth-1  loopCount=1  next=FINISH  finish=true  manifestKeys=- lark-response: Sends a formatted message reply to the Lark chat.\n# - response: Generates a general-purpose text reply for the user.\n# - risk-check: Evaluates whether a write/destructive action is safe to proceed.\n# - zoho-action: Agent 'zoho-action' — no description available.\n# - zoho-read: Reads CRM data (contacts, deals, accounts, leads) from Zoho.\u001b[0m\n# \u001b[2m15:32:07\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mlanggraph.recovery.decision\u001b[0m  \u001b[2mtaskId=task-synth-1  messageId=om_synth_1  recoveryMode=requeue_from_start  reason=checkpoint_absent  recoveredFromNode=undefined\u001b[0m\n# \u001b[2m15:32:07\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mlanggraph.tier1.decision\u001b[0m  \u001b[2mtaskId=task-synth-1  messageId=om_synth_1  done=false\u001b[0m\n# \u001b[2m15:32:07\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mlanggraph.route.resolved\u001b[0m  \u001b[2mtaskId=task-synth-1  messageId=om_synth_1  intent=general  complexityLevel=2  executionMode=sequential  source=llm  fallbackReasonCode=undefined\u001b[0m\n# \u001b[2m15:32:07\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mlanggraph.supervisor.decision\u001b[0m  \u001b[2mtaskId=task-synth-1  loopCount=1  next=FINISH  finish=true  manifestKeys=- lark-response: Sends a formatted message reply to the Lark chat.\n# - response: Generates a general-purpose text reply for the user.\n# - risk-check: Evaluates whether a write/destructive action is safe to proceed.\n# - zoho-action: Agent 'zoho-action' — no description available.\n# - zoho-read: Reads CRM data (contacts, deals, accounts, leads) from Zoho.\u001b[0m\n# Subtest: synthesis/response contract: valid synthesis + send success checkpoints sent\nok 34 - synthesis/response contract: valid synthesis + send success checkpoints sent\n  ---\n  duration_ms: 100.249667\n  type: 'test'\n  ...\n# Subtest: synthesis/response contract: invalid synthesis falls back deterministically\nok 35 - synthesis/response contract: invalid synthesis falls back deterministically\n  ---\n  duration_ms: 6.991375\n  type: 'test'\n  ...\n# Subtest: synthesis/response contract: send failure is explicit and task fails\nok 36 - synthesis/response contract: send failure is explicit and task fails\n  ---\n  duration_ms: 7.654667\n  type: 'test'\n  ...\n1..36\n# tests 36\n# suites 0\n# pass 36\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 942.295166",
+        "stderrTail": ""
+      }
+    },
+    {
+      "id": "unit_zoho",
+      "name": "Zoho/Qdrant/embedding unit suite",
+      "command": "pnpm -C backend test:unit:zoho",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 758,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "ok 19 - ZohoReadAgent returns deterministic no-context success when retrieval result is empty\n  ---\n  duration_ms: 0.178167\n  type: 'test'\n  ...\n# Subtest: ZohoReadAgent maps ambiguous company context to explicit failure code\nok 20 - ZohoReadAgent maps ambiguous company context to explicit failure code\n  ---\n  duration_ms: 0.214\n  type: 'test'\n  ...\n# \u001b[2m15:32:07\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mconfig.validation.ok\u001b[0m  \u001b[2mnodeEnv=development\u001b[0m\n# \u001b[2m15:32:07\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mconfig.validation.warning\u001b[0m  \u001b[2mcount=1  issues=[{\"key\":\"MCP_SECRET_ENCRYPTION_KEY,ZOHO_TOKEN_ENCRYPTION_KEY\",\"code\":\"missing_value\",\"message\":\"Set MCP_SECRET_ENCRYPTION_KEY (or ZOHO_TOKEN_ENCRYPTION_KEY fallback) for encrypted MCP credential storage\",\"severity\":\"warning\"}]\u001b[0m\n# Subtest: encrypt/decrypt Zoho secret roundtrip works with explicit key override\nok 21 - encrypt/decrypt Zoho secret roundtrip works with explicit key override\n  ---\n  duration_ms: 1.626833\n  type: 'test'\n  ...\n# Subtest: decryptZohoSecret rejects invalid payload shape\nok 22 - decryptZohoSecret rejects invalid payload shape\n  ---\n  duration_ms: 1.541292\n  type: 'test'\n  ...\n# Subtest: encryptZohoSecret rejects invalid key material length\nok 23 - encryptZohoSecret rejects invalid key material length\n  ---\n  duration_ms: 0.407375\n  type: 'test'\n  ...\n1..23\n# tests 23\n# suites 0\n# pass 23\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 567.098459",
+        "stderrTail": ""
+      }
+    },
+    {
+      "id": "resilience_tests",
+      "name": "Resilience test suite",
+      "command": "pnpm -C backend run test:resilience",
+      "required": true,
+      "status": "FAIL",
+      "exitCode": 1,
+      "durationMs": 30048,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "> enterprise-express-backend-template@1.0.0 test:resilience /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend\n> node --test tests/resilience.*.test.cjs\nTAP version 13\n# \u001b[2m15:32:08\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mconfig.validation.ok\u001b[0m  \u001b[2mnodeEnv=development\u001b[0m\n# \u001b[2m15:32:08\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mconfig.validation.warning\u001b[0m  \u001b[2mcount=1  issues=[{\"key\":\"MCP_SECRET_ENCRYPTION_KEY,ZOHO_TOKEN_ENCRYPTION_KEY\",\"code\":\"missing_value\",\"message\":\"Set MCP_SECRET_ENCRYPTION_KEY (or ZOHO_TOKEN_ENCRYPTION_KEY fallback) for encrypted MCP credential storage\",\"severity\":\"warning\"}]\u001b[0m",
+        "stderrTail": "Command timed out after 30000ms"
+      }
+    },
+    {
+      "id": "resilience_drill",
+      "name": "Resilience drill script",
+      "command": "node backend/scripts/validate-v1-resilience.cjs",
+      "required": true,
+      "status": "FAIL",
+      "exitCode": 1,
+      "durationMs": 30021,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "\u001b[2m15:32:38\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mconfig.validation.ok\u001b[0m  \u001b[2mnodeEnv=development\u001b[0m\n\u001b[2m15:32:38\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mlark.ingress.received\u001b[0m  \u001b[2mrequestId=req-res-script-1  method=POST  path=/webhooks/lark/events\u001b[0m\n\u001b[2m15:32:38\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mlark.ingress.verified\u001b[0m  \u001b[2mrequestId=req-res-script-1\u001b[0m",
+        "stderrTail": "\u001b[2m15:32:38\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mconfig.validation.warning\u001b[0m  \u001b[2mcount=1  issues=[{\"key\":\"MCP_SECRET_ENCRYPTION_KEY,ZOHO_TOKEN_ENCRYPTION_KEY\",\"code\":\"missing_value\",\"message\":\"Set MCP_SECRET_ENCRYPTION_KEY (or ZOHO_TOKEN_ENCRYPTION_KEY fallback) for encrypted MCP credential storage\",\"severity\":\"warning\"}]\u001b[0m\n\u001b[2m15:32:38\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mlark.ingress.idempotency_unavailable\u001b[0m  \u001b[2mrequestId=req-res-script-1  channel=lark  eventId=evt-res-script-1  messageId=om-res-script-1  chatId=oc-res-script  userId=ou-res-script  idempotencyKey=emiac:idempotent:lark:event:evt-res-script-1  keyType=event  textHash=729fba6a455d541109dfea1f07edc04ba5f5b9919db9cad365d05efdcde9d3b4  error={\"name\":\"Error\",\"message\":\"redis unavailable\",\"stack\":\"Error: redis unavailable\\n    at Object.claimIngressKey (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:103:23)\\n    at /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/channels/lark/lark.webhook.routes.js:282:53\\n    at runHandler (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:40:9)\\n    at /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:111:28\\n    at scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:26)\\n    at run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:80:9)\\n    at Object.<anonymous> (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:261:1)\\n    at Module._compile (node:internal/modules/cjs/loader:1730:14)\\n    at Object..js (node:internal/modules/cjs/loader:1895:10)\\n    at Module.load (node:internal/modules/cjs/loader:1465:32)\",\"code\":\"ECONNREFUSED\"}\u001b[0m\n\u001b[2m15:32:38\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mqueue.enqueue.retry\u001b[0m  \u001b[2mrequestId=req-res-script-queue  taskId=task-res-script-queue  messageId=om-res-script-queue  channel=lark  jobId=job-res-script-queue  attempt=1  delayMs=200  retriable=true  error={\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:153:23)\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\n    at Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:54)\\n    at /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:134:28\\n    at scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:26)\\n    at run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:131:9)\\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\",\"code\":\"ECONNREFUSED\"}\u001b[0m\n\u001b[2m15:32:38\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mqueue.enqueue.retry\u001b[0m  \u001b[2mrequestId=req-res-script-queue  taskId=task-res-script-queue  messageId=om-res-script-queue  channel=lark  jobId=job-res-script-queue  attempt=2  delayMs=400  retriable=true  error={\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:153:23)\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\n    at async Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:9)\\n    at async /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:134:5\\n    at async scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:20)\\n    at async run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:131:3)\",\"code\":\"ECONNREFUSED\"}\u001b[0m\n\u001b[2m15:32:39\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mqueue.enqueue.failed\u001b[0m  \u001b[2mrequestId=req-res-script-queue  taskId=task-res-script-queue  messageId=om-res-script-queue  channel=lark  jobId=job-res-script-queue  retriable=true  error={\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:153:23)\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\n    at async Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:9)\\n    at async /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:134:5\\n    at async scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:20)\\n    at async run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:131:3)\",\"code\":\"ECONNREFUSED\"}\u001b[0m\n\u001b[2m15:32:39\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mqueue.enqueue.unavailable\u001b[0m  \u001b[2mrequestId=req-res-script-queue  taskId=task-res-script-queue  messageId=om-res-script-queue  channel=lark  jobId=job-res-script-queue\u001b[0m\n\u001b[2m15:32:39\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mzoho.http.retry\u001b[0m  \u001b[2murl=https://relicwave-60066687461.zohomcp.in/mcp/message?key=f7a0e444c0ef5ffeef82837f96bb246e/crm/v2/Contacts?page=1&per_page=1  method=GET  attempt=1  maxAttempts=3  delayMs=0  statusCode=429\u001b[0m\nCommand timed out after 30000ms"
+      }
+    },
+    {
+      "id": "core_smoke",
+      "name": "Core smoke script",
+      "command": "node backend/scripts/validate-v0-core-smoke.cjs",
+      "required": true,
+      "status": "FAIL_WAIVED",
+      "exitCode": 0,
+      "durationMs": 30031,
+      "waived": true,
+      "waiver": {
+        "scenarioId": "core_smoke",
+        "reason": "Requires reachable Redis runtime; isolated/sandbox runs may block local Redis connectivity and cause command timeout.",
+        "owner": "platform-runtime",
+        "expiresOn": "2026-04-15",
+        "ticket": "OPS-420"
+      },
+      "output": {
+        "stdoutTail": "\u001b[2m15:33:08\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mconfig.validation.ok\u001b[0m  \u001b[2mnodeEnv=development\u001b[0m\n\u001b[2m15:33:09\u001b[0m \u001b[32mINF\u001b[0m \u001b[1morchestration.agent.dispatch.finish\u001b[0m  \u001b[2mtaskId=6df896e8-9bbc-421c-a842-234de97b7884  messageId=smoke-1772704988985  agentKey=zoho-read  status=failed  retriesUsed=1\u001b[0m\n\u001b[2m15:33:09\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mredis.connecting\u001b[0m  \u001b[2murl=redis://127.0.0.1:6379\u001b[0m",
+        "stderrTail": "    at node:net:1355:9\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\n\u001b[2m15:33:29\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mredis.error\u001b[0m  \u001b[2merror={\"name\":\"Error\",\"message\":\"connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\",\"stack\":\"Error: connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\\n    at internalConnect (node:net:1115:16)\\n    at defaultTriggerAsyncIdScope (node:internal/async_hooks:464:18)\\n    at node:net:1355:9\\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\",\"code\":\"EPERM\"}\u001b[0m\n\u001b[2m15:33:29\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mredis.reconnecting\u001b[0m\n[ioredis] Unhandled error event: Error: connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\n    at internalConnect (node:net:1115:16)\n    at defaultTriggerAsyncIdScope (node:internal/async_hooks:464:18)\n    at node:net:1355:9\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\n\u001b[2m15:33:31\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mredis.error\u001b[0m  \u001b[2merror={\"name\":\"Error\",\"message\":\"connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\",\"stack\":\"Error: connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\\n    at internalConnect (node:net:1115:16)\\n    at defaultTriggerAsyncIdScope (node:internal/async_hooks:464:18)\\n    at node:net:1355:9\\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\",\"code\":\"EPERM\"}\u001b[0m\n\u001b[2m15:33:31\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mredis.reconnecting\u001b[0m\n[ioredis] Unhandled error event: Error: connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\n    at internalConnect (node:net:1115:16)\n    at defaultTriggerAsyncIdScope (node:internal/async_hooks:464:18)\n    at node:net:1355:9\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\n\u001b[2m15:33:32\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mredis.error\u001b[0m  \u001b[2merror={\"name\":\"Error\",\"message\":\"connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\",\"stack\":\"Error: connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\\n    at internalConnect (node:net:1115:16)\\n    at defaultTriggerAsyncIdScope (node:internal/async_hooks:464:18)\\n    at node:net:1355:9\\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\",\"code\":\"EPERM\"}\u001b[0m\n\u001b[2m15:33:32\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mredis.reconnecting\u001b[0m\n[ioredis] Unhandled error event: Error: connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\n    at internalConnect (node:net:1115:16)\n    at defaultTriggerAsyncIdScope (node:internal/async_hooks:464:18)\n    at node:net:1355:9\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\n\u001b[2m15:33:34\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mredis.error\u001b[0m  \u001b[2merror={\"name\":\"Error\",\"message\":\"connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\",\"stack\":\"Error: connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\\n    at internalConnect (node:net:1115:16)\\n    at defaultTriggerAsyncIdScope (node:internal/async_hooks:464:18)\\n    at node:net:1355:9\\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\",\"code\":\"EPERM\"}\u001b[0m\n\u001b[2m15:33:34\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mredis.reconnecting\u001b[0m\n[ioredis] Unhandled error event: Error: connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\n    at internalConnect (node:net:1115:16)\n    at defaultTriggerAsyncIdScope (node:internal/async_hooks:464:18)\n    at node:net:1355:9\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\n\u001b[2m15:33:35\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mredis.error\u001b[0m  \u001b[2merror={\"name\":\"Error\",\"message\":\"connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\",\"stack\":\"Error: connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\\n    at internalConnect (node:net:1115:16)\\n    at defaultTriggerAsyncIdScope (node:internal/async_hooks:464:18)\\n    at node:net:1355:9\\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\",\"code\":\"EPERM\"}\u001b[0m\n\u001b[2m15:33:35\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mredis.reconnecting\u001b[0m\n[ioredis] Unhandled error event: Error: connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\n    at internalConnect (node:net:1115:16)\n    at defaultTriggerAsyncIdScope (node:internal/async_hooks:464:18)\n    at node:net:1355:9\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\n\u001b[2m15:33:37\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mredis.error\u001b[0m  \u001b[2merror={\"name\":\"Error\",\"message\":\"connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\",\"stack\":\"Error: connect EPERM 127.0.0.1:6379 - Local (0.0.0.0:0)\\n    at internalConnect (node:net:1115:16)\\n    at defaultTriggerAsyncIdScope (node:internal/async_hooks:464:18)\\n    at node:net:1355:9\\n    at process.processTicksAndRejections (node:internal/process/task_queues:85:11)\",\"code\":\"EPERM\"}\u001b[0m\n\u001b[2m15:33:37\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mredis.reconnecting\u001b[0m\nCommand timed out after 30000ms"
+      }
+    },
+    {
+      "id": "admin_e2e",
+      "name": "Admin e2e script",
+      "command": "node backend/scripts/validate-admin-e2e.cjs",
+      "required": true,
+      "status": "FAIL_WAIVED",
+      "exitCode": 1,
+      "durationMs": 170,
+      "waived": true,
+      "waiver": {
+        "scenarioId": "admin_e2e",
+        "reason": "Requires live backend server, prepared seed state, and interactive credentials during local-only validation runs.",
+        "owner": "platform-runtime",
+        "expiresOn": "2026-04-15",
+        "ticket": "OPS-421"
+      },
+      "output": {
+        "stdoutTail": "",
+        "stderrTail": "{\n  \"ok\": false,\n  \"error\": \"\\nInvalid `prisma.rbacPermission.findUnique()` invocation in\\n/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-admin-e2e.cjs:304:67\\n\\n  301 const context = {\\n  302   createdEmails: new Set([companyAdminEmail, secondCompanyAdminEmail, inviteMemberEmail]),\\n  303   createdCompanyIds: new Set(),\\n→ 304   previousSystemControlsPermission: await prisma.rbacPermission.findUnique(\\nCan't reach database server at `ep-icy-hat-ahwr4esu-pooler.c-3.us-east-1.aws.neon.tech:5432`\\n\\nPlease make sure your database server is running at `ep-icy-hat-ahwr4esu-pooler.c-3.us-east-1.aws.neon.tech:5432`.\"\n}"
+      }
+    }
+  ],
+  "summary": {
+    "total": 8,
+    "pass": 4,
+    "fail": 2,
+    "failWaived": 2
+  }
+}

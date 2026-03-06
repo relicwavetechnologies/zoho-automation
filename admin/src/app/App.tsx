@@ -4,6 +4,7 @@ import { useAdminAuth } from '../auth/AdminAuthProvider';
 import { AuditLogsPage } from '../pages/AuditLogsPage';
 import { AdminLayout } from '../components/layout/AdminLayout';
 import { ControlsPage } from '../pages/ControlsPage';
+import { IntegrationsPage } from '../pages/IntegrationsPage';
 import { CompanyAdminSignupPage } from '../pages/CompanyAdminSignupPage';
 import { LoginPage } from '../pages/LoginPage';
 import { MemberInviteAcceptPage } from '../pages/MemberInviteAcceptPage';
@@ -11,6 +12,8 @@ import { MembersPage } from '../pages/MembersPage';
 import { OverviewPage } from '../pages/OverviewPage';
 import { PlaceholderPage } from '../pages/PlaceholderPage';
 import { RbacPage } from '../pages/RbacPage';
+import { ToolPermissionsPage } from '../pages/ToolPermissionsPage';
+import { ZohoOauthCallbackPage } from '../pages/ZohoOauthCallbackPage';
 import { Toaster } from '../components/ui/toaster';
 
 const Protected = ({ children }: { children: JSX.Element }) => {
@@ -50,6 +53,9 @@ export const App = () => {
           <Route path="rbac" element={<RbacPage />} />
           <Route path="audit" element={<AuditLogsPage />} />
           <Route path="controls" element={<ControlsPage />} />
+          <Route path="integrations" element={<IntegrationsPage />} />
+          <Route path="tool-access" element={<ToolPermissionsPage />} />
+          <Route path="zoho/callback" element={<ZohoOauthCallbackPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

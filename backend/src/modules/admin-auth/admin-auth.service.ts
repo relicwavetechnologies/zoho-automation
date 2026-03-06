@@ -263,6 +263,18 @@ export class AdminAuthService extends BaseService {
         path: '/controls',
         roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
       },
+      {
+        id: 'integrations',
+        label: 'Integrations',
+        path: '/integrations',
+        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
+      },
+      {
+        id: 'tool-access',
+        label: 'Tool Access',
+        path: '/tool-access',
+        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
+      },
     ];
 
     return {

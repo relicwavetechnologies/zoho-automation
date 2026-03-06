@@ -2,8 +2,8 @@ import { createHash } from 'crypto';
 
 import type { Prisma } from '../../../generated/prisma';
 import { qdrantAdapter } from '../../integrations/vector';
-import { zohoDataClient } from '../../integrations/zoho/zoho-data.client';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
+import { resolveZohoProvider } from '../../integrations/zoho/zoho-provider.resolver';
 import { embeddingService } from '../../integrations/embedding';
 import { prisma } from '../../../utils/prisma';
 import { logger } from '../../../utils/logger';
@@ -94,13 +94,15 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
       sourceId: parsed.sourceId,
     });
   } else {
-    const connection = await prisma.zohoConnection.findUnique({
-      where: { id: job.connectionId },
-      select: { environment: true },
-    });
-    const latestPayload = await zohoDataClient.fetchRecordBySource({
+    const provider = await resolveZohoProvider({
       companyId: job.companyId,
-      environment: connection?.environment ?? 'prod',
+    });
+    const latestPayload = await provider.adapter.fetchRecordBySource({
+      context: {
+        companyId: job.companyId,
+        environment: provider.environment,
+        connectionId: provider.connectionId,
+      },
       sourceType: parsed.sourceType,
       sourceId: parsed.sourceId,
     });

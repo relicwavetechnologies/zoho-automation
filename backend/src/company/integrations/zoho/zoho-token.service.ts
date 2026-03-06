@@ -5,6 +5,7 @@ import { logger } from '../../../utils/logger';
 import { decryptZohoSecret, encryptZohoSecret } from './zoho-token.crypto';
 import { zohoHttpClient, ZohoHttpClient } from './zoho-http.client';
 import { ZohoIntegrationError } from './zoho.errors';
+import { zohoOAuthConfigRepository } from './zoho-oauth-config.repository';
 
 type ZohoTokenServiceOptions = {
   httpClient?: ZohoHttpClient;
@@ -75,6 +76,14 @@ const ensureConnected = (connection: ZohoConnection | null): ZohoConnection => {
     });
   }
 
+  if (connection.providerMode === 'mcp') {
+    throw new ZohoIntegrationError({
+      message: 'Zoho OAuth token operations are not available for MCP-mode connections',
+      code: 'auth_failed',
+      retriable: false,
+    });
+  }
+
   return connection;
 };
 
@@ -94,28 +103,67 @@ export class ZohoTokenService {
     this.now = options.now ?? (() => Date.now());
   }
 
-  async exchangeAuthorizationCode(input: {
-    authorizationCode: string;
-    scopes: string[];
-    environment: string;
-  }): Promise<ZohoTokenExchangeResult> {
+  public async resolveCredentials(companyId?: string): Promise<{
+    clientId: string;
+    clientSecret: string;
+    redirectUri: string;
+    httpClient: ZohoHttpClient;
+  }> {
+    if (companyId) {
+      try {
+        const perCompany = await zohoOAuthConfigRepository.getCredentials(companyId);
+        if (perCompany) {
+          return {
+            clientId: perCompany.clientId,
+            clientSecret: perCompany.clientSecret,
+            redirectUri: perCompany.redirectUri,
+            httpClient: new ZohoHttpClient({
+              accountsBaseUrl: perCompany.accountsBaseUrl,
+              apiBaseUrl: perCompany.apiBaseUrl,
+            }),
+          };
+        }
+      } catch (error) {
+        logger.warn('zoho.oauth.credentials.company_config_unavailable', {
+          companyId,
+          reason: error instanceof Error ? error.message : 'unknown_error',
+        });
+      }
+    }
+
     if (!config.ZOHO_CLIENT_ID || !config.ZOHO_CLIENT_SECRET || !config.ZOHO_REDIRECT_URI) {
       throw new ZohoIntegrationError({
-        message: 'Zoho OAuth credentials are not configured',
+        message: 'Zoho OAuth credentials are not configured. Set them up in the Integrations page of the admin panel.',
         code: 'auth_failed',
         retriable: false,
       });
     }
 
+    return {
+      clientId: config.ZOHO_CLIENT_ID,
+      clientSecret: config.ZOHO_CLIENT_SECRET,
+      redirectUri: config.ZOHO_REDIRECT_URI,
+      httpClient: this.httpClient,
+    };
+  }
+
+  async exchangeAuthorizationCode(input: {
+    authorizationCode: string;
+    scopes: string[];
+    environment: string;
+    companyId?: string;
+  }): Promise<ZohoTokenExchangeResult> {
+    const creds = await this.resolveCredentials(input.companyId);
+
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
-      client_id: config.ZOHO_CLIENT_ID,
-      client_secret: config.ZOHO_CLIENT_SECRET,
-      redirect_uri: config.ZOHO_REDIRECT_URI,
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
+      redirect_uri: creds.redirectUri,
       code: input.authorizationCode,
     });
 
-    const payload = await this.httpClient.requestJson<ZohoTokenResponse>({
+    const payload = await creds.httpClient.requestJson<ZohoTokenResponse>({
       base: 'accounts',
       path: '/oauth/v2/token',
       method: 'POST',
@@ -231,16 +279,17 @@ export class ZohoTokenService {
     }
 
     const refreshToken = decryptZohoSecret(connection.refreshTokenEncrypted);
+    const creds = await this.resolveCredentials(companyId);
 
     try {
-      const payload = await this.httpClient.requestJson<ZohoTokenResponse>({
+      const payload = await creds.httpClient.requestJson<ZohoTokenResponse>({
         base: 'accounts',
         path: '/oauth/v2/token',
         method: 'POST',
         body: new URLSearchParams({
           grant_type: 'refresh_token',
-          client_id: config.ZOHO_CLIENT_ID,
-          client_secret: config.ZOHO_CLIENT_SECRET,
+          client_id: creds.clientId,
+          client_secret: creds.clientSecret,
           refresh_token: refreshToken,
         }),
         retry: {

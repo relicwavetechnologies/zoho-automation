@@ -66,6 +66,18 @@ test('validateEnvironmentContract fails on invalid orchestration engine', () => 
   );
 });
 
+test('validateEnvironmentContract accepts mastra orchestration engine with required fields', () => {
+  const env = baseEnv();
+  env.ORCHESTRATION_ENGINE = 'mastra';
+  env.MASTRA_BASE_URL = 'http://127.0.0.1:4111';
+  env.MASTRA_AGENT_ID = 'supervisorAgent';
+  env.MASTRA_TIMEOUT_MS = '12000';
+
+  const result = validateEnvironmentContract(env);
+  assert.equal(result.config.ORCHESTRATION_ENGINE, 'mastra');
+  assert.equal(result.config.MASTRA_AGENT_ID, 'supervisorAgent');
+});
+
 test('validateEnvironmentContract enforces production Lark verification guard', () => {
   const env = baseEnv();
   env.NODE_ENV = 'production';

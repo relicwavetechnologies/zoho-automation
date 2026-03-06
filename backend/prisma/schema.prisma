@@ -26,9 +26,15 @@ model Company {
   updatedAt       DateTime         @updatedAt
   zohoConnections ZohoConnection[]
   zohoSyncJobs    ZohoSyncJob[]
+  zohoOAuthConfig ZohoOAuthConfig?
+  larkTenantBindings LarkTenantBinding[]
   adminMemberships AdminMembership[]
   adminSessions    AdminSession[]
   invites          CompanyInvite[]
+  mcpActionLogs    McpActionLog[]
+  channelIdentities ChannelIdentity[]
+  toolPermissions  ToolPermission[]
+  aiRoleDefinitions AiRoleDefinition[]
 }
 
 model AdminMembership {
@@ -67,10 +73,18 @@ model ZohoConnection {
   companyId   String
   company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
   environment String      @default("prod")
+  providerMode String     @default("rest")
   status      String
   connectedAt DateTime
   scopes      String[]
   lastSyncAt  DateTime?
+  mcpBaseUrl  String?
+  mcpApiKeyEncrypted String?
+  mcpWorkspaceKey String?
+  mcpAllowedTools String[]
+  mcpCapabilities Json?
+  mcpLastHealthAt DateTime?
+  mcpLastHealthStatus String?
   accessTokenEncrypted String?
   refreshTokenEncrypted String?
   tokenCipherVersion Int @default(1)
@@ -85,6 +99,66 @@ model ZohoConnection {
   vectorDocs  VectorDocument[]
 
   @@unique([companyId, environment])
+}
+
+model ZohoOAuthConfig {
+  id                    String   @id @default(uuid())
+  companyId             String   @unique
+  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  clientId              String
+  clientSecretEncrypted String
+  redirectUri           String
+  accountsBaseUrl       String   @default("https://accounts.zoho.com")
+  apiBaseUrl            String   @default("https://www.zohoapis.com")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model ChannelIdentity {
+  id               String   @id @default(uuid())
+  companyId        String
+  company          Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  channel          String
+  externalUserId   String
+  externalTenantId String
+  displayName      String?
+  email            String?
+  aiRole           String   @default("MEMBER")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([channel, externalUserId, companyId])
+  @@index([companyId, channel])
+}
+
+model LarkTenantBinding {
+  id           String   @id @default(uuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  larkTenantKey String
+  isActive     Boolean  @default(true)
+  createdBy    String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([larkTenantKey])
+  @@index([companyId, isActive])
+}
+
+model McpActionLog {
+  id            String   @id @default(uuid())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  taskId        String
+  actionName    String
+  payloadHash   String
+  status        String
+  receipt       Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([companyId, createdAt])
+  @@index([taskId, createdAt])
 }
 
 model ZohoSyncJob {
@@ -224,4 +298,32 @@ model CompanyInvite {
   updatedAt  DateTime @updatedAt
 
   @@index([companyId, status, createdAt])
+}
+
+model ToolPermission {
+  id        String   @id @default(uuid())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  toolId    String
+  role      String
+  enabled   Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@unique([companyId, toolId, role])
+  @@index([companyId, toolId])
+}
+
+model AiRoleDefinition {
+  id          String   @id @default(uuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  slug        String
+  displayName String
+  isBuiltIn   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([companyId, slug])
+  @@index([companyId, isBuiltIn])
 }

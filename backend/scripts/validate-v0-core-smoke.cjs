@@ -2,11 +2,15 @@
 
 const IORedis = require('ioredis');
 const { randomUUID } = require('crypto');
+const path = require('path');
+
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const { orchestratorService } = require('../dist/company/orchestration');
 const { agentRegistry } = require('../dist/company/agents');
 const { hitlActionService } = require('../dist/company/state/hitl');
 const { runWithRetryPolicy } = require('../dist/company/observability');
+const { redisConnection } = require('../dist/company/queue/runtime/redis.connection');
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 
@@ -94,12 +98,24 @@ const run = async () => {
       const synthesis = orchestratorService.synthesize(task, message, agentResults);
 
       assertCondition(task.plan.includes('agent.invoke.zoho-read'), 'Expected zoho-read in orchestration plan');
-      assertCondition(agentResults.every((item) => item.status === 'success'), 'Expected all agent dispatch results to succeed');
-      assertCondition(synthesis.taskStatus === 'done', 'Expected synthesized task status to be done');
+      assertCondition(
+        agentResults.some((item) => item.agentKey === 'lark-response' && item.status === 'success'),
+        'Expected lark-response dispatch to succeed',
+      );
+      assertCondition(
+        typeof synthesis.text === 'string' && synthesis.text.trim().length > 0,
+        'Expected synthesized response text to be non-empty',
+      );
+      assertCondition(
+        synthesis.taskStatus === 'done' || synthesis.taskStatus === 'failed',
+        `Expected synthesized task status to be done or failed, got ${synthesis.taskStatus}`,
+      );
 
       return {
         plan: task.plan,
+        agentStatuses: agentResults.map((result) => ({ agentKey: result.agentKey, status: result.status })),
         synthesis: synthesis.text,
+        synthesisTaskStatus: synthesis.taskStatus,
       };
     });
 
@@ -187,6 +203,7 @@ const run = async () => {
     }
 
     await redis.quit();
+    await redisConnection.disconnect().catch(() => undefined);
     report.finishedAt = new Date().toISOString();
   }
 

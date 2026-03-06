@@ -24,10 +24,16 @@ type RuntimeTask = {
   taskId: string;
   messageId: string;
   userId: string;
+  companyId?: string | null;
+  scopeVisibility?: 'resolved' | 'unresolved';
   status: string;
   currentStep?: string;
   controlSignal: 'running' | 'paused' | 'cancelled';
   engine?: 'legacy' | 'langgraph';
+  configuredEngine?: 'legacy' | 'langgraph';
+  engineUsed?: 'legacy' | 'langgraph';
+  rolledBackFrom?: 'legacy' | 'langgraph' | null;
+  rollbackReasonCode?: string | null;
   graphThreadId?: string;
   graphNode?: string;
   graphStepHistory?: string[];
@@ -45,7 +51,13 @@ type RuntimeTaskDetail = RuntimeTask & {
 
 type RuntimeTaskTrace = {
   taskId: string;
+  companyId?: string | null;
+  scopeVisibility?: 'resolved' | 'unresolved';
   engine: 'legacy' | 'langgraph';
+  configuredEngine?: 'legacy' | 'langgraph';
+  engineUsed?: 'legacy' | 'langgraph';
+  rolledBackFrom?: 'legacy' | 'langgraph' | null;
+  rollbackReasonCode?: string | null;
   graphThreadId?: string;
   latestNode?: string | null;
   transitions: Array<{
@@ -55,7 +67,28 @@ type RuntimeTaskTrace = {
     engine: 'legacy' | 'langgraph';
     graphNode?: string;
     graphThreadId?: string;
+    companyId?: string | null;
+    scopeVisibility?: 'resolved' | 'unresolved';
+    routeIntent?: string;
+    routeSource?: string;
+    routeFallbackReasonCode?: string;
+    planSource?: string;
+    responseDeliveryStatus?: string;
   }>;
+};
+
+type RuntimeDependencyHealth = {
+  name: 'redis' | 'qdrant' | 'queue' | 'openai' | 'zoho';
+  ok: boolean;
+  latencyMs?: number;
+  detail?: Record<string, unknown>;
+  error?: string;
+};
+
+type RuntimeHealth = {
+  overall: 'ok' | 'degraded';
+  generatedAt: string;
+  dependencies: RuntimeDependencyHealth[];
 };
 
 export const ControlsPage = () => {
@@ -66,18 +99,21 @@ export const ControlsPage = () => {
   const [runtimeAction, setRuntimeAction] = useState<'pause' | 'resume' | 'cancel'>('pause');
   const [runtimeDetail, setRuntimeDetail] = useState<RuntimeTaskDetail | null>(null);
   const [runtimeTrace, setRuntimeTrace] = useState<RuntimeTaskTrace | null>(null);
+  const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
     if (!token) return;
     try {
       setLoading(true);
-      const [result, runtime] = await Promise.all([
+      const [result, runtime, health] = await Promise.all([
         api.get<ControlState[]>('/api/admin/controls', token),
         api.get<RuntimeTask[]>('/api/admin/runtime/tasks?limit=20', token),
+        api.get<RuntimeHealth>('/api/admin/runtime/health', token),
       ]);
       setRows(result);
       setTasks(runtime);
+      setRuntimeHealth(health);
     } finally {
       setLoading(false);
     }
@@ -209,6 +245,57 @@ export const ControlsPage = () => {
 
       <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
         <CardHeader className="border-b border-[#1a1a1a] pb-4">
+          <CardTitle className="text-zinc-100">Runtime Health</CardTitle>
+          <CardDescription className="text-zinc-500 mt-1">
+            Backend dependency health for orchestration runtime and retrieval path.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-6 space-y-4">
+          {loading ? (
+            <div className="flex flex-col gap-2">
+              {[1, 2, 3].map((item) => (
+                <div key={item} className="flex items-center justify-between p-3 rounded-md bg-[#0a0a0a] border border-[#1a1a1a]">
+                  <Skeleton className="h-4 w-20" />
+                  <Skeleton className="h-4 w-32" />
+                </div>
+              ))}
+            </div>
+          ) : runtimeHealth ? (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between rounded-md bg-[#0a0a0a] border border-[#1a1a1a] p-3">
+                <span className="text-sm text-zinc-400">Overall</span>
+                <Badge variant={runtimeHealth.overall === 'ok' ? 'secondary' : 'destructive'} className={runtimeHealth.overall === 'ok' ? 'bg-[#1a1a1a] text-emerald-400' : ''}>
+                  {runtimeHealth.overall.toUpperCase()}
+                </Badge>
+              </div>
+              {runtimeHealth.dependencies.map((dependency) => (
+                <div key={dependency.name} className="rounded-md bg-[#0a0a0a] border border-[#1a1a1a] p-3 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-zinc-300 uppercase tracking-wide">{dependency.name}</span>
+                    <Badge variant={dependency.ok ? 'secondary' : 'destructive'} className={dependency.ok ? 'bg-[#1a1a1a] text-emerald-400' : ''}>
+                      {dependency.ok ? 'healthy' : 'degraded'}
+                    </Badge>
+                  </div>
+                  {typeof dependency.latencyMs === 'number' ? (
+                    <p className="text-xs text-zinc-500">Latency: {dependency.latencyMs}ms</p>
+                  ) : null}
+                  {dependency.error ? (
+                    <p className="text-xs text-rose-400">{dependency.error}</p>
+                  ) : null}
+                  {dependency.detail ? (
+                    <p className="text-xs text-zinc-500 font-mono break-all">{JSON.stringify(dependency.detail)}</p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-zinc-500 italic">Runtime health is unavailable.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
+        <CardHeader className="border-b border-[#1a1a1a] pb-4">
           <CardTitle className="text-zinc-100">Runtime Task Control</CardTitle>
           <CardDescription className="text-zinc-500 mt-1">
             Pause, resume, or cancel orchestration tasks at safe worker boundaries.
@@ -259,10 +346,22 @@ export const ControlsPage = () => {
                   Signal: <span className="text-zinc-200">{runtimeDetail.controlSignal}</span>
                 </span>
                 <span className="flex items-center justify-between">
-                  Engine: <span className="text-zinc-200">{runtimeDetail.engine ?? 'n/a'}</span>
+                  Company Scope: <span className="text-zinc-200">{runtimeDetail.companyId ?? 'unresolved'}</span>
+                </span>
+                <span className="flex items-center justify-between">
+                  Visibility: <span className="text-zinc-200">{runtimeDetail.scopeVisibility ?? 'unresolved'}</span>
+                </span>
+                <span className="flex items-center justify-between">
+                  Engine (configured): <span className="text-zinc-200">{runtimeDetail.configuredEngine ?? 'n/a'}</span>
+                </span>
+                <span className="flex items-center justify-between">
+                  Engine (used): <span className="text-zinc-200">{runtimeDetail.engineUsed ?? runtimeDetail.engine ?? 'n/a'}</span>
                 </span>
                 <span className="flex items-center justify-between">
                   Route Intent: <span className="text-zinc-200">{runtimeDetail.routeIntent ?? 'n/a'}</span>
+                </span>
+                <span className="flex items-center justify-between">
+                  Rollback: <span className="text-zinc-200">{runtimeDetail.rolledBackFrom ? `${runtimeDetail.rolledBackFrom} (${runtimeDetail.rollbackReasonCode ?? 'n/a'})` : 'none'}</span>
                 </span>
                 <span className="flex items-center justify-between">
                   Graph Node: <span className="text-zinc-200">{runtimeDetail.graphNode ?? 'n/a'}</span>
@@ -286,9 +385,14 @@ export const ControlsPage = () => {
             <div className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-md p-4 flex flex-col gap-3">
               <div className="flex items-center justify-between pb-3 border-b border-[#1a1a1a]">
                 <strong className="text-zinc-200 text-sm font-medium">Graph Trace</strong>
-                <Badge variant="outline" className="border-[#222] text-zinc-400 bg-transparent">
-                  {runtimeTrace.engine}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="border-[#222] text-zinc-400 bg-transparent">
+                    cfg: {runtimeTrace.configuredEngine ?? runtimeTrace.engine}
+                  </Badge>
+                  <Badge variant="outline" className="border-[#222] text-zinc-400 bg-transparent">
+                    run: {runtimeTrace.engineUsed ?? runtimeTrace.engine}
+                  </Badge>
+                </div>
               </div>
               <ScrollArea className="h-44 rounded border border-[#1a1a1a] bg-[#080808]">
                 <div className="flex flex-col">
@@ -300,6 +404,9 @@ export const ControlsPage = () => {
                       <p className="text-xs text-zinc-500">
                         {new Date(step.updatedAt).toLocaleString()} &middot; engine: {step.engine}
                         {step.graphNode ? ` · graphNode: ${step.graphNode}` : ''}
+                        {step.routeIntent ? ` · intent: ${step.routeIntent}` : ''}
+                        {step.routeSource ? ` · routeSource: ${step.routeSource}` : ''}
+                        {step.responseDeliveryStatus ? ` · delivery: ${step.responseDeliveryStatus}` : ''}
                       </p>
                     </div>
                   ))}
@@ -335,7 +442,7 @@ export const ControlsPage = () => {
                     <div className="flex flex-col">
                       <strong className="text-zinc-200 text-sm font-medium">{task.taskId}</strong>
                       <span className="text-xs text-zinc-500 mt-1">
-                        {task.status} &middot; engine: {task.engine ?? 'n/a'} &middot; step: {task.currentStep ?? 'n/a'} &middot; signal: {task.controlSignal}
+                        {task.status} &middot; scope: {task.companyId ?? task.scopeVisibility ?? 'unresolved'} &middot; engine: {task.engineUsed ?? task.engine ?? 'n/a'} &middot; step: {task.currentStep ?? 'n/a'} &middot; signal: {task.controlSignal}
                       </span>
                     </div>
                   </button>

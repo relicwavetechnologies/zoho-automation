@@ -22,7 +22,8 @@ type CursorState = {
 
 type ZohoDataClientOptions = {
   httpClient?: ZohoHttpClient;
-  tokenService?: Pick<ZohoTokenService, 'getValidAccessToken' | 'forceRefresh'>;
+  tokenService?: Pick<ZohoTokenService, 'getValidAccessToken' | 'forceRefresh'>
+    & Partial<Pick<ZohoTokenService, 'resolveCredentials'>>;
 };
 
 type ZohoListResponse = {
@@ -97,7 +98,8 @@ const ensureModule = (sourceType: ZohoSourceType): { sourceType: ZohoSourceType;
 export class ZohoDataClient {
   private readonly httpClient: ZohoHttpClient;
 
-  private readonly tokenService: Pick<ZohoTokenService, 'getValidAccessToken' | 'forceRefresh'>;
+  private readonly tokenService: Pick<ZohoTokenService, 'getValidAccessToken' | 'forceRefresh'>
+    & Partial<Pick<ZohoTokenService, 'resolveCredentials'>>;
 
   constructor(options: ZohoDataClientOptions = {}) {
     this.httpClient = options.httpClient ?? zohoHttpClient;
@@ -114,13 +116,41 @@ export class ZohoDataClient {
     const cursor = parseCursor(input.cursor);
     const moduleDef = MODULES[cursor.moduleIndex] ?? MODULES[0];
 
-    const payload = await this.requestZohoListWithRefresh({
-      companyId: input.companyId,
-      environment,
-      moduleName: moduleDef.moduleName,
-      page: cursor.page,
-      perPage: Math.max(1, Math.min(200, input.pageSize)),
-    });
+    let payload: ZohoListResponse;
+    try {
+      payload = await this.requestZohoListWithRefresh({
+        companyId: input.companyId,
+        environment,
+        moduleName: moduleDef.moduleName,
+        page: cursor.page,
+        perPage: Math.max(1, Math.min(200, input.pageSize)),
+      });
+    } catch (error) {
+      const moduleRejected =
+        error instanceof ZohoIntegrationError
+        && error.statusCode === 400;
+      if (!moduleRejected) {
+        throw error;
+      }
+
+      const fallbackCursor = cursor.moduleIndex + 1 < MODULES.length
+        ? encodeCursor({ moduleIndex: cursor.moduleIndex + 1, page: 1 })
+        : undefined;
+      logger.warn('zoho.historical.module.skipped', {
+        companyId: input.companyId,
+        environment,
+        module: moduleDef.moduleName,
+        sourceType: moduleDef.sourceType,
+        page: cursor.page,
+        reason: error.message,
+        nextCursor: fallbackCursor,
+      });
+      return {
+        records: [],
+        nextCursor: fallbackCursor,
+        total: 0,
+      };
+    }
 
     const records = (payload.data ?? []).map((record) => {
       const sourceId = coerceString(record.id);
@@ -203,9 +233,10 @@ export class ZohoDataClient {
   }
 
   private async requestWithRefresh<T>(companyId: string, environment: string, path: string): Promise<T> {
+    const scopedClient = await this.resolveApiClient(companyId);
     const token = await this.tokenService.getValidAccessToken(companyId, environment);
     try {
-      return await this.httpClient.requestJson<T>({
+      return await scopedClient.requestJson<T>({
         base: 'api',
         path,
         method: 'GET',
@@ -226,7 +257,7 @@ export class ZohoDataClient {
       });
 
       const refreshedToken = await this.tokenService.forceRefresh(companyId, environment);
-      return this.httpClient.requestJson<T>({
+      return scopedClient.requestJson<T>({
         base: 'api',
         path,
         method: 'GET',
@@ -239,6 +270,15 @@ export class ZohoDataClient {
         },
       });
     }
+  }
+
+  private async resolveApiClient(companyId: string): Promise<ZohoHttpClient> {
+    if (!this.tokenService.resolveCredentials) {
+      return this.httpClient;
+    }
+
+    const credentials = await this.tokenService.resolveCredentials(companyId);
+    return credentials.httpClient ?? this.httpClient;
   }
 }
 

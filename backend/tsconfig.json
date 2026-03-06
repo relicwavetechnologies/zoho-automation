@@ -12,6 +12,11 @@
     "types": ["node", "express"],
     "baseUrl": "src",
     "paths": {
+      "@mastra/core": ["../node_modules/@mastra/core/dist/index"],
+      "@mastra/core/agent": ["../node_modules/@mastra/core/dist/agent/index"],
+      "@mastra/core/tools": ["../node_modules/@mastra/core/dist/tools/index"],
+      "@mastra/core/di": ["../node_modules/@mastra/core/dist/di/index"],
+      "@ai-sdk/openai": ["../node_modules/@ai-sdk/openai/dist/index"],
       "@config/*": ["config/*"],
       "@core/*": ["core/*"],
       "@loaders/*": ["loaders/*"],

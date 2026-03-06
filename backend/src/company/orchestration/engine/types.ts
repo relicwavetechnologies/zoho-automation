@@ -8,7 +8,7 @@ import type {
 } from '../../contracts';
 import type { OrchestrationTaskStatus } from '../../contracts/status';
 
-export type OrchestrationEngineId = 'legacy' | 'langgraph';
+export type OrchestrationEngineId = 'legacy' | 'langgraph' | 'mastra';
 
 export type RollbackReasonCode =
   | 'llm_unavailable'

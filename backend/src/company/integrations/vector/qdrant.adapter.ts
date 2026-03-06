@@ -47,15 +47,41 @@ class VectorStoreError extends Error {
   }
 }
 
+const isCollectionNotFoundError = (error: unknown): error is VectorStoreError =>
+  error instanceof VectorStoreError && error.message.includes('(404)');
+
+const isMissingPayloadIndexError = (error: unknown): error is VectorStoreError =>
+  error instanceof VectorStoreError
+  && error.message.includes('Index required but not found');
+
 const buildPointId = (point: {
   companyId: string;
   sourceType: string;
   sourceId: string;
   chunkIndex: number;
-}): string =>
-  createHash('sha1')
+}): string => {
+  const seed = createHash('sha1')
     .update(`${point.companyId}|${point.sourceType}|${point.sourceId}|${point.chunkIndex}`)
-    .digest('hex');
+    .digest('hex')
+    .slice(0, 32)
+    .padEnd(32, '0');
+
+  const chars = seed.split('');
+  // UUID version 5 nibble.
+  chars[12] = '5';
+  // RFC4122 variant nibble (8, 9, a, b).
+  const variant = Number.parseInt(chars[16] ?? '0', 16);
+  chars[16] = ((variant & 0x3) | 0x8).toString(16);
+  const normalized = chars.join('');
+
+  return [
+    normalized.slice(0, 8),
+    normalized.slice(8, 12),
+    normalized.slice(12, 16),
+    normalized.slice(16, 20),
+    normalized.slice(20, 32),
+  ].join('-');
+};
 
 export class QdrantAdapter implements VectorStoreAdapter {
   private readonly baseUrl = config.QDRANT_URL.replace(/\/$/, '');
@@ -67,6 +93,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
   private readonly timeoutMs = config.QDRANT_TIMEOUT_MS;
 
   private ensuringCollection: Promise<void> | null = null;
+  private ensuringFilterIndexes: Promise<void> | null = null;
 
   private headers(contentType = true): Record<string, string> {
     const headers: Record<string, string> = {};
@@ -130,6 +157,16 @@ export class QdrantAdapter implements VectorStoreAdapter {
     return this.ensuringCollection;
   }
 
+  private async ensureIndexes(): Promise<void> {
+    if (!this.ensuringFilterIndexes) {
+      this.ensuringFilterIndexes = this.ensureIndexesInternal().finally(() => {
+        this.ensuringFilterIndexes = null;
+      });
+    }
+
+    return this.ensuringFilterIndexes;
+  }
+
   private async ensureCollectionInternal(vectorSize: number): Promise<void> {
     try {
       await this.request({
@@ -160,12 +197,40 @@ export class QdrantAdapter implements VectorStoreAdapter {
     });
   }
 
+  private async ensureIndexesInternal(): Promise<void> {
+    const indexRequests: Array<{ fieldName: string; fieldSchema: 'keyword' | 'integer' }> = [
+      { fieldName: 'companyId', fieldSchema: 'keyword' },
+      { fieldName: 'sourceType', fieldSchema: 'keyword' },
+      { fieldName: 'sourceId', fieldSchema: 'keyword' },
+      { fieldName: 'chunkIndex', fieldSchema: 'integer' },
+    ];
+
+    for (const indexRequest of indexRequests) {
+      try {
+        await this.request({
+          method: 'PUT',
+          path: `/collections/${encodeURIComponent(this.collection)}/index?wait=true`,
+          body: {
+            field_name: indexRequest.fieldName,
+            field_schema: indexRequest.fieldSchema,
+          },
+        });
+      } catch (error) {
+        if (isCollectionNotFoundError(error)) {
+          return;
+        }
+        throw error;
+      }
+    }
+  }
+
   async upsert(points: VectorPointUpsert[]): Promise<void> {
     if (points.length === 0) {
       return;
     }
 
     await this.ensureCollection(points[0].vector.length);
+    await this.ensureIndexes();
 
     const qdrantPoints: QdrantPoint[] = points.map((point) => ({
       id: point.id,
@@ -208,28 +273,35 @@ export class QdrantAdapter implements VectorStoreAdapter {
   }
 
   async deleteBySource(input: VectorDeleteBySourceInput): Promise<void> {
-    await this.request({
-      method: 'POST',
-      path: `/collections/${encodeURIComponent(this.collection)}/points/delete?wait=true`,
-      body: {
-        filter: {
-          must: [
-            {
-              key: 'companyId',
-              match: { value: input.companyId },
-            },
-            {
-              key: 'sourceType',
-              match: { value: input.sourceType },
-            },
-            {
-              key: 'sourceId',
-              match: { value: input.sourceId },
-            },
-          ],
+    try {
+      await this.request({
+        method: 'POST',
+        path: `/collections/${encodeURIComponent(this.collection)}/points/delete?wait=true`,
+        body: {
+          filter: {
+            must: [
+              {
+                key: 'companyId',
+                match: { value: input.companyId },
+              },
+              {
+                key: 'sourceType',
+                match: { value: input.sourceType },
+              },
+              {
+                key: 'sourceId',
+                match: { value: input.sourceId },
+              },
+            ],
+          },
         },
-      },
-    });
+      });
+    } catch (error) {
+      if (isCollectionNotFoundError(error)) {
+        return;
+      }
+      throw error;
+    }
   }
 
   async deleteVectorsBySource(input: {
@@ -245,25 +317,62 @@ export class QdrantAdapter implements VectorStoreAdapter {
   }
 
   async search(query: VectorSearchQuery): Promise<VectorSearchResult[]> {
-    const payload = await this.request<QdrantSearchResponse>({
-      method: 'POST',
-      path: `/collections/${encodeURIComponent(this.collection)}/points/search`,
-      body: {
-        vector: query.vector,
-        limit: Math.max(1, Math.min(20, query.limit)),
-        with_payload: true,
-        filter: {
-          must: [
-            {
-              key: 'companyId',
-              match: {
-                value: query.companyId,
+    let payload: QdrantSearchResponse;
+    try {
+      payload = await this.request<QdrantSearchResponse>({
+        method: 'POST',
+        path: `/collections/${encodeURIComponent(this.collection)}/points/search`,
+        body: {
+          vector: query.vector,
+          limit: Math.max(1, Math.min(20, query.limit)),
+          with_payload: true,
+          filter: {
+            must: [
+              {
+                key: 'companyId',
+                match: {
+                  value: query.companyId,
+                },
               },
-            },
-          ],
+            ],
+          },
         },
-      },
-    });
+      });
+    } catch (error) {
+      if (isCollectionNotFoundError(error)) {
+        // First retrieval may happen before initial ingestion; create lazily and return empty.
+        await this.ensureCollection(query.vector.length);
+        await this.ensureIndexes();
+        return [];
+      }
+
+      if (isMissingPayloadIndexError(error)) {
+        await this.ensureIndexes();
+        payload = await this.request<QdrantSearchResponse>({
+          method: 'POST',
+          path: `/collections/${encodeURIComponent(this.collection)}/points/search`,
+          body: {
+            vector: query.vector,
+            limit: Math.max(1, Math.min(20, query.limit)),
+            with_payload: true,
+            filter: {
+              must: [
+                {
+                  key: 'companyId',
+                  match: {
+                    value: query.companyId,
+                  },
+                },
+              ],
+            },
+          },
+        });
+      } else {
+        throw error;
+      }
+    }
+
+    await this.ensureIndexes();
 
     return (payload.result ?? []).map((item) => ({
       id: String(item.id),
@@ -276,23 +385,53 @@ export class QdrantAdapter implements VectorStoreAdapter {
   }
 
   async countByCompany(companyId: string): Promise<number> {
-    const payload = await this.request<QdrantCountResponse>({
-      method: 'POST',
-      path: `/collections/${encodeURIComponent(this.collection)}/points/count`,
-      body: {
-        exact: true,
-        filter: {
-          must: [
-            {
-              key: 'companyId',
-              match: {
-                value: companyId,
+    let payload: QdrantCountResponse;
+    try {
+      await this.ensureIndexes();
+      payload = await this.request<QdrantCountResponse>({
+        method: 'POST',
+        path: `/collections/${encodeURIComponent(this.collection)}/points/count`,
+        body: {
+          exact: true,
+          filter: {
+            must: [
+              {
+                key: 'companyId',
+                match: {
+                  value: companyId,
+                },
               },
-            },
-          ],
+            ],
+          },
         },
-      },
-    });
+      });
+    } catch (error) {
+      if (isCollectionNotFoundError(error)) {
+        return 0;
+      }
+      if (isMissingPayloadIndexError(error)) {
+        await this.ensureIndexes();
+        payload = await this.request<QdrantCountResponse>({
+          method: 'POST',
+          path: `/collections/${encodeURIComponent(this.collection)}/points/count`,
+          body: {
+            exact: true,
+            filter: {
+              must: [
+                {
+                  key: 'companyId',
+                  match: {
+                    value: companyId,
+                  },
+                },
+              ],
+            },
+          },
+        });
+      } else {
+        throw error;
+      }
+    }
 
     return Number(payload.result?.count ?? 0);
   }
@@ -304,6 +443,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
         method: 'GET',
         path: `/collections/${encodeURIComponent(this.collection)}`,
       });
+      await this.ensureIndexes();
       return {
         ok: true,
         backend: 'qdrant',

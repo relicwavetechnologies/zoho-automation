@@ -122,11 +122,88 @@ const shouldLog = (level: LogLevel, options?: LogOptions, randomFn: () => number
   return randomFn() < sampleRate;
 };
 
+// ─── Pretty dev formatter ────────────────────────────────────────────────────
+
+const IS_DEV = config.NODE_ENV !== 'production';
+
+// ANSI colour codes (no-op in prod)
+const C = IS_DEV
+  ? {
+    reset: '\x1b[0m',
+    dim: '\x1b[2m',
+    bold: '\x1b[1m',
+    debug: '\x1b[36m',   // cyan
+    info: '\x1b[32m',    // green
+    warn: '\x1b[33m',    // yellow
+    error: '\x1b[31m',   // red
+    fatal: '\x1b[35m',   // magenta
+  }
+  : ({} as Record<string, string>);
+
+const levelBadge: Record<LogLevel, string> = IS_DEV
+  ? {
+    debug: `${C.debug}DBG${C.reset}`,
+    info: `${C.info}INF${C.reset}`,
+    warn: `${C.warn}WRN${C.reset}`,
+    error: `${C.error}ERR${C.reset}`,
+    fatal: `${C.fatal}FTL${C.reset}`,
+  }
+  : { debug: 'DBG', info: 'INF', warn: 'WRN', error: 'ERR', fatal: 'FTL' };
+
+/** Flatten a meta object to "key=value key2=value2" – skips nested objects beyond depth 1. */
+const flattenMeta = (meta: unknown): string => {
+  if (!isRecord(meta)) {
+    return String(meta);
+  }
+  return Object.entries(meta)
+    .map(([k, v]) => {
+      if (isRecord(v) || Array.isArray(v)) {
+        return `${k}=${JSON.stringify(v)}`;
+      }
+      return `${k}=${String(v)}`;
+    })
+    .join('  ');
+};
+
+const hhmm = (): string => {
+  const now = new Date();
+  const h = String(now.getHours()).padStart(2, '0');
+  const m = String(now.getMinutes()).padStart(2, '0');
+  const s = String(now.getSeconds()).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+};
+
+const prettyLine = (level: LogLevel, message: string, meta?: unknown): string => {
+  const time = IS_DEV ? `${C.dim}${hhmm()}${C.reset}` : hhmm();
+  const badge = levelBadge[level];
+  const msg = IS_DEV ? `${C.bold}${message}${C.reset}` : message;
+  const metaPart = meta !== undefined ? `  ${C.dim ?? ''}${flattenMeta(meta)}${C.reset ?? ''}` : '';
+  return `${time} ${badge} ${msg}${metaPart}`;
+};
+
+// ─── Emit ────────────────────────────────────────────────────────────────────
+
 const emit = (level: LogLevel, message: string, meta?: unknown, options?: LogOptions): void => {
   if (!shouldLog(level, options)) {
     return;
   }
 
+  if (IS_DEV) {
+    const line = prettyLine(level, message, meta !== undefined ? sanitize(meta) : undefined);
+    if (level === 'error' || level === 'fatal') {
+      // eslint-disable-next-line no-console
+      console.error(line);
+    } else if (level === 'warn') {
+      // eslint-disable-next-line no-console
+      console.warn(line);
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(line);
+    }
+    return;
+  }
+
+  // Production: structured JSON (unchanged)
   const payload: Record<string, unknown> = {
     ts: new Date().toISOString(),
     level,

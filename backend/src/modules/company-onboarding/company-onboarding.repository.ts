@@ -19,15 +19,22 @@ export class CompanyOnboardingRepository extends BaseRepository {
   upsertZohoConnection(input: {
     companyId: string;
     environment: string;
+    providerMode?: 'rest' | 'mcp';
     status: string;
     connectedAt: Date;
     scopes: string[];
-    accessTokenEncrypted: string;
-    refreshTokenEncrypted?: string;
-    tokenCipherVersion: number;
-    accessTokenExpiresAt: Date;
-    refreshTokenExpiresAt?: Date;
-    tokenMetadata?: Record<string, unknown>;
+    accessTokenEncrypted?: string | null;
+    refreshTokenEncrypted?: string | null;
+    tokenCipherVersion?: number;
+    accessTokenExpiresAt?: Date | null;
+    refreshTokenExpiresAt?: Date | null;
+    tokenMetadata?: Record<string, unknown> | null;
+    mcpBaseUrl?: string | null;
+    mcpApiKeyEncrypted?: string | null;
+    mcpWorkspaceKey?: string | null;
+    mcpAllowedTools?: string[];
+    mcpCapabilities?: Record<string, unknown> | null;
+    mcpLastHealthStatus?: string | null;
   }): Promise<ZohoConnection> {
     return prisma.zohoConnection.upsert({
       where: {
@@ -39,28 +46,44 @@ export class CompanyOnboardingRepository extends BaseRepository {
       create: {
         companyId: input.companyId,
         environment: input.environment,
+        providerMode: input.providerMode ?? 'rest',
         status: input.status,
         connectedAt: input.connectedAt,
         scopes: input.scopes,
         accessTokenEncrypted: input.accessTokenEncrypted,
         refreshTokenEncrypted: input.refreshTokenEncrypted,
-        tokenCipherVersion: input.tokenCipherVersion,
+        tokenCipherVersion: input.tokenCipherVersion ?? 1,
         accessTokenExpiresAt: input.accessTokenExpiresAt,
         refreshTokenExpiresAt: input.refreshTokenExpiresAt,
         tokenMetadata: input.tokenMetadata as Prisma.InputJsonValue | undefined,
+        mcpBaseUrl: input.mcpBaseUrl,
+        mcpApiKeyEncrypted: input.mcpApiKeyEncrypted,
+        mcpWorkspaceKey: input.mcpWorkspaceKey,
+        mcpAllowedTools: input.mcpAllowedTools ?? [],
+        mcpCapabilities: input.mcpCapabilities as Prisma.InputJsonValue | undefined,
+        mcpLastHealthAt: input.mcpLastHealthStatus ? new Date() : null,
+        mcpLastHealthStatus: input.mcpLastHealthStatus,
         tokenFailureCode: null,
         lastTokenRefreshAt: new Date(),
       },
       update: {
+        providerMode: input.providerMode ?? 'rest',
         status: input.status,
         connectedAt: input.connectedAt,
         scopes: input.scopes,
         accessTokenEncrypted: input.accessTokenEncrypted,
         refreshTokenEncrypted: input.refreshTokenEncrypted,
-        tokenCipherVersion: input.tokenCipherVersion,
+        tokenCipherVersion: input.tokenCipherVersion ?? 1,
         accessTokenExpiresAt: input.accessTokenExpiresAt,
         refreshTokenExpiresAt: input.refreshTokenExpiresAt,
         tokenMetadata: input.tokenMetadata as Prisma.InputJsonValue | undefined,
+        mcpBaseUrl: input.mcpBaseUrl,
+        mcpApiKeyEncrypted: input.mcpApiKeyEncrypted,
+        mcpWorkspaceKey: input.mcpWorkspaceKey,
+        mcpAllowedTools: input.mcpAllowedTools ?? [],
+        mcpCapabilities: input.mcpCapabilities as Prisma.InputJsonValue | undefined,
+        mcpLastHealthAt: input.mcpLastHealthStatus ? new Date() : null,
+        mcpLastHealthStatus: input.mcpLastHealthStatus,
         tokenFailureCode: null,
         lastTokenRefreshAt: new Date(),
       },

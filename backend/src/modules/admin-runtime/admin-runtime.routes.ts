@@ -7,6 +7,7 @@ import { adminRuntimeController } from './admin-runtime.controller';
 const router = Router();
 
 router.use(requireAdminSession(), requireRbacAction('system.controls.write'));
+router.get('/health', asyncHandler(adminRuntimeController.getHealth));
 router.get('/tasks', asyncHandler(adminRuntimeController.listTasks));
 router.get('/tasks/:taskId', asyncHandler(adminRuntimeController.getTask));
 router.get('/tasks/:taskId/trace', asyncHandler(adminRuntimeController.getTaskTrace));

@@ -2,7 +2,7 @@ import { Job, Worker } from 'bullmq';
 
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
-import { classifyRuntimeError } from '../../observability';
+import { classifyRuntimeError, emitRuntimeTrace } from '../../observability';
 import {
   buildTaskWithConfiguredEngine,
   executeTaskWithConfiguredEngine,
@@ -34,6 +34,31 @@ const runPerUserDeterministically = async (userId: string, fn: () => Promise<voi
   return next;
 };
 
+const extractCompanyIdFromAgentResults = (results: Array<Record<string, unknown>> | undefined): string | undefined => {
+  if (!Array.isArray(results)) {
+    return undefined;
+  }
+
+  for (const result of results) {
+    if (!result || typeof result !== 'object') {
+      continue;
+    }
+    if (result.agentKey !== 'zoho-read' || result.status !== 'success') {
+      continue;
+    }
+    const payload = result.result;
+    if (!payload || typeof payload !== 'object') {
+      continue;
+    }
+    const companyId = (payload as Record<string, unknown>).companyId;
+    if (typeof companyId === 'string' && companyId.trim().length > 0) {
+      return companyId;
+    }
+  }
+
+  return undefined;
+};
+
 const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
   const { taskId, message } = job.data;
   const configuredEngine = getConfiguredOrchestrationEngineId();
@@ -47,6 +72,20 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     taskId,
     jobId: job.id,
     textHash: message.trace?.textHash,
+  });
+  emitRuntimeTrace({
+    event: 'lark.runtime.job.started',
+    level: 'info',
+    requestId: message.trace?.requestId,
+    taskId,
+    messageId: message.messageId,
+    metadata: {
+      channel: message.channel,
+      eventId: message.trace?.eventId,
+      chatId: message.chatId,
+      userId: message.userId,
+      textHash: message.trace?.textHash,
+    },
   });
   const task = await buildTaskWithConfiguredEngine(taskId, message);
 
@@ -78,6 +117,7 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     message,
     latestCheckpoint,
   });
+  const resolvedCompanyId = extractCompanyIdFromAgentResults(result.agentResults as Array<Record<string, unknown>>);
 
   const applyExecutionResultToTask = (input: {
     taskId: string;
@@ -105,6 +145,10 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
       graphNode: input.result.runtimeMeta?.node,
       graphStepHistory: input.result.runtimeMeta?.stepHistory,
       routeIntent: input.result.runtimeMeta?.routeIntent,
+      companyId: resolvedCompanyId ?? runtimeTaskStore.get(input.taskId)?.companyId,
+      scopeVisibility: (resolvedCompanyId ?? runtimeTaskStore.get(input.taskId)?.companyId)
+        ? 'resolved'
+        : 'unresolved',
       agentResultsHistory: [
         ...(runtimeTaskStore.get(input.taskId)?.agentResultsHistory ?? []),
         ...(input.result.agentResults ?? []),
@@ -151,6 +195,24 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     jobId: job.id,
     status: result.status,
     textHash: message.trace?.textHash,
+  });
+  emitRuntimeTrace({
+    event: 'lark.runtime.job.completed',
+    level: 'info',
+    requestId: message.trace?.requestId,
+    taskId,
+    messageId: message.messageId,
+    companyId: resolvedCompanyId,
+    metadata: {
+      status: result.status,
+      channel: message.channel,
+      eventId: message.trace?.eventId,
+      chatId: message.chatId,
+      userId: message.userId,
+      textHash: message.trace?.textHash,
+      configuredEngine: selectedEngine,
+      engineUsed,
+    },
   });
 };
 
@@ -247,6 +309,21 @@ export const startOrchestrationWorker = (): Worker<OrchestrationJobData, void, t
       textHash: job?.data.message.trace?.textHash,
       error: classifiedError,
     });
+    emitRuntimeTrace({
+      event: 'lark.runtime.job.failed',
+      level: 'error',
+      requestId: job?.data.message.trace?.requestId,
+      taskId: job?.data.taskId,
+      messageId: job?.data.message.messageId,
+      metadata: {
+        channel: job?.data.message.channel,
+        eventId: job?.data.message.trace?.eventId,
+        chatId: job?.data.message.chatId,
+        userId: job?.data.message.userId,
+        textHash: job?.data.message.trace?.textHash,
+        error: classifiedError,
+      },
+    });
   });
   worker.on('error', (error) => {
     logger.error('queue.worker.error', { error });
@@ -281,9 +358,9 @@ export const __test__ = {
       runtimeMeta?: { threadId?: string; node?: string; stepHistory?: string[]; routeIntent?: string };
       agentResults?: Array<Record<string, unknown>>;
     };
-    selectedEngine: 'legacy' | 'langgraph';
-    engineUsed: 'legacy' | 'langgraph';
-    rolledBackFrom?: 'legacy' | 'langgraph';
+    selectedEngine: 'legacy' | 'langgraph' | 'mastra';
+    engineUsed: 'legacy' | 'langgraph' | 'mastra';
+    rolledBackFrom?: 'legacy' | 'langgraph' | 'mastra';
     rollbackReasonCode?: string;
   }) =>
     runtimeTaskStore.update(input.taskId, {

@@ -1,11 +1,16 @@
 import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
+import config from '../../config';
 import { IngestionJobDTO, ZohoConnectionDTO } from '../../company/contracts';
 import { zohoConnectionAdapter } from '../../company/integrations/zoho';
 import { ZohoIntegrationError } from '../../company/integrations/zoho/zoho.errors';
+import { mcpHttpClient } from '../../company/integrations/zoho/mcp-http.client';
+import { resolveZohoProvider } from '../../company/integrations/zoho/zoho-provider.resolver';
+import { encryptZohoSecret } from '../../company/integrations/zoho/zoho-token.crypto';
 import { qdrantAdapter } from '../../company/integrations/vector';
 import { zohoSyncProducer } from '../../company/queue/producer';
 import { runZohoDeltaSyncWorker, runZohoHistoricalSyncWorker } from '../../company/queue/workers';
+import { logger } from '../../utils/logger';
 import {
   CompanyOnboardingRepository,
   companyOnboardingRepository,
@@ -17,6 +22,10 @@ import { OnboardingLifecycleValidationResult } from './company-onboarding.model'
 import { DeltaSyncEventDto } from './dto/delta-sync-event.dto';
 import { ZohoConnectDto } from './dto/zoho-connect.dto';
 
+type PersistedZohoConnection = Awaited<
+  ReturnType<CompanyOnboardingRepository['upsertZohoConnection']>
+>;
+
 export class CompanyOnboardingService extends BaseService {
   constructor(
     private readonly repository: CompanyOnboardingRepository = companyOnboardingRepository,
@@ -26,80 +35,22 @@ export class CompanyOnboardingService extends BaseService {
 
   async connectZoho(payload: ZohoConnectDto): Promise<CompanyOnboardingConnectResult> {
     const companyId = await this.resolveCompanyId(payload.companyId, payload.companyName);
-    let adapterResult;
-    try {
-      adapterResult = await zohoConnectionAdapter.connect(
-        {
-          authorizationCode: payload.authorizationCode,
-          scopes: payload.scopes,
-          environment: payload.environment,
-        },
-        companyId,
-      );
-    } catch (error) {
-      if (error instanceof ZohoIntegrationError) {
-        const status = error.code === 'auth_failed' ? 400 : 503;
-        throw new HttpException(status, `Zoho connect failed: ${error.code}`);
-      }
-      throw error;
-    }
-
-    if (adapterResult.status !== 'CONNECTED') {
-      throw new HttpException(400, 'Zoho connection failed');
-    }
-
-    const connection = await this.repository.upsertZohoConnection({
-      companyId,
-      environment: payload.environment,
-      status: adapterResult.status,
-      connectedAt: new Date(adapterResult.connectedAt),
-      scopes: adapterResult.scopes,
-      accessTokenEncrypted: adapterResult.tokenState.accessTokenEncrypted,
-      refreshTokenEncrypted: adapterResult.tokenState.refreshTokenEncrypted,
-      tokenCipherVersion: adapterResult.tokenState.tokenCipherVersion,
-      accessTokenExpiresAt: new Date(adapterResult.tokenState.accessTokenExpiresAt),
-      refreshTokenExpiresAt: adapterResult.tokenState.refreshTokenExpiresAt
-        ? new Date(adapterResult.tokenState.refreshTokenExpiresAt)
-        : undefined,
-      tokenMetadata: adapterResult.tokenState.tokenMetadata,
-    });
+    const connection = payload.mode === 'mcp'
+      ? await this.connectViaMcp(companyId, payload)
+      : await this.connectViaRest(companyId, payload);
 
     const queued = await zohoSyncProducer.enqueueInitialHistoricalSync({
       companyId,
       connectionId: connection.id,
     });
 
-    if (queued.enqueued) {
-      void runZohoHistoricalSyncWorker(companyId);
-    }
-
-    const connectionDto: ZohoConnectionDTO = {
-      companyId,
-      status: connection.status as ZohoConnectionDTO['status'],
-      connectedAt: connection.connectedAt.toISOString(),
-      scopes: connection.scopes,
-      lastSyncAt: connection.lastSyncAt?.toISOString(),
-      tokenHealth: {
-        status: connection.tokenFailureCode
-          ? 'failed'
-          : connection.accessTokenExpiresAt && connection.accessTokenExpiresAt.getTime() <= Date.now()
-            ? 'expired'
-            : connection.accessTokenExpiresAt &&
-                connection.accessTokenExpiresAt.getTime() - Date.now() <= 5 * 60 * 1000
-              ? 'expiring'
-              : connection.accessTokenExpiresAt
-                ? 'healthy'
-                : 'unknown',
-        accessTokenExpiresAt: connection.accessTokenExpiresAt?.toISOString(),
-        lastRefreshAt: connection.lastTokenRefreshAt?.toISOString(),
-        failureCode: connection.tokenFailureCode ?? undefined,
-      },
-    };
+    // Always wake worker so an already-queued job is not left stale.
+    void runZohoHistoricalSyncWorker(companyId);
 
     return {
       companyId,
       environment: connection.environment,
-      connection: connectionDto,
+      connection: this.toConnectionDto(connection),
       initialSync: {
         status: queued.enqueued ? 'queued' : 'already_queued',
         jobId: queued.jobId,
@@ -206,29 +157,7 @@ export class CompanyOnboardingService extends BaseService {
 
     return {
       companyId,
-      connection: connection
-        ? {
-          status: connection.status,
-          connectedAt: connection.connectedAt.toISOString(),
-          scopes: connection.scopes,
-          lastSyncAt: connection.lastSyncAt?.toISOString(),
-          tokenHealth: {
-            status: connection.tokenFailureCode
-              ? 'failed'
-              : connection.accessTokenExpiresAt && connection.accessTokenExpiresAt.getTime() <= Date.now()
-                ? 'expired'
-                : connection.accessTokenExpiresAt &&
-                    connection.accessTokenExpiresAt.getTime() - Date.now() <= 5 * 60 * 1000
-                  ? 'expiring'
-                  : connection.accessTokenExpiresAt
-                    ? 'healthy'
-                    : 'unknown',
-            accessTokenExpiresAt: connection.accessTokenExpiresAt?.toISOString(),
-            lastRefreshAt: connection.lastTokenRefreshAt?.toISOString(),
-            failureCode: connection.tokenFailureCode ?? undefined,
-          },
-        }
-        : null,
+      connection: connection ? this.toConnectionDto(connection) : null,
       historicalSync: historicalJob
         ? {
           jobId: historicalJob.id,
@@ -249,12 +178,71 @@ export class CompanyOnboardingService extends BaseService {
     };
   }
 
+  async triggerHistoricalSync(companyId: string, trigger = 'admin_manual_resync') {
+    const connection = await this.repository.findLatestConnectionForCompany(companyId);
+    if (!connection) {
+      throw new HttpException(404, 'No active Zoho connection found for company');
+    }
+
+    if (connection.status !== 'CONNECTED') {
+      throw new HttpException(409, 'Zoho connection is not active. Connect Zoho before starting sync.');
+    }
+
+    const queued = await zohoSyncProducer.enqueueInitialHistoricalSync({
+      companyId,
+      connectionId: connection.id,
+      trigger,
+    });
+
+    // Always wake worker so manual retry can recover queued/stale jobs.
+    void runZohoHistoricalSyncWorker(companyId);
+
+    return {
+      companyId,
+      connectionId: connection.id,
+      sync: {
+        status: queued.enqueued ? 'queued' : 'already_queued',
+        jobId: queued.jobId,
+      },
+      vectorPolicy: 'safe_upsert_preserve_existing',
+    };
+  }
+
   async disconnectZoho(companyId: string) {
     const result = await this.repository.disconnectCompanyConnections(companyId);
     return {
       companyId,
       disconnected: result.count > 0,
       affectedConnections: result.count,
+    };
+  }
+
+  async getProviderStatus(companyId: string) {
+    const connection = await this.repository.findLatestConnectionForCompany(companyId);
+    if (!connection) {
+      throw new HttpException(404, 'No active Zoho connection found for company');
+    }
+
+    const resolved = await resolveZohoProvider({
+      companyId,
+      environment: connection.environment,
+    });
+    const context = {
+      companyId,
+      connectionId: resolved.connectionId,
+      environment: resolved.environment,
+    };
+    const [health, capabilities] = await Promise.all([
+      resolved.adapter.health(context),
+      resolved.adapter.discoverCapabilities(context).catch(() => []),
+    ]);
+
+    return {
+      companyId,
+      providerMode: resolved.providerMode,
+      environment: resolved.environment,
+      health,
+      capabilities,
     };
   }
 
@@ -276,6 +264,202 @@ export class CompanyOnboardingService extends BaseService {
 
     const company = await this.repository.createCompany(companyName);
     return company.id;
+  }
+
+  private async connectViaRest(
+    companyId: string,
+    payload: Extract<ZohoConnectDto, { mode: 'rest' }>,
+  ): Promise<PersistedZohoConnection> {
+    let connected;
+    try {
+      connected = await zohoConnectionAdapter.connect(
+        {
+          authorizationCode: payload.authorizationCode,
+          scopes: payload.scopes,
+          environment: payload.environment,
+        },
+        companyId,
+      );
+    } catch (error) {
+      const isReplayLikeInvalidCode =
+        error instanceof ZohoIntegrationError
+        && error.code === 'auth_failed'
+        && /invalid_code/i.test(error.message);
+
+      if (!isReplayLikeInvalidCode) {
+        throw error;
+      }
+
+      const existing = await this.repository.findLatestConnectionForCompany(companyId);
+      const recentlyConnected =
+        existing
+        && existing.environment === payload.environment
+        && Date.now() - existing.connectedAt.getTime() <= 10 * 60 * 1000;
+
+      if (!recentlyConnected) {
+        throw error;
+      }
+
+      logger.warn('zoho.oauth.exchange.duplicate_code_ignored', {
+        companyId,
+        environment: payload.environment,
+        connectionId: existing.id,
+      });
+      return existing;
+    }
+
+    return this.repository.upsertZohoConnection({
+      companyId,
+      environment: payload.environment,
+      providerMode: 'rest',
+      status: connected.status,
+      connectedAt: new Date(connected.connectedAt),
+      scopes: connected.scopes,
+      accessTokenEncrypted: connected.tokenState.accessTokenEncrypted,
+      refreshTokenEncrypted: connected.tokenState.refreshTokenEncrypted ?? null,
+      tokenCipherVersion: connected.tokenState.tokenCipherVersion,
+      accessTokenExpiresAt: new Date(connected.tokenState.accessTokenExpiresAt),
+      refreshTokenExpiresAt: connected.tokenState.refreshTokenExpiresAt
+        ? new Date(connected.tokenState.refreshTokenExpiresAt)
+        : null,
+      tokenMetadata: connected.tokenState.tokenMetadata ?? null,
+      mcpBaseUrl: null,
+      mcpApiKeyEncrypted: null,
+      mcpWorkspaceKey: null,
+      mcpAllowedTools: [],
+      mcpCapabilities: null,
+      mcpLastHealthStatus: null,
+    });
+  }
+
+  private async connectViaMcp(
+    companyId: string,
+    payload: Extract<ZohoConnectDto, { mode: 'mcp' }>,
+  ): Promise<PersistedZohoConnection> {
+    if (!config.ZOHO_MCP_ENABLED) {
+      throw new HttpException(400, 'MCP provider mode is disabled for this environment');
+    }
+
+    try {
+      const discoveredTools = await mcpHttpClient.listTools({
+        baseUrl: payload.mcpBaseUrl,
+        apiKey: payload.mcpApiKey,
+        workspaceKey: payload.mcpWorkspaceKey,
+      });
+      const allowedTools = [...new Set(payload.allowedTools.map((tool) => tool.trim()).filter(Boolean))];
+      const capabilities = [...new Set([...allowedTools, ...discoveredTools])];
+      const encryptedMcpApiKey = encryptZohoSecret(
+        payload.mcpApiKey,
+        config.MCP_SECRET_ENCRYPTION_KEY || undefined,
+      ).cipherText;
+
+      logger.success('mcp.connect.success', {
+        companyId,
+        environment: payload.environment,
+        discoveredTools: discoveredTools.length,
+        allowedTools: allowedTools.length,
+      });
+
+      return this.repository.upsertZohoConnection({
+        companyId,
+        environment: payload.environment,
+        providerMode: 'mcp',
+        status: 'CONNECTED',
+        connectedAt: new Date(),
+        scopes: payload.scopes,
+        accessTokenEncrypted: null,
+        refreshTokenEncrypted: null,
+        tokenCipherVersion: 1,
+        accessTokenExpiresAt: null,
+        refreshTokenExpiresAt: null,
+        tokenMetadata: {
+          connectionMode: 'mcp',
+        },
+        mcpBaseUrl: payload.mcpBaseUrl,
+        mcpApiKeyEncrypted: encryptedMcpApiKey,
+        mcpWorkspaceKey: payload.mcpWorkspaceKey ?? null,
+        mcpAllowedTools: allowedTools,
+        mcpCapabilities: {
+          tools: capabilities,
+        },
+        mcpLastHealthStatus: 'healthy',
+      });
+    } catch (error) {
+      logger.error('mcp.connect.failed', {
+        companyId,
+        environment: payload.environment,
+        reason: error instanceof Error ? error.message : 'unknown_error',
+        error,
+      });
+      if (error instanceof HttpException || error instanceof ZohoIntegrationError) {
+        throw error;
+      }
+      throw new ZohoIntegrationError({
+        message: error instanceof Error ? error.message : 'MCP connection failed',
+        code: 'mcp_unavailable',
+        retriable: true,
+      });
+    }
+  }
+
+  private toConnectionDto(connection: PersistedZohoConnection): ZohoConnectionDTO {
+    const now = Date.now();
+    const accessTokenExpiresAt = connection.accessTokenExpiresAt?.toISOString();
+
+    const tokenStatus: ZohoConnectionDTO['tokenHealth'] =
+      connection.providerMode === 'mcp'
+        ? undefined
+        : {
+            status: connection.tokenFailureCode
+              ? 'failed'
+              : connection.accessTokenExpiresAt && connection.accessTokenExpiresAt.getTime() <= now
+                ? 'expired'
+                : connection.accessTokenExpiresAt &&
+                    connection.accessTokenExpiresAt.getTime() - now <= 5 * 60 * 1000
+                  ? 'expiring'
+                  : connection.accessTokenExpiresAt
+                    ? 'healthy'
+                    : 'unknown',
+            accessTokenExpiresAt,
+            lastRefreshAt: connection.lastTokenRefreshAt?.toISOString(),
+            failureCode: connection.tokenFailureCode ?? undefined,
+          };
+
+    return {
+      companyId: connection.companyId,
+      status: connection.status as ZohoConnectionDTO['status'],
+      connectedAt: connection.connectedAt.toISOString(),
+      scopes: connection.scopes,
+      lastSyncAt: connection.lastSyncAt?.toISOString(),
+      providerMode: connection.providerMode as ZohoConnectionDTO['providerMode'],
+      providerHealth:
+        connection.providerMode === 'mcp'
+          ? ((connection.mcpLastHealthStatus as ZohoConnectionDTO['providerHealth']) ?? 'healthy')
+          : undefined,
+      capabilities:
+        connection.providerMode === 'mcp'
+          ? this.readMcpCapabilities(connection.mcpCapabilities)
+          : undefined,
+      tokenHealth: tokenStatus,
+    };
+  }
+
+  private readMcpCapabilities(raw: unknown): string[] {
+    if (Array.isArray(raw)) {
+      return raw.map((value) => (typeof value === 'string' ? value.trim() : '')).filter(Boolean);
+    }
+    if (!raw || typeof raw !== 'object') {
+      return [];
+    }
+
+    const tools = (raw as { tools?: unknown }).tools;
+    if (!Array.isArray(tools)) {
+      return [];
+    }
+
+    return tools
+      .map((value) => (typeof value === 'string' ? value.trim() : ''))
+      .filter((value) => value.length > 0);
   }
 }
 

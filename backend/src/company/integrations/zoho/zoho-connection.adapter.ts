@@ -28,6 +28,7 @@ export class ZohoConnectionAdapter {
         authorizationCode: input.authorizationCode,
         scopes: input.scopes,
         environment: input.environment,
+        companyId,
       });
 
       return {

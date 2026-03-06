@@ -45,10 +45,16 @@ test('QdrantAdapter.upsertVectors ensures collection and upserts deterministic p
     ]);
   });
 
-  assert.equal(calls.length, 3);
-  const upsertBody = JSON.parse(calls[2].init.body);
+  assert.ok(calls.length >= 3);
+  const upsertCall = calls.find((call) => call.url.includes('/points?wait=true'));
+  assert.ok(upsertCall);
+  const upsertBody = JSON.parse(upsertCall.init.body);
   assert.equal(Array.isArray(upsertBody.points), true);
   assert.equal(typeof upsertBody.points[0].id, 'string');
+  assert.match(
+    upsertBody.points[0].id,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
   assert.equal(upsertBody.points[0].payload.companyId, 'cmp-1');
   assert.equal(upsertBody.points[0].payload.sourceId, 'src-1');
 });
@@ -56,24 +62,32 @@ test('QdrantAdapter.upsertVectors ensures collection and upserts deterministic p
 test('QdrantAdapter.search scopes by company and maps payloads', async () => {
   const adapter = new QdrantAdapter();
 
-  await withFetch(async (_url, init) => {
-    const body = JSON.parse(init.body);
-    assert.equal(body.filter.must[0].match.value, 'cmp-1');
+  await withFetch(async (url, init) => {
+    const parsedUrl = String(url);
+    if (parsedUrl.includes('/index?wait=true')) {
+      return jsonResponse({ status: 'ok' });
+    }
+    if (parsedUrl.includes('/points/search')) {
+      const body = JSON.parse(init.body);
+      assert.equal(body.filter.must[0].match.value, 'cmp-1');
 
-    return jsonResponse({
-      result: [
-        {
-          id: 'pt-1',
-          score: 0.88,
-          payload: {
-            sourceType: 'zoho_deal',
-            sourceId: 'deal-1',
-            chunkIndex: 2,
-            title: 'Deal 1',
+      return jsonResponse({
+        result: [
+          {
+            id: 'pt-1',
+            score: 0.88,
+            payload: {
+              sourceType: 'zoho_deal',
+              sourceId: 'deal-1',
+              chunkIndex: 2,
+              title: 'Deal 1',
+            },
           },
-        },
-      ],
-    });
+        ],
+      });
+    }
+
+    return jsonResponse({ status: 'ok' });
   }, async () => {
     const result = await adapter.search({
       companyId: 'cmp-1',

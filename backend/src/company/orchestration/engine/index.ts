@@ -2,6 +2,7 @@ import config from '../../../config';
 import { logger } from '../../../utils/logger';
 import { classifyRuntimeError } from '../../observability';
 import { langGraphOrchestrationEngine } from './langgraph-orchestration.engine';
+import { mastraOrchestrationEngine } from './mastra-orchestration.engine';
 import { legacyOrchestrationEngine } from './legacy-orchestration.engine';
 import type {
   OrchestrationEngine,
@@ -11,7 +12,15 @@ import type {
   RollbackDecision,
 } from './types';
 
-const resolveEngineId = (): OrchestrationEngineId => (config.ORCHESTRATION_ENGINE === 'legacy' ? 'legacy' : 'langgraph');
+const resolveEngineId = (): OrchestrationEngineId => {
+  if (config.ORCHESTRATION_ENGINE === 'legacy') {
+    return 'legacy';
+  }
+  if (config.ORCHESTRATION_ENGINE === 'mastra') {
+    return 'mastra';
+  }
+  return 'langgraph';
+};
 
 export const resolveEnginePolicy = () => ({
   configuredEngine: resolveEngineId(),
@@ -67,7 +76,11 @@ export const classifyRollbackEligibility = (error: unknown): RollbackDecision =>
 export const getConfiguredOrchestrationEngineId = (): OrchestrationEngineId => resolveEngineId();
 
 export const getOrchestrationEngine = (engineId: OrchestrationEngineId): OrchestrationEngine =>
-  engineId === 'legacy' ? legacyOrchestrationEngine : langGraphOrchestrationEngine;
+  engineId === 'legacy'
+    ? legacyOrchestrationEngine
+    : engineId === 'mastra'
+      ? mastraOrchestrationEngine
+      : langGraphOrchestrationEngine;
 
 export const getConfiguredOrchestrationEngine = (): OrchestrationEngine => getOrchestrationEngine(resolveEngineId());
 

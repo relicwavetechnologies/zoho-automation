@@ -10,6 +10,7 @@ import { logger } from '../../../utils/logger';
 import type { LarkWebhookEnvelope } from './lark.types';
 import { buildLarkTraceMeta } from './lark-observability';
 import { larkTenantTokenService, LarkTenantTokenService } from './lark-tenant-token.service';
+import { emitRuntimeTrace } from '../../observability';
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (typeof value !== 'object' || value === null) {
@@ -52,6 +53,15 @@ const parseLarkTextContent = (content: unknown): string => {
     return raw;
   }
 };
+
+const readTenantKey = (envelope: LarkWebhookEnvelope): string | undefined =>
+  readString(envelope.header?.tenant_key)
+  ?? readString(envelope.header?.tenantKey)
+  ?? readString(envelope.event?.tenant_key)
+  ?? readString(envelope.event?.tenantKey)
+  ?? readString(envelope.tenant_key)
+  ?? readString(envelope.tenantKey)
+  ?? readString(envelope.tenantKeyId);
 
 const toIsoTimestamp = (source?: string): string => {
   if (!source) {
@@ -165,6 +175,9 @@ export class LarkChannelAdapter implements ChannelAdapter {
       timestamp: toIsoTimestamp(readString(message.create_time)),
       text: parseLarkTextContent(message.content),
       rawEvent: event,
+      trace: {
+        larkTenantKey: readTenantKey(envelope),
+      },
     };
 
     return Object.freeze(normalized);
@@ -174,8 +187,16 @@ export class LarkChannelAdapter implements ChannelAdapter {
     const requestPath = '/open-apis/im/v1/messages?receive_id_type=chat_id';
     const body = {
       receive_id: input.chatId,
-      msg_type: 'text',
-      content: JSON.stringify({ text: input.text }),
+      msg_type: 'interactive',
+      content: JSON.stringify({
+        config: { wide_screen_mode: true },
+        elements: [
+          {
+            tag: 'markdown',
+            content: input.text,
+          },
+        ],
+      }),
     };
 
     const result = await this.requestWithTokenRetry({
@@ -194,6 +215,15 @@ export class LarkChannelAdapter implements ChannelAdapter {
         }),
         error: result.result.error,
       });
+      emitRuntimeTrace({
+        event: 'lark.egress.send.failed',
+        level: 'warn',
+        taskId: input.correlationId,
+        metadata: {
+          chatId: input.chatId,
+          error: result.result.error,
+        },
+      });
       return result.result;
     }
 
@@ -210,6 +240,15 @@ export class LarkChannelAdapter implements ChannelAdapter {
       messageId: outbound.messageId,
       correlationId: input.correlationId,
     }));
+    emitRuntimeTrace({
+      event: 'lark.egress.send.success',
+      level: 'info',
+      taskId: input.correlationId,
+      messageId: outbound.messageId,
+      metadata: {
+        chatId: input.chatId,
+      },
+    });
     return outbound;
   }
 
@@ -218,7 +257,15 @@ export class LarkChannelAdapter implements ChannelAdapter {
       method: 'PATCH',
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
       body: {
-        content: JSON.stringify({ text: input.text }),
+        content: JSON.stringify({
+          config: { wide_screen_mode: true },
+          elements: [
+            {
+              tag: 'markdown',
+              content: input.text,
+            },
+          ],
+        }),
       },
       context: 'update',
       messageId: input.messageId,
@@ -231,6 +278,15 @@ export class LarkChannelAdapter implements ChannelAdapter {
           correlationId: input.correlationId,
         }),
         error: result.result.error,
+      });
+      emitRuntimeTrace({
+        event: 'lark.egress.update.failed',
+        level: 'warn',
+        taskId: input.correlationId,
+        messageId: input.messageId,
+        metadata: {
+          error: result.result.error,
+        },
       });
       return result.result;
     }
@@ -245,6 +301,12 @@ export class LarkChannelAdapter implements ChannelAdapter {
       messageId: input.messageId,
       correlationId: input.correlationId,
     }));
+    emitRuntimeTrace({
+      event: 'lark.egress.update.success',
+      level: 'info',
+      taskId: input.correlationId,
+      messageId: input.messageId,
+    });
     return outbound;
   }
 
@@ -263,7 +325,41 @@ export class LarkChannelAdapter implements ChannelAdapter {
     try {
       token = await this.tokenService.getAccessToken();
     } catch (error) {
-        logger.error('lark.token.unavailable', {
+      logger.error('lark.token.unavailable', {
+        context: input.context,
+        chatId: input.chatId,
+        messageId: input.messageId,
+        error,
+      });
+      return {
+        ok: false,
+        result: {
+          channel: this.channel,
+          status: 'failed',
+          chatId: input.chatId,
+          messageId: input.messageId,
+          error: {
+            type: 'API_ERROR',
+            classifiedReason: 'lark_tenant_token_unavailable',
+            rawMessage: error instanceof Error ? error.message : 'Lark tenant token unavailable',
+            retriable: false,
+          },
+        },
+      };
+    }
+
+    let firstAttempt = await this.performRequest(input, token);
+    if (!firstAttempt.response.ok && isTokenInvalidFailure(firstAttempt.response, firstAttempt.payload)) {
+      logger.warn('lark.token.refresh.required', {
+        context: input.context,
+        statusCode: firstAttempt.response.status,
+        responseCode: firstAttempt.payload.code,
+        responseMessage: firstAttempt.payload.msg,
+      });
+      try {
+        token = await this.tokenService.getAccessToken({ forceRefresh: true });
+      } catch (error) {
+        logger.error('lark.token.refresh.failed', {
           context: input.context,
           chatId: input.chatId,
           messageId: input.messageId,
@@ -276,109 +372,75 @@ export class LarkChannelAdapter implements ChannelAdapter {
             status: 'failed',
             chatId: input.chatId,
             messageId: input.messageId,
+            providerResponse: firstAttempt.payload,
             error: {
               type: 'API_ERROR',
-              classifiedReason: 'lark_tenant_token_unavailable',
-              rawMessage: error instanceof Error ? error.message : 'Lark tenant token unavailable',
-              retriable: false,
+              classifiedReason: 'lark_tenant_token_refresh_failed',
+              rawMessage: error instanceof Error ? error.message : 'Lark token refresh failed',
+              retriable: true,
             },
           },
         };
       }
+      firstAttempt = await this.performRequest(input, token);
+    }
 
-      let firstAttempt = await this.performRequest(input, token);
-      if (!firstAttempt.response.ok && isTokenInvalidFailure(firstAttempt.response, firstAttempt.payload)) {
-        logger.warn('lark.token.refresh.required', {
+    if (!firstAttempt.response.ok) {
+      logger.error('lark.api.request_failed', {
+        context: input.context,
+        statusCode: firstAttempt.response.status,
+        statusText: firstAttempt.response.statusText,
+        responseCode: firstAttempt.payload.code,
+        responseMessage: firstAttempt.payload.msg,
+        chatId: input.chatId,
+        messageId: input.messageId,
+      });
+      return {
+        ok: false,
+        result: buildApiErrorResult({
           context: input.context,
-          statusCode: firstAttempt.response.status,
-          responseCode: firstAttempt.payload.code,
-          responseMessage: firstAttempt.payload.msg,
-        });
-        try {
-          token = await this.tokenService.getAccessToken({ forceRefresh: true });
-        } catch (error) {
-          logger.error('lark.token.refresh.failed', {
-            context: input.context,
-            chatId: input.chatId,
-            messageId: input.messageId,
-            error,
-          });
-          return {
-            ok: false,
-            result: {
-              channel: this.channel,
-              status: 'failed',
-              chatId: input.chatId,
-              messageId: input.messageId,
-              providerResponse: firstAttempt.payload,
-              error: {
-                type: 'API_ERROR',
-                classifiedReason: 'lark_tenant_token_refresh_failed',
-                rawMessage: error instanceof Error ? error.message : 'Lark token refresh failed',
-                retriable: true,
-              },
-            },
-          };
-        }
-        firstAttempt = await this.performRequest(input, token);
-      }
-
-      if (!firstAttempt.response.ok) {
-        logger.error('lark.api.request_failed', {
-          context: input.context,
-          statusCode: firstAttempt.response.status,
-          statusText: firstAttempt.response.statusText,
-          responseCode: firstAttempt.payload.code,
-          responseMessage: firstAttempt.payload.msg,
+          response: firstAttempt.response,
+          payload: firstAttempt.payload,
           chatId: input.chatId,
           messageId: input.messageId,
-        });
-        return {
-          ok: false,
-          result: buildApiErrorResult({
-            context: input.context,
-            response: firstAttempt.response,
-            payload: firstAttempt.payload,
-            chatId: input.chatId,
-            messageId: input.messageId,
-          }),
-        };
-      }
-
-      return {
-        ok: true,
-        payload: firstAttempt.payload,
+        }),
       };
     }
 
-    private async performRequest(
-      input: {
-        method: 'POST' | 'PATCH';
-        requestPath: string;
-        body: Record<string, unknown>;
+    return {
+      ok: true,
+      payload: firstAttempt.payload,
+    };
+  }
+
+  private async performRequest(
+    input: {
+      method: 'POST' | 'PATCH';
+      requestPath: string;
+      body: Record<string, unknown>;
+    },
+    token: string,
+  ): Promise<{ response: LarkResponseLike; payload: Record<string, unknown> }> {
+    const response = await this.fetchImpl(`${this.apiBaseUrl}${input.requestPath}`, {
+      method: input.method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
       },
-      token: string,
-    ): Promise<{ response: LarkResponseLike; payload: Record<string, unknown> }> {
-      const response = await this.fetchImpl(`${this.apiBaseUrl}${input.requestPath}`, {
-        method: input.method,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(input.body),
-      });
+      body: JSON.stringify(input.body),
+    });
 
-      let payload: Record<string, unknown> = {};
-      try {
-        const parsed = await response.json();
-        payload = asRecord(parsed) ?? {};
-      } catch {
-        payload = {};
-      }
-
-      return {
-        response,
-        payload,
-      };
+    let payload: Record<string, unknown> = {};
+    try {
+      const parsed = await response.json();
+      payload = asRecord(parsed) ?? {};
+    } catch {
+      payload = {};
     }
+
+    return {
+      response,
+      payload,
+    };
+  }
 }

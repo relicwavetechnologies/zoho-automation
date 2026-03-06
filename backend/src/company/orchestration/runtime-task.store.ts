@@ -8,6 +8,8 @@ export type RuntimeTaskSnapshot = {
   channel: string;
   userId: string;
   chatId: string;
+  companyId?: string;
+  scopeVisibility?: 'resolved' | 'unresolved';
   status: OrchestrationTaskStatus;
   plan: string[];
   currentStep?: string;
@@ -41,6 +43,7 @@ class RuntimeTaskStore {
       createdAt: now,
       updatedAt: now,
       controlSignal: 'running',
+      scopeVisibility: input.companyId ? 'resolved' : 'unresolved',
     };
     this.tasks.set(snapshot.taskId, snapshot);
     return snapshot;

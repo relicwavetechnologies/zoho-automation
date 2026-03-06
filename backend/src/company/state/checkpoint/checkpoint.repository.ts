@@ -1,6 +1,7 @@
 import type { CheckpointDTO } from '../../contracts';
 import config from '../../../config';
 import { redisConnection } from '../../queue/runtime/redis.connection';
+import { emitRuntimeTrace } from '../../observability';
 
 const checkpointVersionKey = (taskId: string) => `emiac:task:${taskId}:checkpoint:version`;
 const checkpointHistoryKey = (taskId: string) => `emiac:task:${taskId}:checkpoint:history`;
@@ -26,6 +27,24 @@ class CheckpointRepository {
       .expire(checkpointHistoryKey(taskId), config.CHECKPOINT_TTL_SECONDS)
       .expire(checkpointVersionKey(taskId), config.CHECKPOINT_TTL_SECONDS)
       .exec();
+    const trace = state.trace && typeof state.trace === 'object'
+      ? (state.trace as Record<string, unknown>)
+      : undefined;
+    emitRuntimeTrace({
+      event: 'orchestration.checkpoint.saved',
+      level: 'info',
+      taskId,
+      messageId: typeof state.messageId === 'string' ? state.messageId : undefined,
+      requestId: typeof trace?.requestId === 'string' ? trace.requestId : undefined,
+      metadata: {
+        version,
+        node,
+        routeIntent:
+          state.route && typeof state.route === 'object' && typeof (state.route as Record<string, unknown>).intent === 'string'
+            ? (state.route as Record<string, unknown>).intent
+            : undefined,
+      },
+    });
     return checkpoint;
   }
 

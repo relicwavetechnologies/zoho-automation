@@ -36,6 +36,10 @@ ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS=30000
 ORCHESTRATION_QUEUE_MAX_STALLED_COUNT=1
 ORCHESTRATION_ENGINE=langgraph
 ORCHESTRATION_LEGACY_ROLLBACK_ENABLED=true
+MASTRA_BASE_URL=http://127.0.0.1:8000
+MASTRA_AGENT_ID=supervisorAgent
+MASTRA_API_KEY=
+MASTRA_TIMEOUT_MS=12000
 LOG_LEVEL=info
 LOG_SUCCESS_SAMPLE_RATE=0.25
 LOG_INCLUDE_STACK=true
@@ -49,14 +53,21 @@ OPENAI_ROUTER_MODEL=gpt-4o-mini
 OPENAI_PLANNER_MODEL=gpt-4o-mini
 OPENAI_SYNTHESIS_MODEL=gpt-4o-mini
 OPENAI_TEMPERATURE=0.1
-LANGSMITH_TRACING=
+LANGSMITH_TRACING=false
 LANGSMITH_API_KEY=
+LANGSMITH_PROJECT=zoho-automation-runtime
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 ```
 
 Notes:
 - `OPENAI_API_KEY` enables model-backed route/planning/synthesis in LangGraph runtime.
 - If `OPENAI_API_KEY` is not set, runtime falls back to deterministic routing/planning/synthesis heuristics.
-- `ORCHESTRATION_ENGINE=langgraph` is the V1 default; use `legacy` for manual rollback mode.
+- `ORCHESTRATION_ENGINE=langgraph` is the V1 default; supported values are `langgraph`, `legacy`, and `mastra`.
+- `ORCHESTRATION_ENGINE=mastra` expects a reachable Mastra runtime:
+  - `MASTRA_BASE_URL` (Mastra host, for example `http://127.0.0.1:8000`)
+  - `MASTRA_AGENT_ID` (for example `supervisorAgent`)
+  - `MASTRA_API_KEY` (optional bearer token)
+  - `MASTRA_TIMEOUT_MS` (request timeout for generate calls)
 - Keep `ORCHESTRATION_LEGACY_ROLLBACK_ENABLED=true` during first release cycle.
 - Engine rollback contract:
   - `ORCHESTRATION_ENGINE` selects configured engine deterministically.
@@ -70,6 +81,10 @@ Notes:
   - `OPENAI_ROUTER_MODEL`
   - `OPENAI_PLANNER_MODEL`
   - `OPENAI_SYNTHESIS_MODEL`
+- LangSmith tracing is optional and fail-open:
+  - set `LANGSMITH_TRACING=true` only when `LANGSMITH_API_KEY` and `LANGSMITH_PROJECT` are set.
+  - if toggle is true but keys are missing, startup logs a warning and sink stays disabled.
+  - tracing payloads are sanitized metadata only (hashes/ids/reason codes), with no raw text/prompts.
 
 ## V1 Zoho + Qdrant + Retrieval Runtime (Tasks 13–18 Implemented)
 
@@ -78,12 +93,20 @@ QDRANT_URL=http://127.0.0.1:6333
 QDRANT_API_KEY=
 QDRANT_COLLECTION=zoho_automation_docs
 QDRANT_TIMEOUT_MS=5000
+ZOHO_PROVIDER_DEFAULT=rest
+ZOHO_MCP_ENABLED=false
+ZOHO_MCP_ACTIONS_ENABLED=false
+MCP_REQUEST_TIMEOUT_MS=10000
+MCP_MAX_RETRIES=3
+MCP_RETRY_BASE_DELAY_MS=250
+MCP_SECRET_ENCRYPTION_KEY=
 ZOHO_CLIENT_ID=
 ZOHO_CLIENT_SECRET=
 ZOHO_REDIRECT_URI=
 ZOHO_ACCOUNTS_BASE_URL=https://accounts.zoho.com
 ZOHO_API_BASE_URL=https://www.zohoapis.com
 ZOHO_TOKEN_ENCRYPTION_KEY=
+LARK_TENANT_BINDING_ENFORCED=true
 EMBEDDING_PROVIDER=openai
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 LANGSMITH_PROJECT=
@@ -98,6 +121,12 @@ Notes:
   - `ZOHO_CLIENT_SECRET`
   - `ZOHO_REDIRECT_URI`
   - `ZOHO_TOKEN_ENCRYPTION_KEY` (strongly recommended; warning when missing)
+- MCP mode settings:
+  - `ZOHO_PROVIDER_DEFAULT` chooses default provider (`rest` or `mcp`) for connected companies.
+  - `ZOHO_MCP_ENABLED=true` enables MCP provider resolution and onboarding in `mode=mcp`.
+  - `MCP_SECRET_ENCRYPTION_KEY` is strongly recommended for encrypting per-company MCP API keys.
+  - If `MCP_SECRET_ENCRYPTION_KEY` is empty, code falls back to `ZOHO_TOKEN_ENCRYPTION_KEY`.
+  - `LARK_TENANT_BINDING_ENFORCED=true` enforces explicit tenant->company mapping for Lark ingress.
 - `EMBEDDING_PROVIDER` supports `openai` and `fallback`.
 - If `EMBEDDING_PROVIDER=openai` without `OPENAI_API_KEY`, runtime logs a warning and falls back deterministically.
 - `LANGSMITH_PROJECT` is additive metadata only for now; tracing rollout remains optional.

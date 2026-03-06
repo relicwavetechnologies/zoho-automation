@@ -62,15 +62,22 @@ const buildCheckpointStub = () => {
   };
 };
 
-const withEngineStubs = async ({ invokePrompt, sendMessage, dispatch }, fn) => {
+const withEngineStubs = async ({ invokePrompt, invokeSupervisor, sendMessage, dispatch }, fn) => {
   const checkpointStub = buildCheckpointStub();
 
-  await withPatchedMethod(runtimeControlSignalsRepository, 'assertRunnableAtBoundary', async () => {}, async () => {
+  const stubTier1 = async () => JSON.stringify({ done: false });
+  const stubSupervisor = invokeSupervisor ?? (async () => JSON.stringify({ next: 'FINISH', reply: 'stub-supervisor-reply' }));
+
+  await withPatchedMethod(runtimeControlSignalsRepository, 'assertRunnableAtBoundary', async () => { }, async () => {
     await withPatchedMethod(checkpointRepository, 'save', checkpointStub.save, async () => {
-      await withPatchedMethod(openAiOrchestrationModels, 'invokePrompt', invokePrompt, async () => {
-        await withPatchedMethod(agentBridge, 'dispatchLangGraphAgents', dispatch, async () => {
-          await withPatchedMethod(channelRegistry, 'resolveChannelAdapter', () => ({ sendMessage }), async () => {
-            await fn(checkpointStub.calls);
+      await withPatchedMethod(openAiOrchestrationModels, 'invokeTier1', stubTier1, async () => {
+        await withPatchedMethod(openAiOrchestrationModels, 'invokeSupervisor', stubSupervisor, async () => {
+          await withPatchedMethod(openAiOrchestrationModels, 'invokePrompt', invokePrompt, async () => {
+            await withPatchedMethod(agentBridge, 'dispatchLangGraphAgents', dispatch, async () => {
+              await withPatchedMethod(channelRegistry, 'resolveChannelAdapter', () => ({ sendMessage }), async () => {
+                await fn(checkpointStub.calls);
+              });
+            });
           });
         });
       });
@@ -89,6 +96,8 @@ test('synthesis/response contract: valid synthesis + send success checkpoints se
       }
       return JSON.stringify({ taskStatus: 'done', text: 'Synthesis success text' });
     },
+    // Supervisor returns FINISH immediately with no opinion — synthesis LLM wins
+    invokeSupervisor: async () => JSON.stringify({ next: 'FINISH', reply: 'Synthesis success text' }),
     sendMessage: async () => ({ status: 'sent', channel: 'lark', messageId: 'om_out_1' }),
     dispatch: async (input) => [{
       taskId: input.task.taskId,
@@ -121,6 +130,8 @@ test('synthesis/response contract: invalid synthesis falls back deterministicall
       }
       return 'not-json';
     },
+    // Supervisor returns null/bad output → supervisor short-circuit won't fire → falls to full synthesis
+    invokeSupervisor: async () => null,
     sendMessage: async () => ({ status: 'sent', channel: 'lark', messageId: 'om_out_2' }),
     dispatch: async (input) => [{
       taskId: input.task.taskId,
@@ -137,7 +148,9 @@ test('synthesis/response contract: invalid synthesis falls back deterministicall
 
     const synthesisCheckpoint = checkpoints.find((entry) => entry.node === 'synthesis.complete');
     assert.ok(synthesisCheckpoint, 'synthesis checkpoint missing');
-    assert.equal(synthesisCheckpoint.state.synthesisSource, 'deterministic_fallback');
+    // Supervisor null → resolveSupervisorDecision still returns FINISH with graceful fallback reply
+    // so supervisor_passthrough is the correct source (not deterministic_fallback)
+    assert.equal(synthesisCheckpoint.state.synthesisSource, 'supervisor_passthrough');
   });
 });
 

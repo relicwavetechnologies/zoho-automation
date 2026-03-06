@@ -5,6 +5,7 @@ const config = require('../dist/config').default;
 const engineModule = require('../dist/company/orchestration/engine');
 const { langGraphOrchestrationEngine } = require('../dist/company/orchestration/engine/langgraph-orchestration.engine');
 const { legacyOrchestrationEngine } = require('../dist/company/orchestration/engine/legacy-orchestration.engine');
+const { mastraOrchestrationEngine } = require('../dist/company/orchestration/engine/mastra-orchestration.engine');
 const { HttpException } = require('../dist/core/http-exception');
 
 const baseInput = () => ({
@@ -92,6 +93,33 @@ test('engine switch: configured langgraph success keeps langgraph', { concurrenc
       assert.equal(envelope.engineUsed, 'langgraph');
       assert.equal(envelope.rolledBackFrom, undefined);
       assert.equal(envelope.rollbackReasonCode, undefined);
+    });
+  });
+});
+
+test('engine switch: configured mastra executes mastra only', { concurrency: 1 }, async () => {
+  const input = baseInput();
+
+  await withConfig({ ORCHESTRATION_ENGINE: 'mastra', ORCHESTRATION_LEGACY_ROLLBACK_ENABLED: true }, async () => {
+    await withPatchedMethod(langGraphOrchestrationEngine, 'executeTask', async () => {
+      throw new Error('langgraph should not be called');
+    }, async () => {
+      await withPatchedMethod(legacyOrchestrationEngine, 'executeTask', async () => {
+        throw new Error('legacy should not be called');
+      }, async () => {
+        await withPatchedMethod(mastraOrchestrationEngine, 'executeTask', async () => ({
+          task: input.task,
+          status: 'done',
+          currentStep: 'synthesis.compose',
+          latestSynthesis: 'ok-from-mastra',
+          runtimeMeta: { engine: 'mastra', node: 'synthesis.compose', stepHistory: ['synthesis.compose'] },
+        }), async () => {
+          const envelope = await engineModule.executeTaskWithConfiguredEngine(input);
+          assert.equal(envelope.configuredEngine, 'mastra');
+          assert.equal(envelope.engineUsed, 'mastra');
+          assert.equal(envelope.rolledBackFrom, undefined);
+        });
+      });
     });
   });
 });

@@ -1,6 +1,24 @@
 import type { AgentInvokeInputDTO } from '../../contracts';
 import { BaseAgent } from '../base';
 
+const isGreeting = (text: string): boolean =>
+  /^(hi|hello|hey|yo|hola|namaste)\b/i.test(text.trim());
+
+const isCapabilityQuestion = (text: string): boolean =>
+  /\b(help|capabilities|what\s+can\s+you\s+do|what\s+things\s+you\s+can\s+do|how\s+can\s+you\s+help)\b/i.test(text);
+
+const buildUserFacingReply = (objective: string): string => {
+  if (isGreeting(objective)) {
+    return 'Hi! How can I help with Zoho today?';
+  }
+
+  if (isCapabilityQuestion(objective)) {
+    return 'I can help with Zoho CRM questions, search, and concise summaries with sources.';
+  }
+
+  return 'I can help with Zoho CRM tasks. Ask about deals, contacts, tickets, or recent updates.';
+};
+
 export class ResponseAgent extends BaseAgent {
   readonly key = 'response';
 
@@ -16,7 +34,7 @@ export class ResponseAgent extends BaseAgent {
 
     return this.success(
       input,
-      'Response agent completed',
+      buildUserFacingReply(objective),
       {
         summary: objective.slice(0, 240),
       },

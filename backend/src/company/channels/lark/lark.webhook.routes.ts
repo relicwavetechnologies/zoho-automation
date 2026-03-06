@@ -5,15 +5,24 @@ import {
   verifyLarkWebhookRequest,
 } from '../../security/lark/lark-webhook-verifier';
 import type { NormalizedIncomingMessageDTO } from '../../contracts';
+import config from '../../../config';
 import { logger } from '../../../utils/logger';
 import { LarkChannelAdapter } from './lark.adapter';
 import type { LarkIngressParseResult } from './lark-ingress.contract';
 import { parseLarkIngressPayload } from './lark-ingress.contract';
 import { buildLarkTextHash, buildLarkTraceMeta } from './lark-observability';
+import { emitRuntimeTrace } from '../../observability';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
 type WebhookVerificationFailureReason = Exclude<LarkWebhookVerificationResult['reason'], undefined>;
 type AllowedRejectionReason = Exclude<WebhookVerificationFailureReason, 'replay_window_exceeded'>;
+
+type UpsertChannelIdentityInput = {
+  channel: string;
+  externalUserId: string;
+  externalTenantId: string;
+  companyId: string;
+};
 
 type LarkWebhookRouteDependencies = {
   adapter: Pick<LarkChannelAdapter, 'normalizeIncomingEvent' | 'sendMessage'>;
@@ -25,6 +34,8 @@ type LarkWebhookRouteDependencies = {
     normalized: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>>,
   ) => Promise<{ taskId: string }>;
   resolveHitlAction: (actionId: string, decision: 'confirmed' | 'cancelled') => Promise<boolean>;
+  resolveCompanyIdByTenantKey: (larkTenantKey: string) => Promise<string | null>;
+  upsertChannelIdentity: (input: UpsertChannelIdentityInput) => Promise<{ id: string; isNew: boolean; aiRole: string }>;
 };
 
 type PrimaryIngressIdempotencyKey = {
@@ -44,6 +55,8 @@ const buildIngressTraceMeta = (input: {
   idempotencyKey?: string;
   keyType?: IngressIdempotencyKeyType;
   textHash?: string;
+  larkTenantKey?: string;
+  companyId?: string;
 }): Record<string, unknown> =>
   buildLarkTraceMeta({
     requestId: input.requestId,
@@ -56,6 +69,8 @@ const buildIngressTraceMeta = (input: {
     idempotencyKey: input.idempotencyKey,
     keyType: input.keyType,
     textHash: input.textHash,
+    larkTenantKey: input.larkTenantKey,
+    companyId: input.companyId,
   });
 
 const parseHitlDecision = (text: string): { actionId: string; decision: 'confirmed' | 'cancelled' } | null => {
@@ -140,6 +155,18 @@ const defaultResolveHitlAction: LarkWebhookRouteDependencies['resolveHitlAction'
   return hitlActionService.resolveByActionId(actionId, decision);
 };
 
+const defaultResolveCompanyIdByTenantKey: LarkWebhookRouteDependencies['resolveCompanyIdByTenantKey'] = async (
+  larkTenantKey,
+) => {
+  const { larkTenantBindingRepository } = require('./lark-tenant-binding.repository') as typeof import('./lark-tenant-binding.repository');
+  return larkTenantBindingRepository.resolveCompanyId(larkTenantKey);
+};
+
+const defaultUpsertChannelIdentity: LarkWebhookRouteDependencies['upsertChannelIdentity'] = async (input) => {
+  const { channelIdentityRepository } = require('../channel-identity.repository') as typeof import('../channel-identity.repository');
+  return channelIdentityRepository.upsert(input);
+};
+
 const createDefaultDependencies = (): LarkWebhookRouteDependencies => ({
   adapter: new LarkChannelAdapter(),
   log: logger,
@@ -148,11 +175,13 @@ const createDefaultDependencies = (): LarkWebhookRouteDependencies => ({
   claimIngressKey: defaultClaimIngressKey,
   enqueueTask: defaultEnqueueTask,
   resolveHitlAction: defaultResolveHitlAction,
+  resolveCompanyIdByTenantKey: defaultResolveCompanyIdByTenantKey,
+  upsertChannelIdentity: defaultUpsertChannelIdentity,
 });
 
 const isMetadataParseResult = (
   parsed: LarkIngressParseResult,
-): parsed is Extract<LarkIngressParseResult, { eventType?: string; eventId?: string }> =>
+): parsed is Extract<LarkIngressParseResult, { eventType?: string; eventId?: string; larkTenantKey?: string }> =>
   parsed.kind === 'event_callback_message' || parsed.kind === 'event_callback_ignored';
 
 export const createLarkWebhookEventHandler = (
@@ -184,6 +213,15 @@ export const createLarkWebhookEventHandler = (
           reason: verification.reason,
           statusCode,
         });
+        emitRuntimeTrace({
+          event: 'lark.ingress.rejected',
+          level: 'warn',
+          requestId,
+          metadata: {
+            reason: verification.reason,
+            statusCode,
+          },
+        });
         return res.status(statusCode).json({
           success: false,
           message: `Lark webhook rejected: ${verification.reason}`,
@@ -198,6 +236,7 @@ export const createLarkWebhookEventHandler = (
         reason: parsed.kind === 'invalid' || parsed.kind === 'event_callback_ignored' ? parsed.reason : undefined,
         eventType: isMetadataParseResult(parsed) ? parsed.eventType : undefined,
         eventId: isMetadataParseResult(parsed) ? parsed.eventId : undefined,
+        larkTenantKey: isMetadataParseResult(parsed) ? parsed.larkTenantKey : undefined,
       });
 
       if (parsed.kind === 'url_verification') {
@@ -215,6 +254,7 @@ export const createLarkWebhookEventHandler = (
           reason: parsed.reason,
           eventType: parsed.eventType,
           eventId: parsed.eventId,
+          larkTenantKey: parsed.larkTenantKey,
         });
         return res.status(202).json({
           success: true,
@@ -223,6 +263,7 @@ export const createLarkWebhookEventHandler = (
             reason: parsed.reason,
             eventType: parsed.eventType,
             eventId: parsed.eventId,
+            larkTenantKey: parsed.larkTenantKey,
           },
         });
       }
@@ -258,6 +299,79 @@ export const createLarkWebhookEventHandler = (
         });
       }
       const textHash = buildLarkTextHash(normalized.text);
+      const larkTenantKey = parsed.larkTenantKey ?? normalized.trace?.larkTenantKey;
+      const scopedCompanyId = larkTenantKey
+        ? await dependencies.resolveCompanyIdByTenantKey(larkTenantKey)
+        : null;
+
+      if (config.LARK_TENANT_BINDING_ENFORCED && !scopedCompanyId) {
+        dependencies.log.warn('lark.ingress.rejected', {
+          requestId,
+          reason: 'company_context_missing',
+          statusCode: 403,
+          larkTenantKey,
+        });
+        return res.status(403).json({
+          success: false,
+          message: 'Lark tenant is not mapped to any company workspace',
+          data: {
+            reason: 'company_context_missing',
+            larkTenantKey,
+          },
+        });
+      }
+
+      let channelIdentityId: string | undefined;
+      let userRole = 'MEMBER';
+      if (!scopedCompanyId || !normalized.userId || !larkTenantKey) {
+        dependencies.log.debug('lark.channel_identity.skipped', {
+          requestId,
+          reason: !scopedCompanyId ? 'no_company_binding' : !larkTenantKey ? 'no_tenant_key' : 'no_user_id',
+          larkTenantKey,
+          userId: normalized.userId,
+        });
+      } else {
+        try {
+          const identity = await dependencies.upsertChannelIdentity({
+            channel: 'lark',
+            externalUserId: normalized.userId,
+            externalTenantId: larkTenantKey,
+            companyId: scopedCompanyId,
+          });
+          channelIdentityId = identity.id;
+          userRole = identity.aiRole;
+          if (identity.isNew) {
+            dependencies.log.info('lark.channel_identity.provisioned', {
+              requestId,
+              channelIdentityId: identity.id,
+              channel: 'lark',
+              externalUserId: normalized.userId,
+              externalTenantId: larkTenantKey,
+              companyId: scopedCompanyId,
+              aiRole: identity.aiRole,
+            });
+          } else {
+            dependencies.log.debug('lark.channel_identity.resolved', {
+              requestId,
+              channelIdentityId: identity.id,
+              channel: 'lark',
+              externalUserId: normalized.userId,
+              companyId: scopedCompanyId,
+              aiRole: identity.aiRole,
+            });
+          }
+        } catch (error) {
+          dependencies.log.warn('lark.channel_identity.upsert_failed', {
+            requestId,
+            channel: 'lark',
+            externalUserId: normalized.userId,
+            externalTenantId: larkTenantKey,
+            companyId: scopedCompanyId,
+            error: error instanceof Error ? error.message : 'unknown_error',
+          });
+        }
+      }
+
       const tracedMessage: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>> = {
         ...normalized,
         trace: {
@@ -266,6 +380,11 @@ export const createLarkWebhookEventHandler = (
           eventId: parsed.eventId,
           textHash,
           receivedAt: new Date().toISOString(),
+          larkTenantKey,
+          channelTenantId: larkTenantKey,
+          companyId: scopedCompanyId ?? undefined,
+          channelIdentityId,
+          userRole,
         },
       };
 
@@ -278,6 +397,8 @@ export const createLarkWebhookEventHandler = (
             message: tracedMessage,
             eventId: parsed.eventId,
             textHash,
+            larkTenantKey,
+            companyId: scopedCompanyId ?? undefined,
           }),
           actionId: hitlDecision.actionId,
           decision: hitlDecision.decision,
@@ -321,6 +442,8 @@ export const createLarkWebhookEventHandler = (
             idempotencyKey: primaryIdempotency.idempotencyKey,
             keyType: primaryIdempotency.keyType,
             textHash,
+            larkTenantKey,
+            companyId: scopedCompanyId ?? undefined,
           }),
           error,
         });
@@ -339,6 +462,8 @@ export const createLarkWebhookEventHandler = (
             idempotencyKey: primaryIdempotency.idempotencyKey,
             keyType: primaryIdempotency.keyType,
             textHash,
+            larkTenantKey,
+            companyId: scopedCompanyId ?? undefined,
           }),
         });
         return res.status(202).json({
@@ -364,6 +489,8 @@ export const createLarkWebhookEventHandler = (
               message: tracedMessage,
               eventId: parsed.eventId,
               textHash,
+              larkTenantKey,
+              companyId: scopedCompanyId ?? undefined,
             }),
             error,
           });
@@ -378,7 +505,25 @@ export const createLarkWebhookEventHandler = (
           eventId: parsed.eventId,
           taskId: task.taskId,
           textHash,
+          larkTenantKey,
+          companyId: scopedCompanyId ?? undefined,
         }),
+      });
+      emitRuntimeTrace({
+        event: 'lark.ingress.queued',
+        level: 'info',
+        requestId,
+        taskId: task.taskId,
+        messageId: tracedMessage.messageId,
+        metadata: {
+          channel: tracedMessage.channel,
+          eventId: parsed.eventId,
+          chatId: tracedMessage.chatId,
+          userId: tracedMessage.userId,
+          textHash,
+          larkTenantKey,
+          companyId: scopedCompanyId ?? undefined,
+        },
       });
       return res.status(202).json({
         success: true,

@@ -7,6 +7,7 @@ import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
 import { embeddingService } from '../../integrations/embedding';
 import { qdrantAdapter } from '../../integrations/vector';
 import { prisma } from '../../../utils/prisma';
+import { logger } from '../../../utils/logger';
 
 const HISTORICAL_BATCH_SIZE = 2;
 
@@ -230,6 +231,15 @@ export const runZohoHistoricalSyncWorker = async (companyId?: string): Promise<v
       await runZohoHistoricalSyncWorker(snapshot.companyId);
     }
   } catch (error) {
+    logger.error('zoho.historical.failed', {
+      jobId: job.id,
+      companyId: job.companyId,
+      connectionId: job.connectionId,
+      error,
+      reason: error instanceof Error ? error.message : 'Unknown worker failure',
+      failureCode: error instanceof ZohoIntegrationError ? error.code : 'unknown',
+    });
+
     await prisma.zohoSyncJob.update({
       where: { id: job.id },
       data: {

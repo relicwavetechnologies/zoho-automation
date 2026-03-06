@@ -1,0 +1,16 @@
+[
+  {
+    "scenarioId": "core_smoke",
+    "reason": "Requires reachable Redis runtime; isolated/sandbox runs may block local Redis connectivity and cause command timeout.",
+    "owner": "platform-runtime",
+    "expiresOn": "2026-04-15",
+    "ticket": "OPS-420"
+  },
+  {
+    "scenarioId": "admin_e2e",
+    "reason": "Requires live backend server, prepared seed state, and interactive credentials during local-only validation runs.",
+    "owner": "platform-runtime",
+    "expiresOn": "2026-04-15",
+    "ticket": "OPS-421"
+  }
+]

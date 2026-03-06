@@ -18,6 +18,8 @@ import {
   requiresHumanConfirmation,
   synthesizeFromAgentResults,
 } from './routing-heuristics';
+import { toolPermissionService } from '../tools/tool-permission.service';
+import { LANGGRAPH_AGENT_TOOL_MAP, TOOL_REGISTRY_MAP, type AiRole } from '../tools/tool-registry';
 
 export class OrchestratorService {
   requiresHumanConfirmation(messageText: string): boolean {
@@ -49,8 +51,36 @@ export class OrchestratorService {
       .filter((step) => step.startsWith('agent.invoke.'))
       .map((step) => step.replace('agent.invoke.', ''));
 
+    const companyId = message.trace?.companyId;
+    const userRole = (message.trace?.userRole ?? 'MEMBER') as AiRole;
+
     const results: AgentResultDTO[] = [];
     for (const agentKey of agentKeys) {
+      // Tool-level RBAC: enforce per-tool permission for this user's resolved role
+      const toolId = LANGGRAPH_AGENT_TOOL_MAP[agentKey];
+      if (toolId && companyId) {
+        const allowed = await toolPermissionService.isAllowed(companyId, toolId, userRole);
+        if (!allowed) {
+          const toolDef = TOOL_REGISTRY_MAP.get(toolId);
+          const toolName = toolDef?.name ?? toolId;
+          logger.warn('orchestration.agent.dispatch.permission_denied', {
+            taskId: task.taskId,
+            agentKey,
+            toolId,
+            companyId,
+          });
+          results.push({
+            taskId: task.taskId,
+            agentKey,
+            status: 'failed',
+            message: `Access to "${toolName}" is not permitted for your role. Please contact your admin.`,
+            error: { type: 'SECURITY_ERROR' as const, classifiedReason: 'permission_denied', retriable: false },
+            metrics: { apiCalls: 0 },
+          });
+          continue;
+        }
+      }
+
       const invokeInput: AgentInvokeInputDTO = {
         taskId: task.taskId,
         agentKey,
@@ -61,6 +91,11 @@ export class OrchestratorService {
           chatId: message.chatId,
           chatType: message.chatType,
           timestamp: message.timestamp,
+          companyId: message.trace?.companyId,
+          larkTenantKey: message.trace?.larkTenantKey,
+          requestId: message.trace?.requestId,
+          eventId: message.trace?.eventId,
+          textHash: message.trace?.textHash,
         },
         correlationId: randomUUID(),
       };

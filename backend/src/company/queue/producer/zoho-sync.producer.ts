@@ -4,6 +4,7 @@ import { prisma } from '../../../utils/prisma';
 export type EnqueueZohoHistoricalSyncInput = {
   companyId: string;
   connectionId: string;
+  trigger?: string;
 };
 
 export type EnqueueZohoHistoricalSyncResult = {
@@ -60,7 +61,7 @@ export class ZohoSyncProducer {
         jobType: 'historical',
         status: 'queued',
         payload: {
-          trigger: 'onboarding_zoho_connect',
+          trigger: input.trigger ?? 'onboarding_zoho_connect',
         },
         events: {
           create: {

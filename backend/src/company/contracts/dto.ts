@@ -6,7 +6,7 @@ import type {
 } from './status';
 
 export type NormalizedIncomingMessageDTO = {
-  channel: 'lark';
+  channel: 'lark' | 'slack' | 'whatsapp';
   userId: string;
   chatId: string;
   chatType: 'p2p' | 'group';
@@ -19,6 +19,11 @@ export type NormalizedIncomingMessageDTO = {
     eventId?: string;
     textHash?: string;
     receivedAt?: string;
+    larkTenantKey?: string;
+    channelTenantId?: string;
+    companyId?: string;
+    channelIdentityId?: string;
+    userRole?: string;
   };
 };
 
@@ -88,6 +93,9 @@ export type ZohoConnectionDTO = {
   connectedAt: string;
   scopes: string[];
   lastSyncAt?: string;
+  providerMode?: 'rest' | 'mcp';
+  providerHealth?: 'healthy' | 'degraded' | 'failed';
+  capabilities?: string[];
   tokenHealth?: {
     status: 'healthy' | 'expiring' | 'expired' | 'failed' | 'unknown';
     accessTokenExpiresAt?: string;

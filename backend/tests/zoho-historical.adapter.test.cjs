@@ -91,3 +91,42 @@ test('ZohoDataClient retries once after auth_failed by forcing token refresh', a
   assert.equal(result.records.length, 1);
   assert.equal(callCount, 2);
 });
+
+test('ZohoDataClient uses company-scoped api base via resolveCredentials when available', async () => {
+  const defaultClient = {
+    requestJson: async () => {
+      throw new Error('default client should not be used');
+    },
+  };
+
+  const scopedCalls = [];
+  const scopedClient = {
+    requestJson: async ({ path }) => {
+      scopedCalls.push(path);
+      return { data: [{ id: 'c1' }], info: { more_records: false, count: 1 } };
+    },
+  };
+
+  const client = new ZohoDataClient({
+    httpClient: defaultClient,
+    tokenService: {
+      getValidAccessToken: async () => 'token-1',
+      forceRefresh: async () => 'token-2',
+      resolveCredentials: async () => ({
+        clientId: 'client-id',
+        clientSecret: 'client-secret',
+        redirectUri: 'http://localhost/callback',
+        httpClient: scopedClient,
+      }),
+    },
+  });
+
+  const result = await client.fetchHistoricalPage({
+    companyId: 'cmp-1',
+    pageSize: 1,
+  });
+
+  assert.equal(result.records.length, 1);
+  assert.equal(scopedCalls.length, 1);
+  assert.match(scopedCalls[0], /\/crm\/v2\/Contacts\?page=1&per_page=1/);
+});

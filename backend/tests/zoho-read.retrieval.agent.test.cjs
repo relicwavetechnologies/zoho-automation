@@ -37,6 +37,7 @@ test('ZohoReadAgent returns grounded source references on successful retrieval',
     ], async () => {
       const result = await agent.invoke(baseInput);
       assert.equal(result.status, 'success');
+      assert.match(result.message, /Here are the most relevant deals I found/);
       assert.equal(result.result.companyId, 'cmp-1');
       assert.deepEqual(result.result.sources, ['zoho_deal:deal-1#0', 'zoho_contact:contact-2#1']);
     });
@@ -74,4 +75,26 @@ test('ZohoReadAgent maps ambiguous company context to explicit failure code', as
       assert.equal(result.error.retriable, false);
     },
   );
+});
+
+test('ZohoReadAgent expands retrieval limit for explicit list-size requests', async () => {
+  const agent = new ZohoReadAgent();
+  let capturedLimit = null;
+
+  await withPatch(companyContextResolver, 'resolveCompanyId', async () => 'cmp-1', async () => {
+    await withPatch(zohoRetrievalService, 'query', async ({ limit }) => {
+      capturedLimit = limit;
+      return [
+        { sourceType: 'zoho_deal', sourceId: 'deal-1', chunkIndex: 0, score: 0.91, payload: {} },
+      ];
+    }, async () => {
+      const result = await agent.invoke({
+        ...baseInput,
+        objective: 'Show my 5 most recent deals with amount and stage',
+      });
+      assert.equal(result.status, 'success');
+      assert.ok(typeof capturedLimit === 'number');
+      assert.ok(capturedLimit >= 5);
+    });
+  });
 });

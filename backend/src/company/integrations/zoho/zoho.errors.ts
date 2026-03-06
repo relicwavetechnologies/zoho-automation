@@ -3,6 +3,10 @@ export type ZohoFailureCode =
   | 'token_refresh_failed'
   | 'rate_limited'
   | 'schema_mismatch'
+  | 'mcp_unavailable'
+  | 'mcp_invalid_response'
+  | 'mcp_tool_not_allowed'
+  | 'mcp_action_requires_hitl'
   | 'unknown';
 
 export class ZohoIntegrationError extends Error {

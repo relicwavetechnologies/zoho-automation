@@ -1,6 +1,6 @@
 import type { ErrorDTO, NormalizedIncomingMessageDTO } from '../../contracts';
 
-export type ChannelKey = 'lark';
+export type ChannelKey = 'lark' | 'slack' | 'whatsapp';
 
 export type ChannelOutboundMessage = {
   chatId: string;

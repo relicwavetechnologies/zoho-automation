@@ -1,0 +1,146 @@
+{
+  "generatedAt": "2026-03-05T07:06:20.909Z",
+  "overallStatus": "PASS_WITH_WAIVERS",
+  "allowWaivers": true,
+  "waiverValidationErrors": [],
+  "scenarios": [
+    {
+      "id": "build_backend",
+      "name": "Backend build",
+      "command": "pnpm -C backend build",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 2729,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "> enterprise-express-backend-template@1.0.0 build /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend\n> prisma generate && tsc && mkdir -p dist/generated && cp -R src/generated/prisma dist/generated/prisma\nPrisma schema loaded from prisma/schema.prisma\n✔ Generated Prisma Client (v6.19.0) to ./src/generated/prisma in 109ms\nStart by importing your Prisma Client (See: https://pris.ly/d/importing-client)\nTip: Interested in query caching in just a few lines of code? Try Accelerate today! https://pris.ly/tip-3-accelerate",
+        "stderrTail": "Environment variables loaded from .env"
+      }
+    },
+    {
+      "id": "unit_lark",
+      "name": "Lark unit suite",
+      "command": "pnpm -C backend test:unit:lark",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 258,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "  ...\n# Subtest: verifyLarkWebhookRequest rejects malformed signature timestamp\nok 32 - verifyLarkWebhookRequest rejects malformed signature timestamp\n  ---\n  duration_ms: 0.072333\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest rejects stale signatures by replay window\nok 33 - verifyLarkWebhookRequest rejects stale signatures by replay window\n  ---\n  duration_ms: 0.079666\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest rejects invalid signature digest in signature mode\nok 34 - verifyLarkWebhookRequest rejects invalid signature digest in signature mode\n  ---\n  duration_ms: 0.068167\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest uses verification token mode when signing secret is not configured\nok 35 - verifyLarkWebhookRequest uses verification token mode when signing secret is not configured\n  ---\n  duration_ms: 0.06\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest rejects when signature secret missing and no token mode config\nok 36 - verifyLarkWebhookRequest rejects when signature secret missing and no token mode config\n  ---\n  duration_ms: 0.241417\n  type: 'test'\n  ...\n1..36\n# tests 36\n# suites 0\n# pass 36\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 107.327125",
+        "stderrTail": ""
+      }
+    },
+    {
+      "id": "unit_v1",
+      "name": "V1 orchestration unit suite",
+      "command": "pnpm -C backend test:unit:v1",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 581,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "# Subtest: requiresHumanConfirmation protects destructive operations\nok 33 - requiresHumanConfirmation protects destructive operations\n  ---\n  duration_ms: 0.059834\n  type: 'test'\n  ...\n# {\"ts\":\"2026-03-05T07:06:24.140Z\",\"level\":\"info\",\"message\":\"config.validation.ok\",\"pid\":94362,\"meta\":{\"nodeEnv\":\"development\"}}\n# {\"ts\":\"2026-03-05T07:06:24.435Z\",\"level\":\"info\",\"message\":\"langgraph.recovery.decision\",\"pid\":94362,\"meta\":{\"taskId\":\"task-synth-1\",\"messageId\":\"om_synth_1\",\"recoveryMode\":\"requeue_from_start\",\"reason\":\"checkpoint_absent\"}}\n# {\"ts\":\"2026-03-05T07:06:24.444Z\",\"level\":\"info\",\"message\":\"langgraph.route.resolved\",\"pid\":94362,\"meta\":{\"taskId\":\"task-synth-1\",\"messageId\":\"om_synth_1\",\"intent\":\"general\",\"complexityLevel\":2,\"executionMode\":\"sequential\",\"source\":\"llm\"}}\n# {\"ts\":\"2026-03-05T07:06:24.451Z\",\"level\":\"info\",\"message\":\"langgraph.recovery.decision\",\"pid\":94362,\"meta\":{\"taskId\":\"task-synth-1\",\"messageId\":\"om_synth_1\",\"recoveryMode\":\"requeue_from_start\",\"reason\":\"checkpoint_absent\"}}\n# {\"ts\":\"2026-03-05T07:06:24.453Z\",\"level\":\"info\",\"message\":\"langgraph.route.resolved\",\"pid\":94362,\"meta\":{\"taskId\":\"task-synth-1\",\"messageId\":\"om_synth_1\",\"intent\":\"general\",\"complexityLevel\":2,\"executionMode\":\"sequential\",\"source\":\"llm\"}}\n# {\"ts\":\"2026-03-05T07:06:24.456Z\",\"level\":\"info\",\"message\":\"langgraph.recovery.decision\",\"pid\":94362,\"meta\":{\"taskId\":\"task-synth-1\",\"messageId\":\"om_synth_1\",\"recoveryMode\":\"requeue_from_start\",\"reason\":\"checkpoint_absent\"}}\n# {\"ts\":\"2026-03-05T07:06:24.457Z\",\"level\":\"info\",\"message\":\"langgraph.route.resolved\",\"pid\":94362,\"meta\":{\"taskId\":\"task-synth-1\",\"messageId\":\"om_synth_1\",\"intent\":\"general\",\"complexityLevel\":2,\"executionMode\":\"sequential\",\"source\":\"llm\"}}\n# Subtest: synthesis/response contract: valid synthesis + send success checkpoints sent\nok 34 - synthesis/response contract: valid synthesis + send success checkpoints sent\n  ---\n  duration_ms: 16.487375\n  type: 'test'\n  ...\n# Subtest: synthesis/response contract: invalid synthesis falls back deterministically\nok 35 - synthesis/response contract: invalid synthesis falls back deterministically\n  ---\n  duration_ms: 4.893208\n  type: 'test'\n  ...\n# Subtest: synthesis/response contract: send failure is explicit and task fails\nok 36 - synthesis/response contract: send failure is explicit and task fails\n  ---\n  duration_ms: 5.239083\n  type: 'test'\n  ...\n1..36\n# tests 36\n# suites 0\n# pass 36\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 428.300791",
+        "stderrTail": ""
+      }
+    },
+    {
+      "id": "unit_zoho",
+      "name": "Zoho/Qdrant/embedding unit suite",
+      "command": "pnpm -C backend test:unit:zoho",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 362,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "# Subtest: ZohoReadAgent returns deterministic no-context success when retrieval result is empty\nok 16 - ZohoReadAgent returns deterministic no-context success when retrieval result is empty\n  ---\n  duration_ms: 0.159542\n  type: 'test'\n  ...\n# Subtest: ZohoReadAgent maps ambiguous company context to explicit failure code\nok 17 - ZohoReadAgent maps ambiguous company context to explicit failure code\n  ---\n  duration_ms: 0.1195\n  type: 'test'\n  ...\n# {\"ts\":\"2026-03-05T07:06:24.686Z\",\"level\":\"info\",\"message\":\"config.validation.ok\",\"pid\":94399,\"meta\":{\"nodeEnv\":\"development\"}}\n# Subtest: encrypt/decrypt Zoho secret roundtrip works with explicit key override\nok 18 - encrypt/decrypt Zoho secret roundtrip works with explicit key override\n  ---\n  duration_ms: 0.754042\n  type: 'test'\n  ...\n# Subtest: decryptZohoSecret rejects invalid payload shape\nok 19 - decryptZohoSecret rejects invalid payload shape\n  ---\n  duration_ms: 0.191833\n  type: 'test'\n  ...\n# Subtest: encryptZohoSecret rejects invalid key material length\nok 20 - encryptZohoSecret rejects invalid key material length\n  ---\n  duration_ms: 0.123209\n  type: 'test'\n  ...\n1..20\n# tests 20\n# suites 0\n# pass 20\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 210.081",
+        "stderrTail": ""
+      }
+    },
+    {
+      "id": "resilience_tests",
+      "name": "Resilience test suite",
+      "command": "pnpm -C backend run test:resilience",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 1125,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "# {\"ts\":\"2026-03-05T07:06:25.326Z\",\"level\":\"warn\",\"message\":\"queue.enqueue.retry\",\"pid\":94426,\"meta\":{\"requestId\":\"req-res-queue-1\",\"taskId\":\"task-res-queue-fail\",\"messageId\":\"om-res-queue-1\",\"channel\":\"lark\",\"jobId\":\"job-res-queue-fail\",\"attempt\":2,\"delayMs\":400,\"retriable\":true,\"error\":{\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/tests/resilience.redis.test.cjs:125:25)\\\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\\\n    at async Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:9)\\\\n    at async waitForActual (node:assert:566:5)\\\\n    at async Function.rejects (node:assert:687:25)\\\\n    at async TestContext.<anonymous> (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/tests/resilience.redis.test.cjs:117:3)\\\\n    at async Test.run (node:internal/test_runner/test:1054:7)\\\\n    at async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\",\"code\":\"ECONNREFUSED\"}}}\n# {\"ts\":\"2026-03-05T07:06:25.728Z\",\"level\":\"error\",\"message\":\"queue.enqueue.failed\",\"pid\":94426,\"meta\":{\"requestId\":\"req-res-queue-1\",\"taskId\":\"task-res-queue-fail\",\"messageId\":\"om-res-queue-1\",\"channel\":\"lark\",\"jobId\":\"job-res-queue-fail\",\"retriable\":true,\"error\":{\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/tests/resilience.redis.test.cjs:125:25)\\\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\\\n    at async Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:9)\\\\n    at async waitForActual (node:assert:566:5)\\\\n    at async Function.rejects (node:assert:687:25)\\\\n    at async TestContext.<anonymous> (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/tests/resilience.redis.test.cjs:117:3)\\\\n    at async Test.run (node:internal/test_runner/test:1054:7)\\\\n    at async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\",\"code\":\"ECONNREFUSED\"}}}\n# {\"ts\":\"2026-03-05T07:06:25.729Z\",\"level\":\"error\",\"message\":\"queue.enqueue.unavailable\",\"pid\":94426,\"meta\":{\"requestId\":\"req-res-queue-1\",\"taskId\":\"task-res-queue-fail\",\"messageId\":\"om-res-queue-1\",\"channel\":\"lark\",\"jobId\":\"job-res-queue-fail\"}}\n# {\"ts\":\"2026-03-05T07:06:25.731Z\",\"level\":\"warn\",\"message\":\"queue.enqueue.retry\",\"pid\":94426,\"meta\":{\"requestId\":\"req-res-queue-2\",\"taskId\":\"task-res-queue-success\",\"messageId\":\"om-res-queue-2\",\"channel\":\"lark\",\"jobId\":\"job-res-queue-success\",\"attempt\":1,\"delayMs\":200,\"retriable\":true,\"error\":{\"name\":\"Error\",\"message\":\"redis temporarily unavailable\",\"stack\":\"Error: redis temporarily unavailable\\\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/tests/resilience.redis.test.cjs:164:23)\\\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\\\n    at Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:54)\\\\n    at TestContext.<anonymous> (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/tests/resilience.redis.test.cjs:157:26)\\\\n    at Test.runInAsyncScope (node:async_hooks:214:14)\\\\n    at Test.run (node:internal/test_runner/test:1047:25)\\\\n    at Test.processPendingSubtests (node:internal/test_runner/test:744:18)\\\\n    at Test.postRun (node:internal/test_runner/test:1173:19)\\\\n    at Test.run (node:internal/test_runner/test:1101:12)\",\"code\":\"ECONNREFUSED\"}}}\n# Subtest: resilience(redis): queue enqueue retries transient redis errors then fails with 503\nok 8 - resilience(redis): queue enqueue retries transient redis errors then fails with 503\n  ---\n  duration_ms: 605.790375\n  type: 'test'\n  ...\n# Subtest: resilience(redis): queue enqueue recovers after transient failure within retry bound\nok 9 - resilience(redis): queue enqueue recovers after transient failure within retry bound\n  ---\n  duration_ms: 202.343708\n  type: 'test'\n  ...\n# {\"ts\":\"2026-03-05T07:06:25.027Z\",\"level\":\"info\",\"message\":\"config.validation.ok\",\"pid\":94427,\"meta\":{\"nodeEnv\":\"development\"}}\n# {\"ts\":\"2026-03-05T07:06:25.039Z\",\"level\":\"warn\",\"message\":\"zoho.http.retry\",\"pid\":94427,\"meta\":{\"url\":\"https://www.zohoapis.com/crm/v2/Contacts?page=1&per_page=1\",\"method\":\"GET\",\"attempt\":1,\"maxAttempts\":3,\"delayMs\":0,\"statusCode\":429}}\n# {\"ts\":\"2026-03-05T07:06:25.040Z\",\"level\":\"warn\",\"message\":\"zoho.http.retry\",\"pid\":94427,\"meta\":{\"url\":\"https://www.zohoapis.com/crm/v2/Deals?page=1&per_page=1\",\"method\":\"GET\",\"attempt\":1,\"maxAttempts\":2,\"delayMs\":0,\"statusCode\":503}}\n# Subtest: resilience(zoho): 429 is retried with bounded attempts and then succeeds\nok 10 - resilience(zoho): 429 is retried with bounded attempts and then succeeds\n  ---\n  duration_ms: 9.616125\n  type: 'test'\n  ...\n# Subtest: resilience(zoho): repeated 5xx returns classified error after retry exhaustion\nok 11 - resilience(zoho): repeated 5xx returns classified error after retry exhaustion\n  ---\n  duration_ms: 1.427583\n  type: 'test'\n  ...\n1..11\n# tests 11\n# suites 0\n# pass 11\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 961.518458",
+        "stderrTail": ""
+      }
+    },
+    {
+      "id": "resilience_drill",
+      "name": "Resilience drill script",
+      "command": "node backend/scripts/validate-v1-resilience.cjs",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 851,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "      \"id\": \"redis_queue_transient_retry_exhaustion\",\n      \"status\": \"PASS\",\n      \"durationMs\": 606,\n      \"detail\": {\n        \"attempts\": 3\n      }\n    },\n    {\n      \"id\": \"qdrant_timeout_degraded_health\",\n      \"status\": \"PASS\",\n      \"durationMs\": 1,\n      \"detail\": {\n        \"ok\": false,\n        \"backend\": \"qdrant\",\n        \"collection\": \"zoho_automation_docs\",\n        \"latencyMs\": 1,\n        \"error\": \"timeout\"\n      }\n    },\n    {\n      \"id\": \"zoho_rate_limit_retry_then_success\",\n      \"status\": \"PASS\",\n      \"durationMs\": 21,\n      \"detail\": {\n        \"attempts\": 2,\n        \"records\": 1\n      }\n    },\n    {\n      \"id\": \"openai_unavailable_deterministic_fallback\",\n      \"status\": \"PASS\",\n      \"durationMs\": 0,\n      \"detail\": {\n        \"llmOutput\": null,\n        \"routeIntent\": \"zoho_read\",\n        \"source\": \"heuristic_fallback\"\n      }\n    }\n  ]\n}",
+        "stderrTail": "{\"ts\":\"2026-03-05T07:06:26.178Z\",\"level\":\"error\",\"message\":\"lark.ingress.idempotency_unavailable\",\"pid\":94428,\"meta\":{\"requestId\":\"req-res-script-1\",\"channel\":\"lark\",\"eventId\":\"evt-res-script-1\",\"messageId\":\"om-res-script-1\",\"chatId\":\"oc-res-script\",\"userId\":\"ou-res-script\",\"idempotencyKey\":\"emiac:idempotent:lark:event:evt-res-script-1\",\"keyType\":\"event\",\"textHash\":\"729fba6a455d541109dfea1f07edc04ba5f5b9919db9cad365d05efdcde9d3b4\",\"error\":{\"name\":\"Error\",\"message\":\"redis unavailable\",\"stack\":\"Error: redis unavailable\\n    at Object.claimIngressKey (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:103:23)\\n    at /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/channels/lark/lark.webhook.routes.js:244:53\\n    at runHandler (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:40:9)\\n    at /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:111:28\\n    at scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:26)\\n    at run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:80:9)\\n    at Object.<anonymous> (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:261:1)\\n    at Module._compile (node:internal/modules/cjs/loader:1730:14)\\n    at Object..js (node:internal/modules/cjs/loader:1895:10)\\n    at Module.load (node:internal/modules/cjs/loader:1465:32)\",\"code\":\"ECONNREFUSED\"}}}\n{\"ts\":\"2026-03-05T07:06:26.178Z\",\"level\":\"warn\",\"message\":\"queue.enqueue.retry\",\"pid\":94428,\"meta\":{\"requestId\":\"req-res-script-queue\",\"taskId\":\"task-res-script-queue\",\"messageId\":\"om-res-script-queue\",\"channel\":\"lark\",\"jobId\":\"job-res-script-queue\",\"attempt\":1,\"delayMs\":200,\"retriable\":true,\"error\":{\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:153:23)\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\n    at Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:54)\\n    at /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:134:28\\n    at scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:26)\\n    at run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:131:9)\\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\",\"code\":\"ECONNREFUSED\"}}}\n{\"ts\":\"2026-03-05T07:06:26.380Z\",\"level\":\"warn\",\"message\":\"queue.enqueue.retry\",\"pid\":94428,\"meta\":{\"requestId\":\"req-res-script-queue\",\"taskId\":\"task-res-script-queue\",\"messageId\":\"om-res-script-queue\",\"channel\":\"lark\",\"jobId\":\"job-res-script-queue\",\"attempt\":2,\"delayMs\":400,\"retriable\":true,\"error\":{\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:153:23)\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\n    at async Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:9)\\n    at async /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:134:5\\n    at async scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:20)\\n    at async run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:131:3)\",\"code\":\"ECONNREFUSED\"}}}\n{\"ts\":\"2026-03-05T07:06:26.782Z\",\"level\":\"error\",\"message\":\"queue.enqueue.failed\",\"pid\":94428,\"meta\":{\"requestId\":\"req-res-script-queue\",\"taskId\":\"task-res-script-queue\",\"messageId\":\"om-res-script-queue\",\"channel\":\"lark\",\"jobId\":\"job-res-script-queue\",\"retriable\":true,\"error\":{\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:153:23)\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\n    at async Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:9)\\n    at async /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:134:5\\n    at async scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:20)\\n    at async run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:131:3)\",\"code\":\"ECONNREFUSED\"}}}\n{\"ts\":\"2026-03-05T07:06:26.783Z\",\"level\":\"error\",\"message\":\"queue.enqueue.unavailable\",\"pid\":94428,\"meta\":{\"requestId\":\"req-res-script-queue\",\"taskId\":\"task-res-script-queue\",\"messageId\":\"om-res-script-queue\",\"channel\":\"lark\",\"jobId\":\"job-res-script-queue\"}}\n{\"ts\":\"2026-03-05T07:06:26.805Z\",\"level\":\"warn\",\"message\":\"zoho.http.retry\",\"pid\":94428,\"meta\":{\"url\":\"https://www.zohoapis.com/crm/v2/Contacts?page=1&per_page=1\",\"method\":\"GET\",\"attempt\":1,\"maxAttempts\":3,\"delayMs\":0,\"statusCode\":429}}\n{\"ts\":\"2026-03-05T07:06:26.806Z\",\"level\":\"warn\",\"message\":\"langchain.openai.invoke_failed\",\"pid\":94428,\"meta\":{\"modelKey\":\"router\",\"reason\":\"OpenAI unavailable\"}}"
+      }
+    },
+    {
+      "id": "core_smoke",
+      "name": "Core smoke script",
+      "command": "node backend/scripts/validate-v0-core-smoke.cjs",
+      "required": true,
+      "status": "FAIL_WAIVED",
+      "exitCode": 1,
+      "durationMs": 60,
+      "waived": true,
+      "waiver": {
+        "scenarioId": "core_smoke",
+        "reason": "Requires local Redis runtime and full orchestration runtime boot for smoke execution outside isolated unit runs.",
+        "owner": "platform-runtime",
+        "expiresOn": "2026-04-15",
+        "ticket": "OPS-420"
+      },
+      "output": {
+        "stdoutTail": "",
+        "stderrTail": "{\"ts\":\"2026-03-05T07:06:26.873Z\",\"level\":\"error\",\"message\":\"config.validation.failed\",\"pid\":94432,\"meta\":{\"count\":1,\"issues\":[{\"key\":\"DATABASE_URL\",\"code\":\"missing_value\",\"message\":\"DATABASE_URL is required\",\"severity\":\"error\"}]}}\n/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/config/env.js:64\n    throw error;\n    ^\nEnvValidationError: Environment validation failed\n    at validateEnvironmentContract (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/config/env.contract.js:549:15)\n    at Object.<anonymous> (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/config/env.js:41:64)\n    at Module._compile (node:internal/modules/cjs/loader:1730:14)\n    at Object..js (node:internal/modules/cjs/loader:1895:10)\n    at Module.load (node:internal/modules/cjs/loader:1465:32)\n    at Function._load (node:internal/modules/cjs/loader:1282:12)\n    at TracingChannel.traceSync (node:diagnostics_channel:322:14)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:235:24)\n    at Module.require (node:internal/modules/cjs/loader:1487:12)\n    at require (node:internal/modules/helpers:135:16) {\n  issues: [\n    {\n      key: 'DATABASE_URL',\n      code: 'missing_value',\n      message: 'DATABASE_URL is required',\n      severity: 'error'\n    }\n  ]\n}\nNode.js v22.16.0"
+      }
+    },
+    {
+      "id": "admin_e2e",
+      "name": "Admin e2e script",
+      "command": "node backend/scripts/validate-admin-e2e.cjs",
+      "required": true,
+      "status": "FAIL_WAIVED",
+      "exitCode": 1,
+      "durationMs": 26361,
+      "waived": true,
+      "waiver": {
+        "scenarioId": "admin_e2e",
+        "reason": "Requires live backend server, prepared seed state, and interactive credentials during local-only validation runs.",
+        "owner": "platform-runtime",
+        "expiresOn": "2026-04-15",
+        "ticket": "OPS-421"
+      },
+      "output": {
+        "stdoutTail": "      \"status\": \"PASS\",\n      \"detail\": {\n        \"navIds\": [\n          \"overview\",\n          \"members\",\n          \"rbac\",\n          \"audit\",\n          \"controls\"\n        ]\n      }\n    },\n    {\n      \"name\": \"RBAC backend enforcement blocks company-admin privileged mutation\",\n      \"status\": \"PASS\",\n      \"detail\": {\n        \"expected\": 403\n      }\n    },\n    {\n      \"name\": \"Company-admin invite flow creates and accepts workspace member invite\",\n      \"status\": \"PASS\",\n      \"detail\": {\n        \"inviteId\": \"22addf23-7aec-4cff-8daf-920530087c78\",\n        \"acceptedUserId\": \"b5c22a48-075c-48e0-b65d-e3ecefeade6f\"\n      }\n    },\n    {\n      \"name\": \"Onboarding connect and sync visibility is controllable by company-admin\",\n      \"status\": \"FAIL\",\n      \"detail\": \"POST /api/admin/company/onboarding/connect expected HTTP 202, got 400. Zoho connect failed: auth_failed\"\n    }\n  ],\n  \"ok\": false,\n  \"cleanup\": {\n    \"deletedUsers\": 2,\n    \"deletedCompanies\": 1,\n    \"deletedEmails\": 3\n  },\n  \"finishedAt\": \"2026-03-05T07:06:53.222Z\"\n}",
+        "stderrTail": ""
+      }
+    }
+  ],
+  "summary": {
+    "total": 8,
+    "pass": 6,
+    "fail": 0,
+    "failWaived": 2
+  }
+}

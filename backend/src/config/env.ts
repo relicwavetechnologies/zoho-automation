@@ -4,11 +4,41 @@ import { EnvValidationError, EnvValidationIssue, validateEnvironmentContract } f
 
 dotenv.config();
 
+const IS_DEV_BOOT = process.env['NODE_ENV'] !== 'production';
+
 const emitValidationLog = (
   level: 'info' | 'warn' | 'error',
   message: string,
   meta?: Record<string, unknown>,
 ): void => {
+  if (IS_DEV_BOOT) {
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const ss = String(now.getSeconds()).padStart(2, '0');
+    const badge = level === 'error' ? '\x1b[31mERR\x1b[0m' : level === 'warn' ? '\x1b[33mWRN\x1b[0m' : '\x1b[32mINF\x1b[0m';
+    const metaPart = meta
+      ? '  \x1b[2m' +
+      Object.entries(meta)
+        .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+        .join('  ') +
+      '\x1b[0m'
+      : '';
+    const line = `\x1b[2m${hh}:${mm}:${ss}\x1b[0m ${badge} \x1b[1m${message}\x1b[0m${metaPart}`;
+    if (level === 'error') {
+      // eslint-disable-next-line no-console
+      console.error(line);
+    } else if (level === 'warn') {
+      // eslint-disable-next-line no-console
+      console.warn(line);
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(line);
+    }
+    return;
+  }
+
+  // Production: structured JSON
   const payload = {
     ts: new Date().toISOString(),
     level,
@@ -112,6 +142,13 @@ export const ZOHO_REDIRECT_URI = validated.config.ZOHO_REDIRECT_URI;
 export const ZOHO_ACCOUNTS_BASE_URL = validated.config.ZOHO_ACCOUNTS_BASE_URL;
 export const ZOHO_API_BASE_URL = validated.config.ZOHO_API_BASE_URL;
 export const ZOHO_TOKEN_ENCRYPTION_KEY = validated.config.ZOHO_TOKEN_ENCRYPTION_KEY;
+export const ZOHO_PROVIDER_DEFAULT = validated.config.ZOHO_PROVIDER_DEFAULT;
+export const ZOHO_MCP_ENABLED = validated.config.ZOHO_MCP_ENABLED;
+export const ZOHO_MCP_ACTIONS_ENABLED = validated.config.ZOHO_MCP_ACTIONS_ENABLED;
+export const MCP_REQUEST_TIMEOUT_MS = validated.config.MCP_REQUEST_TIMEOUT_MS;
+export const MCP_MAX_RETRIES = validated.config.MCP_MAX_RETRIES;
+export const MCP_RETRY_BASE_DELAY_MS = validated.config.MCP_RETRY_BASE_DELAY_MS;
+export const MCP_SECRET_ENCRYPTION_KEY = validated.config.MCP_SECRET_ENCRYPTION_KEY;
 export const QDRANT_URL = validated.config.QDRANT_URL;
 export const QDRANT_API_KEY = validated.config.QDRANT_API_KEY;
 export const QDRANT_COLLECTION = validated.config.QDRANT_COLLECTION;
@@ -120,10 +157,19 @@ export const EMBEDDING_PROVIDER = validated.config.EMBEDDING_PROVIDER;
 export const OPENAI_EMBEDDING_MODEL = validated.config.OPENAI_EMBEDDING_MODEL;
 export const ORCHESTRATION_ENGINE = validated.config.ORCHESTRATION_ENGINE;
 export const ORCHESTRATION_LEGACY_ROLLBACK_ENABLED = validated.config.ORCHESTRATION_LEGACY_ROLLBACK_ENABLED;
+export const MASTRA_BASE_URL = validated.config.MASTRA_BASE_URL;
+export const MASTRA_AGENT_ID = validated.config.MASTRA_AGENT_ID;
+export const MASTRA_API_KEY = validated.config.MASTRA_API_KEY;
+export const MASTRA_TIMEOUT_MS = validated.config.MASTRA_TIMEOUT_MS;
+export const GROQ_API_KEY = validated.config.GROQ_API_KEY;
+export const GROQ_ROUTER_MODEL = validated.config.GROQ_ROUTER_MODEL;
 export const OPENAI_ROUTER_MODEL = validated.config.OPENAI_ROUTER_MODEL;
+export const OPENAI_SUPERVISOR_MODEL = validated.config.OPENAI_SUPERVISOR_MODEL;
 export const OPENAI_PLANNER_MODEL = validated.config.OPENAI_PLANNER_MODEL;
 export const OPENAI_SYNTHESIS_MODEL = validated.config.OPENAI_SYNTHESIS_MODEL;
 export const OPENAI_TEMPERATURE = validated.config.OPENAI_TEMPERATURE;
 export const LANGSMITH_TRACING = validated.config.LANGSMITH_TRACING;
 export const LANGSMITH_API_KEY = validated.config.LANGSMITH_API_KEY;
 export const LANGSMITH_PROJECT = validated.config.LANGSMITH_PROJECT;
+export const LANGSMITH_ENDPOINT = validated.config.LANGSMITH_ENDPOINT;
+export const LARK_TENANT_BINDING_ENFORCED = validated.config.LARK_TENANT_BINDING_ENFORCED;

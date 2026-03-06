@@ -1,0 +1,140 @@
+{
+  "generatedAt": "2026-03-05T10:11:04.710Z",
+  "overallStatus": "PASS_WITH_WAIVERS",
+  "allowWaivers": true,
+  "waiverValidationErrors": [],
+  "scenarios": [
+    {
+      "id": "build_backend",
+      "name": "Backend build",
+      "command": "pnpm -C backend build",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 3517,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "> enterprise-express-backend-template@1.0.0 build /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend\n> prisma generate && tsc && mkdir -p dist/generated && cp -R src/generated/prisma dist/generated/prisma\nPrisma schema loaded from prisma/schema.prisma\n✔ Generated Prisma Client (v6.19.0) to ./src/generated/prisma in 159ms\nStart by importing your Prisma Client (See: https://pris.ly/d/importing-client)\nTip: Need your database queries to be 1000x faster? Accelerate offers you that and more: https://pris.ly/tip-2-accelerate",
+        "stderrTail": "Environment variables loaded from .env"
+      }
+    },
+    {
+      "id": "unit_lark",
+      "name": "Lark unit suite",
+      "command": "pnpm -C backend test:unit:lark",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 353,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "  ...\n# Subtest: verifyLarkWebhookRequest rejects malformed signature timestamp\nok 32 - verifyLarkWebhookRequest rejects malformed signature timestamp\n  ---\n  duration_ms: 0.078\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest rejects stale signatures by replay window\nok 33 - verifyLarkWebhookRequest rejects stale signatures by replay window\n  ---\n  duration_ms: 0.09275\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest rejects invalid signature digest in signature mode\nok 34 - verifyLarkWebhookRequest rejects invalid signature digest in signature mode\n  ---\n  duration_ms: 0.070416\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest uses verification token mode when signing secret is not configured\nok 35 - verifyLarkWebhookRequest uses verification token mode when signing secret is not configured\n  ---\n  duration_ms: 0.060375\n  type: 'test'\n  ...\n# Subtest: verifyLarkWebhookRequest rejects when signature secret missing and no token mode config\nok 36 - verifyLarkWebhookRequest rejects when signature secret missing and no token mode config\n  ---\n  duration_ms: 0.232209\n  type: 'test'\n  ...\n1..36\n# tests 36\n# suites 0\n# pass 36\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 126.349084",
+        "stderrTail": ""
+      }
+    },
+    {
+      "id": "unit_v1",
+      "name": "V1 orchestration unit suite",
+      "command": "pnpm -C backend test:unit:v1",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 667,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "# [ENGINE] 🏁 Task task-syn finished with status: done\n# \u001b[2m15:41:09\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mlanggraph.recovery.decision\u001b[0m  \u001b[2mtaskId=task-synth-1  messageId=om_synth_1  recoveryMode=requeue_from_start  reason=checkpoint_absent  recoveredFromNode=undefined\u001b[0m\n# [ENGINE] 🟢 Started orchestration task task-syn for message: \"summarize updates\"\n# \u001b[2m15:41:09\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mlanggraph.tier1.decision\u001b[0m  \u001b[2mtaskId=task-synth-1  messageId=om_synth_1  done=false\u001b[0m\n# [ROUTER] 🚦 Intent: general | Mode: sequential | Complexity: 2\n# \u001b[2m15:41:09\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mlanggraph.route.resolved\u001b[0m  \u001b[2mtaskId=task-synth-1  messageId=om_synth_1  intent=general  complexityLevel=2  executionMode=sequential  source=llm  fallbackReasonCode=undefined\u001b[0m\n# [SUPERVISOR] 🧠 Loop 1: FINISH -> \"stub-supervisor-reply...\"\n# \u001b[2m15:41:09\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mlanggraph.supervisor.decision\u001b[0m  \u001b[2mtaskId=task-synth-1  loopCount=1  next=FINISH  finish=true  manifestKeys=- lark-response: Sends a formatted message reply to the Lark chat.\n# - response: Generates a general-purpose text reply for the user.\n# - risk-check: Evaluates whether a write/destructive action is safe to proceed.\n# - zoho-action: Executes approved Zoho side-effect actions through provider adapter.\n# - zoho-read: Reads CRM data (contacts, deals, accounts, leads) from Zoho.\u001b[0m\n# [ENGINE] 🏁 Task task-syn finished with status: failed\n# Subtest: synthesis/response contract: valid synthesis + send success checkpoints sent\nok 34 - synthesis/response contract: valid synthesis + send success checkpoints sent\n  ---\n  duration_ms: 19.346208\n  type: 'test'\n  ...\n# Subtest: synthesis/response contract: invalid synthesis falls back deterministically\nok 35 - synthesis/response contract: invalid synthesis falls back deterministically\n  ---\n  duration_ms: 8.221917\n  type: 'test'\n  ...\n# Subtest: synthesis/response contract: send failure is explicit and task fails\nok 36 - synthesis/response contract: send failure is explicit and task fails\n  ---\n  duration_ms: 5.409375\n  type: 'test'\n  ...\n1..36\n# tests 36\n# suites 0\n# pass 36\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 506.830083",
+        "stderrTail": ""
+      }
+    },
+    {
+      "id": "unit_zoho",
+      "name": "Zoho/Qdrant/embedding unit suite",
+      "command": "pnpm -C backend test:unit:zoho",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 400,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "ok 19 - ZohoReadAgent returns deterministic no-context success when retrieval result is empty\n  ---\n  duration_ms: 0.119042\n  type: 'test'\n  ...\n# Subtest: ZohoReadAgent maps ambiguous company context to explicit failure code\nok 20 - ZohoReadAgent maps ambiguous company context to explicit failure code\n  ---\n  duration_ms: 0.120459\n  type: 'test'\n  ...\n# \u001b[2m15:41:09\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mconfig.validation.ok\u001b[0m  \u001b[2mnodeEnv=development\u001b[0m\n# \u001b[2m15:41:09\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mconfig.validation.warning\u001b[0m  \u001b[2mcount=1  issues=[{\"key\":\"MCP_SECRET_ENCRYPTION_KEY,ZOHO_TOKEN_ENCRYPTION_KEY\",\"code\":\"missing_value\",\"message\":\"Set MCP_SECRET_ENCRYPTION_KEY (or ZOHO_TOKEN_ENCRYPTION_KEY fallback) for encrypted MCP credential storage\",\"severity\":\"warning\"}]\u001b[0m\n# Subtest: encrypt/decrypt Zoho secret roundtrip works with explicit key override\nok 21 - encrypt/decrypt Zoho secret roundtrip works with explicit key override\n  ---\n  duration_ms: 1.49975\n  type: 'test'\n  ...\n# Subtest: decryptZohoSecret rejects invalid payload shape\nok 22 - decryptZohoSecret rejects invalid payload shape\n  ---\n  duration_ms: 0.208542\n  type: 'test'\n  ...\n# Subtest: encryptZohoSecret rejects invalid key material length\nok 23 - encryptZohoSecret rejects invalid key material length\n  ---\n  duration_ms: 0.125333\n  type: 'test'\n  ...\n1..23\n# tests 23\n# suites 0\n# pass 23\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 240.407125",
+        "stderrTail": ""
+      }
+    },
+    {
+      "id": "resilience_tests",
+      "name": "Resilience test suite",
+      "command": "pnpm -C backend run test:resilience",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 1150,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "# \u001b[2m15:41:10\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mqueue.enqueue.failed\u001b[0m  \u001b[2mrequestId=req-res-queue-1  taskId=task-res-queue-fail  messageId=om-res-queue-1  channel=lark  jobId=job-res-queue-fail  retriable=true  error={\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/tests/resilience.redis.test.cjs:125:25)\\\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\\\n    at async Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:9)\\\\n    at async waitForActual (node:assert:566:5)\\\\n    at async Function.rejects (node:assert:687:25)\\\\n    at async TestContext.<anonymous> (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/tests/resilience.redis.test.cjs:117:3)\\\\n    at async Test.run (node:internal/test_runner/test:1054:7)\\\\n    at async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\",\"code\":\"ECONNREFUSED\"}\u001b[0m\n# \u001b[2m15:41:10\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mqueue.enqueue.unavailable\u001b[0m  \u001b[2mrequestId=req-res-queue-1  taskId=task-res-queue-fail  messageId=om-res-queue-1  channel=lark  jobId=job-res-queue-fail\u001b[0m\n# \u001b[2m15:41:10\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mqueue.enqueue.retry\u001b[0m  \u001b[2mrequestId=req-res-queue-2  taskId=task-res-queue-success  messageId=om-res-queue-2  channel=lark  jobId=job-res-queue-success  attempt=1  delayMs=200  retriable=true  error={\"name\":\"Error\",\"message\":\"redis temporarily unavailable\",\"stack\":\"Error: redis temporarily unavailable\\\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/tests/resilience.redis.test.cjs:164:23)\\\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\\\n    at Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:54)\\\\n    at TestContext.<anonymous> (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/tests/resilience.redis.test.cjs:157:26)\\\\n    at Test.runInAsyncScope (node:async_hooks:214:14)\\\\n    at Test.run (node:internal/test_runner/test:1047:25)\\\\n    at Test.processPendingSubtests (node:internal/test_runner/test:744:18)\\\\n    at Test.postRun (node:internal/test_runner/test:1173:19)\\\\n    at Test.run (node:internal/test_runner/test:1101:12)\",\"code\":\"ECONNREFUSED\"}\u001b[0m\n# Subtest: resilience(redis): queue enqueue retries transient redis errors then fails with 503\nok 8 - resilience(redis): queue enqueue retries transient redis errors then fails with 503\n  ---\n  duration_ms: 607.159583\n  type: 'test'\n  ...\n# Subtest: resilience(redis): queue enqueue recovers after transient failure within retry bound\nok 9 - resilience(redis): queue enqueue recovers after transient failure within retry bound\n  ---\n  duration_ms: 201.989292\n  type: 'test'\n  ...\n# \u001b[2m15:41:09\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mconfig.validation.ok\u001b[0m  \u001b[2mnodeEnv=development\u001b[0m\n# \u001b[2m15:41:09\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mconfig.validation.warning\u001b[0m  \u001b[2mcount=1  issues=[{\"key\":\"MCP_SECRET_ENCRYPTION_KEY,ZOHO_TOKEN_ENCRYPTION_KEY\",\"code\":\"missing_value\",\"message\":\"Set MCP_SECRET_ENCRYPTION_KEY (or ZOHO_TOKEN_ENCRYPTION_KEY fallback) for encrypted MCP credential storage\",\"severity\":\"warning\"}]\u001b[0m\n# \u001b[2m15:41:09\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mzoho.http.retry\u001b[0m  \u001b[2murl=https://relicwave-60066687461.zohomcp.in/mcp/message?key=f7a0e444c0ef5ffeef82837f96bb246e/crm/v2/Contacts?page=1&per_page=1  method=GET  attempt=1  maxAttempts=3  delayMs=0  statusCode=429\u001b[0m\n# \u001b[2m15:41:09\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mzoho.http.retry\u001b[0m  \u001b[2murl=https://relicwave-60066687461.zohomcp.in/mcp/message?key=f7a0e444c0ef5ffeef82837f96bb246e/crm/v2/Deals?page=1&per_page=1  method=GET  attempt=1  maxAttempts=2  delayMs=0  statusCode=503\u001b[0m\n# Subtest: resilience(zoho): 429 is retried with bounded attempts and then succeeds\nok 10 - resilience(zoho): 429 is retried with bounded attempts and then succeeds\n  ---\n  duration_ms: 14.447584\n  type: 'test'\n  ...\n# Subtest: resilience(zoho): repeated 5xx returns classified error after retry exhaustion\nok 11 - resilience(zoho): repeated 5xx returns classified error after retry exhaustion\n  ---\n  duration_ms: 1.155375\n  type: 'test'\n  ...\n1..11\n# tests 11\n# suites 0\n# pass 11\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 986.687417",
+        "stderrTail": ""
+      }
+    },
+    {
+      "id": "resilience_drill",
+      "name": "Resilience drill script",
+      "command": "node backend/scripts/validate-v1-resilience.cjs",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 1083,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "      \"id\": \"redis_queue_transient_retry_exhaustion\",\n      \"status\": \"PASS\",\n      \"durationMs\": 605,\n      \"detail\": {\n        \"attempts\": 3\n      }\n    },\n    {\n      \"id\": \"qdrant_timeout_degraded_health\",\n      \"status\": \"PASS\",\n      \"durationMs\": 2,\n      \"detail\": {\n        \"ok\": false,\n        \"backend\": \"qdrant\",\n        \"collection\": \"zoho_automation_docs\",\n        \"latencyMs\": 1,\n        \"error\": \"timeout\"\n      }\n    },\n    {\n      \"id\": \"zoho_rate_limit_retry_then_success\",\n      \"status\": \"PASS\",\n      \"durationMs\": 20,\n      \"detail\": {\n        \"attempts\": 2,\n        \"records\": 1\n      }\n    },\n    {\n      \"id\": \"openai_unavailable_deterministic_fallback\",\n      \"status\": \"PASS\",\n      \"durationMs\": 126,\n      \"detail\": {\n        \"llmOutput\": null,\n        \"routeIntent\": \"zoho_read\",\n        \"source\": \"heuristic_fallback\"\n      }\n    }\n  ]\n}",
+        "stderrTail": "\u001b[2m15:41:10\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mconfig.validation.warning\u001b[0m  \u001b[2mcount=1  issues=[{\"key\":\"MCP_SECRET_ENCRYPTION_KEY,ZOHO_TOKEN_ENCRYPTION_KEY\",\"code\":\"missing_value\",\"message\":\"Set MCP_SECRET_ENCRYPTION_KEY (or ZOHO_TOKEN_ENCRYPTION_KEY fallback) for encrypted MCP credential storage\",\"severity\":\"warning\"}]\u001b[0m\n\u001b[2m15:41:11\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mlark.ingress.idempotency_unavailable\u001b[0m  \u001b[2mrequestId=req-res-script-1  channel=lark  eventId=evt-res-script-1  messageId=om-res-script-1  chatId=oc-res-script  userId=ou-res-script  idempotencyKey=emiac:idempotent:lark:event:evt-res-script-1  keyType=event  textHash=729fba6a455d541109dfea1f07edc04ba5f5b9919db9cad365d05efdcde9d3b4  error={\"name\":\"Error\",\"message\":\"redis unavailable\",\"stack\":\"Error: redis unavailable\\n    at Object.claimIngressKey (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:103:23)\\n    at /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/channels/lark/lark.webhook.routes.js:282:53\\n    at runHandler (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:40:9)\\n    at /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:111:28\\n    at scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:26)\\n    at run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:80:9)\\n    at Object.<anonymous> (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:261:1)\\n    at Module._compile (node:internal/modules/cjs/loader:1730:14)\\n    at Object..js (node:internal/modules/cjs/loader:1895:10)\\n    at Module.load (node:internal/modules/cjs/loader:1465:32)\",\"code\":\"ECONNREFUSED\"}\u001b[0m\n\u001b[2m15:41:11\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mqueue.enqueue.retry\u001b[0m  \u001b[2mrequestId=req-res-script-queue  taskId=task-res-script-queue  messageId=om-res-script-queue  channel=lark  jobId=job-res-script-queue  attempt=1  delayMs=200  retriable=true  error={\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:153:23)\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\n    at Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:54)\\n    at /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:134:28\\n    at scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:26)\\n    at run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:131:9)\\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\",\"code\":\"ECONNREFUSED\"}\u001b[0m\n\u001b[2m15:41:11\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mqueue.enqueue.retry\u001b[0m  \u001b[2mrequestId=req-res-script-queue  taskId=task-res-script-queue  messageId=om-res-script-queue  channel=lark  jobId=job-res-script-queue  attempt=2  delayMs=400  retriable=true  error={\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:153:23)\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\n    at async Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:9)\\n    at async /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:134:5\\n    at async scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:20)\\n    at async run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:131:3)\",\"code\":\"ECONNREFUSED\"}\u001b[0m\n\u001b[2m15:41:11\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mqueue.enqueue.failed\u001b[0m  \u001b[2mrequestId=req-res-script-queue  taskId=task-res-script-queue  messageId=om-res-script-queue  channel=lark  jobId=job-res-script-queue  retriable=true  error={\"name\":\"Error\",\"message\":\"redis queue unavailable\",\"stack\":\"Error: redis queue unavailable\\n    at queueAdd (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:153:23)\\n    at Object.run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:50:23)\\n    at runWithRetryPolicy (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/observability/retry-policy.js:13:40)\\n    at async Object.enqueueJobWithRetry (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/dist/company/queue/runtime/orchestration.queue.js:46:9)\\n    at async /Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:134:5\\n    at async scenario (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:54:20)\\n    at async run (/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/backend/scripts/validate-v1-resilience.cjs:131:3)\",\"code\":\"ECONNREFUSED\"}\u001b[0m\n\u001b[2m15:41:11\u001b[0m \u001b[31mERR\u001b[0m \u001b[1mqueue.enqueue.unavailable\u001b[0m  \u001b[2mrequestId=req-res-script-queue  taskId=task-res-script-queue  messageId=om-res-script-queue  channel=lark  jobId=job-res-script-queue\u001b[0m\n\u001b[2m15:41:11\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mzoho.http.retry\u001b[0m  \u001b[2murl=https://relicwave-60066687461.zohomcp.in/mcp/message?key=f7a0e444c0ef5ffeef82837f96bb246e/crm/v2/Contacts?page=1&per_page=1  method=GET  attempt=1  maxAttempts=3  delayMs=0  statusCode=429\u001b[0m\n\u001b[2m15:41:11\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mlangchain.groq.invoke_failed\u001b[0m  \u001b[2mmodelKey=router  fallback=Attempting OpenAI fallback if possible  reason=401 Invalid API Key\nTroubleshooting URL: https://docs.langchain.com/oss/javascript/langchain/errors/MODEL_AUTHENTICATION/\n  timedOut=false\u001b[0m\n\u001b[2m15:41:11\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mlangchain.openai.invoke_failed\u001b[0m  \u001b[2mmodelKey=router  reason=OpenAI unavailable\u001b[0m"
+      }
+    },
+    {
+      "id": "core_smoke",
+      "name": "Core smoke script",
+      "command": "node backend/scripts/validate-v0-core-smoke.cjs",
+      "required": true,
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 3572,
+      "waived": false,
+      "waiver": null,
+      "output": {
+        "stdoutTail": "          \"agent.invoke.lark-response\",\n          \"synthesis.compose\"\n        ],\n        \"agentStatuses\": [\n          {\n            \"agentKey\": \"zoho-read\",\n            \"status\": \"failed\"\n          },\n          {\n            \"agentKey\": \"lark-response\",\n            \"status\": \"success\"\n          }\n        ],\n        \"synthesis\": \"Request could not be completed: No active company Zoho connection available for retrieval\",\n        \"synthesisTaskStatus\": \"failed\"\n      }\n    },\n    {\n      \"name\": \"HITL status transition and atomic resolve behavior\",\n      \"status\": \"PASS\",\n      \"detail\": {\n        \"actionId\": \"8ffd3790-9344-471c-ab82-542f4f7a0ec3\",\n        \"finalStatus\": \"confirmed\",\n        \"secondResolve\": false\n      }\n    },\n    {\n      \"name\": \"Retry path classification and bounded retry execution\",\n      \"status\": \"PASS\",\n      \"detail\": {\n        \"attempts\": 2\n      }\n    }\n  ],\n  \"ok\": true,\n  \"cleanup\": {\n    \"redisKeysDeleted\": 2\n  },\n  \"finishedAt\": \"2026-03-05T10:11:15.435Z\"\n}",
+        "stderrTail": "\u001b[2m15:41:11\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mconfig.validation.warning\u001b[0m  \u001b[2mcount=1  issues=[{\"key\":\"MCP_SECRET_ENCRYPTION_KEY,ZOHO_TOKEN_ENCRYPTION_KEY\",\"code\":\"missing_value\",\"message\":\"Set MCP_SECRET_ENCRYPTION_KEY (or ZOHO_TOKEN_ENCRYPTION_KEY fallback) for encrypted MCP credential storage\",\"severity\":\"warning\"}]\u001b[0m\n\u001b[2m15:41:15\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mredis.closed\u001b[0m"
+      }
+    },
+    {
+      "id": "admin_e2e",
+      "name": "Admin e2e script",
+      "command": "node backend/scripts/validate-admin-e2e.cjs",
+      "required": true,
+      "status": "FAIL_WAIVED",
+      "exitCode": 1,
+      "durationMs": 8143,
+      "waived": true,
+      "waiver": {
+        "scenarioId": "admin_e2e",
+        "reason": "Requires live backend server, prepared seed state, and interactive credentials during local-only validation runs.",
+        "owner": "platform-runtime",
+        "expiresOn": "2026-04-15",
+        "ticket": "OPS-421"
+      },
+      "output": {
+        "stdoutTail": "  \"startedAt\": \"2026-03-05T10:11:15.506Z\",\n  \"baseUrl\": \"http://localhost:8000\",\n  \"runId\": \"e2e1772705475506\",\n  \"scenarios\": [\n    {\n      \"name\": \"Super-admin credential bootstrap and login\",\n      \"status\": \"PASS\",\n      \"detail\": {\n        \"userId\": \"fd14a2f4-250d-4a41-a711-a850a0469017\",\n        \"role\": \"SUPER_ADMIN\"\n      }\n    },\n    {\n      \"name\": \"Super-admin capabilities include workspace-only nav\",\n      \"status\": \"PASS\",\n      \"detail\": {\n        \"navIds\": [\n          \"overview\",\n          \"workspaces\",\n          \"members\",\n          \"rbac\",\n          \"audit\",\n          \"controls\"\n        ]\n      }\n    },\n    {\n      \"name\": \"Company-admin self-signup and login\",\n      \"status\": \"FAIL\",\n      \"detail\": \"HTTP request failed for POST /api/admin/auth/signup/company-admin: fetch failed\"\n    }\n  ],\n  \"ok\": false,\n  \"cleanup\": {\n    \"deletedUsers\": 0,\n    \"deletedCompanies\": 0,\n    \"deletedEmails\": 3\n  },\n  \"finishedAt\": \"2026-03-05T10:11:23.586Z\"\n}",
+        "stderrTail": ""
+      }
+    }
+  ],
+  "summary": {
+    "total": 8,
+    "pass": 7,
+    "fail": 0,
+    "failWaived": 1
+  }
+}

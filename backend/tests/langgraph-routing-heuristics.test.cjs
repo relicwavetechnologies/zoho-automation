@@ -32,6 +32,13 @@ test('buildPlanFromIntent returns deterministic fallback plans', () => {
     'agent.invoke.unknown',
     'synthesis.compose',
   ]);
+  assert.deepEqual(buildPlanFromIntent('write_intent', 4, 'delete this zoho ticket'), [
+    'route.classify',
+    'agent.invoke.risk-check',
+    'agent.invoke.zoho-action',
+    'agent.invoke.lark-response',
+    'synthesis.compose',
+  ]);
 });
 
 test('requiresHumanConfirmation protects destructive operations', () => {

@@ -131,15 +131,36 @@ export class ZohoHttpClient {
 
         if (!response.ok) {
           const classified = classifyHttpFailure(response.status);
-          const message =
+          const payloadMessage =
             typeof payload === 'object' && payload !== null && typeof (payload as { message?: unknown }).message === 'string'
               ? (payload as { message: string }).message
-              : `Zoho API request failed (${response.status})`;
+              : undefined;
+          const payloadCode =
+            typeof payload === 'object' && payload !== null && typeof (payload as { code?: unknown }).code === 'string'
+              ? (payload as { code: string }).code
+              : undefined;
+          const message = payloadMessage
+            ? `${payloadMessage}${payloadCode ? ` [${payloadCode}]` : ''}`
+            : `Zoho API request failed (${response.status})${payloadCode ? ` [${payloadCode}]` : ''}`;
           const error = new ZohoIntegrationError({
             message,
             code: classified.code,
             retriable: classified.retriable,
             statusCode: response.status,
+          });
+
+          logger.warn('zoho.http.error_response', {
+            url,
+            method,
+            statusCode: response.status,
+            code: payloadCode,
+            message: payloadMessage,
+            payload:
+              payload && typeof payload === 'object'
+                ? payload
+                : typeof payload === 'string'
+                  ? payload.slice(0, 512)
+                  : undefined,
           });
 
           if (!error.retriable || attempt >= retryPolicy.maxAttempts) {
@@ -160,7 +181,7 @@ export class ZohoHttpClient {
           continue;
         }
 
-        return payload as T;
+        return (payload ?? {}) as T;
       } catch (error) {
         const retriable =
           error instanceof ZohoIntegrationError

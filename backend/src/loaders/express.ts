@@ -9,6 +9,7 @@ import auditRoutes from '../modules/audit/audit.routes';
 import companyAdminRoutes from '../modules/company-admin/company-admin.routes';
 import companyOnboardingRoutes from '../modules/company-onboarding/company-onboarding.routes';
 import exampleRoutes from '../modules/example/example.routes';
+import mastraRuntimeRoutes from '../modules/mastra-runtime/mastra-runtime.routes';
 import rbacRoutes from '../modules/rbac/rbac.routes';
 import userRoutes from '../modules/user/user.routes';
 import { errorMiddleware } from '../middlewares/error.middleware';
@@ -59,6 +60,7 @@ const expressLoader = async (app: Application): Promise<void> => {
   app.use('/api/admin/runtime', adminRuntimeRoutes);
   app.use('/api/admin/company', companyAdminRoutes);
   app.use('/api/onboarding', companyOnboardingRoutes);
+  app.use('/api/agents', mastraRuntimeRoutes);
   app.use('/webhooks/lark', larkWebhookRoutes);
 
   // Error middleware must be registered last

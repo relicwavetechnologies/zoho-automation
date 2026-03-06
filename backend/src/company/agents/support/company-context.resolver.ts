@@ -1,3 +1,4 @@
+import config from '../../../config';
 import { prisma } from '../../../utils/prisma';
 
 export class CompanyContextResolutionError extends Error {
@@ -11,7 +12,7 @@ export class CompanyContextResolutionError extends Error {
 }
 
 export class CompanyContextResolver {
-  async resolveCompanyId(input?: { companyId?: unknown }): Promise<string> {
+  async resolveCompanyId(input?: { companyId?: unknown; larkTenantKey?: unknown }): Promise<string> {
     if (typeof input?.companyId === 'string' && input.companyId.trim()) {
       const exists = await prisma.zohoConnection.findFirst({
         where: {
@@ -24,6 +25,40 @@ export class CompanyContextResolver {
       if (exists) {
         return exists.companyId;
       }
+    }
+
+    // Try resolving companyId via Lark tenant binding when companyId is absent or unconnected
+    if (typeof input?.larkTenantKey === 'string' && input.larkTenantKey.trim()) {
+      const binding = await prisma.larkTenantBinding.findUnique({
+        where: { larkTenantKey: input.larkTenantKey.trim() },
+        select: { companyId: true, isActive: true },
+      });
+
+      if (binding?.isActive) {
+        const exists = await prisma.zohoConnection.findFirst({
+          where: {
+            companyId: binding.companyId,
+            status: 'CONNECTED',
+          },
+          select: { companyId: true },
+        });
+
+        if (exists) {
+          return exists.companyId;
+        }
+
+        throw new CompanyContextResolutionError(
+          'company_context_missing',
+          'Zoho is not connected for this workspace. Please connect Zoho from the admin panel.',
+        );
+      }
+    }
+
+    if (config.LARK_TENANT_BINDING_ENFORCED) {
+      throw new CompanyContextResolutionError(
+        'company_context_missing',
+        'Company context is required and must come from tenant binding',
+      );
     }
 
     const activeConnections = await prisma.zohoConnection.findMany({
@@ -40,7 +75,7 @@ export class CompanyContextResolver {
     if (activeConnections.length === 0) {
       throw new CompanyContextResolutionError(
         'company_context_missing',
-        'No active company Zoho connection available for retrieval',
+        'Zoho is not connected. Please connect Zoho from the admin panel.',
       );
     }
 

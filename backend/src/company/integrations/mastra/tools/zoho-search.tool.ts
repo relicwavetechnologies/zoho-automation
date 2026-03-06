@@ -1,0 +1,47 @@
+import { createTool } from '@mastra/core/tools';
+import { z } from 'zod';
+
+import { companyContextResolver, zohoRetrievalService } from '../../../agents/support';
+import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
+
+const TOOL_ID = 'search-zoho-context';
+
+export const zohoSearchTool = createTool({
+  id: TOOL_ID,
+  description:
+    'Search indexed Zoho CRM records (deals, contacts, tickets) from the vector database. ' +
+    'Use when you need to find relevant CRM context for a query.',
+  inputSchema: z.object({
+    query: z.string().describe('The search query to find relevant CRM records'),
+    limit: z.number().optional().default(5).describe('Max records to return'),
+  }),
+  execute: async (inputData, context) => {
+    const requestContext = context?.requestContext;
+    const allowedToolIds = requestContext?.get('allowedToolIds') as string[] | undefined;
+    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID)) {
+      const name = TOOL_REGISTRY_MAP.get(TOOL_ID)?.name ?? TOOL_ID;
+      return { error: `Access to "${name}" is not permitted for your role. Please contact your admin.`, records: [], count: 0 };
+    }
+
+    const companyId = requestContext?.get('companyId') as string | undefined;
+    const larkTenantKey = requestContext?.get('larkTenantKey') as string | undefined;
+
+    const resolved = await companyContextResolver.resolveCompanyId({ companyId, larkTenantKey });
+    const matches = await zohoRetrievalService.query({
+      companyId: resolved,
+      text: inputData.query,
+      limit: inputData.limit ?? 5,
+    });
+
+    return {
+      records: matches.map((match) => ({
+        type: match.sourceType,
+        id: match.sourceId,
+        score: match.score,
+        data: match.payload,
+      })),
+      count: matches.length,
+      companyId: resolved,
+    };
+  },
+});

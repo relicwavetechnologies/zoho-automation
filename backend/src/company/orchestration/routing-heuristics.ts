@@ -46,7 +46,7 @@ export const buildPlanFromIntent = (
     return [
       'route.classify',
       'agent.invoke.risk-check',
-      'agent.invoke.response',
+      'agent.invoke.zoho-action',
       'agent.invoke.lark-response',
       'synthesis.compose',
     ];
@@ -83,13 +83,29 @@ export const synthesizeFromAgentResults = (
 
   const zohoResult = agentResults.find((result) => result.agentKey === 'zoho-read' && result.status === 'success');
   if (zohoResult?.result) {
+    const answer = typeof zohoResult.result.answer === 'string' && zohoResult.result.answer.trim()
+      ? zohoResult.result.answer.trim()
+      : undefined;
     const sources = Array.isArray(zohoResult.result.sources)
       ? (zohoResult.result.sources as string[]).slice(0, 3)
       : [];
     const sourceText = sources.length > 0 ? ` Sources: ${sources.join(', ')}.` : '';
     return {
       taskStatus: 'done',
-      text: `Zoho data read complete.${sourceText}`,
+      text: answer ?? `Zoho data read complete.${sourceText}`,
+    };
+  }
+
+  const actionResult = agentResults.find((result) => result.agentKey === 'zoho-action' && result.status === 'success');
+  if (actionResult?.result) {
+    const actionName = typeof actionResult.result.actionName === 'string' ? actionResult.result.actionName : 'action';
+    const sources = Array.isArray(actionResult.result.sourceRefs)
+      ? (actionResult.result.sourceRefs as Array<{ id?: string }>).map((entry) => entry?.id).filter(Boolean).slice(0, 3)
+      : [];
+    const sourceText = sources.length > 0 ? ` Sources: ${sources.join(', ')}.` : '';
+    return {
+      taskStatus: 'done',
+      text: `Zoho action '${actionName}' executed.${sourceText}`,
     };
   }
 

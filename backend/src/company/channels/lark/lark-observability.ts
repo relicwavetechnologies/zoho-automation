@@ -13,6 +13,8 @@ type LarkTraceMetaInput = {
   keyType?: 'event' | 'message';
   textHash?: string;
   receivedAt?: string;
+  larkTenantKey?: string;
+  companyId?: string;
 };
 
 export const buildLarkTextHash = (text: string): string =>

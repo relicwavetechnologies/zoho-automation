@@ -113,6 +113,7 @@ export const enqueueOrchestrationTask = async (
     channel: message.channel,
     userId: message.userId,
     chatId: message.chatId,
+    companyId: message.trace?.companyId,
     status: 'pending',
     plan: [],
   });
@@ -144,6 +145,7 @@ export const requeueOrchestrationTask = async (
       channel: message.channel,
       userId: message.userId,
       chatId: message.chatId,
+      companyId: message.trace?.companyId,
       status: 'pending',
       plan: [],
     });

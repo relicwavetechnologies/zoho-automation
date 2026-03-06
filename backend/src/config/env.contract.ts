@@ -50,21 +50,37 @@ export type ValidatedEnv = {
   ZOHO_ACCOUNTS_BASE_URL: string;
   ZOHO_API_BASE_URL: string;
   ZOHO_TOKEN_ENCRYPTION_KEY: string;
+  ZOHO_PROVIDER_DEFAULT: 'rest' | 'mcp';
+  ZOHO_MCP_ENABLED: boolean;
+  ZOHO_MCP_ACTIONS_ENABLED: boolean;
+  MCP_REQUEST_TIMEOUT_MS: number;
+  MCP_MAX_RETRIES: number;
+  MCP_RETRY_BASE_DELAY_MS: number;
+  MCP_SECRET_ENCRYPTION_KEY: string;
   QDRANT_URL: string;
   QDRANT_API_KEY: string;
   QDRANT_COLLECTION: string;
   QDRANT_TIMEOUT_MS: number;
   EMBEDDING_PROVIDER: 'openai' | 'fallback';
   OPENAI_EMBEDDING_MODEL: string;
-  ORCHESTRATION_ENGINE: 'langgraph' | 'legacy';
+  ORCHESTRATION_ENGINE: 'langgraph' | 'legacy' | 'mastra';
   ORCHESTRATION_LEGACY_ROLLBACK_ENABLED: boolean;
+  MASTRA_BASE_URL: string;
+  MASTRA_AGENT_ID: string;
+  MASTRA_API_KEY: string;
+  MASTRA_TIMEOUT_MS: number;
+  GROQ_API_KEY: string;
+  GROQ_ROUTER_MODEL: string;
   OPENAI_ROUTER_MODEL: string;
+  OPENAI_SUPERVISOR_MODEL: string;
   OPENAI_PLANNER_MODEL: string;
   OPENAI_SYNTHESIS_MODEL: string;
   OPENAI_TEMPERATURE: number;
-  LANGSMITH_TRACING: string;
+  LANGSMITH_TRACING: boolean;
   LANGSMITH_API_KEY: string;
   LANGSMITH_PROJECT: string;
+  LANGSMITH_ENDPOINT: string;
+  LARK_TENANT_BINDING_ENFORCED: boolean;
 };
 
 export type EnvValidationResult = {
@@ -279,14 +295,14 @@ const parseLogLevel = (value: string, issues: EnvValidationIssue[]): ValidatedEn
 };
 
 const parseOrchestrationEngine = (value: string, issues: EnvValidationIssue[]): ValidatedEnv['ORCHESTRATION_ENGINE'] => {
-  if (value === 'langgraph' || value === 'legacy') {
+  if (value === 'langgraph' || value === 'legacy' || value === 'mastra') {
     return value;
   }
 
   issues.push({
     key: 'ORCHESTRATION_ENGINE',
     code: 'invalid_enum',
-    message: 'ORCHESTRATION_ENGINE must be langgraph or legacy',
+    message: 'ORCHESTRATION_ENGINE must be langgraph, legacy, or mastra',
     severity: 'error',
   });
 
@@ -306,6 +322,24 @@ const parseEmbeddingProvider = (value: string, issues: EnvValidationIssue[]): Va
   });
 
   return 'openai';
+};
+
+const parseZohoProviderDefault = (
+  value: string,
+  issues: EnvValidationIssue[],
+): ValidatedEnv['ZOHO_PROVIDER_DEFAULT'] => {
+  if (value === 'rest' || value === 'mcp') {
+    return value;
+  }
+
+  issues.push({
+    key: 'ZOHO_PROVIDER_DEFAULT',
+    code: 'invalid_enum',
+    message: 'ZOHO_PROVIDER_DEFAULT must be rest or mcp',
+    severity: 'error',
+  });
+
+  return 'rest';
 };
 
 const requireNonEmpty = (key: string, value: string, issues: EnvValidationIssue[]): string => {
@@ -504,6 +538,41 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     ZOHO_ACCOUNTS_BASE_URL: readString(parsedRaw.ZOHO_ACCOUNTS_BASE_URL, 'https://accounts.zoho.com'),
     ZOHO_API_BASE_URL: readString(parsedRaw.ZOHO_API_BASE_URL, 'https://www.zohoapis.com'),
     ZOHO_TOKEN_ENCRYPTION_KEY: readString(parsedRaw.ZOHO_TOKEN_ENCRYPTION_KEY),
+    ZOHO_PROVIDER_DEFAULT: parseZohoProviderDefault(readString(parsedRaw.ZOHO_PROVIDER_DEFAULT, 'rest'), issues),
+    ZOHO_MCP_ENABLED: parseBoolean({
+      key: 'ZOHO_MCP_ENABLED',
+      value: readString(parsedRaw.ZOHO_MCP_ENABLED, 'false'),
+      defaultValue: false,
+      issues,
+    }),
+    ZOHO_MCP_ACTIONS_ENABLED: parseBoolean({
+      key: 'ZOHO_MCP_ACTIONS_ENABLED',
+      value: readString(parsedRaw.ZOHO_MCP_ACTIONS_ENABLED, 'false'),
+      defaultValue: false,
+      issues,
+    }),
+    MCP_REQUEST_TIMEOUT_MS: parseInteger({
+      key: 'MCP_REQUEST_TIMEOUT_MS',
+      value: readString(parsedRaw.MCP_REQUEST_TIMEOUT_MS, '10000'),
+      defaultValue: 10000,
+      min: 1000,
+      issues,
+    }),
+    MCP_MAX_RETRIES: parseInteger({
+      key: 'MCP_MAX_RETRIES',
+      value: readString(parsedRaw.MCP_MAX_RETRIES, '3'),
+      defaultValue: 3,
+      min: 1,
+      issues,
+    }),
+    MCP_RETRY_BASE_DELAY_MS: parseInteger({
+      key: 'MCP_RETRY_BASE_DELAY_MS',
+      value: readString(parsedRaw.MCP_RETRY_BASE_DELAY_MS, '250'),
+      defaultValue: 250,
+      min: 0,
+      issues,
+    }),
+    MCP_SECRET_ENCRYPTION_KEY: readString(parsedRaw.MCP_SECRET_ENCRYPTION_KEY),
     QDRANT_URL: readString(parsedRaw.QDRANT_URL, 'http://127.0.0.1:6333'),
     QDRANT_API_KEY: readString(parsedRaw.QDRANT_API_KEY),
     QDRANT_COLLECTION: readString(parsedRaw.QDRANT_COLLECTION, 'zoho_automation_docs'),
@@ -523,13 +592,38 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       defaultValue: true,
       issues,
     }),
+    MASTRA_BASE_URL: readString(parsedRaw.MASTRA_BASE_URL, 'http://127.0.0.1:8000'),
+    MASTRA_AGENT_ID: readString(parsedRaw.MASTRA_AGENT_ID, 'supervisorAgent'),
+    MASTRA_API_KEY: readString(parsedRaw.MASTRA_API_KEY),
+    MASTRA_TIMEOUT_MS: parseInteger({
+      key: 'MASTRA_TIMEOUT_MS',
+      value: readString(parsedRaw.MASTRA_TIMEOUT_MS, '12000'),
+      defaultValue: 12000,
+      min: 1000,
+      issues,
+    }),
+    GROQ_API_KEY: readString(parsedRaw.GROQ_API_KEY),
+    GROQ_ROUTER_MODEL: readString(parsedRaw.GROQ_ROUTER_MODEL, 'llama-3.1-8b-instant'),
     OPENAI_ROUTER_MODEL: readString(parsedRaw.OPENAI_ROUTER_MODEL, 'gpt-4o-mini'),
+    OPENAI_SUPERVISOR_MODEL: readString(parsedRaw.OPENAI_SUPERVISOR_MODEL, 'gpt-4o'),
     OPENAI_PLANNER_MODEL: readString(parsedRaw.OPENAI_PLANNER_MODEL, 'gpt-4o-mini'),
     OPENAI_SYNTHESIS_MODEL: readString(parsedRaw.OPENAI_SYNTHESIS_MODEL, 'gpt-4o-mini'),
     OPENAI_TEMPERATURE: openAiTemperature,
-    LANGSMITH_TRACING: readString(parsedRaw.LANGSMITH_TRACING),
+    LANGSMITH_TRACING: parseBoolean({
+      key: 'LANGSMITH_TRACING',
+      value: readString(parsedRaw.LANGSMITH_TRACING, 'false'),
+      defaultValue: false,
+      issues,
+    }),
     LANGSMITH_API_KEY: readString(parsedRaw.LANGSMITH_API_KEY),
     LANGSMITH_PROJECT: readString(parsedRaw.LANGSMITH_PROJECT),
+    LANGSMITH_ENDPOINT: readString(parsedRaw.LANGSMITH_ENDPOINT, 'https://api.smith.langchain.com'),
+    LARK_TENANT_BINDING_ENFORCED: parseBoolean({
+      key: 'LARK_TENANT_BINDING_ENFORCED',
+      value: readString(parsedRaw.LARK_TENANT_BINDING_ENFORCED, 'false'),
+      defaultValue: false,
+      issues,
+    }),
   };
 
   if (!config.REDIS_URL.startsWith('redis://') && !config.REDIS_URL.startsWith('rediss://')) {
@@ -601,6 +695,36 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     });
   }
 
+  if (config.ORCHESTRATION_ENGINE === 'mastra') {
+    if (!config.MASTRA_AGENT_ID) {
+      issues.push({
+        key: 'MASTRA_AGENT_ID',
+        code: 'missing_value',
+        message: 'MASTRA_AGENT_ID is required when ORCHESTRATION_ENGINE=mastra',
+        severity: 'error',
+      });
+    }
+
+    try {
+      const parsedMastra = new URL(config.MASTRA_BASE_URL);
+      if (parsedMastra.protocol !== 'http:' && parsedMastra.protocol !== 'https:') {
+        issues.push({
+          key: 'MASTRA_BASE_URL',
+          code: 'invalid_protocol',
+          message: 'MASTRA_BASE_URL must be http:// or https://',
+          severity: 'error',
+        });
+      }
+    } catch {
+      issues.push({
+        key: 'MASTRA_BASE_URL',
+        code: 'invalid_url',
+        message: 'MASTRA_BASE_URL must be a valid URL',
+        severity: 'error',
+      });
+    }
+  }
+
   if (config.NODE_ENV === 'production' && !hasLarkVerificationToken && !hasLarkSigningSecret) {
     issues.push({
       key: 'LARK_VERIFICATION_TOKEN,LARK_WEBHOOK_SIGNING_SECRET',
@@ -611,12 +735,14 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
   }
 
   const hasOpenAiApiKey = readString(parsedRaw.OPENAI_API_KEY).length > 0;
-  if (hasOpenAiApiKey) {
-    if (config.OPENAI_ROUTER_MODEL.length === 0) {
+  const hasGroqApiKey = config.GROQ_API_KEY.length > 0;
+
+  if (hasOpenAiApiKey || hasGroqApiKey) {
+    if (config.OPENAI_ROUTER_MODEL.length === 0 && config.GROQ_ROUTER_MODEL.length === 0) {
       issues.push({
         key: 'OPENAI_ROUTER_MODEL',
         code: 'missing_value',
-        message: 'OPENAI_ROUTER_MODEL is required when OPENAI_API_KEY is set',
+        message: 'A router model is required when an API Key is set',
         severity: 'error',
       });
     }
@@ -654,6 +780,33 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       key: 'EMBEDDING_PROVIDER,OPENAI_API_KEY',
       code: 'embedding_provider_fallback',
       message: 'EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is missing; embeddings will fall back deterministically',
+      severity: 'warning',
+    });
+  }
+
+  if (config.LANGSMITH_TRACING && (!config.LANGSMITH_API_KEY || !config.LANGSMITH_PROJECT)) {
+    warnings.push({
+      key: 'LANGSMITH_TRACING,LANGSMITH_API_KEY,LANGSMITH_PROJECT',
+      code: 'tracing_disabled',
+      message: 'LANGSMITH_TRACING is enabled but LANGSMITH_API_KEY/LANGSMITH_PROJECT are incomplete; tracing sink will be disabled',
+      severity: 'warning',
+    });
+  }
+
+  if (config.ZOHO_PROVIDER_DEFAULT === 'mcp' && !config.ZOHO_MCP_ENABLED) {
+    warnings.push({
+      key: 'ZOHO_PROVIDER_DEFAULT,ZOHO_MCP_ENABLED',
+      code: 'provider_default_disabled',
+      message: 'ZOHO_PROVIDER_DEFAULT is mcp but ZOHO_MCP_ENABLED is false; runtime will fall back to rest',
+      severity: 'warning',
+    });
+  }
+
+  if (!config.MCP_SECRET_ENCRYPTION_KEY && !config.ZOHO_TOKEN_ENCRYPTION_KEY) {
+    warnings.push({
+      key: 'MCP_SECRET_ENCRYPTION_KEY,ZOHO_TOKEN_ENCRYPTION_KEY',
+      code: 'missing_value',
+      message: 'Set MCP_SECRET_ENCRYPTION_KEY (or ZOHO_TOKEN_ENCRYPTION_KEY fallback) for encrypted MCP credential storage',
       severity: 'warning',
     });
   }
