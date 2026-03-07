@@ -1,4 +1,5 @@
 import config from './config';
+import { larkDirectorySyncScheduler } from './company/channels/lark';
 import { initializeOrchestrationRuntime, shutdownOrchestrationRuntime } from './company/queue/runtime';
 import loaders from './loaders';
 import { runBootstrapHealthChecks } from './loaders/bootstrap-health';
@@ -11,6 +12,7 @@ const startServer = async () => {
     await runBootstrapHealthChecks();
     await initializeOrchestrationRuntime();
     const app = await loaders();
+    larkDirectorySyncScheduler.start();
 
     app.listen(config.PORT, () => {
       logger.info('server.started', { port: config.PORT, nodeEnv: config.NODE_ENV }, { always: true });
@@ -29,6 +31,7 @@ const gracefulShutdown = async () => {
 
   try {
     logger.info('server.shutdown.start', undefined, { always: true });
+    larkDirectorySyncScheduler.stop();
     await shutdownOrchestrationRuntime();
     logger.info('server.shutdown.complete', undefined, { always: true });
   } catch (error) {

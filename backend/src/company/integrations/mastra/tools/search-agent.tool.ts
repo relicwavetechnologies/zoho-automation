@@ -2,6 +2,7 @@ import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 
 import { searchAgent } from '../agents/search.agent';
+import { buildMastraAgentRunOptions } from '../mastra-model-control';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
 
 const TOOL_ID = 'search-agent';
@@ -9,8 +10,7 @@ const TOOL_ID = 'search-agent';
 export const searchAgentTool = createTool({
   id: TOOL_ID,
   description:
-    'Search indexed CRM context for general queries. ' +
-    'Use when the user needs to find information that may not be a direct CRM record lookup.',
+    'Delegate to the web research agent for Serper-backed search plus exact-site page context extraction.',
   inputSchema: z.object({
     query: z.string().describe('The search query'),
   }),
@@ -22,9 +22,10 @@ export const searchAgentTool = createTool({
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
 
+    const runOptions = await buildMastraAgentRunOptions('mastra.search', { requestContext });
     const result = await searchAgent.generate(
       [{ role: 'user', content: inputData.query }],
-      { requestContext },
+      runOptions as any,
     );
     return { answer: result.text };
   },

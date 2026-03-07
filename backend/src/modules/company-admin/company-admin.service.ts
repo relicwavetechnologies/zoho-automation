@@ -4,7 +4,9 @@ import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
 import config from '../../config';
 import { channelIdentityRepository } from '../../company/channels/channel-identity.repository';
+import { larkDirectorySyncService } from '../../company/channels/lark/lark-directory-sync.service';
 import { larkTenantBindingRepository } from '../../company/channels/lark/lark-tenant-binding.repository';
+import { larkWorkspaceConfigRepository } from '../../company/channels/lark/lark-workspace-config.repository';
 import { auditService } from '../audit/audit.service';
 import { companyOnboardingService } from '../company-onboarding/company-onboarding.service';
 import { CompanyAdminRepository, companyAdminRepository } from './company-admin.repository';
@@ -13,6 +15,7 @@ import {
   DisconnectOnboardingDto,
   TriggerHistoricalSyncDto,
   UpsertLarkBindingDto,
+  UpsertLarkWorkspaceConfigDto,
   UpsertZohoOAuthConfigDto,
 } from './dto/connect-onboarding.dto';
 import { zohoOAuthConfigRepository } from '../../company/integrations/zoho/zoho-oauth-config.repository';
@@ -286,6 +289,12 @@ export class CompanyAdminService extends BaseService {
       },
     });
 
+    try {
+      await larkDirectorySyncService.trigger(scopedCompanyId, 'setup');
+    } catch {
+      // setup sync is best-effort and remains available through manual trigger
+    }
+
     return {
       bindingId: binding.id,
       companyId: binding.companyId,
@@ -293,6 +302,100 @@ export class CompanyAdminService extends BaseService {
       isActive: binding.isActive,
       updatedAt: binding.updatedAt.toISOString(),
     };
+  }
+
+  async getLarkWorkspaceConfigStatus(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const status = await larkWorkspaceConfigRepository.getStatus(scopedCompanyId);
+    return status ?? { configured: false };
+  }
+
+  async upsertLarkWorkspaceConfig(session: SessionScope, payload: UpsertLarkWorkspaceConfigDto) {
+    const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
+    const existing = await larkWorkspaceConfigRepository.findByCompanyId(scopedCompanyId);
+
+    const appSecret = payload.appSecret?.trim() || existing?.appSecret;
+    if (!appSecret) {
+      throw new HttpException(400, 'Lark appSecret is required');
+    }
+
+    const verificationToken = payload.verificationToken?.trim() || existing?.verificationToken;
+    const signingSecret = payload.signingSecret?.trim() || existing?.signingSecret;
+    if (!verificationToken && !signingSecret) {
+      throw new HttpException(400, 'Provide verificationToken or signingSecret');
+    }
+
+    const record = await larkWorkspaceConfigRepository.upsert({
+      companyId: scopedCompanyId,
+      createdBy: session.userId,
+      appId: payload.appId.trim(),
+      appSecret,
+      verificationToken,
+      signingSecret,
+      staticTenantAccessToken: payload.staticTenantAccessToken?.trim() || existing?.staticTenantAccessToken,
+      apiBaseUrl: payload.apiBaseUrl?.trim() || existing?.apiBaseUrl,
+    });
+
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'company.onboarding.lark_workspace_config.upsert',
+      outcome: 'success',
+      metadata: {
+        appId: payload.appId.trim(),
+      },
+    });
+
+    try {
+      await larkDirectorySyncService.trigger(scopedCompanyId, 'setup');
+    } catch {
+      // setup sync is best-effort and remains available through manual trigger
+    }
+
+    return {
+      configured: true,
+      companyId: scopedCompanyId,
+      appId: record.appId,
+      apiBaseUrl: record.apiBaseUrl,
+      hasVerificationToken: Boolean(record.verificationTokenEncrypted),
+      hasSigningSecret: Boolean(record.signingSecretEncrypted),
+      hasStaticTenantAccessToken: Boolean(record.staticTenantAccessTokenEncrypted),
+      updatedAt: record.updatedAt.toISOString(),
+    };
+  }
+
+  async deleteLarkWorkspaceConfig(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    await larkWorkspaceConfigRepository.delete(scopedCompanyId);
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'company.onboarding.lark_workspace_config.delete',
+      outcome: 'success',
+      metadata: {},
+    });
+    return {
+      companyId: scopedCompanyId,
+      deleted: true,
+    };
+  }
+
+  async getLarkUserSyncStatus(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    return larkDirectorySyncService.getStatus(scopedCompanyId);
+  }
+
+  async triggerLarkUserSync(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const result = await larkDirectorySyncService.trigger(scopedCompanyId, 'manual');
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'company.onboarding.lark_user_sync.trigger',
+      outcome: 'success',
+      metadata: result,
+    });
+    return result;
   }
 
   async getProviderStatus(session: SessionScope, companyId?: string) {
@@ -423,6 +526,9 @@ export class CompanyAdminService extends BaseService {
       externalTenantId: row.externalTenantId,
       displayName: row.displayName ?? undefined,
       email: row.email ?? undefined,
+      larkOpenId: row.larkOpenId ?? undefined,
+      larkUserId: row.larkUserId ?? undefined,
+      sourceRoles: row.sourceRoles,
       aiRole: row.aiRole,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
@@ -442,10 +548,15 @@ export class CompanyAdminService extends BaseService {
     companyId?: string,
   ) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const normalizedRole = role.trim().toUpperCase().replace(/\s+/g, '_');
+    const validRoleSlugs = await aiRoleService.getRoleSlugs(scopedCompanyId);
+    if (!validRoleSlugs.includes(normalizedRole)) {
+      throw new HttpException(404, `Unknown AI role: ${normalizedRole}`);
+    }
     const result = await toolPermissionService.updatePermission(
       scopedCompanyId,
       toolId,
-      role,
+      normalizedRole,
       enabled,
       session.userId,
     );
@@ -454,7 +565,7 @@ export class CompanyAdminService extends BaseService {
       companyId: scopedCompanyId,
       action: 'tool.permission.update',
       outcome: 'success',
-      metadata: { toolId, role, enabled },
+      metadata: { toolId, role: normalizedRole, enabled },
     });
     return result;
   }
@@ -505,17 +616,22 @@ export class CompanyAdminService extends BaseService {
 
   async setLarkUserRole(session: SessionScope, identityId: string, aiRole: string, companyId?: string) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const normalizedRole = aiRole.trim().toUpperCase().replace(/\s+/g, '_');
+    const validRoleSlugs = await aiRoleService.getRoleSlugs(scopedCompanyId);
+    if (!validRoleSlugs.includes(normalizedRole)) {
+      throw new HttpException(404, `Unknown AI role: ${normalizedRole}`);
+    }
     const identity = await channelIdentityRepository.findById(identityId);
     if (!identity || identity.companyId !== scopedCompanyId) {
       throw new HttpException(404, 'Channel identity not found');
     }
-    const updated = await channelIdentityRepository.setAiRole(identityId, aiRole);
+    const updated = await channelIdentityRepository.setAiRole(identityId, normalizedRole);
     await auditService.recordLog({
       actorId: session.userId,
       companyId: scopedCompanyId,
       action: 'channel_identity.ai_role.update',
       outcome: 'success',
-      metadata: { identityId, aiRole },
+      metadata: { identityId, aiRole: normalizedRole },
     });
     return {
       id: updated.id,

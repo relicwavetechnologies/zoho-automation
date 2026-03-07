@@ -98,8 +98,8 @@ class MastraRuntimeController extends BaseController {
   listAgents = async (_req: Request, res: Response) =>
     res.json({
       agents: [
-        { id: 'supervisorAgent', description: 'Routes across search and Zoho specialist agents.' },
-        { id: 'searchAgent', description: 'Queries indexed Zoho context from vector search.' },
+        { id: 'supervisorAgent', description: 'Routes across web search, outreach, and Zoho specialist agents.' },
+        { id: 'searchAgent', description: 'Runs Serper-backed web research with exact-site page context extraction.' },
         { id: 'zohoAgent', description: 'Reads grounded Zoho context via zoho-read agent.' },
       ],
     });

@@ -59,6 +59,8 @@ export type ValidatedEnv = {
   MCP_SECRET_ENCRYPTION_KEY: string;
   OUTREACH_API_URL: string;
   OUTREACH_API_TIMEOUT_MS: number;
+  SERPER_API_KEY: string;
+  SERPER_TIMEOUT_MS: number;
   QDRANT_URL: string;
   QDRANT_API_KEY: string;
   QDRANT_COLLECTION: string;
@@ -73,6 +75,7 @@ export type ValidatedEnv = {
   MASTRA_TIMEOUT_MS: number;
   GROQ_API_KEY: string;
   GROQ_ROUTER_MODEL: string;
+  GEMINI_API_KEY: string;
   OPENAI_ROUTER_MODEL: string;
   OPENAI_SUPERVISOR_MODEL: string;
   OPENAI_PLANNER_MODEL: string;
@@ -583,6 +586,14 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       min: 1000,
       issues,
     }),
+    SERPER_API_KEY: readString(parsedRaw.SERPER_API_KEY, readString(parsedRaw.SEPER_API_KEY)),
+    SERPER_TIMEOUT_MS: parseInteger({
+      key: 'SERPER_TIMEOUT_MS',
+      value: readString(parsedRaw.SERPER_TIMEOUT_MS, '10000'),
+      defaultValue: 10000,
+      min: 1000,
+      issues,
+    }),
     QDRANT_URL: readString(parsedRaw.QDRANT_URL, 'http://127.0.0.1:6333'),
     QDRANT_API_KEY: readString(parsedRaw.QDRANT_API_KEY),
     QDRANT_COLLECTION: readString(parsedRaw.QDRANT_COLLECTION, 'zoho_automation_docs'),
@@ -614,6 +625,7 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     }),
     GROQ_API_KEY: readString(parsedRaw.GROQ_API_KEY),
     GROQ_ROUTER_MODEL: readString(parsedRaw.GROQ_ROUTER_MODEL, 'llama-3.1-8b-instant'),
+    GEMINI_API_KEY: readString(parsedRaw.GEMINI_API_KEY, readString(parsedRaw.GOOGLE_API_KEY)),
     OPENAI_ROUTER_MODEL: readString(parsedRaw.OPENAI_ROUTER_MODEL, 'gpt-4o-mini'),
     OPENAI_SUPERVISOR_MODEL: readString(parsedRaw.OPENAI_SUPERVISOR_MODEL, 'gpt-4o'),
     OPENAI_PLANNER_MODEL: readString(parsedRaw.OPENAI_PLANNER_MODEL, 'gpt-4o-mini'),
@@ -702,6 +714,15 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       code: 'invalid_url',
       message: 'OUTREACH_API_URL must be a valid URL',
       severity: 'error',
+    });
+  }
+
+  if (readString(parsedRaw.SEPER_API_KEY).length > 0 && readString(parsedRaw.SERPER_API_KEY).length === 0) {
+    warnings.push({
+      key: 'SEPER_API_KEY,SERPER_API_KEY',
+      code: 'deprecated_alias',
+      message: 'SEPER_API_KEY is deprecated; rename it to SERPER_API_KEY when possible',
+      severity: 'warning',
     });
   }
 

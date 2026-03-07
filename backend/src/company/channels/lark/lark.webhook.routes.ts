@@ -12,6 +12,7 @@ import type { LarkIngressParseResult } from './lark-ingress.contract';
 import { parseLarkIngressPayload } from './lark-ingress.contract';
 import { buildLarkTextHash, buildLarkTraceMeta } from './lark-observability';
 import { emitRuntimeTrace } from '../../observability';
+import { larkWorkspaceConfigRepository } from './lark-workspace-config.repository';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
 type WebhookVerificationFailureReason = Exclude<LarkWebhookVerificationResult['reason'], undefined>;
@@ -22,6 +23,8 @@ type UpsertChannelIdentityInput = {
   externalUserId: string;
   externalTenantId: string;
   companyId: string;
+  larkOpenId?: string;
+  larkUserId?: string;
 };
 
 type LarkWebhookRouteDependencies = {
@@ -35,6 +38,9 @@ type LarkWebhookRouteDependencies = {
   ) => Promise<{ taskId: string }>;
   resolveHitlAction: (actionId: string, decision: 'confirmed' | 'cancelled') => Promise<boolean>;
   resolveCompanyIdByTenantKey: (larkTenantKey: string) => Promise<string | null>;
+  resolveWorkspaceVerificationConfig: (
+    companyId: string,
+  ) => Promise<{ signingSecret?: string; verificationToken?: string; maxSkewSeconds?: number } | null>;
   upsertChannelIdentity: (input: UpsertChannelIdentityInput) => Promise<{ id: string; isNew: boolean; aiRole: string }>;
 };
 
@@ -162,6 +168,20 @@ const defaultResolveCompanyIdByTenantKey: LarkWebhookRouteDependencies['resolveC
   return larkTenantBindingRepository.resolveCompanyId(larkTenantKey);
 };
 
+const defaultResolveWorkspaceVerificationConfig: LarkWebhookRouteDependencies['resolveWorkspaceVerificationConfig'] = async (
+  companyId,
+) => {
+  const workspaceConfig = await larkWorkspaceConfigRepository.findByCompanyId(companyId);
+  if (!workspaceConfig) {
+    return null;
+  }
+  return {
+    signingSecret: workspaceConfig.signingSecret,
+    verificationToken: workspaceConfig.verificationToken,
+    maxSkewSeconds: config.LARK_WEBHOOK_MAX_SKEW_SECONDS,
+  };
+};
+
 const defaultUpsertChannelIdentity: LarkWebhookRouteDependencies['upsertChannelIdentity'] = async (input) => {
   const { channelIdentityRepository } = require('../channel-identity.repository') as typeof import('../channel-identity.repository');
   return channelIdentityRepository.upsert(input);
@@ -176,6 +196,7 @@ const createDefaultDependencies = (): LarkWebhookRouteDependencies => ({
   enqueueTask: defaultEnqueueTask,
   resolveHitlAction: defaultResolveHitlAction,
   resolveCompanyIdByTenantKey: defaultResolveCompanyIdByTenantKey,
+  resolveWorkspaceVerificationConfig: defaultResolveWorkspaceVerificationConfig,
   upsertChannelIdentity: defaultUpsertChannelIdentity,
 });
 
@@ -201,10 +222,43 @@ export const createLarkWebhookEventHandler = (
         method: req.method,
         path: req.originalUrl || req.url,
       });
+      const parsed = dependencies.parsePayload(req.body);
+      const larkTenantKey = isMetadataParseResult(parsed) ? parsed.larkTenantKey : undefined;
+      const scopedCompanyId = larkTenantKey
+        ? await dependencies.resolveCompanyIdByTenantKey(larkTenantKey)
+        : null;
+
+      if (
+        config.LARK_TENANT_BINDING_ENFORCED
+        && larkTenantKey
+        && !scopedCompanyId
+        && parsed.kind !== 'url_verification'
+      ) {
+        dependencies.log.warn('lark.ingress.rejected', {
+          requestId,
+          reason: 'company_context_missing',
+          statusCode: 403,
+          larkTenantKey,
+        });
+        return res.status(403).json({
+          success: false,
+          message: 'Lark tenant is not mapped to any company workspace',
+          data: {
+            reason: 'company_context_missing',
+            larkTenantKey,
+          },
+        });
+      }
+
+      const verificationConfig = scopedCompanyId
+        ? await dependencies.resolveWorkspaceVerificationConfig(scopedCompanyId)
+        : null;
       const verification = dependencies.verifyRequest({
         headers: req.headers,
         rawBody,
         parsedBody: req.body,
+      }, {
+        config: verificationConfig ?? undefined,
       });
       if (!verification.ok) {
         const statusCode = mapVerificationReasonToHttpStatus(verification.reason);
@@ -227,9 +281,11 @@ export const createLarkWebhookEventHandler = (
           message: `Lark webhook rejected: ${verification.reason}`,
         });
       }
-      dependencies.log.info('lark.ingress.verified', { requestId });
-
-      const parsed = dependencies.parsePayload(req.body);
+      dependencies.log.info('lark.ingress.verified', {
+        requestId,
+        larkTenantKey,
+        companyId: scopedCompanyId ?? undefined,
+      });
       dependencies.log.debug('lark.webhook.contract.parsed', {
         requestId,
         kind: parsed.kind,
@@ -299,27 +355,6 @@ export const createLarkWebhookEventHandler = (
         });
       }
       const textHash = buildLarkTextHash(normalized.text);
-      const larkTenantKey = parsed.larkTenantKey ?? normalized.trace?.larkTenantKey;
-      const scopedCompanyId = larkTenantKey
-        ? await dependencies.resolveCompanyIdByTenantKey(larkTenantKey)
-        : null;
-
-      if (config.LARK_TENANT_BINDING_ENFORCED && !scopedCompanyId) {
-        dependencies.log.warn('lark.ingress.rejected', {
-          requestId,
-          reason: 'company_context_missing',
-          statusCode: 403,
-          larkTenantKey,
-        });
-        return res.status(403).json({
-          success: false,
-          message: 'Lark tenant is not mapped to any company workspace',
-          data: {
-            reason: 'company_context_missing',
-            larkTenantKey,
-          },
-        });
-      }
 
       let channelIdentityId: string | undefined;
       let userRole = 'MEMBER';
@@ -337,6 +372,8 @@ export const createLarkWebhookEventHandler = (
             externalUserId: normalized.userId,
             externalTenantId: larkTenantKey,
             companyId: scopedCompanyId,
+            larkOpenId: normalized.trace?.larkOpenId,
+            larkUserId: normalized.trace?.larkUserId,
           });
           channelIdentityId = identity.id;
           userRole = identity.aiRole;

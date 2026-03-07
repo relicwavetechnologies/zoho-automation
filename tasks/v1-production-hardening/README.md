@@ -39,6 +39,12 @@ Deliver a production-grade V1 runtime that is simple, robust, and architecturall
 22. `21-failure-injection-resilience-suite`
 23. `22-e2e-release-gate-matrix`
 24. `23-rollback-drill-and-ops-runbook`
+25. `24-sse-progress-update-quality`
+26. `25-lark-company-config-and-verification-isolation`
+27. `26-lark-directory-sync-and-role-bootstrap`
+28. `27-vector-visibility-personal-shared-public`
+29. `28-admin-approved-vector-sharing`
+30. `29-doc-upload-and-generation-limits`
 
 ## Global Quality Gates
 1. Additive changes only (no breaking public API/type changes).

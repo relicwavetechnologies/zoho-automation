@@ -29,6 +29,32 @@ export const upsertLarkBindingSchema = z.object({
   isActive: z.boolean().default(true),
 });
 
+export const upsertLarkWorkspaceConfigSchema = z
+  .object({
+    companyId: z.string().uuid().optional(),
+    appId: z.string().min(1),
+    appSecret: z.string().optional(),
+    verificationToken: z.string().optional(),
+    signingSecret: z.string().optional(),
+    staticTenantAccessToken: z.string().optional(),
+    apiBaseUrl: z.string().url().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const hasVerificationToken = typeof value.verificationToken === 'string' && value.verificationToken.trim().length > 0;
+    const hasSigningSecret = typeof value.signingSecret === 'string' && value.signingSecret.trim().length > 0;
+    if (!hasVerificationToken && !hasSigningSecret) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['verificationToken'],
+        message: 'Provide verificationToken or signingSecret',
+      });
+    }
+  });
+
+export const larkSyncQuerySchema = z.object({
+  companyId: z.string().uuid().optional(),
+});
+
 export const disconnectOnboardingSchema = z.object({
   companyId: z.string().uuid().optional(),
 });
@@ -78,6 +104,8 @@ export const zohoAuthorizeUrlQuerySchema = z.object({
 export type ConnectOnboardingDto = z.infer<typeof connectOnboardingSchema>;
 export type DisconnectOnboardingDto = z.infer<typeof disconnectOnboardingSchema>;
 export type UpsertLarkBindingDto = z.infer<typeof upsertLarkBindingSchema>;
+export type UpsertLarkWorkspaceConfigDto = z.infer<typeof upsertLarkWorkspaceConfigSchema>;
 export type UpsertZohoOAuthConfigDto = z.infer<typeof upsertZohoOAuthConfigSchema>;
 export type ZohoAuthorizeUrlQueryDto = z.infer<typeof zohoAuthorizeUrlQuerySchema>;
 export type TriggerHistoricalSyncDto = z.infer<typeof triggerHistoricalSyncSchema>;
+export type LarkSyncQueryDto = z.infer<typeof larkSyncQuerySchema>;

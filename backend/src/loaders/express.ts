@@ -3,6 +3,7 @@ import express, { Application, NextFunction, Request, Response } from 'express';
 import config from '../config';
 import { larkWebhookRoutes } from '../company/channels';
 import adminControlsRoutes from '../modules/admin-controls/admin-controls.routes';
+import adminAiModelsRoutes from '../modules/admin-ai-models/admin-ai-models.routes';
 import adminRuntimeRoutes from '../modules/admin-runtime/admin-runtime.routes';
 import adminAuthRoutes from '../modules/admin-auth/admin-auth.routes';
 import auditRoutes from '../modules/audit/audit.routes';
@@ -57,6 +58,7 @@ const expressLoader = async (app: Application): Promise<void> => {
   app.use('/api/admin/rbac', rbacRoutes);
   app.use('/api/admin/audit', auditRoutes);
   app.use('/api/admin/controls', adminControlsRoutes);
+  app.use('/api/admin/ai-models', adminAiModelsRoutes);
   app.use('/api/admin/runtime', adminRuntimeRoutes);
   app.use('/api/admin/company', companyAdminRoutes);
   app.use('/api/onboarding', companyOnboardingRoutes);

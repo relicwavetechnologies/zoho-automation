@@ -39,6 +39,12 @@ test('buildPlanFromIntent returns deterministic fallback plans', () => {
     'agent.invoke.lark-response',
     'synthesis.compose',
   ]);
+  assert.deepEqual(buildPlanFromIntent('general', 2, 'search example.com pricing and latest updates'), [
+    'route.classify',
+    'agent.invoke.search-read',
+    'agent.invoke.lark-response',
+    'synthesis.compose',
+  ]);
 });
 
 test('requiresHumanConfirmation protects destructive operations', () => {

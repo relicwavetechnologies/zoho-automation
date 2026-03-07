@@ -264,6 +264,12 @@ export class AdminAuthService extends BaseService {
         roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
       },
       {
+        id: 'ai-models',
+        label: 'AI Models',
+        path: '/ai-models',
+        roles: ['SUPER_ADMIN'],
+      },
+      {
         id: 'integrations',
         label: 'Integrations',
         path: '/integrations',

@@ -10,10 +10,38 @@ const OUTREACH_QUERY_KEYWORDS = [
   'da ',
   'dr ',
 ];
+const WEB_SEARCH_QUERY_KEYWORDS = [
+  'search',
+  'look up',
+  'lookup',
+  'google',
+  'web',
+  'website',
+  'site',
+  'domain',
+  'news',
+  'latest',
+  'current',
+  'research',
+];
 
 const isOutreachQuery = (text: string): boolean => {
   const normalized = text.toLowerCase();
   return OUTREACH_QUERY_KEYWORDS.some((keyword) => normalized.includes(keyword));
+};
+
+const isWebSearchQuery = (text: string): boolean => {
+  const normalized = text.toLowerCase();
+  if (/\bhttps?:\/\/[^\s]+/i.test(text)) {
+    return true;
+  }
+  if (/\bsite:[a-z0-9.-]+\.[a-z]{2,}\b/i.test(text)) {
+    return true;
+  }
+  if (/\b[a-z0-9][a-z0-9.-]*\.[a-z]{2,}\b/i.test(text) && normalized.includes('website')) {
+    return true;
+  }
+  return WEB_SEARCH_QUERY_KEYWORDS.some((keyword) => normalized.includes(keyword));
 };
 
 export const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {
@@ -72,6 +100,10 @@ export const buildPlanFromIntent = (
       'agent.invoke.lark-response',
       'synthesis.compose',
     ];
+  }
+
+  if (isWebSearchQuery(normalized)) {
+    return ['route.classify', 'agent.invoke.search-read', 'agent.invoke.lark-response', 'synthesis.compose'];
   }
 
   return ['route.classify', 'agent.invoke.response', 'agent.invoke.lark-response', 'synthesis.compose'];
@@ -143,6 +175,19 @@ export const synthesizeFromAgentResults = (
     return {
       taskStatus: 'done',
       text: answer.length > 0 ? answer : `Outreach publisher lookup complete.${sourceText}`,
+    };
+  }
+
+  const searchResult = agentResults.find((result) => result.agentKey === 'search-read' && result.status === 'success');
+  if (searchResult?.result) {
+    const answer = typeof searchResult.result.answer === 'string' ? searchResult.result.answer.trim() : '';
+    const sourceRefs = Array.isArray(searchResult.result.sourceRefs)
+      ? (searchResult.result.sourceRefs as Array<{ id?: string }>).map((entry) => entry?.id).filter(Boolean).slice(0, 3)
+      : [];
+    const sourceText = sourceRefs.length > 0 ? ` Sources: ${sourceRefs.join(', ')}.` : '';
+    return {
+      taskStatus: 'done',
+      text: answer.length > 0 ? answer : `Web search complete.${sourceText}`,
     };
   }
 

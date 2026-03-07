@@ -5,9 +5,11 @@ import { BaseController } from '../../core/controller';
 import {
   connectOnboardingSchema,
   disconnectOnboardingSchema,
+  larkSyncQuerySchema,
   triggerHistoricalSyncSchema,
   zohoAuthorizeUrlQuerySchema,
   upsertLarkBindingSchema,
+  upsertLarkWorkspaceConfigSchema,
   upsertZohoOAuthConfigSchema,
 } from './dto/connect-onboarding.dto';
 import { createInviteSchema } from './dto/create-invite.dto';
@@ -118,6 +120,56 @@ class CompanyAdminController extends BaseController {
     }
     const result = await this.service.upsertLarkBinding(session, payload);
     return res.status(201).json(ApiResponse.success(result, 'Lark tenant binding saved'));
+  };
+
+  getLarkWorkspaceConfigStatus = async (req: Request, res: Response) => {
+    const query = larkSyncQuerySchema.parse(req.query);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getLarkWorkspaceConfigStatus(session, query.companyId);
+    return res.json(ApiResponse.success(result, 'Lark workspace config status loaded'));
+  };
+
+  upsertLarkWorkspaceConfig = async (req: Request, res: Response) => {
+    const payload = upsertLarkWorkspaceConfigSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.upsertLarkWorkspaceConfig(session, payload);
+    return res.status(201).json(ApiResponse.success(result, 'Lark workspace config saved'));
+  };
+
+  deleteLarkWorkspaceConfig = async (req: Request, res: Response) => {
+    const query = larkSyncQuerySchema.parse(req.query);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.deleteLarkWorkspaceConfig(session, query.companyId);
+    return res.json(ApiResponse.success(result, 'Lark workspace config removed'));
+  };
+
+  getLarkUserSyncStatus = async (req: Request, res: Response) => {
+    const query = larkSyncQuerySchema.parse(req.query);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getLarkUserSyncStatus(session, query.companyId);
+    return res.json(ApiResponse.success(result, 'Lark user sync status loaded'));
+  };
+
+  triggerLarkUserSync = async (req: Request, res: Response) => {
+    const payload = larkSyncQuerySchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.triggerLarkUserSync(session, payload.companyId);
+    return res.status(202).json(ApiResponse.success(result, 'Lark user sync triggered'));
   };
 
   getProviderStatus = async (req: Request, res: Response) => {

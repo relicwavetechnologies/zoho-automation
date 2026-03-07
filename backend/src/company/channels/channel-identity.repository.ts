@@ -7,34 +7,65 @@ type UpsertChannelIdentityInput = {
   companyId: string;
   displayName?: string;
   email?: string;
+  larkOpenId?: string;
+  larkUserId?: string;
+  sourceRoles?: string[];
+  aiRole?: string;
 };
 
 class ChannelIdentityRepository {
   async upsert(input: UpsertChannelIdentityInput) {
-    const row = await prisma.channelIdentity.upsert({
-      where: {
-        channel_externalUserId_companyId: {
-          channel: input.channel,
-          externalUserId: input.externalUserId,
-          companyId: input.companyId,
+    const existing =
+      (await prisma.channelIdentity.findUnique({
+        where: {
+          channel_externalUserId_companyId: {
+            channel: input.channel,
+            externalUserId: input.externalUserId,
+            companyId: input.companyId,
+          },
         },
-      },
-      create: {
-        channel: input.channel,
-        externalUserId: input.externalUserId,
-        externalTenantId: input.externalTenantId,
-        companyId: input.companyId,
-        displayName: input.displayName,
-        email: input.email,
-      },
-      update: {
-        externalTenantId: input.externalTenantId,
-        ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
-        ...(input.email !== undefined ? { email: input.email } : {}),
-      },
-    });
-    // createdAt === updatedAt means Prisma just ran the CREATE branch
-    const isNew = row.createdAt.getTime() === row.updatedAt.getTime();
+      }))
+      ?? (input.channel === 'lark' && (input.larkOpenId || input.larkUserId)
+        ? await prisma.channelIdentity.findFirst({
+            where: {
+              companyId: input.companyId,
+              channel: input.channel,
+              OR: [
+                ...(input.larkOpenId ? [{ larkOpenId: input.larkOpenId }] : []),
+                ...(input.larkUserId ? [{ larkUserId: input.larkUserId }] : []),
+              ],
+            },
+          })
+        : null);
+
+    const row = existing
+      ? await prisma.channelIdentity.update({
+          where: { id: existing.id },
+          data: {
+            externalUserId: input.externalUserId,
+            externalTenantId: input.externalTenantId,
+            ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+            ...(input.email !== undefined ? { email: input.email } : {}),
+            ...(input.larkOpenId !== undefined ? { larkOpenId: input.larkOpenId } : {}),
+            ...(input.larkUserId !== undefined ? { larkUserId: input.larkUserId } : {}),
+            ...(input.sourceRoles !== undefined ? { sourceRoles: input.sourceRoles } : {}),
+          },
+        })
+      : await prisma.channelIdentity.create({
+          data: {
+            channel: input.channel,
+            externalUserId: input.externalUserId,
+            externalTenantId: input.externalTenantId,
+            companyId: input.companyId,
+            displayName: input.displayName,
+            email: input.email,
+            larkOpenId: input.larkOpenId,
+            larkUserId: input.larkUserId,
+            sourceRoles: input.sourceRoles ?? [],
+            aiRole: input.aiRole ?? 'MEMBER',
+          },
+        });
+    const isNew = !existing;
     return { ...row, isNew };
   }
 

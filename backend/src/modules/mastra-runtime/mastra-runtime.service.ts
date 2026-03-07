@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { RequestContext } from '@mastra/core/di';
 
 import { mastra } from '../../company/integrations/mastra';
+import { buildMastraAgentRunOptions, MASTRA_AGENT_TARGETS, type MastraAgentTargetId } from '../../company/integrations/mastra/mastra-model-control';
 
 type GeneratePayload = {
   messages: Array<{
@@ -87,7 +88,11 @@ export class MastraRuntimeService {
     // mastra.getAgent accepts the registered agent key — cast since we validated above
     const agent = mastra.getAgent(agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent');
     // Pass objective as a plain string — MessageListInput accepts string
-    const result = await agent.generate(objective, { requestContext });
+    const runOptions = await buildMastraAgentRunOptions(
+      MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId],
+      { requestContext },
+    );
+    const result = await agent.generate(objective, runOptions as any);
 
     return {
       id: randomUUID(),
@@ -119,7 +124,11 @@ export class MastraRuntimeService {
     requestContext.set('channel', asString(raw['channel']));
 
     const agent = mastra.getAgent(agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent');
-    return agent.stream(objective, { requestContext });
+    const runOptions = await buildMastraAgentRunOptions(
+      MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId],
+      { requestContext },
+    );
+    return agent.stream(objective, runOptions as any);
   }
 }
 

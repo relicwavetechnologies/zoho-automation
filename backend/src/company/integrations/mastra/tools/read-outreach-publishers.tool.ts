@@ -17,6 +17,12 @@ export const readOutreachPublishersTool = createTool({
     objective: z
       .string()
       .describe('Outreach query objective, e.g. "Find technology publishers for acme.com with DA > 50"'),
+    rawFilterString: z
+      .string()
+      .describe(
+        'SQL-like template string for exact filtering (e.g., `"niche" LIKE \'%tech%\' AND "domainAuthority" >= 50`). Supports: = (exact), LIKE (contains), >=, <=, etc. For URL domains, use `LIKE \'%domain.com%\'` instead of exact `=`.'
+      )
+      .optional(),
     limit: z.number().int().min(1).max(25).optional().default(10),
   }),
   execute: async (inputData, context) => {
@@ -43,6 +49,7 @@ export const readOutreachPublishersTool = createTool({
         userId: requestContext?.get('userId'),
         chatId: requestContext?.get('chatId'),
         filters: requestContext?.get('outreachFilters'),
+        rawFilterString: inputData.rawFilterString,
         limit: inputData.limit,
       },
     });

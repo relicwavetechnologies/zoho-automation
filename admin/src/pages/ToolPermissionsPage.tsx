@@ -113,6 +113,7 @@ export default function ToolPermissionsPage() {
   // ── Data ────────────────────────────────────────────────────────────────────
 
   const loadMatrix = useCallback(async () => {
+    if (!token) return;
     const data = await api.get<{ roles: AiRole[]; tools: ToolRow[] }>(
       '/api/admin/company/tool-permissions',
       token,
@@ -122,6 +123,7 @@ export default function ToolPermissionsPage() {
   }, [token]);
 
   const loadUsers = useCallback(async () => {
+    if (!token) return;
     const data = await api.get<ChannelIdentity[]>(
       '/api/admin/company/channel-identities?channel=lark',
       token,
@@ -137,6 +139,7 @@ export default function ToolPermissionsPage() {
   // ── Handlers ────────────────────────────────────────────────────────────────
 
   const handleToggle = async (toolId: string, roleSlug: string, newVal: boolean) => {
+    if (!token) return;
     setTools((prev) =>
       prev.map((t) =>
         t.toolId === toolId ? { ...t, permissions: { ...t.permissions, [roleSlug]: newVal } } : t,
@@ -161,6 +164,7 @@ export default function ToolPermissionsPage() {
   };
 
   const handleCreateRole = async () => {
+    if (!token) return;
     if (!newRoleSlug.trim() || !newRoleLabel.trim()) return;
     setCreatingRole(true);
     try {
@@ -181,6 +185,7 @@ export default function ToolPermissionsPage() {
   };
 
   const handleDeleteRole = async (role: AiRole) => {
+    if (!token) return;
     if (role.isBuiltIn) return;
     try {
       await api.delete(`/api/admin/company/ai-roles/${role.id}`, {}, token);
@@ -192,6 +197,7 @@ export default function ToolPermissionsPage() {
   };
 
   const handleUserRoleChange = async (userId: string, newRole: string) => {
+    if (!token) return;
     setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, aiRole: newRole } : u)));
     try {
       await api.put(

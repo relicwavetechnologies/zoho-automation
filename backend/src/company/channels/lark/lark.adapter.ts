@@ -159,6 +159,8 @@ export class LarkChannelAdapter implements ChannelAdapter {
       readString(sender?.sender_id?.open_id) ??
       readString(sender?.sender_id?.user_id) ??
       readString(sender?.employee_id);
+    const larkOpenId = readString(sender?.sender_id?.open_id);
+    const larkUserId = readString(sender?.sender_id?.user_id);
     const chatId = readString(message.chat_id);
     const messageId = readString(message.message_id);
 
@@ -177,6 +179,8 @@ export class LarkChannelAdapter implements ChannelAdapter {
       rawEvent: event,
       trace: {
         larkTenantKey: readTenantKey(envelope),
+        larkOpenId,
+        larkUserId,
       },
     };
 

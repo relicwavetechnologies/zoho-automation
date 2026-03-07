@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { useAdminAuth } from '../auth/AdminAuthProvider';
 import { AuditLogsPage } from '../pages/AuditLogsPage';
+import { AiModelsPage } from '../pages/AiModelsPage';
 import { AdminLayout } from '../components/layout/AdminLayout';
 import { ControlsPage } from '../pages/ControlsPage';
 import { IntegrationsPage } from '../pages/IntegrationsPage';
@@ -53,6 +54,7 @@ export const App = () => {
           <Route path="rbac" element={<RbacPage />} />
           <Route path="audit" element={<AuditLogsPage />} />
           <Route path="controls" element={<ControlsPage />} />
+          <Route path="ai-models" element={<AiModelsPage />} />
           <Route path="integrations" element={<IntegrationsPage />} />
           <Route path="tool-access" element={<ToolPermissionsPage />} />
           <Route path="zoho/callback" element={<ZohoOauthCallbackPage />} />

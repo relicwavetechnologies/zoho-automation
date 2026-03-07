@@ -3,6 +3,7 @@ import {
   OutreachReadAgent,
   ResponseAgent,
   RiskCheckAgent,
+  SearchReadAgent,
   ZohoActionAgent,
   ZohoReadAgent,
 } from './implementations';
@@ -22,6 +23,7 @@ registry.register(new ResponseAgent());
 registry.register(new RiskCheckAgent());
 registry.register(new ZohoReadAgent());
 registry.register(new OutreachReadAgent());
+registry.register(new SearchReadAgent());
 registry.register(new ZohoActionAgent());
 registry.register(new LarkResponseAgent());
 

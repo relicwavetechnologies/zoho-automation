@@ -3,5 +3,8 @@ export * from './lark-ingress.contract';
 export * from './lark-observability';
 export * from './lark-tenant-token.service';
 export * from './lark-tenant-binding.repository';
+export * from './lark-workspace-config.repository';
+export * from './lark-directory-sync.repository';
+export * from './lark-directory-sync.service';
 export * from './lark.types';
 export { default as larkWebhookRoutes } from './lark.webhook.routes';

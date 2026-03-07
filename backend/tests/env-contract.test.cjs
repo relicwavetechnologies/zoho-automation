@@ -120,3 +120,11 @@ test('validateEnvironmentContract warns for langgraph without OPENAI_API_KEY', (
   const result = validateEnvironmentContract(env);
   assert.ok(result.warnings.some((issue) => issue.key === 'OPENAI_API_KEY' && issue.code === 'fallback_mode'));
 });
+
+test('validateEnvironmentContract accepts deprecated SEPER_API_KEY alias', () => {
+  const env = baseEnv();
+  env.SEPER_API_KEY = 'serper-key-from-alias';
+
+  const result = validateEnvironmentContract(env);
+  assert.equal(result.config.SERPER_API_KEY, 'serper-key-from-alias');
+});

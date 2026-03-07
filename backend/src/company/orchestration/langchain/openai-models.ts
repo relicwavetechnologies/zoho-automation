@@ -1,26 +1,32 @@
+import { ChatGoogle } from '@langchain/google';
 import { ChatOpenAI } from '@langchain/openai';
 
 import config from '../../../config';
+import { aiModelControlService, type AiControlTargetKey, type AiModelProvider } from '../../ai-models';
 import { logger } from '../../../utils/logger';
 
 export type OrchestrationModelKey = 'router' | 'planner' | 'synthesis';
+type SupportedChatModel = ChatOpenAI | ChatGoogle;
 const GROQ_INVOKE_TIMEOUT_MS = 3_000;
+
+const TARGET_BY_KEY: Record<OrchestrationModelKey, AiControlTargetKey> = {
+  router: 'langgraph.router',
+  planner: 'langgraph.planner',
+  synthesis: 'langgraph.synthesis',
+};
+
+const TARGET_CACHE_ALIASES: Partial<Record<AiControlTargetKey, string>> = {
+  'langgraph.router': 'router',
+  'langgraph.planner': 'planner',
+  'langgraph.synthesis': 'synthesis',
+  'langgraph.supervisor': 'supervisor',
+};
 
 const coerceTemperature = (value: number): number => {
   if (!Number.isFinite(value)) {
     return 0.1;
   }
   return Math.max(0, Math.min(1, value));
-};
-
-const readModelName = (key: OrchestrationModelKey): string => {
-  if (key === 'router') {
-    return config.OPENAI_ROUTER_MODEL;
-  }
-  if (key === 'planner') {
-    return config.OPENAI_PLANNER_MODEL;
-  }
-  return config.OPENAI_SYNTHESIS_MODEL;
 };
 
 const extractText = (content: unknown): string => {
@@ -47,37 +53,33 @@ const extractText = (content: unknown): string => {
 };
 
 class OpenAiOrchestrationModels {
-  private readonly enabled: boolean;
-  private readonly groqEnabled: boolean;
-  private readonly groqRouter: ChatOpenAI | null = null;
-  private readonly supervisorModel: ChatOpenAI | null = null;
-  private readonly modelCache = new Map<OrchestrationModelKey, ChatOpenAI>();
+  enabled: boolean;
+  groqEnabled: boolean;
+  groqRouter: ChatOpenAI | null = null;
+  supervisorModel: SupportedChatModel | null = null;
+  modelCache = new Map<string, SupportedChatModel>();
 
   constructor() {
-    this.enabled = Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim().length > 0);
+    this.enabled = Boolean(
+      (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim().length > 0) ||
+      (config.GEMINI_API_KEY && config.GEMINI_API_KEY.trim().length > 0),
+    );
     this.groqEnabled = Boolean(config.GROQ_API_KEY && config.GROQ_API_KEY.trim().length > 0);
 
     if (!this.enabled && !this.groqEnabled) {
       logger.warn('langchain.orchestration.disabled', {
-        reason: 'Both OPENAI_API_KEY and GROQ_API_KEY missing',
+        reason: 'OPENAI_API_KEY, GEMINI_API_KEY, and GROQ_API_KEY are all missing',
       });
     }
 
     if (this.groqEnabled) {
       this.groqRouter = new ChatOpenAI({
         model: config.GROQ_ROUTER_MODEL,
-        temperature: 0, // deterministic for Tier-1 fast-path decisions
+        temperature: 0,
         apiKey: config.GROQ_API_KEY,
         configuration: {
           baseURL: 'https://api.groq.com/openai/v1',
         },
-      });
-    }
-
-    if (this.enabled) {
-      this.supervisorModel = new ChatOpenAI({
-        model: config.OPENAI_SUPERVISOR_MODEL,
-        temperature: coerceTemperature(config.OPENAI_TEMPERATURE),
       });
     }
   }
@@ -86,27 +88,73 @@ class OpenAiOrchestrationModels {
     return this.enabled || this.groqEnabled;
   }
 
-  private getModel(key: OrchestrationModelKey): ChatOpenAI {
-    const cached = this.modelCache.get(key);
-    if (cached) {
-      return cached;
+  private hasProviderCredentials(provider: AiModelProvider): boolean {
+    if (provider === 'google') {
+      return Boolean((config.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim());
     }
-
-    const model = new ChatOpenAI({
-      model: readModelName(key),
-      temperature: coerceTemperature(config.OPENAI_TEMPERATURE),
-    });
-
-    this.modelCache.set(key, model);
-    return model;
+    return Boolean((process.env.OPENAI_API_KEY || '').trim());
   }
 
-  /**
-   * Tier-1 fast path via Groq (~100ms, very cheap).
-   * Times out after 3 seconds — gracefully falls through to full orchestration.
-   * Returns raw text or null if unavailable/timed-out/errored.
-   */
-  async invokeTier1(prompt: string): Promise<string | null> {
+  private async buildTargetModel(targetKey: AiControlTargetKey): Promise<{ cacheKey: string; model: SupportedChatModel }> {
+    const alias = TARGET_CACHE_ALIASES[targetKey];
+    if (alias) {
+      const aliased = this.modelCache.get(alias);
+      if (aliased) {
+        return { cacheKey: alias, model: aliased };
+      }
+    }
+
+    const resolved = await aiModelControlService.resolveTarget(targetKey);
+    const cacheKey = [
+      targetKey,
+      resolved.effectiveProvider,
+      resolved.effectiveModelId,
+      resolved.effectiveThinkingLevel ?? '',
+    ].join(':');
+    const cached = this.modelCache.get(cacheKey);
+    if (cached) {
+      return { cacheKey, model: cached };
+    }
+
+    if (!this.hasProviderCredentials(resolved.effectiveProvider)) {
+      throw new Error(`Missing credentials for provider ${resolved.effectiveProvider}`);
+    }
+
+    const model: SupportedChatModel =
+      resolved.effectiveProvider === 'google'
+        ? new ChatGoogle({
+          model: resolved.effectiveModelId,
+          apiKey: config.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+          thinkingLevel: resolved.effectiveThinkingLevel,
+        })
+        : new ChatOpenAI({
+          model: resolved.effectiveModelId,
+          temperature: coerceTemperature(config.OPENAI_TEMPERATURE),
+        });
+
+    this.modelCache.set(cacheKey, model);
+    if (targetKey === 'langgraph.supervisor') {
+      this.supervisorModel = model;
+    }
+    return { cacheKey, model };
+  }
+
+  private async invokeTarget(targetKey: AiControlTargetKey, prompt: string): Promise<string | null> {
+    try {
+      const { model } = await this.buildTargetModel(targetKey);
+      const response = await model.invoke(prompt);
+      const text = extractText(response.content).trim();
+      return text.length > 0 ? text : null;
+    } catch (error) {
+      logger.warn('langchain.target.invoke_failed', {
+        targetKey,
+        reason: error instanceof Error ? error.message : 'unknown_error',
+      });
+      return null;
+    }
+  }
+
+  private async invokeGroq(prompt: string): Promise<string | null> {
     if (!this.groqEnabled || !this.groqRouter) {
       return null;
     }
@@ -117,89 +165,63 @@ class OpenAiOrchestrationModels {
       const text = extractText(response.content).trim();
       return text.length > 0 ? text : null;
     } catch (error) {
-      const reason = error instanceof Error ? error.message : 'unknown_error';
-      const isTimeout = error instanceof Error && error.name === 'TimeoutError';
-      logger.warn('langchain.groq.tier1.failed', {
-        reason,
-        timedOut: isTimeout,
+      logger.warn('langchain.groq.invoke_failed', {
+        reason: error instanceof Error ? error.message : 'unknown_error',
+        timedOut: error instanceof Error && error.name === 'TimeoutError',
       });
       return null;
     }
   }
 
-  /**
-   * Tier-2 supervisor boss via GPT-4o.
-   * Decides which agent to call next, or returns FINISH with a NL reply.
-   * Falls back to Groq if OpenAI is unavailable.
-   */
+  async invokeTier1(prompt: string): Promise<string | null> {
+    let resolved: Awaited<ReturnType<typeof aiModelControlService.resolveTarget>> | null = null;
+    try {
+      resolved = await aiModelControlService.resolveTarget('langgraph.router');
+    } catch (error) {
+      logger.warn('langchain.router.resolve_failed', {
+        reason: error instanceof Error ? error.message : 'unknown_error',
+      });
+    }
+    if ((!resolved || resolved.source === 'default') && this.groqEnabled) {
+      const fastPath = await this.invokeGroq(prompt);
+      if (fastPath) {
+        return fastPath;
+      }
+    }
+    return this.invokeTarget('langgraph.router', prompt);
+  }
+
   async invokeSupervisor(prompt: string): Promise<string | null> {
-    if (!this.enabled || !this.supervisorModel) {
-      if (this.groqEnabled && this.groqRouter) {
-        try {
-          const response = await this.groqRouter.invoke(prompt, {
-            signal: AbortSignal.timeout(GROQ_INVOKE_TIMEOUT_MS),
-          });
-          const text = extractText(response.content).trim();
-          return text.length > 0 ? text : null;
-        } catch {
-          return null;
-        }
-      }
-      return null;
+    const output = await this.invokeTarget('langgraph.supervisor', prompt);
+    if (output) {
+      return output;
     }
-    try {
-      const response = await this.supervisorModel.invoke(prompt);
-      const text = extractText(response.content).trim();
-      return text.length > 0 ? text : null;
-    } catch (error) {
-      logger.warn('langchain.supervisor.invoke_failed', {
-        model: config.OPENAI_SUPERVISOR_MODEL,
-        reason: error instanceof Error ? error.message : 'unknown_error',
-      });
-      return null;
+    if (this.groqEnabled) {
+      return this.invokeGroq(prompt);
     }
+    return null;
   }
 
-  /**
-   * General orchestration invoke (router / planner / synthesis).
-   * Router tries Groq first, then falls back to OpenAI.
-   */
   async invokePrompt(key: OrchestrationModelKey, prompt: string): Promise<string | null> {
-    if (key === 'router' && this.groqEnabled && this.groqRouter) {
-      try {
-        const response = await this.groqRouter.invoke(prompt, {
-          signal: AbortSignal.timeout(GROQ_INVOKE_TIMEOUT_MS),
-        });
-        const text = extractText(response.content).trim();
-        if (text.length > 0) {
-          return text;
-        }
-      } catch (error) {
-        logger.warn('langchain.groq.invoke_failed', {
-          modelKey: key,
-          fallback: 'Attempting OpenAI fallback if possible',
-          reason: error instanceof Error ? error.message : 'unknown_error',
-          timedOut: error instanceof Error && error.name === 'TimeoutError',
-        });
+    const targetKey = TARGET_BY_KEY[key];
+    let resolved: Awaited<ReturnType<typeof aiModelControlService.resolveTarget>> | null = null;
+    try {
+      resolved = await aiModelControlService.resolveTarget(targetKey);
+    } catch (error) {
+      logger.warn('langchain.target.resolve_failed', {
+        targetKey,
+        reason: error instanceof Error ? error.message : 'unknown_error',
+      });
+    }
+
+    if (key === 'router' && (!resolved || resolved.source === 'default') && this.groqEnabled) {
+      const fastPath = await this.invokeGroq(prompt);
+      if (fastPath) {
+        return fastPath;
       }
     }
 
-    if (!this.enabled) {
-      return null;
-    }
-
-    try {
-      const model = this.getModel(key);
-      const response = await model.invoke(prompt);
-      const text = extractText(response.content).trim();
-      return text.length > 0 ? text : null;
-    } catch (error) {
-      logger.warn('langchain.openai.invoke_failed', {
-        modelKey: key,
-        reason: error instanceof Error ? error.message : 'unknown_error',
-      });
-      return null;
-    }
+    return this.invokeTarget(targetKey, prompt);
   }
 }
 

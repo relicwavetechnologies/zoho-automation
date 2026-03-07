@@ -41,6 +41,31 @@ router.post(
   asyncHandler(companyAdminController.upsertLarkBinding),
 );
 router.get(
+  '/onboarding/lark-workspace-config',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.getLarkWorkspaceConfigStatus),
+);
+router.post(
+  '/onboarding/lark-workspace-config',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.upsertLarkWorkspaceConfig),
+);
+router.delete(
+  '/onboarding/lark-workspace-config',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.deleteLarkWorkspaceConfig),
+);
+router.get(
+  '/onboarding/lark-sync/status',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.getLarkUserSyncStatus),
+);
+router.post(
+  '/onboarding/lark-sync',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.triggerLarkUserSync),
+);
+router.get(
   '/onboarding/provider-status',
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.getProviderStatus),

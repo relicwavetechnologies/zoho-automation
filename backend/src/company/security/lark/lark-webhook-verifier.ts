@@ -61,9 +61,11 @@ export const verifyLarkWebhookRequest = (
   input: LarkWebhookVerificationInput,
   options: LarkWebhookVerificationOptions = {},
 ): LarkWebhookVerificationResult => {
+  const configSigningSecret = options.config?.signingSecret?.trim();
+  const configVerificationToken = options.config?.verificationToken?.trim();
   const resolvedConfig = {
-    signingSecret: options.config?.signingSecret ?? process.env.LARK_WEBHOOK_SIGNING_SECRET?.trim(),
-    verificationToken: options.config?.verificationToken ?? process.env.LARK_VERIFICATION_TOKEN?.trim(),
+    signingSecret: configSigningSecret || process.env.LARK_WEBHOOK_SIGNING_SECRET?.trim(),
+    verificationToken: configVerificationToken || process.env.LARK_VERIFICATION_TOKEN?.trim(),
     maxSkewSeconds:
       options.config?.maxSkewSeconds
       ?? Number(process.env.LARK_WEBHOOK_MAX_SKEW_SECONDS ?? DEFAULT_REPLAY_WINDOW_SECONDS),

@@ -39,6 +39,9 @@ type OnboardingStatus = {
     indexedCount: number;
     healthy: boolean;
   };
+  larkBinding?: LarkBindingResult | null;
+  larkWorkspaceConfig?: LarkWorkspaceConfigStatus;
+  larkDirectorySync?: LarkSyncStatus;
 };
 
 type ZohoOAuthConfigStatus = {
@@ -66,6 +69,29 @@ type LarkBindingResult = {
   updatedAt: string;
 };
 
+type LarkWorkspaceConfigStatus = {
+  configured: boolean;
+  companyId?: string;
+  appId?: string;
+  apiBaseUrl?: string;
+  hasVerificationToken?: boolean;
+  hasSigningSecret?: boolean;
+  hasStaticTenantAccessToken?: boolean;
+  updatedAt?: string;
+};
+
+type LarkSyncStatus = {
+  hasRun: boolean;
+  runId?: string;
+  trigger?: string;
+  status?: string;
+  syncedCount?: number;
+  adminCount?: number;
+  memberCount?: number;
+  errorMessage?: string;
+  updatedAt?: string;
+};
+
 type ChannelIdentity = {
   id: string;
   companyId: string;
@@ -74,6 +100,10 @@ type ChannelIdentity = {
   externalTenantId: string;
   displayName?: string;
   email?: string;
+  larkOpenId?: string;
+  larkUserId?: string;
+  sourceRoles: string[];
+  aiRole: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -97,9 +127,13 @@ export const IntegrationsPage = () => {
   const [statusLoading, setStatusLoading] = useState(true);
   const [identitiesLoading, setIdentitiesLoading] = useState(true);
   const [oauthConfigLoading, setOauthConfigLoading] = useState(true);
+  const [larkWorkspaceConfigLoading, setLarkWorkspaceConfigLoading] = useState(true);
+  const [larkSyncLoading, setLarkSyncLoading] = useState(true);
 
   const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null);
   const [larkBinding, setLarkBinding] = useState<LarkBindingResult | null>(null);
+  const [larkWorkspaceConfig, setLarkWorkspaceConfig] = useState<LarkWorkspaceConfigStatus | null>(null);
+  const [larkSyncStatus, setLarkSyncStatus] = useState<LarkSyncStatus | null>(null);
   const [oauthConfig, setOauthConfig] = useState<ZohoOAuthConfigStatus | null>(null);
   const [identities, setIdentities] = useState<ChannelIdentity[]>([]);
   const [channelFilter, setChannelFilter] = useState<'all' | 'lark' | 'slack' | 'whatsapp'>('all');
@@ -107,6 +141,15 @@ export const IntegrationsPage = () => {
   const [larkTenantKey, setLarkTenantKey] = useState('');
   const [larkIsActive, setLarkIsActive] = useState<'true' | 'false'>('true');
   const [larkSaving, setLarkSaving] = useState(false);
+  const [larkAppId, setLarkAppId] = useState('');
+  const [larkAppSecret, setLarkAppSecret] = useState('');
+  const [larkVerificationToken, setLarkVerificationToken] = useState('');
+  const [larkSigningSecret, setLarkSigningSecret] = useState('');
+  const [larkStaticTenantAccessToken, setLarkStaticTenantAccessToken] = useState('');
+  const [larkApiBaseUrl, setLarkApiBaseUrl] = useState('https://open.larksuite.com');
+  const [larkConfigSaving, setLarkConfigSaving] = useState(false);
+  const [larkConfigDeleting, setLarkConfigDeleting] = useState(false);
+  const [larkSyncTriggering, setLarkSyncTriggering] = useState(false);
 
   const [zohoMode, setZohoMode] = useState<'rest' | 'mcp'>('rest');
   const [restCode, setRestCode] = useState('');
@@ -146,6 +189,7 @@ export const IntegrationsPage = () => {
         token,
       );
       setOnboarding(status);
+      setLarkBinding(status.larkBinding ?? null);
     } catch {
       // Error handled globally by api.ts
     } finally {
@@ -196,10 +240,60 @@ export const IntegrationsPage = () => {
     }
   };
 
+  const loadLarkWorkspaceConfig = async () => {
+    if (!token) return;
+    if (isSuperAdmin && !scopedCompanyId) {
+      setLarkWorkspaceConfig(null);
+      setLarkWorkspaceConfigLoading(false);
+      return;
+    }
+    setLarkWorkspaceConfigLoading(true);
+    try {
+      const result = await api.get<LarkWorkspaceConfigStatus>(
+        `/api/admin/company/onboarding/lark-workspace-config${buildQuery()}`,
+        token,
+      );
+      setLarkWorkspaceConfig(result);
+      if (result.apiBaseUrl) {
+        setLarkApiBaseUrl(result.apiBaseUrl);
+      }
+      if (result.appId) {
+        setLarkAppId(result.appId);
+      }
+    } catch {
+      setLarkWorkspaceConfig({ configured: false });
+    } finally {
+      setLarkWorkspaceConfigLoading(false);
+    }
+  };
+
+  const loadLarkSyncStatus = async () => {
+    if (!token) return;
+    if (isSuperAdmin && !scopedCompanyId) {
+      setLarkSyncStatus(null);
+      setLarkSyncLoading(false);
+      return;
+    }
+    setLarkSyncLoading(true);
+    try {
+      const result = await api.get<LarkSyncStatus>(
+        `/api/admin/company/onboarding/lark-sync/status${buildQuery()}`,
+        token,
+      );
+      setLarkSyncStatus(result);
+    } catch {
+      setLarkSyncStatus({ hasRun: false });
+    } finally {
+      setLarkSyncLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadStatus();
     void loadIdentities();
     void loadZohoOAuthConfig();
+    void loadLarkWorkspaceConfig();
+    void loadLarkSyncStatus();
   }, [token, scopedCompanyId, isSuperAdmin]);
 
   useEffect(() => {
@@ -212,6 +306,16 @@ export const IntegrationsPage = () => {
     const interval = window.setInterval(() => { void loadStatus(); }, 5000);
     return () => window.clearInterval(interval);
   }, [onboarding?.historicalSync?.status]);
+
+  useEffect(() => {
+    if (!larkSyncStatus?.status) return;
+    if (!['queued', 'running'].includes(larkSyncStatus.status)) return;
+    const interval = window.setInterval(() => {
+      void loadLarkSyncStatus();
+      void loadIdentities();
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [larkSyncStatus?.status]);
 
   const saveLarkBinding = async (event: FormEvent) => {
     event.preventDefault();
@@ -234,6 +338,74 @@ export const IntegrationsPage = () => {
       // Error handled globally
     } finally {
       setLarkSaving(false);
+    }
+  };
+
+  const saveLarkWorkspaceConfig = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!token) return;
+    setLarkConfigSaving(true);
+    try {
+      const result = await api.post<LarkWorkspaceConfigStatus>(
+        '/api/admin/company/onboarding/lark-workspace-config',
+        {
+          companyId: scopedCompanyId || undefined,
+          appId: larkAppId.trim(),
+          appSecret: larkAppSecret.trim() || undefined,
+          verificationToken: larkVerificationToken.trim() || undefined,
+          signingSecret: larkSigningSecret.trim() || undefined,
+          staticTenantAccessToken: larkStaticTenantAccessToken.trim() || undefined,
+          apiBaseUrl: larkApiBaseUrl.trim() || undefined,
+        },
+        token,
+      );
+      setLarkWorkspaceConfig(result);
+      setLarkAppSecret('');
+      setLarkVerificationToken('');
+      setLarkSigningSecret('');
+      setLarkStaticTenantAccessToken('');
+      toast({ title: 'Lark workspace config saved', description: 'Verification and sync credentials updated.', variant: 'success' });
+      void loadLarkSyncStatus();
+    } catch {
+      // Error handled globally
+    } finally {
+      setLarkConfigSaving(false);
+    }
+  };
+
+  const deleteLarkWorkspaceConfig = async () => {
+    if (!token || !window.confirm('Remove the saved Lark workspace config for this company?')) return;
+    setLarkConfigDeleting(true);
+    try {
+      await api.delete('/api/admin/company/onboarding/lark-workspace-config', { companyId: scopedCompanyId || undefined }, token);
+      setLarkWorkspaceConfig({ configured: false });
+      toast({ title: 'Lark workspace config removed', variant: 'success' });
+    } catch {
+      // Error handled globally
+    } finally {
+      setLarkConfigDeleting(false);
+    }
+  };
+
+  const triggerLarkUserSync = async () => {
+    if (!token) return;
+    setLarkSyncTriggering(true);
+    try {
+      const result = await api.post<{ runId: string; status: string; queued: boolean }>(
+        '/api/admin/company/onboarding/lark-sync',
+        { companyId: scopedCompanyId || undefined },
+        token,
+      );
+      toast({
+        title: result.queued ? 'Lark user sync started' : 'Lark user sync already running',
+        description: `Run ID: ${result.runId}`,
+        variant: 'success',
+      });
+      void loadLarkSyncStatus();
+    } catch {
+      // Error handled globally
+    } finally {
+      setLarkSyncTriggering(false);
     }
   };
 
@@ -529,6 +701,207 @@ export const IntegrationsPage = () => {
               </Button>
             </div>
           </form>
+        </CardContent>
+      </Card>
+
+      {/* Lark Workspace Config */}
+      <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
+        <CardHeader className="border-b border-[#1a1a1a] pb-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <CardTitle className="text-zinc-100 flex items-center gap-2">
+              <Zap strokeWidth={1.5} className="h-4 w-4 text-zinc-400" />
+              Lark Workspace Credentials
+            </CardTitle>
+            <CardDescription className="text-zinc-500 mt-1">
+              Company-scoped verification and directory-sync credentials. These are used before any env fallback.
+            </CardDescription>
+          </div>
+          {larkWorkspaceConfigLoading ? (
+            <Skeleton className="h-5 w-24 shrink-0" />
+          ) : (
+            <div className="flex items-center gap-2 shrink-0">
+              <Badge
+                variant="secondary"
+                className={`${larkWorkspaceConfig?.configured ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-900/40' : 'bg-[#111] border border-[#333] text-zinc-500'}`}
+              >
+                {larkWorkspaceConfig?.configured ? 'Configured' : 'Not Configured'}
+              </Badge>
+              {larkWorkspaceConfig?.configured ? (
+                <button
+                  type="button"
+                  onClick={() => void deleteLarkWorkspaceConfig()}
+                  disabled={larkConfigDeleting}
+                  className="text-xs text-red-500 hover:text-red-400 disabled:opacity-50"
+                >
+                  {larkConfigDeleting ? 'Removing…' : 'Remove'}
+                </button>
+              ) : null}
+            </div>
+          )}
+        </CardHeader>
+        <CardContent className="pt-6 space-y-5">
+          {larkWorkspaceConfig?.configured && !larkWorkspaceConfigLoading ? (
+            <div className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-md p-4 grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-sm">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[11px] text-zinc-600 uppercase tracking-wide">App ID</span>
+                <span className="text-zinc-200 font-mono text-xs break-all">{larkWorkspaceConfig.appId}</span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[11px] text-zinc-600 uppercase tracking-wide">API Base URL</span>
+                <span className="text-zinc-400 text-xs break-all">{larkWorkspaceConfig.apiBaseUrl}</span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[11px] text-zinc-600 uppercase tracking-wide">Verification Token</span>
+                <span className="text-zinc-400 text-xs">{larkWorkspaceConfig.hasVerificationToken ? 'Stored' : 'Missing'}</span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[11px] text-zinc-600 uppercase tracking-wide">Signing Secret</span>
+                <span className="text-zinc-400 text-xs">{larkWorkspaceConfig.hasSigningSecret ? 'Stored' : 'Missing'}</span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[11px] text-zinc-600 uppercase tracking-wide">Static Tenant Token</span>
+                <span className="text-zinc-400 text-xs">{larkWorkspaceConfig.hasStaticTenantAccessToken ? 'Stored' : 'Not set'}</span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[11px] text-zinc-600 uppercase tracking-wide">Last Updated</span>
+                <span className="text-zinc-500 text-xs">
+                  {larkWorkspaceConfig.updatedAt ? new Date(larkWorkspaceConfig.updatedAt).toLocaleString() : '—'}
+                </span>
+              </div>
+            </div>
+          ) : null}
+
+          <form className="flex flex-col gap-4 p-4 rounded-md border border-[#222] bg-[#0c0c0c]" onSubmit={saveLarkWorkspaceConfig}>
+            <span className="text-sm font-medium text-zinc-300">
+              {larkWorkspaceConfig?.configured ? 'Update Workspace Credentials' : 'Add Workspace Credentials'}
+            </span>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs text-zinc-500">App ID</label>
+                <Input
+                  value={larkAppId}
+                  onChange={(e) => setLarkAppId(e.target.value)}
+                  placeholder="cli_xxxxxxxxxxxxx"
+                  className="bg-[#0a0a0a] border-[#222]"
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs text-zinc-500">
+                  App Secret {larkWorkspaceConfig?.configured ? <span className="text-zinc-600">(leave blank to keep existing)</span> : null}
+                </label>
+                <Input
+                  value={larkAppSecret}
+                  onChange={(e) => setLarkAppSecret(e.target.value)}
+                  type="password"
+                  placeholder={larkWorkspaceConfig?.configured ? '••••••••••••' : 'Lark app secret'}
+                  className="bg-[#0a0a0a] border-[#222]"
+                  required={!larkWorkspaceConfig?.configured}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs text-zinc-500">Verification Token (optional if signing secret set)</label>
+                <Input
+                  value={larkVerificationToken}
+                  onChange={(e) => setLarkVerificationToken(e.target.value)}
+                  placeholder="Verification token from Lark event subscription"
+                  className="bg-[#0a0a0a] border-[#222]"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs text-zinc-500">Signing Secret (optional if verification token set)</label>
+                <Input
+                  value={larkSigningSecret}
+                  onChange={(e) => setLarkSigningSecret(e.target.value)}
+                  placeholder="Event subscription signing secret"
+                  className="bg-[#0a0a0a] border-[#222]"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs text-zinc-500">Static Tenant Access Token (optional)</label>
+                <Input
+                  value={larkStaticTenantAccessToken}
+                  onChange={(e) => setLarkStaticTenantAccessToken(e.target.value)}
+                  type="password"
+                  placeholder="Only use if app credential flow is unavailable"
+                  className="bg-[#0a0a0a] border-[#222]"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs text-zinc-500">API Base URL</label>
+                <Input
+                  value={larkApiBaseUrl}
+                  onChange={(e) => setLarkApiBaseUrl(e.target.value)}
+                  placeholder="https://open.larksuite.com"
+                  className="bg-[#0a0a0a] border-[#222]"
+                />
+              </div>
+            </div>
+            <Button type="submit" disabled={larkConfigSaving} className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200">
+              {larkConfigSaving ? 'Saving…' : larkWorkspaceConfig?.configured ? 'Update Credentials' : 'Save Credentials'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      {/* Lark Directory Sync */}
+      <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
+        <CardHeader className="border-b border-[#1a1a1a] pb-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <CardTitle className="text-zinc-100 flex items-center gap-2">
+              <Users strokeWidth={1.5} className="h-4 w-4 text-zinc-400" />
+              Lark User Directory Sync
+            </CardTitle>
+            <CardDescription className="text-zinc-500 mt-1">
+              Runs on setup, nightly, and manually. Syncs users into company channel identities.
+            </CardDescription>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={larkSyncTriggering || !larkWorkspaceConfig?.configured || !larkBinding?.isActive}
+            onClick={() => void triggerLarkUserSync()}
+            className="border-[#2a2a2a] text-zinc-300 hover:bg-[#1a1a1a] shrink-0"
+          >
+            {larkSyncTriggering ? 'Starting…' : 'Re-sync users'}
+          </Button>
+        </CardHeader>
+        <CardContent className="pt-6">
+          {larkSyncLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="p-4 rounded-md bg-[#0a0a0a] border border-[#1a1a1a] flex flex-col gap-2 h-[84px]">
+                  <Skeleton className="h-3 w-20" />
+                  <Skeleton className="h-4 w-24" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div className="p-4 rounded-md bg-[#0a0a0a] border border-[#1a1a1a] flex flex-col gap-1.5">
+                <span className="text-[11px] text-zinc-600 uppercase tracking-wide">Status</span>
+                <span className="text-sm text-zinc-200">{larkSyncStatus?.hasRun ? larkSyncStatus.status : 'Not started'}</span>
+                {larkSyncStatus?.updatedAt ? <span className="text-xs text-zinc-600">{new Date(larkSyncStatus.updatedAt).toLocaleString()}</span> : null}
+              </div>
+              <div className="p-4 rounded-md bg-[#0a0a0a] border border-[#1a1a1a] flex flex-col gap-1.5">
+                <span className="text-[11px] text-zinc-600 uppercase tracking-wide">Trigger</span>
+                <span className="text-sm text-zinc-200">{larkSyncStatus?.trigger ?? '—'}</span>
+                <span className="text-xs text-zinc-600">Users: {larkSyncStatus?.syncedCount ?? 0}</span>
+              </div>
+              <div className="p-4 rounded-md bg-[#0a0a0a] border border-[#1a1a1a] flex flex-col gap-1.5">
+                <span className="text-[11px] text-zinc-600 uppercase tracking-wide">Admins / Members</span>
+                <span className="text-sm text-zinc-200">{larkSyncStatus?.adminCount ?? 0} / {larkSyncStatus?.memberCount ?? 0}</span>
+              </div>
+              <div className="p-4 rounded-md bg-[#0a0a0a] border border-[#1a1a1a] flex flex-col gap-1.5">
+                <span className="text-[11px] text-zinc-600 uppercase tracking-wide">Last Error</span>
+                <span className="text-xs text-red-400 line-clamp-3">{larkSyncStatus?.errorMessage ?? '—'}</span>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -1007,6 +1380,8 @@ export const IntegrationsPage = () => {
                     <th className="px-4 py-2.5 text-left text-[11px] text-zinc-500 font-medium uppercase tracking-wide">Channel</th>
                     <th className="px-4 py-2.5 text-left text-[11px] text-zinc-500 font-medium uppercase tracking-wide">User</th>
                     <th className="px-4 py-2.5 text-left text-[11px] text-zinc-500 font-medium uppercase tracking-wide hidden md:table-cell">Email</th>
+                    <th className="px-4 py-2.5 text-left text-[11px] text-zinc-500 font-medium uppercase tracking-wide hidden md:table-cell">AI Role</th>
+                    <th className="px-4 py-2.5 text-left text-[11px] text-zinc-500 font-medium uppercase tracking-wide hidden xl:table-cell">Source Roles</th>
                     <th className="px-4 py-2.5 text-left text-[11px] text-zinc-500 font-medium uppercase tracking-wide hidden lg:table-cell">External ID</th>
                     <th className="px-4 py-2.5 text-left text-[11px] text-zinc-500 font-medium uppercase tracking-wide hidden lg:table-cell">Joined</th>
                   </tr>
@@ -1037,6 +1412,14 @@ export const IntegrationsPage = () => {
                       </td>
                       <td className="px-4 py-3 hidden md:table-cell">
                         <span className="text-zinc-400 text-xs">{identity.email ?? '—'}</span>
+                      </td>
+                      <td className="px-4 py-3 hidden md:table-cell">
+                        <span className="text-zinc-300 text-xs font-medium">{identity.aiRole}</span>
+                      </td>
+                      <td className="px-4 py-3 hidden xl:table-cell">
+                        <span className="text-zinc-500 text-xs">
+                          {identity.sourceRoles.length > 0 ? identity.sourceRoles.join(', ') : '—'}
+                        </span>
                       </td>
                       <td className="px-4 py-3 hidden lg:table-cell">
                         <span className="text-zinc-500 font-mono text-xs">{identity.externalUserId}</span>

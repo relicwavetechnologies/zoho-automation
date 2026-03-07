@@ -187,9 +187,16 @@ export class OutreachReadAgent extends BaseAgent {
     const parsedFilters = buildFiltersFromObjective(objective);
     const mergedFilters: OutreachQueryFilters = { ...parsedFilters, ...explicitFilters };
 
+    const rawFilterString =
+      typeof input.contextPacket.rawFilterString === 'string'
+        ? input.contextPacket.rawFilterString
+        : undefined;
+
     try {
+      console.log(`[OutreachReadAgent] Querying publishers`, { mergedFilters, rawFilterString });
       const response = await outreachClient.queryPublishers({
         filters: mergedFilters,
+        filterString: rawFilterString,
         limit,
       });
 

@@ -4,6 +4,7 @@ import { BaseAgent } from '../base';
 import { resolveWithFallback } from '../../integrations/zoho/zoho-provider.resolver';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
 import { mastra } from '../../integrations/mastra/mastra.instance';
+import { buildMastraAgentRunOptions } from '../../integrations/mastra/mastra-model-control';
 import { logger } from '../../../utils/logger';
 
 // ---------------------------------------------------------------------------
@@ -203,9 +204,8 @@ export class ZohoReadAgent extends BaseAgent {
     ].join('\n');
 
     const agent = mastra.getAgent('synthesisAgent');
-    const result = await agent.generate(promptText);
-
-    return result.text;
+    const runOptions = await buildMastraAgentRunOptions('mastra.synthesis');
+    const result = await agent.generate(promptText, runOptions as any);
 
     return result.text;
   }

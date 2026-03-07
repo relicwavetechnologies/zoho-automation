@@ -41,6 +41,7 @@ export type OutreachQueryFilters = Partial<Record<NumericField, number | RangeVa
 
 export type OutreachQueryInput = {
   filters?: OutreachQueryFilters;
+  filterString?: string;
   limit?: number;
   offset?: number;
   page?: number;
@@ -263,7 +264,9 @@ export class OutreachClient {
     filtersString: string;
     raw: unknown;
   }> {
-    const filtersString = buildOutreachFilterString(input.filters);
+    const filtersString = input.filterString && input.filterString.trim() !== ''
+      ? input.filterString
+      : buildOutreachFilterString(input.filters);
     const body: Record<string, unknown> = {
       limit: Math.max(1, Math.min(100, input.limit ?? 10)),
       offset: Math.max(0, input.offset ?? 0),
@@ -271,6 +274,21 @@ export class OutreachClient {
     };
     if (filtersString.length > 0) {
       body.filters = filtersString;
+    }
+
+    logger.info('[OutreachClient] Requesting publishers', {
+      url: config.OUTREACH_API_URL,
+      body,
+      filtersString
+    });
+
+    try {
+      // Use direct require for simplicity in this temporary log
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const fs = require('fs');
+      fs.appendFileSync('/tmp/outreach_debug.log', `[${new Date().toISOString()}] filtersString: ${filtersString}\nbody: ${JSON.stringify(body)}\n\n`);
+    } catch (e) {
+      console.error('Failed to write to /tmp/outreach_debug.log', e);
     }
 
     let response: Response;

@@ -20,6 +20,8 @@ export type NormalizedIncomingMessageDTO = {
     textHash?: string;
     receivedAt?: string;
     larkTenantKey?: string;
+    larkOpenId?: string;
+    larkUserId?: string;
     channelTenantId?: string;
     companyId?: string;
     channelIdentityId?: string;

@@ -8,6 +8,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum VectorVisibility {
+  personal
+  shared
+  public
+}
+
 model User {
   id               String            @id @default(uuid())
   email            String            @unique
@@ -28,6 +34,8 @@ model Company {
   zohoSyncJobs    ZohoSyncJob[]
   zohoOAuthConfig ZohoOAuthConfig?
   larkTenantBindings LarkTenantBinding[]
+  larkWorkspaceConfig LarkWorkspaceConfig?
+  larkDirectorySyncRuns LarkDirectorySyncRun[]
   adminMemberships AdminMembership[]
   adminSessions    AdminSession[]
   invites          CompanyInvite[]
@@ -35,6 +43,8 @@ model Company {
   channelIdentities ChannelIdentity[]
   toolPermissions  ToolPermission[]
   aiRoleDefinitions AiRoleDefinition[]
+  vectorDocuments  VectorDocument[]
+  vectorShareRequests VectorShareRequest[]
 }
 
 model AdminMembership {
@@ -123,12 +133,52 @@ model ChannelIdentity {
   externalTenantId String
   displayName      String?
   email            String?
+  larkOpenId       String?
+  larkUserId       String?
+  sourceRoles      String[] @default([])
   aiRole           String   @default("MEMBER")
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   @@unique([channel, externalUserId, companyId])
+  @@index([companyId, larkOpenId])
+  @@index([companyId, larkUserId])
   @@index([companyId, channel])
+}
+
+model LarkWorkspaceConfig {
+  id                           String   @id @default(uuid())
+  companyId                    String   @unique
+  company                      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  appId                        String
+  appSecretEncrypted           String
+  verificationTokenEncrypted   String?
+  signingSecretEncrypted       String?
+  staticTenantAccessTokenEncrypted String?
+  apiBaseUrl                   String   @default("https://open.larksuite.com")
+  createdBy                    String
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+}
+
+model LarkDirectorySyncRun {
+  id            String   @id @default(uuid())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  trigger       String
+  status        String
+  syncedCount   Int      @default(0)
+  adminCount    Int      @default(0)
+  memberCount   Int      @default(0)
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  errorMessage  String?
+  diagnostics   Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([companyId, createdAt])
+  @@index([companyId, status, createdAt])
 }
 
 model LarkTenantBinding {
@@ -221,12 +271,16 @@ model ZohoSyncJobEvent {
 model VectorDocument {
   id           String      @id @default(uuid())
   companyId    String
+  company      Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
   connectionId String
   connection   ZohoConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
   sourceType   String
   sourceId     String
   chunkIndex   Int
   contentHash  String
+  visibility   VectorVisibility @default(shared)
+  ownerUserId  String?
+  conversationKey String?
   payload      Json
   embedding    Float[]
   createdAt    DateTime    @default(now())
@@ -234,6 +288,29 @@ model VectorDocument {
 
   @@unique([companyId, sourceType, sourceId, chunkIndex])
   @@index([companyId, sourceType])
+  @@index([companyId, visibility, ownerUserId])
+  @@index([companyId, conversationKey])
+}
+
+model VectorShareRequest {
+  id                       String   @id @default(uuid())
+  companyId                String
+  company                  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  requesterUserId          String
+  requesterChannelIdentityId String?
+  conversationKey          String
+  status                   String
+  reason                   String?
+  decisionNote             String?
+  reviewedBy               String?
+  reviewedAt               DateTime?
+  expiresAt                DateTime?
+  promotedVectorCount      Int      @default(0)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@index([companyId, status, createdAt])
+  @@index([companyId, requesterUserId, conversationKey])
 }
 
 model IngressIdempotencyKey {
@@ -326,4 +403,16 @@ model AiRoleDefinition {
 
   @@unique([companyId, slug])
   @@index([companyId, isBuiltIn])
+}
+
+model AiModelTargetConfig {
+  id            String   @id @default(uuid())
+  targetKey      String   @unique
+  provider       String
+  modelId        String
+  thinkingLevel  String?
+  updatedBy      String
+  updatedAt      DateTime @updatedAt
+
+  @@index([updatedAt])
 }

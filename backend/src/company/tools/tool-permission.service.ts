@@ -79,17 +79,24 @@ export class ToolPermissionService {
 
   /** Returns the set of toolIds allowed for the given role slug in this company. */
   async getAllowedTools(companyId: string, role: string): Promise<string[]> {
-    const [stored] = await Promise.all([this.repo.getForCompany(companyId)]);
+    const normalizedRole = role.trim().toUpperCase();
+    const [stored, validRoleSlugs] = await Promise.all([
+      this.repo.getForCompany(companyId),
+      aiRoleService.getRoleSlugs(companyId),
+    ]);
+    if (!validRoleSlugs.includes(normalizedRole)) {
+      return [];
+    }
     const overrideMap = new Map(stored.map((r) => [`${r.toolId}:${r.role}`, r.enabled]));
 
     return TOOL_REGISTRY.filter((tool) => {
-      const key = `${tool.id}:${role}`;
+      const key = `${tool.id}:${normalizedRole}`;
       if (overrideMap.has(key)) {
         return overrideMap.get(key) as boolean;
       }
       // Built-in roles use their defined default; custom roles inherit MEMBER
-      if (['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN'].includes(role)) {
-        return tool.defaultPermissions[role as keyof typeof tool.defaultPermissions] ?? false;
+      if (['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN'].includes(normalizedRole)) {
+        return tool.defaultPermissions[normalizedRole as keyof typeof tool.defaultPermissions] ?? false;
       }
       return memberDefault(tool.id);
     }).map((t) => t.id);
@@ -99,13 +106,18 @@ export class ToolPermissionService {
   async isAllowed(companyId: string, toolId: string, role: string): Promise<boolean> {
     const tool = TOOL_REGISTRY_MAP.get(toolId);
     if (!tool) return false;
+    const normalizedRole = role.trim().toUpperCase();
+    const validRoleSlugs = await aiRoleService.getRoleSlugs(companyId);
+    if (!validRoleSlugs.includes(normalizedRole)) {
+      return false;
+    }
 
     const stored = await this.repo.getForCompany(companyId);
-    const row = stored.find((r) => r.toolId === toolId && r.role === role);
+    const row = stored.find((r) => r.toolId === toolId && r.role === normalizedRole);
     if (row !== undefined) return row.enabled;
 
-    if (['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN'].includes(role)) {
-      return tool.defaultPermissions[role as keyof typeof tool.defaultPermissions] ?? false;
+    if (['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN'].includes(normalizedRole)) {
+      return tool.defaultPermissions[normalizedRole as keyof typeof tool.defaultPermissions] ?? false;
     }
     // Custom role: inherit MEMBER default
     return memberDefault(toolId);

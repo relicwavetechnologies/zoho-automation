@@ -36,6 +36,7 @@ Disallowed pattern:
 - `risk-check`: detects potentially destructive intent keywords.
 - `response`: deterministic textual response synthesis helper.
 - `zoho-read`: read-only sample fetch through Zoho historical adapter.
+- `search-read`: Serper-backed web search with exact-site page context extraction.
 - `lark-response`: progress delivery to Lark chat during orchestration.
 
 ## V0 Route Entry

@@ -8,6 +8,9 @@ import { mcpHttpClient } from '../../company/integrations/zoho/mcp-http.client';
 import { resolveZohoProvider } from '../../company/integrations/zoho/zoho-provider.resolver';
 import { encryptZohoSecret } from '../../company/integrations/zoho/zoho-token.crypto';
 import { qdrantAdapter } from '../../company/integrations/vector';
+import { larkDirectorySyncService } from '../../company/channels/lark/lark-directory-sync.service';
+import { larkTenantBindingRepository } from '../../company/channels/lark/lark-tenant-binding.repository';
+import { larkWorkspaceConfigRepository } from '../../company/channels/lark/lark-workspace-config.repository';
 import { zohoSyncProducer } from '../../company/queue/producer';
 import { runZohoDeltaSyncWorker, runZohoHistoricalSyncWorker } from '../../company/queue/workers';
 import { logger } from '../../utils/logger';
@@ -148,12 +151,16 @@ export class CompanyOnboardingService extends BaseService {
   }
 
   async getCompanyOnboardingStatus(companyId: string) {
-    const [connection, historicalJob, vectorHealth, indexedCount] = await Promise.all([
+    const [connection, historicalJob, vectorHealth, indexedCount, larkBindings, larkWorkspaceConfig, larkSync] = await Promise.all([
       this.repository.findLatestConnectionForCompany(companyId),
       this.repository.findLatestHistoricalJob(companyId),
       qdrantAdapter.health(),
       qdrantAdapter.countByCompany(companyId).catch(() => 0),
+      larkTenantBindingRepository.listByCompany(companyId),
+      larkWorkspaceConfigRepository.getStatus(companyId),
+      larkDirectorySyncService.getStatus(companyId),
     ]);
+    const latestLarkBinding = larkBindings[0];
 
     return {
       companyId,
@@ -175,6 +182,26 @@ export class CompanyOnboardingService extends BaseService {
         indexedCount,
         healthy: vectorHealth.ok,
       },
+      larkBinding: latestLarkBinding
+        ? {
+          bindingId: latestLarkBinding.id,
+          larkTenantKey: latestLarkBinding.larkTenantKey,
+          isActive: latestLarkBinding.isActive,
+          updatedAt: latestLarkBinding.updatedAt.toISOString(),
+        }
+        : null,
+      larkWorkspaceConfig: larkWorkspaceConfig
+        ? {
+          configured: true,
+          appId: larkWorkspaceConfig.appId,
+          apiBaseUrl: larkWorkspaceConfig.apiBaseUrl,
+          hasVerificationToken: larkWorkspaceConfig.hasVerificationToken,
+          hasSigningSecret: larkWorkspaceConfig.hasSigningSecret,
+          hasStaticTenantAccessToken: larkWorkspaceConfig.hasStaticTenantAccessToken,
+          updatedAt: larkWorkspaceConfig.updatedAt.toISOString(),
+        }
+        : { configured: false },
+      larkDirectorySync: larkSync,
     };
   }
 

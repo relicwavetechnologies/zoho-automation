@@ -2,6 +2,7 @@ import { RequestContext } from '@mastra/core/di';
 
 import { resolveChannelAdapter } from '../../channels';
 import { mastra } from '../../integrations/mastra';
+import { buildMastraAgentRunOptions } from '../../integrations/mastra/mastra-model-control';
 import { logger } from '../../../utils/logger';
 import { checkpointRepository } from '../../state/checkpoint';
 import { conversationMemoryStore } from '../../state/conversation';
@@ -16,6 +17,7 @@ const AGENT_GENERATE_TIMEOUT_MS = 50_000;
 const PROGRESS_MIN_INITIAL_CHARS = 20;
 const PROGRESS_MIN_UPDATE_DELTA_CHARS = 24;
 const PROGRESS_MIN_UPDATE_INTERVAL_MS = 900;
+const PROGRESS_MAX_BUFFER_CHARS = 160;
 const HISTORY_CONTEXT_MESSAGE_LIMIT = 14;
 const HISTORY_PREFIX_LIMIT = 12;
 
@@ -58,6 +60,59 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
     clearTimeout(timer!);
   }
 }
+
+const isSentenceBoundaryChar = (char: string): boolean => char === '.' || char === '?' || char === '!' || char === '\n';
+
+export const findProgressFlushIndex = (text: string): number => {
+  let boundaryIndex = -1;
+  for (let index = 0; index < text.length; index += 1) {
+    if (isSentenceBoundaryChar(text[index])) {
+      boundaryIndex = index + 1;
+      while (boundaryIndex < text.length && /\s/.test(text[boundaryIndex])) {
+        boundaryIndex += 1;
+      }
+    }
+  }
+  return boundaryIndex;
+};
+
+export const splitProgressBuffer = (
+  text: string,
+  options: {
+    force?: boolean;
+    intervalElapsed?: boolean;
+    maxChars?: number;
+  } = {},
+): { flushText: string; remainder: string } | null => {
+  if (!text) {
+    return null;
+  }
+
+  if (options.force) {
+    return {
+      flushText: text,
+      remainder: '',
+    };
+  }
+
+  const boundaryIndex = findProgressFlushIndex(text);
+  if (boundaryIndex > 0) {
+    return {
+      flushText: text.slice(0, boundaryIndex),
+      remainder: text.slice(boundaryIndex),
+    };
+  }
+
+  const maxChars = options.maxChars ?? PROGRESS_MAX_BUFFER_CHARS;
+  if (text.length >= maxChars || options.intervalElapsed) {
+    return {
+      flushText: text,
+      remainder: '',
+    };
+  }
+
+  return null;
+};
 
 export class MastraOrchestrationEngine implements OrchestrationEngine {
   readonly id = 'mastra' as const;
@@ -177,8 +232,9 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
 
     let streamResult;
     try {
+      const runOptions = await buildMastraAgentRunOptions('mastra.supervisor', { requestContext });
       streamResult = await withTimeout(
-        agent.stream([{ role: 'user', content: historyAwarePrompt }], { requestContext }),
+        agent.stream([{ role: 'user', content: historyAwarePrompt }], runOptions as any),
         AGENT_GENERATE_TIMEOUT_MS,
         'supervisorAgent.stream',
       );
@@ -195,7 +251,8 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
 
     // ── Handle steps and text stream for natural progress updates ────────────
     let progressMessageId: string | undefined;
-    let progressPreviewText = '';
+    let progressCommittedText = '';
+    let progressBufferedText = '';
     let lastPushedPreviewText = '';
     let lastPushAt = 0;
 
@@ -206,16 +263,28 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     const [stream, stepStream] = [streamResult.textStream, (streamResult as any).stepsStream];
 
     const pushProgress = async (force = false): Promise<void> => {
-      const preview = progressPreviewText.trim();
+      const now = Date.now();
+      const intervalElapsed = now - lastPushAt >= PROGRESS_MIN_UPDATE_INTERVAL_MS;
+      const split = splitProgressBuffer(progressBufferedText, {
+        force,
+        intervalElapsed,
+      });
+
+      if (!split) {
+        return;
+      }
+
+      progressCommittedText += split.flushText;
+      progressBufferedText = split.remainder;
+
+      const preview = progressCommittedText.trim();
       if (!preview) {
         return;
       }
 
-      const now = Date.now();
       const enoughForFirstMessage = preview.length >= PROGRESS_MIN_INITIAL_CHARS;
       const hasMeaningfulDelta =
         Math.abs(preview.length - lastPushedPreviewText.length) >= PROGRESS_MIN_UPDATE_DELTA_CHARS;
-      const intervalElapsed = now - lastPushAt >= PROGRESS_MIN_UPDATE_INTERVAL_MS;
 
       if (!force) {
         if (!progressMessageId && !enoughForFirstMessage) {
@@ -250,7 +319,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
         return `Understood. I’m checking Zoho CRM data for "${objective}" now. I’ll share the results shortly.`;
       }
       if (toolNames.includes('search-agent')) {
-        return `Understood. I’m searching indexed CRM context for "${objective}" now. I’ll update you in a moment.`;
+        return `Understood. I’m searching the web for "${objective}" and pulling page context from the most relevant site results now.`;
       }
       if (toolNames.includes('outreach-agent')) {
         return `Understood. I’m checking outreach publisher data for "${objective}" now. I’ll share results shortly.`;
@@ -263,14 +332,23 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       try {
         if (stepStream) {
           for await (const step of stepStream) {
+            const toolResults = (step as any).toolResults || {};
             const toolCalls = (step as any).toolCalls || [];
+
+            if (Object.keys(toolResults).length > 0) {
+              logger.info('mastra.engine.tool.results', {
+                taskId: task.taskId,
+                toolResults,
+              });
+            }
+
             if (toolCalls.length > 0) {
               const toolNames = toolCalls
                 .map((tc: any) => (typeof tc?.toolName === 'string' ? tc.toolName : ''))
                 .filter(Boolean);
 
               // Preferred path: push model-authored acknowledgement streamed from the agent.
-              if (progressPreviewText.trim().length >= PROGRESS_MIN_INITIAL_CHARS) {
+              if ((progressCommittedText + progressBufferedText).trim().length >= PROGRESS_MIN_INITIAL_CHARS) {
                 await pushProgress(true);
                 continue;
               }
@@ -301,10 +379,15 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       }
     })();
 
-    for await (const delta of stream) {
-      fullText += delta;
-      progressPreviewText += delta;
-      await pushProgress(false);
+    try {
+      for await (const delta of stream) {
+        fullText += delta;
+        progressBufferedText += delta;
+        await pushProgress(false);
+      }
+    } catch (error) {
+      await pushProgress(true);
+      throw error;
     }
     await pushProgress(true);
     await stepListenerPromise;
