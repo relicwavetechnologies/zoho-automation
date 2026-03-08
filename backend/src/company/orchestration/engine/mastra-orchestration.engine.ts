@@ -17,7 +17,7 @@ import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExe
 // Maximum time (ms) we wait for the LLM agent to respond before aborting.
 // Keep this shorter than any upstream HTTP gateway timeout.
 const AGENT_GENERATE_TIMEOUT_MS = 50_000;
-const ACK_GENERATE_TIMEOUT_MS = 1_200;
+// Removed: ACK_GENERATE_TIMEOUT_MS – no longer calling LLM for acks
 const PROGRESS_MIN_INITIAL_CHARS = 20;
 const PROGRESS_MIN_UPDATE_DELTA_CHARS = 24;
 const PROGRESS_MIN_UPDATE_INTERVAL_MS = 900;
@@ -231,14 +231,6 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
 
     const companyId = message.trace?.companyId ?? '';
     const conversationKey = `${message.channel}:${message.trace?.larkTenantKey ?? 'no_tenant'}:${message.chatId}`;
-    const userRole = (message.trace?.userRole ?? 'MEMBER') as AiRole;
-    const requesterUserId =
-      typeof message.trace?.channelIdentityId === 'string' && message.trace.channelIdentityId.trim().length > 0
-        ? message.trace.channelIdentityId.trim()
-        : message.userId;
-    const allowedToolIds = companyId
-      ? await toolPermissionService.getAllowedTools(companyId, userRole)
-      : [];
 
     const requestContext = new RequestContext<Record<string, unknown>>();
     requestContext.set('taskId', task.taskId);
@@ -250,7 +242,65 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     requestContext.set('larkTenantKey', message.trace?.larkTenantKey ?? '');
     requestContext.set('requestId', message.trace?.requestId ?? '');
     requestContext.set('channelIdentityId', message.trace?.channelIdentityId ?? '');
+
+    // ── Stage 1: Instant "Thinking" indicator ───────────────────────────────
+    // Fire this synchronously before ANY async work so the user sees feedback
+    // within ~200ms of receiving the webhook, regardless of DB/LLM latency.
+    const channelAdapter = resolveChannelAdapter(message.channel);
+    let progressMessageId: string | undefined;
+    let progressCommittedText = '';
+    let progressBufferedText = '';
+    let lastPushedPreviewText = '';
+    let lastPushAt = 0;
+
+    const updateStageIndicator = async (text: string): Promise<void> => {
+      try {
+        if (!progressMessageId) {
+          const outbound = await channelAdapter.sendMessage({
+            chatId: message.chatId,
+            text,
+            correlationId: task.taskId,
+          });
+          progressMessageId = outbound.messageId;
+          lastPushedPreviewText = text;
+          lastPushAt = Date.now();
+          logger.info('mastra.engine.stage.sent', { taskId: task.taskId, stage: text.slice(0, 40) });
+        } else {
+          await channelAdapter.updateMessage({
+            messageId: progressMessageId,
+            text,
+            correlationId: task.taskId,
+          });
+          lastPushedPreviewText = text;
+          lastPushAt = Date.now();
+          logger.info('mastra.engine.stage.updated', { taskId: task.taskId, stage: text.slice(0, 40) });
+        }
+      } catch (error) {
+        logger.warn('mastra.engine.stage.failed', {
+          taskId: task.taskId,
+          stage: text.slice(0, 40),
+          reason: error instanceof Error ? error.message : 'unknown_error',
+        });
+      }
+    };
+
+    // Fire and do NOT await — this must never block the pipeline.
+    // If Lark is slow the indicator just appears a bit late but never hangs.
+    void updateStageIndicator('_Processing your request..._');
+
+    // ── DB Lookups & Context Building ────────────────────────────────────────
+    const userRole = (message.trace?.userRole ?? 'MEMBER') as AiRole;
+    const requesterUserId =
+      typeof message.trace?.channelIdentityId === 'string' && message.trace.channelIdentityId.trim().length > 0
+        ? message.trace.channelIdentityId.trim()
+        : message.userId;
+    const allowedToolIds = companyId
+      ? await toolPermissionService.getAllowedTools(companyId, userRole)
+      : [];
     requestContext.set('allowedToolIds', allowedToolIds);
+
+    // ── Stage 2: Personalizing ───────────────────────────────────────────────
+    void updateStageIndicator('_Retrieving your context..._');
 
     let personalContextMatches: Array<{ role?: string; content: string }> = [];
     if (companyId && requesterUserId) {
@@ -302,89 +352,21 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       );
     }
 
-    // ── Agent generate with hard timeout ────────────────────────────────────
-    // Without this the call hangs until the upstream HTTP gateway kills it
-    // (at ~12 s in the logs), which then triggers a retry, which spawns
-    // another agent run — forming the loop.
+    // ── Stage 3: Working on it ───────────────────────────────────────────────
+    void updateStageIndicator('_Generating response..._');
+
+    // ── Agent stream ─────────────────────────────────────────────────────────
     const agent = mastra.getAgent('supervisorAgent');
-    const ackAgent = mastra.getAgent('ackAgent');
-    const channelAdapter = resolveChannelAdapter(message.channel);
-
-    const ackPrompt = [
-      'Write one short acknowledgement for the user request below.',
-      'Do not answer it.',
-      'Do not claim that you already checked the data.',
-      'Keep it under 18 words.',
-      `User request: ${message.text.trim()}`,
-    ].join('\n');
-
-    const ackRunOptionsPromise = buildMastraAgentRunOptions('mastra.ack', { requestContext });
-    const ackPromise = (async () => {
-      try {
-        const runOptions = await ackRunOptionsPromise;
-        const result = await withTimeout(
-          ackAgent.generate(ackPrompt, runOptions as any),
-          ACK_GENERATE_TIMEOUT_MS,
-          'ackAgent.generate',
-        );
-        return normalizeAckText(result.text ?? '');
-      } catch (error) {
-        logger.debug('mastra.engine.ack.skipped', {
-          taskId: task.taskId,
-          messageId: message.messageId,
-          companyId,
-          reason: error instanceof Error ? error.message : 'unknown_error',
-        });
-        return '';
-      }
-    })();
-
-    let progressMessageId: string | undefined;
-    let progressCommittedText = '';
-    let progressBufferedText = '';
-    let lastPushedPreviewText = '';
-    let lastPushAt = 0;
-    let responseSettled = false;
-
-    const ackDispatchPromise = (async () => {
-      const ackText = await ackPromise;
-      if (!ackText || progressMessageId || responseSettled) {
-        return;
-      }
-
-      const outbound = await channelAdapter.sendMessage({
-        chatId: message.chatId,
-        text: ackText,
-        correlationId: task.taskId,
-      });
-      progressMessageId = outbound.messageId;
-      lastPushedPreviewText = ackText;
-      lastPushAt = Date.now();
-      logger.info('mastra.engine.ack.sent', {
-        taskId: task.taskId,
-        messageId: message.messageId,
-        companyId,
-      });
-    })().catch((error) => {
-      logger.warn('mastra.engine.ack.failed', {
-        taskId: task.taskId,
-        messageId: message.messageId,
-        companyId,
-        reason: error instanceof Error ? error.message : 'unknown_error',
-      });
-    });
+    const runOptions = await buildMastraAgentRunOptions('mastra.supervisor', { requestContext });
 
     let streamResult;
     try {
-      const runOptions = await buildMastraAgentRunOptions('mastra.supervisor', { requestContext });
       streamResult = await withTimeout(
         agent.stream([{ role: 'user', content: historyAwarePrompt }], runOptions as any),
         AGENT_GENERATE_TIMEOUT_MS,
         'supervisorAgent.stream',
       );
     } catch (err) {
-      responseSettled = true;
-      await ackDispatchPromise;
       logger.error('mastra.engine.stream.failed', {
         taskId: task.taskId,
         messageId: message.messageId,
@@ -405,6 +387,8 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
 
     const pushProgress = async (force = false): Promise<void> => {
       const now = Date.now();
+      // If ack was already sent we count that as a push, so the interval
+      // is measured against when it was dispatched, not epoch 0.
       const intervalElapsed = now - lastPushAt >= PROGRESS_MIN_UPDATE_INTERVAL_MS;
       const split = splitProgressBuffer(progressBufferedText, {
         force,
@@ -428,10 +412,13 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
         Math.abs(preview.length - lastPushedPreviewText.length) >= PROGRESS_MIN_UPDATE_DELTA_CHARS;
 
       if (!force) {
-        if (!progressMessageId && !enoughForFirstMessage) {
+        // We already sent the ack so progressMessageId is always set by here.
+        // Only push a streamed update if the content has changed meaningfully.
+        if (progressMessageId && !hasMeaningfulDelta && !intervalElapsed) {
           return;
         }
-        if (progressMessageId && !hasMeaningfulDelta && !intervalElapsed) {
+        // If progressMessageId is somehow not set, only send once enough text.
+        if (!progressMessageId && !enoughForFirstMessage) {
           return;
         }
       }
@@ -531,14 +518,10 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       }
     } catch (error) {
       await pushProgress(true);
-      responseSettled = true;
-      await ackDispatchPromise;
       throw error;
     }
     await pushProgress(true);
     await stepListenerPromise;
-    responseSettled = true;
-    await ackDispatchPromise;
 
     await checkpointRepository.save(task.taskId, 'synthesis.complete', {
       status: 'done',
