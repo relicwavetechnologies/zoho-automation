@@ -138,6 +138,17 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     engines: ['mastra', 'langgraph'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
+  {
+    id: 'share_chat_vectors',
+    name: 'Share Chat Knowledge',
+    description:
+      'Allows a user to promote their personal conversation vectors to company-wide shared context. ' +
+      'When enabled, a "Share this chat\'s knowledge" button will appear on bot responses.',
+    category: 'workspace',
+    engines: ['mastra', 'langgraph'],
+    // Off for regular members by default; grant explicitly via the Permissions UI.
+    defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
 ];
 
 export const TOOL_REGISTRY_MAP = new Map(TOOL_REGISTRY.map((t) => [t.id, t]));

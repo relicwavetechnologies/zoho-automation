@@ -130,18 +130,11 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
 
   // Treat as an event callback if type is explicitly 'event_callback' OR if it's schema 2.0
   if (type === 'event_callback' || schema === '2.0') {
-    if (!envelope.event || typeof envelope.event !== 'object') {
-      return {
-        kind: 'invalid',
-        reason: 'missing_event_payload',
-      };
-    }
-
-    const metadata = readEventMetadata(envelope);
-    const message = envelope.event.message;
-
-    if (metadata.eventType === 'card.action.trigger') {
-      if (!envelope.action?.value) {
+    // ── Check for Interactive Card Action (V2) ─────────────────────────────
+    // Lark interactive card actions (V2) don't have an `event` payload,
+    // they send the action directly on the top-level envelope.
+    if (envelope.action && typeof envelope.action === 'object') {
+      if (!envelope.action.value) {
         return {
           kind: 'invalid',
           reason: 'missing_message_fields',
@@ -152,9 +145,20 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
         kind: 'event_callback_card_action',
         envelope,
         actionValue: envelope.action.value,
-        ...metadata,
+        eventType: 'card.action.trigger',
+        larkTenantKey: readTenantKey(envelope),
       };
     }
+
+    if (!envelope.event || typeof envelope.event !== 'object') {
+      return {
+        kind: 'invalid',
+        reason: 'missing_event_payload',
+      };
+    }
+
+    const metadata = readEventMetadata(envelope);
+    const message = envelope.event.message;
 
     if (metadata.eventType !== 'im.message.receive_v1' && !message) {
       return {

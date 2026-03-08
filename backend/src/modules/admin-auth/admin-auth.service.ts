@@ -281,6 +281,12 @@ export class AdminAuthService extends BaseService {
         path: '/tool-access',
         roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
       },
+      {
+        id: 'vector-requests',
+        label: 'Share Requests',
+        path: '/vector-requests',
+        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
+      },
     ];
 
     return {

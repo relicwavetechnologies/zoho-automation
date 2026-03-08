@@ -9,11 +9,13 @@ import { IntegrationsPage } from '../pages/IntegrationsPage';
 import { CompanyAdminSignupPage } from '../pages/CompanyAdminSignupPage';
 import { LoginPage } from '../pages/LoginPage';
 import { MemberInviteAcceptPage } from '../pages/MemberInviteAcceptPage';
+import { MemberLoginPage } from '../pages/MemberLoginPage';
 import { MembersPage } from '../pages/MembersPage';
 import { OverviewPage } from '../pages/OverviewPage';
 import { PlaceholderPage } from '../pages/PlaceholderPage';
 import { RbacPage } from '../pages/RbacPage';
 import { ToolPermissionsPage } from '../pages/ToolPermissionsPage';
+import { VectorShareRequestsPage } from '../pages/VectorShareRequestsPage';
 import { ZohoOauthCallbackPage } from '../pages/ZohoOauthCallbackPage';
 import { Toaster } from '../components/ui/toaster';
 
@@ -36,6 +38,8 @@ export const App = () => {
     <>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/desktop-login" element={<MemberLoginPage />} />
+        <Route path="/member-login" element={<MemberLoginPage />} />
         <Route path="/signup/company-admin" element={<CompanyAdminSignupPage />} />
         <Route path="/signup/member-invite" element={<MemberInviteAcceptPage />} />
 
@@ -57,6 +61,7 @@ export const App = () => {
           <Route path="ai-models" element={<AiModelsPage />} />
           <Route path="integrations" element={<IntegrationsPage />} />
           <Route path="tool-access" element={<ToolPermissionsPage />} />
+          <Route path="vector-requests" element={<VectorShareRequestsPage />} />
           <Route path="zoho/callback" element={<ZohoOauthCallbackPage />} />
         </Route>
 

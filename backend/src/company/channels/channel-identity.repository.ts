@@ -27,44 +27,44 @@ class ChannelIdentityRepository {
       }))
       ?? (input.channel === 'lark' && (input.larkOpenId || input.larkUserId)
         ? await prisma.channelIdentity.findFirst({
-            where: {
-              companyId: input.companyId,
-              channel: input.channel,
-              OR: [
-                ...(input.larkOpenId ? [{ larkOpenId: input.larkOpenId }] : []),
-                ...(input.larkUserId ? [{ larkUserId: input.larkUserId }] : []),
-              ],
-            },
-          })
+          where: {
+            companyId: input.companyId,
+            channel: input.channel,
+            OR: [
+              ...(input.larkOpenId ? [{ larkOpenId: input.larkOpenId }] : []),
+              ...(input.larkUserId ? [{ larkUserId: input.larkUserId }] : []),
+            ],
+          },
+        })
         : null);
 
     const row = existing
       ? await prisma.channelIdentity.update({
-          where: { id: existing.id },
-          data: {
-            externalUserId: input.externalUserId,
-            externalTenantId: input.externalTenantId,
-            ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
-            ...(input.email !== undefined ? { email: input.email } : {}),
-            ...(input.larkOpenId !== undefined ? { larkOpenId: input.larkOpenId } : {}),
-            ...(input.larkUserId !== undefined ? { larkUserId: input.larkUserId } : {}),
-            ...(input.sourceRoles !== undefined ? { sourceRoles: input.sourceRoles } : {}),
-          },
-        })
+        where: { id: existing.id },
+        data: {
+          externalUserId: input.externalUserId,
+          externalTenantId: input.externalTenantId,
+          ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+          ...(input.email !== undefined ? { email: input.email } : {}),
+          ...(input.larkOpenId !== undefined ? { larkOpenId: input.larkOpenId } : {}),
+          ...(input.larkUserId !== undefined ? { larkUserId: input.larkUserId } : {}),
+          ...(input.sourceRoles !== undefined ? { sourceRoles: input.sourceRoles } : {}),
+        },
+      })
       : await prisma.channelIdentity.create({
-          data: {
-            channel: input.channel,
-            externalUserId: input.externalUserId,
-            externalTenantId: input.externalTenantId,
-            companyId: input.companyId,
-            displayName: input.displayName,
-            email: input.email,
-            larkOpenId: input.larkOpenId,
-            larkUserId: input.larkUserId,
-            sourceRoles: input.sourceRoles ?? [],
-            aiRole: input.aiRole ?? 'MEMBER',
-          },
-        });
+        data: {
+          channel: input.channel,
+          externalUserId: input.externalUserId,
+          externalTenantId: input.externalTenantId,
+          companyId: input.companyId,
+          displayName: input.displayName,
+          email: input.email,
+          larkOpenId: input.larkOpenId,
+          larkUserId: input.larkUserId,
+          sourceRoles: input.sourceRoles ?? [],
+          aiRole: input.aiRole ?? 'MEMBER',
+        },
+      });
     const isNew = !existing;
     return { ...row, isNew };
   }
@@ -96,6 +96,25 @@ class ChannelIdentityRepository {
       where: { id },
       data: { aiRole },
     });
+  }
+
+  /**
+   * Returns all channel identities for the company that have an admin AI role
+   * and a valid Lark Open ID so we can send them direct messages.
+   */
+  async findAdminsByCompany(companyId: string): Promise<Array<{ larkOpenId: string; displayName: string | null }>> {
+    const rows = await prisma.channelIdentity.findMany({
+      where: {
+        companyId,
+        channel: 'lark',
+        aiRole: { in: ['COMPANY_ADMIN', 'SUPER_ADMIN'] },
+        larkOpenId: { not: null },
+      },
+      select: { larkOpenId: true, displayName: true },
+    });
+    return rows
+      .filter((r): r is { larkOpenId: string; displayName: string | null } => typeof r.larkOpenId === 'string')
+      .map((r) => ({ larkOpenId: r.larkOpenId, displayName: r.displayName }));
   }
 }
 

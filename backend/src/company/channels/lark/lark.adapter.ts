@@ -1,4 +1,5 @@
 import type {
+  ChannelAction,
   ChannelAdapter,
   ChannelOutboundMessage,
   ChannelOutboundResult,
@@ -131,6 +132,31 @@ const buildEgressTraceMeta = (input: {
     taskId: input.correlationId,
   });
 
+/**
+ * Builds the Lark interactive card content JSON from text + optional actions.
+ * If no actions are provided, only a single markdown element is rendered (identical to the old behaviour).
+ */
+const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<string, unknown> => {
+  const elements: unknown[] = [{ tag: 'markdown', content: text }];
+
+  if (actions && actions.length > 0) {
+    elements.push({
+      tag: 'action',
+      actions: actions.map((action) => ({
+        tag: 'button',
+        text: { tag: 'plain_text', content: action.label },
+        type: action.style === 'primary' ? 'primary' : action.style === 'danger' ? 'danger' : 'default',
+        value: { id: action.id, ...action.value },
+      })),
+    });
+  }
+
+  return {
+    config: { wide_screen_mode: true },
+    elements,
+  };
+};
+
 export class LarkChannelAdapter implements ChannelAdapter {
   public readonly channel = 'lark' as const;
 
@@ -222,19 +248,14 @@ export class LarkChannelAdapter implements ChannelAdapter {
   }
 
   public async sendMessage(input: ChannelOutboundMessage): Promise<ChannelOutboundResult> {
-    const requestPath = '/open-apis/im/v1/messages?receive_id_type=chat_id';
+    // Lark open_id values start with "ou_"; chat IDs start with "oc_".
+    // When targeting a user directly (DM), switch the receive_id_type accordingly.
+    const receiveIdType = input.chatId.startsWith('ou_') ? 'open_id' : 'chat_id';
+    const requestPath = `/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`;
     const body = {
       receive_id: input.chatId,
       msg_type: 'interactive',
-      content: JSON.stringify({
-        config: { wide_screen_mode: true },
-        elements: [
-          {
-            tag: 'markdown',
-            content: input.text,
-          },
-        ],
-      }),
+      content: JSON.stringify(buildLarkCardContent(input.text, input.actions)),
     };
 
     const result = await this.requestWithTokenRetry({
@@ -295,15 +316,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       method: 'PATCH',
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
       body: {
-        content: JSON.stringify({
-          config: { wide_screen_mode: true },
-          elements: [
-            {
-              tag: 'markdown',
-              content: input.text,
-            },
-          ],
-        }),
+        content: JSON.stringify(buildLarkCardContent(input.text, input.actions)),
       },
       context: 'update',
       messageId: input.messageId,

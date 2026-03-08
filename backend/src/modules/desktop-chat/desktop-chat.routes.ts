@@ -1,0 +1,13 @@
+import { Router } from 'express';
+import { asyncHandler } from '../../utils/async-handler';
+import { requireMemberSession } from '../../middlewares/member-auth.middleware';
+import { desktopChatController } from './desktop-chat.controller';
+
+const router = Router();
+
+router.use(requireMemberSession());
+
+// Send message and stream response
+router.post('/:threadId/send', asyncHandler(desktopChatController.send));
+
+export default router;

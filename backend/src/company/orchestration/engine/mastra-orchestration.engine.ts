@@ -2,6 +2,7 @@ import { RequestContext } from '@mastra/core/di';
 
 import config from '../../../config';
 import { resolveChannelAdapter } from '../../channels';
+import { channelIdentityRepository } from '../../channels/channel-identity.repository';
 import { mastra } from '../../integrations/mastra';
 import { buildMastraAgentRunOptions } from '../../integrations/mastra/mastra-model-control';
 import { personalVectorMemoryService } from '../../integrations/vector';
@@ -11,6 +12,7 @@ import { conversationMemoryStore } from '../../state/conversation';
 import { applyGenerationWordLimit } from '../../support/content-limits';
 import { orchestratorService } from '../orchestrator.service';
 import { toolPermissionService } from '../../tools/tool-permission.service';
+import { prisma } from '../../../utils/prisma';
 import type { AiRole } from '../../tools/tool-registry';
 import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
 
@@ -189,6 +191,161 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
 
   private async _runTask(input: OrchestrationExecutionInput): Promise<OrchestrationExecutionResult> {
     const { task, message, latestCheckpoint } = input;
+
+    // ── Card Action Intercept ────────────────────────────────────────────────
+    // Lark sends card.action.trigger webhooks as a "message" with the text
+    // "[Interactive Card Action] {...payload}". We short-circuit here so the
+    // AI pipeline never sees the button click.
+    if (message.text.startsWith('[Interactive Card Action]')) {
+      try {
+        const jsonStart = message.text.indexOf('{');
+        const action = jsonStart >= 0
+          ? (JSON.parse(message.text.slice(jsonStart)) as Record<string, unknown>)
+          : {};
+        const actionId = typeof action.id === 'string' ? action.id : undefined;
+        const companyId = message.trace?.companyId ?? '';
+        const channelAdapter = resolveChannelAdapter(message.channel);
+
+        // ── User taps "Share this chat's knowledge" ──────────────────────────
+        if (actionId === 'share_vectors') {
+          const conversationKey = typeof action.conversationKey === 'string' ? action.conversationKey : '';
+          const triggerMessageId = typeof action.triggerMessageId === 'string' ? action.triggerMessageId : undefined;
+          const requesterUserId = message.userId;
+
+          if (companyId && conversationKey && requesterUserId) {
+            // 1. Create (or reuse) a pending VectorShareRequest in the DB.
+            const existingPending = await prisma.vectorShareRequest.findFirst({
+              where: { companyId, requesterUserId, conversationKey, status: 'pending' },
+              orderBy: { createdAt: 'desc' },
+            });
+            const shareRequest = existingPending ?? await prisma.vectorShareRequest.create({
+              data: { companyId, requesterUserId, conversationKey, status: 'pending' },
+            });
+
+            // 2. Immediately update the user's message to "pending" so they get feedback.
+            if (triggerMessageId) {
+              await channelAdapter.updateMessage({
+                messageId: triggerMessageId,
+                text: '_Share request submitted — pending administrator review._',
+                correlationId: task.taskId,
+                actions: [], // Remove the button; no double-clicks.
+              });
+            }
+
+            // 3. Build a short conversation preview for the admin card.
+            const previewDocs = await personalVectorMemoryService.getConversationPreview(
+              companyId, requesterUserId, conversationKey,
+            );
+
+            // 4. Dispatch DM approval cards to all company admins with Lark OpenIDs.
+            const admins = await channelIdentityRepository.findAdminsByCompany(companyId);
+            const requesterName = requesterUserId;
+            const adminCardText = [
+              `**Vector Share Request**`,
+              `*Requested by:* ${requesterName}`,
+              '',
+              `*Conversation preview:*`,
+              previewDocs ? previewDocs : '_No preview available._',
+            ].join('\n');
+
+            await Promise.allSettled(
+              admins.map((admin) =>
+                channelAdapter.sendMessage({
+                  chatId: admin.larkOpenId, // ou_ prefix → DM via open_id routing
+                  text: adminCardText,
+                  correlationId: task.taskId,
+                  actions: [
+                    {
+                      id: 'admin_share_decision',
+                      label: 'Approve',
+                      value: { requestId: shareRequest.id, decision: 'approve' },
+                      style: 'primary',
+                    },
+                    {
+                      id: 'admin_share_decision',
+                      label: 'Reject',
+                      value: { requestId: shareRequest.id, decision: 'reject' },
+                      style: 'danger',
+                    },
+                  ],
+                }),
+              ),
+            );
+
+            logger.info('mastra.engine.share_vectors.request.dispatched', {
+              taskId: task.taskId,
+              companyId,
+              conversationKey,
+              requestId: shareRequest.id,
+              adminCount: admins.length,
+            });
+          }
+        }
+
+        // ── Admin taps Approve or Reject ─────────────────────────────────────
+        if (actionId === 'admin_share_decision') {
+          const requestId = typeof action.requestId === 'string' ? action.requestId : undefined;
+          const decision = action.decision === 'approve' || action.decision === 'reject' ? action.decision : undefined;
+          const adminMessageId = typeof action.adminMessageId === 'string' ? action.adminMessageId : undefined;
+
+          if (requestId && decision) {
+            const shareRow = await prisma.vectorShareRequest.findUnique({ where: { id: requestId } });
+
+            if (shareRow && shareRow.status === 'pending') {
+              if (decision === 'approve') {
+                // Promote vectors in Postgres + Qdrant using the existing service.
+                await personalVectorMemoryService.shareConversation({
+                  companyId: shareRow.companyId,
+                  requesterUserId: shareRow.requesterUserId,
+                  conversationKey: shareRow.conversationKey,
+                });
+                await prisma.vectorShareRequest.update({
+                  where: { id: requestId },
+                  data: { status: 'approved', reviewedBy: message.userId, reviewedAt: new Date() },
+                });
+              } else {
+                await prisma.vectorShareRequest.update({
+                  where: { id: requestId },
+                  data: { status: 'rejected', reviewedBy: message.userId, reviewedAt: new Date() },
+                });
+              }
+
+              // Update the admin's card to reflect the decision.
+              if (adminMessageId) {
+                const confirmText = decision === 'approve'
+                  ? '_Approved — knowledge is now shared company-wide._'
+                  : '_Rejected — personal vectors remain private._';
+                await channelAdapter.updateMessage({
+                  messageId: adminMessageId,
+                  text: confirmText,
+                  correlationId: task.taskId,
+                  actions: [], // Remove buttons after decision.
+                });
+              }
+
+              logger.info('mastra.engine.admin_share_decision.completed', {
+                taskId: task.taskId,
+                requestId,
+                decision,
+              });
+            }
+          }
+        }
+      } catch (error) {
+        logger.warn('mastra.engine.card_action.failed', {
+          taskId: task.taskId,
+          reason: error instanceof Error ? error.message : 'unknown_error',
+        });
+      }
+      // Always return done — never feed card events to the AI.
+      return {
+        task,
+        status: 'done',
+        currentStep: 'action_complete',
+        latestSynthesis: '',
+        runtimeMeta: { engine: 'mastra', node: 'card_action', stepHistory: ['card_action'] },
+      };
+    }
 
     if (latestCheckpoint?.node === 'synthesis.complete') {
       const text =
@@ -566,17 +723,31 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       );
     }
 
+    const canShareVectors = allowedToolIds.includes('share_chat_vectors');
+    const shareActions = canShareVectors
+      ? [
+        {
+          id: 'share_vectors',
+          label: 'Share this chat\'s knowledge',
+          value: { conversationKey, triggerMessageId: progressMessageId ?? '' },
+          style: 'default' as const,
+        },
+      ]
+      : undefined;
+
     if (progressMessageId) {
       await channelAdapter.updateMessage({
         messageId: progressMessageId,
         text: finalText,
         correlationId: task.taskId,
+        actions: shareActions,
       });
     } else {
       await channelAdapter.sendMessage({
         chatId: message.chatId,
         text: finalText,
         correlationId: task.taskId,
+        actions: shareActions,
       });
     }
 

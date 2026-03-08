@@ -128,11 +128,14 @@ type VectorShareRequest = {
 export const IntegrationsPage = () => {
   const { token, session } = useAdminAuth();
   const isSuperAdmin = session?.role === 'SUPER_ADMIN';
+  const canManageWorkspaceIntegrations = !isSuperAdmin;
   const [workspaceId, setWorkspaceId] = useState('');
   const scopedCompanyId = useMemo(
     () => (isSuperAdmin ? workspaceId.trim() : undefined),
     [workspaceId, isSuperAdmin],
   );
+  const requiresWorkspaceSelection = isSuperAdmin && !scopedCompanyId;
+  const isScopedReadOnlyView = isSuperAdmin && !!scopedCompanyId;
 
   const buildQuery = (extra?: string) => {
     const parts: string[] = [];
@@ -673,6 +676,40 @@ export const IntegrationsPage = () => {
     return 'text-zinc-400';
   };
 
+  if (requiresWorkspaceSelection) {
+    return (
+      <div className="flex flex-col gap-6 max-w-5xl">
+        <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20">
+          <CardContent className="pt-4 pb-4">
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-zinc-400 shrink-0">Workspace ID</span>
+              <Input
+                value={workspaceId}
+                onChange={(e) => setWorkspaceId(e.target.value)}
+                placeholder="Paste workspace UUID to inspect integrations"
+                className="bg-[#0a0a0a] border-[#222] flex-1"
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
+          <CardHeader className="border-b border-[#1a1a1a] pb-4">
+            <CardTitle className="text-zinc-100">Workspace Integration Diagnostics</CardTitle>
+            <CardDescription className="text-zinc-500">
+              Super admin access is intentionally scoped. Pick a workspace to inspect its Lark, Zoho, user sync, and memory status without exposing workspace setup controls globally.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-6">
+            <div className="rounded-md border border-dashed border-[#2a2a2a] bg-[#0a0a0a] p-6 text-sm text-zinc-500">
+              No workspace selected yet.
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6 max-w-5xl">
       {isSuperAdmin && (
@@ -690,6 +727,16 @@ export const IntegrationsPage = () => {
           </CardContent>
         </Card>
       )}
+
+      {isScopedReadOnlyView ? (
+        <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
+          <CardContent className="pt-4 pb-4">
+            <div className="rounded-md border border-amber-900/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-200">
+              Super admin view is read-only here. Workspace admins own connection, credential, sync, and approval actions.
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* Lark Integration */}
       <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
@@ -736,50 +783,56 @@ export const IntegrationsPage = () => {
             </div>
           ) : null}
 
-          <form
-            className="flex flex-col gap-3 p-4 rounded-md border border-[#222] bg-[#0c0c0c]"
-            onSubmit={saveLarkBinding}
-          >
-            <span className="text-sm font-medium text-zinc-300">
-              {larkBinding ? 'Update Binding' : 'Set Up Lark Binding'}
-            </span>
-            <p className="text-xs text-zinc-500 leading-relaxed">
-              The tenant key identifies your Lark workspace. Find it in your Lark webhook payload under the{' '}
-              <code className="bg-[#1a1a1a] px-1 rounded text-zinc-300 text-[11px]">tenant_key</code> field, or via
-              the Lark Open Platform console.
-            </p>
-            <div className="space-y-1">
-              <label className="text-xs text-zinc-500">Lark Tenant Key</label>
-              <Input
-                value={larkTenantKey}
-                onChange={(e) => setLarkTenantKey(e.target.value)}
-                placeholder="e.g. 150707d30199d743"
-                className="bg-[#0a0a0a] border-[#222]"
-                required
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="space-y-1 flex-1">
-                <label className="text-xs text-zinc-500">Binding State</label>
-                <Select value={larkIsActive} onValueChange={(val) => setLarkIsActive(val as 'true' | 'false')}>
-                  <SelectTrigger className="bg-[#0a0a0a] border-[#222]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
-                    <SelectItem value="true">Active — messages from this workspace will be processed</SelectItem>
-                    <SelectItem value="false">Inactive — binding saved but messages will be rejected</SelectItem>
-                  </SelectContent>
-                </Select>
+          {canManageWorkspaceIntegrations ? (
+            <form
+              className="flex flex-col gap-3 p-4 rounded-md border border-[#222] bg-[#0c0c0c]"
+              onSubmit={saveLarkBinding}
+            >
+              <span className="text-sm font-medium text-zinc-300">
+                {larkBinding ? 'Update Binding' : 'Set Up Lark Binding'}
+              </span>
+              <p className="text-xs text-zinc-500 leading-relaxed">
+                The tenant key identifies your Lark workspace. Find it in your Lark webhook payload under the{' '}
+                <code className="bg-[#1a1a1a] px-1 rounded text-zinc-300 text-[11px]">tenant_key</code> field, or via
+                the Lark Open Platform console.
+              </p>
+              <div className="space-y-1">
+                <label className="text-xs text-zinc-500">Lark Tenant Key</label>
+                <Input
+                  value={larkTenantKey}
+                  onChange={(e) => setLarkTenantKey(e.target.value)}
+                  placeholder="e.g. 150707d30199d743"
+                  className="bg-[#0a0a0a] border-[#222]"
+                  required
+                />
               </div>
-              <Button
-                type="submit"
-                disabled={larkSaving}
-                className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200 mt-5 shrink-0"
-              >
-                {larkSaving ? 'Saving…' : larkBinding ? 'Update' : 'Save Binding'}
-              </Button>
+              <div className="flex items-center gap-3">
+                <div className="space-y-1 flex-1">
+                  <label className="text-xs text-zinc-500">Binding State</label>
+                  <Select value={larkIsActive} onValueChange={(val) => setLarkIsActive(val as 'true' | 'false')}>
+                    <SelectTrigger className="bg-[#0a0a0a] border-[#222]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
+                      <SelectItem value="true">Active — messages from this workspace will be processed</SelectItem>
+                      <SelectItem value="false">Inactive — binding saved but messages will be rejected</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  type="submit"
+                  disabled={larkSaving}
+                  className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200 mt-5 shrink-0"
+                >
+                  {larkSaving ? 'Saving…' : larkBinding ? 'Update' : 'Save Binding'}
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <div className="rounded-md border border-dashed border-[#2a2a2a] bg-[#0c0c0c] px-4 py-3 text-sm text-zinc-500">
+              Binding changes are intentionally hidden from super admin. Use a workspace-admin session to change tenant mapping.
             </div>
-          </form>
+          )}
         </CardContent>
       </Card>
 
@@ -805,7 +858,7 @@ export const IntegrationsPage = () => {
               >
                 {larkWorkspaceConfig?.configured ? 'Configured' : 'Not Configured'}
               </Badge>
-              {larkWorkspaceConfig?.configured ? (
+              {larkWorkspaceConfig?.configured && canManageWorkspaceIntegrations ? (
                 <button
                   type="button"
                   onClick={() => void deleteLarkWorkspaceConfig()}
@@ -850,80 +903,86 @@ export const IntegrationsPage = () => {
             </div>
           ) : null}
 
-          <form className="flex flex-col gap-4 p-4 rounded-md border border-[#222] bg-[#0c0c0c]" onSubmit={saveLarkWorkspaceConfig}>
-            <span className="text-sm font-medium text-zinc-300">
-              {larkWorkspaceConfig?.configured ? 'Update Workspace Credentials' : 'Add Workspace Credentials'}
-            </span>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">App ID</label>
-                <Input
-                  value={larkAppId}
-                  onChange={(e) => setLarkAppId(e.target.value)}
-                  placeholder="cli_xxxxxxxxxxxxx"
-                  className="bg-[#0a0a0a] border-[#222]"
-                  required
-                />
+          {canManageWorkspaceIntegrations ? (
+            <form className="flex flex-col gap-4 p-4 rounded-md border border-[#222] bg-[#0c0c0c]" onSubmit={saveLarkWorkspaceConfig}>
+              <span className="text-sm font-medium text-zinc-300">
+                {larkWorkspaceConfig?.configured ? 'Update Workspace Credentials' : 'Add Workspace Credentials'}
+              </span>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500">App ID</label>
+                  <Input
+                    value={larkAppId}
+                    onChange={(e) => setLarkAppId(e.target.value)}
+                    placeholder="cli_xxxxxxxxxxxxx"
+                    className="bg-[#0a0a0a] border-[#222]"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500">
+                    App Secret {larkWorkspaceConfig?.configured ? <span className="text-zinc-600">(leave blank to keep existing)</span> : null}
+                  </label>
+                  <Input
+                    value={larkAppSecret}
+                    onChange={(e) => setLarkAppSecret(e.target.value)}
+                    type="password"
+                    placeholder={larkWorkspaceConfig?.configured ? '••••••••••••' : 'Lark app secret'}
+                    className="bg-[#0a0a0a] border-[#222]"
+                    required={!larkWorkspaceConfig?.configured}
+                  />
+                </div>
               </div>
-              <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">
-                  App Secret {larkWorkspaceConfig?.configured ? <span className="text-zinc-600">(leave blank to keep existing)</span> : null}
-                </label>
-                <Input
-                  value={larkAppSecret}
-                  onChange={(e) => setLarkAppSecret(e.target.value)}
-                  type="password"
-                  placeholder={larkWorkspaceConfig?.configured ? '••••••••••••' : 'Lark app secret'}
-                  className="bg-[#0a0a0a] border-[#222]"
-                  required={!larkWorkspaceConfig?.configured}
-                />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500">Verification Token (optional if signing secret set)</label>
+                  <Input
+                    value={larkVerificationToken}
+                    onChange={(e) => setLarkVerificationToken(e.target.value)}
+                    placeholder="Verification token from Lark event subscription"
+                    className="bg-[#0a0a0a] border-[#222]"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500">Signing Secret (optional if verification token set)</label>
+                  <Input
+                    value={larkSigningSecret}
+                    onChange={(e) => setLarkSigningSecret(e.target.value)}
+                    placeholder="Event subscription signing secret"
+                    className="bg-[#0a0a0a] border-[#222]"
+                  />
+                </div>
               </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500">Static Tenant Access Token (optional)</label>
+                  <Input
+                    value={larkStaticTenantAccessToken}
+                    onChange={(e) => setLarkStaticTenantAccessToken(e.target.value)}
+                    type="password"
+                    placeholder="Only use if app credential flow is unavailable"
+                    className="bg-[#0a0a0a] border-[#222]"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500">API Base URL</label>
+                  <Input
+                    value={larkApiBaseUrl}
+                    onChange={(e) => setLarkApiBaseUrl(e.target.value)}
+                    placeholder="https://open.larksuite.com"
+                    className="bg-[#0a0a0a] border-[#222]"
+                  />
+                </div>
+              </div>
+              <Button type="submit" disabled={larkConfigSaving} className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200">
+                {larkConfigSaving ? 'Saving…' : larkWorkspaceConfig?.configured ? 'Update Credentials' : 'Save Credentials'}
+              </Button>
+            </form>
+          ) : (
+            <div className="rounded-md border border-dashed border-[#2a2a2a] bg-[#0c0c0c] px-4 py-3 text-sm text-zinc-500">
+              Stored credential status is visible here, but secret rotation and verification updates require a workspace-admin session.
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">Verification Token (optional if signing secret set)</label>
-                <Input
-                  value={larkVerificationToken}
-                  onChange={(e) => setLarkVerificationToken(e.target.value)}
-                  placeholder="Verification token from Lark event subscription"
-                  className="bg-[#0a0a0a] border-[#222]"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">Signing Secret (optional if verification token set)</label>
-                <Input
-                  value={larkSigningSecret}
-                  onChange={(e) => setLarkSigningSecret(e.target.value)}
-                  placeholder="Event subscription signing secret"
-                  className="bg-[#0a0a0a] border-[#222]"
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">Static Tenant Access Token (optional)</label>
-                <Input
-                  value={larkStaticTenantAccessToken}
-                  onChange={(e) => setLarkStaticTenantAccessToken(e.target.value)}
-                  type="password"
-                  placeholder="Only use if app credential flow is unavailable"
-                  className="bg-[#0a0a0a] border-[#222]"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">API Base URL</label>
-                <Input
-                  value={larkApiBaseUrl}
-                  onChange={(e) => setLarkApiBaseUrl(e.target.value)}
-                  placeholder="https://open.larksuite.com"
-                  className="bg-[#0a0a0a] border-[#222]"
-                />
-              </div>
-            </div>
-            <Button type="submit" disabled={larkConfigSaving} className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200">
-              {larkConfigSaving ? 'Saving…' : larkWorkspaceConfig?.configured ? 'Update Credentials' : 'Save Credentials'}
-            </Button>
-          </form>
+          )}
         </CardContent>
       </Card>
 
@@ -939,15 +998,17 @@ export const IntegrationsPage = () => {
               Runs on setup, nightly, and manually. Syncs users into company channel identities.
             </CardDescription>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={larkSyncTriggering || !larkWorkspaceConfig?.configured || !larkBinding?.isActive}
-            onClick={() => void triggerLarkUserSync()}
-            className="border-[#2a2a2a] text-zinc-300 hover:bg-[#1a1a1a] shrink-0"
-          >
-            {larkSyncTriggering ? 'Starting…' : 'Re-sync users'}
-          </Button>
+          {canManageWorkspaceIntegrations ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={larkSyncTriggering || !larkWorkspaceConfig?.configured || !larkBinding?.isActive}
+              onClick={() => void triggerLarkUserSync()}
+              className="border-[#2a2a2a] text-zinc-300 hover:bg-[#1a1a1a] shrink-0"
+            >
+              {larkSyncTriggering ? 'Starting…' : 'Re-sync users'}
+            </Button>
+          ) : null}
         </CardHeader>
         <CardContent className="pt-6">
           {larkSyncLoading ? (
@@ -1047,25 +1108,29 @@ export const IntegrationsPage = () => {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={request.status !== 'pending' || vectorShareMutatingId === request.id}
-                      onClick={() => void approveVectorShareRequest(request.id)}
-                      className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
-                    >
-                      {vectorShareMutatingId === request.id ? 'Working…' : 'Approve'}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={request.status !== 'pending' || vectorShareMutatingId === request.id}
-                      onClick={() => void rejectVectorShareRequest(request.id)}
-                      className="border-[#2a2a2a] text-zinc-300 hover:bg-[#1a1a1a]"
-                    >
-                      Reject
-                    </Button>
+                    {canManageWorkspaceIntegrations ? (
+                      <>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={request.status !== 'pending' || vectorShareMutatingId === request.id}
+                          onClick={() => void approveVectorShareRequest(request.id)}
+                          className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+                        >
+                          {vectorShareMutatingId === request.id ? 'Working…' : 'Approve'}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={request.status !== 'pending' || vectorShareMutatingId === request.id}
+                          onClick={() => void rejectVectorShareRequest(request.id)}
+                          className="border-[#2a2a2a] text-zinc-300 hover:bg-[#1a1a1a]"
+                        >
+                          Reject
+                        </Button>
+                      </>
+                    ) : null}
                     {request.status !== 'pending' ? (
                       <span className="text-xs text-zinc-500">
                         reviewed {request.reviewedAt ? new Date(request.reviewedAt).toLocaleString() : '—'}
@@ -1105,7 +1170,7 @@ export const IntegrationsPage = () => {
               >
                 {oauthConfig?.configured ? 'Configured' : 'Not Configured'}
               </Badge>
-              {oauthConfig?.configured && (
+              {oauthConfig?.configured && canManageWorkspaceIntegrations && (
                 <button
                   type="button"
                   onClick={() => void deleteZohoOAuthConfig()}
@@ -1144,79 +1209,85 @@ export const IntegrationsPage = () => {
             </div>
           ) : null}
 
-          <form className="flex flex-col gap-4 p-4 rounded-md border border-[#222] bg-[#0c0c0c]" onSubmit={saveZohoOAuthConfig}>
-            <span className="text-sm font-medium text-zinc-300">
-              {oauthConfig?.configured ? 'Update Credentials' : 'Add Zoho OAuth App'}
-            </span>
-            <p className="text-xs text-zinc-500 leading-relaxed">
-              Create a Zoho OAuth app at <span className="text-zinc-300">api-console.zoho.com</span>, set the redirect URI, and paste the credentials here.
-              The client secret is encrypted with AES-256-GCM before storage.
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {canManageWorkspaceIntegrations ? (
+            <form className="flex flex-col gap-4 p-4 rounded-md border border-[#222] bg-[#0c0c0c]" onSubmit={saveZohoOAuthConfig}>
+              <span className="text-sm font-medium text-zinc-300">
+                {oauthConfig?.configured ? 'Update Credentials' : 'Add Zoho OAuth App'}
+              </span>
+              <p className="text-xs text-zinc-500 leading-relaxed">
+                Create a Zoho OAuth app at <span className="text-zinc-300">api-console.zoho.com</span>, set the redirect URI, and paste the credentials here.
+                The client secret is encrypted with AES-256-GCM before storage.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500">Client ID</label>
+                  <Input
+                    value={oauthClientId}
+                    onChange={(e) => setOauthClientId(e.target.value)}
+                    placeholder="1000.XXXXXXXXXXXXXXXXXXXXXX"
+                    className="bg-[#0a0a0a] border-[#222]"
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500">
+                    Client Secret {oauthConfig?.configured ? <span className="text-zinc-600">(leave blank to keep existing)</span> : null}
+                  </label>
+                  <Input
+                    value={oauthClientSecret}
+                    onChange={(e) => setOauthClientSecret(e.target.value)}
+                    placeholder={oauthConfig?.configured ? '••••••••••••' : 'Your Zoho client secret'}
+                    type="password"
+                    className="bg-[#0a0a0a] border-[#222]"
+                    required={!oauthConfig?.configured}
+                  />
+                </div>
+              </div>
               <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">Client ID</label>
+                <label className="text-xs text-zinc-500">Redirect URI</label>
                 <Input
-                  value={oauthClientId}
-                  onChange={(e) => setOauthClientId(e.target.value)}
-                  placeholder="1000.XXXXXXXXXXXXXXXXXXXXXX"
+                  value={oauthRedirectUri}
+                  onChange={(e) => setOauthRedirectUri(e.target.value)}
+                  placeholder="https://yourapp.com/zoho/callback"
                   className="bg-[#0a0a0a] border-[#222]"
                   required
                 />
+                <p className="text-[11px] text-zinc-600">Must match exactly what is registered in the Zoho OAuth app.</p>
               </div>
-              <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">
-                  Client Secret {oauthConfig?.configured ? <span className="text-zinc-600">(leave blank to keep existing)</span> : null}
-                </label>
-                <Input
-                  value={oauthClientSecret}
-                  onChange={(e) => setOauthClientSecret(e.target.value)}
-                  placeholder={oauthConfig?.configured ? '••••••••••••' : 'Your Zoho client secret'}
-                  type="password"
-                  className="bg-[#0a0a0a] border-[#222]"
-                  required={!oauthConfig?.configured}
-                />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500">Accounts Base URL (optional)</label>
+                  <Input
+                    value={oauthAccountsBaseUrl}
+                    onChange={(e) => setOauthAccountsBaseUrl(e.target.value)}
+                    placeholder="https://accounts.zoho.com"
+                    className="bg-[#0a0a0a] border-[#222]"
+                  />
+                  <p className="text-[11px] text-zinc-600">Change for regional deployments (e.g. .eu, .in, .com.au).</p>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs text-zinc-500">API Base URL (optional)</label>
+                  <Input
+                    value={oauthApiBaseUrl}
+                    onChange={(e) => setOauthApiBaseUrl(e.target.value)}
+                    placeholder="https://www.zohoapis.com"
+                    className="bg-[#0a0a0a] border-[#222]"
+                  />
+                </div>
               </div>
+              <Button
+                type="submit"
+                disabled={oauthConfigSaving}
+                className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+              >
+                {oauthConfigSaving ? 'Saving…' : oauthConfig?.configured ? 'Update Credentials' : 'Save Credentials'}
+              </Button>
+            </form>
+          ) : (
+            <div className="rounded-md border border-dashed border-[#2a2a2a] bg-[#0c0c0c] px-4 py-3 text-sm text-zinc-500">
+              OAuth application metadata stays visible for audits, but credential changes are restricted to workspace-admin sessions.
             </div>
-            <div className="space-y-1.5">
-              <label className="text-xs text-zinc-500">Redirect URI</label>
-              <Input
-                value={oauthRedirectUri}
-                onChange={(e) => setOauthRedirectUri(e.target.value)}
-                placeholder="https://yourapp.com/zoho/callback"
-                className="bg-[#0a0a0a] border-[#222]"
-                required
-              />
-              <p className="text-[11px] text-zinc-600">Must match exactly what is registered in the Zoho OAuth app.</p>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">Accounts Base URL (optional)</label>
-                <Input
-                  value={oauthAccountsBaseUrl}
-                  onChange={(e) => setOauthAccountsBaseUrl(e.target.value)}
-                  placeholder="https://accounts.zoho.com"
-                  className="bg-[#0a0a0a] border-[#222]"
-                />
-                <p className="text-[11px] text-zinc-600">Change for regional deployments (e.g. .eu, .in, .com.au).</p>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">API Base URL (optional)</label>
-                <Input
-                  value={oauthApiBaseUrl}
-                  onChange={(e) => setOauthApiBaseUrl(e.target.value)}
-                  placeholder="https://www.zohoapis.com"
-                  className="bg-[#0a0a0a] border-[#222]"
-                />
-              </div>
-            </div>
-            <Button
-              type="submit"
-              disabled={oauthConfigSaving}
-              className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
-            >
-              {oauthConfigSaving ? 'Saving…' : oauthConfig?.configured ? 'Update Credentials' : 'Save Credentials'}
-            </Button>
-          </form>
+          )}
         </CardContent>
       </Card>
 
@@ -1291,16 +1362,18 @@ export const IntegrationsPage = () => {
                     Last sync: {new Date(onboarding.connection.lastSyncAt).toLocaleString()}
                   </span>
                 ) : null}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={historicalSyncTriggering || !zohoConnected}
-                  onClick={() => void triggerHistoricalSync()}
-                  className="mt-2 border-[#2a2a2a] text-zinc-300 hover:bg-[#1a1a1a] w-fit"
-                >
-                  {historicalSyncTriggering ? 'Queuing…' : 'Retry / Re-sync'}
-                </Button>
+                {canManageWorkspaceIntegrations ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={historicalSyncTriggering || !zohoConnected}
+                    onClick={() => void triggerHistoricalSync()}
+                    className="mt-2 border-[#2a2a2a] text-zinc-300 hover:bg-[#1a1a1a] w-fit"
+                  >
+                    {historicalSyncTriggering ? 'Queuing…' : 'Retry / Re-sync'}
+                  </Button>
+                ) : null}
                 <span className="text-[11px] text-zinc-600">
                   Safe mode: keeps existing vectors and upserts latest chunks.
                 </span>
@@ -1325,7 +1398,7 @@ export const IntegrationsPage = () => {
             ) : null
           )}
 
-          {zohoConnected && (
+          {zohoConnected && canManageWorkspaceIntegrations && (
             <div className="flex justify-end">
               <Button
                 variant="outline"
@@ -1339,130 +1412,76 @@ export const IntegrationsPage = () => {
             </div>
           )}
 
-          <div className="border border-[#222] rounded-md p-4 bg-[#0c0c0c]">
-            <p className="text-sm font-medium text-zinc-300 mb-4">
-              {zohoConnected ? 'Reconnect / Update Connection' : 'New Connection Setup'}
-            </p>
-            <Tabs value={zohoMode} onValueChange={(val) => setZohoMode(val as 'rest' | 'mcp')}>
-              <TabsList className="bg-[#0a0a0a] border border-[#1a1a1a] mb-5 h-8">
-                <TabsTrigger
-                  value="rest"
-                  className="text-xs data-[state=active]:bg-[#1a1a1a] data-[state=active]:text-zinc-100 text-zinc-500"
-                >
-                  OAuth (REST)
-                </TabsTrigger>
-                <TabsTrigger
-                  value="mcp"
-                  className="text-xs data-[state=active]:bg-[#1a1a1a] data-[state=active]:text-zinc-100 text-zinc-500"
-                >
-                  MCP
-                </TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="rest">
-                <form className="flex flex-col gap-4" onSubmit={connectZohoRest}>
-                  <div className="space-y-2 rounded-md border border-[#222] bg-[#0a0a0a] p-3">
-                    <p className="text-xs text-zinc-400">
-                      Preferred flow: click <span className="text-zinc-200 font-medium">Start Zoho OAuth</span>. You will return to
-                      <code className="ml-1 bg-[#1a1a1a] px-1.5 py-0.5 rounded text-[11px]">{zohoRedirectUri}</code>
-                      and connection will complete automatically.
-                    </p>
-                    <Button
-                      type="button"
-                      onClick={() => void launchZohoOauth()}
-                      disabled={oauthLaunching || !oauthConfig?.configured}
-                      className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
-                    >
-                      {oauthLaunching ? 'Redirecting…' : 'Start Zoho OAuth'}
-                    </Button>
-                    {!oauthConfig?.configured ? (
-                      <p className="text-[11px] text-amber-400">
-                        Save Zoho OAuth App credentials above to enable one-click OAuth launch.
-                      </p>
-                    ) : null}
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-zinc-500">Authorization Code</label>
-                    <Input
-                      value={restCode}
-                      onChange={(e) => setRestCode(e.target.value)}
-                      placeholder="Paste Zoho OAuth authorization code"
-                      className="bg-[#0a0a0a] border-[#222]"
-                      required
-                    />
-                    <p className="text-[11px] text-zinc-600">
-                      Obtain via the Zoho OAuth flow. The code is single-use and expires after 60 seconds.
-                    </p>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-zinc-500">Scopes (comma-separated)</label>
-                    <Input
-                      value={restScopes}
-                      onChange={(e) => setRestScopes(e.target.value)}
-                      placeholder="ZohoCRM.modules.ALL,ZohoCRM.settings.ALL"
-                      className="bg-[#0a0a0a] border-[#222]"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-zinc-500">Environment</label>
-                    <Select value={restEnv} onValueChange={(val) => setRestEnv(val as 'prod' | 'sandbox')}>
-                      <SelectTrigger className="bg-[#0a0a0a] border-[#222]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
-                        <SelectItem value="prod">Production</SelectItem>
-                        <SelectItem value="sandbox">Sandbox</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <Button
-                    type="submit"
-                    disabled={zohoConnecting}
-                    className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+          {canManageWorkspaceIntegrations ? (
+            <div className="border border-[#222] rounded-md p-4 bg-[#0c0c0c]">
+              <p className="text-sm font-medium text-zinc-300 mb-4">
+                {zohoConnected ? 'Reconnect / Update Connection' : 'New Connection Setup'}
+              </p>
+              <Tabs value={zohoMode} onValueChange={(val) => setZohoMode(val as 'rest' | 'mcp')}>
+                <TabsList className="bg-[#0a0a0a] border border-[#1a1a1a] mb-5 h-8">
+                  <TabsTrigger
+                    value="rest"
+                    className="text-xs data-[state=active]:bg-[#1a1a1a] data-[state=active]:text-zinc-100 text-zinc-500"
                   >
-                    {zohoConnecting ? 'Connecting…' : 'Connect via OAuth'}
-                  </Button>
-                </form>
-              </TabsContent>
+                    OAuth (REST)
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="mcp"
+                    className="text-xs data-[state=active]:bg-[#1a1a1a] data-[state=active]:text-zinc-100 text-zinc-500"
+                  >
+                    MCP
+                  </TabsTrigger>
+                </TabsList>
 
-              <TabsContent value="mcp">
-                <form className="flex flex-col gap-4" onSubmit={connectZohoMcp}>
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-zinc-500">MCP Base URL</label>
-                    <Input
-                      value={mcpBaseUrl}
-                      onChange={(e) => setMcpBaseUrl(e.target.value)}
-                      placeholder="https://your-mcp-server.com/api"
-                      className="bg-[#0a0a0a] border-[#222]"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-zinc-500">API Key</label>
-                    <Input
-                      value={mcpApiKey}
-                      onChange={(e) => setMcpApiKey(e.target.value)}
-                      placeholder="MCP API key"
-                      type="password"
-                      className="bg-[#0a0a0a] border-[#222]"
-                      required
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <TabsContent value="rest">
+                  <form className="flex flex-col gap-4" onSubmit={connectZohoRest}>
+                    <div className="space-y-2 rounded-md border border-[#222] bg-[#0a0a0a] p-3">
+                      <p className="text-xs text-zinc-400">
+                        Preferred flow: click <span className="text-zinc-200 font-medium">Start Zoho OAuth</span>. You will return to
+                        <code className="ml-1 bg-[#1a1a1a] px-1.5 py-0.5 rounded text-[11px]">{zohoRedirectUri}</code>
+                        and connection will complete automatically.
+                      </p>
+                      <Button
+                        type="button"
+                        onClick={() => void launchZohoOauth()}
+                        disabled={oauthLaunching || !oauthConfig?.configured}
+                        className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+                      >
+                        {oauthLaunching ? 'Redirecting…' : 'Start Zoho OAuth'}
+                      </Button>
+                      {!oauthConfig?.configured ? (
+                        <p className="text-[11px] text-amber-400">
+                          Save Zoho OAuth App credentials above to enable one-click OAuth launch.
+                        </p>
+                      ) : null}
+                    </div>
+
                     <div className="space-y-1.5">
-                      <label className="text-xs text-zinc-500">Workspace Key (optional)</label>
+                      <label className="text-xs text-zinc-500">Authorization Code</label>
                       <Input
-                        value={mcpWorkspaceKey}
-                        onChange={(e) => setMcpWorkspaceKey(e.target.value)}
-                        placeholder="MCP workspace key"
+                        value={restCode}
+                        onChange={(e) => setRestCode(e.target.value)}
+                        placeholder="Paste Zoho OAuth authorization code"
                         className="bg-[#0a0a0a] border-[#222]"
+                        required
+                      />
+                      <p className="text-[11px] text-zinc-600">
+                        Obtain via the Zoho OAuth flow. The code is single-use and expires after 60 seconds.
+                      </p>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-zinc-500">Scopes (comma-separated)</label>
+                      <Input
+                        value={restScopes}
+                        onChange={(e) => setRestScopes(e.target.value)}
+                        placeholder="ZohoCRM.modules.ALL,ZohoCRM.settings.ALL"
+                        className="bg-[#0a0a0a] border-[#222]"
+                        required
                       />
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-xs text-zinc-500">Environment</label>
-                      <Select value={mcpEnv} onValueChange={(val) => setMcpEnv(val as 'prod' | 'sandbox')}>
+                      <Select value={restEnv} onValueChange={(val) => setRestEnv(val as 'prod' | 'sandbox')}>
                         <SelectTrigger className="bg-[#0a0a0a] border-[#222]">
                           <SelectValue />
                         </SelectTrigger>
@@ -1472,30 +1491,90 @@ export const IntegrationsPage = () => {
                         </SelectContent>
                       </Select>
                     </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-zinc-500">Allowed Tools (comma-separated, optional)</label>
-                    <Input
-                      value={mcpAllowedTools}
-                      onChange={(e) => setMcpAllowedTools(e.target.value)}
-                      placeholder="search_contacts,get_deals,list_accounts"
-                      className="bg-[#0a0a0a] border-[#222]"
-                    />
-                    <p className="text-[11px] text-zinc-600">
-                      Leave blank to allow all tools exposed by the MCP server.
-                    </p>
-                  </div>
-                  <Button
-                    type="submit"
-                    disabled={zohoConnecting}
-                    className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
-                  >
-                    {zohoConnecting ? 'Connecting…' : 'Connect via MCP'}
-                  </Button>
-                </form>
-              </TabsContent>
-            </Tabs>
-          </div>
+                    <Button
+                      type="submit"
+                      disabled={zohoConnecting}
+                      className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+                    >
+                      {zohoConnecting ? 'Connecting…' : 'Connect via OAuth'}
+                    </Button>
+                  </form>
+                </TabsContent>
+
+                <TabsContent value="mcp">
+                  <form className="flex flex-col gap-4" onSubmit={connectZohoMcp}>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-zinc-500">MCP Base URL</label>
+                      <Input
+                        value={mcpBaseUrl}
+                        onChange={(e) => setMcpBaseUrl(e.target.value)}
+                        placeholder="https://your-mcp-server.com/api"
+                        className="bg-[#0a0a0a] border-[#222]"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-zinc-500">API Key</label>
+                      <Input
+                        value={mcpApiKey}
+                        onChange={(e) => setMcpApiKey(e.target.value)}
+                        placeholder="MCP API key"
+                        type="password"
+                        className="bg-[#0a0a0a] border-[#222]"
+                        required
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-xs text-zinc-500">Workspace Key (optional)</label>
+                        <Input
+                          value={mcpWorkspaceKey}
+                          onChange={(e) => setMcpWorkspaceKey(e.target.value)}
+                          placeholder="MCP workspace key"
+                          className="bg-[#0a0a0a] border-[#222]"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs text-zinc-500">Environment</label>
+                        <Select value={mcpEnv} onValueChange={(val) => setMcpEnv(val as 'prod' | 'sandbox')}>
+                          <SelectTrigger className="bg-[#0a0a0a] border-[#222]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
+                            <SelectItem value="prod">Production</SelectItem>
+                            <SelectItem value="sandbox">Sandbox</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-zinc-500">Allowed Tools (comma-separated, optional)</label>
+                      <Input
+                        value={mcpAllowedTools}
+                        onChange={(e) => setMcpAllowedTools(e.target.value)}
+                        placeholder="search_contacts,get_deals,list_accounts"
+                        className="bg-[#0a0a0a] border-[#222]"
+                      />
+                      <p className="text-[11px] text-zinc-600">
+                        Leave blank to allow all tools exposed by the MCP server.
+                      </p>
+                    </div>
+                    <Button
+                      type="submit"
+                      disabled={zohoConnecting}
+                      className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+                    >
+                      {zohoConnecting ? 'Connecting…' : 'Connect via MCP'}
+                    </Button>
+                  </form>
+                </TabsContent>
+              </Tabs>
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed border-[#2a2a2a] bg-[#0c0c0c] px-4 py-3 text-sm text-zinc-500">
+              Connection status stays visible here for inspection. Reconnect, disconnect, OAuth launch, and sync actions are restricted to workspace-admin sessions.
+            </div>
+          )}
         </CardContent>
       </Card>
 

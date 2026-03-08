@@ -10,6 +10,9 @@ import { Avatar, AvatarFallback } from '../ui/avatar';
 export const AdminLayout = () => {
   const { session, navItems, logout } = useAdminAuth();
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const isSuperAdmin = session?.role === 'SUPER_ADMIN';
+  const scopeTitle = isSuperAdmin ? 'Global Control Plane' : 'Workspace Control Plane';
+  const scopeLabel = isSuperAdmin ? 'All workspaces' : session?.companyId ?? 'Workspace scope pending';
 
   return (
     <div className="flex h-screen w-full bg-[#0c0c0c] text-zinc-300 font-sans overflow-hidden antialiased selection:bg-zinc-800">
@@ -26,16 +29,17 @@ export const AdminLayout = () => {
             >
               <Menu className="h-4 w-4" />
             </Button>
-            <h2 className="text-sm font-medium text-zinc-100 flex items-center gap-2">
-              <span className="text-zinc-500">Workspace</span> / Default
-            </h2>
+            <div className="flex flex-col">
+              <h2 className="text-sm font-medium text-zinc-100">{scopeTitle}</h2>
+              <span className="text-[11px] text-zinc-500">{scopeLabel}</span>
+            </div>
           </div>
 
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-3">
               <div className="flex flex-col items-end">
-                <span className="text-xs font-medium text-zinc-200">Admin User</span>
-                <span className="text-[10px] text-zinc-500">{roleLabel(session?.role)}</span>
+                <span className="text-xs font-medium text-zinc-200">{isSuperAdmin ? 'Super Admin Session' : 'Workspace Admin Session'}</span>
+                <span className="text-[10px] text-zinc-500">{roleLabel(session?.role)} · {navItems.length} panels</span>
               </div>
               <Avatar className="h-8 w-8 rounded-md border border-[#222]">
                 <AvatarFallback className="bg-[#111] text-zinc-300 rounded-md">

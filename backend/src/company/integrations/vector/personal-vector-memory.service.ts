@@ -119,6 +119,98 @@ class PersonalVectorMemoryService {
       chunkCount: records.length,
     });
   }
+
+  /**
+   * Promotes all personal chat-turn vectors for a given conversation from
+   * `personal` visibility to `shared` (company-wide) visibility.
+   *
+   * This is a two-phase write:
+   * 1. PostgreSQL is updated first (source of truth for metadata).
+   * 2. Qdrant vectors are re-upserted with the new visibility flag so queries
+   *    from other users immediately start seeing this content.
+   */
+  async shareConversation(input: {
+    companyId: string;
+    requesterUserId: string;
+    conversationKey: string;
+  }): Promise<{ sharedCount: number }> {
+    // Phase 1: Fetch docs FIRST while they are still `personal` (findByConversation
+    // filters on visibility='personal' so we get them before the flag changes).
+    const docsToShare = await vectorDocumentRepository.findByConversation({
+      companyId: input.companyId,
+      requesterUserId: input.requesterUserId,
+      conversationKey: input.conversationKey,
+    });
+
+    if (docsToShare.length === 0) {
+      logger.warn('personal.vector.conversation.share.no_docs', {
+        companyId: input.companyId,
+        conversationKey: input.conversationKey,
+      });
+      return { sharedCount: 0 };
+    }
+
+    // Phase 2: Update visibility in PostgreSQL (the authoritative metadata store)
+    await vectorDocumentRepository.reassignConversationVisibility({
+      companyId: input.companyId,
+      requesterUserId: input.requesterUserId,
+      conversationKey: input.conversationKey,
+      visibility: 'shared',
+    });
+
+    // Phase 3: Sync the updated visibility flag to Qdrant
+    const qdrantRecords = docsToShare.map((doc) => ({
+      companyId: doc.companyId,
+      sourceType: doc.sourceType as 'chat_turn',
+      sourceId: doc.sourceId,
+      chunkIndex: doc.chunkIndex,
+      contentHash: doc.contentHash,
+      visibility: 'shared' as const,
+      ownerUserId: doc.ownerUserId ?? undefined,
+      conversationKey: doc.conversationKey ?? undefined,
+      payload: (doc.payload ?? {}) as Record<string, unknown>,
+      embedding: doc.embedding as number[],
+    }));
+    await qdrantAdapter.upsertVectors(qdrantRecords);
+
+    logger.info('personal.vector.conversation.shared', {
+      companyId: input.companyId,
+      requesterUserId: input.requesterUserId,
+      conversationKey: input.conversationKey,
+      sharedCount: docsToShare.length,
+    });
+
+    return { sharedCount: docsToShare.length };
+  }
+
+  /**
+   * Returns a short human-readable preview of the conversation vectors
+   * for display in admin approval cards. Shows up to 5 text snippets.
+   */
+  async getConversationPreview(
+    companyId: string,
+    requesterUserId: string,
+    conversationKey: string,
+  ): Promise<string | null> {
+    const docs = await vectorDocumentRepository.findByConversation({
+      companyId,
+      requesterUserId,
+      conversationKey,
+    });
+    if (docs.length === 0) return null;
+
+    const lines = docs
+      .slice(0, 5)
+      .map((doc) => {
+        const payload = (doc.payload ?? {}) as Record<string, unknown>;
+        const text = typeof payload.text === 'string' ? payload.text.slice(0, 200) : null;
+        const role = typeof payload.role === 'string' ? payload.role : 'message';
+        return text ? `- [${role}]: ${text}` : null;
+      })
+      .filter((line): line is string => line !== null);
+
+    return lines.length > 0 ? lines.join('\n') : null;
+  }
 }
 
 export const personalVectorMemoryService = new PersonalVectorMemoryService();

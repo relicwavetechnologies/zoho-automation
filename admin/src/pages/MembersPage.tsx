@@ -31,37 +31,14 @@ type Invite = {
   createdAt: string;
 };
 
-type OnboardingStatus = {
-  companyId: string;
-  connection: {
-    status: string;
-    connectedAt: string;
-    scopes: string[];
-    lastSyncAt?: string;
-  } | null;
-  historicalSync: {
-    jobId: string;
-    status: string;
-    progressPercent: number;
-    checkpoint?: string;
-    queuedAt: string;
-    startedAt?: string;
-    finishedAt?: string;
-  } | null;
-};
-
 export const MembersPage = () => {
   const { token, session } = useAdminAuth();
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
-  const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null);
 
   const [companyId, setCompanyId] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRoleId, setInviteRoleId] = useState<'MEMBER' | 'COMPANY_ADMIN'>('MEMBER');
-  const [connectCode, setConnectCode] = useState('');
-  const [connectScopes, setConnectScopes] = useState('ZohoCRM.modules.ALL');
-  const [connectEnvironment, setConnectEnvironment] = useState<'prod' | 'sandbox'>('prod');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,7 +58,6 @@ export const MembersPage = () => {
     if (isSuperAdmin && !scopedCompanyId) {
       setMembers([]);
       setInvites([]);
-      setOnboarding(null);
       return;
     }
 
@@ -89,16 +65,14 @@ export const MembersPage = () => {
     setError(null);
     try {
       const query = buildQuery();
-      const [membersData, invitesData, onboardingData] = await Promise.all([
+      const [membersData, invitesData] = await Promise.all([
         api.get<Member[]>(`/api/admin/company/members${query}`, token),
         api.get<Invite[]>(`/api/admin/company/invites${query}`, token),
-        api.get<OnboardingStatus>(`/api/admin/company/onboarding/status${query}`, token),
       ]);
       setMembers(membersData);
       setInvites(invitesData);
-      setOnboarding(onboardingData);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Failed to load workspace operations.');
+      setError(loadError instanceof Error ? loadError.message : 'Failed to load member operations.');
     } finally {
       setLoading(false);
     }
@@ -107,16 +81,6 @@ export const MembersPage = () => {
   useEffect(() => {
     void load();
   }, [token, scopedCompanyId, isSuperAdmin]);
-
-  useEffect(() => {
-    if (!token || !onboarding?.historicalSync) return;
-    if (!['queued', 'running'].includes(onboarding.historicalSync.status)) return;
-
-    const interval = window.setInterval(() => {
-      void load();
-    }, 5000);
-    return () => window.clearInterval(interval);
-  }, [token, onboarding?.historicalSync?.status, scopedCompanyId, isSuperAdmin]);
 
   const createInvite = async (event: FormEvent) => {
     event.preventDefault();
@@ -155,57 +119,14 @@ export const MembersPage = () => {
     }
   };
 
-  const connectZoho = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!token) return;
-
-    setMessage(null);
-    setError(null);
-    try {
-      await api.post(
-        '/api/admin/company/onboarding/connect',
-        {
-          companyId: scopedCompanyId || undefined,
-          authorizationCode: connectCode,
-          scopes: connectScopes
-            .split(',')
-            .map((scope) => scope.trim())
-            .filter(Boolean),
-          environment: connectEnvironment,
-        },
-        token,
-      );
-      setMessage('Zoho connected and historical sync queued.');
-      await load();
-    } catch (connectError) {
-      setError(connectError instanceof Error ? connectError.message : 'Zoho connect failed.');
-    }
-  };
-
-  const disconnectZoho = async () => {
-    if (!token) return;
-
-    setMessage(null);
-    setError(null);
-    try {
-      await api.post(
-        '/api/admin/company/onboarding/disconnect',
-        { companyId: scopedCompanyId || undefined },
-        token,
-      );
-      setMessage('Zoho disconnected.');
-      await load();
-    } catch (disconnectError) {
-      setError(disconnectError instanceof Error ? disconnectError.message : 'Zoho disconnect failed.');
-    }
-  };
-
   return (
     <div className="flex flex-col gap-6 max-w-5xl">
       <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
         <CardHeader className="border-b border-[#1a1a1a] pb-4">
-          <CardTitle className="text-zinc-100">Workspace Operations</CardTitle>
-          <CardDescription className="text-zinc-500">Manage members, invites, and onboarding in one control surface.</CardDescription>
+          <CardTitle className="text-zinc-100">Members</CardTitle>
+          <CardDescription className="text-zinc-500">
+            Manage workspace members and invites. Integration setup lives in the dedicated Integrations area.
+          </CardDescription>
         </CardHeader>
         <CardContent className="pt-6 space-y-8">
           {isSuperAdmin ? (
@@ -315,92 +236,6 @@ export const MembersPage = () => {
             </div>
           </div>
 
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium text-zinc-100 border-b border-[#1a1a1a] pb-2">Zoho Onboarding</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-              {loading ? (
-                <>
-                  <div className="flex flex-col p-4 rounded-md bg-[#0a0a0a] border border-[#1a1a1a] h-[106px]">
-                    <strong className="text-zinc-200 text-sm mb-2">Connection</strong>
-                    <div className="flex items-center justify-between mt-auto">
-                      <div className="flex flex-col w-full gap-2">
-                        <Skeleton className="h-3 w-32" />
-                        <Skeleton className="h-3 w-40" />
-                      </div>
-                      <Skeleton className="h-8 w-24 shrink-0" />
-                    </div>
-                  </div>
-                  <div className="flex flex-col p-4 rounded-md bg-[#0a0a0a] border border-[#1a1a1a] h-[106px]">
-                    <strong className="text-zinc-200 text-sm mb-2">Historical Sync</strong>
-                    <div className="flex items-center justify-between mt-auto">
-                      <Skeleton className="h-3 w-48" />
-                      <Skeleton className="h-5 w-20 shrink-0" />
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="flex flex-col p-4 rounded-md bg-[#0a0a0a] border border-[#1a1a1a]">
-                    <strong className="text-zinc-200 text-sm mb-2">Connection</strong>
-                    <div className="flex items-center justify-between mt-auto">
-                      <div className="flex flex-col">
-                        <span className="text-xs text-zinc-400">Status: <span className="text-zinc-200">{onboarding?.connection?.status ?? 'NOT_CONNECTED'}</span></span>
-                        <span className="text-xs text-zinc-400">Last Sync: <span className="text-zinc-200">{onboarding?.connection?.lastSyncAt ?? 'N/A'}</span></span>
-                      </div>
-                      <Button variant="outline" size="sm" onClick={() => void disconnectZoho()} className="border-[#222] text-zinc-400 hover:text-zinc-200 hover:bg-[#1a1a1a]">
-                        Disconnect
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col p-4 rounded-md bg-[#0a0a0a] border border-[#1a1a1a]">
-                    <strong className="text-zinc-200 text-sm mb-2">Historical Sync</strong>
-                    <div className="flex items-center justify-between mt-auto">
-                      <span className="text-xs text-zinc-400">
-                        {onboarding?.historicalSync
-                          ? `${onboarding.historicalSync.status} (${onboarding.historicalSync.progressPercent}%)`
-                          : 'Not started'}
-                      </span>
-                      {onboarding?.historicalSync ? (
-                        <Badge variant="secondary" className="bg-[#1a1a1a] text-zinc-400">{onboarding.historicalSync.status}</Badge>
-                      ) : null}
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-
-            <form className="flex flex-col gap-3 p-4 rounded-md border border-[#222] bg-[#0c0c0c]" onSubmit={connectZoho}>
-              <span className="text-sm font-medium text-zinc-300">New Connection Setup</span>
-              <Input
-                value={connectCode}
-                onChange={(event) => setConnectCode(event.target.value)}
-                placeholder="Zoho authorization code"
-                className="bg-[#0a0a0a] border-[#222]"
-                required
-              />
-              <Input
-                value={connectScopes}
-                onChange={(event) => setConnectScopes(event.target.value)}
-                placeholder="Scopes (comma separated)"
-                className="bg-[#0a0a0a] border-[#222]"
-                required
-              />
-              <Select
-                value={connectEnvironment}
-                onValueChange={(val) => setConnectEnvironment(val as 'prod' | 'sandbox')}
-              >
-                <SelectTrigger className="bg-[#0a0a0a] border-[#222]">
-                  <SelectValue placeholder="Environment" />
-                </SelectTrigger>
-                <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
-                  <SelectItem value="prod">prod</SelectItem>
-                  <SelectItem value="sandbox">sandbox</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button type="submit" variant="default" className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200 mt-2">Connect Zoho</Button>
-            </form>
-          </div>
         </CardContent>
       </Card>
     </div>
