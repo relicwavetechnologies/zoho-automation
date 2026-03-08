@@ -13,10 +13,10 @@ const buildUserFacingReply = (objective: string): string => {
   }
 
   if (isCapabilityQuestion(objective)) {
-    return 'I can help with Zoho CRM questions, outreach publisher lookup, web research, and creating Lark Docs from grounded results.';
+    return 'I can help with Zoho CRM questions, outreach publisher lookup, web research, and creating or editing Lark Docs from grounded results.';
   }
 
-  return 'I can help with Zoho CRM tasks, outreach lookups, web research, and Lark Doc creation.';
+  return 'I can help with Zoho CRM tasks, outreach lookups, web research, and Lark Doc creation or editing.';
 };
 
 export class ResponseAgent extends BaseAgent {

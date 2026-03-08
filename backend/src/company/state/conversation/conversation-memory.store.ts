@@ -9,12 +9,20 @@ type ConversationTurn = {
 
 type ConversationBucket = {
   turns: ConversationTurn[];
+  larkDocs: LarkDocReference[];
   updatedAtMs: number;
 };
 
 type ConversationMessage = {
   role: ConversationRole;
   content: string;
+};
+
+export type LarkDocReference = {
+  title: string;
+  documentId: string;
+  url?: string;
+  updatedAtMs: number;
 };
 
 const DEFAULT_MAX_TURNS_PER_CHAT = 30;
@@ -57,6 +65,7 @@ class ConversationMemoryStore {
 
     const created: ConversationBucket = {
       turns: [],
+      larkDocs: [],
       updatedAtMs: nowMs,
     };
     this.buckets.set(conversationKey, created);
@@ -109,6 +118,46 @@ class ConversationMemoryStore {
       content,
       dedupeKey: `assistant:${taskId}`,
     });
+  }
+
+  addLarkDoc(conversationKey: string, input: {
+    title: string;
+    documentId: string;
+    url?: string;
+  }): void {
+    const nowMs = Date.now();
+    const bucket = this.getOrCreateBucket(conversationKey, nowMs);
+    const existingIndex = bucket.larkDocs.findIndex((entry) => entry.documentId === input.documentId);
+    const next: LarkDocReference = {
+      title: input.title.trim() || 'Lark Doc',
+      documentId: input.documentId,
+      url: input.url?.trim() || undefined,
+      updatedAtMs: nowMs,
+    };
+
+    if (existingIndex >= 0) {
+      bucket.larkDocs.splice(existingIndex, 1);
+    }
+    bucket.larkDocs.push(next);
+    if (bucket.larkDocs.length > 12) {
+      bucket.larkDocs.splice(0, bucket.larkDocs.length - 12);
+    }
+    bucket.updatedAtMs = nowMs;
+  }
+
+  getLatestLarkDoc(conversationKey: string): LarkDocReference | null {
+    this.pruneExpired();
+    const bucket = this.buckets.get(conversationKey);
+    if (!bucket || bucket.larkDocs.length === 0) {
+      return null;
+    }
+    return bucket.larkDocs[bucket.larkDocs.length - 1] ?? null;
+  }
+
+  listLarkDocs(conversationKey: string): LarkDocReference[] {
+    this.pruneExpired();
+    const bucket = this.buckets.get(conversationKey);
+    return bucket ? [...bucket.larkDocs] : [];
   }
 
   getContextMessages(conversationKey: string, maxMessages = this.maxContextMessages): ConversationMessage[] {

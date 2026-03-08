@@ -32,4 +32,14 @@ export type LarkWebhookEnvelope = {
       content?: string;
     };
   };
+  action?: {
+    value?: Record<string, unknown>;
+    tag?: string;
+    option?: string;
+    input_value?: string;
+  };
+  open_id?: string;
+  user_id?: string;
+  open_message_id?: string;
+  open_chat_id?: string;
 };

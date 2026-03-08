@@ -148,6 +148,40 @@ export class LarkChannelAdapter implements ChannelAdapter {
 
   public normalizeIncomingEvent(event: unknown): Readonly<NormalizedIncomingMessageDTO> | null {
     const envelope = asRecord(event) as LarkWebhookEnvelope | null;
+
+    // Check if it's a card action
+    const eventType = readString(envelope?.header?.event_type);
+    if (eventType === 'card.action.trigger' && envelope?.action) {
+      const openId = readString(envelope.open_id);
+      const userId = readString(envelope.user_id) ?? openId;
+      const chatId = readString(envelope.open_chat_id);
+      const messageId = readString(envelope.open_message_id);
+
+      if (!userId || !chatId || !messageId) {
+        return null;
+      }
+
+      const payloadText = JSON.stringify(envelope.action.value ?? {});
+
+      const normalized: NormalizedIncomingMessageDTO = {
+        channel: 'lark',
+        userId,
+        chatId,
+        chatType: 'p2p', // Interactive cards can be in groups, but p2p is a safe default fallback if unmarked
+        messageId,
+        timestamp: new Date().toISOString(),
+        text: `[Interactive Card Action] ${payloadText}`,
+        rawEvent: event,
+        trace: {
+          larkTenantKey: readTenantKey(envelope),
+          larkOpenId: openId,
+          larkUserId: readString(envelope.user_id),
+        },
+      };
+
+      return Object.freeze(normalized);
+    }
+
     if (!envelope?.event?.message) {
       return null;
     }

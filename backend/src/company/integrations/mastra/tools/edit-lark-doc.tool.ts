@@ -15,54 +15,64 @@ const buildConversationKey = (requestContext?: { get: (key: string) => unknown }
   return `${channel}:${typeof tenant === 'string' && tenant.trim() ? tenant.trim() : 'no_tenant'}:${chatId}`;
 };
 
-export const createLarkDocTool = createTool({
-  id: 'create-lark-doc',
+export const editLarkDocTool = createTool({
+  id: 'edit-lark-doc',
   description:
-    'Create a Lark Doc from markdown content by converting markdown into native Lark Doc blocks. Use this when the user asks to create, export, or save a report into Lark Docs.',
+    'Edit an existing Lark Doc. Use this when the user asks to update, rewrite, append to, or remove content from an existing Lark Doc.',
   inputSchema: z.object({
-    title: z.string().min(1).describe('The document title'),
-    markdown: z.string().min(1).describe('Markdown content to import into the new Lark Doc'),
-    folderToken: z.string().optional().describe('Optional Lark Drive folder token to place the document into'),
+    strategy: z.enum(['replace', 'append', 'patch', 'delete']).describe('How to edit the target document'),
+    instruction: z.string().min(1).describe('The natural language edit instruction'),
+    documentId: z.string().optional().describe('Optional explicit document ID. If omitted, use the latest doc from this chat.'),
+    newMarkdown: z.string().optional().describe('Markdown content for replace, append, or section patch operations'),
   }),
   execute: async (inputData, context) => {
     const requestContext = context?.requestContext;
     const allowedToolIds = requestContext?.get('allowedToolIds') as string[] | undefined;
-    if (allowedToolIds !== undefined && !allowedToolIds.includes('create-lark-doc') && !allowedToolIds.includes('lark-doc-agent')) {
-      const name = TOOL_REGISTRY_MAP.get('create-lark-doc')?.name ?? 'Create Lark Doc';
+    if (allowedToolIds !== undefined && !allowedToolIds.includes('edit-lark-doc') && !allowedToolIds.includes('lark-doc-agent')) {
+      const name = TOOL_REGISTRY_MAP.get('edit-lark-doc')?.name ?? 'Edit Lark Doc';
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
+    const conversationKey = buildConversationKey(requestContext as any);
+    const latestDoc = conversationKey ? conversationMemoryStore.getLatestLarkDoc(conversationKey) : null;
+    const documentId = inputData.documentId?.trim() || latestDoc?.documentId;
+
+    if (!documentId) {
+      return {
+        answer: 'No prior Lark Doc was found in this conversation. Please specify the document ID or create a doc first.',
+        error: 'missing_document_id',
+      };
+    }
+
     try {
-      const result = await larkDocsService.createMarkdownDoc({
+      const result = await larkDocsService.editMarkdownDoc({
         companyId: requestContext?.get('companyId') as string | undefined,
         larkTenantKey: requestContext?.get('larkTenantKey') as string | undefined,
-        title: inputData.title,
-        markdown: inputData.markdown,
-        folderToken: inputData.folderToken,
+        documentId,
+        instruction: inputData.instruction,
+        newMarkdown: inputData.newMarkdown,
+        strategy: inputData.strategy,
       });
 
-      const conversationKey = buildConversationKey(requestContext as any);
       if (conversationKey) {
         conversationMemoryStore.addLarkDoc(conversationKey, {
-          title: result.title,
+          title: latestDoc?.title ?? 'Lark Doc',
           documentId: result.documentId,
           url: result.url,
         });
       }
 
       return {
-        answer: result.url
-          ? `Created Lark Doc "${result.title}". URL: ${result.url}`
-          : `Created Lark Doc "${result.title}". Document ID: ${result.documentId}`,
-        title: result.title,
+        answer: `Updated Lark Doc. URL: ${result.url}`,
         documentId: result.documentId,
         url: result.url,
-        blockCount: result.blockCount,
+        blocksAffected: result.blocksAffected,
       };
     } catch (error) {
       const message = error instanceof LarkDocsIntegrationError ? error.message : error instanceof Error ? error.message : 'unknown_error';
       return {
-        answer: `Lark Doc creation failed: ${message}`,
+        answer: `Lark Doc update failed: ${message}`,
         error: message,
+        documentId,
       };
     }
   },

@@ -15,7 +15,7 @@ export const supervisorAgent = new Agent({
 1. **Zoho CRM Specialist**: Handles all CRM-specific data including deals, contacts, tickets, and pipeline health.
 2. **Outreach Specialist**: Manages SEO publisher inventory, site discovery, and DA/DR/pricing filters.
 3. **Context Search Agent**: Conducts real-time web research, domain lookups, and retrieves external information.
-4. **Lark Docs Specialist**: Creates Lark documents using markdown import for reports, summaries, and exported findings.
+4. **Lark Docs Specialist**: Creates and edits Lark documents for reports, summaries, and exported findings.
 
 ### Communication Protocol:
 1. **Acknowledge First**: ALWAYS start with a brief, professional, and conversational acknowledgment (e.g., "I'll fetch that CRM data for you..." or "Let's find those publishers...").

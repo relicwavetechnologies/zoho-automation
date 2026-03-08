@@ -23,6 +23,14 @@ export type LarkIngressParseResult =
     larkTenantKey?: string;
   }
   | {
+    kind: 'event_callback_card_action';
+    envelope: LarkWebhookEnvelope;
+    eventType?: string;
+    eventId?: string;
+    larkTenantKey?: string;
+    actionValue: Record<string, unknown>;
+  }
+  | {
     kind: 'event_callback_ignored';
     reason: LarkIngressIgnoreReason;
     eventType?: string;
@@ -132,7 +140,22 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
     const metadata = readEventMetadata(envelope);
     const message = envelope.event.message;
 
-    // Lark v2 message callback event type is 'im.message.receive_v1'
+    if (metadata.eventType === 'card.action.trigger') {
+      if (!envelope.action?.value) {
+        return {
+          kind: 'invalid',
+          reason: 'missing_message_fields',
+          details: 'card.action.trigger is missing action.value',
+        };
+      }
+      return {
+        kind: 'event_callback_card_action',
+        envelope,
+        actionValue: envelope.action.value,
+        ...metadata,
+      };
+    }
+
     if (metadata.eventType !== 'im.message.receive_v1' && !message) {
       return {
         kind: 'event_callback_ignored',

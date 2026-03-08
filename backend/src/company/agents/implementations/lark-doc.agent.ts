@@ -1,6 +1,7 @@
 import type { AgentInvokeInputDTO } from '../../contracts';
 import { larkDocsService, LarkDocsIntegrationError } from '../../channels/lark/lark-docs.service';
 import { BaseAgent } from '../base';
+import { conversationMemoryStore } from '../../state/conversation';
 
 const asString = (value: unknown): string | undefined => {
   if (typeof value !== 'string') {
@@ -34,6 +35,33 @@ const extractTitle = (objective: string): string => {
 const toMarkdownSection = (heading: string, content: string): string =>
   `## ${heading}\n\n${content.trim()}`;
 
+const buildConversationKey = (input: AgentInvokeInputDTO): string | null => {
+  const channel = asString(input.contextPacket.channel);
+  const tenant = asString(input.contextPacket.larkTenantKey);
+  const chatId = asString(input.contextPacket.chatId);
+  if (!channel || !chatId) {
+    return null;
+  }
+  return `${channel}:${tenant ?? 'no_tenant'}:${chatId}`;
+};
+
+const inferEditStrategy = (objective: string): 'replace' | 'append' | 'patch' | 'delete' => {
+  const text = objective.toLowerCase();
+  if (/\b(rewrite|redo|replace|change everything|replace everything|start over)\b/.test(text)) {
+    return 'replace';
+  }
+  if (/\b(add|append|include|insert)\b/.test(text)) {
+    return 'append';
+  }
+  if (/\b(remove|delete)\b/.test(text)) {
+    return 'delete';
+  }
+  return 'patch';
+};
+
+const isEditIntent = (objective: string): boolean =>
+  /\b(edit|update|append|add|remove|delete|rewrite|replace)\b/i.test(objective);
+
 const formatUnknown = (value: unknown): string => {
   if (typeof value === 'string') {
     return value.trim();
@@ -51,11 +79,25 @@ const formatArrayOfRecords = (items: Record<string, unknown>[]): string => {
     return items.map((item, index) => `${index + 1}. ${formatUnknown(item)}`).join('\n');
   }
 
-  const header = `| ${keys.join(' | ')} |`;
-  const divider = `| ${keys.map(() => '---').join(' | ')} |`;
-  const rows = items.slice(0, 12).map((item) =>
-    `| ${keys.map((key) => formatUnknown(item[key]).replace(/\n+/g, ' ').replace(/\|/g, '\\|')).join(' | ')} |`);
-  return [header, divider, ...rows].join('\n');
+  return items.slice(0, 12).map((item, index) => {
+    const titleKey = keys.find((key) => /name|title|subject|deal|company/i.test(key));
+    const titleValue = titleKey ? formatUnknown(item[titleKey]).replace(/\n+/g, ' ').trim() : '';
+    const fields = keys
+      .map((key) => {
+        const value = formatUnknown(item[key]).replace(/\n+/g, ' ').trim();
+        if (!value) {
+          return null;
+        }
+        return `  - **${key}:** ${value}`;
+      })
+      .filter((value): value is string => Boolean(value));
+
+    if (fields.length === 0) {
+      return `${index + 1}. ${formatUnknown(item)}`;
+    }
+
+    return [`${index + 1}. ${titleValue || 'Record'}`, ...fields].join('\n');
+  }).join('\n\n');
 };
 
 const formatResultPayload = (payload: Record<string, unknown>): string => {
@@ -140,8 +182,62 @@ export class LarkDocAgent extends BaseAgent {
     const folderToken = asString(input.contextPacket.folderToken);
     const companyId = asString(input.contextPacket.companyId);
     const larkTenantKey = asString(input.contextPacket.larkTenantKey);
+    const conversationKey = buildConversationKey(input);
+    const latestDoc = conversationKey ? conversationMemoryStore.getLatestLarkDoc(conversationKey) : null;
 
     try {
+      if (isEditIntent(input.objective)) {
+        const explicitDocumentId = asString(input.contextPacket.documentId);
+        const documentId = explicitDocumentId ?? latestDoc?.documentId;
+        if (!documentId) {
+          return this.failure(
+            input,
+            'No prior Lark Doc was found in this conversation. Create a doc first or specify a document ID.',
+            'lark_docs_invalid_response',
+            'missing_document_id',
+            false,
+            {
+              latencyMs: Date.now() - startedAt,
+              apiCalls: 0,
+            },
+          );
+        }
+
+        const editResult = await larkDocsService.editMarkdownDoc({
+          companyId,
+          larkTenantKey,
+          documentId,
+          instruction: input.objective,
+          newMarkdown: inferEditStrategy(input.objective) === 'delete' ? undefined : markdown,
+          strategy: inferEditStrategy(input.objective),
+        });
+
+        if (conversationKey) {
+          conversationMemoryStore.addLarkDoc(conversationKey, {
+            title: latestDoc?.title ?? title,
+            documentId: editResult.documentId,
+            url: editResult.url,
+          });
+        }
+
+        const answer = `Updated Lark Doc. URL: ${editResult.url}`;
+        return this.success(
+          input,
+          answer,
+          {
+            answer,
+            title: latestDoc?.title ?? title,
+            documentId: editResult.documentId,
+            url: editResult.url,
+            blocksAffected: editResult.blocksAffected,
+          },
+          {
+            latencyMs: Date.now() - startedAt,
+            apiCalls: 3,
+          },
+        );
+      }
+
       const result = await larkDocsService.createMarkdownDoc({
         companyId,
         larkTenantKey,
@@ -149,6 +245,14 @@ export class LarkDocAgent extends BaseAgent {
         markdown,
         folderToken,
       });
+
+      if (conversationKey) {
+        conversationMemoryStore.addLarkDoc(conversationKey, {
+          title: result.title,
+          documentId: result.documentId,
+          url: result.url,
+        });
+      }
 
       const answer = result.url
         ? `Created Lark Doc "${result.title}". URL: ${result.url}`

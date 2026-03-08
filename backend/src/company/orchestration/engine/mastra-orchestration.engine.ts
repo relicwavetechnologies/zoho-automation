@@ -465,7 +465,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       if (toolNames.includes('outreach-agent')) {
         return `Understood. I’m checking outreach publisher data for "${objective}" now. I’ll share results shortly.`;
       }
-      if (toolNames.includes('lark-doc-agent') || toolNames.includes('create-lark-doc')) {
+      if (toolNames.includes('lark-doc-agent') || toolNames.includes('create-lark-doc') || toolNames.includes('edit-lark-doc')) {
         return `Understood. I’m preparing a Lark Doc for "${objective}" now and will share the document details shortly.`;
       }
       return `Understood. I’m working on "${objective}" now and will update you as I make progress.`;

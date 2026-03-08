@@ -24,10 +24,25 @@ export type LarkMarkdownDocResult = {
   blockCount: number;
 };
 
+export type EditMarkdownDocInput = {
+  companyId?: string;
+  larkTenantKey?: string;
+  documentId: string;
+  instruction: string;
+  newMarkdown?: string;
+  strategy: 'replace' | 'append' | 'patch' | 'delete';
+};
+
+export type LarkEditDocResult = {
+  documentId: string;
+  url: string;
+  blocksAffected: number;
+};
+
 type RequestOptions = {
   companyId: string;
   workspaceConfig: DecryptedLarkWorkspaceConfig | null;
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   path: string;
   body?: string;
   headers?: Record<string, string>;
@@ -60,6 +75,24 @@ type LarkBlock =
   | { block_type: 15; quote: { elements: LarkTextElement[] } }
   | { block_type: 22; divider: Record<string, never> };
 
+type RemoteDocBlock = {
+  blockId: string;
+  blockType: number;
+  parentBlockId?: string;
+  children: string[];
+  text: string;
+};
+
+type RemoteDocSnapshot = {
+  rootBlockId: string;
+  childBlocks: RemoteDocBlock[];
+};
+
+type MarkdownSection = {
+  heading?: string;
+  markdown: string;
+};
+
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (typeof value !== 'object' || value === null) {
     return null;
@@ -89,6 +122,7 @@ const asNumber = (value: unknown): number | undefined => {
 };
 
 const normalizeMarkdown = (md: string): string => md.replace(/\r\n/g, '\n').trim();
+const normalizeLooseText = (value: string): string => value.toLowerCase().replace(/\s+/g, ' ').trim();
 
 const readLarkErrorMessage = (payload: unknown): string => {
   const record = asRecord(payload);
@@ -101,6 +135,165 @@ const normalizeTitle = (title: string): string => {
     return 'Lark Document';
   }
   return trimmed.slice(0, 120);
+};
+
+const blockTypeIsHeading = (blockType: number): boolean => blockType >= 3 && blockType <= 8;
+const headingLevelForBlockType = (blockType: number): number | null =>
+  blockTypeIsHeading(blockType) ? blockType - 2 : null;
+
+const gatherTextRuns = (value: unknown): string[] => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => gatherTextRuns(entry));
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return [];
+  }
+
+  const directContent = asString(record.content);
+  const parts = directContent ? [directContent] : [];
+  for (const [key, child] of Object.entries(record)) {
+    if (key === 'content') {
+      continue;
+    }
+    parts.push(...gatherTextRuns(child));
+  }
+  return parts;
+};
+
+const extractBlockText = (record: Record<string, unknown>): string => {
+  const sections = [
+    record.text,
+    record.heading1,
+    record.heading2,
+    record.heading3,
+    record.heading4,
+    record.heading5,
+    record.heading6,
+    record.bullet,
+    record.ordered,
+    record.code,
+    record.quote,
+  ];
+  return gatherTextRuns(sections).join(' ').replace(/\s+/g, ' ').trim();
+};
+
+const deriveTargetHint = (instruction: string): string | null => {
+  const normalized = instruction.trim();
+  const quoted = normalized.match(/["“']([^"”']{2,120})["”']/)?.[1];
+  if (quoted) {
+    return quoted.trim();
+  }
+
+  const common = ['introduction', 'summary', 'findings', 'risks', 'priorities', 'actions', 'action items', 'conclusion', 'sources'];
+  const lowered = normalizeLooseText(normalized);
+  const commonHit = common.find((term) => lowered.includes(term));
+  if (commonHit) {
+    return commonHit;
+  }
+
+  const match = normalized.match(/\b(?:remove|delete|update|rewrite|replace|edit|fix|change)\s+(?:the\s+)?([a-z0-9 _-]{2,80}?)(?:\s+section|\s+part|\s*$)/i)?.[1];
+  return match?.trim() ?? null;
+};
+
+const findTargetRange = (blocks: RemoteDocBlock[], instruction: string): { startIndex: number; endIndex: number } | null => {
+  const targetHint = deriveTargetHint(instruction);
+  if (!targetHint) {
+    return null;
+  }
+
+  const normalizedTarget = normalizeLooseText(targetHint);
+  const startIndex = blocks.findIndex((block) => normalizeLooseText(block.text).includes(normalizedTarget));
+  if (startIndex < 0) {
+    return null;
+  }
+
+  const startBlock = blocks[startIndex];
+  const startLevel = headingLevelForBlockType(startBlock.blockType);
+  if (startLevel === null) {
+    return { startIndex, endIndex: startIndex + 1 };
+  }
+
+  let endIndex = blocks.length;
+  for (let index = startIndex + 1; index < blocks.length; index += 1) {
+    const nextLevel = headingLevelForBlockType(blocks[index].blockType);
+    if (nextLevel !== null && nextLevel <= startLevel) {
+      endIndex = index;
+      break;
+    }
+  }
+  return { startIndex, endIndex };
+};
+
+const parseMarkdownSections = (markdown: string): MarkdownSection[] => {
+  const normalized = normalizeMarkdown(markdown);
+  if (!normalized) {
+    return [];
+  }
+
+  const lines = normalized.split('\n');
+  const sections: MarkdownSection[] = [];
+  let current: string[] = [];
+  let currentHeading: string | undefined;
+
+  const flush = () => {
+    const content = current.join('\n').trim();
+    if (!content) {
+      return;
+    }
+    sections.push({
+      heading: currentHeading,
+      markdown: content,
+    });
+  };
+
+  for (const line of lines) {
+    const headingMatch = line.match(/^##\s+(.+)$/);
+    if (headingMatch) {
+      flush();
+      current = [line];
+      currentHeading = headingMatch[1]?.trim();
+      continue;
+    }
+    if (current.length === 0) {
+      current = [line];
+    } else {
+      current.push(line);
+    }
+  }
+  flush();
+  return sections;
+};
+
+const selectRelevantMarkdown = (
+  strategy: EditMarkdownDocInput['strategy'],
+  instruction: string,
+  markdown: string | undefined,
+): string | undefined => {
+  const normalized = normalizeMarkdown(markdown ?? '');
+  if (!normalized || strategy === 'replace') {
+    return normalized || undefined;
+  }
+
+  const targetHint = deriveTargetHint(instruction);
+  if (!targetHint) {
+    return normalized;
+  }
+  const target = normalizeLooseText(targetHint);
+  const sections = parseMarkdownSections(normalized);
+  if (sections.length <= 1) {
+    return normalized;
+  }
+
+  const matched = sections.find((section) => {
+    const heading = normalizeLooseText(section.heading ?? '');
+    return heading.includes(target) || target.includes(heading);
+  });
+  return matched?.markdown ?? normalized;
 };
 
 export class LarkDocsIntegrationError extends Error {
@@ -151,6 +344,39 @@ function parseInlineMarkdown(text: string): LarkTextElement[] {
   return elements.length > 0 ? elements : [{ text_run: { content: text } }];
 }
 
+const isTableLine = (line: string): boolean =>
+  /^\|.+\|$/.test(line.trim());
+
+const splitTableRow = (line: string): string[] =>
+  line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+
+const isTableDividerRow = (cells: string[]): boolean =>
+  cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+
+const formatMarkdownTableAsBullets = (headers: string[], rows: string[][]): LarkBlock[] =>
+  rows.map((row, index) => {
+    const content = headers
+      .map((header, headerIndex) => {
+        const value = row[headerIndex]?.trim();
+        if (!value) {
+          return null;
+        }
+        return `**${header}:** ${value}`;
+      })
+      .filter((value): value is string => Boolean(value))
+      .join(' | ');
+
+    return {
+      block_type: 12,
+      bullet: { elements: parseInlineMarkdown(content || `Row ${index + 1}`) },
+    };
+  });
+
 function markdownToLarkBlocks(markdown: string): LarkBlock[] {
   const lines = markdown.split('\n');
   const blocks: LarkBlock[] = [];
@@ -181,6 +407,21 @@ function markdownToLarkBlocks(markdown: string): LarkBlock[] {
       blocks.push({ block_type: 22, divider: {} });
       i += 1;
       continue;
+    }
+
+    if (isTableLine(line)) {
+      const headerCells = splitTableRow(line);
+      const dividerCells = lines[i + 1] ? splitTableRow(lines[i + 1] ?? '') : [];
+      if (isTableDividerRow(dividerCells)) {
+        const rows: string[][] = [];
+        i += 2;
+        while (i < lines.length && isTableLine(lines[i] ?? '')) {
+          rows.push(splitTableRow(lines[i] ?? ''));
+          i += 1;
+        }
+        blocks.push(...formatMarkdownTableAsBullets(headerCells, rows));
+        continue;
+      }
     }
 
     const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
@@ -223,8 +464,30 @@ function markdownToLarkBlocks(markdown: string): LarkBlock[] {
       continue;
     }
 
-    blocks.push({ block_type: 2, text: { elements: parseInlineMarkdown(line) } });
+    const paragraphLines = [line.trim()];
     i += 1;
+    while (i < lines.length) {
+      const nextLine = lines[i] ?? '';
+      if (
+        nextLine.trim() === ''
+        || nextLine.match(/^```/)
+        || nextLine.match(/^(#{1,6})\s+/)
+        || nextLine.startsWith('> ')
+        || nextLine.match(/^[-*+]\s+/)
+        || nextLine.match(/^\d+\.\s+/)
+        || /^(-{3,}|\*{3,}|_{3,})$/.test(nextLine.trim())
+        || isTableLine(nextLine)
+      ) {
+        break;
+      }
+      paragraphLines.push(nextLine.trim());
+      i += 1;
+    }
+
+    blocks.push({
+      block_type: 2,
+      text: { elements: parseInlineMarkdown(paragraphLines.join(' ')) },
+    });
   }
 
   return blocks;
@@ -279,6 +542,120 @@ class LarkDocsService {
       url,
       blockCount,
     };
+  }
+
+  async editMarkdownDoc(input: EditMarkdownDocInput): Promise<LarkEditDocResult> {
+    const companyId = await companyContextResolver.resolveCompanyId({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+    });
+    const workspaceConfig = await larkWorkspaceConfigRepository.findByCompanyId(companyId);
+    const documentId = input.documentId.trim();
+    if (!documentId) {
+      throw new LarkDocsIntegrationError('Document ID is required for Lark Doc edits', 'lark_docs_invalid_response');
+    }
+
+    const snapshot = await this.getDocumentSnapshot({
+      companyId,
+      workspaceConfig,
+      documentId,
+    });
+    const url = `https://docs.larksuite.com/docx/${documentId}`;
+    const relevantMarkdown = selectRelevantMarkdown(input.strategy, input.instruction, input.newMarkdown);
+
+    const normalizedStrategy =
+      /\b(add|append|insert)\b/i.test(input.instruction) && input.strategy === 'patch'
+        ? 'append'
+        : input.strategy;
+
+    if (normalizedStrategy === 'replace') {
+      const markdown = normalizeMarkdown(relevantMarkdown ?? '');
+      if (!markdown) {
+        throw new LarkDocsIntegrationError('Replacement markdown content is empty', 'lark_docs_invalid_response');
+      }
+      if (snapshot.childBlocks.length > 0) {
+        await this.deleteChildRange({
+          companyId,
+          workspaceConfig,
+          documentId,
+          parentBlockId: snapshot.rootBlockId,
+          startIndex: 0,
+          endIndex: snapshot.childBlocks.length,
+        });
+      }
+      const blocks = markdownToLarkBlocks(markdown);
+      const inserted = blocks.length > 0
+        ? await this.insertBlocks({
+          companyId,
+          workspaceConfig,
+          documentId,
+          parentBlockId: snapshot.rootBlockId,
+          blocks,
+          index: 0,
+        })
+        : 0;
+      return { documentId, url, blocksAffected: Math.max(snapshot.childBlocks.length, inserted) };
+    }
+
+    if (normalizedStrategy === 'append') {
+      const markdown = normalizeMarkdown(relevantMarkdown ?? '');
+      if (!markdown) {
+        throw new LarkDocsIntegrationError('Append markdown content is empty', 'lark_docs_invalid_response');
+      }
+      const blocks = markdownToLarkBlocks(markdown);
+      const inserted = await this.insertBlocks({
+        companyId,
+        workspaceConfig,
+        documentId,
+        parentBlockId: snapshot.rootBlockId,
+        blocks,
+        index: snapshot.childBlocks.length,
+      });
+      return { documentId, url, blocksAffected: inserted };
+    }
+
+    const range = findTargetRange(snapshot.childBlocks, input.instruction);
+    if (!range) {
+      throw new LarkDocsIntegrationError(
+        'Could not identify the target section to edit in this Lark Doc',
+        'lark_docs_invalid_response',
+      );
+    }
+
+    if (normalizedStrategy === 'delete') {
+      await this.deleteChildRange({
+        companyId,
+        workspaceConfig,
+        documentId,
+        parentBlockId: snapshot.rootBlockId,
+        startIndex: range.startIndex,
+        endIndex: range.endIndex,
+      });
+      return { documentId, url, blocksAffected: range.endIndex - range.startIndex };
+    }
+
+    const markdown = normalizeMarkdown(relevantMarkdown ?? '');
+    if (!markdown) {
+      throw new LarkDocsIntegrationError('Updated markdown content is empty', 'lark_docs_invalid_response');
+    }
+    const replacementBlocks = markdownToLarkBlocks(markdown);
+    await this.deleteChildRange({
+      companyId,
+      workspaceConfig,
+      documentId,
+      parentBlockId: snapshot.rootBlockId,
+      startIndex: range.startIndex,
+      endIndex: range.endIndex,
+    });
+    const inserted = await this.insertBlocks({
+      companyId,
+      workspaceConfig,
+      documentId,
+      parentBlockId: snapshot.rootBlockId,
+      blocks: replacementBlocks,
+      index: range.startIndex,
+    });
+    return { documentId, url, blocksAffected: Math.max(range.endIndex - range.startIndex, inserted) };
   }
 
   private async createBlankDocument(input: {
@@ -356,6 +733,109 @@ class LarkDocsService {
     }
 
     return written;
+  }
+
+  private async getDocumentSnapshot(input: {
+    companyId: string;
+    workspaceConfig: DecryptedLarkWorkspaceConfig | null;
+    documentId: string;
+  }): Promise<RemoteDocSnapshot> {
+    const items: RemoteDocBlock[] = [];
+    let pageToken: string | undefined;
+
+    do {
+      const suffix = pageToken ? `?page_token=${encodeURIComponent(pageToken)}` : '';
+      const payload = await this.requestJson<Record<string, unknown>>({
+        companyId: input.companyId,
+        workspaceConfig: input.workspaceConfig,
+        method: 'GET',
+        path: `/open-apis/docx/v1/documents/${encodeURIComponent(input.documentId)}/blocks/${encodeURIComponent(input.documentId)}/children${suffix ? `${suffix}&document_revision_id=-1` : '?document_revision_id=-1'}`,
+      });
+      const data = asRecord(payload.data);
+      const pageItems = Array.isArray(data?.items) ? data.items : [];
+      for (const rawItem of pageItems) {
+        const record = asRecord(rawItem);
+        if (!record) continue;
+        const blockId = asString(record.block_id);
+        const blockType = asNumber(record.block_type);
+        if (!blockId || blockType === undefined) continue;
+        const children = Array.isArray(record.children)
+          ? record.children.map((value) => asString(value)).filter((value): value is string => Boolean(value))
+          : [];
+        items.push({
+          blockId,
+          blockType,
+          parentBlockId: asString(record.parent_id) ?? asString(record.parent_block_id),
+          children,
+          text: extractBlockText(record),
+        });
+      }
+      pageToken = asString(data?.page_token);
+      const hasMore = Boolean(data?.has_more);
+      if (!hasMore) {
+        pageToken = undefined;
+      }
+    } while (pageToken);
+
+    return {
+      rootBlockId: input.documentId,
+      childBlocks: items,
+    };
+  }
+
+  private async insertBlocks(input: {
+    companyId: string;
+    workspaceConfig: DecryptedLarkWorkspaceConfig | null;
+    documentId: string;
+    parentBlockId: string;
+    blocks: LarkBlock[];
+    index: number;
+  }): Promise<number> {
+    if (input.blocks.length === 0) {
+      return 0;
+    }
+    const chunkSize = 50;
+    let written = 0;
+    for (let offset = 0; offset < input.blocks.length; offset += chunkSize) {
+      const chunk = input.blocks.slice(offset, offset + chunkSize);
+      await this.requestJson({
+        companyId: input.companyId,
+        workspaceConfig: input.workspaceConfig,
+        method: 'POST',
+        path: `/open-apis/docx/v1/documents/${encodeURIComponent(input.documentId)}/blocks/${encodeURIComponent(input.parentBlockId)}/children?document_revision_id=-1`,
+        body: JSON.stringify({
+          children: chunk,
+          index: input.index + written,
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      written += chunk.length;
+    }
+    return written;
+  }
+
+  private async deleteChildRange(input: {
+    companyId: string;
+    workspaceConfig: DecryptedLarkWorkspaceConfig | null;
+    documentId: string;
+    parentBlockId: string;
+    startIndex: number;
+    endIndex: number;
+  }): Promise<void> {
+    if (input.endIndex <= input.startIndex) {
+      return;
+    }
+    await this.requestJson({
+      companyId: input.companyId,
+      workspaceConfig: input.workspaceConfig,
+      method: 'DELETE',
+      path: `/open-apis/docx/v1/documents/${encodeURIComponent(input.documentId)}/blocks/${encodeURIComponent(input.parentBlockId)}/children/batch_delete?document_revision_id=-1`,
+      body: JSON.stringify({
+        start_index: input.startIndex,
+        end_index: input.endIndex,
+      }),
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
   private buildTokenService(workspaceConfig: DecryptedLarkWorkspaceConfig | null) {
     return new LarkTenantTokenService({

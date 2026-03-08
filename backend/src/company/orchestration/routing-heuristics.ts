@@ -59,7 +59,7 @@ const isLarkDocQuery = (text: string): boolean => {
   if (!LARK_DOC_KEYWORDS.some((keyword) => normalized.includes(keyword))) {
     return false;
   }
-  return /\b(create|make|build|put|save|export|draft|write)\b/i.test(text);
+  return /\b(create|make|build|put|save|export|draft|write|edit|update|append|add|remove|delete|rewrite|replace)\b/i.test(text);
 };
 
 export const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {

@@ -202,8 +202,13 @@ const createDefaultDependencies = (): LarkWebhookRouteDependencies => ({
 
 const isMetadataParseResult = (
   parsed: LarkIngressParseResult,
-): parsed is Extract<LarkIngressParseResult, { eventType?: string; eventId?: string; larkTenantKey?: string }> =>
-  parsed.kind === 'event_callback_message' || parsed.kind === 'event_callback_ignored';
+): parsed is Extract<
+  LarkIngressParseResult,
+  { eventType?: string; eventId?: string; larkTenantKey?: string }
+> =>
+  parsed.kind === 'event_callback_message'
+  || parsed.kind === 'event_callback_card_action'
+  || parsed.kind === 'event_callback_ignored';
 
 export const createLarkWebhookEventHandler = (
   overrides: Partial<LarkWebhookRouteDependencies> = {},
