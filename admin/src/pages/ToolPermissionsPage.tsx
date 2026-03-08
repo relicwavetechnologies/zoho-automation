@@ -28,11 +28,12 @@ type Tab = 'permissions' | 'roles' | 'users';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const CATEGORY_ORDER = ['crm-read', 'crm-action', 'search', 'routing'];
+const CATEGORY_ORDER = ['crm-read', 'crm-action', 'search', 'workspace', 'routing'];
 const CATEGORY_LABELS: Record<string, string> = {
   'crm-read': 'CRM Read',
   'crm-action': 'CRM Actions',
   search: 'Search',
+  workspace: 'Workspace',
   routing: 'Routing',
 };
 

@@ -15,7 +15,7 @@ export type EnqueueZohoHistoricalSyncResult = {
 export type EnqueueZohoDeltaSyncInput = {
   companyId: string;
   connectionId: string;
-  sourceType: 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
   sourceId: string;
   operation: 'create' | 'update' | 'delete';
   changedAt: string;

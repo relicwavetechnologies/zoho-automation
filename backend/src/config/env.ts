@@ -178,3 +178,6 @@ export const LANGSMITH_API_KEY = validated.config.LANGSMITH_API_KEY;
 export const LANGSMITH_PROJECT = validated.config.LANGSMITH_PROJECT;
 export const LANGSMITH_ENDPOINT = validated.config.LANGSMITH_ENDPOINT;
 export const LARK_TENANT_BINDING_ENFORCED = validated.config.LARK_TENANT_BINDING_ENFORCED;
+export const DOC_UPLOAD_MAX_MB = validated.config.DOC_UPLOAD_MAX_MB;
+export const DOC_EXTRACT_MAX_WORDS = validated.config.DOC_EXTRACT_MAX_WORDS;
+export const DOC_GENERATION_MAX_WORDS = validated.config.DOC_GENERATION_MAX_WORDS;

@@ -1,12 +1,9 @@
 import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
-import config from '../../config';
 import { IngestionJobDTO, ZohoConnectionDTO } from '../../company/contracts';
 import { zohoConnectionAdapter } from '../../company/integrations/zoho';
 import { ZohoIntegrationError } from '../../company/integrations/zoho/zoho.errors';
-import { mcpHttpClient } from '../../company/integrations/zoho/mcp-http.client';
 import { resolveZohoProvider } from '../../company/integrations/zoho/zoho-provider.resolver';
-import { encryptZohoSecret } from '../../company/integrations/zoho/zoho-token.crypto';
 import { qdrantAdapter } from '../../company/integrations/vector';
 import { larkDirectorySyncService } from '../../company/channels/lark/lark-directory-sync.service';
 import { larkTenantBindingRepository } from '../../company/channels/lark/lark-tenant-binding.repository';
@@ -38,9 +35,10 @@ export class CompanyOnboardingService extends BaseService {
 
   async connectZoho(payload: ZohoConnectDto): Promise<CompanyOnboardingConnectResult> {
     const companyId = await this.resolveCompanyId(payload.companyId, payload.companyName);
-    const connection = payload.mode === 'mcp'
-      ? await this.connectViaMcp(companyId, payload)
-      : await this.connectViaRest(companyId, payload);
+    if (payload.mode === 'mcp') {
+      throw new HttpException(400, 'Zoho MCP connections are no longer supported. Connect the Zoho account through OAuth/REST.');
+    }
+    const connection = await this.connectViaRest(companyId, payload);
 
     const queued = await zohoSyncProducer.enqueueInitialHistoricalSync({
       companyId,
@@ -357,76 +355,6 @@ export class CompanyOnboardingService extends BaseService {
       mcpCapabilities: null,
       mcpLastHealthStatus: null,
     });
-  }
-
-  private async connectViaMcp(
-    companyId: string,
-    payload: Extract<ZohoConnectDto, { mode: 'mcp' }>,
-  ): Promise<PersistedZohoConnection> {
-    if (!config.ZOHO_MCP_ENABLED) {
-      throw new HttpException(400, 'MCP provider mode is disabled for this environment');
-    }
-
-    try {
-      const discoveredTools = await mcpHttpClient.listTools({
-        baseUrl: payload.mcpBaseUrl,
-        apiKey: payload.mcpApiKey,
-        workspaceKey: payload.mcpWorkspaceKey,
-      });
-      const allowedTools = [...new Set(payload.allowedTools.map((tool) => tool.trim()).filter(Boolean))];
-      const capabilities = [...new Set([...allowedTools, ...discoveredTools])];
-      const encryptedMcpApiKey = encryptZohoSecret(
-        payload.mcpApiKey,
-        config.MCP_SECRET_ENCRYPTION_KEY || undefined,
-      ).cipherText;
-
-      logger.success('mcp.connect.success', {
-        companyId,
-        environment: payload.environment,
-        discoveredTools: discoveredTools.length,
-        allowedTools: allowedTools.length,
-      });
-
-      return this.repository.upsertZohoConnection({
-        companyId,
-        environment: payload.environment,
-        providerMode: 'mcp',
-        status: 'CONNECTED',
-        connectedAt: new Date(),
-        scopes: payload.scopes,
-        accessTokenEncrypted: null,
-        refreshTokenEncrypted: null,
-        tokenCipherVersion: 1,
-        accessTokenExpiresAt: null,
-        refreshTokenExpiresAt: null,
-        tokenMetadata: {
-          connectionMode: 'mcp',
-        },
-        mcpBaseUrl: payload.mcpBaseUrl,
-        mcpApiKeyEncrypted: encryptedMcpApiKey,
-        mcpWorkspaceKey: payload.mcpWorkspaceKey ?? null,
-        mcpAllowedTools: allowedTools,
-        mcpCapabilities: {
-          tools: capabilities,
-        },
-        mcpLastHealthStatus: 'healthy',
-      });
-    } catch (error) {
-      logger.error('mcp.connect.failed', {
-        companyId,
-        environment: payload.environment,
-        reason: error instanceof Error ? error.message : 'unknown_error',
-        error,
-      });
-      if (error instanceof HttpException || error instanceof ZohoIntegrationError) {
-        throw error;
-      }
-      throw new ZohoIntegrationError({
-        message: error instanceof Error ? error.message : 'MCP connection failed',
-        code: 'mcp_unavailable',
-        retriable: true,
-      });
-    }
   }
 
   private toConnectionDto(connection: PersistedZohoConnection): ZohoConnectionDTO {

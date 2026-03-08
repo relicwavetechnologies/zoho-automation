@@ -1,4 +1,4 @@
-export type ToolCategory = 'crm-read' | 'crm-action' | 'search' | 'routing';
+export type ToolCategory = 'crm-read' | 'crm-action' | 'search' | 'workspace' | 'routing';
 
 /** Built-in role slugs (always present for every company). */
 export type AiRole = 'MEMBER' | 'COMPANY_ADMIN' | 'SUPER_ADMIN';
@@ -75,6 +75,14 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
+    id: 'lark-doc-agent',
+    name: 'Lark Doc Agent',
+    description: 'Create Lark Docs from markdown-formatted grounded content and reports.',
+    category: 'workspace',
+    engines: ['mastra', 'langgraph'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
     id: 'zoho-read',
     name: 'Zoho Read',
     description: 'Live Zoho CRM read via MCP or REST with vector augmentation.',
@@ -124,6 +132,7 @@ export const LANGGRAPH_AGENT_TOOL_MAP: Record<string, string> = {
   'zoho-action': 'zoho-action',
   'outreach-read': 'read-outreach-publishers',
   'search-read': 'search-read',
+  'lark-doc': 'lark-doc-agent',
   response: 'response',
   'risk-check': 'risk-check',
   'lark-response': 'lark-response',

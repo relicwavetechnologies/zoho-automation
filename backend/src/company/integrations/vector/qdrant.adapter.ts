@@ -13,7 +13,7 @@ import type {
 } from './vector-store.adapter';
 
 export type QdrantUpsertInput = VectorUpsertDTO & {
-  connectionId: string;
+  connectionId?: string;
   embedding: number[];
 };
 
@@ -81,6 +81,90 @@ const buildPointId = (point: {
     normalized.slice(16, 20),
     normalized.slice(20, 32),
   ].join('-');
+};
+
+const buildScopeShouldClauses = (query: VectorSearchQuery): Array<Record<string, unknown>> => {
+  const should: Array<Record<string, unknown>> = [];
+  const includePublic = query.includePublic ?? true;
+  const includeShared = query.includeShared ?? true;
+  const includePersonal = (query.includePersonal ?? true) && Boolean(query.requesterUserId);
+
+  if (includePublic) {
+    should.push({
+      must: [
+        {
+          key: 'visibility',
+          match: { value: 'public' },
+        },
+      ],
+    });
+  }
+
+  if (includeShared) {
+    should.push({
+      must: [
+        {
+          key: 'companyId',
+          match: { value: query.companyId },
+        },
+        {
+          key: 'visibility',
+          match: { value: 'shared' },
+        },
+      ],
+    });
+  }
+
+  if (includePersonal && query.requesterUserId) {
+    should.push({
+      must: [
+        {
+          key: 'companyId',
+          match: { value: query.companyId },
+        },
+        {
+          key: 'visibility',
+          match: { value: 'personal' },
+        },
+        {
+          key: 'ownerUserId',
+          match: { value: query.requesterUserId },
+        },
+      ],
+    });
+  }
+
+  if (should.length === 0) {
+    should.push({
+      must: [
+        {
+          key: 'companyId',
+          match: { value: query.companyId },
+        },
+      ],
+    });
+  }
+
+  return should;
+};
+
+const buildSearchFilter = (query: VectorSearchQuery): Record<string, unknown> => {
+  const filter: Record<string, unknown> = {
+    should: buildScopeShouldClauses(query),
+  };
+
+  if (query.sourceTypes && query.sourceTypes.length > 0) {
+    filter.must = [
+      {
+        key: 'sourceType',
+        match: query.sourceTypes.length === 1
+          ? { value: query.sourceTypes[0] }
+          : { any: query.sourceTypes },
+      },
+    ];
+  }
+
+  return filter;
 };
 
 export class QdrantAdapter implements VectorStoreAdapter {
@@ -202,6 +286,9 @@ export class QdrantAdapter implements VectorStoreAdapter {
       { fieldName: 'companyId', fieldSchema: 'keyword' },
       { fieldName: 'sourceType', fieldSchema: 'keyword' },
       { fieldName: 'sourceId', fieldSchema: 'keyword' },
+      { fieldName: 'visibility', fieldSchema: 'keyword' },
+      { fieldName: 'ownerUserId', fieldSchema: 'keyword' },
+      { fieldName: 'conversationKey', fieldSchema: 'keyword' },
       { fieldName: 'chunkIndex', fieldSchema: 'integer' },
     ];
 
@@ -241,6 +328,9 @@ export class QdrantAdapter implements VectorStoreAdapter {
         sourceId: point.sourceId,
         chunkIndex: point.chunkIndex,
         contentHash: point.contentHash,
+        visibility: point.visibility,
+        ...(point.ownerUserId ? { ownerUserId: point.ownerUserId } : {}),
+        ...(point.conversationKey ? { conversationKey: point.conversationKey } : {}),
         ...point.payload,
       },
     }));
@@ -262,9 +352,12 @@ export class QdrantAdapter implements VectorStoreAdapter {
       sourceId: record.sourceId,
       chunkIndex: record.chunkIndex,
       contentHash: record.contentHash,
+      visibility: record.visibility ?? 'shared',
+      ownerUserId: record.ownerUserId,
+      conversationKey: record.conversationKey,
       payload: {
         ...record.payload,
-        connectionId: record.connectionId,
+        ...(record.connectionId ? { connectionId: record.connectionId } : {}),
       },
       vector: record.embedding,
     }));
@@ -318,6 +411,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
 
   async search(query: VectorSearchQuery): Promise<VectorSearchResult[]> {
     let payload: QdrantSearchResponse;
+    const filter = buildSearchFilter(query);
     try {
       payload = await this.request<QdrantSearchResponse>({
         method: 'POST',
@@ -326,16 +420,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
           vector: query.vector,
           limit: Math.max(1, Math.min(20, query.limit)),
           with_payload: true,
-          filter: {
-            must: [
-              {
-                key: 'companyId',
-                match: {
-                  value: query.companyId,
-                },
-              },
-            ],
-          },
+          filter,
         },
       });
     } catch (error) {
@@ -355,16 +440,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
             vector: query.vector,
             limit: Math.max(1, Math.min(20, query.limit)),
             with_payload: true,
-            filter: {
-              must: [
-                {
-                  key: 'companyId',
-                  match: {
-                    value: query.companyId,
-                  },
-                },
-              ],
-            },
+            filter,
           },
         });
       } else {
@@ -380,6 +456,11 @@ export class QdrantAdapter implements VectorStoreAdapter {
       sourceType: (item.payload?.sourceType as VectorSearchResult['sourceType']) ?? 'zoho_contact',
       sourceId: String(item.payload?.sourceId ?? ''),
       chunkIndex: Number(item.payload?.chunkIndex ?? 0),
+      visibility: (item.payload?.visibility as VectorSearchResult['visibility']) ?? 'shared',
+      ownerUserId:
+        typeof item.payload?.ownerUserId === 'string' ? item.payload.ownerUserId : undefined,
+      conversationKey:
+        typeof item.payload?.conversationKey === 'string' ? item.payload.conversationKey : undefined,
       payload: (item.payload ?? {}) as Record<string, unknown>,
     }));
   }

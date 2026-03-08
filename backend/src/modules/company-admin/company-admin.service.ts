@@ -22,6 +22,8 @@ import { zohoOAuthConfigRepository } from '../../company/integrations/zoho/zoho-
 import { CreateInviteDto } from './dto/create-invite.dto';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { aiRoleService } from '../../company/tools/ai-role.service';
+import { prisma } from '../../utils/prisma';
+import { qdrantAdapter, vectorDocumentRepository } from '../../company/integrations/vector';
 
 export type SessionScope = {
   userId: string;
@@ -162,25 +164,16 @@ export class CompanyAdminService extends BaseService {
   async connectOnboarding(session: SessionScope, payload: ConnectOnboardingDto) {
     const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
     try {
-      const result =
-        payload.mode === 'mcp'
-          ? await companyOnboardingService.connectZoho({
-              companyId: scopedCompanyId,
-              mode: 'mcp',
-              environment: payload.environment,
-              mcpBaseUrl: payload.mcpBaseUrl,
-              mcpApiKey: payload.mcpApiKey,
-              mcpWorkspaceKey: payload.mcpWorkspaceKey,
-              allowedTools: payload.allowedTools,
-              scopes: payload.scopes,
-            })
-          : await companyOnboardingService.connectZoho({
-              companyId: scopedCompanyId,
-              mode: 'rest',
-              authorizationCode: payload.authorizationCode,
-              scopes: payload.scopes,
-              environment: payload.environment,
-            });
+      if (payload.mode === 'mcp') {
+        throw new HttpException(400, 'Zoho MCP onboarding is no longer supported. Use OAuth/REST connection.');
+      }
+      const result = await companyOnboardingService.connectZoho({
+        companyId: scopedCompanyId,
+        mode: 'rest',
+        authorizationCode: payload.authorizationCode,
+        scopes: payload.scopes,
+        environment: payload.environment,
+      });
       await auditService.recordLog({
         actorId: session.userId,
         companyId: scopedCompanyId,
@@ -638,6 +631,233 @@ export class CompanyAdminService extends BaseService {
       externalUserId: updated.externalUserId,
       displayName: updated.displayName ?? undefined,
       aiRole: updated.aiRole,
+    };
+  }
+
+  async listVectorShareRequests(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const rows = await prisma.vectorShareRequest.findMany({
+      where: {
+        companyId: scopedCompanyId,
+      },
+      orderBy: [{ createdAt: 'desc' }],
+      take: 50,
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      companyId: row.companyId,
+      requesterUserId: row.requesterUserId,
+      requesterChannelIdentityId: row.requesterChannelIdentityId ?? undefined,
+      conversationKey: row.conversationKey,
+      status: row.status,
+      reason: row.reason ?? undefined,
+      decisionNote: row.decisionNote ?? undefined,
+      reviewedBy: row.reviewedBy ?? undefined,
+      reviewedAt: row.reviewedAt?.toISOString(),
+      expiresAt: row.expiresAt?.toISOString(),
+      promotedVectorCount: row.promotedVectorCount,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    }));
+  }
+
+  async createVectorShareRequest(
+    session: SessionScope,
+    input: {
+      companyId?: string;
+      requesterUserId: string;
+      requesterChannelIdentityId?: string;
+      conversationKey: string;
+      reason?: string;
+      expiresAt?: string;
+    },
+  ) {
+    const scopedCompanyId = resolveCompanyScope(session, input.companyId);
+    const docs = await vectorDocumentRepository.findByConversation({
+      companyId: scopedCompanyId,
+      requesterUserId: input.requesterUserId,
+      conversationKey: input.conversationKey,
+    });
+
+    if (docs.length === 0) {
+      throw new HttpException(404, 'No personal conversation vectors found for this request');
+    }
+
+    const existingPending = await prisma.vectorShareRequest.findFirst({
+      where: {
+        companyId: scopedCompanyId,
+        requesterUserId: input.requesterUserId,
+        conversationKey: input.conversationKey,
+        status: 'pending',
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    const row = existingPending ?? await prisma.vectorShareRequest.create({
+      data: {
+        companyId: scopedCompanyId,
+        requesterUserId: input.requesterUserId,
+        requesterChannelIdentityId: input.requesterChannelIdentityId,
+        conversationKey: input.conversationKey,
+        status: 'pending',
+        reason: input.reason,
+        expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
+      },
+    });
+
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'vector_share_request.create',
+      outcome: 'success',
+      metadata: {
+        requestId: row.id,
+        requesterUserId: input.requesterUserId,
+        conversationKey: input.conversationKey,
+        vectorCount: docs.length,
+      },
+    });
+
+    return {
+      id: row.id,
+      status: row.status,
+      conversationKey: row.conversationKey,
+      requesterUserId: row.requesterUserId,
+      createdAt: row.createdAt.toISOString(),
+    };
+  }
+
+  async approveVectorShareRequest(
+    session: SessionScope,
+    requestId: string,
+    input: { companyId?: string; decisionNote?: string },
+  ) {
+    const row = await prisma.vectorShareRequest.findUnique({
+      where: { id: requestId },
+    });
+    if (!row) {
+      throw new HttpException(404, 'Vector share request not found');
+    }
+
+    const scopedCompanyId = resolveCompanyScope(session, input.companyId ?? row.companyId);
+    if (row.companyId !== scopedCompanyId) {
+      throw new HttpException(403, 'Company scope mismatch');
+    }
+    if (row.status !== 'pending') {
+      throw new HttpException(409, 'Only pending vector share requests can be approved');
+    }
+
+    const docs = await vectorDocumentRepository.findByConversation({
+      companyId: row.companyId,
+      requesterUserId: row.requesterUserId,
+      conversationKey: row.conversationKey,
+    });
+    if (docs.length === 0) {
+      throw new HttpException(404, 'No personal vectors found for this conversation');
+    }
+
+    await vectorDocumentRepository.reassignConversationVisibility({
+      companyId: row.companyId,
+      requesterUserId: row.requesterUserId,
+      conversationKey: row.conversationKey,
+      visibility: 'shared',
+    });
+
+    await qdrantAdapter.upsertVectors(
+      docs.map((doc) => ({
+        companyId: doc.companyId,
+        connectionId: doc.connectionId ?? undefined,
+        sourceType: doc.sourceType as 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket' | 'chat_turn',
+        sourceId: doc.sourceId,
+        chunkIndex: doc.chunkIndex,
+        contentHash: doc.contentHash,
+        visibility: 'shared' as const,
+        ownerUserId: doc.ownerUserId ?? undefined,
+        conversationKey: doc.conversationKey ?? undefined,
+        payload: (doc.payload ?? {}) as Record<string, unknown>,
+        embedding: doc.embedding,
+      })),
+    );
+
+    const updated = await prisma.vectorShareRequest.update({
+      where: { id: requestId },
+      data: {
+        status: 'approved',
+        decisionNote: input.decisionNote ?? null,
+        reviewedBy: session.userId,
+        reviewedAt: new Date(),
+        promotedVectorCount: docs.length,
+      },
+    });
+
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: row.companyId,
+      action: 'vector_share_request.approve',
+      outcome: 'success',
+      metadata: {
+        requestId,
+        conversationKey: row.conversationKey,
+        promotedVectorCount: docs.length,
+      },
+    });
+
+    return {
+      id: updated.id,
+      status: updated.status,
+      promotedVectorCount: updated.promotedVectorCount,
+      reviewedAt: updated.reviewedAt?.toISOString(),
+    };
+  }
+
+  async rejectVectorShareRequest(
+    session: SessionScope,
+    requestId: string,
+    input: { companyId?: string; decisionNote?: string },
+  ) {
+    const row = await prisma.vectorShareRequest.findUnique({
+      where: { id: requestId },
+    });
+    if (!row) {
+      throw new HttpException(404, 'Vector share request not found');
+    }
+
+    const scopedCompanyId = resolveCompanyScope(session, input.companyId ?? row.companyId);
+    if (row.companyId !== scopedCompanyId) {
+      throw new HttpException(403, 'Company scope mismatch');
+    }
+    if (row.status !== 'pending') {
+      throw new HttpException(409, 'Only pending vector share requests can be rejected');
+    }
+
+    const updated = await prisma.vectorShareRequest.update({
+      where: { id: requestId },
+      data: {
+        status: 'rejected',
+        decisionNote: input.decisionNote ?? null,
+        reviewedBy: session.userId,
+        reviewedAt: new Date(),
+      },
+    });
+
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: row.companyId,
+      action: 'vector_share_request.reject',
+      outcome: 'success',
+      metadata: {
+        requestId,
+        conversationKey: row.conversationKey,
+      },
+    });
+
+    return {
+      id: updated.id,
+      status: updated.status,
+      reviewedAt: updated.reviewedAt?.toISOString(),
     };
   }
 }

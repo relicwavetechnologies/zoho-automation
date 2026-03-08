@@ -2,7 +2,7 @@ import type { ZohoFailureCode } from './zoho.errors';
 
 export type ZohoProviderMode = 'rest' | 'mcp';
 
-export type ZohoSourceType = 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+export type ZohoSourceType = 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
 
 export type ZohoProviderHistoricalRecord = {
   sourceType: ZohoSourceType;
@@ -20,6 +20,9 @@ export type ZohoProviderHistoricalPageInput = {
   context: ZohoProviderContext;
   cursor?: string;
   pageSize: number;
+  sourceType?: ZohoSourceType;
+  sortBy?: 'id' | 'Created_Time' | 'Modified_Time';
+  sortOrder?: 'asc' | 'desc';
 };
 
 export type ZohoProviderHistoricalPageResult = {

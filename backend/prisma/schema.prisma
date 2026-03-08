@@ -272,8 +272,8 @@ model VectorDocument {
   id           String      @id @default(uuid())
   companyId    String
   company      Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  connectionId String
-  connection   ZohoConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  connectionId String?
+  connection   ZohoConnection? @relation(fields: [connectionId], references: [id], onDelete: Cascade)
   sourceType   String
   sourceId     String
   chunkIndex   Int

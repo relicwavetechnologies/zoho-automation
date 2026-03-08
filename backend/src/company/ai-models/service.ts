@@ -15,7 +15,7 @@ export type AiModelTargetResolvedDTO = {
   label: string;
   description: string;
   engine: 'mastra' | 'langgraph';
-  kind: 'supervisor' | 'specialist' | 'router' | 'planner' | 'synthesis';
+  kind: 'supervisor' | 'specialist' | 'router' | 'planner' | 'synthesis' | 'ack';
   effectiveProvider: AiModelProvider;
   effectiveModelId: string;
   effectiveThinkingLevel?: AiThinkingLevel;

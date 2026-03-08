@@ -5,7 +5,7 @@ import type { VectorUpsertDTO } from '../../contracts';
 import { zohoHistoricalAdapter } from '../../integrations/zoho/zoho-historical.adapter';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
 import { embeddingService } from '../../integrations/embedding';
-import { qdrantAdapter } from '../../integrations/vector';
+import { qdrantAdapter, vectorDocumentRepository } from '../../integrations/vector';
 import { prisma } from '../../../utils/prisma';
 import { logger } from '../../../utils/logger';
 
@@ -98,6 +98,7 @@ const mapToVectorRecords = async (input: {
     sourceId: input.sourceId,
     chunkIndex: index,
     contentHash: hashContent(chunk),
+    visibility: 'shared' as const,
     payload: {
       ...input.payload,
       _chunk: chunk,
@@ -174,6 +175,7 @@ export const runZohoHistoricalSyncWorker = async (companyId?: string): Promise<v
       )
     ).flat();
 
+    await vectorDocumentRepository.upsertMany(vectorRecords);
     await qdrantAdapter.upsertVectors(vectorRecords);
 
     const processedBatches = snapshot.processedBatches + 1;

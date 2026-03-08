@@ -28,7 +28,7 @@ type TargetRow = {
   label: string;
   description: string;
   engine: 'mastra' | 'langgraph';
-  kind: 'supervisor' | 'specialist' | 'router' | 'planner' | 'synthesis';
+  kind: 'supervisor' | 'specialist' | 'router' | 'planner' | 'synthesis' | 'ack';
   effectiveProvider: Provider;
   effectiveModelId: string;
   effectiveThinkingLevel?: ThinkingLevel;

@@ -237,6 +237,72 @@ class CompanyAdminController extends BaseController {
     return res.json(ApiResponse.success(result, 'Channel identities loaded'));
   };
 
+  listVectorShareRequests = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.listVectorShareRequests(session, companyId);
+    return res.json(ApiResponse.success(result, 'Vector share requests loaded'));
+  };
+
+  createVectorShareRequest = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const { companyId, requesterUserId, requesterChannelIdentityId, conversationKey, reason, expiresAt } = req.body ?? {};
+    if (typeof requesterUserId !== 'string' || requesterUserId.trim().length === 0) {
+      return res.status(400).json({ success: false, message: '`requesterUserId` is required' });
+    }
+    if (typeof conversationKey !== 'string' || conversationKey.trim().length === 0) {
+      return res.status(400).json({ success: false, message: '`conversationKey` is required' });
+    }
+    const result = await this.service.createVectorShareRequest(session, {
+      companyId: typeof companyId === 'string' ? companyId : undefined,
+      requesterUserId: requesterUserId.trim(),
+      requesterChannelIdentityId:
+        typeof requesterChannelIdentityId === 'string' && requesterChannelIdentityId.trim().length > 0
+          ? requesterChannelIdentityId.trim()
+          : undefined,
+      conversationKey: conversationKey.trim(),
+      reason: typeof reason === 'string' && reason.trim().length > 0 ? reason.trim() : undefined,
+      expiresAt: typeof expiresAt === 'string' && expiresAt.trim().length > 0 ? expiresAt.trim() : undefined,
+    });
+    return res.status(201).json(ApiResponse.success(result, 'Vector share request created'));
+  };
+
+  approveVectorShareRequest = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.approveVectorShareRequest(session, req.params.requestId, {
+      companyId: typeof req.body?.companyId === 'string' ? req.body.companyId : undefined,
+      decisionNote:
+        typeof req.body?.decisionNote === 'string' && req.body.decisionNote.trim().length > 0
+          ? req.body.decisionNote.trim()
+          : undefined,
+    });
+    return res.json(ApiResponse.success(result, 'Vector share request approved'));
+  };
+
+  rejectVectorShareRequest = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.rejectVectorShareRequest(session, req.params.requestId, {
+      companyId: typeof req.body?.companyId === 'string' ? req.body.companyId : undefined,
+      decisionNote:
+        typeof req.body?.decisionNote === 'string' && req.body.decisionNote.trim().length > 0
+          ? req.body.decisionNote.trim()
+          : undefined,
+    });
+    return res.json(ApiResponse.success(result, 'Vector share request rejected'));
+  };
+
   getToolPermissions = async (req: Request, res: Response) => {
     const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
     const session = this.readSession(req);

@@ -76,6 +76,26 @@ router.get(
   asyncHandler(companyAdminController.listChannelIdentities),
 );
 router.get(
+  '/vector-share-requests',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.listVectorShareRequests),
+);
+router.post(
+  '/vector-share-requests',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.createVectorShareRequest),
+);
+router.post(
+  '/vector-share-requests/:requestId/approve',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.approveVectorShareRequest),
+);
+router.post(
+  '/vector-share-requests/:requestId/reject',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.rejectVectorShareRequest),
+);
+router.get(
   '/onboarding/zoho-oauth-config',
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.getZohoOAuthConfigStatus),

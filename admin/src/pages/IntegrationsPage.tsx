@@ -108,6 +108,23 @@ type ChannelIdentity = {
   updatedAt: string;
 };
 
+type VectorShareRequest = {
+  id: string;
+  companyId: string;
+  requesterUserId: string;
+  requesterChannelIdentityId?: string;
+  conversationKey: string;
+  status: string;
+  reason?: string;
+  decisionNote?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  expiresAt?: string;
+  promotedVectorCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export const IntegrationsPage = () => {
   const { token, session } = useAdminAuth();
   const isSuperAdmin = session?.role === 'SUPER_ADMIN';
@@ -129,6 +146,7 @@ export const IntegrationsPage = () => {
   const [oauthConfigLoading, setOauthConfigLoading] = useState(true);
   const [larkWorkspaceConfigLoading, setLarkWorkspaceConfigLoading] = useState(true);
   const [larkSyncLoading, setLarkSyncLoading] = useState(true);
+  const [vectorShareLoading, setVectorShareLoading] = useState(true);
 
   const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null);
   const [larkBinding, setLarkBinding] = useState<LarkBindingResult | null>(null);
@@ -136,6 +154,7 @@ export const IntegrationsPage = () => {
   const [larkSyncStatus, setLarkSyncStatus] = useState<LarkSyncStatus | null>(null);
   const [oauthConfig, setOauthConfig] = useState<ZohoOAuthConfigStatus | null>(null);
   const [identities, setIdentities] = useState<ChannelIdentity[]>([]);
+  const [vectorShareRequests, setVectorShareRequests] = useState<VectorShareRequest[]>([]);
   const [channelFilter, setChannelFilter] = useState<'all' | 'lark' | 'slack' | 'whatsapp'>('all');
 
   const [larkTenantKey, setLarkTenantKey] = useState('');
@@ -150,6 +169,7 @@ export const IntegrationsPage = () => {
   const [larkConfigSaving, setLarkConfigSaving] = useState(false);
   const [larkConfigDeleting, setLarkConfigDeleting] = useState(false);
   const [larkSyncTriggering, setLarkSyncTriggering] = useState(false);
+  const [vectorShareMutatingId, setVectorShareMutatingId] = useState<string | null>(null);
 
   const [zohoMode, setZohoMode] = useState<'rest' | 'mcp'>('rest');
   const [restCode, setRestCode] = useState('');
@@ -288,12 +308,34 @@ export const IntegrationsPage = () => {
     }
   };
 
+  const loadVectorShareRequests = async () => {
+    if (!token) return;
+    if (isSuperAdmin && !scopedCompanyId) {
+      setVectorShareRequests([]);
+      setVectorShareLoading(false);
+      return;
+    }
+    setVectorShareLoading(true);
+    try {
+      const result = await api.get<VectorShareRequest[]>(
+        `/api/admin/company/vector-share-requests${buildQuery()}`,
+        token,
+      );
+      setVectorShareRequests(result);
+    } catch {
+      setVectorShareRequests([]);
+    } finally {
+      setVectorShareLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadStatus();
     void loadIdentities();
     void loadZohoOAuthConfig();
     void loadLarkWorkspaceConfig();
     void loadLarkSyncStatus();
+    void loadVectorShareRequests();
   }, [token, scopedCompanyId, isSuperAdmin]);
 
   useEffect(() => {
@@ -543,6 +585,43 @@ export const IntegrationsPage = () => {
       // Error handled globally
     } finally {
       setHistoricalSyncTriggering(false);
+    }
+  };
+
+  const approveVectorShareRequest = async (requestId: string) => {
+    if (!token) return;
+    setVectorShareMutatingId(requestId);
+    try {
+      await api.post(
+        `/api/admin/company/vector-share-requests/${requestId}/approve`,
+        { companyId: scopedCompanyId || undefined },
+        token,
+      );
+      toast({ title: 'Share request approved', description: 'Conversation vectors promoted to shared scope.', variant: 'success' });
+      void loadVectorShareRequests();
+      void loadStatus();
+    } catch {
+      // Error handled globally
+    } finally {
+      setVectorShareMutatingId(null);
+    }
+  };
+
+  const rejectVectorShareRequest = async (requestId: string) => {
+    if (!token) return;
+    setVectorShareMutatingId(requestId);
+    try {
+      await api.post(
+        `/api/admin/company/vector-share-requests/${requestId}/reject`,
+        { companyId: scopedCompanyId || undefined },
+        token,
+      );
+      toast({ title: 'Share request rejected', variant: 'success' });
+      void loadVectorShareRequests();
+    } catch {
+      // Error handled globally
+    } finally {
+      setVectorShareMutatingId(null);
     }
   };
 
@@ -906,6 +985,105 @@ export const IntegrationsPage = () => {
       </Card>
 
       {/* Zoho OAuth App Credentials */}
+      <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
+        <CardHeader className="border-b border-[#1a1a1a] pb-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <CardTitle className="text-zinc-100 flex items-center gap-2">
+              <Users strokeWidth={1.5} className="h-4 w-4 text-zinc-400" />
+              Vector Share Requests
+            </CardTitle>
+            <CardDescription className="text-zinc-500 mt-1">
+              Pending conversation-share requests. Approving promotes personal chat vectors into shared company memory.
+            </CardDescription>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void loadVectorShareRequests()}
+            className="border-[#2a2a2a] text-zinc-300 hover:bg-[#1a1a1a] shrink-0"
+          >
+            Refresh
+          </Button>
+        </CardHeader>
+        <CardContent className="pt-6">
+          {vectorShareLoading ? (
+            <div className="space-y-3">
+              {[1, 2].map((i) => (
+                <div key={i} className="rounded-md border border-[#1a1a1a] bg-[#0a0a0a] p-4">
+                  <Skeleton className="h-4 w-40" />
+                  <Skeleton className="h-3 w-full mt-2" />
+                </div>
+              ))}
+            </div>
+          ) : vectorShareRequests.length === 0 ? (
+            <div className="rounded-md border border-dashed border-[#2a2a2a] bg-[#0a0a0a] p-6 text-sm text-zinc-500">
+              No vector share requests yet.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {vectorShareRequests.map((request) => (
+                <div
+                  key={request.id}
+                  className="rounded-md border border-[#1a1a1a] bg-[#0a0a0a] p-4 flex flex-col gap-3"
+                >
+                  <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm text-zinc-100 font-medium">{request.status}</span>
+                        <span className="text-[11px] text-zinc-600 font-mono">{request.id}</span>
+                      </div>
+                      <div className="text-xs text-zinc-500 font-mono break-all">
+                        conversation: {request.conversationKey}
+                      </div>
+                      <div className="text-xs text-zinc-500">
+                        requester: {request.requesterChannelIdentityId || request.requesterUserId}
+                      </div>
+                      {request.reason ? (
+                        <div className="text-xs text-zinc-400">Reason: {request.reason}</div>
+                      ) : null}
+                    </div>
+                    <div className="text-xs text-zinc-500">
+                      Created {new Date(request.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={request.status !== 'pending' || vectorShareMutatingId === request.id}
+                      onClick={() => void approveVectorShareRequest(request.id)}
+                      className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+                    >
+                      {vectorShareMutatingId === request.id ? 'Working…' : 'Approve'}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={request.status !== 'pending' || vectorShareMutatingId === request.id}
+                      onClick={() => void rejectVectorShareRequest(request.id)}
+                      className="border-[#2a2a2a] text-zinc-300 hover:bg-[#1a1a1a]"
+                    >
+                      Reject
+                    </Button>
+                    {request.status !== 'pending' ? (
+                      <span className="text-xs text-zinc-500">
+                        reviewed {request.reviewedAt ? new Date(request.reviewedAt).toLocaleString() : '—'}
+                      </span>
+                    ) : null}
+                    {request.promotedVectorCount > 0 ? (
+                      <span className="text-xs text-zinc-500">
+                        promoted {request.promotedVectorCount} vectors
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
         <CardHeader className="border-b border-[#1a1a1a] pb-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>

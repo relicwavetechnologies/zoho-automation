@@ -1,4 +1,5 @@
 import {
+  LarkDocAgent,
   LarkResponseAgent,
   OutreachReadAgent,
   ResponseAgent,
@@ -26,5 +27,6 @@ registry.register(new OutreachReadAgent());
 registry.register(new SearchReadAgent());
 registry.register(new ZohoActionAgent());
 registry.register(new LarkResponseAgent());
+registry.register(new LarkDocAgent());
 
 export const agentRegistry = registry;

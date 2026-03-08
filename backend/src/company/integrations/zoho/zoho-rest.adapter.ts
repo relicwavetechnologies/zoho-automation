@@ -48,6 +48,9 @@ export class ZohoRestAdapter implements ZohoProviderAdapter {
       environment: input.context.environment,
       cursor: input.cursor,
       pageSize: input.pageSize,
+      sourceType: input.sourceType,
+      sortBy: input.sortBy,
+      sortOrder: input.sortOrder,
     });
     return {
       records: page.records,
@@ -58,7 +61,7 @@ export class ZohoRestAdapter implements ZohoProviderAdapter {
 
   async fetchRecordBySource(input: {
     context: ZohoProviderContext;
-    sourceType: 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+    sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
     sourceId: string;
   }): Promise<Record<string, unknown> | null> {
     return zohoDataClient.fetchRecordBySource({

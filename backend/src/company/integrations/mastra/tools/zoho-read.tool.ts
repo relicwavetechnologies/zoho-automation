@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { agentRegistry } from '../../../agents';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
+import { logger } from '../../../../utils/logger';
 
 const TOOL_ID = 'read-zoho-records';
 
@@ -21,14 +22,27 @@ export const zohoReadTool = createTool({
   }),
   execute: async (inputData, context) => {
     const requestContext = context?.requestContext;
+    const taskId = requestContext?.get('taskId');
+    const messageId = requestContext?.get('messageId');
+    const requestId = requestContext?.get('requestId');
+    const companyId = requestContext?.get('companyId');
     const allowedToolIds = requestContext?.get('allowedToolIds') as string[] | undefined;
     if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID)) {
       const name = TOOL_REGISTRY_MAP.get(TOOL_ID)?.name ?? TOOL_ID;
       return { answer: null, sourceRefs: [], error: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
 
+    logger.info('zoho.tool.read.start', {
+      toolId: TOOL_ID,
+      taskId,
+      messageId,
+      requestId,
+      companyId,
+      objectivePreview: inputData.objective.slice(0, 200),
+    });
+
     const contextPacket: Record<string, unknown> = {
-      companyId: requestContext?.get('companyId'),
+      companyId,
       larkTenantKey: requestContext?.get('larkTenantKey'),
       userId: requestContext?.get('userId'),
       chatId: requestContext?.get('chatId'),
@@ -42,6 +56,27 @@ export const zohoReadTool = createTool({
       constraints: ['mastra-tool'],
       contextPacket,
     });
+
+    const failureCode =
+      typeof result.error?.classifiedReason === 'string' ? result.error.classifiedReason : undefined;
+    const rateLimited = failureCode === 'rate_limited' || result.message.toLowerCase().includes('rate limit');
+
+    const finishMeta = {
+      toolId: TOOL_ID,
+      taskId,
+      messageId,
+      requestId,
+      companyId,
+      status: result.status,
+      failureCode: failureCode ?? null,
+      sourceRefCount: Array.isArray(result.result?.['sourceRefs']) ? result.result['sourceRefs'].length : 0,
+    };
+
+    if (rateLimited) {
+      logger.error('zoho.tool.read.rate_limited', finishMeta);
+    } else {
+      logger.info('zoho.tool.read.finish', finishMeta);
+    }
 
     return {
       answer: result.status === 'success' ? result.message : null,

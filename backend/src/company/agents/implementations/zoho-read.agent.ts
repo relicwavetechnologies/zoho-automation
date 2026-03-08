@@ -1,69 +1,149 @@
 import type { AgentInvokeInputDTO } from '../../contracts';
 import { CompanyContextResolutionError, companyContextResolver, zohoRetrievalService } from '../support';
 import { BaseAgent } from '../base';
-import { resolveWithFallback } from '../../integrations/zoho/zoho-provider.resolver';
+import { resolveZohoProvider } from '../../integrations/zoho/zoho-provider.resolver';
+import type { ZohoSourceType } from '../../integrations/zoho/zoho-provider.adapter';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
 import { mastra } from '../../integrations/mastra/mastra.instance';
 import { buildMastraAgentRunOptions } from '../../integrations/mastra/mastra-model-control';
 import { logger } from '../../../utils/logger';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const DEFAULT_RESULT_LIMIT = 3;
-const MAX_RESULT_LIMIT = 8;
-const LIVE_FETCH_PAGE_SIZE = 10;
-
-// ---------------------------------------------------------------------------
-// Lightweight types
-// ---------------------------------------------------------------------------
+const MAX_ALL_RESULT_LIMIT = 25;
 
 type SourceRef = {
-  source: 'vector' | 'mcp' | 'rest';
+  source: 'vector' | 'rest';
   id: string;
 };
 
 type LiveRecord = {
-  sourceType: string;
+  sourceType: ZohoSourceType;
   sourceId: string;
   payload: Record<string, unknown>;
 };
 
 type VectorMatch = {
-  sourceType: string;
+  sourceType: ZohoSourceType;
   sourceId: string;
   chunkIndex: number;
   payload: unknown;
   score: number;
 };
 
-// ---------------------------------------------------------------------------
-// Small pure helpers
-// ---------------------------------------------------------------------------
+type QueryIntent = {
+  preferredSourceTypes: ZohoSourceType[];
+  createdAfter?: Date;
+  targetLimit: number;
+  pageSize: number;
+  maxPages: number;
+  sortBy: 'Created_Time' | 'Modified_Time';
+  sortOrder: 'asc' | 'desc';
+};
 
 const normalizeText = (input: string): string => input.toLowerCase().trim();
 
+const containsAny = (text: string, patterns: string[]): boolean =>
+  patterns.some((pattern) => text.includes(pattern));
+
 const extractRequestedLimit = (objective: string): number => {
   const text = normalizeText(objective);
+  if (containsAny(text, ['all ', 'all my', 'current all', 'show me all', 'list all'])) {
+    return MAX_ALL_RESULT_LIMIT;
+  }
   const explicit = text.match(/\b(?:top|recent|latest|last|show|list)\b(?:\s+[a-z]+){0,2}\s+(\d{1,2})\b/);
   if (explicit) {
     const parsed = Number.parseInt(explicit[1] ?? '', 10);
     if (Number.isFinite(parsed) && parsed >= 1) {
-      return Math.min(MAX_RESULT_LIMIT, parsed);
+      return Math.min(MAX_ALL_RESULT_LIMIT, parsed);
     }
   }
   return DEFAULT_RESULT_LIMIT;
 };
 
+const startOfDay = (now: Date): Date =>
+  new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+
+const startOfWeek = (now: Date): Date => {
+  const start = startOfDay(now);
+  const day = start.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  start.setDate(start.getDate() + diff);
+  return start;
+};
+
+const startOfMonth = (now: Date): Date =>
+  new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+
+const inferSourceTypes = (objective: string): ZohoSourceType[] => {
+  const text = normalizeText(objective);
+  const preferred: ZohoSourceType[] = [];
+
+  if (containsAny(text, [' lead', 'leads', ' prospect', 'prospects'])) preferred.push('zoho_lead');
+  if (containsAny(text, [' deal', 'deals', ' opportunity', 'opportunities'])) preferred.push('zoho_deal');
+  if (containsAny(text, [' contact', 'contacts'])) preferred.push('zoho_contact');
+  if (containsAny(text, [' ticket', 'tickets', ' case', 'cases', 'support'])) preferred.push('zoho_ticket');
+
+  return preferred.length > 0
+    ? [...new Set(preferred)]
+    : ['zoho_lead', 'zoho_deal', 'zoho_contact', 'zoho_ticket'];
+};
+
+const inferCreatedAfter = (objective: string): Date | undefined => {
+  const text = normalizeText(objective);
+  const now = new Date();
+
+  if (containsAny(text, ['this week', 'current week'])) {
+    return startOfWeek(now);
+  }
+  if (containsAny(text, ['today', 'todays', "today's"])) {
+    return startOfDay(now);
+  }
+  if (containsAny(text, ['this month', 'current month'])) {
+    return startOfMonth(now);
+  }
+  return undefined;
+};
+
+const buildQueryIntent = (objective: string): QueryIntent => {
+  const targetLimit = extractRequestedLimit(objective);
+  const createdAfter = inferCreatedAfter(objective);
+  return {
+    preferredSourceTypes: inferSourceTypes(objective),
+    createdAfter,
+    targetLimit,
+    pageSize: Math.min(50, Math.max(10, targetLimit * 3)),
+    maxPages: createdAfter ? 4 : 2,
+    sortBy: createdAfter ? 'Created_Time' : 'Modified_Time',
+    sortOrder: 'desc',
+  };
+};
+
 const toRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 
-const buildLiveSourceRefs = (
-  records: LiveRecord[],
-  mode: 'mcp' | 'rest',
-): SourceRef[] =>
-  records.map((r) => ({ source: mode, id: `${r.sourceType}:${r.sourceId}` }));
+const parseTimestamp = (value: unknown): number | null => {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const getRecordTimestamp = (record: LiveRecord): number | null =>
+  parseTimestamp(record.payload.Created_Time)
+  ?? parseTimestamp(record.payload.Modified_Time)
+  ?? null;
+
+const matchesTimeFilter = (record: LiveRecord, createdAfter?: Date): boolean => {
+  if (!createdAfter) {
+    return true;
+  }
+  const timestamp = getRecordTimestamp(record);
+  return timestamp !== null && timestamp >= createdAfter.getTime();
+};
+
+const buildLiveSourceRefs = (records: LiveRecord[]): SourceRef[] =>
+  records.map((r) => ({ source: 'rest', id: `${r.sourceType}:${r.sourceId}` }));
 
 const buildVectorSourceRefs = (
   matches: Array<{ sourceType: string; sourceId: string; chunkIndex: number }>,
@@ -73,152 +153,256 @@ const buildVectorSourceRefs = (
     id: `${m.sourceType}:${m.sourceId}#${m.chunkIndex}`,
   }));
 
-/**
- * Compact plain-text fallback when the LLM synthesis call fails.
- * Produces a readable bullet summary directly from raw records.
- */
-const buildPlainTextFallback = (
-  objective: string,
-  liveRecords: LiveRecord[],
-  vectorRecords: VectorMatch[],
-): string => {
-  const limit = extractRequestedLimit(objective);
-  const allRecords = [
-    ...liveRecords.map((r) => ({ ...r, score: 1 })),
-    ...vectorRecords.map((m) => ({
-      sourceType: m.sourceType,
-      sourceId: m.sourceId,
-      payload: toRecord(m.payload),
-      score: m.score,
-    })),
-  ].slice(0, limit);
-
-  if (allRecords.length === 0) {
-    return 'No grounded Zoho records found for this query.';
-  }
-
-  const readField = (payload: Record<string, unknown>, keys: string[]): string | undefined => {
-    for (const key of keys) {
-      const v = payload[key];
-      if (typeof v === 'string' && v.trim()) return v.trim();
+const readField = (payload: Record<string, unknown>, keys: string[]): string | undefined => {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
     }
-    return undefined;
-  };
-
-  const lines = allRecords.map((r, idx) => {
-    const label =
-      readField(r.payload, ['Deal_Name', 'Full_Name', 'Subject', 'Name', 'name']) ??
-      `${r.sourceType}:${r.sourceId}`;
-    return `${idx + 1}. [${r.sourceType}] ${label}`;
-  });
-
-  return `Here are the most relevant Zoho records I found:\n${lines.join('\n')}`;
+  }
+  return undefined;
 };
 
-// ---------------------------------------------------------------------------
-// Agent
-// ---------------------------------------------------------------------------
+const buildPlainTextFallback = (objective: string, liveRecords: LiveRecord[]): string => {
+  if (liveRecords.length === 0) {
+    return 'The live Zoho API did not return matching records for this query.';
+  }
+
+  const limit = extractRequestedLimit(objective);
+  const lines = liveRecords.slice(0, limit).map((record, index) => {
+    const label =
+      readField(record.payload, ['Deal_Name', 'Full_Name', 'Subject', 'Name', 'name', 'Company']) ??
+      `${record.sourceType}:${record.sourceId}`;
+    const createdAt = readField(record.payload, ['Created_Time', 'Modified_Time']);
+    const suffix = createdAt ? ` (${createdAt})` : '';
+    return `${index + 1}. [${record.sourceType}] ${label}${suffix}`;
+  });
+
+  return `Here are the live Zoho records I found:\n${lines.join('\n')}`;
+};
+
+const isListRequest = (objective: string): boolean => {
+  const text = normalizeText(objective);
+  return containsAny(text, [
+    'show me all',
+    'list all',
+    'all my',
+    'all leads',
+    'all deals',
+    'all contacts',
+    'all tickets',
+    'with name',
+    'with company',
+    'with email',
+    'with status',
+    'with amount',
+    'with stage',
+  ]);
+};
+
+const formatRecordLine = (record: LiveRecord, index: number): string => {
+  const payload = record.payload;
+
+  if (record.sourceType === 'zoho_lead') {
+    const name =
+      readField(payload, ['Full_Name', 'Lead_Name', 'Name']) ??
+      `${record.sourceType}:${record.sourceId}`;
+    const company = readField(payload, ['Company']);
+    const email = readField(payload, ['Email']);
+    const status = readField(payload, ['Lead_Status', 'Status']);
+    const created = readField(payload, ['Created_Time']);
+    const parts = [name];
+    if (company) parts.push(`company: ${company}`);
+    if (email) parts.push(`email: ${email}`);
+    if (status) parts.push(`status: ${status}`);
+    if (created) parts.push(`created: ${created}`);
+    return `${index + 1}. ${parts.join(' | ')}`;
+  }
+
+  if (record.sourceType === 'zoho_deal') {
+    const name =
+      readField(payload, ['Deal_Name', 'Name']) ??
+      `${record.sourceType}:${record.sourceId}`;
+    const stage = readField(payload, ['Stage']);
+    const amount = readField(payload, ['Amount']);
+    const closeDate = readField(payload, ['Closing_Date', 'Close_Date']);
+    const parts = [name];
+    if (stage) parts.push(`stage: ${stage}`);
+    if (amount) parts.push(`amount: ${amount}`);
+    if (closeDate) parts.push(`close: ${closeDate}`);
+    return `${index + 1}. ${parts.join(' | ')}`;
+  }
+
+  if (record.sourceType === 'zoho_contact') {
+    const name =
+      readField(payload, ['Full_Name', 'Name']) ??
+      `${record.sourceType}:${record.sourceId}`;
+    const company = readField(payload, ['Account_Name', 'Company']);
+    const email = readField(payload, ['Email']);
+    const phone = readField(payload, ['Phone', 'Mobile']);
+    const parts = [name];
+    if (company) parts.push(`company: ${company}`);
+    if (email) parts.push(`email: ${email}`);
+    if (phone) parts.push(`phone: ${phone}`);
+    return `${index + 1}. ${parts.join(' | ')}`;
+  }
+
+  const subject =
+    readField(payload, ['Subject', 'Name']) ??
+    `${record.sourceType}:${record.sourceId}`;
+  const status = readField(payload, ['Status']);
+  const priority = readField(payload, ['Priority']);
+  const created = readField(payload, ['Created_Time']);
+  const parts = [subject];
+  if (status) parts.push(`status: ${status}`);
+  if (priority) parts.push(`priority: ${priority}`);
+  if (created) parts.push(`created: ${created}`);
+  return `${index + 1}. ${parts.join(' | ')}`;
+};
+
+const buildDeterministicListResponse = (objective: string, liveRecords: LiveRecord[]): string => {
+  const limit = extractRequestedLimit(objective);
+  const rows = liveRecords.slice(0, limit).map(formatRecordLine);
+  return `I found ${Math.min(liveRecords.length, limit)} matching Zoho records:\n${rows.join('\n')}`;
+};
 
 export class ZohoReadAgent extends BaseAgent {
   readonly key = 'zoho-read';
 
-  // ── Step 1: fetch live records via MCP → REST fallback ─────────────────
   private async fetchLiveRecords(input: {
     companyId: string;
     taskId: string;
-  }): Promise<{ records: LiveRecord[]; sourceRefs: SourceRef[]; mode: 'mcp' | 'rest'; fallbackUsed: boolean }> {
-    const provider = await resolveWithFallback({ companyId: input.companyId });
+    objective: string;
+  }): Promise<{ records: LiveRecord[]; sourceRefs: SourceRef[]; fallbackUsed: boolean }> {
+    const provider = await resolveZohoProvider({ companyId: input.companyId });
+    const intent = buildQueryIntent(input.objective);
+    const records: LiveRecord[] = [];
+    const seen = new Set<string>();
 
     logger.debug('zoho.agent.live_fetch.start', {
       taskId: input.taskId,
       companyId: input.companyId,
       mode: provider.providerMode,
-      fallbackUsed: provider.fallbackUsed,
+      sourceTypes: intent.preferredSourceTypes,
+      createdAfter: intent.createdAfter?.toISOString(),
+      pageSize: intent.pageSize,
+      maxPages: intent.maxPages,
     });
 
-    const page = await provider.adapter.fetchHistoricalPage({
-      context: {
-        companyId: input.companyId,
-        environment: provider.environment,
-        connectionId: provider.connectionId,
-      },
-      pageSize: LIVE_FETCH_PAGE_SIZE,
-    });
+    for (const sourceType of intent.preferredSourceTypes) {
+      let cursor: string | undefined;
+      let pagesFetched = 0;
 
-    const records: LiveRecord[] = page.records.map((r) => ({
-      sourceType: r.sourceType,
-      sourceId: r.sourceId,
-      payload: r.payload,
-    }));
+      while (pagesFetched < intent.maxPages && records.length < intent.targetLimit) {
+        const page = await provider.adapter.fetchHistoricalPage({
+          context: {
+            companyId: input.companyId,
+            environment: provider.environment,
+            connectionId: provider.connectionId,
+          },
+          cursor,
+          pageSize: intent.pageSize,
+          sourceType,
+          sortBy: intent.sortBy,
+          sortOrder: intent.sortOrder,
+        });
+        pagesFetched += 1;
 
-    const mode = provider.providerMode === 'mcp' ? 'mcp' : 'rest';
+        const pageRecords = page.records.map((record) => ({
+          sourceType: record.sourceType,
+          sourceId: record.sourceId,
+          payload: record.payload,
+        })) as LiveRecord[];
+
+        for (const record of pageRecords) {
+          if (!matchesTimeFilter(record, intent.createdAfter)) {
+            continue;
+          }
+          const key = `${record.sourceType}:${record.sourceId}`;
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          records.push(record);
+          if (records.length >= intent.targetLimit) {
+            break;
+          }
+        }
+
+        const encounteredOlderRecord =
+          Boolean(intent.createdAfter)
+          && pageRecords.some((record) => {
+            const timestamp = getRecordTimestamp(record);
+            return timestamp !== null && timestamp < intent.createdAfter!.getTime();
+          });
+
+        if (!page.nextCursor || encounteredOlderRecord || records.length >= intent.targetLimit) {
+          break;
+        }
+        cursor = page.nextCursor;
+      }
+    }
+
     return {
       records,
-      sourceRefs: buildLiveSourceRefs(records, mode),
-      mode,
-      fallbackUsed: provider.fallbackUsed,
+      sourceRefs: buildLiveSourceRefs(records),
+      fallbackUsed: false,
     };
   }
 
-  // ── Step 2: ask the Mastra LLM to synthesise a natural-language answer ──
   private async synthesiseWithLLM(input: {
-    taskId: string;
-    messageId: string;
-    userId: string;
-    chatId: string;
-    channel: string;
-    companyId: string;
-    requestId?: string;
-    larkTenantKey?: string;
     objective: string;
     liveRecords: LiveRecord[];
     vectorContext: VectorMatch[];
   }): Promise<string> {
-    const liveSnippet =
-      input.liveRecords.length > 0
-        ? JSON.stringify(input.liveRecords.slice(0, 8), null, 2)
-        : '(no live records available)';
-
+    const liveSnippet = JSON.stringify(input.liveRecords.slice(0, 12), null, 2);
     const vectorSnippet =
       input.vectorContext.length > 0
         ? JSON.stringify(
-          input.vectorContext.slice(0, 5).map((m) => ({
-            sourceType: m.sourceType,
-            sourceId: m.sourceId,
-            score: m.score,
-            payload: toRecord(m.payload),
+          input.vectorContext.slice(0, 5).map((match) => ({
+            sourceType: match.sourceType,
+            sourceId: match.sourceId,
+            score: match.score,
+            payload: toRecord(match.payload),
           })),
           null,
           2,
         )
-        : '(no vector context available)';
+        : '(no supporting vector context)';
 
     const promptText = [
       `User request: "${input.objective}"`,
-      ``,
-      `## Live CRM records:`,
+      '',
+      'You are answering a Zoho CRM question.',
+      'Rules:',
+      '- Treat live Zoho API records as the source of truth.',
+      '- Use vector context only as supporting context; it may be stale.',
+      '- Do not say there are zero records if live records are present below.',
+      '- If you summarize records, stay grounded to the provided data.',
+      '- Never say "see above", "listed above", or imply hidden UI content.',
+      '- If the user asked to list records, include the actual records inline in the answer.',
+      '',
+      '## Live Zoho API records',
       liveSnippet,
-      ``,
-      `## Supporting vector context:`,
+      '',
+      '## Supporting vector context',
       vectorSnippet,
     ].join('\n');
 
     const agent = mastra.getAgent('synthesisAgent');
     const runOptions = await buildMastraAgentRunOptions('mastra.synthesis');
     const result = await agent.generate(promptText, runOptions as any);
-
     return result.text;
   }
 
-  // ── Main invoke ──────────────────────────────────────────────────────────
   async invoke(input: AgentInvokeInputDTO) {
     const startedAt = Date.now();
     let apiCalls = 0;
 
     try {
       const VECTOR_CONTEXT_ENABLED = process.env.ZOHO_VECTOR_CONTEXT_ENABLED !== 'false';
-      const limit = extractRequestedLimit(input.objective);
-      const retrievalLimit = Math.min(10, Math.max(DEFAULT_RESULT_LIMIT, limit + 2));
+      const intent = buildQueryIntent(input.objective);
+      const retrievalLimit = Math.min(10, Math.max(DEFAULT_RESULT_LIMIT, intent.targetLimit + 2));
 
       const companyId = await companyContextResolver.resolveCompanyId({
         companyId: input.contextPacket.companyId,
@@ -226,45 +410,80 @@ export class ZohoReadAgent extends BaseAgent {
       });
       apiCalls++;
 
-      // ── Step 1: Live Zoho data (MCP → REST fallback) ────────────────────
       let liveRecords: LiveRecord[] = [];
       let liveSourceRefs: SourceRef[] = [];
-      let liveMode: 'mcp' | 'rest' = 'rest';
-      let fallbackUsed = false;
 
       try {
-        const live = await this.fetchLiveRecords({ companyId, taskId: input.taskId });
+        const live = await this.fetchLiveRecords({
+          companyId,
+          taskId: input.taskId,
+          objective: input.objective,
+        });
         liveRecords = live.records;
         liveSourceRefs = live.sourceRefs;
-        liveMode = live.mode;
-        fallbackUsed = live.fallbackUsed;
         apiCalls += 2;
 
         logger.debug('zoho.agent.live_fetch.success', {
           taskId: input.taskId,
           companyId,
-          mode: liveMode,
-          fallbackUsed,
+          mode: 'rest',
+          sourceTypes: intent.preferredSourceTypes,
           recordCount: liveRecords.length,
         });
       } catch (error) {
-        logger.warn('zoho.agent.live_fetch.failed', {
+        const isRateLimited =
+          error instanceof ZohoIntegrationError
+          && error.code === 'rate_limited';
+        const logMeta = {
           taskId: input.taskId,
           companyId,
+          code: error instanceof ZohoIntegrationError ? error.code : undefined,
+          statusCode: error instanceof ZohoIntegrationError ? error.statusCode : undefined,
           reason: error instanceof Error ? error.message : 'unknown_error',
-        });
+        };
+        if (isRateLimited) {
+          logger.error('zoho.agent.live_fetch.rate_limited', logMeta);
+        } else {
+          logger.warn('zoho.agent.live_fetch.failed', logMeta);
+        }
+        throw error;
       }
 
-      // ── Step 2: Vector context (augmentation only) ───────────────────────
+      if (liveRecords.length === 0) {
+        const answer = 'The live Zoho API did not return matching records for this query.';
+        return this.success(
+          input,
+          answer,
+          {
+            companyId,
+            answer,
+            sourceRefs: [],
+            sources: [],
+            liveProviderMode: 'rest',
+            fallbackUsed: false,
+            liveRecordCount: 0,
+            vectorRecordCount: 0,
+          },
+          { latencyMs: Date.now() - startedAt, apiCalls },
+        );
+      }
+
       let vectorMatches: VectorMatch[] = [];
       let vectorSourceRefs: SourceRef[] = [];
-
       if (VECTOR_CONTEXT_ENABLED) {
         try {
+          const requesterUserId =
+            typeof input.contextPacket.channelIdentityId === 'string' && input.contextPacket.channelIdentityId.trim()
+              ? input.contextPacket.channelIdentityId.trim()
+              : typeof input.contextPacket.userId === 'string' && input.contextPacket.userId.trim()
+                ? input.contextPacket.userId.trim()
+                : undefined;
           vectorMatches = await zohoRetrievalService.query({
             companyId,
+            requesterUserId,
             text: input.objective,
             limit: retrievalLimit,
+            sourceTypes: intent.preferredSourceTypes,
           });
           vectorSourceRefs = buildVectorSourceRefs(vectorMatches);
           apiCalls++;
@@ -277,49 +496,28 @@ export class ZohoReadAgent extends BaseAgent {
         }
       }
 
-      // ── Early exit if nothing at all ─────────────────────────────────────
-      const allSourceRefs = [...liveSourceRefs, ...vectorSourceRefs];
-      if (liveRecords.length === 0 && vectorMatches.length === 0) {
-        return this.success(
-          input,
-          'No grounded Zoho records found for this query yet.',
-          {
-            companyId,
-            answer: 'No grounded Zoho records found for this query yet.',
-            sourceRefs: [],
-            sources: [],
-          },
-          { latencyMs: Date.now() - startedAt, apiCalls },
-        );
-      }
-
-      // ── Step 3: LLM synthesis ────────────────────────────────────────────
       let answer: string;
-      try {
-        answer = await this.synthesiseWithLLM({
-          taskId: input.taskId,
-          messageId: String(input.contextPacket.chatId ?? input.taskId),
-          userId: String(input.contextPacket.chatId ?? input.taskId),
-          chatId: String(input.contextPacket.chatId ?? input.taskId),
-          channel: String(input.contextPacket.channel ?? 'unknown'),
-          companyId,
-          requestId: typeof input.contextPacket.requestId === 'string' ? input.contextPacket.requestId : undefined,
-          larkTenantKey: typeof input.contextPacket.larkTenantKey === 'string' ? input.contextPacket.larkTenantKey : undefined,
-          objective: input.objective,
-          liveRecords,
-          vectorContext: vectorMatches,
-        });
-        apiCalls++;
-      } catch (llmError) {
-        logger.warn('zoho.agent.llm_synthesis.failed', {
-          taskId: input.taskId,
-          companyId,
-          reason: llmError instanceof Error ? llmError.message : 'unknown_error',
-        });
-        // Graceful fallback: plain-text summary from raw records
-        answer = buildPlainTextFallback(input.objective, liveRecords, vectorMatches);
+      if (isListRequest(input.objective)) {
+        answer = buildDeterministicListResponse(input.objective, liveRecords);
+      } else {
+        try {
+          answer = await this.synthesiseWithLLM({
+            objective: input.objective,
+            liveRecords,
+            vectorContext: vectorMatches,
+          });
+          apiCalls++;
+        } catch (llmError) {
+          logger.warn('zoho.agent.llm_synthesis.failed', {
+            taskId: input.taskId,
+            companyId,
+            reason: llmError instanceof Error ? llmError.message : 'unknown_error',
+          });
+          answer = buildPlainTextFallback(input.objective, liveRecords);
+        }
       }
 
+      const allSourceRefs = [...liveSourceRefs, ...vectorSourceRefs];
       const summarySources = allSourceRefs.slice(0, 4).map((ref) => ref.id);
 
       return this.success(
@@ -330,8 +528,8 @@ export class ZohoReadAgent extends BaseAgent {
           answer,
           sources: summarySources,
           sourceRefs: allSourceRefs,
-          liveProviderMode: liveMode,
-          fallbackUsed,
+          liveProviderMode: 'rest',
+          fallbackUsed: false,
           liveRecordCount: liveRecords.length,
           vectorRecordCount: vectorMatches.length,
         },

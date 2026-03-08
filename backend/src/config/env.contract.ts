@@ -86,6 +86,9 @@ export type ValidatedEnv = {
   LANGSMITH_PROJECT: string;
   LANGSMITH_ENDPOINT: string;
   LARK_TENANT_BINDING_ENFORCED: boolean;
+  DOC_UPLOAD_MAX_MB: number;
+  DOC_EXTRACT_MAX_WORDS: number;
+  DOC_GENERATION_MAX_WORDS: number;
 };
 
 export type EnvValidationResult = {
@@ -393,6 +396,33 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     issues,
   });
 
+  const docUploadMaxMb = parseInteger({
+    key: 'DOC_UPLOAD_MAX_MB',
+    value: readString(parsedRaw.DOC_UPLOAD_MAX_MB, '10'),
+    defaultValue: 10,
+    min: 1,
+    max: 100,
+    issues,
+  });
+
+  const docExtractMaxWords = parseInteger({
+    key: 'DOC_EXTRACT_MAX_WORDS',
+    value: readString(parsedRaw.DOC_EXTRACT_MAX_WORDS, '50000'),
+    defaultValue: 50000,
+    min: 1000,
+    max: 200000,
+    issues,
+  });
+
+  const docGenerationMaxWords = parseInteger({
+    key: 'DOC_GENERATION_MAX_WORDS',
+    value: readString(parsedRaw.DOC_GENERATION_MAX_WORDS, '1200'),
+    defaultValue: 1200,
+    min: 100,
+    max: 10000,
+    issues,
+  });
+
   const larkWebhookMaxSkewSeconds = parseInteger({
     key: 'LARK_WEBHOOK_MAX_SKEW_SECONDS',
     value: readString(parsedRaw.LARK_WEBHOOK_MAX_SKEW_SECONDS, '300'),
@@ -646,6 +676,9 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       defaultValue: false,
       issues,
     }),
+    DOC_UPLOAD_MAX_MB: docUploadMaxMb,
+    DOC_EXTRACT_MAX_WORDS: docExtractMaxWords,
+    DOC_GENERATION_MAX_WORDS: docGenerationMaxWords,
   };
 
   if (!config.REDIS_URL.startsWith('redis://') && !config.REDIS_URL.startsWith('rediss://')) {

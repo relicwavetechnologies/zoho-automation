@@ -1,11 +1,14 @@
 import { RequestContext } from '@mastra/core/di';
 
+import config from '../../../config';
 import { resolveChannelAdapter } from '../../channels';
 import { mastra } from '../../integrations/mastra';
 import { buildMastraAgentRunOptions } from '../../integrations/mastra/mastra-model-control';
+import { personalVectorMemoryService } from '../../integrations/vector';
 import { logger } from '../../../utils/logger';
 import { checkpointRepository } from '../../state/checkpoint';
 import { conversationMemoryStore } from '../../state/conversation';
+import { applyGenerationWordLimit } from '../../support/content-limits';
 import { orchestratorService } from '../orchestrator.service';
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import type { AiRole } from '../../tools/tool-registry';
@@ -14,15 +17,18 @@ import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExe
 // Maximum time (ms) we wait for the LLM agent to respond before aborting.
 // Keep this shorter than any upstream HTTP gateway timeout.
 const AGENT_GENERATE_TIMEOUT_MS = 50_000;
+const ACK_GENERATE_TIMEOUT_MS = 1_200;
 const PROGRESS_MIN_INITIAL_CHARS = 20;
 const PROGRESS_MIN_UPDATE_DELTA_CHARS = 24;
 const PROGRESS_MIN_UPDATE_INTERVAL_MS = 900;
 const PROGRESS_MAX_BUFFER_CHARS = 160;
 const HISTORY_CONTEXT_MESSAGE_LIMIT = 14;
 const HISTORY_PREFIX_LIMIT = 12;
+const PERSONAL_CONTEXT_LIMIT = 4;
 
 const buildHistoryAwarePrompt = (
   history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  personalContext: Array<{ role?: string; content: string }>,
   currentMessageText: string,
 ): string => {
   const normalizedCurrent = currentMessageText.trim();
@@ -31,19 +37,36 @@ const buildHistoryAwarePrompt = (
       !(index === history.length - 1 && entry.role === 'user' && entry.content.trim() === normalizedCurrent),
   );
 
-  if (contextOnly.length === 0) {
+  if (contextOnly.length === 0 && personalContext.length === 0) {
     return currentMessageText;
   }
 
-  const transcript = contextOnly
-    .slice(-HISTORY_PREFIX_LIMIT)
-    .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.content}`)
-    .join('\n');
+  const sections: string[] = [];
+
+  if (personalContext.length > 0) {
+    sections.push(
+      'Relevant personal memory from this same user in prior chats:',
+      personalContext
+        .slice(0, PERSONAL_CONTEXT_LIMIT)
+        .map((entry) => `${entry.role === 'assistant' ? 'Assistant memory' : 'User memory'}: ${entry.content}`)
+        .join('\n'),
+      '',
+    );
+  }
+
+  if (contextOnly.length > 0) {
+    sections.push(
+      'Conversation context from this same chat (most recent first-order history):',
+      contextOnly
+        .slice(-HISTORY_PREFIX_LIMIT)
+        .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${entry.content}`)
+        .join('\n'),
+      '',
+    );
+  }
 
   return [
-    'Conversation context from this same chat (most recent first-order history):',
-    transcript,
-    '',
+    ...sections,
     `Current user message: ${currentMessageText}`,
   ].join('\n');
 };
@@ -62,6 +85,14 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 }
 
 const isSentenceBoundaryChar = (char: string): boolean => char === '.' || char === '?' || char === '!' || char === '\n';
+
+const normalizeAckText = (text: string): string => {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  if (!compact) {
+    return '';
+  }
+  return compact.length > 160 ? `${compact.slice(0, 157).trimEnd()}...` : compact;
+};
 
 export const findProgressFlushIndex = (text: string): number => {
   let boundaryIndex = -1;
@@ -201,6 +232,10 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     const companyId = message.trace?.companyId ?? '';
     const conversationKey = `${message.channel}:${message.trace?.larkTenantKey ?? 'no_tenant'}:${message.chatId}`;
     const userRole = (message.trace?.userRole ?? 'MEMBER') as AiRole;
+    const requesterUserId =
+      typeof message.trace?.channelIdentityId === 'string' && message.trace.channelIdentityId.trim().length > 0
+        ? message.trace.channelIdentityId.trim()
+        : message.userId;
     const allowedToolIds = companyId
       ? await toolPermissionService.getAllowedTools(companyId, userRole)
       : [];
@@ -214,21 +249,130 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     requestContext.set('companyId', companyId);
     requestContext.set('larkTenantKey', message.trace?.larkTenantKey ?? '');
     requestContext.set('requestId', message.trace?.requestId ?? '');
+    requestContext.set('channelIdentityId', message.trace?.channelIdentityId ?? '');
     requestContext.set('allowedToolIds', allowedToolIds);
+
+    let personalContextMatches: Array<{ role?: string; content: string }> = [];
+    if (companyId && requesterUserId) {
+      try {
+        personalContextMatches = await personalVectorMemoryService.query({
+          companyId,
+          requesterUserId,
+          text: message.text,
+          limit: PERSONAL_CONTEXT_LIMIT,
+        });
+      } catch (error) {
+        logger.warn('personal.vector.query.failed', {
+          taskId: task.taskId,
+          companyId,
+          requesterUserId,
+          reason: error instanceof Error ? error.message : 'unknown_error',
+        });
+      }
+    }
 
     conversationMemoryStore.addUserMessage(conversationKey, message.messageId, message.text);
     const contextMessages = conversationMemoryStore.getContextMessages(
       conversationKey,
       HISTORY_CONTEXT_MESSAGE_LIMIT,
     );
-    const historyAwarePrompt = buildHistoryAwarePrompt(contextMessages, message.text);
+    const historyAwarePrompt = buildHistoryAwarePrompt(contextMessages, personalContextMatches, message.text);
+
+    const pendingPersistence: Array<Promise<void>> = [];
+    if (companyId && requesterUserId) {
+      pendingPersistence.push(
+        personalVectorMemoryService.storeChatTurn({
+          companyId,
+          requesterUserId,
+          conversationKey,
+          sourceId: message.messageId,
+          role: 'user',
+          text: message.text,
+          channel: message.channel,
+          chatId: message.chatId,
+        }).catch((error) => {
+          logger.warn('personal.vector.store.user.failed', {
+            taskId: task.taskId,
+            companyId,
+            requesterUserId,
+            sourceId: message.messageId,
+            reason: error instanceof Error ? error.message : 'unknown_error',
+          });
+        }),
+      );
+    }
 
     // ── Agent generate with hard timeout ────────────────────────────────────
     // Without this the call hangs until the upstream HTTP gateway kills it
     // (at ~12 s in the logs), which then triggers a retry, which spawns
     // another agent run — forming the loop.
     const agent = mastra.getAgent('supervisorAgent');
+    const ackAgent = mastra.getAgent('ackAgent');
     const channelAdapter = resolveChannelAdapter(message.channel);
+
+    const ackPrompt = [
+      'Write one short acknowledgement for the user request below.',
+      'Do not answer it.',
+      'Do not claim that you already checked the data.',
+      'Keep it under 18 words.',
+      `User request: ${message.text.trim()}`,
+    ].join('\n');
+
+    const ackRunOptionsPromise = buildMastraAgentRunOptions('mastra.ack', { requestContext });
+    const ackPromise = (async () => {
+      try {
+        const runOptions = await ackRunOptionsPromise;
+        const result = await withTimeout(
+          ackAgent.generate(ackPrompt, runOptions as any),
+          ACK_GENERATE_TIMEOUT_MS,
+          'ackAgent.generate',
+        );
+        return normalizeAckText(result.text ?? '');
+      } catch (error) {
+        logger.debug('mastra.engine.ack.skipped', {
+          taskId: task.taskId,
+          messageId: message.messageId,
+          companyId,
+          reason: error instanceof Error ? error.message : 'unknown_error',
+        });
+        return '';
+      }
+    })();
+
+    let progressMessageId: string | undefined;
+    let progressCommittedText = '';
+    let progressBufferedText = '';
+    let lastPushedPreviewText = '';
+    let lastPushAt = 0;
+    let responseSettled = false;
+
+    const ackDispatchPromise = (async () => {
+      const ackText = await ackPromise;
+      if (!ackText || progressMessageId || responseSettled) {
+        return;
+      }
+
+      const outbound = await channelAdapter.sendMessage({
+        chatId: message.chatId,
+        text: ackText,
+        correlationId: task.taskId,
+      });
+      progressMessageId = outbound.messageId;
+      lastPushedPreviewText = ackText;
+      lastPushAt = Date.now();
+      logger.info('mastra.engine.ack.sent', {
+        taskId: task.taskId,
+        messageId: message.messageId,
+        companyId,
+      });
+    })().catch((error) => {
+      logger.warn('mastra.engine.ack.failed', {
+        taskId: task.taskId,
+        messageId: message.messageId,
+        companyId,
+        reason: error instanceof Error ? error.message : 'unknown_error',
+      });
+    });
 
     let streamResult;
     try {
@@ -239,6 +383,8 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
         'supervisorAgent.stream',
       );
     } catch (err) {
+      responseSettled = true;
+      await ackDispatchPromise;
       logger.error('mastra.engine.stream.failed', {
         taskId: task.taskId,
         messageId: message.messageId,
@@ -250,11 +396,6 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     }
 
     // ── Handle steps and text stream for natural progress updates ────────────
-    let progressMessageId: string | undefined;
-    let progressCommittedText = '';
-    let progressBufferedText = '';
-    let lastPushedPreviewText = '';
-    let lastPushAt = 0;
 
     // Collect the final text and handle streams
     let fullText = '';
@@ -324,6 +465,9 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       if (toolNames.includes('outreach-agent')) {
         return `Understood. I’m checking outreach publisher data for "${objective}" now. I’ll share results shortly.`;
       }
+      if (toolNames.includes('lark-doc-agent') || toolNames.includes('create-lark-doc')) {
+        return `Understood. I’m preparing a Lark Doc for "${objective}" now and will share the document details shortly.`;
+      }
       return `Understood. I’m working on "${objective}" now and will update you as I make progress.`;
     };
 
@@ -387,10 +531,14 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       }
     } catch (error) {
       await pushProgress(true);
+      responseSettled = true;
+      await ackDispatchPromise;
       throw error;
     }
     await pushProgress(true);
     await stepListenerPromise;
+    responseSettled = true;
+    await ackDispatchPromise;
 
     await checkpointRepository.save(task.taskId, 'synthesis.complete', {
       status: 'done',
@@ -407,8 +555,33 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       textHash: message.trace?.textHash,
     });
 
-    const finalText = fullText.trim().length > 0 ? fullText : 'Done.';
+    const rawFinalText = fullText.trim().length > 0 ? fullText : 'Done.';
+    const limitedOutput = applyGenerationWordLimit(rawFinalText, config.DOC_GENERATION_MAX_WORDS);
+    const finalText = limitedOutput.text;
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, finalText);
+
+    if (companyId && requesterUserId) {
+      pendingPersistence.push(
+        personalVectorMemoryService.storeChatTurn({
+          companyId,
+          requesterUserId,
+          conversationKey,
+          sourceId: task.taskId,
+          role: 'assistant',
+          text: finalText,
+          channel: message.channel,
+          chatId: message.chatId,
+        }).catch((error) => {
+          logger.warn('personal.vector.store.assistant.failed', {
+            taskId: task.taskId,
+            companyId,
+            requesterUserId,
+            sourceId: task.taskId,
+            reason: error instanceof Error ? error.message : 'unknown_error',
+          });
+        }),
+      );
+    }
 
     if (progressMessageId) {
       await channelAdapter.updateMessage({
@@ -421,6 +594,20 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
         chatId: message.chatId,
         text: finalText,
         correlationId: task.taskId,
+      });
+    }
+
+    if (pendingPersistence.length > 0) {
+      await Promise.allSettled(pendingPersistence);
+    }
+
+    if (limitedOutput.truncated) {
+      logger.warn('mastra.engine.output.truncated', {
+        taskId: task.taskId,
+        messageId: message.messageId,
+        companyId,
+        reasonCode: limitedOutput.reasonCode,
+        maxWords: config.DOC_GENERATION_MAX_WORDS,
       });
     }
 

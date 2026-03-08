@@ -13,6 +13,7 @@
     "prisma:push": "prisma db push",
     "admin:bootstrap:default": "prisma generate && node scripts/bootstrap-super-admin.cjs",
     "lark:token": "node scripts/generate-lark-tenant-token.cjs",
+    "lark:docs:validate": "node scripts/validate-lark-docs.cjs",
     "test:unit:config": "node --test tests/env-contract.test.cjs && node --test tests/bootstrap-health.test.cjs",
     "test:unit:lark": "node --test tests/lark-*.test.cjs",
     "test:unit:v1": "node --test tests/langgraph-*.test.cjs tests/langchain-*.test.cjs",

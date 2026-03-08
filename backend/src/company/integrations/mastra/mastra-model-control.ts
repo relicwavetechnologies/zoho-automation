@@ -9,10 +9,12 @@ const googleClient = createGoogleGenerativeAI({
 });
 
 export const MASTRA_AGENT_TARGETS = {
+  ackAgent: 'mastra.ack',
   supervisorAgent: 'mastra.supervisor',
   zohoAgent: 'mastra.zoho-specialist',
   outreachAgent: 'mastra.outreach',
   searchAgent: 'mastra.search',
+  larkDocAgent: 'mastra.lark-doc',
   synthesisAgent: 'mastra.synthesis',
 } as const;
 

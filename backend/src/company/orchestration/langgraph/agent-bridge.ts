@@ -61,6 +61,14 @@ export type PriorAgentResult = {
   summary: string;
 };
 
+export type PriorAgentOutput = {
+  agentKey: string;
+  status: AgentResultDTO['status'];
+  message: string;
+  result?: AgentResultDTO['result'];
+  error?: AgentResultDTO['error'];
+};
+
 export const buildLangGraphAgentInvocations = (
   task: OrchestrationTaskDTO,
   message: NormalizedIncomingMessageDTO,
@@ -70,6 +78,13 @@ export const buildLangGraphAgentInvocations = (
   const priorSummaries: PriorAgentResult[] = (priorResults ?? []).map((r) => ({
     agentKey: r.agentKey,
     summary: summarizeResult(r),
+  }));
+  const priorOutputs: PriorAgentOutput[] = (priorResults ?? []).map((r) => ({
+    agentKey: r.agentKey,
+    status: r.status,
+    message: r.message,
+    result: r.result,
+    error: r.error,
   }));
 
   return agentKeys.map((agentKey) => ({
@@ -88,6 +103,7 @@ export const buildLangGraphAgentInvocations = (
       eventId: message.trace?.eventId,
       textHash: message.trace?.textHash,
       ...(priorSummaries.length > 0 ? { priorAgentResults: priorSummaries } : {}),
+      ...(priorOutputs.length > 0 ? { priorAgentOutputs: priorOutputs } : {}),
     },
     correlationId: randomUUID(),
   }));
@@ -103,6 +119,13 @@ export const buildSingleAgentInvocation = (
   const priorSummaries: PriorAgentResult[] = (priorResults ?? []).map((r) => ({
     agentKey: r.agentKey,
     summary: summarizeResult(r),
+  }));
+  const priorOutputs: PriorAgentOutput[] = (priorResults ?? []).map((r) => ({
+    agentKey: r.agentKey,
+    status: r.status,
+    message: r.message,
+    result: r.result,
+    error: r.error,
   }));
 
   return {
@@ -121,6 +144,7 @@ export const buildSingleAgentInvocation = (
       eventId: message.trace?.eventId,
       textHash: message.trace?.textHash,
       ...(priorSummaries.length > 0 ? { priorAgentResults: priorSummaries } : {}),
+      ...(priorOutputs.length > 0 ? { priorAgentOutputs: priorOutputs } : {}),
     },
     correlationId: randomUUID(),
   };

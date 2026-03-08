@@ -25,6 +25,16 @@ const WEB_SEARCH_QUERY_KEYWORDS = [
   'research',
 ];
 
+const LARK_DOC_KEYWORDS = [
+  'lark doc',
+  'lark docs',
+  'document',
+  'doc',
+  'write up',
+  'export',
+  'save this',
+];
+
 const isOutreachQuery = (text: string): boolean => {
   const normalized = text.toLowerCase();
   return OUTREACH_QUERY_KEYWORDS.some((keyword) => normalized.includes(keyword));
@@ -42,6 +52,14 @@ const isWebSearchQuery = (text: string): boolean => {
     return true;
   }
   return WEB_SEARCH_QUERY_KEYWORDS.some((keyword) => normalized.includes(keyword));
+};
+
+const isLarkDocQuery = (text: string): boolean => {
+  const normalized = text.toLowerCase();
+  if (!LARK_DOC_KEYWORDS.some((keyword) => normalized.includes(keyword))) {
+    return false;
+  }
+  return /\b(create|make|build|put|save|export|draft|write)\b/i.test(text);
 };
 
 export const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {
@@ -104,6 +122,10 @@ export const buildPlanFromIntent = (
 
   if (isWebSearchQuery(normalized)) {
     return ['route.classify', 'agent.invoke.search-read', 'agent.invoke.lark-response', 'synthesis.compose'];
+  }
+
+  if (isLarkDocQuery(normalized)) {
+    return ['route.classify', 'agent.invoke.lark-doc', 'agent.invoke.lark-response', 'synthesis.compose'];
   }
 
   return ['route.classify', 'agent.invoke.response', 'agent.invoke.lark-response', 'synthesis.compose'];
@@ -188,6 +210,15 @@ export const synthesizeFromAgentResults = (
     return {
       taskStatus: 'done',
       text: answer.length > 0 ? answer : `Web search complete.${sourceText}`,
+    };
+  }
+
+  const larkDocResult = agentResults.find((result) => result.agentKey === 'lark-doc' && result.status === 'success');
+  if (larkDocResult?.result) {
+    const answer = typeof larkDocResult.result.answer === 'string' ? larkDocResult.result.answer.trim() : '';
+    return {
+      taskStatus: 'done',
+      text: answer.length > 0 ? answer : 'Lark Doc created successfully.',
     };
   }
 

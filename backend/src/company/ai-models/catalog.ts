@@ -1,15 +1,17 @@
 export type AiModelProvider = 'google' | 'openai';
 export type AiThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
 export type AiControlEngine = 'mastra' | 'langgraph';
-export type AiControlTargetKind = 'supervisor' | 'specialist' | 'router' | 'planner' | 'synthesis';
+export type AiControlTargetKind = 'supervisor' | 'specialist' | 'router' | 'planner' | 'synthesis' | 'ack';
 
 export const AI_THINKING_LEVELS: AiThinkingLevel[] = ['minimal', 'low', 'medium', 'high'];
 
 export type AiControlTargetKey =
+  | 'mastra.ack'
   | 'mastra.supervisor'
   | 'mastra.zoho-specialist'
   | 'mastra.search'
   | 'mastra.outreach'
+  | 'mastra.lark-doc'
   | 'mastra.synthesis'
   | 'langgraph.supervisor'
   | 'langgraph.router'
@@ -109,6 +111,16 @@ export const AI_MODEL_CATALOG_MAP = new Map(
 
 export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
   {
+    key: 'mastra.ack',
+    engine: 'mastra',
+    kind: 'ack',
+    label: 'Mastra Acknowledgement',
+    description: 'Low-latency AI acknowledgement used for placeholder/progress replies before the main supervisor finishes.',
+    defaultProvider: 'google',
+    defaultModelId: 'gemini-3.1-flash-lite-preview',
+    defaultThinkingLevel: 'minimal',
+  },
+  {
     key: 'mastra.supervisor',
     engine: 'mastra',
     kind: 'supervisor',
@@ -145,6 +157,15 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     description: 'SEO/outreach inventory filtering specialist for publisher discovery and ranking.',
     defaultProvider: 'openai',
     defaultModelId: 'gpt-4.1-nano',
+  },
+  {
+    key: 'mastra.lark-doc',
+    engine: 'mastra',
+    kind: 'specialist',
+    label: 'Mastra Lark Docs Specialist',
+    description: 'Document creation specialist that formats grounded markdown and creates Lark Docs through the import API.',
+    defaultProvider: 'openai',
+    defaultModelId: 'gpt-4.1-mini',
   },
   {
     key: 'mastra.synthesis',

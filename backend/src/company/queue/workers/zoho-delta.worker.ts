@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 
 import type { Prisma } from '../../../generated/prisma';
-import { qdrantAdapter } from '../../integrations/vector';
+import { qdrantAdapter, vectorDocumentRepository } from '../../integrations/vector';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
 import { resolveZohoProvider } from '../../integrations/zoho/zoho-provider.resolver';
 import { embeddingService } from '../../integrations/embedding';
@@ -44,7 +44,7 @@ const recordEvent = async (input: {
 };
 
 const parsePayload = (value: Prisma.JsonValue | null): {
-  sourceType: 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
   sourceId: string;
   operation: 'create' | 'update' | 'delete';
   eventKey: string;
@@ -53,7 +53,7 @@ const parsePayload = (value: Prisma.JsonValue | null): {
   const obj = (value ?? {}) as Record<string, unknown>;
 
   return {
-    sourceType: (obj.sourceType as 'zoho_contact' | 'zoho_deal' | 'zoho_ticket') ?? 'zoho_contact',
+    sourceType: (obj.sourceType as 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket') ?? 'zoho_contact',
     sourceId: String(obj.sourceId ?? ''),
     operation: (obj.operation as 'create' | 'update' | 'delete') ?? 'update',
     eventKey: String(obj.eventKey ?? ''),
@@ -88,6 +88,11 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
   });
 
   if (parsed.operation === 'delete') {
+    await vectorDocumentRepository.deleteBySource({
+      companyId: job.companyId,
+      sourceType: parsed.sourceType,
+      sourceId: parsed.sourceId,
+    });
     await qdrantAdapter.deleteVectorsBySource({
       companyId: job.companyId,
       sourceType: parsed.sourceType,
@@ -115,21 +120,22 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
 
     const chunks = createChunks(basePayload);
     const embeddings = await embeddingService.embed(chunks);
-    await qdrantAdapter.upsertVectors(
-      chunks.map((chunk, index) => ({
-        companyId: job.companyId,
-        connectionId: job.connectionId,
-        sourceType: parsed.sourceType,
-        sourceId: parsed.sourceId,
-        chunkIndex: index,
-        contentHash: hashContent(chunk),
-        payload: {
-          ...basePayload,
-          _chunk: chunk,
-        },
-        embedding: embeddings[index],
-      })),
-    );
+    const records = chunks.map((chunk, index) => ({
+      companyId: job.companyId,
+      connectionId: job.connectionId,
+      sourceType: parsed.sourceType,
+      sourceId: parsed.sourceId,
+      chunkIndex: index,
+      contentHash: hashContent(chunk),
+      visibility: 'shared' as const,
+      payload: {
+        ...basePayload,
+        _chunk: chunk,
+      },
+      embedding: embeddings[index],
+    }));
+    await vectorDocumentRepository.upsertMany(records);
+    await qdrantAdapter.upsertVectors(records);
   }
 
   await prisma.$transaction([

@@ -23,6 +23,24 @@ type RequestInput = {
   retry?: RetryOptions;
 };
 
+const readRetryAfterMs = (value: string | null): number | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+
+  const dateMs = Date.parse(value);
+  if (Number.isFinite(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+
+  return undefined;
+};
+
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
@@ -131,6 +149,8 @@ export class ZohoHttpClient {
 
         if (!response.ok) {
           const classified = classifyHttpFailure(response.status);
+          const retryAfterHeader = response.headers.get('retry-after');
+          const retryAfterMs = readRetryAfterMs(retryAfterHeader);
           const payloadMessage =
             typeof payload === 'object' && payload !== null && typeof (payload as { message?: unknown }).message === 'string'
               ? (payload as { message: string }).message
@@ -149,10 +169,14 @@ export class ZohoHttpClient {
             statusCode: response.status,
           });
 
-          logger.warn('zoho.http.error_response', {
+          const errorMeta = {
             url,
             method,
             statusCode: response.status,
+            failureCode: classified.code,
+            retriable: classified.retriable,
+            retryAfterHeader,
+            retryAfterMs,
             code: payloadCode,
             message: payloadMessage,
             payload:
@@ -161,21 +185,34 @@ export class ZohoHttpClient {
                 : typeof payload === 'string'
                   ? payload.slice(0, 512)
                   : undefined,
-          });
+          };
+
+          if (response.status === 429) {
+            logger.error('zoho.http.rate_limited', errorMeta);
+          } else {
+            logger.warn('zoho.http.error_response', errorMeta);
+          }
 
           if (!error.retriable || attempt >= retryPolicy.maxAttempts) {
             throw error;
           }
 
-          const delayMs = retryPolicy.baseDelayMs * attempt;
-          logger.warn('zoho.http.retry', {
+          const delayMs = retryAfterMs ?? retryPolicy.baseDelayMs * attempt;
+          const retryMeta = {
             url,
             method,
             attempt,
             maxAttempts: retryPolicy.maxAttempts,
             delayMs,
             statusCode: response.status,
-          });
+            failureCode: classified.code,
+            retryAfterHeader,
+          };
+          if (response.status === 429) {
+            logger.error('zoho.http.rate_limit_retry', retryMeta);
+          } else {
+            logger.warn('zoho.http.retry', retryMeta);
+          }
           await sleep(delayMs);
           attempt += 1;
           continue;

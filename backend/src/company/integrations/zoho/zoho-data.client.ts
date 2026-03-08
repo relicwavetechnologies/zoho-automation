@@ -3,7 +3,7 @@ import { ZohoIntegrationError } from './zoho.errors';
 import { zohoHttpClient, ZohoHttpClient } from './zoho-http.client';
 import { zohoTokenService, ZohoTokenService } from './zoho-token.service';
 
-export type ZohoSourceType = 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+export type ZohoSourceType = 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
 
 export type ZohoHistoricalPageResult = {
   records: Array<{
@@ -16,8 +16,9 @@ export type ZohoHistoricalPageResult = {
 };
 
 type CursorState = {
-  moduleIndex: number;
+  moduleIndex?: number;
   page: number;
+  sourceType?: ZohoSourceType;
 };
 
 type ZohoDataClientOptions = {
@@ -41,6 +42,7 @@ type ZohoSingleResponse = {
 };
 
 const MODULES: Array<{ sourceType: ZohoSourceType; moduleName: string }> = [
+  { sourceType: 'zoho_lead', moduleName: 'Leads' },
   { sourceType: 'zoho_contact', moduleName: 'Contacts' },
   { sourceType: 'zoho_deal', moduleName: 'Deals' },
   { sourceType: 'zoho_ticket', moduleName: 'Cases' },
@@ -53,14 +55,27 @@ const parseCursor = (cursor?: string): CursorState => {
 
   try {
     const parsed = JSON.parse(cursor) as CursorState;
+    const moduleIndex = parsed.moduleIndex;
     if (
-      Number.isInteger(parsed.moduleIndex) &&
-      parsed.moduleIndex >= 0 &&
-      parsed.moduleIndex < MODULES.length &&
+      typeof moduleIndex === 'number' &&
+      Number.isInteger(moduleIndex) &&
+      moduleIndex >= 0 &&
+      moduleIndex < MODULES.length &&
       Number.isInteger(parsed.page) &&
       parsed.page >= 1
     ) {
       return parsed;
+    }
+    if (
+      parsed.sourceType &&
+      MODULES.some((moduleDef) => moduleDef.sourceType === parsed.sourceType) &&
+      Number.isInteger(parsed.page) &&
+      parsed.page >= 1
+    ) {
+      return {
+        sourceType: parsed.sourceType,
+        page: parsed.page,
+      };
     }
   } catch {
     return { moduleIndex: 0, page: 1 };
@@ -111,19 +126,28 @@ export class ZohoDataClient {
     environment?: string;
     cursor?: string;
     pageSize: number;
+    sourceType?: ZohoSourceType;
+    sortBy?: 'id' | 'Created_Time' | 'Modified_Time';
+    sortOrder?: 'asc' | 'desc';
   }): Promise<ZohoHistoricalPageResult> {
     const environment = input.environment ?? 'prod';
     const cursor = parseCursor(input.cursor);
-    const moduleDef = MODULES[cursor.moduleIndex] ?? MODULES[0];
+    const requestedModule = input.sourceType
+      ? ensureModule(input.sourceType)
+      : cursor.sourceType
+        ? ensureModule(cursor.sourceType)
+        : MODULES[cursor.moduleIndex ?? 0] ?? MODULES[0];
 
     let payload: ZohoListResponse;
     try {
       payload = await this.requestZohoListWithRefresh({
         companyId: input.companyId,
         environment,
-        moduleName: moduleDef.moduleName,
+        moduleName: requestedModule.moduleName,
         page: cursor.page,
         perPage: Math.max(1, Math.min(200, input.pageSize)),
+        sortBy: input.sortBy,
+        sortOrder: input.sortOrder,
       });
     } catch (error) {
       const moduleRejected =
@@ -133,14 +157,16 @@ export class ZohoDataClient {
         throw error;
       }
 
-      const fallbackCursor = cursor.moduleIndex + 1 < MODULES.length
-        ? encodeCursor({ moduleIndex: cursor.moduleIndex + 1, page: 1 })
-        : undefined;
+      const fallbackCursor = input.sourceType || cursor.sourceType
+        ? undefined
+        : (cursor.moduleIndex ?? 0) + 1 < MODULES.length
+          ? encodeCursor({ moduleIndex: (cursor.moduleIndex ?? 0) + 1, page: 1 })
+          : undefined;
       logger.warn('zoho.historical.module.skipped', {
         companyId: input.companyId,
         environment,
-        module: moduleDef.moduleName,
-        sourceType: moduleDef.sourceType,
+        module: requestedModule.moduleName,
+        sourceType: requestedModule.sourceType,
         page: cursor.page,
         reason: error.message,
         nextCursor: fallbackCursor,
@@ -163,24 +189,28 @@ export class ZohoDataClient {
       }
 
       return {
-        sourceType: moduleDef.sourceType,
+        sourceType: requestedModule.sourceType,
         sourceId,
         payload: record,
       };
     });
 
     const hasMore = Boolean(payload.info?.more_records);
-    const nextCursor = hasMore
-      ? encodeCursor({ moduleIndex: cursor.moduleIndex, page: cursor.page + 1 })
-      : cursor.moduleIndex + 1 < MODULES.length
-        ? encodeCursor({ moduleIndex: cursor.moduleIndex + 1, page: 1 })
-        : undefined;
+    const nextCursor = input.sourceType || cursor.sourceType
+      ? hasMore
+        ? encodeCursor({ sourceType: requestedModule.sourceType, page: cursor.page + 1 })
+        : undefined
+      : hasMore
+        ? encodeCursor({ moduleIndex: cursor.moduleIndex ?? 0, page: cursor.page + 1 })
+        : (cursor.moduleIndex ?? 0) + 1 < MODULES.length
+          ? encodeCursor({ moduleIndex: (cursor.moduleIndex ?? 0) + 1, page: 1 })
+          : undefined;
 
     logger.success('zoho.historical.page.fetched', {
       companyId: input.companyId,
       environment,
-      module: moduleDef.moduleName,
-      sourceType: moduleDef.sourceType,
+      module: requestedModule.moduleName,
+      sourceType: requestedModule.sourceType,
       page: cursor.page,
       count: records.length,
       hasMore,
@@ -219,8 +249,20 @@ export class ZohoDataClient {
     moduleName: string;
     page: number;
     perPage: number;
+    sortBy?: 'id' | 'Created_Time' | 'Modified_Time';
+    sortOrder?: 'asc' | 'desc';
   }): Promise<ZohoListResponse> {
-    const path = `/crm/v2/${input.moduleName}?page=${input.page}&per_page=${input.perPage}`;
+    const params = new URLSearchParams({
+      page: String(input.page),
+      per_page: String(input.perPage),
+    });
+    if (input.sortBy) {
+      params.set('sort_by', input.sortBy);
+    }
+    if (input.sortOrder) {
+      params.set('sort_order', input.sortOrder);
+    }
+    const path = `/crm/v2/${input.moduleName}?${params.toString()}`;
     return this.requestWithRefresh<ZohoListResponse>(input.companyId, input.environment, path);
   }
 

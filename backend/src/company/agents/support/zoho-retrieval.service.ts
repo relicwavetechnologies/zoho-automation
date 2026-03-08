@@ -3,7 +3,7 @@ import { qdrantAdapter } from '../../integrations/vector';
 import { logger } from '../../../utils/logger';
 
 export type ZohoRetrievalItem = {
-  sourceType: 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
   sourceId: string;
   chunkIndex: number;
   score: number;
@@ -11,15 +11,26 @@ export type ZohoRetrievalItem = {
 };
 
 export class ZohoRetrievalService {
-  async query(input: { companyId: string; text: string; limit?: number }): Promise<ZohoRetrievalItem[]> {
+  async query(input: {
+    companyId: string;
+    requesterUserId?: string;
+    text: string;
+    limit?: number;
+    sourceTypes?: Array<ZohoRetrievalItem['sourceType']>;
+  }): Promise<ZohoRetrievalItem[]> {
     const limit = Math.max(1, Math.min(10, input.limit ?? 4));
     const startedAt = Date.now();
     try {
       const [queryVector] = await embeddingService.embed([input.text]);
       const matches = await qdrantAdapter.search({
         companyId: input.companyId,
+        requesterUserId: input.requesterUserId,
         vector: queryVector,
         limit,
+        sourceTypes: input.sourceTypes ?? ['zoho_lead', 'zoho_contact', 'zoho_deal', 'zoho_ticket'],
+        includePersonal: false,
+        includeShared: true,
+        includePublic: true,
       });
 
       logger.success('retrieval.query.executed', {
@@ -38,7 +49,7 @@ export class ZohoRetrievalService {
       }
 
       return matches.map((match) => ({
-        sourceType: match.sourceType,
+        sourceType: match.sourceType as ZohoRetrievalItem['sourceType'],
         sourceId: match.sourceId,
         chunkIndex: match.chunkIndex,
         score: match.score,
