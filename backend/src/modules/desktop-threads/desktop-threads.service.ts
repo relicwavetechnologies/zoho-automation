@@ -45,6 +45,10 @@ export class DesktopThreadsService extends BaseService {
 
     return message;
   }
+
+  async deleteThread(threadId: string, userId: string): Promise<void> {
+    await this.repository.deleteThread(threadId, userId);
+  }
 }
 
 export const desktopThreadsService = new DesktopThreadsService();

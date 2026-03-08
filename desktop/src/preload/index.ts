@@ -16,6 +16,7 @@ export type DesktopAPI = {
     list: (token: string) => Promise<{ success: boolean; data?: unknown[] }>
     get: (token: string, threadId: string) => Promise<{ success: boolean; data?: unknown }>
     create: (token: string) => Promise<{ success: boolean; data?: { id: string } }>
+    delete: (token: string, threadId: string) => Promise<{ success: boolean }>
   }
   chat: {
     send: (
@@ -67,6 +68,7 @@ const api: DesktopAPI = {
     list: (token) => ipcRenderer.invoke('desktop:threads', token),
     get: (token, threadId) => ipcRenderer.invoke('desktop:thread', token, threadId),
     create: (token) => ipcRenderer.invoke('desktop:thread:create', token),
+    delete: (token, threadId) => ipcRenderer.invoke('desktop:thread:delete', token, threadId),
   },
   chat: {
     send: (token, threadId, message) =>

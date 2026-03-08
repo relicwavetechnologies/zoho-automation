@@ -10,5 +10,6 @@ router.use(requireMemberSession());
 router.get('/', asyncHandler(desktopThreadsController.list));
 router.post('/', asyncHandler(desktopThreadsController.create));
 router.get('/:threadId', asyncHandler(desktopThreadsController.get));
+router.delete('/:threadId', asyncHandler(desktopThreadsController.delete));
 
 export default router;

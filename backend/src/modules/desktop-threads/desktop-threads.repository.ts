@@ -37,6 +37,14 @@ export class DesktopThreadsRepository extends BaseRepository {
     });
   }
 
+  async deleteThread(threadId: string, userId: string): Promise<void> {
+    // Verify ownership before deleting
+    const thread = await prisma.desktopThread.findFirst({ where: { id: threadId, userId } });
+    if (!thread) return;
+    await prisma.desktopMessage.deleteMany({ where: { threadId } });
+    await prisma.desktopThread.delete({ where: { id: threadId } });
+  }
+
   listMessages(threadId: string, limit = 100): Promise<DesktopMessage[]> {
     return prisma.desktopMessage.findMany({
       where: { threadId },

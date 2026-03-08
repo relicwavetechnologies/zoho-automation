@@ -37,6 +37,8 @@ export interface MessageMetadata {
 export interface ToolCallInfo {
   id: string
   name: string
+  label: string
+  icon: string
   status: 'running' | 'completed' | 'failed'
   result?: string
 }
@@ -48,9 +50,19 @@ export interface LarkDocRef {
   updatedAtMs: number
 }
 
+/** Live in-flight agentic activity step shown during streaming */
+export interface ActivityStep {
+  id: string
+  name: string
+  label: string
+  icon: string
+  status: 'running' | 'done' | 'error'
+  resultSummary?: string
+}
+
 export interface StreamEvent {
-  type: 'text' | 'step' | 'tool' | 'done' | 'error'
-  data: string
+  type: 'text' | 'thinking' | 'activity' | 'activity_done' | 'step' | 'done' | 'error'
+  data: unknown
 }
 
 export type AppView = 'login' | 'loading' | 'chat'

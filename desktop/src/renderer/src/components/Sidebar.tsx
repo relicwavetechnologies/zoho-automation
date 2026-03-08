@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Plus, Search } from 'lucide-react'
+import { Plus, Search, Trash2 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useChat } from '../context/ChatContext'
 import type { Thread } from '../types'
@@ -18,9 +18,9 @@ export function Sidebar(): JSX.Element {
 
   const filtered = filter
     ? threads.filter(
-        (t) =>
-          (t.title ?? 'New thread').toLowerCase().includes(filter.toLowerCase()),
-      )
+      (t) =>
+        (t.title ?? 'New thread').toLowerCase().includes(filter.toLowerCase()),
+    )
     : threads
 
   const handleNewThread = async (): Promise<void> => {
@@ -110,28 +110,50 @@ function ThreadItem({
   isActive: boolean
   onClick: () => void
 }): JSX.Element {
+  const { deleteThread } = useChat()
   const title = thread.title ?? 'New thread'
   const time = thread.lastMessageAt
     ? formatRelativeTime(new Date(thread.lastMessageAt))
     : ''
 
+  const handleDelete = async (e: React.MouseEvent): Promise<void> => {
+    e.stopPropagation()
+    if (!window.confirm(`Delete "${title}"?`)) return
+    await deleteThread(thread.id)
+  }
+
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        'w-full text-left px-3 py-2 rounded-md mb-0.5 transition-colors group',
-        isActive
-          ? 'bg-[hsl(0,0%,14%)] text-[hsl(0,0%,88%)]'
-          : 'text-[hsl(0,0%,55%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,75%)]',
-      )}
-    >
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-sm truncate font-medium">{title}</span>
-        {time && (
-          <span className="text-[10px] text-[hsl(0,0%,35%)] shrink-0">{time}</span>
+    <div className="relative group mb-0.5">
+      <button
+        onClick={onClick}
+        className={cn(
+          'w-full text-left px-3 py-2 rounded-md transition-colors pr-8',
+          isActive
+            ? 'bg-[hsl(0,0%,14%)] text-[hsl(0,0%,88%)]'
+            : 'text-[hsl(0,0%,55%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,75%)]',
         )}
-      </div>
-    </button>
+      >
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-sm truncate font-medium">{title}</span>
+          {time && (
+            <span className="text-[10px] text-[hsl(0,0%,35%)] shrink-0">{time}</span>
+          )}
+        </div>
+      </button>
+
+      {/* Delete button — appears on hover */}
+      <button
+        onClick={handleDelete}
+        title="Delete thread"
+        className={cn(
+          'absolute right-1.5 top-1/2 -translate-y-1/2',
+          'p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity',
+          'text-[hsl(0,0%,35%)] hover:text-[hsl(0,55%,55%)] hover:bg-[hsl(0,0%,14%)]',
+        )}
+      >
+        <Trash2 size={12} />
+      </button>
+    </div>
   )
 }
 

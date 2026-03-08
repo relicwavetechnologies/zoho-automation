@@ -31,6 +31,12 @@ class DesktopThreadsController extends BaseController {
     const thread = await desktopThreadsService.createThread(s.userId, s.companyId);
     return res.status(201).json(ApiResponse.success(thread, 'Thread created'));
   };
+
+  delete = async (req: Request, res: Response) => {
+    const s = this.session(req);
+    await desktopThreadsService.deleteThread(req.params.threadId, s.userId);
+    return res.status(204).send();
+  };
 }
 
 export const desktopThreadsController = new DesktopThreadsController();

@@ -159,6 +159,15 @@ ipcMain.handle('desktop:thread:create', async (_event, token: string) => {
   return res.json()
 })
 
+// Threads: delete
+ipcMain.handle('desktop:thread:delete', async (_event, token: string, threadId: string) => {
+  const res = await net.fetch(`${BACKEND_URL}/api/desktop/threads/${threadId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return { success: res.ok }
+})
+
 // Chat: send message (returns stream URL info)
 ipcMain.handle(
   'desktop:chat:send',
@@ -198,7 +207,7 @@ ipcMain.handle(
       return { success: false }
     }
 
-    ;(async () => {
+    ; (async () => {
       const reader = res.body!.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
