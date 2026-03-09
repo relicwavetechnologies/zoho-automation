@@ -2,15 +2,14 @@ import { useEffect, useRef } from 'react'
 import { useChat } from '../context/ChatContext'
 import { MessageBubble } from './MessageBubble'
 import { EmptyThread } from './EmptyThread'
-import { ActivityBar, ThinkingShimmer } from './ActivityBar'
-import { MarkdownContent } from './MarkdownContent'
+import { ThinkingShimmer } from './ActivityBar'
+import { BlocksRenderer } from './BlocksRenderer'
 
 export function ChatPane(): JSX.Element {
   const {
     messages,
     isStreaming,
-    streamingText,
-    activitySteps,
+    liveBlocks,
     activeThread,
     error,
     clearError,
@@ -19,11 +18,9 @@ export function ChatPane(): JSX.Element {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamingText, activitySteps])
+  }, [messages, liveBlocks.length])
 
-  if (!activeThread) {
-    return <EmptyThread />
-  }
+  if (!activeThread) return <EmptyThread />
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -52,7 +49,7 @@ export function ChatPane(): JSX.Element {
           <MessageBubble key={msg.id} message={msg} />
         ))}
 
-        {/* ── Live agentic response area ─────────────────────────────── */}
+        {/* ── Live agentic response ─────────────────────────────────────── */}
         {isStreaming && (
           <div className="mb-4">
             <div className="flex gap-3">
@@ -62,33 +59,18 @@ export function ChatPane(): JSX.Element {
               </div>
 
               <div className="min-w-0 flex-1">
-                {/* 1. Thinking shimmer — shows immediately on send while no text/steps yet */}
-                {!streamingText && activitySteps.length === 0 && (
-                  <ThinkingShimmer />
+                {/*
+                  When no blocks have arrived yet (request in flight, before first SSE),
+                  show a "Working..." shimmer so the user knows the request is being processed.
+                  Once blocks arrive, they replace this indicator.
+                */}
+                {liveBlocks.length === 0 && (
+                  <ThinkingShimmer label="Working..." />
                 )}
 
-                {/* 2. Activity feed — live tool steps, dim colored */}
-                {activitySteps.length > 0 && (
-                  <ActivityBar steps={activitySteps} />
-                )}
-
-                {/* 3. Streaming AI text — bright white, appears after tool steps complete */}
-                {streamingText && (
-                  <div className="streaming-cursor mt-1">
-                    <MarkdownContent
-                      content={streamingText}
-                      className="desktop-markdown text-sm leading-relaxed text-[hsl(0,0%,88%)]"
-                    />
-                  </div>
-                )}
-
-                {/* 4. Waiting dots — should never be seen since shimmer covers it, but kept as safety net */}
-                {false && (
-                  <div className="flex gap-1 pt-1">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[hsl(0,0%,28%)] animate-pulse" style={{ animationDelay: '0ms' }} />
-                    <span className="h-1.5 w-1.5 rounded-full bg-[hsl(0,0%,28%)] animate-pulse" style={{ animationDelay: '200ms' }} />
-                    <span className="h-1.5 w-1.5 rounded-full bg-[hsl(0,0%,28%)] animate-pulse" style={{ animationDelay: '400ms' }} />
-                  </div>
+                {/* Ordered timeline — tool rows, thinking shimmer/labels, text blocks */}
+                {liveBlocks.length > 0 && (
+                  <BlocksRenderer blocks={liveBlocks} isStreaming />
                 )}
               </div>
             </div>

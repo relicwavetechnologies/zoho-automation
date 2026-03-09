@@ -33,14 +33,19 @@ const sendSchema = z.object({
 
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
 
-type PersistedToolCall = {
+// Mirrors the frontend ContentBlock union type — kept in sync manually
+type ToolBlock = {
+  type: 'tool';
   id: string;
   name: string;
   label: string;
   icon: string;
-  status: 'running' | 'completed' | 'failed';
-  result?: string;
+  status: 'running' | 'done' | 'failed';
+  resultSummary?: string;
 };
+type TextBlock = { type: 'text'; content: string };
+type ThinkingBlock = { type: 'thinking' };
+type ContentBlock = ToolBlock | TextBlock | ThinkingBlock;
 
 class DesktopChatController extends BaseController {
   private session(req: Request): MemberSessionDTO {
@@ -49,7 +54,6 @@ class DesktopChatController extends BaseController {
     return s;
   }
 
-  /** POST /api/desktop/chat/:threadId/send — Accept message, persist, then stream response. */
   send = async (req: Request, res: Response) => {
     const session = this.session(req);
     const threadId = req.params.threadId;
@@ -63,11 +67,9 @@ class DesktopChatController extends BaseController {
     const taskId = randomUUID();
     const conversationKey = `desktop:${threadId}`;
 
-    // 1. Persist user message
     await desktopThreadsService.addMessage(threadId, session.userId, 'user', message);
     conversationMemoryStore.addUserMessage(conversationKey, messageId, message);
 
-    // 2. Store user turn in vector memory (fire-and-forget)
     personalVectorMemoryService.storeChatTurn({
       companyId: session.companyId,
       requesterUserId: session.userId,
@@ -79,7 +81,6 @@ class DesktopChatController extends BaseController {
       chatId: threadId,
     }).catch((err) => logger.error('desktop.vector.user.store.failed', { error: err }));
 
-    // 3. Retrieve personal memory context
     let memoryContext = '';
     try {
       const memories = await personalVectorMemoryService.query({
@@ -97,7 +98,6 @@ class DesktopChatController extends BaseController {
       logger.warn('desktop.vector.query.failed', { error: err });
     }
 
-    // 4. Get conversation history
     const history = conversationMemoryStore.getContextMessages(conversationKey, 12);
     let historyContext = '';
     if (history.length > 1) {
@@ -106,16 +106,13 @@ class DesktopChatController extends BaseController {
         '\n--- End history ---\n';
     }
 
-    // 5. Check allowed tools
     await toolPermissionService.getAllowedTools(
       session.companyId,
       session.role as 'MEMBER' | 'COMPANY_ADMIN' | 'SUPER_ADMIN',
     );
 
-    // 6. Build objective
     const objective = [memoryContext, historyContext, message].filter(Boolean).join('\n');
 
-    // 7. Set up SSE streaming
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -125,50 +122,76 @@ class DesktopChatController extends BaseController {
       res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
     };
 
-    // Immediately signal "thinking" so the shimmer appears right away
     sendEvent('thinking', 'Thinking...');
 
+    // ── Ordered content blocks accumulator ──────────────────────────────────
+    const contentBlocks: ContentBlock[] = [];
     let assistantText = '';
     let streamFailed = false;
     let streamErrorMessage: string | null = null;
-    let activityLog: PersistedToolCall[] = [];
 
-    const upsertActivity = (
-      payload: ActivityPayload,
-      status: PersistedToolCall['status'],
-    ): void => {
-      const next: PersistedToolCall = {
+    // Helper: push a new thinking block and record when it started
+    const pushThinkingBlock = (): void => {
+      (contentBlocks as any[]).push({ type: 'thinking', _startedAt: Date.now() });
+    };
+
+    // Helper: finalize the last open thinking block with duration
+    const finalizeLastThinkingBlock = (): void => {
+      const last = contentBlocks[contentBlocks.length - 1] as any;
+      if (last?.type === 'thinking' && last._startedAt) {
+        last.durationMs = Date.now() - last._startedAt;
+        delete last._startedAt;
+      }
+    };
+
+    // First block is always thinking
+    pushThinkingBlock();
+
+    const appendTextChunk = (chunk: string): void => {
+      assistantText += chunk;
+      // If transitioning from thinking → text, finalize the thinking block
+      const last = contentBlocks[contentBlocks.length - 1];
+      if (last?.type === 'thinking') {
+        finalizeLastThinkingBlock();
+        contentBlocks.push({ type: 'text', content: chunk });
+      } else if (last?.type === 'text') {
+        last.content += chunk;
+      } else {
+        contentBlocks.push({ type: 'text', content: chunk });
+      }
+    };
+
+    const onActivity = (payload: ActivityPayload): void => {
+      // Finalize any open thinking block before the tool starts
+      finalizeLastThinkingBlock();
+      contentBlocks.push({
+        type: 'tool',
         id: payload.id,
         name: payload.name,
         label: payload.label,
         icon: payload.icon,
-        status,
-        result: payload.resultSummary,
-      };
-
-      const existingIndex = activityLog.findIndex((entry) => entry.id === payload.id);
-      if (existingIndex === -1) {
-        activityLog = [...activityLog, next];
-        return;
-      }
-
-      activityLog = activityLog.map((entry, index) => {
-        if (index !== existingIndex) return entry;
-        return {
-          ...entry,
-          ...next,
-          result: payload.resultSummary ?? entry.result,
-        };
+        status: 'running',
       });
     };
 
-    // Each request gets a unique ID used as the key in the activity bus
+    const onActivityDone = (payload: ActivityPayload): void => {
+      const block = contentBlocks.find(
+        (b): b is ToolBlock => b.type === 'tool' && b.id === payload.id,
+      );
+      if (block) {
+        block.status = 'done';
+        if (payload.resultSummary) block.resultSummary = payload.resultSummary;
+        if (payload.label) block.label = payload.label;
+      }
+      // AI starts thinking again after a tool finishes
+      pushThinkingBlock();
+    };
+
     const streamRequestId = randomUUID();
 
-    // Register callback so agent tools can emit live activity events to this stream
     registerActivityBus(streamRequestId, (type, payload) => {
-      if (type === 'activity') upsertActivity(payload, 'running');
-      if (type === 'activity_done') upsertActivity(payload, 'completed');
+      if (type === 'activity') onActivity(payload);
+      if (type === 'activity_done') onActivityDone(payload);
       sendEvent(type, payload);
     });
 
@@ -179,7 +202,6 @@ class DesktopChatController extends BaseController {
       requestContext.set('chatId', threadId);
       requestContext.set('taskId', taskId);
       requestContext.set('messageId', messageId);
-      // Use streamRequestId so tools can look up the bus
       requestContext.set('requestId', streamRequestId);
       requestContext.set('channel', 'desktop');
       requestContext.set('requesterEmail', session.email ?? '');
@@ -194,10 +216,9 @@ class DesktopChatController extends BaseController {
       );
 
       const streamResult = await agent.stream(objective, runOptions as any);
-      const textStream = streamResult.textStream;
 
-      for await (const chunk of textStream) {
-        assistantText += chunk;
+      for await (const chunk of streamResult.textStream) {
+        appendTextChunk(chunk);
         sendEvent('text', chunk);
       }
     } catch (err) {
@@ -205,22 +226,22 @@ class DesktopChatController extends BaseController {
       streamFailed = true;
       streamErrorMessage = errorMessage;
       logger.error('desktop.chat.stream.error', { threadId, userId: session.userId, error: errorMessage });
+      // Mark any running tool blocks as failed
+      for (const b of contentBlocks) {
+        if (b.type === 'tool' && b.status === 'running') b.status = 'failed';
+      }
       sendEvent('error', errorMessage);
     } finally {
-      // Deregister the bus for this request
       unregisterActivityBus(streamRequestId);
 
-      if (streamFailed) {
-        activityLog = activityLog.map((entry) =>
-          entry.status === 'running'
-            ? { ...entry, status: 'failed', result: entry.result ?? streamErrorMessage ?? undefined }
-            : entry,
-        );
-      }
+      // Finalize any trailing thinking block that never got resolved
+      finalizeLastThinkingBlock();
 
-      if (assistantText || activityLog.length > 0) {
-        const metadata: Record<string, unknown> = {};
-        if (activityLog.length > 0) metadata.toolCalls = activityLog;
+      if (assistantText || contentBlocks.length > 0) {
+        const metadata: Record<string, unknown> = {
+          // Save the full ordered timeline — this is what the UI reads on reload
+          contentBlocks,
+        };
         if (streamErrorMessage) metadata.error = streamErrorMessage;
 
         const persistedMessage = await desktopThreadsService
@@ -231,10 +252,15 @@ class DesktopChatController extends BaseController {
             assistantText,
             Object.keys(metadata).length > 0 ? metadata : undefined,
           )
-          .catch((err) => logger.error('desktop.message.persist.failed', { error: err }));
+          .catch((err) => {
+            logger.error('desktop.message.persist.failed', { error: err });
+            return undefined;
+          });
+
         if (!streamFailed) {
           sendEvent('done', persistedMessage ? { message: persistedMessage } : 'complete');
         }
+
         if (assistantText) {
           conversationMemoryStore.addAssistantMessage(conversationKey, taskId, assistantText);
           personalVectorMemoryService.storeChatTurn({
@@ -251,6 +277,7 @@ class DesktopChatController extends BaseController {
       } else if (!streamFailed) {
         sendEvent('done', 'complete');
       }
+
       res.end();
     }
   };

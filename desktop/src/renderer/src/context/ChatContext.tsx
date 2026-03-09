@@ -7,7 +7,7 @@ import {
   useEffect,
   type ReactNode,
 } from 'react'
-import type { Thread, Message, ActivityStep } from '../types'
+import type { Thread, Message, ContentBlock } from '../types'
 import { useAuth } from './AuthContext'
 
 interface ChatState {
@@ -15,9 +15,10 @@ interface ChatState {
   activeThread: Thread | null
   messages: Message[]
   isStreaming: boolean
+  /** True while waiting for the first block (shows thinking shimmer) */
   isThinking: boolean
-  streamingText: string
-  activitySteps: ActivityStep[]
+  /** Ordered live timeline during streaming — replaces activitySteps + streamingText */
+  liveBlocks: ContentBlock[]
   error: string | null
   loadThreads: () => Promise<void>
   selectThread: (threadId: string) => Promise<void>
@@ -29,17 +30,6 @@ interface ChatState {
 
 const ChatContext = createContext<ChatState | null>(null)
 
-function buildToolCallsFromSteps(steps: ActivityStep[]): NonNullable<Message['metadata']>['toolCalls'] {
-  return steps.map((s) => ({
-    id: s.id,
-    name: s.name,
-    label: s.label,
-    icon: s.icon,
-    status: s.status === 'done' ? 'completed' : s.status === 'error' ? 'failed' : 'running',
-    result: s.resultSummary,
-  }))
-}
-
 export function ChatProvider({ children }: { children: ReactNode }): JSX.Element {
   const { token } = useAuth()
   const [threads, setThreads] = useState<Thread[]>([])
@@ -47,128 +37,146 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const [messages, setMessages] = useState<Message[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [isThinking, setIsThinking] = useState(false)
-  const [streamingText, setStreamingText] = useState('')
-  const [activitySteps, setActivitySteps] = useState<ActivityStep[]>([])
+  const [liveBlocks, setLiveBlocks] = useState<ContentBlock[]>([])
   const [error, setError] = useState<string | null>(null)
 
   const activeRequestIdRef = useRef<string | null>(null)
   const activeThreadRef = useRef<Thread | null>(null)
-  const streamingTextRef = useRef('')
-  const activityStepsRef = useRef<ActivityStep[]>([])
+  const liveBlocksRef = useRef<ContentBlock[]>([])
   const loadThreadsRef = useRef<(() => Promise<void>) | null>(null)
 
+  // ── SSE Event Handler ──────────────────────────────────────────────────────
   useEffect(() => {
     const unsubscribe = window.desktopAPI.chat.onStreamEvent(({ requestId, event }) => {
       if (activeRequestIdRef.current !== requestId) return
 
       switch (event.type) {
         case 'thinking': {
-          // AI started thinking — show shimmer, clear any previous steps
           setIsThinking(true)
-          setActivitySteps([])
-          activityStepsRef.current = []
+          setLiveBlocks((prev) => {
+            const next: ContentBlock[] = [...prev, { type: 'thinking' }]
+            liveBlocksRef.current = next
+            return next
+          })
           break
         }
-        case 'text': {
-          // First text token — stop showing "thinking" shimmer
-          setIsThinking(false)
-          const delta = String(event.data ?? '')
-          setStreamingText((prev) => prev + delta)
-          break
-        }
+
         case 'activity': {
-          // A tool just started — add it to the live activity feed
           const raw = event.data as { id: string; name: string; label: string; icon: string }
-          const step: ActivityStep = {
-            id: raw.id ?? String(Date.now()),
-            name: raw.name ?? '',
-            label: raw.label ?? raw.name ?? 'Working...',
-            icon: raw.icon ?? 'zap',
-            status: 'running',
-          }
           setIsThinking(false)
-          setActivitySteps((prev) => {
-            const next = [...prev, step]
-            activityStepsRef.current = next
+          setLiveBlocks((prev) => {
+            const next: ContentBlock[] = [
+              ...prev,
+              {
+                type: 'tool',
+                id: raw.id ?? String(Date.now()),
+                name: raw.name ?? '',
+                label: raw.label ?? raw.name ?? 'Working...',
+                icon: raw.icon ?? 'zap',
+                status: 'running',
+              },
+            ]
+            liveBlocksRef.current = next
             return next
           })
           break
         }
+
         case 'activity_done': {
-          // A tool finished — mark it done and keep the final server label/icon if provided
           const raw = event.data as {
-            id: string
-            label?: string
-            icon?: string
-            name?: string
-            resultSummary?: string
+            id: string; label?: string; icon?: string; name?: string; resultSummary?: string
           }
-          setActivitySteps((prev) => {
-            const next = prev.map((s) =>
-              s.id === raw.id
-                ? {
-                  ...s,
-                  name: raw.name ?? s.name,
-                  label: raw.label ?? s.label,
-                  icon: raw.icon ?? s.icon,
-                  status: 'done' as const,
-                  resultSummary: raw.resultSummary,
-                }
-                : s,
-            )
-            activityStepsRef.current = next
+          setIsThinking(true)
+          setLiveBlocks((prev: ContentBlock[]) => {
+            const next: ContentBlock[] = [
+              ...prev.map((b: ContentBlock) =>
+                b.type === 'tool' && b.id === raw.id
+                  ? ({
+                    ...b,
+                    name: raw.name ?? b.name,
+                    label: raw.label ?? b.label,
+                    icon: raw.icon ?? b.icon,
+                    status: 'done' as const,
+                    resultSummary: raw.resultSummary,
+                  } as ContentBlock)
+                  : b,
+              ),
+              { type: 'thinking' },
+            ]
+            liveBlocksRef.current = next
             return next
           })
           break
         }
+
+        case 'text': {
+          const chunk = String(event.data ?? '')
+          setIsThinking(false)
+          setLiveBlocks((prev) => {
+            const last = prev[prev.length - 1]
+            let next: ContentBlock[]
+            if (last?.type === 'text') {
+              next = [
+                ...prev.slice(0, -1),
+                { type: 'text', content: last.content + chunk },
+              ]
+            } else {
+              next = [...prev, { type: 'text', content: chunk }]
+            }
+            liveBlocksRef.current = next
+            return next
+          })
+          break
+        }
+
         case 'error': {
           setError(String(event.data ?? 'Stream failed. Please try again.'))
           setIsStreaming(false)
           setIsThinking(false)
-          setActivitySteps([])
-          activityStepsRef.current = []
+          setLiveBlocks([])
+          liveBlocksRef.current = []
           activeRequestIdRef.current = null
           break
         }
+
         case 'done': {
           const raw = event.data as { message?: Message } | null
           const persistedMessage = raw?.message
 
-          // Finalize — prefer the persisted backend message so tool-call metadata survives reloads
           setMessages((prev) => {
             if (persistedMessage) {
+              // Server sent the DB-persisted message — use it directly (has contentBlocks)
               return [...prev, persistedMessage]
             }
-
-            const assistantText = streamingTextRef.current.trim()
-            if (!assistantText) return prev
-            const steps = activityStepsRef.current
+            // Fallback: build from live blocks
+            const blocks = liveBlocksRef.current
+            const textContent = blocks
+              .filter((b): b is { type: 'text'; content: string } => b.type === 'text')
+              .map((b) => b.content)
+              .join('')
+            if (!textContent && blocks.length === 0) return prev
             return [
               ...prev,
               {
                 id: `assistant-${Date.now()}`,
                 threadId: activeThreadRef.current?.id ?? '',
                 role: 'assistant',
-                content: assistantText,
+                content: textContent,
                 createdAt: new Date().toISOString(),
-                metadata:
-                  steps.length > 0
-                    ? {
-                      toolCalls: buildToolCallsFromSteps(steps),
-                    }
-                    : undefined,
+                metadata: blocks.length > 0 ? { contentBlocks: blocks } : undefined,
               },
             ]
           })
-          setStreamingText('')
+
+          setLiveBlocks([])
+          liveBlocksRef.current = []
           setIsStreaming(false)
           setIsThinking(false)
-          setActivitySteps([])
-          activityStepsRef.current = []
           activeRequestIdRef.current = null
           void loadThreadsRef.current?.()
           break
         }
+
         default:
           break
       }
@@ -178,15 +186,12 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   }, [])
 
   useEffect(() => { activeThreadRef.current = activeThread }, [activeThread])
-  useEffect(() => { streamingTextRef.current = streamingText }, [streamingText])
 
   const loadThreads = useCallback(async () => {
     if (!token) return
     try {
       const res = await window.desktopAPI.threads.list(token)
-      if (res.success && res.data) {
-        setThreads(res.data as Thread[])
-      }
+      if (res.success && res.data) setThreads(res.data as Thread[])
     } catch {
       setError('Failed to load threads')
     }
@@ -240,31 +245,22 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     setMessages((prev) => [...prev, userMsg])
     setIsStreaming(true)
     setIsThinking(false)
-    setStreamingText('')
-    setActivitySteps([])
-    activityStepsRef.current = []
+    setLiveBlocks([])
+    liveBlocksRef.current = []
     setError(null)
 
     try {
       const requestId = crypto.randomUUID()
       activeRequestIdRef.current = requestId
-      const sendRes = await window.desktopAPI.chat.startStream(
-        token,
-        activeThread.id,
-        text,
-        requestId,
-      )
+      const sendRes = await window.desktopAPI.chat.startStream(token, activeThread.id, text, requestId)
       if (!sendRes.success) {
         setError('Failed to send message')
         setIsStreaming(false)
         setIsThinking(false)
         activeRequestIdRef.current = null
-        return
       }
     } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        setError('Stream failed. Please try again.')
-      }
+      if ((err as Error).name !== 'AbortError') setError('Stream failed. Please try again.')
       setIsStreaming(false)
       setIsThinking(false)
       activeRequestIdRef.current = null
@@ -283,7 +279,6 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         return
       }
       setThreads((prev) => prev.filter((t) => t.id !== threadId))
-      // If the deleted thread was active, clear the view
       if (activeThreadRef.current?.id === threadId) {
         setActiveThread(null)
         setMessages([])
@@ -302,8 +297,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         messages,
         isStreaming,
         isThinking,
-        streamingText,
-        activitySteps,
+        liveBlocks,
         error,
         loadThreads,
         selectThread,

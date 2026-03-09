@@ -27,7 +27,37 @@ export interface Message {
   createdAt: string
 }
 
+// ─── Content Blocks — unified ordered timeline ────────────────────────────────
+
+export interface ToolContentBlock {
+  type: 'tool'
+  id: string
+  name: string
+  label: string
+  icon: string
+  status: 'running' | 'done' | 'failed'
+  resultSummary?: string
+}
+
+export interface TextContentBlock {
+  type: 'text'
+  content: string
+}
+
+export interface ThinkingContentBlock {
+  type: 'thinking'
+  /** Duration in milliseconds (set when the thinking period is finalized) */
+  durationMs?: number
+  /** Optional internal reasoning text (populated when model exposes it) */
+  text?: string
+}
+
+export type ContentBlock = ToolContentBlock | TextContentBlock | ThinkingContentBlock
+
+// ─── Message metadata ─────────────────────────────────────────────────────────
 export interface MessageMetadata {
+  contentBlocks?: ContentBlock[]
+  /** Legacy — kept for backward compat */
   toolCalls?: ToolCallInfo[]
   larkDocs?: LarkDocRef[]
   error?: string
@@ -48,16 +78,6 @@ export interface LarkDocRef {
   documentId: string
   url: string
   updatedAtMs: number
-}
-
-/** Live in-flight agentic activity step shown during streaming */
-export interface ActivityStep {
-  id: string
-  name: string
-  label: string
-  icon: string
-  status: 'running' | 'done' | 'error'
-  resultSummary?: string
 }
 
 export interface StreamEvent {

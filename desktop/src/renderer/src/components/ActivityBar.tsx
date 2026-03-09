@@ -1,5 +1,4 @@
 import { CheckCircle2, Loader2, XCircle, Search, Globe, FilePen, FileText, Share2, BarChart2, List, UserPlus, Edit, Zap } from 'lucide-react'
-import type { ActivityStep } from '../types'
 import { cn } from '../lib/utils'
 import TextShimmer from './TextShimmer'
 
@@ -17,10 +16,10 @@ const ICON_MAP: Record<string, React.ReactNode> = {
 }
 
 interface Props {
-    steps: ActivityStep[]
+    steps: { id: string; icon: string; label: string; status: 'running' | 'done' | 'error' }[]
 }
 
-function StepIcon({ icon, status }: { icon: string; status: ActivityStep['status'] }) {
+function StepIcon({ icon, status }: { icon: string; status: 'running' | 'done' | 'error' }) {
     if (status === 'running') {
         return <Loader2 size={11} className="text-[hsl(217,70%,55%)] animate-spin shrink-0" />
     }
@@ -74,7 +73,7 @@ export function ActivityBar({ steps }: Props): JSX.Element | null {
 }
 
 /** ThinkingShimmer — shimmer text shown before the AI produces any output */
-export function ThinkingShimmer(): JSX.Element {
+export function ThinkingShimmer({ label = 'Thinking...' }: { label?: string }): JSX.Element {
     return (
         <div className="pt-1 pb-1">
             <TextShimmer
@@ -82,7 +81,7 @@ export function ThinkingShimmer(): JSX.Element {
                 duration={1.8}
                 spread={3}
             >
-                Thinking...
+                {label}
             </TextShimmer>
         </div>
     )

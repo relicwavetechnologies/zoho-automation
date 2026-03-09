@@ -6,8 +6,11 @@ import { Header } from './components/Header'
 import { ChatPane } from './components/ChatPane'
 import { Composer } from './components/Composer'
 
+import { useState } from 'react'
+
 function AppShell(): JSX.Element {
   const { session, loading } = useAuth()
+  const [sidebarOpen, setSidebarOpen] = useState(true)
 
   if (loading) {
     return (
@@ -30,9 +33,9 @@ function AppShell(): JSX.Element {
   return (
     <ChatProvider>
       <div className="flex h-full" style={{ background: 'hsl(var(--background))' }}>
-        <Sidebar />
+        <Sidebar isOpen={sidebarOpen} onToggle={() => setSidebarOpen(false)} />
         <div className="flex flex-col flex-1 min-w-0">
-          <Header />
+          <Header sidebarOpen={sidebarOpen} toggleSidebar={() => setSidebarOpen(true)} />
           <ChatPane />
           <Composer />
         </div>
@@ -42,6 +45,7 @@ function AppShell(): JSX.Element {
 }
 
 export function App(): JSX.Element {
+
   return (
     <AuthProvider>
       <AppShell />
