@@ -4,6 +4,7 @@ import type { Prisma } from '../../../generated/prisma';
 import type { VectorUpsertDTO } from '../../contracts';
 import { zohoHistoricalAdapter } from '../../integrations/zoho/zoho-historical.adapter';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
+import { extractNormalizedEmails } from '../../integrations/zoho/zoho-email-scope';
 import { embeddingService } from '../../integrations/embedding';
 import { qdrantAdapter, vectorDocumentRepository } from '../../integrations/vector';
 import { prisma } from '../../../utils/prisma';
@@ -90,6 +91,7 @@ const mapToVectorRecords = async (input: {
 }): Promise<(VectorUpsertDTO & { embedding: number[]; connectionId: string })[]> => {
   const chunks = createChunks(input.payload);
   const embeddings = await embeddingService.embed(chunks);
+  const referenceEmails = extractNormalizedEmails(input.payload);
 
   return chunks.map((chunk, index) => ({
     companyId: input.companyId,
@@ -99,8 +101,10 @@ const mapToVectorRecords = async (input: {
     chunkIndex: index,
     contentHash: hashContent(chunk),
     visibility: 'shared' as const,
+    referenceEmails,
     payload: {
       ...input.payload,
+      referenceEmails,
       _chunk: chunk,
     },
     embedding: embeddings[index],

@@ -45,6 +45,8 @@ export const zohoReadTool = createTool({
       companyId,
       larkTenantKey: requestContext?.get('larkTenantKey'),
       userId: requestContext?.get('userId'),
+      channelIdentityId: requestContext?.get('channelIdentityId'),
+      requesterEmail: requestContext?.get('requesterEmail'),
       chatId: requestContext?.get('chatId'),
     };
 

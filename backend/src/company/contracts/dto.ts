@@ -26,6 +26,7 @@ export type NormalizedIncomingMessageDTO = {
     companyId?: string;
     channelIdentityId?: string;
     userRole?: string;
+    requesterEmail?: string;
   };
 };
 
@@ -127,6 +128,7 @@ export type VectorUpsertDTO = {
   visibility?: 'personal' | 'shared' | 'public';
   ownerUserId?: string;
   conversationKey?: string;
+  referenceEmails?: string[];
   payload: Record<string, unknown>;
 };
 

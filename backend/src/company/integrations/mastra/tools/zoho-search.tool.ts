@@ -2,6 +2,7 @@ import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 
 import { companyContextResolver, zohoRetrievalService } from '../../../agents/support';
+import { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } from '../../../support/runtime-controls';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
 
 const TOOL_ID = 'search-zoho-context';
@@ -25,10 +26,29 @@ export const zohoSearchTool = createTool({
 
     const companyId = requestContext?.get('companyId') as string | undefined;
     const larkTenantKey = requestContext?.get('larkTenantKey') as string | undefined;
+    const requesterEmail = requestContext?.get('requesterEmail') as string | undefined;
+    const channelIdentityId = requestContext?.get('channelIdentityId') as string | undefined;
+    const requesterUserId = channelIdentityId || (requestContext?.get('userId') as string | undefined);
 
     const resolved = await companyContextResolver.resolveCompanyId({ companyId, larkTenantKey });
+    const strictUserScopeEnabled = await isCompanyControlEnabled({
+      controlKey: COMPANY_CONTROL_KEYS.zohoUserScopedReadStrictEnabled,
+      companyId: resolved,
+      defaultValue: true,
+    });
+    if (strictUserScopeEnabled && (!requesterEmail || !requesterEmail.trim())) {
+      return {
+        error: 'User-scoped Zoho access is enabled, but requester email is missing for this request.',
+        records: [],
+        count: 0,
+        companyId: resolved,
+      };
+    }
     const matches = await zohoRetrievalService.query({
       companyId: resolved,
+      requesterUserId,
+      requesterEmail,
+      strictUserScopeEnabled,
       text: inputData.query,
       limit: inputData.limit ?? 5,
     });

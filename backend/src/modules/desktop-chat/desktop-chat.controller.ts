@@ -138,6 +138,7 @@ class DesktopChatController extends BaseController {
       // Use streamRequestId so tools can look up the bus
       requestContext.set('requestId', streamRequestId);
       requestContext.set('channel', 'desktop');
+      requestContext.set('requesterEmail', session.email ?? '');
 
       const agent = mastra.getAgent(
         agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent',

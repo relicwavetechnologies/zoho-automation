@@ -1,6 +1,7 @@
 import { embeddingService } from '../../integrations/embedding';
 import { qdrantAdapter } from '../../integrations/vector';
 import { logger } from '../../../utils/logger';
+import { normalizeEmail, payloadReferencesEmail } from '../../integrations/zoho/zoho-email-scope';
 
 export type ZohoRetrievalItem = {
   sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
@@ -14,6 +15,8 @@ export class ZohoRetrievalService {
   async query(input: {
     companyId: string;
     requesterUserId?: string;
+    requesterEmail?: string;
+    strictUserScopeEnabled?: boolean;
     text: string;
     limit?: number;
     sourceTypes?: Array<ZohoRetrievalItem['sourceType']>;
@@ -21,34 +24,50 @@ export class ZohoRetrievalService {
     const limit = Math.max(1, Math.min(10, input.limit ?? 4));
     const startedAt = Date.now();
     try {
+      const strictUserScopeEnabled = input.strictUserScopeEnabled ?? true;
+      const normalizedRequesterEmail = normalizeEmail(input.requesterEmail);
+      if (strictUserScopeEnabled && !normalizedRequesterEmail) {
+        logger.warn('retrieval.query.blocked_missing_requester_email', {
+          companyId: input.companyId,
+        });
+        return [];
+      }
+
       const [queryVector] = await embeddingService.embed([input.text]);
       const matches = await qdrantAdapter.search({
         companyId: input.companyId,
         requesterUserId: input.requesterUserId,
+        requesterEmail: normalizedRequesterEmail,
+        enforceEmailMatch: strictUserScopeEnabled,
         vector: queryVector,
         limit,
         sourceTypes: input.sourceTypes ?? ['zoho_lead', 'zoho_contact', 'zoho_deal', 'zoho_ticket'],
         includePersonal: false,
         includeShared: true,
-        includePublic: true,
+        includePublic: false,
       });
+
+      const safeMatches =
+        strictUserScopeEnabled && normalizedRequesterEmail
+          ? matches.filter((match) => payloadReferencesEmail(match.payload, normalizedRequesterEmail))
+          : matches;
 
       logger.success('retrieval.query.executed', {
         companyId: input.companyId,
         limit,
-        matchCount: matches.length,
+        matchCount: safeMatches.length,
         provider: embeddingService.providerName,
         latencyMs: Date.now() - startedAt,
       });
 
-      if (matches.length === 0) {
+      if (safeMatches.length === 0) {
         logger.info('retrieval.query.empty', {
           companyId: input.companyId,
           limit,
         });
       }
 
-      return matches.map((match) => ({
+      return safeMatches.map((match) => ({
         sourceType: match.sourceType as ZohoRetrievalItem['sourceType'],
         sourceId: match.sourceId,
         chunkIndex: match.chunkIndex,

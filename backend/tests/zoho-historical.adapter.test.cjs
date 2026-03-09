@@ -14,14 +14,14 @@ test('ZohoDataClient.fetchHistoricalPage paginates module pages then advances mo
     httpClient: {
       requestJson: async ({ path }) => {
         calls.push(path);
-        if (path.includes('/Contacts') && path.includes('page=1')) {
+        if (path.includes('/Leads') && path.includes('page=1')) {
           return {
             data: [{ id: 'c1', name: 'Alice' }],
             info: { more_records: false, count: 1 },
           };
         }
 
-        if (path.includes('/Deals') && path.includes('page=1')) {
+        if (path.includes('/Contacts') && path.includes('page=1')) {
           return {
             data: [{ id: 'd1', deal_name: 'Deal A' }],
             info: { more_records: false, count: 1 },
@@ -40,7 +40,7 @@ test('ZohoDataClient.fetchHistoricalPage paginates module pages then advances mo
     companyId: 'cmp-1',
     pageSize: 50,
   });
-  assert.equal(first.records[0].sourceType, 'zoho_contact');
+  assert.equal(first.records[0].sourceType, 'zoho_lead');
   assert.ok(first.nextCursor);
 
   const second = await client.fetchHistoricalPage({
@@ -48,7 +48,7 @@ test('ZohoDataClient.fetchHistoricalPage paginates module pages then advances mo
     pageSize: 50,
     cursor: first.nextCursor,
   });
-  assert.equal(second.records[0].sourceType, 'zoho_deal');
+  assert.equal(second.records[0].sourceType, 'zoho_contact');
   assert.ok(second.nextCursor);
   assert.equal(calls.length, 2);
 });
@@ -128,5 +128,88 @@ test('ZohoDataClient uses company-scoped api base via resolveCredentials when av
 
   assert.equal(result.records.length, 1);
   assert.equal(scopedCalls.length, 1);
-  assert.match(scopedCalls[0], /\/crm\/v2\/Contacts\?page=1&per_page=1/);
+  assert.match(scopedCalls[0], /\/crm\/v2\/Leads\?page=1&per_page=1/);
+});
+
+test('ZohoDataClient.fetchUserScopedRecords filters by requester email exactly after normalization', async () => {
+  const client = new ZohoDataClient({
+    tokenService: {
+      getValidAccessToken: async () => 'token-1',
+      forceRefresh: async () => 'token-2',
+    },
+    httpClient: {
+      requestJson: async ({ path, body }) => {
+        if (path.startsWith('/crm/v8/settings/fields')) {
+          return {
+            fields: [
+              { api_name: 'Email', data_type: 'email' },
+            ],
+          };
+        }
+
+        if (path === '/crm/v8/coql') {
+          assert.ok(String(body.select_query).includes("Email = 'owner@example.com'"));
+          return {
+            data: [{ id: 'c1' }, { id: 'c2' }],
+          };
+        }
+
+        if (path.endsWith('/Contacts/c1')) {
+          return {
+            data: [{ id: 'c1', Email: ' Owner@example.com ' }],
+          };
+        }
+
+        if (path.endsWith('/Contacts/c2')) {
+          return {
+            data: [{ id: 'c2', Email: 'someoneelse@example.com' }],
+          };
+        }
+
+        throw new Error(`Unexpected path ${path}`);
+      },
+    },
+  });
+
+  const result = await client.fetchUserScopedRecords({
+    companyId: 'cmp-1',
+    sourceType: 'zoho_contact',
+    requesterEmail: 'owner@example.com',
+    limit: 5,
+    maxPages: 1,
+  });
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].sourceId, 'c1');
+});
+
+test('ZohoDataClient.fetchUserScopedRecords fails closed when module has no safe email predicates', async () => {
+  const client = new ZohoDataClient({
+    tokenService: {
+      getValidAccessToken: async () => 'token-1',
+      forceRefresh: async () => 'token-2',
+    },
+    httpClient: {
+      requestJson: async ({ path }) => {
+        if (path.startsWith('/crm/v8/settings/fields')) {
+          return {
+            fields: [{ api_name: 'Stage', data_type: 'picklist' }],
+          };
+        }
+        throw new Error(`Unexpected path ${path}`);
+      },
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      client.fetchUserScopedRecords({
+        companyId: 'cmp-1',
+        sourceType: 'zoho_deal',
+        requesterEmail: 'owner@example.com',
+        limit: 5,
+        maxPages: 1,
+      }),
+    (error) => error && error.code === 'schema_mismatch',
+  );
 });
