@@ -20,6 +20,7 @@ import { logger } from '../../utils/logger';
 import {
   registerActivityBus,
   unregisterActivityBus,
+  type ActivityPayload,
 } from '../../company/integrations/mastra/tools/activity-bus';
 
 const KNOWN_AGENTS = ['supervisorAgent', 'zohoAgent', 'outreachAgent', 'searchAgent'] as const;
@@ -31,6 +32,15 @@ const sendSchema = z.object({
 });
 
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
+
+type PersistedToolCall = {
+  id: string;
+  name: string;
+  label: string;
+  icon: string;
+  status: 'running' | 'completed' | 'failed';
+  result?: string;
+};
 
 class DesktopChatController extends BaseController {
   private session(req: Request): MemberSessionDTO {
@@ -119,12 +129,46 @@ class DesktopChatController extends BaseController {
     sendEvent('thinking', 'Thinking...');
 
     let assistantText = '';
+    let streamFailed = false;
+    let streamErrorMessage: string | null = null;
+    let activityLog: PersistedToolCall[] = [];
+
+    const upsertActivity = (
+      payload: ActivityPayload,
+      status: PersistedToolCall['status'],
+    ): void => {
+      const next: PersistedToolCall = {
+        id: payload.id,
+        name: payload.name,
+        label: payload.label,
+        icon: payload.icon,
+        status,
+        result: payload.resultSummary,
+      };
+
+      const existingIndex = activityLog.findIndex((entry) => entry.id === payload.id);
+      if (existingIndex === -1) {
+        activityLog = [...activityLog, next];
+        return;
+      }
+
+      activityLog = activityLog.map((entry, index) => {
+        if (index !== existingIndex) return entry;
+        return {
+          ...entry,
+          ...next,
+          result: payload.resultSummary ?? entry.result,
+        };
+      });
+    };
 
     // Each request gets a unique ID used as the key in the activity bus
     const streamRequestId = randomUUID();
 
     // Register callback so agent tools can emit live activity events to this stream
     registerActivityBus(streamRequestId, (type, payload) => {
+      if (type === 'activity') upsertActivity(payload, 'running');
+      if (type === 'activity_done') upsertActivity(payload, 'completed');
       sendEvent(type, payload);
     });
 
@@ -155,31 +199,56 @@ class DesktopChatController extends BaseController {
         assistantText += chunk;
         sendEvent('text', chunk);
       }
-
-      sendEvent('done', 'complete');
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      streamFailed = true;
+      streamErrorMessage = errorMessage;
       logger.error('desktop.chat.stream.error', { threadId, userId: session.userId, error: errorMessage });
       sendEvent('error', errorMessage);
     } finally {
       // Deregister the bus for this request
       unregisterActivityBus(streamRequestId);
 
-      if (assistantText) {
-        conversationMemoryStore.addAssistantMessage(conversationKey, taskId, assistantText);
-        await desktopThreadsService
-          .addMessage(threadId, session.userId, 'assistant', assistantText)
+      if (streamFailed) {
+        activityLog = activityLog.map((entry) =>
+          entry.status === 'running'
+            ? { ...entry, status: 'failed', result: entry.result ?? streamErrorMessage ?? undefined }
+            : entry,
+        );
+      }
+
+      if (assistantText || activityLog.length > 0) {
+        const metadata: Record<string, unknown> = {};
+        if (activityLog.length > 0) metadata.toolCalls = activityLog;
+        if (streamErrorMessage) metadata.error = streamErrorMessage;
+
+        const persistedMessage = await desktopThreadsService
+          .addMessage(
+            threadId,
+            session.userId,
+            'assistant',
+            assistantText,
+            Object.keys(metadata).length > 0 ? metadata : undefined,
+          )
           .catch((err) => logger.error('desktop.message.persist.failed', { error: err }));
-        personalVectorMemoryService.storeChatTurn({
-          companyId: session.companyId,
-          requesterUserId: session.userId,
-          conversationKey,
-          sourceId: `desktop-assistant-${taskId}`,
-          role: 'assistant',
-          text: assistantText,
-          channel: 'desktop',
-          chatId: threadId,
-        }).catch((err) => logger.error('desktop.vector.assistant.store.failed', { error: err }));
+        if (!streamFailed) {
+          sendEvent('done', persistedMessage ? { message: persistedMessage } : 'complete');
+        }
+        if (assistantText) {
+          conversationMemoryStore.addAssistantMessage(conversationKey, taskId, assistantText);
+          personalVectorMemoryService.storeChatTurn({
+            companyId: session.companyId,
+            requesterUserId: session.userId,
+            conversationKey,
+            sourceId: `desktop-assistant-${taskId}`,
+            role: 'assistant',
+            text: assistantText,
+            channel: 'desktop',
+            chatId: threadId,
+          }).catch((err) => logger.error('desktop.vector.assistant.store.failed', { error: err }));
+        }
+      } else if (!streamFailed) {
+        sendEvent('done', 'complete');
       }
       res.end();
     }

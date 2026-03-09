@@ -29,6 +29,17 @@ interface ChatState {
 
 const ChatContext = createContext<ChatState | null>(null)
 
+function buildToolCallsFromSteps(steps: ActivityStep[]): NonNullable<Message['metadata']>['toolCalls'] {
+  return steps.map((s) => ({
+    id: s.id,
+    name: s.name,
+    label: s.label,
+    icon: s.icon,
+    status: s.status === 'done' ? 'completed' : s.status === 'error' ? 'failed' : 'running',
+    result: s.resultSummary,
+  }))
+}
+
 export function ChatProvider({ children }: { children: ReactNode }): JSX.Element {
   const { token } = useAuth()
   const [threads, setThreads] = useState<Thread[]>([])
@@ -84,12 +95,25 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           break
         }
         case 'activity_done': {
-          // A tool finished — mark it done
-          const raw = event.data as { id: string; resultSummary?: string }
+          // A tool finished — mark it done and keep the final server label/icon if provided
+          const raw = event.data as {
+            id: string
+            label?: string
+            icon?: string
+            name?: string
+            resultSummary?: string
+          }
           setActivitySteps((prev) => {
             const next = prev.map((s) =>
               s.id === raw.id
-                ? { ...s, status: 'done' as const, resultSummary: raw.resultSummary }
+                ? {
+                  ...s,
+                  name: raw.name ?? s.name,
+                  label: raw.label ?? s.label,
+                  icon: raw.icon ?? s.icon,
+                  status: 'done' as const,
+                  resultSummary: raw.resultSummary,
+                }
                 : s,
             )
             activityStepsRef.current = next
@@ -107,8 +131,15 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           break
         }
         case 'done': {
-          // Finalize — move streaming text to messages, store activity steps in metadata
+          const raw = event.data as { message?: Message } | null
+          const persistedMessage = raw?.message
+
+          // Finalize — prefer the persisted backend message so tool-call metadata survives reloads
           setMessages((prev) => {
+            if (persistedMessage) {
+              return [...prev, persistedMessage]
+            }
+
             const assistantText = streamingTextRef.current.trim()
             if (!assistantText) return prev
             const steps = activityStepsRef.current
@@ -123,14 +154,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
                 metadata:
                   steps.length > 0
                     ? {
-                      toolCalls: steps.map((s) => ({
-                        id: s.id,
-                        name: s.name,
-                        label: s.label,
-                        icon: s.icon,
-                        status: s.status === 'done' ? 'completed' : s.status === 'error' ? 'failed' : 'running',
-                        result: s.resultSummary,
-                      })),
+                      toolCalls: buildToolCallsFromSteps(steps),
                     }
                     : undefined,
               },
