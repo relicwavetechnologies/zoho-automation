@@ -399,6 +399,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     requestContext.set('larkTenantKey', message.trace?.larkTenantKey ?? '');
     requestContext.set('requestId', message.trace?.requestId ?? '');
     requestContext.set('channelIdentityId', message.trace?.channelIdentityId ?? '');
+    requestContext.set('requesterEmail', message.trace?.requesterEmail ?? '');
 
     // ── Stage 1: Instant "Thinking" indicator ───────────────────────────────
     // Fire this synchronously before ANY async work so the user sees feedback

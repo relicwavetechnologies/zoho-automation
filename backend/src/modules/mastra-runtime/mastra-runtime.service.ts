@@ -84,6 +84,7 @@ export class MastraRuntimeService {
     requestContext.set('messageId', asString(raw['messageId']));
     requestContext.set('requestId', asString(raw['requestId'] ?? requestId));
     requestContext.set('channel', asString(raw['channel']));
+    requestContext.set('requesterEmail', asString(raw['requesterEmail']));
 
     // mastra.getAgent accepts the registered agent key — cast since we validated above
     const agent = mastra.getAgent(agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent');
@@ -122,6 +123,7 @@ export class MastraRuntimeService {
     requestContext.set('messageId', asString(raw['messageId']));
     requestContext.set('requestId', asString(raw['requestId'] ?? requestId));
     requestContext.set('channel', asString(raw['channel']));
+    requestContext.set('requesterEmail', asString(raw['requesterEmail']));
 
     const agent = mastra.getAgent(agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent');
     const runOptions = await buildMastraAgentRunOptions(

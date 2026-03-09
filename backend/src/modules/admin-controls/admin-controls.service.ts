@@ -7,6 +7,7 @@ const DEFAULT_CONTROL_VALUES: Record<string, boolean> = {
   'zoho.integration.enabled': true,
   'runtime.historical_sync.enabled': true,
   'runtime.delta_sync.enabled': true,
+  'zoho.user_scoped_read.strict_enabled': true,
 };
 
 export class AdminControlsService extends BaseService {

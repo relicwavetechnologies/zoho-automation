@@ -4,8 +4,9 @@ import { BaseAgent } from '../base';
 import { resolveZohoProvider } from '../../integrations/zoho/zoho-provider.resolver';
 import type { ZohoSourceType } from '../../integrations/zoho/zoho-provider.adapter';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
-import { mastra } from '../../integrations/mastra/mastra.instance';
-import { buildMastraAgentRunOptions } from '../../integrations/mastra/mastra-model-control';
+import { zohoDataClient } from '../../integrations/zoho/zoho-data.client';
+import { normalizeEmail } from '../../integrations/zoho/zoho-email-scope';
+import { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } from '../../support/runtime-controls';
 import { logger } from '../../../utils/logger';
 
 const DEFAULT_RESULT_LIMIT = 3;
@@ -273,11 +274,13 @@ export class ZohoReadAgent extends BaseAgent {
     companyId: string;
     taskId: string;
     objective: string;
+    requesterEmail?: string;
+    strictUserScopeEnabled: boolean;
   }): Promise<{ records: LiveRecord[]; sourceRefs: SourceRef[]; fallbackUsed: boolean }> {
-    const provider = await resolveZohoProvider({ companyId: input.companyId });
     const intent = buildQueryIntent(input.objective);
     const records: LiveRecord[] = [];
     const seen = new Set<string>();
+    const provider = await resolveZohoProvider({ companyId: input.companyId });
 
     logger.debug('zoho.agent.live_fetch.start', {
       taskId: input.taskId,
@@ -287,7 +290,57 @@ export class ZohoReadAgent extends BaseAgent {
       createdAfter: intent.createdAfter?.toISOString(),
       pageSize: intent.pageSize,
       maxPages: intent.maxPages,
+      strictUserScopeEnabled: input.strictUserScopeEnabled,
     });
+
+    if (input.strictUserScopeEnabled) {
+      const requesterEmail = normalizeEmail(input.requesterEmail);
+      if (!requesterEmail) {
+        throw new ZohoIntegrationError({
+          message: 'Requester email is required for strict user-scoped Zoho reads',
+          code: 'auth_failed',
+          retriable: false,
+        });
+      }
+
+      for (const sourceType of intent.preferredSourceTypes) {
+        const scopedRecords = await zohoDataClient.fetchUserScopedRecords({
+          companyId: input.companyId,
+          environment: provider.environment,
+          sourceType,
+          requesterEmail,
+          limit: intent.targetLimit,
+          maxPages: intent.maxPages,
+          sortBy: intent.sortBy,
+          sortOrder: intent.sortOrder,
+        });
+
+        for (const record of scopedRecords) {
+          if (!matchesTimeFilter(record, intent.createdAfter)) {
+            continue;
+          }
+          const key = `${record.sourceType}:${record.sourceId}`;
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          records.push(record);
+          if (records.length >= intent.targetLimit) {
+            break;
+          }
+        }
+
+        if (records.length >= intent.targetLimit) {
+          break;
+        }
+      }
+
+      return {
+        records,
+        sourceRefs: buildLiveSourceRefs(records),
+        fallbackUsed: false,
+      };
+    }
 
     for (const sourceType of intent.preferredSourceTypes) {
       let cursor: string | undefined;
@@ -355,6 +408,11 @@ export class ZohoReadAgent extends BaseAgent {
     liveRecords: LiveRecord[];
     vectorContext: VectorMatch[];
   }): Promise<string> {
+    const [{ mastra }, { buildMastraAgentRunOptions }] = await Promise.all([
+      import('../../integrations/mastra/mastra.instance'),
+      import('../../integrations/mastra/mastra-model-control'),
+    ]);
+
     const liveSnippet = JSON.stringify(input.liveRecords.slice(0, 12), null, 2);
     const vectorSnippet =
       input.vectorContext.length > 0
@@ -398,6 +456,7 @@ export class ZohoReadAgent extends BaseAgent {
   async invoke(input: AgentInvokeInputDTO) {
     const startedAt = Date.now();
     let apiCalls = 0;
+    let strictUserScopeEnabled = true;
 
     try {
       const VECTOR_CONTEXT_ENABLED = process.env.ZOHO_VECTOR_CONTEXT_ENABLED !== 'false';
@@ -409,6 +468,26 @@ export class ZohoReadAgent extends BaseAgent {
         larkTenantKey: input.contextPacket.larkTenantKey,
       });
       apiCalls++;
+      strictUserScopeEnabled = await isCompanyControlEnabled({
+        controlKey: COMPANY_CONTROL_KEYS.zohoUserScopedReadStrictEnabled,
+        companyId,
+        defaultValue: true,
+      });
+      const requesterEmail =
+        typeof input.contextPacket.requesterEmail === 'string'
+          ? input.contextPacket.requesterEmail.trim()
+          : '';
+
+      if (strictUserScopeEnabled && !normalizeEmail(requesterEmail)) {
+        return this.failure(
+          input,
+          'Requester email is required for strict user-scoped Zoho reads.',
+          'strict_scope_missing_requester_email',
+          'Requester email missing from trusted request context',
+          false,
+          { latencyMs: Date.now() - startedAt, apiCalls },
+        );
+      }
 
       let liveRecords: LiveRecord[] = [];
       let liveSourceRefs: SourceRef[] = [];
@@ -418,6 +497,8 @@ export class ZohoReadAgent extends BaseAgent {
           companyId,
           taskId: input.taskId,
           objective: input.objective,
+          requesterEmail,
+          strictUserScopeEnabled,
         });
         liveRecords = live.records;
         liveSourceRefs = live.sourceRefs;
@@ -450,6 +531,17 @@ export class ZohoReadAgent extends BaseAgent {
       }
 
       if (liveRecords.length === 0) {
+        if (strictUserScopeEnabled) {
+          return this.failure(
+            input,
+            'No Zoho records matched your user-scoped access.',
+            'strict_scope_no_matching_records',
+            'Strict user scope yielded zero records',
+            false,
+            { latencyMs: Date.now() - startedAt, apiCalls },
+          );
+        }
+
         const answer = 'The live Zoho API did not return matching records for this query.';
         return this.success(
           input,
@@ -481,10 +573,14 @@ export class ZohoReadAgent extends BaseAgent {
           vectorMatches = await zohoRetrievalService.query({
             companyId,
             requesterUserId,
+            requesterEmail,
+            strictUserScopeEnabled,
             text: input.objective,
             limit: retrievalLimit,
             sourceTypes: intent.preferredSourceTypes,
           });
+          const authorizedSourceIds = new Set(liveRecords.map((record) => `${record.sourceType}:${record.sourceId}`));
+          vectorMatches = vectorMatches.filter((match) => authorizedSourceIds.has(`${match.sourceType}:${match.sourceId}`));
           vectorSourceRefs = buildVectorSourceRefs(vectorMatches);
           apiCalls++;
         } catch (vecError) {
@@ -548,10 +644,14 @@ export class ZohoReadAgent extends BaseAgent {
       }
 
       if (error instanceof ZohoIntegrationError) {
+        const strictUnenforceable =
+          strictUserScopeEnabled
+          && error.code === 'schema_mismatch'
+          && error.message.toLowerCase().includes('strict user scope cannot be enforced');
         return this.failure(
           input,
-          'Zoho provider retrieval failed',
-          error.code,
+          strictUnenforceable ? 'Strict user scope is not enforceable for one or more Zoho modules.' : 'Zoho provider retrieval failed',
+          strictUnenforceable ? 'strict_scope_unenforceable_module' : error.code,
           error.message,
           error.retriable,
           { latencyMs: Date.now() - startedAt, apiCalls },

@@ -41,7 +41,9 @@ type LarkWebhookRouteDependencies = {
   resolveWorkspaceVerificationConfig: (
     companyId: string,
   ) => Promise<{ signingSecret?: string; verificationToken?: string; maxSkewSeconds?: number } | null>;
-  upsertChannelIdentity: (input: UpsertChannelIdentityInput) => Promise<{ id: string; isNew: boolean; aiRole: string }>;
+  upsertChannelIdentity: (
+    input: UpsertChannelIdentityInput,
+  ) => Promise<{ id: string; isNew: boolean; aiRole: string; email?: string | null }>;
 };
 
 type PrimaryIngressIdempotencyKey = {
@@ -362,6 +364,7 @@ export const createLarkWebhookEventHandler = (
       const textHash = buildLarkTextHash(normalized.text);
 
       let channelIdentityId: string | undefined;
+      let requesterEmail: string | undefined;
       let userRole = 'MEMBER';
       if (!scopedCompanyId || !normalized.userId || !larkTenantKey) {
         dependencies.log.debug('lark.channel_identity.skipped', {
@@ -381,6 +384,9 @@ export const createLarkWebhookEventHandler = (
             larkUserId: normalized.trace?.larkUserId,
           });
           channelIdentityId = identity.id;
+          if (typeof identity.email === 'string' && identity.email.trim().length > 0) {
+            requesterEmail = identity.email.trim();
+          }
           userRole = identity.aiRole;
           if (identity.isNew) {
             dependencies.log.info('lark.channel_identity.provisioned', {
@@ -427,6 +433,7 @@ export const createLarkWebhookEventHandler = (
           companyId: scopedCompanyId ?? undefined,
           channelIdentityId,
           userRole,
+          requesterEmail,
         },
       };
 

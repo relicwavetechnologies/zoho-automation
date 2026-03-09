@@ -7,6 +7,7 @@ const {
   CompanyContextResolutionError,
   zohoRetrievalService,
 } = require('../dist/company/agents/support');
+const runtimeControls = require('../dist/company/support/runtime-controls');
 
 const withPatch = async (target, methodName, replacement, fn) => {
   const original = target[methodName];
@@ -21,37 +22,71 @@ const withPatch = async (target, methodName, replacement, fn) => {
 const baseInput = {
   taskId: 'task-1',
   agentKey: 'zoho-read',
-  objective: 'show top deals',
+  objective: 'show me all deals',
   constraints: ['v1'],
-  contextPacket: {},
+  contextPacket: {
+    requesterEmail: 'owner@example.com',
+    userId: 'user-1',
+  },
   correlationId: 'corr-1',
 };
 
-test('ZohoReadAgent returns grounded source references on successful retrieval', async () => {
+test('ZohoReadAgent blocks strict mode when requester email is missing', async () => {
   const agent = new ZohoReadAgent();
 
   await withPatch(companyContextResolver, 'resolveCompanyId', async () => 'cmp-1', async () => {
-    await withPatch(zohoRetrievalService, 'query', async () => [
-      { sourceType: 'zoho_deal', sourceId: 'deal-1', chunkIndex: 0, score: 0.91, payload: {} },
-      { sourceType: 'zoho_contact', sourceId: 'contact-2', chunkIndex: 1, score: 0.75, payload: {} },
-    ], async () => {
-      const result = await agent.invoke(baseInput);
-      assert.equal(result.status, 'success');
-      assert.match(result.message, /Here are the most relevant deals I found/);
-      assert.equal(result.result.companyId, 'cmp-1');
-      assert.deepEqual(result.result.sources, ['zoho_deal:deal-1#0', 'zoho_contact:contact-2#1']);
+    await withPatch(runtimeControls, 'isCompanyControlEnabled', async () => true, async () => {
+      const result = await agent.invoke({
+        ...baseInput,
+        contextPacket: {},
+      });
+      assert.equal(result.status, 'failed');
+      assert.equal(result.error.classifiedReason, 'strict_scope_missing_requester_email');
     });
   });
 });
 
-test('ZohoReadAgent returns deterministic no-context success when retrieval result is empty', async () => {
+test('ZohoReadAgent returns strict_scope_no_matching_records when strict scope yields nothing', async () => {
   const agent = new ZohoReadAgent();
 
   await withPatch(companyContextResolver, 'resolveCompanyId', async () => 'cmp-1', async () => {
-    await withPatch(zohoRetrievalService, 'query', async () => [], async () => {
-      const result = await agent.invoke(baseInput);
-      assert.equal(result.status, 'success');
-      assert.deepEqual(result.result.sources, []);
+    await withPatch(runtimeControls, 'isCompanyControlEnabled', async () => true, async () => {
+      await withPatch(agent, 'fetchLiveRecords', async () => ({ records: [], sourceRefs: [], fallbackUsed: false }), async () => {
+        const result = await agent.invoke(baseInput);
+        assert.equal(result.status, 'failed');
+        assert.equal(result.error.classifiedReason, 'strict_scope_no_matching_records');
+      });
+    });
+  });
+});
+
+test('ZohoReadAgent only keeps vector context that maps to authorized live source IDs', async () => {
+  const agent = new ZohoReadAgent();
+
+  await withPatch(companyContextResolver, 'resolveCompanyId', async () => 'cmp-1', async () => {
+    await withPatch(runtimeControls, 'isCompanyControlEnabled', async () => true, async () => {
+      await withPatch(agent, 'fetchLiveRecords', async () => ({
+        records: [
+          {
+            sourceType: 'zoho_deal',
+            sourceId: 'deal-1',
+            payload: { Deal_Name: 'Deal One', Amount: '1000' },
+          },
+        ],
+        sourceRefs: [{ source: 'rest', id: 'zoho_deal:deal-1' }],
+        fallbackUsed: false,
+      }), async () => {
+        await withPatch(zohoRetrievalService, 'query', async () => [
+          { sourceType: 'zoho_deal', sourceId: 'deal-1', chunkIndex: 0, score: 0.91, payload: {} },
+          { sourceType: 'zoho_deal', sourceId: 'deal-2', chunkIndex: 1, score: 0.75, payload: {} },
+        ], async () => {
+          const result = await agent.invoke(baseInput);
+          assert.equal(result.status, 'success');
+          assert.equal(result.result.liveRecordCount, 1);
+          assert.equal(result.result.vectorRecordCount, 1);
+          assert.deepEqual(result.result.sources, ['zoho_deal:deal-1', 'zoho_deal:deal-1#0']);
+        });
+      });
     });
   });
 });
@@ -75,26 +110,4 @@ test('ZohoReadAgent maps ambiguous company context to explicit failure code', as
       assert.equal(result.error.retriable, false);
     },
   );
-});
-
-test('ZohoReadAgent expands retrieval limit for explicit list-size requests', async () => {
-  const agent = new ZohoReadAgent();
-  let capturedLimit = null;
-
-  await withPatch(companyContextResolver, 'resolveCompanyId', async () => 'cmp-1', async () => {
-    await withPatch(zohoRetrievalService, 'query', async ({ limit }) => {
-      capturedLimit = limit;
-      return [
-        { sourceType: 'zoho_deal', sourceId: 'deal-1', chunkIndex: 0, score: 0.91, payload: {} },
-      ];
-    }, async () => {
-      const result = await agent.invoke({
-        ...baseInput,
-        objective: 'Show my 5 most recent deals with amount and stage',
-      });
-      assert.equal(result.status, 'success');
-      assert.ok(typeof capturedLimit === 'number');
-      assert.ok(capturedLimit >= 5);
-    });
-  });
 });

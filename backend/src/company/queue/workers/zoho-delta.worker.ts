@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import type { Prisma } from '../../../generated/prisma';
 import { qdrantAdapter, vectorDocumentRepository } from '../../integrations/vector';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
+import { extractNormalizedEmails } from '../../integrations/zoho/zoho-email-scope';
 import { resolveZohoProvider } from '../../integrations/zoho/zoho-provider.resolver';
 import { embeddingService } from '../../integrations/embedding';
 import { prisma } from '../../../utils/prisma';
@@ -120,6 +121,7 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
 
     const chunks = createChunks(basePayload);
     const embeddings = await embeddingService.embed(chunks);
+    const referenceEmails = extractNormalizedEmails(basePayload);
     const records = chunks.map((chunk, index) => ({
       companyId: job.companyId,
       connectionId: job.connectionId,
@@ -128,8 +130,10 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
       chunkIndex: index,
       contentHash: hashContent(chunk),
       visibility: 'shared' as const,
+      referenceEmails,
       payload: {
         ...basePayload,
+        referenceEmails,
         _chunk: chunk,
       },
       embedding: embeddings[index],

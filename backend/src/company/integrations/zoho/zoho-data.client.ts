@@ -1,5 +1,6 @@
 import { logger } from '../../../utils/logger';
 import { ZohoIntegrationError } from './zoho.errors';
+import { normalizeEmail, payloadReferencesEmail } from './zoho-email-scope';
 import { zohoHttpClient, ZohoHttpClient } from './zoho-http.client';
 import { zohoTokenService, ZohoTokenService } from './zoho-token.service';
 
@@ -39,6 +40,18 @@ type ZohoListResponse = {
 
 type ZohoSingleResponse = {
   data?: Array<Record<string, unknown>>;
+};
+
+type ZohoCoqlResponse = {
+  data?: Array<Record<string, unknown>>;
+  info?: {
+    more_records?: boolean;
+    count?: number;
+  };
+};
+
+type ZohoFieldMetaResponse = {
+  fields?: Array<Record<string, unknown>>;
 };
 
 const MODULES: Array<{ sourceType: ZohoSourceType; moduleName: string }> = [
@@ -110,11 +123,85 @@ const ensureModule = (sourceType: ZohoSourceType): { sourceType: ZohoSourceType;
   return found;
 };
 
+const readString = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const escapeCoqlLiteral = (value: string): string => value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+const readFieldRows = (payload: ZohoFieldMetaResponse): Array<Record<string, unknown>> =>
+  Array.isArray(payload.fields) ? payload.fields : [];
+
+const isEmailField = (field: Record<string, unknown>): boolean => {
+  const dataType = readString(field.data_type)?.toLowerCase();
+  const apiName = readString(field.api_name)?.toLowerCase();
+  return dataType === 'email' || (typeof apiName === 'string' && apiName.includes('email'));
+};
+
+const isLookupField = (field: Record<string, unknown>): boolean => {
+  const dataType = readString(field.data_type)?.toLowerCase();
+  return dataType === 'lookup' || dataType === 'ownerlookup';
+};
+
+const readLookupTarget = (field: Record<string, unknown>): string | undefined => {
+  const lookup = field.lookup;
+  if (!lookup || typeof lookup !== 'object') {
+    return undefined;
+  }
+  const lookupRecord = lookup as Record<string, unknown>;
+  const nestedModule = lookupRecord.module;
+  if (nestedModule && typeof nestedModule === 'object') {
+    const nested = nestedModule as Record<string, unknown>;
+    return readString(nested.api_name) ?? readString(nested.name);
+  }
+  return readString(lookupRecord.module) ?? readString(lookupRecord.api_name) ?? readString(lookupRecord.name);
+};
+
+const isSafeLookupTargetForEmail = (value: string): boolean =>
+  /(users?|contacts?|leads?)/i.test(value);
+
+const buildEmailPredicatesFromFields = (fields: Array<Record<string, unknown>>): string[] => {
+  const predicates = new Set<string>();
+
+  for (const field of fields) {
+    const apiName = readString(field.api_name);
+    if (!apiName) {
+      continue;
+    }
+
+    if (isEmailField(field)) {
+      predicates.add(apiName);
+      continue;
+    }
+
+    if (!isLookupField(field)) {
+      continue;
+    }
+
+    const target = readLookupTarget(field);
+    if (!target || !isSafeLookupTargetForEmail(target)) {
+      continue;
+    }
+
+    // Email field names differ by lookup target; keep conservative variants.
+    predicates.add(`${apiName}.Email`);
+    predicates.add(`${apiName}.email`);
+  }
+
+  return [...predicates];
+};
+
 export class ZohoDataClient {
   private readonly httpClient: ZohoHttpClient;
 
   private readonly tokenService: Pick<ZohoTokenService, 'getValidAccessToken' | 'forceRefresh'>
     & Partial<Pick<ZohoTokenService, 'resolveCredentials'>>;
+
+  private readonly moduleEmailPredicateCache = new Map<string, string[]>();
 
   constructor(options: ZohoDataClientOptions = {}) {
     this.httpClient = options.httpClient ?? zohoHttpClient;
@@ -243,6 +330,103 @@ export class ZohoDataClient {
     return record ?? null;
   }
 
+  async fetchUserScopedRecords(input: {
+    companyId: string;
+    environment?: string;
+    sourceType: ZohoSourceType;
+    requesterEmail: string;
+    limit: number;
+    maxPages: number;
+    sortBy?: 'Created_Time' | 'Modified_Time';
+    sortOrder?: 'asc' | 'desc';
+  }): Promise<Array<{ sourceType: ZohoSourceType; sourceId: string; payload: Record<string, unknown> }>> {
+    const environment = input.environment ?? 'prod';
+    const moduleDef = ensureModule(input.sourceType);
+    const normalizedRequesterEmail = normalizeEmail(input.requesterEmail);
+    if (!normalizedRequesterEmail) {
+      throw new ZohoIntegrationError({
+        message: 'Requester email is required for strict user-scoped Zoho reads',
+        code: 'auth_failed',
+        retriable: false,
+      });
+    }
+
+    const emailPaths = await this.resolveModuleEmailPredicates({
+      companyId: input.companyId,
+      environment,
+      moduleName: moduleDef.moduleName,
+    });
+    if (emailPaths.length === 0) {
+      throw new ZohoIntegrationError({
+        message: `Strict user scope cannot be enforced for module ${moduleDef.moduleName}: no safe email fields found`,
+        code: 'schema_mismatch',
+        retriable: false,
+      });
+    }
+
+    const records: Array<{ sourceType: ZohoSourceType; sourceId: string; payload: Record<string, unknown> }> = [];
+    const seenSourceIds = new Set<string>();
+    const perPage = Math.max(1, Math.min(50, Math.max(10, input.limit * 2)));
+    const sortBy = input.sortBy ?? 'Modified_Time';
+    const sortOrder = input.sortOrder ?? 'desc';
+
+    for (let page = 1; page <= Math.max(1, input.maxPages) && records.length < input.limit; page += 1) {
+      const offset = (page - 1) * perPage;
+      const selectQuery =
+        `select id from ${moduleDef.moduleName} where ` +
+        `(${emailPaths.map((path) => `${path} = '${escapeCoqlLiteral(normalizedRequesterEmail)}'`).join(' or ')}) ` +
+        `order by ${sortBy} ${sortOrder} limit ${offset}, ${perPage}`;
+
+      const coql = await this.requestWithRefresh<ZohoCoqlResponse>({
+        companyId: input.companyId,
+        environment,
+        path: '/crm/v8/coql',
+        method: 'POST',
+        body: { select_query: selectQuery },
+      });
+
+      const ids = (coql.data ?? [])
+        .map((row) => coerceString(row.id))
+        .filter((id): id is string => Boolean(id));
+
+      if (ids.length === 0) {
+        break;
+      }
+
+      for (const sourceId of ids) {
+        if (records.length >= input.limit || seenSourceIds.has(sourceId)) {
+          continue;
+        }
+
+        const payload = await this.fetchRecordBySource({
+          companyId: input.companyId,
+          environment,
+          sourceType: input.sourceType,
+          sourceId,
+        });
+        if (!payload) {
+          continue;
+        }
+        if (!payloadReferencesEmail(payload, normalizedRequesterEmail)) {
+          continue;
+        }
+
+        seenSourceIds.add(sourceId);
+        records.push({
+          sourceType: input.sourceType,
+          sourceId,
+          payload,
+        });
+      }
+
+      if (ids.length < perPage) {
+        break;
+      }
+    }
+
+    return records;
+  }
+
   private async requestZohoListWithRefresh(input: {
     companyId: string;
     environment: string;
@@ -263,7 +447,12 @@ export class ZohoDataClient {
       params.set('sort_order', input.sortOrder);
     }
     const path = `/crm/v2/${input.moduleName}?${params.toString()}`;
-    return this.requestWithRefresh<ZohoListResponse>(input.companyId, input.environment, path);
+    return this.requestWithRefresh<ZohoListResponse>({
+      companyId: input.companyId,
+      environment: input.environment,
+      path,
+      method: 'GET',
+    });
   }
 
   private async requestZohoSingleWithRefresh(input: {
@@ -271,17 +460,29 @@ export class ZohoDataClient {
     environment: string;
     path: string;
   }): Promise<ZohoSingleResponse> {
-    return this.requestWithRefresh<ZohoSingleResponse>(input.companyId, input.environment, input.path);
+    return this.requestWithRefresh<ZohoSingleResponse>({
+      companyId: input.companyId,
+      environment: input.environment,
+      path: input.path,
+      method: 'GET',
+    });
   }
 
-  private async requestWithRefresh<T>(companyId: string, environment: string, path: string): Promise<T> {
-    const scopedClient = await this.resolveApiClient(companyId);
-    const token = await this.tokenService.getValidAccessToken(companyId, environment);
+  private async requestWithRefresh<T>(input: {
+    companyId: string;
+    environment: string;
+    path: string;
+    method: 'GET' | 'POST';
+    body?: URLSearchParams | Record<string, unknown>;
+  }): Promise<T> {
+    const scopedClient = await this.resolveApiClient(input.companyId);
+    const token = await this.tokenService.getValidAccessToken(input.companyId, input.environment);
     try {
       return await scopedClient.requestJson<T>({
         base: 'api',
-        path,
-        method: 'GET',
+        path: input.path,
+        method: input.method,
+        body: input.body,
         headers: {
           Authorization: `Zoho-oauthtoken ${token}`,
         },
@@ -293,16 +494,17 @@ export class ZohoDataClient {
       }
 
       logger.warn('zoho.api.retry_after_token_refresh', {
-        companyId,
-        environment,
-        path,
+        companyId: input.companyId,
+        environment: input.environment,
+        path: input.path,
       });
 
-      const refreshedToken = await this.tokenService.forceRefresh(companyId, environment);
+      const refreshedToken = await this.tokenService.forceRefresh(input.companyId, input.environment);
       return scopedClient.requestJson<T>({
         base: 'api',
-        path,
-        method: 'GET',
+        path: input.path,
+        method: input.method,
+        body: input.body,
         headers: {
           Authorization: `Zoho-oauthtoken ${refreshedToken}`,
         },
@@ -312,6 +514,29 @@ export class ZohoDataClient {
         },
       });
     }
+  }
+
+  private async resolveModuleEmailPredicates(input: {
+    companyId: string;
+    environment: string;
+    moduleName: string;
+  }): Promise<string[]> {
+    const cacheKey = `${input.companyId}:${input.environment}:${input.moduleName}`;
+    const cached = this.moduleEmailPredicateCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const path = `/crm/v8/settings/fields?module=${encodeURIComponent(input.moduleName)}`;
+    const payload = await this.requestWithRefresh<ZohoFieldMetaResponse>({
+      companyId: input.companyId,
+      environment: input.environment,
+      path,
+      method: 'GET',
+    });
+    const predicates = buildEmailPredicatesFromFields(readFieldRows(payload));
+    this.moduleEmailPredicateCache.set(cacheKey, predicates);
+    return predicates;
   }
 
   private async resolveApiClient(companyId: string): Promise<ZohoHttpClient> {

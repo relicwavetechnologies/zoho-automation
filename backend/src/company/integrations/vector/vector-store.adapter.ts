@@ -20,6 +20,8 @@ export type VectorPointUpsert = {
 export type VectorSearchQuery = {
   companyId: string;
   requesterUserId?: string;
+  requesterEmail?: string;
+  enforceEmailMatch?: boolean;
   vector: number[];
   limit: number;
   sourceTypes?: VectorSourceType[];

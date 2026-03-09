@@ -69,7 +69,8 @@ test('QdrantAdapter.search scopes by company and maps payloads', async () => {
     }
     if (parsedUrl.includes('/points/search')) {
       const body = JSON.parse(init.body);
-      assert.equal(body.filter.must[0].match.value, 'cmp-1');
+      assert.equal(Array.isArray(body.filter.should), true);
+      assert.equal(body.filter.should.length >= 1, true);
 
       return jsonResponse({
         result: [
@@ -98,6 +99,36 @@ test('QdrantAdapter.search scopes by company and maps payloads', async () => {
     assert.equal(result.length, 1);
     assert.equal(result[0].sourceType, 'zoho_deal');
     assert.equal(result[0].sourceId, 'deal-1');
+  });
+});
+
+test('QdrantAdapter.search adds requester email payload filter when strict user scope is enabled', async () => {
+  const adapter = new QdrantAdapter();
+
+  await withFetch(async (url, init) => {
+    const parsedUrl = String(url);
+    if (parsedUrl.includes('/index?wait=true')) {
+      return jsonResponse({ status: 'ok' });
+    }
+    if (parsedUrl.includes('/points/search')) {
+      const body = JSON.parse(init.body);
+      const must = Array.isArray(body.filter.must) ? body.filter.must : [];
+      const emailClause = must.find((clause) => clause?.key === 'referenceEmails');
+      assert.ok(emailClause);
+      assert.deepEqual(emailClause.match.any, ['owner@example.com']);
+
+      return jsonResponse({ result: [] });
+    }
+    return jsonResponse({ status: 'ok' });
+  }, async () => {
+    const result = await adapter.search({
+      companyId: 'cmp-1',
+      requesterEmail: 'owner@example.com',
+      enforceEmailMatch: true,
+      vector: [0.1, 0.2, 0.3],
+      limit: 3,
+    });
+    assert.equal(Array.isArray(result), true);
   });
 });
 

@@ -149,19 +149,31 @@ const buildScopeShouldClauses = (query: VectorSearchQuery): Array<Record<string,
 };
 
 const buildSearchFilter = (query: VectorSearchQuery): Record<string, unknown> => {
+  const must: Array<Record<string, unknown>> = [];
   const filter: Record<string, unknown> = {
     should: buildScopeShouldClauses(query),
   };
 
   if (query.sourceTypes && query.sourceTypes.length > 0) {
-    filter.must = [
+    must.push(
       {
         key: 'sourceType',
         match: query.sourceTypes.length === 1
           ? { value: query.sourceTypes[0] }
           : { any: query.sourceTypes },
       },
-    ];
+    );
+  }
+
+  if (query.enforceEmailMatch && typeof query.requesterEmail === 'string' && query.requesterEmail.trim().length > 0) {
+    must.push({
+      key: 'referenceEmails',
+      match: { any: [query.requesterEmail.trim().toLowerCase()] },
+    });
+  }
+
+  if (must.length > 0) {
+    filter.must = must;
   }
 
   return filter;
@@ -288,6 +300,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
       { fieldName: 'sourceId', fieldSchema: 'keyword' },
       { fieldName: 'visibility', fieldSchema: 'keyword' },
       { fieldName: 'ownerUserId', fieldSchema: 'keyword' },
+      { fieldName: 'referenceEmails', fieldSchema: 'keyword' },
       { fieldName: 'conversationKey', fieldSchema: 'keyword' },
       { fieldName: 'chunkIndex', fieldSchema: 'integer' },
     ];
@@ -357,6 +370,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
       conversationKey: record.conversationKey,
       payload: {
         ...record.payload,
+        ...(Array.isArray(record.referenceEmails) ? { referenceEmails: record.referenceEmails } : {}),
         ...(record.connectionId ? { connectionId: record.connectionId } : {}),
       },
       vector: record.embedding,
