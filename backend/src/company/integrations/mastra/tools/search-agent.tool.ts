@@ -38,8 +38,36 @@ export const searchAgentTool = createTool({
       runOptions as any,
     );
 
+    // Try to extract raw tool calls/metadata from the agent run to build structured citations
+    let citationsData = result.text;
+    try {
+      const resultAny = result as any;
+      const runContext = resultAny.info?.calls?.[0] || {};
+      const toolResults = Object.values(runContext)?.filter((c: any) => c?.toolName === 'search-read');
+      if (toolResults.length > 0) {
+        const payload = toolResults[0] as any;
+        const items = payload?.result?.sourceRefs || payload?.result?.items || [];
+        const queries = payload?.result?.query ? [payload.result.query] : [];
+        if (payload?.result?.focusedSiteSearch) queries.push(payload.result.focusedSiteSearch);
+
+        // Wrap it in a JSON block so the frontend BlocksRenderer knows it's structured data
+        citationsData = JSON.stringify({
+          type: 'structured_search',
+          queries,
+          sources: items.map((i: any) => ({ title: i.title, url: i.url, snippet: i.snippet })),
+          answer: result.text
+        });
+      }
+    } catch (e) { /* fallback to text */ }
+
     if (requestId) {
-      emitActivityEvent(requestId, 'activity_done', { id: callId, name: TOOL_ID, label: 'Searched the web', icon: 'globe' });
+      emitActivityEvent(requestId, 'activity_done', {
+        id: callId,
+        name: TOOL_ID,
+        label: 'Searched the web',
+        icon: 'globe',
+        resultSummary: citationsData,
+      });
     }
     return { answer: result.text };
   },

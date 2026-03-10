@@ -8,6 +8,12 @@ export interface UserSession {
   expiresAt: string
 }
 
+export interface WorkspaceFolder {
+  id: string
+  path: string
+  name: string
+}
+
 export interface Thread {
   id: string
   title: string | null
@@ -39,6 +45,30 @@ export interface ToolContentBlock {
   resultSummary?: string
 }
 
+export interface ApprovalContentBlock {
+  type: 'approval'
+  id: string
+  kind: 'run_command' | 'write_file' | 'mkdir' | 'delete_path'
+  title: string
+  description: string
+  subject: string
+  footer: string
+  status: 'pending' | 'approved' | 'rejected'
+}
+
+export interface TerminalContentBlock {
+  type: 'terminal'
+  id: string
+  command: string
+  cwd: string
+  status: 'running' | 'done' | 'failed'
+  stdout: string
+  stderr: string
+  exitCode?: number | null
+  signal?: string | null
+  durationMs?: number
+}
+
 export interface TextContentBlock {
   type: 'text'
   content: string
@@ -52,7 +82,12 @@ export interface ThinkingContentBlock {
   text?: string
 }
 
-export type ContentBlock = ToolContentBlock | TextContentBlock | ThinkingContentBlock
+export type ContentBlock =
+  | ToolContentBlock
+  | ApprovalContentBlock
+  | TerminalContentBlock
+  | TextContentBlock
+  | ThinkingContentBlock
 
 // ─── Message metadata ─────────────────────────────────────────────────────────
 export interface MessageMetadata {
@@ -60,6 +95,18 @@ export interface MessageMetadata {
   /** Legacy — kept for backward compat */
   toolCalls?: ToolCallInfo[]
   larkDocs?: LarkDocRef[]
+  localCommandSummary?: {
+    command: string
+    cwd: string
+    status: 'done' | 'failed' | 'rejected'
+    exitCode?: number | null
+    durationMs?: number
+  }
+  localFileSummary?: {
+    kind: 'list_files' | 'read_file' | 'write_file' | 'mkdir' | 'delete_path'
+    path: string
+    status: 'done' | 'failed' | 'rejected'
+  }
   error?: string
   streaming?: boolean
 }
@@ -81,7 +128,7 @@ export interface LarkDocRef {
 }
 
 export interface StreamEvent {
-  type: 'text' | 'thinking' | 'activity' | 'activity_done' | 'step' | 'done' | 'error'
+  type: 'text' | 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'step' | 'done' | 'error'
   data: unknown
 }
 

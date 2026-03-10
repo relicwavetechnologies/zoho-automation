@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { agentRegistry } from '../../../agents';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
+import { emitActivityEvent } from './activity-bus';
 
 const TOOL_ID = 'search-read';
 
@@ -24,6 +25,17 @@ export const searchReadTool = createTool({
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
 
+    const requestId = requestContext?.get('requestId') as string | undefined;
+    const callId = randomUUID();
+    if (requestId) {
+      emitActivityEvent(requestId, 'activity', {
+        id: callId,
+        name: TOOL_ID,
+        label: 'Executing context search',
+        icon: 'search',
+      });
+    }
+
     const result = await agentRegistry.invoke({
       taskId: `mastra_tool_${randomUUID()}`,
       agentKey: 'search-read',
@@ -37,6 +49,16 @@ export const searchReadTool = createTool({
       },
       correlationId: randomUUID(),
     });
+
+    if (requestId) {
+      emitActivityEvent(requestId, 'activity_done', {
+        id: callId,
+        name: TOOL_ID,
+        label: result.status === 'success' ? 'Finished context search' : 'Search failed',
+        icon: result.status === 'success' ? 'search' : 'x-circle',
+        resultSummary: result.status === 'success' ? 'Retrieved exact context' : 'Error',
+      });
+    }
 
     if (result.status === 'failed') {
       return { answer: result.message, error: result.error };

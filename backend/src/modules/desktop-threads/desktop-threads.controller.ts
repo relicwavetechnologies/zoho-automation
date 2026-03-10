@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { z } from 'zod';
 
 import { ApiResponse } from '../../core/api-response';
 import { BaseController } from '../../core/controller';
@@ -6,6 +7,12 @@ import { MemberSessionDTO } from '../member-auth/member-auth.service';
 import { desktopThreadsService } from './desktop-threads.service';
 
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
+
+const createMessageSchema = z.object({
+  role: z.string().min(1).max(32),
+  content: z.string().max(20000),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
 
 class DesktopThreadsController extends BaseController {
   private session(req: Request): MemberSessionDTO {
@@ -30,6 +37,13 @@ class DesktopThreadsController extends BaseController {
     const s = this.session(req);
     const thread = await desktopThreadsService.createThread(s.userId, s.companyId);
     return res.status(201).json(ApiResponse.success(thread, 'Thread created'));
+  };
+
+  addMessage = async (req: Request, res: Response) => {
+    const s = this.session(req);
+    const { role, content, metadata } = createMessageSchema.parse(req.body);
+    const message = await desktopThreadsService.addMessage(req.params.threadId, s.userId, role, content, metadata);
+    return res.status(201).json(ApiResponse.success(message, 'Message created'));
   };
 
   delete = async (req: Request, res: Response) => {

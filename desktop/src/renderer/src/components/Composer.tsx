@@ -2,9 +2,11 @@ import { useState, useRef, useEffect } from 'react'
 import { ArrowUp, AtSign, ChevronDown, Image as ImageIcon, Infinity } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useChat } from '../context/ChatContext'
+import { useWorkspace } from '../context/WorkspaceContext'
 
 export function Composer(): JSX.Element {
   const { sendMessage, isStreaming, activeThread } = useChat()
+  const { currentWorkspace } = useWorkspace()
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -34,15 +36,15 @@ export function Composer(): JSX.Element {
   }
 
   return (
-    <div className="shrink-0 px-5 py-3">
+    <div className="shrink-0 px-5 py-3 titlebar-no-drag">
       <div className="max-w-[760px] mx-auto">
         <div
           className={cn(
             'rounded-[20px] border px-3.5 pt-3 pb-2.5 shadow-[0_12px_24px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.03)]',
-            'bg-[linear-gradient(180deg,hsl(0,0%,11%),hsl(0,0%,9%))]',
+            'bg-[linear-gradient(180deg,hsl(0,0%,9%),hsl(0,0%,7%))]',
             activeThread
-              ? 'border-[hsl(0,0%,18%)] focus-within:border-[hsl(216,14%,28%)]'
-              : 'border-[hsl(0,0%,18%)] opacity-60',
+              ? 'border-[hsl(0,0%,16%)] focus-within:border-[hsl(216,14%,28%)]'
+              : 'border-[hsl(0,0%,16%)] opacity-60',
           )}
         >
           <textarea
@@ -50,7 +52,13 @@ export function Composer(): JSX.Element {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={activeThread ? 'Plan and build, @ for context, / for commands' : 'Select or create a thread to start'}
+            placeholder={
+              activeThread
+                ? `Ask about ${currentWorkspace?.name ?? 'this workspace'} or run /run <command>`
+                : currentWorkspace
+                  ? `Create a thread in ${currentWorkspace.name} to start`
+                  : 'Open a workspace folder to start'
+            }
             disabled={!activeThread}
             rows={1}
             className={cn(
@@ -116,7 +124,9 @@ export function Composer(): JSX.Element {
           </div>
         </div>
         <p className="mt-1.5 text-center text-[9px] tracking-[0.02em] text-[hsl(0,0%,28%)]">
-          Desktop chat uses the same backend orchestration, permissions, and tools as Lark.
+          {currentWorkspace
+            ? `Threads are scoped to ${currentWorkspace.name}. Use /run to execute a shell command here.`
+            : 'Open a workspace folder to begin.'}
         </p>
       </div>
     </div>

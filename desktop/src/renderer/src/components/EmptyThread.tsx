@@ -1,9 +1,11 @@
 import { MessageSquarePlus } from 'lucide-react'
 import { useChat } from '../context/ChatContext'
+import { useWorkspace } from '../context/WorkspaceContext'
 import { cn } from '../lib/utils'
 
 export function EmptyThread(): JSX.Element {
   const { createThread } = useChat()
+  const { currentWorkspace } = useWorkspace()
 
   return (
     <div className="flex-1 flex items-center justify-center">
@@ -13,10 +15,12 @@ export function EmptyThread(): JSX.Element {
         </div>
         <div>
           <h3 className="text-base font-medium text-[hsl(0,0%,70%)] mb-1">
-            No thread selected
+            {currentWorkspace ? `No thread selected in ${currentWorkspace.name}` : 'No thread selected'}
           </h3>
           <p className="text-sm text-[hsl(0,0%,38%)] leading-relaxed">
-            Select an existing thread from the sidebar or start a new conversation.
+            {currentWorkspace
+              ? 'Select an existing thread from the sidebar or start a new conversation in this workspace.'
+              : 'Open a workspace and start a new conversation.'}
           </p>
         </div>
         <button

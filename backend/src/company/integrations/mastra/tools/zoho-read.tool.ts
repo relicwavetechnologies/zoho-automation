@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { agentRegistry } from '../../../agents';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
+import { emitActivityEvent } from './activity-bus';
 import { logger } from '../../../../utils/logger';
 
 const TOOL_ID = 'read-zoho-records';
@@ -30,6 +31,16 @@ export const zohoReadTool = createTool({
     if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID)) {
       const name = TOOL_REGISTRY_MAP.get(TOOL_ID)?.name ?? TOOL_ID;
       return { answer: null, sourceRefs: [], error: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
+    }
+
+    const callId = randomUUID();
+    if (requestId) {
+      emitActivityEvent(requestId as string, 'activity', {
+        id: callId,
+        name: TOOL_ID,
+        label: 'Reading Zoho records',
+        icon: 'search',
+      });
     }
 
     logger.info('zoho.tool.read.start', {
@@ -78,6 +89,16 @@ export const zohoReadTool = createTool({
       logger.error('zoho.tool.read.rate_limited', finishMeta);
     } else {
       logger.info('zoho.tool.read.finish', finishMeta);
+    }
+
+    if (requestId) {
+      emitActivityEvent(requestId as string, 'activity_done', {
+        id: callId,
+        name: TOOL_ID,
+        label: result.status === 'success' ? 'Read Zoho records' : 'Failed to read Zoho records',
+        icon: result.status === 'success' ? 'search' : 'x-circle',
+        resultSummary: result.status === 'success' ? 'Records found' : 'Error',
+      });
     }
 
     return {

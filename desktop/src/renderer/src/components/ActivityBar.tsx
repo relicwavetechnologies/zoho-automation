@@ -40,34 +40,35 @@ export function ActivityBar({ steps }: Props): JSX.Element | null {
     if (steps.length === 0) return null
 
     return (
-        <div className="mb-2 flex flex-col gap-[3px]">
-            {steps.map((step) => (
-                <div
-                    key={step.id}
-                    className={cn(
-                        'flex items-center gap-2 px-2 py-[5px] rounded-md text-xs font-mono',
-                        'bg-[hsl(0,0%,6%)] border border-[hsl(0,0%,11%)]',
-                        'transition-all duration-300 ease-out',
-                    )}
-                >
-                    <StepIcon icon={step.icon} status={step.status} />
-                    <span
-                        className={cn(
-                            'truncate transition-colors duration-300',
-                            step.status === 'running'
-                                ? 'text-[hsl(0,0%,42%)]'
-                                : step.status === 'done'
-                                    ? 'text-[hsl(0,0%,32%)]'
-                                    : 'text-[hsl(0,50%,42%)]',
-                        )}
+        <div className="mb-2 flex flex-col gap-1.5 ml-1">
+            {steps.map((step) => {
+                const isRunning = step.status === 'running'
+                return (
+                    <div
+                        key={step.id}
+                        className="flex items-center gap-2 py-0.5 text-xs font-mono"
                     >
-                        {step.label}
-                        {step.status === 'running' && (
-                            <span className="activity-dot inline-block ml-[2px]">…</span>
+                        <StepIcon icon={step.icon} status={step.status} />
+
+                        {isRunning ? (
+                            <TextShimmer className="text-xs font-mono font-medium" duration={1.5} spread={2}>
+                                {step.label}
+                            </TextShimmer>
+                        ) : (
+                            <span
+                                className={cn(
+                                    'truncate transition-colors duration-300',
+                                    step.status === 'done'
+                                        ? 'text-[hsl(0,0%,35%)]'
+                                        : 'text-[hsl(0,50%,45%)]',
+                                )}
+                            >
+                                {step.label}
+                            </span>
                         )}
-                    </span>
-                </div>
-            ))}
+                    </div>
+                )
+            })}
         </div>
     )
 }

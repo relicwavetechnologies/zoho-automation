@@ -1,9 +1,11 @@
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
+import { randomUUID } from 'crypto';
 
 import { companyContextResolver, zohoRetrievalService } from '../../../agents/support';
 import { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } from '../../../support/runtime-controls';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
+import { emitActivityEvent } from './activity-bus';
 
 const TOOL_ID = 'search-zoho-context';
 
@@ -24,6 +26,17 @@ export const zohoSearchTool = createTool({
       return { error: `Access to "${name}" is not permitted for your role. Please contact your admin.`, records: [], count: 0 };
     }
 
+    const requestId = requestContext?.get('requestId') as string | undefined;
+    const callId = randomUUID();
+    if (requestId) {
+      emitActivityEvent(requestId, 'activity', {
+        id: callId,
+        name: TOOL_ID,
+        label: 'Searching Zoho CRM',
+        icon: 'search',
+      });
+    }
+
     const companyId = requestContext?.get('companyId') as string | undefined;
     const larkTenantKey = requestContext?.get('larkTenantKey') as string | undefined;
     const requesterEmail = requestContext?.get('requesterEmail') as string | undefined;
@@ -37,6 +50,15 @@ export const zohoSearchTool = createTool({
       defaultValue: true,
     });
     if (strictUserScopeEnabled && (!requesterEmail || !requesterEmail.trim())) {
+      if (requestId) {
+        emitActivityEvent(requestId, 'activity_done', {
+          id: callId,
+          name: TOOL_ID,
+          label: 'Search failed',
+          icon: 'x-circle',
+          resultSummary: 'Missing email scope',
+        });
+      }
       return {
         error: 'User-scoped Zoho access is enabled, but requester email is missing for this request.',
         records: [],
@@ -52,6 +74,16 @@ export const zohoSearchTool = createTool({
       text: inputData.query,
       limit: inputData.limit ?? 5,
     });
+
+    if (requestId) {
+      emitActivityEvent(requestId, 'activity_done', {
+        id: callId,
+        name: TOOL_ID,
+        label: 'Searched Zoho CRM',
+        icon: 'search',
+        resultSummary: `Found ${matches.length} matching records`,
+      });
+    }
 
     return {
       records: matches.map((match) => ({

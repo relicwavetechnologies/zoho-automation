@@ -9,5 +9,6 @@ router.use(requireMemberSession());
 
 // Send message and stream response
 router.post('/:threadId/send', asyncHandler(desktopChatController.send));
+router.post('/:threadId/act', asyncHandler(desktopChatController.act));
 
 export default router;

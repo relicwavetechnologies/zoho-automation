@@ -41,7 +41,13 @@ export const zohoAgentTool = createTool({
     );
 
     if (requestId) {
-      emitActivityEvent(requestId, 'activity_done', { id: callId, name: TOOL_ID, label: 'Queried Zoho CRM', icon: 'search' });
+      emitActivityEvent(requestId, 'activity_done', {
+        id: callId,
+        name: TOOL_ID,
+        label: 'Queried Zoho CRM',
+        icon: 'search',
+        resultSummary: result.text,
+      });
     }
     return { answer: result.text };
   },

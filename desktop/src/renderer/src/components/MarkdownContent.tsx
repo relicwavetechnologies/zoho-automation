@@ -30,7 +30,8 @@ export function MarkdownContent({ content, className }: Props): JSX.Element {
               className="my-3 border-l-2 border-[hsl(0,0%,20%)] pl-4 text-[hsl(0,0%,64%)]"
             />
           ),
-          code: ({ node: _node, inline, className: codeClassName, children, ...props }) => {
+          code: ({ node: _node, className: codeClassName, children, ...props }) => {
+            const inline = !codeClassName
             if (inline) {
               return (
                 <code

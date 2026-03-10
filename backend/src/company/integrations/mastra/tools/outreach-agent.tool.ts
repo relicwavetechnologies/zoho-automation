@@ -42,7 +42,13 @@ export const outreachAgentTool = createTool({
     );
 
     if (requestId) {
-      emitActivityEvent(requestId, 'activity_done', { id: callId, name: TOOL_ID, label: 'Searched Outreach publishers', icon: 'bar-chart-2' });
+      emitActivityEvent(requestId, 'activity_done', {
+        id: callId,
+        name: TOOL_ID,
+        label: 'Searched Outreach publishers',
+        icon: 'bar-chart-2',
+        resultSummary: result.text,
+      });
     }
     return { answer: result.text };
   },

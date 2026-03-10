@@ -1,9 +1,11 @@
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
+import { randomUUID } from 'crypto';
 
 import { larkDocsService, LarkDocsIntegrationError } from '../../../channels/lark/lark-docs.service';
 import { conversationMemoryStore } from '../../../state/conversation';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
+import { emitActivityEvent } from './activity-bus';
 
 const buildConversationKey = (requestContext?: { get: (key: string) => unknown }): string | null => {
   const channel = requestContext?.get('channel');
@@ -32,11 +34,31 @@ export const editLarkDocTool = createTool({
       const name = TOOL_REGISTRY_MAP.get('edit-lark-doc')?.name ?? 'Edit Lark Doc';
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
+
+    const requestId = requestContext?.get('requestId') as string | undefined;
+    const callId = randomUUID();
+    if (requestId) {
+      emitActivityEvent(requestId, 'activity', {
+        id: callId,
+        name: 'edit-lark-doc',
+        label: 'Editing Lark Document',
+        icon: 'file-text',
+      });
+    }
+
     const conversationKey = buildConversationKey(requestContext as any);
     const latestDoc = conversationKey ? conversationMemoryStore.getLatestLarkDoc(conversationKey) : null;
     const documentId = inputData.documentId?.trim() || latestDoc?.documentId;
 
     if (!documentId) {
+      if (requestId) {
+        emitActivityEvent(requestId, 'activity_done', {
+          id: callId,
+          name: 'edit-lark-doc',
+          label: 'Edit failed: No document ID',
+          icon: 'x-circle',
+        });
+      }
       return {
         answer: 'No prior Lark Doc was found in this conversation. Please specify the document ID or create a doc first.',
         error: 'missing_document_id',
@@ -61,6 +83,16 @@ export const editLarkDocTool = createTool({
         });
       }
 
+      if (requestId) {
+        emitActivityEvent(requestId, 'activity_done', {
+          id: callId,
+          name: 'edit-lark-doc',
+          label: 'Edited Lark Document',
+          icon: 'file-text',
+          resultSummary: 'Success',
+        });
+      }
+
       return {
         answer: `Updated Lark Doc. URL: ${result.url}`,
         documentId: result.documentId,
@@ -69,6 +101,15 @@ export const editLarkDocTool = createTool({
       };
     } catch (error) {
       const message = error instanceof LarkDocsIntegrationError ? error.message : error instanceof Error ? error.message : 'unknown_error';
+      if (requestId) {
+        emitActivityEvent(requestId, 'activity_done', {
+          id: callId,
+          name: 'edit-lark-doc',
+          label: 'Failed to edit document',
+          icon: 'x-circle',
+          resultSummary: 'Error',
+        });
+      }
       return {
         answer: `Lark Doc update failed: ${message}`,
         error: message,

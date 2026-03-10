@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { Plus, Search, Trash2, PanelLeftClose, PanelRightClose, SquarePen, Settings, Sparkles } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useChat } from '../context/ChatContext'
+import { useWorkspace } from '../context/WorkspaceContext'
 import type { Thread } from '../types'
 
 export function Sidebar({ isOpen, onToggle }: { isOpen: boolean; onToggle: () => void }): JSX.Element | null {
   const { threads, activeThread, loadThreads, selectThread, createThread } = useChat()
+  const { currentWorkspace, selectWorkspace, getThreadWorkspace } = useWorkspace()
   const [filter, setFilter] = useState('')
   const loadedRef = useRef(false)
 
@@ -56,6 +58,19 @@ export function Sidebar({ isOpen, onToggle }: { isOpen: boolean; onToggle: () =>
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 py-2 flex flex-col gap-1">
+        {currentWorkspace && (
+          <div className="mx-1 mb-3 rounded-2xl border border-[hsl(0,0%,12%)] bg-[hsl(0,0%,8%)] px-3 py-3">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-[hsl(0,0%,42%)]">Workspace</div>
+            <div className="mt-1 truncate text-sm font-medium text-[hsl(0,0%,82%)]">{currentWorkspace.name}</div>
+            <div className="mt-1 truncate text-[11px] text-[hsl(0,0%,42%)]">{currentWorkspace.path}</div>
+            <button
+              onClick={() => void selectWorkspace()}
+              className="mt-3 text-[11px] font-medium text-[hsl(45,85%,62%)] hover:text-[hsl(45,85%,70%)]"
+            >
+              Change folder
+            </button>
+          </div>
+        )}
 
         {/* Top pinned items (from reference: Automations, Skills etc if needed, here just basic search for now) */}
         <div className="px-1 pb-4">
@@ -100,6 +115,7 @@ export function Sidebar({ isOpen, onToggle }: { isOpen: boolean; onToggle: () =>
             thread={thread}
             isActive={activeThread?.id === thread.id}
             onClick={() => selectThread(thread.id)}
+            workspaceName={getThreadWorkspace(thread.id)?.name ?? null}
           />
         ))}
       </div>
@@ -123,10 +139,12 @@ function ThreadItem({
   thread,
   isActive,
   onClick,
+  workspaceName,
 }: {
   thread: Thread
   isActive: boolean
   onClick: () => void
+  workspaceName: string | null
 }): JSX.Element {
   const { deleteThread } = useChat()
   const title = thread.title ?? 'New thread'
@@ -153,9 +171,16 @@ function ThreadItem({
         )}
       >
         <div className="flex items-baseline justify-between gap-3">
-          <span className={cn("text-[13px] truncate", isActive ? "font-medium" : "font-normal")}>
-            {title}
-          </span>
+          <div className="min-w-0">
+            <span className={cn("block text-[13px] truncate", isActive ? "font-medium" : "font-normal")}>
+              {title}
+            </span>
+            {workspaceName && (
+              <span className="block text-[10px] truncate text-[hsl(0,0%,42%)]">
+                {workspaceName}
+              </span>
+            )}
+          </div>
           {time && (
             <span className={cn(
               "text-[10px] shrink-0",

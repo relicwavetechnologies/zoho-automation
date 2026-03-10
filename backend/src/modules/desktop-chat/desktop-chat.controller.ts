@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { randomUUID } from 'crypto';
 
 import { RequestContext } from '@mastra/core/di';
+import { ApiResponse } from '../../core/api-response';
 import { BaseController } from '../../core/controller';
 import { HttpException } from '../../core/http-exception';
 import { MemberSessionDTO } from '../member-auth/member-auth.service';
@@ -31,9 +32,26 @@ const sendSchema = z.object({
   agentId: z.string().optional(),
 });
 
+const workspaceSchema = z.object({
+  name: z.string().min(1).max(255),
+  path: z.string().min(1).max(4096),
+});
+
+const actionResultSchema = z.object({
+  kind: z.enum(['list_files', 'read_file', 'write_file', 'mkdir', 'delete_path', 'run_command']),
+  ok: z.boolean(),
+  summary: z.string().min(1).max(30000),
+});
+
+const actSchema = z.object({
+  message: z.string().min(1).max(10000).optional(),
+  agentId: z.string().optional(),
+  workspace: workspaceSchema,
+  actionResult: actionResultSchema.optional(),
+});
+
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
 
-// Mirrors the frontend ContentBlock union type — kept in sync manually
 type ToolBlock = {
   type: 'tool';
   id: string;
@@ -44,9 +62,73 @@ type ToolBlock = {
   resultSummary?: string;
 };
 type TextBlock = { type: 'text'; content: string };
-type ThinkingBlock = { type: 'thinking' };
+// Thinking block carries live reasoning text streamed from the model
+type ThinkingBlock = { type: 'thinking'; text?: string; durationMs?: number };
 type ContentBlock = ToolBlock | TextBlock | ThinkingBlock;
 
+type DesktopAction = {
+  kind: 'list_files' | 'read_file' | 'write_file' | 'mkdir' | 'delete_path' | 'run_command';
+  path?: string;
+  content?: string;
+  command?: string;
+};
+
+const LOCAL_ACTION_TAG = 'desktop-action';
+
+const parseDesktopAction = (text: string): DesktopAction | null => {
+  const match = text.match(new RegExp(`<${LOCAL_ACTION_TAG}>([\\s\\S]*?)</${LOCAL_ACTION_TAG}>`, 'i'));
+  if (!match) return null;
+
+  try {
+    const parsed = JSON.parse(match[1].trim()) as DesktopAction;
+    if (typeof parsed?.kind !== 'string') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const buildDesktopCapabilityPrompt = (workspace: { name: string; path: string }, actionResult?: {
+  kind: string;
+  ok: boolean;
+  summary: string;
+}): string => {
+  const resultSection = actionResult
+    ? [
+      '\n--- LOCAL ACTION RESULT ---',
+      `kind: ${actionResult.kind}`,
+      `ok: ${String(actionResult.ok)}`,
+      actionResult.summary,
+      '--- END LOCAL ACTION RESULT ---\n',
+    ].join('\n')
+    : '';
+
+  return [
+    '\n--- DESKTOP LOCAL WORKSPACE ---',
+    'You are responding inside the macOS desktop app.',
+    `Selected workspace name: ${workspace.name}`,
+    `Selected workspace path: ${workspace.path}`,
+    'You may request EXACTLY ONE local workspace action at a time.',
+    `If you need one, respond with ONLY <${LOCAL_ACTION_TAG}>{{JSON}}</${LOCAL_ACTION_TAG}> and no other text.`,
+    'Allowed action JSON shapes:',
+    '{"kind":"list_files","path":"."}',
+    '{"kind":"read_file","path":"relative/path.txt"}',
+    '{"kind":"write_file","path":"relative/path.txt","content":"full file content"}',
+    '{"kind":"mkdir","path":"relative/folder"}',
+    '{"kind":"delete_path","path":"relative/path"}',
+    '{"kind":"run_command","command":"pnpm test"}',
+    'Rules:',
+    '- All paths must be relative to the selected workspace.',
+    '- Prefer list_files/read_file before write_file/delete_path.',
+    '- Use run_command only when necessary.',
+    '- After receiving a local action result, continue the task from that result.',
+    '- If you do not need a local action, answer normally.',
+    '--- END DESKTOP LOCAL WORKSPACE ---\n',
+    resultSection,
+  ].join('\n');
+};
+
+// Mirrors the frontend ContentBlock union type — kept in sync manually
 class DesktopChatController extends BaseController {
   private session(req: Request): MemberSessionDTO {
     const s = (req as MemberRequest).memberSession;
@@ -87,12 +169,20 @@ class DesktopChatController extends BaseController {
         companyId: session.companyId,
         requesterUserId: session.userId,
         text: message,
-        limit: 4,
+        limit: 10, // Request slightly more to pad against filtered items
       });
-      if (memories.length > 0) {
-        memoryContext = '\n\n--- Relevant personal memory ---\n' +
-          memories.map((m) => `[${m.role ?? 'unknown'}] ${m.content}`).join('\n') +
-          '\n--- End memory ---\n';
+
+      // Exclude vectors that came from the current thread to prevent context leakage
+      const filteredMemories = memories
+        .filter((m) => m.conversationKey !== conversationKey)
+        .slice(0, 4);
+
+      if (filteredMemories.length > 0) {
+        memoryContext =
+          '\n\n--- CONTEXT RETRIEVED FROM PAST CONVERSATIONS ---\n' +
+          "(Note: The information below is retrieved from the user's past threads for context. Do NOT assume this is part of the current active conversation unless the user explicitly asks about it.)\n" +
+          filteredMemories.map((m) => `[${m.role ?? 'unknown'}] ${m.content}`).join('\n') +
+          '\n--- End past context ---\n';
       }
     } catch (err) {
       logger.warn('desktop.vector.query.failed', { error: err });
@@ -127,12 +217,13 @@ class DesktopChatController extends BaseController {
     // ── Ordered content blocks accumulator ──────────────────────────────────
     const contentBlocks: ContentBlock[] = [];
     let assistantText = '';
+    let thinkingText = '';
     let streamFailed = false;
     let streamErrorMessage: string | null = null;
 
     // Helper: push a new thinking block and record when it started
     const pushThinkingBlock = (): void => {
-      (contentBlocks as any[]).push({ type: 'thinking', _startedAt: Date.now() });
+      (contentBlocks as any[]).push({ type: 'thinking', text: '', _startedAt: Date.now() });
     };
 
     // Helper: finalize the last open thinking block with duration
@@ -142,6 +233,16 @@ class DesktopChatController extends BaseController {
         last.durationMs = Date.now() - last._startedAt;
         delete last._startedAt;
       }
+    };
+
+    // Helper: append a reasoning chunk to the current thinking block
+    const appendThinkingChunk = (delta: string): void => {
+      thinkingText += delta;
+      const last = contentBlocks[contentBlocks.length - 1] as any;
+      if (last?.type === 'thinking') {
+        last.text = (last.text || '') + delta;
+      }
+      sendEvent('thinking_token', delta);
     };
 
     // First block is always thinking
@@ -217,6 +318,26 @@ class DesktopChatController extends BaseController {
 
       const streamResult = await agent.stream(objective, runOptions as any);
 
+      // ── Background: collect reasoning/thinking chunks without blocking text ──
+      // fullStream gives us fine-grained chunks. We consume reasoning-delta
+      // in the background while textStream drives the main response.
+      // NOTE: We intentionally do NOT await this — it races alongside textStream.
+      (async () => {
+        try {
+          for await (const chunk of streamResult.fullStream) {
+            const c = chunk as any;
+            const type: string = c.type ?? '';
+            if (type === 'reasoning-delta' || type === 'reasoning') {
+              const delta: string = c.payload?.textDelta ?? c.textDelta ?? '';
+              if (delta) appendThinkingChunk(delta);
+            }
+          }
+        } catch {
+          // Reasoning stream errors are non-fatal — ignore silently
+        }
+      })();
+
+      // ── Foreground: reliable text delivery via textStream ─────────────────
       for await (const chunk of streamResult.textStream) {
         appendTextChunk(chunk);
         sendEvent('text', chunk);
@@ -280,6 +401,82 @@ class DesktopChatController extends BaseController {
 
       res.end();
     }
+  };
+
+  act = async (req: Request, res: Response) => {
+    const session = this.session(req);
+    const threadId = req.params.threadId;
+    const parsed = actSchema.parse(req.body);
+    const { workspace, actionResult, agentId: requestedAgent } = parsed;
+    const message = parsed.message?.trim() ?? '';
+
+    const agentId = requestedAgent && (KNOWN_AGENTS as readonly string[]).includes(requestedAgent)
+      ? requestedAgent
+      : DEFAULT_AGENT;
+
+    const conversationKey = `desktop:${threadId}`;
+
+    if (message && !actionResult) {
+      const messageId = randomUUID();
+      await desktopThreadsService.addMessage(threadId, session.userId, 'user', message);
+      conversationMemoryStore.addUserMessage(conversationKey, messageId, message);
+    }
+
+    const history = conversationMemoryStore.getContextMessages(conversationKey, 12);
+    let historyContext = '';
+    if (history.length > 0) {
+      historyContext = '\n\n--- Conversation history ---\n' +
+        history.map((h) => `${h.role}: ${h.content}`).join('\n') +
+        '\n--- End history ---\n';
+    }
+
+    await toolPermissionService.getAllowedTools(
+      session.companyId,
+      session.role as 'MEMBER' | 'COMPANY_ADMIN' | 'SUPER_ADMIN',
+    );
+
+    const desktopPrompt = buildDesktopCapabilityPrompt(workspace, actionResult);
+    const objective = [
+      desktopPrompt,
+      historyContext,
+      message || 'Continue from the latest local workspace action result and finish the user request.',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const requestContext = new RequestContext<Record<string, string>>();
+    requestContext.set('companyId', session.companyId);
+    requestContext.set('userId', session.userId);
+    requestContext.set('chatId', threadId);
+    requestContext.set('channel', 'desktop');
+    requestContext.set('requesterEmail', session.email ?? '');
+
+    const agent = mastra.getAgent(
+      agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent',
+    );
+
+    const runOptions = await buildMastraAgentRunOptions(
+      MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId],
+      { requestContext },
+    );
+
+    const result = await agent.generate(objective, runOptions as any);
+    const assistantText = typeof result?.text === 'string' ? result.text.trim() : '';
+    const requestedAction = parseDesktopAction(assistantText);
+
+    if (requestedAction) {
+      return res.json(ApiResponse.success({ kind: 'action', action: requestedAction }, 'Local action requested'));
+    }
+
+    const assistantMessage = await desktopThreadsService.addMessage(
+      threadId,
+      session.userId,
+      'assistant',
+      assistantText,
+    );
+    conversationMemoryStore.addAssistantMessage(conversationKey, randomUUID(), assistantText);
+
+    return res.json(ApiResponse.success({ kind: 'answer', message: assistantMessage }, 'Assistant reply created'));
   };
 }
 

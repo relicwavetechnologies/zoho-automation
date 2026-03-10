@@ -1,9 +1,11 @@
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
+import { randomUUID } from 'crypto';
 
 import { larkDocsService, LarkDocsIntegrationError } from '../../../channels/lark/lark-docs.service';
 import { conversationMemoryStore } from '../../../state/conversation';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
+import { emitActivityEvent } from './activity-bus';
 
 const buildConversationKey = (requestContext?: { get: (key: string) => unknown }): string | null => {
   const channel = requestContext?.get('channel');
@@ -31,6 +33,18 @@ export const createLarkDocTool = createTool({
       const name = TOOL_REGISTRY_MAP.get('create-lark-doc')?.name ?? 'Create Lark Doc';
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
+
+    const requestId = requestContext?.get('requestId') as string | undefined;
+    const callId = randomUUID();
+    if (requestId) {
+      emitActivityEvent(requestId, 'activity', {
+        id: callId,
+        name: 'create-lark-doc',
+        label: 'Creating Lark Document',
+        icon: 'file-text',
+      });
+    }
+
     try {
       const result = await larkDocsService.createMarkdownDoc({
         companyId: requestContext?.get('companyId') as string | undefined,
@@ -49,6 +63,16 @@ export const createLarkDocTool = createTool({
         });
       }
 
+      if (requestId) {
+        emitActivityEvent(requestId, 'activity_done', {
+          id: callId,
+          name: 'create-lark-doc',
+          label: 'Created Lark Document',
+          icon: 'file-text',
+          resultSummary: result.title,
+        });
+      }
+
       return {
         answer: result.url
           ? `Created Lark Doc "${result.title}". URL: ${result.url}`
@@ -60,6 +84,15 @@ export const createLarkDocTool = createTool({
       };
     } catch (error) {
       const message = error instanceof LarkDocsIntegrationError ? error.message : error instanceof Error ? error.message : 'unknown_error';
+      if (requestId) {
+        emitActivityEvent(requestId, 'activity_done', {
+          id: callId,
+          name: 'create-lark-doc',
+          label: 'Failed to create document',
+          icon: 'x-circle',
+          resultSummary: 'Error',
+        });
+      }
       return {
         answer: `Lark Doc creation failed: ${message}`,
         error: message,

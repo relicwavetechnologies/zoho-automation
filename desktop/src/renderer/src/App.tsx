@@ -1,15 +1,19 @@
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { ChatProvider } from './context/ChatContext'
+import { WorkspaceProvider, useWorkspace } from './context/WorkspaceContext'
 import { LoginScreen } from './components/LoginScreen'
 import { Sidebar } from './components/Sidebar'
 import { Header } from './components/Header'
 import { ChatPane } from './components/ChatPane'
 import { Composer } from './components/Composer'
+import { WorkspaceGate } from './components/WorkspaceGate'
+import { WorkspaceStudio } from './components/WorkspaceStudio'
 
 import { useState } from 'react'
 
 function AppShell(): JSX.Element {
   const { session, loading } = useAuth()
+  const { hasWorkspace } = useWorkspace()
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
   if (loading) {
@@ -30,14 +34,23 @@ function AppShell(): JSX.Element {
     return <LoginScreen />
   }
 
+  if (!hasWorkspace) {
+    return <WorkspaceGate />
+  }
+
   return (
     <ChatProvider>
       <div className="flex h-full" style={{ background: 'hsl(var(--background))' }}>
         <Sidebar isOpen={sidebarOpen} onToggle={() => setSidebarOpen(false)} />
-        <div className="flex flex-col flex-1 min-w-0">
+        <div className="flex min-w-0 flex-1 flex-col">
           <Header sidebarOpen={sidebarOpen} toggleSidebar={() => setSidebarOpen(true)} />
-          <ChatPane />
-          <Composer />
+          <div className="flex min-h-0 flex-1">
+            <div className="flex min-w-0 flex-1 flex-col">
+              <ChatPane />
+              <Composer />
+            </div>
+            <WorkspaceStudio />
+          </div>
         </div>
       </div>
     </ChatProvider>
@@ -48,7 +61,9 @@ export function App(): JSX.Element {
 
   return (
     <AuthProvider>
-      <AppShell />
+      <WorkspaceProvider>
+        <AppShell />
+      </WorkspaceProvider>
     </AuthProvider>
   )
 }

@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { agentRegistry } from '../../../agents';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
+import { emitActivityEvent } from './activity-bus';
 
 const TOOL_ID = 'read-outreach-publishers';
 
@@ -38,6 +39,17 @@ export const readOutreachPublishersTool = createTool({
       };
     }
 
+    const requestId = requestContext?.get('requestId') as string | undefined;
+    const callId = randomUUID();
+    if (requestId) {
+      emitActivityEvent(requestId, 'activity', {
+        id: callId,
+        name: TOOL_ID,
+        label: 'Fetching outreach publishers',
+        icon: 'bar-chart-2',
+      });
+    }
+
     const result = await agentRegistry.invoke({
       taskId: `mastra_tool_${randomUUID()}`,
       agentKey: 'outreach-read',
@@ -53,6 +65,16 @@ export const readOutreachPublishersTool = createTool({
         limit: inputData.limit,
       },
     });
+
+    if (requestId) {
+      emitActivityEvent(requestId, 'activity_done', {
+        id: callId,
+        name: TOOL_ID,
+        label: result.status === 'success' ? 'Fetched outreach publishers' : 'Failed to fetch publishers',
+        icon: result.status === 'success' ? 'bar-chart-2' : 'x-circle',
+        resultSummary: result.status === 'success' ? `${(result.result?.['records'] as Array<any> | undefined)?.length ?? 0} publishers retrieved` : 'Error',
+      });
+    }
 
     return {
       answer: result.status === 'success' ? result.message : null,
