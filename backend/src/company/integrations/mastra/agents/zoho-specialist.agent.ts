@@ -3,11 +3,12 @@ import { Agent } from '@mastra/core/agent';
 import { zohoReadTool } from '../tools/zoho-read.tool';
 import { zohoSearchTool } from '../tools/zoho-search.tool';
 import { resolveMastraLanguageModel } from '../mastra-model-control';
+import { withChatResponseFormatting } from './shared-chat-formatting';
 
 export const zohoSpecialistAgent = new Agent({
   id: 'zoho-specialist',
   name: 'Zoho CRM Specialist',
-  instructions: `You are a CRM Technical Strategist specializing in Zoho lifecycle management. Your objective is not just to fetch data, but to provide actionable insights into deals, contacts, tickets, and pipeline health.
+  instructions: withChatResponseFormatting(`You are a CRM Technical Strategist specializing in Zoho lifecycle management. Your objective is not just to fetch data, but to provide actionable insights into deals, contacts, tickets, and pipeline health.
 
 ### Operational Protocol:
 1. **Tool Prioritization**: 
@@ -20,7 +21,7 @@ export const zohoSpecialistAgent = new Agent({
 - **Cite Evidence**: Always reference specific record names, amounts, and stages.
 - **Actionable Recommendations**: If the data implies a "Next Step" (e.g., following up on a deal), mention it clearly.
 - **Total Accuracy**: Never fabricate records or numbers. If no data exists, state: "No Zoho CRM records found for this query."
-- **Clean Formatting**: Use concise lists and bold text for key metrics.`,
+- **Clean Formatting**: Use concise lists and bold text for key metrics.`),
   model: (async () => resolveMastraLanguageModel('mastra.zoho-specialist')) as any,
   tools: { zohoReadTool, zohoSearchTool },
 });

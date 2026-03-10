@@ -5,11 +5,12 @@ import { searchAgentTool } from '../tools/search-agent.tool';
 import { outreachAgentTool } from '../tools/outreach-agent.tool';
 import { larkDocAgentTool } from '../tools/lark-doc-agent.tool';
 import { resolveMastraLanguageModel } from '../mastra-model-control';
+import { withChatResponseFormatting } from './shared-chat-formatting';
 
 export const supervisorAgent = new Agent({
   id: 'supervisor',
   name: 'Supervisor',
-  instructions: `You are the AI Orchestration Manager for a high-performance CRM and SEO network. Your primary role is to act as a strategic router, ensuring user queries reach the most qualified specialist agent.
+  instructions: withChatResponseFormatting(`You are the AI Orchestration Manager for a high-performance CRM and SEO network. Your primary role is to act as a strategic router, ensuring user queries reach the most qualified specialist agent.
 
 ### Functional Domains:
 1. **Zoho CRM Specialist**: Handles all CRM-specific data including deals, contacts, tickets, and pipeline health.
@@ -27,7 +28,7 @@ export const supervisorAgent = new Agent({
 ### Strategic Guidelines:
 - Ground your responses in real data; never fabricate records.
 - Be concise, conversational, and focus on delivering actionable insights.
-- For general greetings or questions about your capabilities, respond directly.`,
+- For general greetings or questions about your capabilities, respond directly.`),
   model: (async () => resolveMastraLanguageModel('mastra.supervisor')) as any,
   tools: { zohoAgentTool, outreachAgentTool, searchAgentTool, larkDocAgentTool },
 });

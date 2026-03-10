@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import {
     CheckCircle2, ChevronRight, ChevronDown,
     Loader2, XCircle, Search, Globe, FilePen,
-    FileText, Share2, BarChart2, List, UserPlus, Edit, Zap, ShieldAlert, TerminalSquare,
+    FileText, Share2, BarChart2, List, UserPlus, Edit, Zap, ShieldAlert, TerminalSquare, Brain,
 } from 'lucide-react'
 import type { ContentBlock } from '../types'
 import { cn } from '../lib/utils'
@@ -350,8 +350,11 @@ function ThinkingBlockRow({
                     ) : (
                         <div className="w-[11px] shrink-0" />
                     )}
-                    {/* Spacing placeholder to match ToolIcon width (w-3.5) */}
-                    <div className="w-3.5 h-3.5 shrink-0" />
+                    {/* Brain icon instead of placeholder space */}
+                    <Brain size={13} strokeWidth={2.5} className={cn(
+                        "shrink-0 transition-colors",
+                        hasContent ? 'text-[hsl(0,0%,32%)] group-hover:text-[hsl(0,0%,42%)]' : 'text-[hsl(0,0%,22%)]'
+                    )} />
                 </div>
                 <span className={cn(
                     'text-xs font-mono',
