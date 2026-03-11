@@ -6,6 +6,10 @@ export interface UserSession {
   role: string
   sessionId: string
   expiresAt: string
+  authProvider: 'password' | 'handoff' | 'lark'
+  larkTenantKey?: string
+  larkOpenId?: string
+  larkUserId?: string
 }
 
 export interface WorkspaceFolder {

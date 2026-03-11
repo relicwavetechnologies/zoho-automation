@@ -26,6 +26,7 @@ model User {
   memberSessions   MemberSession[]
   desktopHandoffs  DesktopAuthHandoff[]
   desktopThreads   DesktopThread[]
+  larkAuthLinks    LarkUserAuthLink[]
 }
 
 model Company {
@@ -51,6 +52,7 @@ model Company {
   memberSessions   MemberSession[]
   desktopHandoffs  DesktopAuthHandoff[]
   desktopThreads   DesktopThread[]
+  larkAuthLinks    LarkUserAuthLink[]
 }
 
 model AdminMembership {
@@ -143,6 +145,9 @@ model ChannelIdentity {
   larkUserId       String?
   sourceRoles      String[] @default([])
   aiRole           String   @default("MEMBER")
+  aiRoleSource     String   @default("sync")
+  syncedAiRole     String?
+  syncedFromLarkRole String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -434,12 +439,45 @@ model MemberSession {
   company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   role      String    @default("MEMBER")
   channel   String    @default("desktop")
+  authProvider String @default("password")
+  larkTenantKey String?
+  larkOpenId String?
+  larkUserId String?
   expiresAt DateTime
   revokedAt DateTime?
   createdAt DateTime  @default(now())
 
   @@index([userId, channel, expiresAt])
   @@index([companyId, channel, expiresAt])
+  @@index([companyId, larkOpenId])
+}
+
+model LarkUserAuthLink {
+  id                    String   @id @default(uuid())
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId             String
+  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  larkTenantKey         String
+  larkOpenId            String?
+  larkUserId            String?
+  larkEmail             String
+  larkName              String?
+  accessTokenEncrypted  String
+  refreshTokenEncrypted String?
+  tokenType             String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  tokenMetadata         Json?
+  linkedAt              DateTime @default(now())
+  lastUsedAt            DateTime?
+  revokedAt             DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([userId, companyId])
+  @@index([companyId, larkTenantKey])
+  @@index([companyId, larkEmail])
 }
 
 model DesktopAuthHandoff {

@@ -3,6 +3,7 @@ import { logger } from '../../../utils/logger';
 import { companyContextResolver } from '../../agents/support/company-context.resolver';
 import { larkWorkspaceConfigRepository, type DecryptedLarkWorkspaceConfig } from './lark-workspace-config.repository';
 import { LarkTenantTokenService } from './lark-tenant-token.service';
+import { larkUserAuthLinkRepository } from './lark-user-auth-link.repository';
 
 type LarkDocsServiceOptions = {
   fetchImpl?: typeof fetch;
@@ -12,6 +13,8 @@ type LarkDocsServiceOptions = {
 type CreateMarkdownDocInput = {
   companyId?: string;
   larkTenantKey?: string;
+  appUserId?: string;
+  credentialMode?: 'tenant' | 'user_linked';
   title: string;
   markdown: string;
   folderToken?: string;
@@ -27,6 +30,8 @@ export type LarkMarkdownDocResult = {
 export type EditMarkdownDocInput = {
   companyId?: string;
   larkTenantKey?: string;
+  appUserId?: string;
+  credentialMode?: 'tenant' | 'user_linked';
   documentId: string;
   instruction: string;
   newMarkdown?: string;
@@ -42,6 +47,9 @@ export type LarkEditDocResult = {
 type RequestOptions = {
   companyId: string;
   workspaceConfig: DecryptedLarkWorkspaceConfig | null;
+  appUserId?: string;
+  larkTenantKey?: string;
+  authMode?: 'tenant' | 'user_linked';
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   path: string;
   body?: string;
@@ -519,13 +527,24 @@ class LarkDocsService {
     const { documentId, url } = await this.createBlankDocument({
       companyId,
       workspaceConfig,
+      appUserId: input.appUserId,
+      larkTenantKey: input.larkTenantKey,
+      authMode: input.credentialMode ?? 'tenant',
       title,
       folderToken: input.folderToken,
     });
 
     const blocks = markdownToLarkBlocks(markdown);
     const blockCount = blocks.length > 0
-      ? await this.writeBlocks({ companyId, workspaceConfig, documentId, blocks })
+      ? await this.writeBlocks({
+        companyId,
+        workspaceConfig,
+        appUserId: input.appUserId,
+        larkTenantKey: input.larkTenantKey,
+        authMode: input.credentialMode ?? 'tenant',
+        documentId,
+        blocks,
+      })
       : 0;
 
     this.log.info('lark.docs.create.success', {
@@ -558,6 +577,9 @@ class LarkDocsService {
     const snapshot = await this.getDocumentSnapshot({
       companyId,
       workspaceConfig,
+      appUserId: input.appUserId,
+      larkTenantKey: input.larkTenantKey,
+      authMode: input.credentialMode ?? 'tenant',
       documentId,
     });
     const url = `https://docs.larksuite.com/docx/${documentId}`;
@@ -577,6 +599,9 @@ class LarkDocsService {
         await this.deleteChildRange({
           companyId,
           workspaceConfig,
+          appUserId: input.appUserId,
+          larkTenantKey: input.larkTenantKey,
+          authMode: input.credentialMode ?? 'tenant',
           documentId,
           parentBlockId: snapshot.rootBlockId,
           startIndex: 0,
@@ -588,6 +613,9 @@ class LarkDocsService {
         ? await this.insertBlocks({
           companyId,
           workspaceConfig,
+          appUserId: input.appUserId,
+          larkTenantKey: input.larkTenantKey,
+          authMode: input.credentialMode ?? 'tenant',
           documentId,
           parentBlockId: snapshot.rootBlockId,
           blocks,
@@ -606,6 +634,9 @@ class LarkDocsService {
       const inserted = await this.insertBlocks({
         companyId,
         workspaceConfig,
+        appUserId: input.appUserId,
+        larkTenantKey: input.larkTenantKey,
+        authMode: input.credentialMode ?? 'tenant',
         documentId,
         parentBlockId: snapshot.rootBlockId,
         blocks,
@@ -626,6 +657,9 @@ class LarkDocsService {
       await this.deleteChildRange({
         companyId,
         workspaceConfig,
+        appUserId: input.appUserId,
+        larkTenantKey: input.larkTenantKey,
+        authMode: input.credentialMode ?? 'tenant',
         documentId,
         parentBlockId: snapshot.rootBlockId,
         startIndex: range.startIndex,
@@ -642,6 +676,9 @@ class LarkDocsService {
     await this.deleteChildRange({
       companyId,
       workspaceConfig,
+      appUserId: input.appUserId,
+      larkTenantKey: input.larkTenantKey,
+      authMode: input.credentialMode ?? 'tenant',
       documentId,
       parentBlockId: snapshot.rootBlockId,
       startIndex: range.startIndex,
@@ -650,6 +687,9 @@ class LarkDocsService {
     const inserted = await this.insertBlocks({
       companyId,
       workspaceConfig,
+      appUserId: input.appUserId,
+      larkTenantKey: input.larkTenantKey,
+      authMode: input.credentialMode ?? 'tenant',
       documentId,
       parentBlockId: snapshot.rootBlockId,
       blocks: replacementBlocks,
@@ -661,6 +701,9 @@ class LarkDocsService {
   private async createBlankDocument(input: {
     companyId: string;
     workspaceConfig: DecryptedLarkWorkspaceConfig | null;
+    appUserId?: string;
+    larkTenantKey?: string;
+    authMode?: 'tenant' | 'user_linked';
     title: string;
     folderToken?: string;
   }): Promise<{ documentId: string; url: string }> {
@@ -672,6 +715,9 @@ class LarkDocsService {
     const payload = await this.requestJson<Record<string, unknown>>({
       companyId: input.companyId,
       workspaceConfig: input.workspaceConfig,
+      appUserId: input.appUserId,
+      larkTenantKey: input.larkTenantKey,
+      authMode: input.authMode,
       method: 'POST',
       path: '/open-apis/docx/v1/documents',
       body: JSON.stringify(body),
@@ -703,6 +749,9 @@ class LarkDocsService {
   private async writeBlocks(input: {
     companyId: string;
     workspaceConfig: DecryptedLarkWorkspaceConfig | null;
+    appUserId?: string;
+    larkTenantKey?: string;
+    authMode?: 'tenant' | 'user_linked';
     documentId: string;
     blocks: LarkBlock[];
   }): Promise<number> {
@@ -715,6 +764,9 @@ class LarkDocsService {
         await this.requestJson({
           companyId: input.companyId,
           workspaceConfig: input.workspaceConfig,
+          appUserId: input.appUserId,
+          larkTenantKey: input.larkTenantKey,
+          authMode: input.authMode,
           method: 'POST',
           path: `/open-apis/docx/v1/documents/${encodeURIComponent(input.documentId)}/blocks/${encodeURIComponent(input.documentId)}/children?document_revision_id=-1`,
           body: JSON.stringify({
@@ -738,6 +790,9 @@ class LarkDocsService {
   private async getDocumentSnapshot(input: {
     companyId: string;
     workspaceConfig: DecryptedLarkWorkspaceConfig | null;
+    appUserId?: string;
+    larkTenantKey?: string;
+    authMode?: 'tenant' | 'user_linked';
     documentId: string;
   }): Promise<RemoteDocSnapshot> {
     const items: RemoteDocBlock[] = [];
@@ -748,6 +803,9 @@ class LarkDocsService {
       const payload = await this.requestJson<Record<string, unknown>>({
         companyId: input.companyId,
         workspaceConfig: input.workspaceConfig,
+        appUserId: input.appUserId,
+        larkTenantKey: input.larkTenantKey,
+        authMode: input.authMode,
         method: 'GET',
         path: `/open-apis/docx/v1/documents/${encodeURIComponent(input.documentId)}/blocks/${encodeURIComponent(input.documentId)}/children${suffix ? `${suffix}&document_revision_id=-1` : '?document_revision_id=-1'}`,
       });
@@ -786,6 +844,9 @@ class LarkDocsService {
   private async insertBlocks(input: {
     companyId: string;
     workspaceConfig: DecryptedLarkWorkspaceConfig | null;
+    appUserId?: string;
+    larkTenantKey?: string;
+    authMode?: 'tenant' | 'user_linked';
     documentId: string;
     parentBlockId: string;
     blocks: LarkBlock[];
@@ -801,6 +862,9 @@ class LarkDocsService {
       await this.requestJson({
         companyId: input.companyId,
         workspaceConfig: input.workspaceConfig,
+        appUserId: input.appUserId,
+        larkTenantKey: input.larkTenantKey,
+        authMode: input.authMode,
         method: 'POST',
         path: `/open-apis/docx/v1/documents/${encodeURIComponent(input.documentId)}/blocks/${encodeURIComponent(input.parentBlockId)}/children?document_revision_id=-1`,
         body: JSON.stringify({
@@ -817,6 +881,9 @@ class LarkDocsService {
   private async deleteChildRange(input: {
     companyId: string;
     workspaceConfig: DecryptedLarkWorkspaceConfig | null;
+    appUserId?: string;
+    larkTenantKey?: string;
+    authMode?: 'tenant' | 'user_linked';
     documentId: string;
     parentBlockId: string;
     startIndex: number;
@@ -828,6 +895,9 @@ class LarkDocsService {
     await this.requestJson({
       companyId: input.companyId,
       workspaceConfig: input.workspaceConfig,
+      appUserId: input.appUserId,
+      larkTenantKey: input.larkTenantKey,
+      authMode: input.authMode,
       method: 'DELETE',
       path: `/open-apis/docx/v1/documents/${encodeURIComponent(input.documentId)}/blocks/${encodeURIComponent(input.parentBlockId)}/children/batch_delete?document_revision_id=-1`,
       body: JSON.stringify({
@@ -848,18 +918,29 @@ class LarkDocsService {
     });
   }
 
-  private resolveCredentialMeta(workspaceConfig: DecryptedLarkWorkspaceConfig | null) {
+  private resolveCredentialMeta(input: {
+    workspaceConfig: DecryptedLarkWorkspaceConfig | null;
+    authMode?: 'tenant' | 'user_linked';
+  }) {
     return {
-      appId: workspaceConfig?.appId ?? config.LARK_APP_ID,
-      tokenSource: workspaceConfig?.appId ? 'workspace_config' : 'env_fallback',
-      apiBaseUrl: workspaceConfig?.apiBaseUrl ?? config.LARK_API_BASE_URL,
+      appId: input.authMode === 'user_linked'
+        ? 'user_linked'
+        : input.workspaceConfig?.appId ?? config.LARK_APP_ID,
+      tokenSource: input.authMode === 'user_linked'
+        ? 'user_linked'
+        : input.workspaceConfig?.appId ? 'workspace_config' : 'env_fallback',
+      apiBaseUrl: input.workspaceConfig?.apiBaseUrl ?? config.LARK_API_BASE_URL,
     } as const;
   }
 
   private async requestJson<T = Record<string, unknown>>(input: RequestOptions): Promise<T> {
-    const credentialMeta = this.resolveCredentialMeta(input.workspaceConfig);
-    const tokenService = this.buildTokenService(input.workspaceConfig);
-    const accessToken = await tokenService.getAccessToken();
+    const credentialMeta = this.resolveCredentialMeta({
+      workspaceConfig: input.workspaceConfig,
+      authMode: input.authMode,
+    });
+    const accessToken = input.authMode === 'user_linked'
+      ? await this.resolveUserLinkedAccessToken(input)
+      : await this.buildTokenService(input.workspaceConfig).getAccessToken();
     const url = new URL(`${credentialMeta.apiBaseUrl}${input.path}`);
 
     let response: Response;
@@ -916,6 +997,40 @@ class LarkDocsService {
     });
 
     return record as T;
+  }
+
+  private async resolveUserLinkedAccessToken(input: RequestOptions): Promise<string> {
+    if (!input.appUserId) {
+      throw new LarkDocsIntegrationError(
+        'Desktop Lark account is not linked to an app user. Sign in with Lark again.',
+        'lark_docs_unavailable',
+      );
+    }
+
+    const link = await larkUserAuthLinkRepository.findActiveByUser(input.appUserId, input.companyId);
+    if (!link) {
+      throw new LarkDocsIntegrationError(
+        'No linked Lark desktop account was found. Sign in with Lark again.',
+        'lark_docs_unavailable',
+      );
+    }
+
+    if (input.larkTenantKey && link.larkTenantKey !== input.larkTenantKey) {
+      throw new LarkDocsIntegrationError(
+        'Linked Lark account does not belong to the active workspace tenant.',
+        'lark_docs_unavailable',
+      );
+    }
+
+    if (link.accessTokenExpiresAt && link.accessTokenExpiresAt.getTime() <= Date.now()) {
+      throw new LarkDocsIntegrationError(
+        'Linked Lark desktop session has expired. Sign in with Lark again.',
+        'lark_docs_unavailable',
+      );
+    }
+
+    await larkUserAuthLinkRepository.touchLastUsed(link.id);
+    return link.accessToken;
   }
 }
 

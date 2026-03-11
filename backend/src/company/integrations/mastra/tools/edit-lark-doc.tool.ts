@@ -66,9 +66,13 @@ export const editLarkDocTool = createTool({
     }
 
     try {
+      const credentialMode =
+        requestContext?.get('larkAuthMode') === 'user_linked' ? 'user_linked' : 'tenant';
       const result = await larkDocsService.editMarkdownDoc({
         companyId: requestContext?.get('companyId') as string | undefined,
         larkTenantKey: requestContext?.get('larkTenantKey') as string | undefined,
+        appUserId: requestContext?.get('userId') as string | undefined,
+        credentialMode,
         documentId,
         instruction: inputData.instruction,
         newMarkdown: inputData.newMarkdown,

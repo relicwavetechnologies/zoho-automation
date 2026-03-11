@@ -7,6 +7,11 @@ export type AiRoleDTO = {
   isBuiltIn: boolean;
 };
 
+export type EnsureAiRoleResult = {
+  role: AiRoleDTO;
+  created: boolean;
+};
+
 const toDTO = (row: AiRoleRow): AiRoleDTO => ({
   id: row.id,
   slug: row.slug,
@@ -35,6 +40,24 @@ class AiRoleService {
     }
     const row = await aiRoleRepository.create(companyId, normalizedSlug, displayName.trim());
     return toDTO(row);
+  }
+
+  async ensureRole(companyId: string, slug: string, displayName: string): Promise<EnsureAiRoleResult> {
+    const normalizedSlug = slug.trim().toUpperCase().replace(/\s+/g, '_');
+    if (!SLUG_RE.test(normalizedSlug)) {
+      throw new Error('Role slug must be 2-30 uppercase letters/digits/underscores, starting with a letter.');
+    }
+    await aiRoleRepository.ensureBuiltIns(companyId);
+    const existing = await aiRoleRepository.findBySlug(companyId, normalizedSlug);
+    if (existing) {
+      if (!existing.isBuiltIn && existing.displayName !== displayName.trim()) {
+        const updated = await aiRoleRepository.update(existing.id, companyId, displayName.trim());
+        return { role: toDTO(updated), created: false };
+      }
+      return { role: toDTO(existing), created: false };
+    }
+    const row = await aiRoleRepository.create(companyId, normalizedSlug, displayName.trim());
+    return { role: toDTO(row), created: true };
   }
 
   async updateRole(companyId: string, roleId: string, displayName: string): Promise<AiRoleDTO> {

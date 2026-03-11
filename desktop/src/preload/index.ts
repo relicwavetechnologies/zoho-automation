@@ -5,12 +5,12 @@ export type DesktopAPI = {
     backendUrl: string
   }
   auth: {
-    login: (email: string, password: string) => Promise<{ success: boolean; data?: { token: string; session: unknown } }>
-    openLogin: () => Promise<void>
-    exchange: (code: string) => Promise<{ success: boolean; data?: { token: string; session: unknown } }>
+    openLarkLogin: () => Promise<void>
+    exchangeLark: (code: string, state: string) => Promise<{ success: boolean; data?: { token: string; session: unknown } }>
     me: (token: string) => Promise<{ success: boolean; data?: unknown }>
     logout: (token: string) => Promise<{ success: boolean }>
-    onCallback: (cb: (payload: { code: string }) => void) => () => void
+    unlinkLark: (token: string) => Promise<{ success: boolean }>
+    onCallback: (cb: (payload: { code?: string; state?: string; error?: string }) => void) => () => void
   }
   workspace: {
     select: () => Promise<{ canceled: boolean; data?: { id: string; path: string; name: string } }>
@@ -84,13 +84,16 @@ const api: DesktopAPI = {
     backendUrl: process.env.CURSORR_BACKEND_URL ?? 'http://localhost:8000',
   },
   auth: {
-    login: (email, password) => ipcRenderer.invoke('desktop-auth:login', email, password),
-    openLogin: () => ipcRenderer.invoke('desktop-auth:open-login'),
-    exchange: (code) => ipcRenderer.invoke('desktop-auth:exchange', code),
+    openLarkLogin: () => ipcRenderer.invoke('desktop-auth:open-lark-login'),
+    exchangeLark: (code, state) => ipcRenderer.invoke('desktop-auth:exchange-lark', code, state),
     me: (token) => ipcRenderer.invoke('desktop-auth:me', token),
     logout: (token) => ipcRenderer.invoke('desktop-auth:logout', token),
+    unlinkLark: (token) => ipcRenderer.invoke('desktop-auth:unlink-lark', token),
     onCallback: (cb) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: { code: string }): void => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        payload: { code?: string; state?: string; error?: string },
+      ): void => {
         cb(payload)
       }
       ipcRenderer.on('desktop-auth:callback', handler)

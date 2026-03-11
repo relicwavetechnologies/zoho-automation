@@ -16,8 +16,12 @@ export interface MemberSessionDTO {
   role: string;
   sessionId: string;
   expiresAt: string;
+  authProvider: 'password' | 'handoff' | 'lark';
   name?: string;
   email: string;
+  larkTenantKey?: string;
+  larkOpenId?: string;
+  larkUserId?: string;
 }
 
 export interface MemberLoginResult {
@@ -47,10 +51,28 @@ export class MemberAuthService extends BaseService {
   }
 
   /** Issue a desktop-channel session (called after handoff exchange). */
-  async issueDesktopSession(userId: string, companyId: string, role: string): Promise<MemberLoginResult> {
+  async issueDesktopSession(
+    userId: string,
+    companyId: string,
+    role: string,
+    options?: {
+      authProvider?: 'password' | 'handoff' | 'lark';
+      larkTenantKey?: string;
+      larkOpenId?: string;
+      larkUserId?: string;
+    },
+  ): Promise<MemberLoginResult> {
     const user = await this.repository.findUserById(userId);
     if (!user) throw new HttpException(404, 'User not found');
-    return this.issueSession(userId, companyId, role, 'desktop', user.name ?? undefined, user.email);
+    return this.issueSession(
+      userId,
+      companyId,
+      role,
+      'desktop',
+      user.name ?? undefined,
+      user.email,
+      options,
+    );
   }
 
   /** Resolve a member session from a sessionId. */
@@ -66,8 +88,12 @@ export class MemberAuthService extends BaseService {
       role: session.role,
       sessionId: session.sessionId,
       expiresAt: session.expiresAt.toISOString(),
+      authProvider: (session.authProvider as 'password' | 'handoff' | 'lark') ?? 'password',
       name: user?.name ?? undefined,
       email: user?.email ?? '',
+      larkTenantKey: session.larkTenantKey ?? undefined,
+      larkOpenId: session.larkOpenId ?? undefined,
+      larkUserId: session.larkUserId ?? undefined,
     };
   }
 
@@ -92,6 +118,12 @@ export class MemberAuthService extends BaseService {
     channel: string,
     name?: string,
     email?: string,
+    options?: {
+      authProvider?: 'password' | 'handoff' | 'lark';
+      larkTenantKey?: string;
+      larkOpenId?: string;
+      larkUserId?: string;
+    },
   ): Promise<MemberLoginResult> {
     const expiresAt = new Date(Date.now() + MEMBER_SESSION_TTL_MINUTES * 60 * 1000);
     const session = await this.repository.createMemberSession({
@@ -99,6 +131,10 @@ export class MemberAuthService extends BaseService {
       companyId,
       role,
       channel,
+      authProvider: options?.authProvider,
+      larkTenantKey: options?.larkTenantKey,
+      larkOpenId: options?.larkOpenId,
+      larkUserId: options?.larkUserId,
       expiresAt,
     });
 
@@ -108,8 +144,12 @@ export class MemberAuthService extends BaseService {
       role: session.role,
       sessionId: session.sessionId,
       expiresAt: session.expiresAt.toISOString(),
+      authProvider: (session.authProvider as 'password' | 'handoff' | 'lark') ?? 'password',
       name,
       email: email ?? '',
+      larkTenantKey: session.larkTenantKey ?? undefined,
+      larkOpenId: session.larkOpenId ?? undefined,
+      larkUserId: session.larkUserId ?? undefined,
     };
 
     const token = jwt.sign(

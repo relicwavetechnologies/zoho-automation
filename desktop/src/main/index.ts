@@ -55,8 +55,10 @@ function handleDeepLink(url: string): void {
     const parsed = new URL(url)
     if (parsed.hostname === 'auth' && parsed.pathname === '/callback') {
       const code = parsed.searchParams.get('code')
-      if (code && mainWindow) {
-        mainWindow.webContents.send('desktop-auth:callback', { code })
+      const state = parsed.searchParams.get('state')
+      const error = parsed.searchParams.get('error')
+      if ((code || error) && mainWindow) {
+        mainWindow.webContents.send('desktop-auth:callback', { code, state, error })
       }
     }
   } catch {

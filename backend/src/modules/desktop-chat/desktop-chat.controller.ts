@@ -306,6 +306,14 @@ class DesktopChatController extends BaseController {
       requestContext.set('requestId', streamRequestId);
       requestContext.set('channel', 'desktop');
       requestContext.set('requesterEmail', session.email ?? '');
+      requestContext.set('authProvider', session.authProvider);
+      requestContext.set('larkTenantKey', session.larkTenantKey ?? '');
+      requestContext.set('larkOpenId', session.larkOpenId ?? '');
+      requestContext.set('larkUserId', session.larkUserId ?? '');
+      requestContext.set(
+        'larkAuthMode',
+        session.authProvider === 'lark' ? 'user_linked' : 'tenant',
+      );
 
       const agent = mastra.getAgent(
         agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent',

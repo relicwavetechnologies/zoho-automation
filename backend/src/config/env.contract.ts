@@ -12,6 +12,8 @@ export type EnvValidationIssue = {
 export type ValidatedEnv = {
   PORT: number;
   NODE_ENV: 'development' | 'test' | 'production';
+  APP_BASE_URL: string;
+  BACKEND_PUBLIC_URL: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error' | 'fatal';
   LOG_SUCCESS_SAMPLE_RATE: number;
   LOG_INCLUDE_STACK: boolean;
@@ -434,6 +436,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
   const config: ValidatedEnv = {
     PORT: port,
     NODE_ENV: nodeEnv,
+    APP_BASE_URL: readString(parsedRaw.APP_BASE_URL, 'http://localhost:5173'),
+    BACKEND_PUBLIC_URL: readString(parsedRaw.BACKEND_PUBLIC_URL, 'http://localhost:8000'),
     LOG_LEVEL: parseLogLevel(readString(parsedRaw.LOG_LEVEL, 'info'), issues),
     LOG_SUCCESS_SAMPLE_RATE: logSuccessSampleRate,
     LOG_INCLUDE_STACK: parseBoolean({
@@ -695,6 +699,7 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
   const hasLarkVerificationToken = config.LARK_VERIFICATION_TOKEN.length > 0;
   const hasLarkSigningSecret = config.LARK_WEBHOOK_SIGNING_SECRET.length > 0;
   const hasStaticTenantToken = config.LARK_BOT_TENANT_ACCESS_TOKEN.length > 0;
+  const hasAppBaseUrl = config.APP_BASE_URL.length > 0;
 
   if ((hasLarkAppId && !hasLarkAppSecret) || (!hasLarkAppId && hasLarkAppSecret)) {
     issues.push({
@@ -702,6 +707,15 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       code: 'paired_required',
       message: 'LARK_APP_ID and LARK_APP_SECRET must be set together',
       severity: 'error',
+    });
+  }
+
+  if ((hasLarkAppId || hasLarkAppSecret) && !hasAppBaseUrl) {
+    warnings.push({
+      key: 'APP_BASE_URL',
+      code: 'missing_value',
+      message: 'APP_BASE_URL should be set when Lark OAuth is configured',
+      severity: 'warning',
     });
   }
 

@@ -22,6 +22,10 @@ type ChannelIdentity = {
   email?: string;
   channel: string;
   aiRole: string;
+  aiRoleSource: 'sync' | 'manual';
+  syncedAiRole?: string;
+  syncedFromLarkRole?: string;
+  sourceRoles?: string[];
 };
 
 type Tab = 'permissions' | 'roles' | 'users';
@@ -207,6 +211,17 @@ export default function ToolPermissionsPage() {
         token,
       );
       toast({ title: 'User role updated' });
+    } catch {
+      await loadUsers();
+    }
+  };
+
+  const handleResetUserRole = async (userId: string) => {
+    if (!token) return;
+    try {
+      await api.post(`/api/admin/company/channel-identities/${userId}/ai-role/reset`, {}, token);
+      await loadUsers();
+      toast({ title: 'User role reset to sync-managed value' });
     } catch {
       await loadUsers();
     }
@@ -428,6 +443,7 @@ export default function ToolPermissionsPage() {
                     <th className="py-3 pl-4 text-left text-xs font-semibold uppercase tracking-wider text-zinc-500">User</th>
                     <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-zinc-500">External ID</th>
                     <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-zinc-500">Current Role</th>
+                    <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-zinc-500">Source</th>
                     <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-zinc-500">Change Role</th>
                   </tr>
                 </thead>
@@ -444,19 +460,37 @@ export default function ToolPermissionsPage() {
                           slug={u.aiRole}
                           label={roles.find((r) => r.slug === u.aiRole)?.displayName ?? u.aiRole}
                         />
+                        {u.syncedAiRole && u.syncedAiRole !== u.aiRole && (
+                          <div className="mt-1 text-[11px] text-zinc-600">sync: {u.syncedAiRole}</div>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 text-xs text-zinc-500">
+                        <div>{u.aiRoleSource}</div>
+                        {u.syncedFromLarkRole && <div className="mt-1 text-[11px] text-zinc-600">{u.syncedFromLarkRole}</div>}
                       </td>
                       <td className="px-3 py-3">
-                        <select
-                          value={u.aiRole}
-                          onChange={(e) => handleUserRoleChange(u.id, e.target.value)}
-                          className="rounded border border-[#2a2a2a] bg-[#0a0a0a] px-2 py-1 text-xs text-zinc-300 focus:border-indigo-700 focus:outline-none"
-                        >
-                          {roles.map((r) => (
-                            <option key={r.slug} value={r.slug}>
-                              {r.displayName}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={u.aiRole}
+                            onChange={(e) => handleUserRoleChange(u.id, e.target.value)}
+                            className="rounded border border-[#2a2a2a] bg-[#0a0a0a] px-2 py-1 text-xs text-zinc-300 focus:border-indigo-700 focus:outline-none"
+                          >
+                            {roles.map((r) => (
+                              <option key={r.slug} value={r.slug}>
+                                {r.displayName}
+                              </option>
+                            ))}
+                          </select>
+                          {u.aiRoleSource === 'manual' && (
+                            <button
+                              type="button"
+                              onClick={() => handleResetUserRole(u.id)}
+                              className="rounded border border-[#2a2a2a] px-2 py-1 text-[11px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+                            >
+                              Reset
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}

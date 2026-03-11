@@ -41,6 +41,21 @@ router.post(
   asyncHandler(companyAdminController.upsertLarkBinding),
 );
 router.get(
+  '/onboarding/lark-authorize-url',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.getLarkAuthorizeUrl),
+);
+router.post(
+  '/onboarding/lark-connect',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.connectLarkOnboarding),
+);
+router.post(
+  '/onboarding/lark-disconnect',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.disconnectLarkOnboarding),
+);
+router.get(
   '/onboarding/lark-workspace-config',
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.getLarkWorkspaceConfigStatus),
@@ -129,6 +144,11 @@ router.put(
   '/channel-identities/:identityId/ai-role',
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.setLarkUserRole),
+);
+router.post(
+  '/channel-identities/:identityId/ai-role/reset',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.resetLarkUserRole),
 );
 router.get(
   '/ai-roles',
