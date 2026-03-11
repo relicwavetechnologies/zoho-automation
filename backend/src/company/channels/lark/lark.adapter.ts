@@ -12,6 +12,7 @@ import type { LarkWebhookEnvelope } from './lark.types';
 import { buildLarkTraceMeta } from './lark-observability';
 import { larkTenantTokenService, LarkTenantTokenService } from './lark-tenant-token.service';
 import { emitRuntimeTrace } from '../../observability';
+import { parseLarkMessageContent } from './lark-message-content';
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (typeof value !== 'object' || value === null) {
@@ -39,20 +40,6 @@ const readString = (value: unknown): string | undefined => {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
-};
-
-const parseLarkTextContent = (content: unknown): string => {
-  const raw = readString(content);
-  if (!raw) {
-    return '';
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return readString(parsed.text) ?? raw;
-  } catch {
-    return raw;
-  }
 };
 
 const readTenantKey = (envelope: LarkWebhookEnvelope): string | undefined =>
@@ -235,7 +222,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       chatType: message.chat_type === 'group' ? 'group' : 'p2p',
       messageId,
       timestamp: toIsoTimestamp(readString(message.create_time)),
-      text: parseLarkTextContent(message.content),
+      text: parseLarkMessageContent(message.content, readString(message.msg_type) ?? 'text'),
       rawEvent: event,
       trace: {
         larkTenantKey: readTenantKey(envelope),
@@ -257,6 +244,15 @@ export class LarkChannelAdapter implements ChannelAdapter {
       msg_type: 'interactive',
       content: JSON.stringify(buildLarkCardContent(input.text, input.actions)),
     };
+    logger.info('lark.egress.send.start', {
+      ...buildEgressTraceMeta({
+        chatId: input.chatId,
+        correlationId: input.correlationId,
+      }),
+      receiveIdType,
+      requestPath,
+      textLength: input.text.length,
+    });
 
     const result = await this.requestWithTokenRetry({
       method: 'POST',
@@ -272,6 +268,8 @@ export class LarkChannelAdapter implements ChannelAdapter {
           chatId: input.chatId,
           correlationId: input.correlationId,
         }),
+        receiveIdType,
+        requestPath,
         error: result.result.error,
       });
       emitRuntimeTrace({
@@ -312,6 +310,14 @@ export class LarkChannelAdapter implements ChannelAdapter {
   }
 
   public async updateMessage(input: ChannelUpdateMessage): Promise<ChannelOutboundResult> {
+    logger.info('lark.egress.update.start', {
+      ...buildEgressTraceMeta({
+        messageId: input.messageId,
+        correlationId: input.correlationId,
+      }),
+      requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
+      textLength: input.text.length,
+    });
     const result = await this.requestWithTokenRetry({
       method: 'PATCH',
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
@@ -328,6 +334,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
           messageId: input.messageId,
           correlationId: input.correlationId,
         }),
+        requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
         error: result.result.error,
       });
       emitRuntimeTrace({

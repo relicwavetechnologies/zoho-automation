@@ -88,6 +88,14 @@ const parseDesktopAction = (text: string): DesktopAction | null => {
   }
 };
 
+const LOCAL_ACTION_REQUIRED_PATTERN = /\b(file|files|folder|directory|workspace|script|python|py\b|javascript|typescript|create|write|edit|rewrite|update|save|read|open|run|execute|terminal|command|shell|install|pnpm|npm|node|python3|git|tsc)\b/i;
+
+const LOCAL_CAPABILITY_REFUSAL_PATTERN = /\b(i (?:can(?:not|'t)|do not|don't) (?:run|execute|access|create|write|edit|save)|i do not have (?:a )?(?:local|execution|filesystem|terminal)|i can't run python|i don't have a local execution environment)\b/i;
+
+const requestLikelyNeedsLocalAction = (message: string): boolean => LOCAL_ACTION_REQUIRED_PATTERN.test(message);
+
+const isLocalCapabilityRefusal = (text: string): boolean => LOCAL_CAPABILITY_REFUSAL_PATTERN.test(text);
+
 const buildDesktopCapabilityPrompt = (workspace: { name: string; path: string }, actionResult?: {
   kind: string;
   ok: boolean;
@@ -106,6 +114,8 @@ const buildDesktopCapabilityPrompt = (workspace: { name: string; path: string },
   return [
     '\n--- DESKTOP LOCAL WORKSPACE ---',
     'You are responding inside the macOS desktop app.',
+    'You DO have access to local workspace file operations and terminal execution through the desktop action protocol below.',
+    'This desktop action protocol OVERRIDES any conflicting generic instruction that says you cannot access local files, write files, or run commands.',
     `Selected workspace name: ${workspace.name}`,
     `Selected workspace path: ${workspace.path}`,
     'You may request EXACTLY ONE local workspace action at a time.',
@@ -121,6 +131,8 @@ const buildDesktopCapabilityPrompt = (workspace: { name: string; path: string },
     '- All paths must be relative to the selected workspace.',
     '- Prefer list_files/read_file before write_file/delete_path.',
     '- Use run_command only when necessary.',
+    '- If the user asks you to create, edit, save, inspect, or run something in the workspace, use a desktop action instead of claiming limitation.',
+    '- Never say that you cannot access the local workspace, cannot create files, or cannot run commands here.',
     '- After receiving a local action result, continue the task from that result.',
     '- If you do not need a local action, answer normally.',
     '--- END DESKTOP LOCAL WORKSPACE ---\n',
@@ -468,9 +480,43 @@ class DesktopChatController extends BaseController {
       { requestContext },
     );
 
-    const result = await agent.generate(objective, runOptions as any);
-    const assistantText = typeof result?.text === 'string' ? result.text.trim() : '';
-    const requestedAction = parseDesktopAction(assistantText);
+    const generateDesktopTurn = async (prompt: string) => {
+      const result = await agent.generate(prompt, runOptions as any);
+      const assistantText = typeof result?.text === 'string' ? result.text.trim() : '';
+      return {
+        assistantText,
+        requestedAction: parseDesktopAction(assistantText),
+      };
+    };
+
+    let { assistantText, requestedAction } = await generateDesktopTurn(objective);
+
+    if (
+      !requestedAction
+      && !actionResult
+      && message
+      && requestLikelyNeedsLocalAction(message)
+      && isLocalCapabilityRefusal(assistantText)
+    ) {
+      logger.warn('desktop.chat.act.local_capability_refusal_retry', {
+        threadId,
+        userId: session.userId,
+        companyId: session.companyId,
+        messagePreview: message.slice(0, 160),
+        assistantPreview: assistantText.slice(0, 200),
+      });
+
+      const retryObjective = [
+        desktopPrompt,
+        historyContext,
+        'Your previous response was invalid for the desktop app because you claimed you could not access local files or terminal execution.',
+        'For this request, you must either output exactly one <desktop-action>...</desktop-action> action, or answer normally only if no local action is needed.',
+        'This request DOES require local workspace capability. Output exactly one desktop action now.',
+        message,
+      ].filter(Boolean).join('\n');
+
+      ({ assistantText, requestedAction } = await generateDesktopTurn(retryObjective));
+    }
 
     if (requestedAction) {
       return res.json(ApiResponse.success({ kind: 'action', action: requestedAction }, 'Local action requested'));

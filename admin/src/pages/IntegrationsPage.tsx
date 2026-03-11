@@ -183,14 +183,16 @@ export const IntegrationsPage = () => {
 
   const zohoRedirectUri = oauthConfig?.redirectUri || `${window.location.origin}/zoho/callback`;
 
-  const loadStatus = async () => {
+  const loadStatus = async (options?: { silent?: boolean }) => {
     if (!token) return;
     if (isSuperAdmin && !scopedCompanyId) {
       setOnboarding(null);
       setStatusLoading(false);
       return;
     }
-    setStatusLoading(true);
+    if (!options?.silent) {
+      setStatusLoading(true);
+    }
     try {
       const status = await api.get<OnboardingStatus>(
         `/api/admin/company/onboarding/status${buildQuery()}`,
@@ -205,14 +207,16 @@ export const IntegrationsPage = () => {
     }
   };
 
-  const loadIdentities = async () => {
+  const loadIdentities = async (options?: { silent?: boolean }) => {
     if (!token) return;
     if (isSuperAdmin && !scopedCompanyId) {
       setIdentities([]);
       setIdentitiesLoading(false);
       return;
     }
-    setIdentitiesLoading(true);
+    if (!options?.silent) {
+      setIdentitiesLoading(true);
+    }
     try {
       const channelParam = channelFilter !== 'all' ? `channel=${channelFilter}` : '';
       const rows = await api.get<ChannelIdentity[]>(
@@ -269,14 +273,16 @@ export const IntegrationsPage = () => {
     }
   };
 
-  const loadLarkSyncStatus = async () => {
+  const loadLarkSyncStatus = async (options?: { silent?: boolean }) => {
     if (!token) return;
     if (isSuperAdmin && !scopedCompanyId) {
       setLarkSyncStatus(null);
       setLarkSyncLoading(false);
       return;
     }
-    setLarkSyncLoading(true);
+    if (!options?.silent) {
+      setLarkSyncLoading(true);
+    }
     try {
       const result = await api.get<LarkSyncStatus>(
         `/api/admin/company/onboarding/lark-sync/status${buildQuery()}`,
@@ -327,7 +333,7 @@ export const IntegrationsPage = () => {
   useEffect(() => {
     if (!onboarding?.historicalSync) return;
     if (!['queued', 'running'].includes(onboarding.historicalSync.status)) return;
-    const interval = window.setInterval(() => { void loadStatus(); }, 5000);
+    const interval = window.setInterval(() => { void loadStatus({ silent: true }); }, 5000);
     return () => window.clearInterval(interval);
   }, [onboarding?.historicalSync?.status]);
 
@@ -335,8 +341,8 @@ export const IntegrationsPage = () => {
     if (!larkSyncStatus?.status) return;
     if (!['queued', 'running'].includes(larkSyncStatus.status)) return;
     const interval = window.setInterval(() => {
-      void loadLarkSyncStatus();
-      void loadIdentities();
+      void loadLarkSyncStatus({ silent: true });
+      void loadIdentities({ silent: true });
     }, 5000);
     return () => window.clearInterval(interval);
   }, [larkSyncStatus?.status]);

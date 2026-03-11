@@ -33,6 +33,47 @@ export class MemberAuthRepository extends BaseRepository {
     });
   }
 
+  createUser(data: { email: string; password: string; name?: string }): Promise<User> {
+    return prisma.user.create({
+      data: {
+        email: data.email,
+        password: data.password,
+        ...(data.name ? { name: data.name } : {}),
+      },
+    });
+  }
+
+  async ensureActiveMembership(userId: string, companyId: string, role: string): Promise<AdminMembership> {
+    const activeMembership = await this.findActiveMembership(userId, companyId);
+    if (activeMembership) {
+      return activeMembership;
+    }
+
+    const latestMembership = await prisma.adminMembership.findFirst({
+      where: { userId, companyId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (latestMembership) {
+      return prisma.adminMembership.update({
+        where: { id: latestMembership.id },
+        data: {
+          isActive: true,
+          role: latestMembership.role || role,
+        },
+      });
+    }
+
+    return prisma.adminMembership.create({
+      data: {
+        userId,
+        companyId,
+        role,
+        isActive: true,
+      },
+    });
+  }
+
   createMemberSession(data: {
     userId: string;
     companyId: string;

@@ -7,6 +7,7 @@ import { mastra } from '../../integrations/mastra';
 import { buildMastraAgentRunOptions } from '../../integrations/mastra/mastra-model-control';
 import { personalVectorMemoryService } from '../../integrations/vector';
 import { logger } from '../../../utils/logger';
+import { classifyRuntimeError } from '../../observability';
 import { checkpointRepository } from '../../state/checkpoint';
 import { conversationMemoryStore } from '../../state/conversation';
 import { applyGenerationWordLimit } from '../../support/content-limits';
@@ -94,6 +95,31 @@ const normalizeAckText = (text: string): string => {
     return '';
   }
   return compact.length > 160 ? `${compact.slice(0, 157).trimEnd()}...` : compact;
+};
+
+const ensureOutboundSucceeded = (
+  outbound:
+    | Awaited<ReturnType<ReturnType<typeof resolveChannelAdapter>['sendMessage']>>
+    | Awaited<ReturnType<ReturnType<typeof resolveChannelAdapter>['updateMessage']>>,
+  context: {
+    phase: string;
+    taskId: string;
+    messageId: string;
+    chatId: string;
+  },
+) => {
+  if (outbound.status !== 'failed') {
+    return outbound;
+  }
+
+  logger.warn('mastra.engine.egress.failed', {
+    phase: context.phase,
+    taskId: context.taskId,
+    messageId: context.messageId,
+    chatId: context.chatId,
+    error: outbound.error,
+  });
+  throw new Error(outbound.error?.rawMessage ?? outbound.error?.classifiedReason ?? `${context.phase} failed`);
 };
 
 export const findProgressFlushIndex = (text: string): number => {
@@ -414,20 +440,30 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     const updateStageIndicator = async (text: string): Promise<void> => {
       try {
         if (!progressMessageId) {
-          const outbound = await channelAdapter.sendMessage({
+          const outbound = ensureOutboundSucceeded(await channelAdapter.sendMessage({
             chatId: message.chatId,
             text,
             correlationId: task.taskId,
+          }), {
+            phase: 'stage.send',
+            taskId: task.taskId,
+            messageId: message.messageId,
+            chatId: message.chatId,
           });
           progressMessageId = outbound.messageId;
           lastPushedPreviewText = text;
           lastPushAt = Date.now();
           logger.info('mastra.engine.stage.sent', { taskId: task.taskId, stage: text.slice(0, 40) });
         } else {
-          await channelAdapter.updateMessage({
+          ensureOutboundSucceeded(await channelAdapter.updateMessage({
             messageId: progressMessageId,
             text,
             correlationId: task.taskId,
+          }), {
+            phase: 'stage.update',
+            taskId: task.taskId,
+            messageId: message.messageId,
+            chatId: message.chatId,
           });
           lastPushedPreviewText = text;
           lastPushAt = Date.now();
@@ -582,17 +618,27 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       }
 
       if (!progressMessageId) {
-        const outbound = await channelAdapter.sendMessage({
+        const outbound = ensureOutboundSucceeded(await channelAdapter.sendMessage({
           chatId: message.chatId,
           text: preview,
           correlationId: task.taskId,
+        }), {
+          phase: 'progress.send',
+          taskId: task.taskId,
+          messageId: message.messageId,
+          chatId: message.chatId,
         });
         progressMessageId = outbound.messageId;
       } else {
-        await channelAdapter.updateMessage({
+        ensureOutboundSucceeded(await channelAdapter.updateMessage({
           messageId: progressMessageId,
           text: preview,
           correlationId: task.taskId,
+        }), {
+          phase: 'progress.update',
+          taskId: task.taskId,
+          messageId: message.messageId,
+          chatId: message.chatId,
         });
       }
       lastPushedPreviewText = preview;
@@ -645,17 +691,27 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
               // Safety fallback when a tool starts before the model streams text.
               const fallback = buildToolProgressFallback(toolNames);
               if (!progressMessageId) {
-                const outbound = await channelAdapter.sendMessage({
+                const outbound = ensureOutboundSucceeded(await channelAdapter.sendMessage({
                   chatId: message.chatId,
                   text: fallback,
                   correlationId: task.taskId,
+                }), {
+                  phase: 'tool-progress.send',
+                  taskId: task.taskId,
+                  messageId: message.messageId,
+                  chatId: message.chatId,
                 });
                 progressMessageId = outbound.messageId;
               } else {
-                await channelAdapter.updateMessage({
+                ensureOutboundSucceeded(await channelAdapter.updateMessage({
                   messageId: progressMessageId,
                   text: fallback,
                   correlationId: task.taskId,
+                }), {
+                  phase: 'tool-progress.update',
+                  taskId: task.taskId,
+                  messageId: message.messageId,
+                  chatId: message.chatId,
                 });
               }
               lastPushedPreviewText = fallback;
@@ -736,20 +792,83 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       ]
       : undefined;
 
-    if (progressMessageId) {
-      await channelAdapter.updateMessage({
-        messageId: progressMessageId,
-        text: finalText,
-        correlationId: task.taskId,
-        actions: shareActions,
-      });
-    } else {
-      await channelAdapter.sendMessage({
+    try {
+      let deliveredMessageId = progressMessageId;
+      if (progressMessageId) {
+        ensureOutboundSucceeded(await channelAdapter.updateMessage({
+          messageId: progressMessageId,
+          text: finalText,
+          correlationId: task.taskId,
+          actions: shareActions,
+        }), {
+          phase: 'final.update',
+          taskId: task.taskId,
+          messageId: message.messageId,
+          chatId: message.chatId,
+        });
+      } else {
+        const outbound = ensureOutboundSucceeded(await channelAdapter.sendMessage({
+          chatId: message.chatId,
+          text: finalText,
+          correlationId: task.taskId,
+          actions: shareActions,
+        }), {
+          phase: 'final.send',
+          taskId: task.taskId,
+          messageId: message.messageId,
+          chatId: message.chatId,
+        });
+        deliveredMessageId = outbound.messageId;
+      }
+
+      logger.info('mastra.engine.response.send.success', {
+        taskId: task.taskId,
+        messageId: message.messageId,
         chatId: message.chatId,
-        text: finalText,
-        correlationId: task.taskId,
-        actions: shareActions,
+        responseMessageId: deliveredMessageId,
       });
+
+      await checkpointRepository.save(task.taskId, 'response.send', {
+        status: 'done',
+        sent: true,
+        responseDeliveryStatus: 'sent',
+        responseMessageId: deliveredMessageId,
+        text: finalText,
+        channel: message.channel,
+        messageId: message.messageId,
+        chatId: message.chatId,
+        chatType: message.chatType,
+        timestamp: message.timestamp,
+        userId: message.userId,
+        requestId: message.trace?.requestId,
+        eventId: message.trace?.eventId,
+        textHash: message.trace?.textHash,
+      });
+    } catch (error) {
+      const deliveryError = classifyRuntimeError(error);
+      logger.error('mastra.engine.response.send.failed', {
+        taskId: task.taskId,
+        messageId: message.messageId,
+        chatId: message.chatId,
+        error: deliveryError,
+      });
+      await checkpointRepository.save(task.taskId, 'response.send', {
+        status: 'failed',
+        sent: false,
+        responseDeliveryStatus: 'failed',
+        responseDeliveryReason: deliveryError.classifiedReason,
+        text: finalText,
+        channel: message.channel,
+        messageId: message.messageId,
+        chatId: message.chatId,
+        chatType: message.chatType,
+        timestamp: message.timestamp,
+        userId: message.userId,
+        requestId: message.trace?.requestId,
+        eventId: message.trace?.eventId,
+        textHash: message.trace?.textHash,
+      });
+      throw error;
     }
 
     if (pendingPersistence.length > 0) {

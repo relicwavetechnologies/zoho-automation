@@ -112,6 +112,34 @@ class ChannelIdentityRepository {
     });
   }
 
+  async findLarkIdentityForProvisioning(input: {
+    companyId: string;
+    externalUserId?: string;
+    larkOpenId?: string;
+    larkUserId?: string;
+    email?: string;
+  }) {
+    const orConditions = [
+      ...(input.externalUserId ? [{ externalUserId: input.externalUserId }] : []),
+      ...(input.larkOpenId ? [{ larkOpenId: input.larkOpenId }] : []),
+      ...(input.larkUserId ? [{ larkUserId: input.larkUserId }] : []),
+      ...(input.email ? [{ email: input.email }] : []),
+    ];
+
+    if (orConditions.length === 0) {
+      return null;
+    }
+
+    return prisma.channelIdentity.findFirst({
+      where: {
+        companyId: input.companyId,
+        channel: 'lark',
+        OR: orConditions,
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
   async setAiRole(id: string, aiRole: string) {
     return prisma.channelIdentity.update({
       where: { id },

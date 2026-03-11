@@ -371,6 +371,19 @@ export const createLarkWebhookEventHandler = (
           },
         });
       }
+      dependencies.log.info('lark.webhook.message.normalized', {
+        requestId,
+        eventId: parsed.eventId,
+        larkTenantKey,
+        companyId: scopedCompanyId ?? undefined,
+        channel: normalized.channel,
+        userId: normalized.userId,
+        chatId: normalized.chatId,
+        chatType: normalized.chatType,
+        messageId: normalized.messageId,
+        textPreview: normalized.text.slice(0, 120),
+        textLength: normalized.text.length,
+      });
       const textHash = buildLarkTextHash(normalized.text);
 
       let channelIdentityId: string | undefined;

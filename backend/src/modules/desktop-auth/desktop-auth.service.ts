@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import config from '../../config';
 import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
+import { hashPassword } from '../../utils/bcrypt';
 import { channelIdentityRepository } from '../../company/channels/channel-identity.repository';
 import { larkOAuthService } from '../../company/channels/lark/lark-oauth.service';
 import { larkTenantBindingRepository } from '../../company/channels/lark/lark-tenant-binding.repository';
@@ -79,15 +80,29 @@ export class DesktopAuthService extends BaseService {
       throw new HttpException(403, 'This Lark workspace is not connected to a company in the app.');
     }
 
-    const user = await this.members.findUserByEmailInsensitive(email);
+    const externalUserId = userInfo.openId?.trim() || userInfo.userId?.trim();
+    const syncedIdentity = await channelIdentityRepository.findLarkIdentityForProvisioning({
+      companyId,
+      externalUserId: externalUserId || undefined,
+      larkOpenId: userInfo.openId,
+      larkUserId: userInfo.userId,
+      email,
+    });
+    const provisionedRole =
+      typeof syncedIdentity?.aiRole === 'string' && syncedIdentity.aiRole.trim().length > 0
+        ? syncedIdentity.aiRole.trim()
+        : 'MEMBER';
+
+    let user = await this.members.findUserByEmailInsensitive(email);
     if (!user) {
-      throw new HttpException(403, 'No existing app member matches your Lark email for this company.');
+      user = await this.members.createUser({
+        email,
+        name: userInfo.name,
+        password: await hashPassword(crypto.randomUUID()),
+      });
     }
 
-    const membership = await this.members.findActiveMembership(user.id, companyId);
-    if (!membership) {
-      throw new HttpException(403, 'Your Lark account is not an active member of this company.');
-    }
+    const membership = await this.members.ensureActiveMembership(user.id, companyId, provisionedRole);
 
     await larkUserAuthLinkRepository.upsert({
       userId: user.id,
@@ -107,7 +122,6 @@ export class DesktopAuthService extends BaseService {
       },
     });
 
-    const externalUserId = userInfo.openId?.trim() || userInfo.userId?.trim();
     if (externalUserId) {
       await channelIdentityRepository.upsert({
         channel: 'lark',

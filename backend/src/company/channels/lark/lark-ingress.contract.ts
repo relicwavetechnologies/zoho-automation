@@ -1,4 +1,5 @@
 import type { LarkWebhookEnvelope } from './lark.types';
+import { parseLarkMessageContent } from './lark-message-content';
 
 export type LarkIngressInvalidReason =
   | 'unknown_type'
@@ -52,20 +53,6 @@ const readString = (value: unknown): string | undefined => {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
-};
-
-const parseLarkTextContent = (content: unknown): string => {
-  const raw = readString(content);
-  if (!raw) {
-    return '';
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return readString(parsed.text) ?? '';
-  } catch {
-    return raw;
-  }
 };
 
 const hasSenderIdentity = (envelope: LarkWebhookEnvelope): boolean => {
@@ -176,7 +163,7 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
     }
 
     const msgType = readString(message.msg_type) ?? 'text';
-    if (msgType !== 'text') {
+    if (msgType !== 'text' && msgType !== 'post') {
       return {
         kind: 'event_callback_ignored',
         reason: 'unsupported_message_type',
@@ -184,7 +171,7 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
       };
     }
 
-    const parsedText = parseLarkTextContent(message.content);
+    const parsedText = parseLarkMessageContent(message.content, msgType);
     if (parsedText.trim().length === 0) {
       return {
         kind: 'event_callback_ignored',
