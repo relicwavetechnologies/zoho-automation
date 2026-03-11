@@ -11,6 +11,9 @@ type UpsertChannelIdentityInput = {
   larkUserId?: string;
   sourceRoles?: string[];
   aiRole?: string;
+  aiRoleSource?: 'sync' | 'manual';
+  syncedAiRole?: string;
+  syncedFromLarkRole?: string;
 };
 
 class ChannelIdentityRepository {
@@ -49,6 +52,17 @@ class ChannelIdentityRepository {
           ...(input.larkOpenId !== undefined ? { larkOpenId: input.larkOpenId } : {}),
           ...(input.larkUserId !== undefined ? { larkUserId: input.larkUserId } : {}),
           ...(input.sourceRoles !== undefined ? { sourceRoles: input.sourceRoles } : {}),
+          ...(input.syncedAiRole !== undefined ? { syncedAiRole: input.syncedAiRole } : {}),
+          ...(input.syncedFromLarkRole !== undefined ? { syncedFromLarkRole: input.syncedFromLarkRole } : {}),
+          ...(
+            existing.aiRoleSource === 'manual'
+              ? {}
+              : input.syncedAiRole
+                ? { aiRole: input.syncedAiRole, aiRoleSource: 'sync' }
+                : input.aiRole
+                  ? { aiRole: input.aiRole, aiRoleSource: input.aiRoleSource ?? 'sync' }
+                  : {}
+          ),
         },
       })
       : await prisma.channelIdentity.create({
@@ -62,11 +76,18 @@ class ChannelIdentityRepository {
           larkOpenId: input.larkOpenId,
           larkUserId: input.larkUserId,
           sourceRoles: input.sourceRoles ?? [],
-          aiRole: input.aiRole ?? 'MEMBER',
+          aiRole: input.aiRole ?? input.syncedAiRole ?? 'MEMBER',
+          aiRoleSource: input.aiRoleSource ?? 'sync',
+          syncedAiRole: input.syncedAiRole,
+          syncedFromLarkRole: input.syncedFromLarkRole,
         },
       });
     const isNew = !existing;
-    return { ...row, isNew };
+    return {
+      ...row,
+      isNew,
+      manualOverridePreserved: Boolean(existing && existing.aiRoleSource === 'manual' && input.syncedAiRole),
+    };
   }
 
   async findById(id: string) {
@@ -94,7 +115,21 @@ class ChannelIdentityRepository {
   async setAiRole(id: string, aiRole: string) {
     return prisma.channelIdentity.update({
       where: { id },
-      data: { aiRole },
+      data: { aiRole, aiRoleSource: 'manual' },
+    });
+  }
+
+  async resetAiRoleToSynced(id: string) {
+    const row = await prisma.channelIdentity.findUnique({
+      where: { id },
+      select: { syncedAiRole: true },
+    });
+    return prisma.channelIdentity.update({
+      where: { id },
+      data: {
+        aiRole: row?.syncedAiRole ?? 'MEMBER',
+        aiRoleSource: 'sync',
+      },
     });
   }
 

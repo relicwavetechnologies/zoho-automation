@@ -104,6 +104,8 @@ export const ENV_VALIDATION_WARNINGS = validated.warnings;
 
 export const PORT = validated.config.PORT;
 export const NODE_ENV = validated.config.NODE_ENV;
+export const APP_BASE_URL = validated.config.APP_BASE_URL;
+export const BACKEND_PUBLIC_URL = validated.config.BACKEND_PUBLIC_URL;
 export const LOG_LEVEL = validated.config.LOG_LEVEL;
 export const LOG_SUCCESS_SAMPLE_RATE = validated.config.LOG_SUCCESS_SAMPLE_RATE;
 export const LOG_INCLUDE_STACK = validated.config.LOG_INCLUDE_STACK;

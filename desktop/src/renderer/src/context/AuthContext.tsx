@@ -6,8 +6,7 @@ interface AuthState {
   token: string | null
   loading: boolean
   error: string | null
-  login: (email: string, password: string) => Promise<void>
-  openBrowserLogin: () => Promise<void>
+  openLarkLogin: () => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -53,11 +52,21 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
 
   // Listen for auth callback from main process (custom protocol)
   useEffect(() => {
-    const unsub = window.desktopAPI.auth.onCallback(async ({ code }) => {
+    const unsub = window.desktopAPI.auth.onCallback(async ({ code, state, error }) => {
+      if (error) {
+        setError(`Lark sign-in failed: ${error}`)
+        setLoading(false)
+        return
+      }
+      if (!code || !state) {
+        setError('Desktop Lark callback is missing required OAuth data.')
+        setLoading(false)
+        return
+      }
       setLoading(true)
       setError(null)
       try {
-        const res = await window.desktopAPI.auth.exchange(code)
+        const res = await window.desktopAPI.auth.exchangeLark(code, state)
         if (res.success && res.data) {
           const { token: newToken, session: newSession } = res.data as {
             token: string
@@ -67,10 +76,10 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
           setSession(newSession)
           localStorage.setItem(TOKEN_KEY, newToken)
         } else {
-          setError('Authentication failed. Please try again.')
+          setError('Lark authentication failed. Please try again.')
         }
       } catch {
-        setError('Authentication exchange failed.')
+        setError('Lark authentication exchange failed.')
       } finally {
         setLoading(false)
       }
@@ -78,36 +87,13 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
     return unsub
   }, [])
 
-  const login = useCallback(async (email: string, password: string) => {
+  const openLarkLogin = useCallback(async () => {
     setError(null)
     setLoading(true)
     try {
-      const res = await window.desktopAPI.auth.login(email, password)
-      if (res.success && res.data) {
-        const { token: newToken, session: newSession } = res.data as {
-          token: string
-          session: UserSession
-        }
-        setToken(newToken)
-        setSession(newSession)
-        localStorage.setItem(TOKEN_KEY, newToken)
-      } else {
-        setError('Invalid credentials. Please try again.')
-      }
+      await window.desktopAPI.auth.openLarkLogin()
     } catch {
-      setError('Login failed. Check your connection and try again.')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  const openBrowserLogin = useCallback(async () => {
-    setError(null)
-    setLoading(true)
-    try {
-      await window.desktopAPI.auth.openLogin()
-    } catch {
-      setError('Could not open the browser login flow.')
+      setError('Could not open the Lark login flow.')
       setLoading(false)
       return
     }
@@ -128,7 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
   }, [token])
 
   return (
-    <AuthContext.Provider value={{ session, token, loading, error, login, openBrowserLogin, logout }}>
+    <AuthContext.Provider value={{ session, token, loading, error, openLarkLogin, logout }}>
       {children}
     </AuthContext.Provider>
   )

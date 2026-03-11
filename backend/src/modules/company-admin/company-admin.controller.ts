@@ -3,8 +3,10 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../core/api-response';
 import { BaseController } from '../../core/controller';
 import {
+  connectLarkOnboardingSchema,
   connectOnboardingSchema,
   disconnectOnboardingSchema,
+  larkAuthorizeUrlQuerySchema,
   larkSyncQuerySchema,
   triggerHistoricalSyncSchema,
   zohoAuthorizeUrlQuerySchema,
@@ -226,6 +228,36 @@ class CompanyAdminController extends BaseController {
     return res.json(ApiResponse.success(result, 'Zoho OAuth app credentials removed'));
   };
 
+  getLarkAuthorizeUrl = async (req: Request, res: Response) => {
+    const query = larkAuthorizeUrlQuerySchema.parse(req.query);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getLarkAuthorizeUrl(session, query.companyId);
+    return res.json(ApiResponse.success(result, 'Lark authorize URL generated'));
+  };
+
+  connectLarkOnboarding = async (req: Request, res: Response) => {
+    const payload = connectLarkOnboardingSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.connectLarkOnboarding(session, payload);
+    return res.status(202).json(ApiResponse.success(result, 'Lark workspace linked and sync queued'));
+  };
+
+  disconnectLarkOnboarding = async (req: Request, res: Response) => {
+    const payload = disconnectOnboardingSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.disconnectLarkOnboarding(session, payload.companyId);
+    return res.json(ApiResponse.success(result, 'Lark workspace disconnected'));
+  };
+
   listChannelIdentities = async (req: Request, res: Response) => {
     const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
     const channel = typeof req.query.channel === 'string' ? req.query.channel : undefined;
@@ -341,6 +373,17 @@ class CompanyAdminController extends BaseController {
     }
     const result = await this.service.setLarkUserRole(session, identityId, aiRole.trim(), companyId);
     return res.json(ApiResponse.success(result, 'Lark user AI role updated'));
+  };
+
+  resetLarkUserRole = async (req: Request, res: Response) => {
+    const { identityId } = req.params;
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.resetLarkUserRole(session, identityId, companyId);
+    return res.json(ApiResponse.success(result, 'Lark user AI role reset to synced value'));
   };
 
   listAiRoles = async (req: Request, res: Response) => {

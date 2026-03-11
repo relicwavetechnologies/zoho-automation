@@ -5,6 +5,7 @@ import { larkDirectorySyncRepository } from './lark-directory-sync.repository';
 import { larkTenantBindingRepository } from './lark-tenant-binding.repository';
 import { LarkTenantTokenService } from './lark-tenant-token.service';
 import { larkWorkspaceConfigRepository } from './lark-workspace-config.repository';
+import { aiRoleService } from '../../tools/ai-role.service';
 
 type LarkDirectorySyncTrigger = 'setup' | 'nightly' | 'manual';
 
@@ -29,6 +30,10 @@ class LarkDirectorySyncError extends Error {
 
 const NIGHTLY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const MAX_PAGE_SIZE = 50;
+const MIN_DIRECT_USER_LIST_CONFIDENCE = 2;
+const RESERVED_ROLE_SLUGS = new Set(['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN']);
+const LARK_ADMIN_SOURCE_ROLES = new Set(['tenant_admin', 'tenant_manager']);
+const LARK_ROLE_PRIORITY = ['LARK_OWNER', 'LARK_ADMIN', 'LARK_MANAGER'];
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
@@ -77,9 +82,6 @@ const readHasMore = (payload: Record<string, unknown>): boolean => {
   return readBoolean(data.has_more) ?? false;
 };
 
-const isAdminRoleName = (roleName: string): boolean =>
-  /(admin|administrator|owner|manager|tenant_admin|tenant_manager)/i.test(roleName);
-
 const buildPermissionHint = (code?: number, message?: string): string => {
   if (code === 99991672) {
     return `${message ?? 'No permission'}. Enable Lark permission "Access role information" or functional role read scope, then publish/reinstall app.`;
@@ -95,6 +97,39 @@ const toQueryString = (params: Record<string, string | number | undefined>) => {
     }
   }
   return query.toString();
+};
+
+const normalizeLarkRoleSlug = (roleName: string): string | null => {
+  const trimmed = roleName.trim();
+  if (!trimmed) {
+    return null;
+  }
+  let normalized = trimmed
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!normalized) {
+    return null;
+  }
+  if (/^[0-9]/.test(normalized)) {
+    normalized = `LARK_${normalized}`;
+  }
+  if (RESERVED_ROLE_SLUGS.has(normalized)) {
+    normalized = `LARK_${normalized}`;
+  }
+  return normalized;
+};
+
+const toRoleDisplayName = (roleName: string): string =>
+  roleName
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[_-]+/g, ' ');
+
+const rankRoleSlug = (slug: string): number => {
+  const index = LARK_ROLE_PRIORITY.indexOf(slug);
+  return index === -1 ? LARK_ROLE_PRIORITY.length : index;
 };
 
 class LarkDirectorySyncService {
@@ -154,7 +189,11 @@ class LarkDirectorySyncService {
   }
 
   async runNightlySyncForAll() {
-    const companyIds = await larkWorkspaceConfigRepository.listConfiguredCompanyIds();
+    const [boundCompanyIds, legacyConfigCompanyIds] = await Promise.all([
+      larkTenantBindingRepository.listActiveCompanyIds(),
+      larkWorkspaceConfigRepository.listConfiguredCompanyIds(),
+    ]);
+    const companyIds = [...new Set([...boundCompanyIds, ...legacyConfigCompanyIds])];
     for (const companyId of companyIds) {
       try {
         await this.trigger(companyId, 'nightly');
@@ -175,55 +214,110 @@ class LarkDirectorySyncService {
       }
 
       const workspaceConfig = await larkWorkspaceConfigRepository.findByCompanyId(companyId);
-      if (!workspaceConfig) {
-        throw new Error('Lark workspace config is not configured for this company');
+      const apiBaseUrl = workspaceConfig?.apiBaseUrl ?? config.LARK_API_BASE_URL;
+      const resolvedAppId = workspaceConfig?.appId ?? config.LARK_APP_ID;
+      const resolvedAppSecret = workspaceConfig?.appSecret ?? config.LARK_APP_SECRET;
+      const resolvedStaticToken = workspaceConfig?.staticTenantAccessToken ?? config.LARK_BOT_TENANT_ACCESS_TOKEN;
+      if (!resolvedStaticToken && !(resolvedAppId && resolvedAppSecret)) {
+        throw new Error('Lark runtime is not configured. Set platform env creds or keep legacy workspace config during migration.');
       }
 
-      const tokenSource = workspaceConfig.staticTenantAccessToken ? 'workspace_static_token' : 'workspace_app_credentials';
+      const tokenSource = workspaceConfig
+        ? workspaceConfig.staticTenantAccessToken
+          ? 'workspace_static_token'
+          : 'workspace_app_credentials'
+        : resolvedStaticToken
+          ? 'platform_static_token'
+          : 'platform_env_app_credentials';
       logger.info('lark.directory.sync.token_strategy', {
         companyId,
         trigger,
         tokenSource,
-        appId: workspaceConfig.appId,
-        staticFallbackEnabled: Boolean(workspaceConfig.staticTenantAccessToken),
+        appId: resolvedAppId,
+        staticFallbackEnabled: Boolean(resolvedStaticToken),
       });
 
       const tokenService = new LarkTenantTokenService({
-        apiBaseUrl: workspaceConfig.apiBaseUrl,
-        appId: workspaceConfig.appId,
-        appSecret: workspaceConfig.appSecret,
-        staticToken: workspaceConfig.staticTenantAccessToken,
+        apiBaseUrl,
+        appId: workspaceConfig?.appId,
+        appSecret: workspaceConfig?.appSecret,
+        staticToken: workspaceConfig?.staticTenantAccessToken,
       });
 
       const token = await tokenService.getAccessToken();
 
       let users: Map<string, LarkUserRecord>;
+      let directUserCount = 0;
+      let departmentUserCount = 0;
+      let userEnumerationStrategy: 'direct_only' | 'department_only' | 'direct_plus_department' = 'direct_only';
       try {
-        users = await this.listUsersDirectly(workspaceConfig.apiBaseUrl, token);
+        users = await this.listUsersDirectly(apiBaseUrl, token);
+        directUserCount = users.size;
+        if (users.size < MIN_DIRECT_USER_LIST_CONFIDENCE) {
+          logger.warn('lark.directory.sync.users.list_strategy_low_confidence', {
+            companyId,
+            trigger,
+            syncedCount: users.size,
+            threshold: MIN_DIRECT_USER_LIST_CONFIDENCE,
+          });
+          const departmentUsers = await this.listUsersByDepartment(apiBaseUrl, token);
+          departmentUserCount = departmentUsers.size;
+          users = this.mergeUsers(users, departmentUsers);
+          userEnumerationStrategy = 'direct_plus_department';
+        }
       } catch (error) {
         logger.warn('lark.directory.sync.users.list_strategy_failed', {
           companyId,
           trigger,
           reason: error instanceof Error ? error.message : 'unknown_error',
         });
-        users = await this.listUsersByDepartment(workspaceConfig.apiBaseUrl, token);
+        users = await this.listUsersByDepartment(apiBaseUrl, token);
+        departmentUserCount = users.size;
+        userEnumerationStrategy = 'department_only';
       }
 
-      await this.enrichRoles(workspaceConfig.apiBaseUrl, token, users, workspaceConfig.appId);
+      await this.enrichRoles(apiBaseUrl, token, users, resolvedAppId);
+
+      const discoveredRoleNames = [...new Set(
+        [...users.values()]
+          .flatMap((user) => user.sourceRoles)
+          .filter((roleName) => roleName && !LARK_ADMIN_SOURCE_ROLES.has(roleName)),
+      )];
+      logger.info('lark.directory.sync.role_discovery_summary', {
+        companyId,
+        trigger,
+        discoveredRoleCount: discoveredRoleNames.length,
+        discoveredRoleSample: discoveredRoleNames.slice(0, 20),
+      });
+      const ensuredRoleSlugs = new Set<string>();
+      let createdRoleCount = 0;
+      for (const roleName of discoveredRoleNames) {
+        const normalizedSlug = normalizeLarkRoleSlug(roleName);
+        if (!normalizedSlug || RESERVED_ROLE_SLUGS.has(normalizedSlug)) {
+          continue;
+        }
+        const ensured = await aiRoleService.ensureRole(companyId, normalizedSlug, toRoleDisplayName(roleName));
+        ensuredRoleSlugs.add(ensured.role.slug);
+        if (ensured.created) {
+          createdRoleCount += 1;
+        }
+      }
 
       const userRecords = [...users.values()];
       let adminCount = 0;
       let memberCount = 0;
+      let assignedBySyncCount = 0;
+      let preservedManualOverrideCount = 0;
 
       for (const user of userRecords) {
-        const defaultAiRole = user.isAdminDefault ? 'COMPANY_ADMIN' : 'MEMBER';
+        const { role: defaultAiRole, matchedSourceRole } = this.computeSyncedAiRole(user);
         if (defaultAiRole === 'COMPANY_ADMIN') {
           adminCount += 1;
         } else {
           memberCount += 1;
         }
 
-        await channelIdentityRepository.upsert({
+        const upserted = await channelIdentityRepository.upsert({
           channel: 'lark',
           externalUserId: user.externalUserId,
           externalTenantId: binding.larkTenantKey,
@@ -233,8 +327,15 @@ class LarkDirectorySyncService {
           larkOpenId: user.openId,
           larkUserId: user.userId,
           sourceRoles: user.sourceRoles,
-          aiRole: defaultAiRole,
+          syncedAiRole: defaultAiRole,
+          syncedFromLarkRole: matchedSourceRole,
+          aiRoleSource: 'sync',
         });
+        if (upserted.manualOverridePreserved) {
+          preservedManualOverrideCount += 1;
+        } else {
+          assignedBySyncCount += 1;
+        }
       }
 
       await larkDirectorySyncRepository.markCompleted(runId, {
@@ -244,6 +345,14 @@ class LarkDirectorySyncService {
         diagnostics: {
           tokenSource,
           activeTenantKey: binding.larkTenantKey,
+          userEnumerationStrategy,
+          directUserCount,
+          departmentUserCount,
+          discoveredRoleCount: discoveredRoleNames.length,
+          createdRoleCount,
+          ensuredRoleCount: ensuredRoleSlugs.size,
+          assignedBySyncCount,
+          preservedManualOverrideCount,
         },
       });
 
@@ -382,6 +491,64 @@ class LarkDirectorySyncService {
     return users;
   }
 
+  private mergeUsers(primary: Map<string, LarkUserRecord>, secondary: Map<string, LarkUserRecord>) {
+    const merged = new Map(primary);
+    for (const [key, user] of secondary.entries()) {
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, user);
+        continue;
+      }
+
+      merged.set(key, {
+        externalUserId: existing.externalUserId,
+        openId: existing.openId ?? user.openId,
+        userId: existing.userId ?? user.userId,
+        name: existing.name ?? user.name,
+        email: existing.email ?? user.email,
+        sourceRoles: [...new Set([...existing.sourceRoles, ...user.sourceRoles])],
+        isAdminDefault: existing.isAdminDefault || user.isAdminDefault,
+      });
+    }
+    return merged;
+  }
+
+  private computeSyncedAiRole(user: LarkUserRecord): { role: string; matchedSourceRole?: string } {
+    if (user.isAdminDefault) {
+      const adminSource = user.sourceRoles.find((roleName) => LARK_ADMIN_SOURCE_ROLES.has(roleName));
+      return {
+        role: 'COMPANY_ADMIN',
+        matchedSourceRole: adminSource ?? 'tenant_admin',
+      };
+    }
+
+    const normalizedRolePairs = user.sourceRoles
+      .filter((roleName) => roleName && !LARK_ADMIN_SOURCE_ROLES.has(roleName))
+      .map((roleName) => ({
+        roleName,
+        slug: normalizeLarkRoleSlug(roleName),
+      }))
+      .filter((entry): entry is { roleName: string; slug: string } => Boolean(entry.slug));
+
+    normalizedRolePairs.sort((left, right) => {
+      const rankDiff = rankRoleSlug(left.slug) - rankRoleSlug(right.slug);
+      if (rankDiff !== 0) {
+        return rankDiff;
+      }
+      return left.slug.localeCompare(right.slug);
+    });
+
+    const selected = normalizedRolePairs[0];
+    if (!selected) {
+      return { role: 'MEMBER' };
+    }
+
+    return {
+      role: selected.slug,
+      matchedSourceRole: selected.roleName,
+    };
+  }
+
   private async enrichRoles(
     apiBaseUrl: string,
     token: string,
@@ -391,7 +558,17 @@ class LarkDirectorySyncService {
     const roleMap = new Map<string, Set<string>>();
     try {
       const roles = await this.listRoles(apiBaseUrl, token);
+      logger.info('lark.directory.sync.roles.list_result', {
+        appId,
+        roleCount: roles.length,
+        rolesSample: roles.slice(0, 20).map((role) => ({
+          id: role.id,
+          name: role.name,
+          version: role.version,
+        })),
+      });
       for (const role of roles) {
+        let roleMemberCount = 0;
         let pageToken: string | undefined;
         for (;;) {
           const query = toQueryString({
@@ -413,6 +590,7 @@ class LarkDirectorySyncService {
             if (!openId) {
               continue;
             }
+            roleMemberCount += 1;
             if (!roleMap.has(openId)) {
               roleMap.set(openId, new Set<string>());
             }
@@ -423,6 +601,13 @@ class LarkDirectorySyncService {
             break;
           }
         }
+        logger.info('lark.directory.sync.role_members.list_result', {
+          appId,
+          roleId: role.id,
+          roleName: role.name,
+          version: role.version,
+          memberCount: roleMemberCount,
+        });
       }
     } catch (error) {
       const code = error instanceof LarkDirectorySyncError ? error.code : undefined;
@@ -437,6 +622,14 @@ class LarkDirectorySyncService {
     logger.info('lark.directory.sync.role_membership_enrichment_summary', {
       appId,
       enrichedUsers: [...users.values()].filter((user) => user.sourceRoles.length > 0).length,
+      enrichedUserSample: [...users.values()]
+        .filter((user) => user.sourceRoles.length > 0)
+        .slice(0, 20)
+        .map((user) => ({
+          externalUserId: user.externalUserId,
+          email: user.email,
+          sourceRoles: user.sourceRoles,
+        })),
     });
 
     for (const user of users.values()) {
@@ -444,7 +637,7 @@ class LarkDirectorySyncService {
       if (roleNames.length > 0) {
         user.sourceRoles = [...new Set([...user.sourceRoles, ...roleNames])];
       }
-      if (user.sourceRoles.some((roleName) => isAdminRoleName(roleName))) {
+      if (user.sourceRoles.some((roleName) => LARK_ADMIN_SOURCE_ROLES.has(roleName))) {
         user.isAdminDefault = true;
       }
     }

@@ -18,6 +18,8 @@ test('validateEnvironmentContract parses valid minimal config', () => {
 
   assert.equal(result.config.PORT, 8000);
   assert.equal(result.config.NODE_ENV, 'development');
+  assert.equal(result.config.APP_BASE_URL, 'http://localhost:5173');
+  assert.equal(result.config.BACKEND_PUBLIC_URL, 'http://localhost:8000');
   assert.equal(result.config.ORCHESTRATION_ENGINE, 'langgraph');
   assert.ok(Array.isArray(result.warnings));
 });

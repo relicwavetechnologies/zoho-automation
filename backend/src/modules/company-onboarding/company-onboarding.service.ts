@@ -1,5 +1,6 @@
 import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
+import config from '../../config';
 import { IngestionJobDTO, ZohoConnectionDTO } from '../../company/contracts';
 import { zohoConnectionAdapter } from '../../company/integrations/zoho';
 import { ZohoIntegrationError } from '../../company/integrations/zoho/zoho.errors';
@@ -158,7 +159,34 @@ export class CompanyOnboardingService extends BaseService {
       larkWorkspaceConfigRepository.getStatus(companyId),
       larkDirectorySyncService.getStatus(companyId),
     ]);
-    const latestLarkBinding = larkBindings[0];
+    const latestLarkBinding = larkBindings.find((binding) => binding.isActive) ?? larkBindings[0];
+    const platformLarkConfigured = Boolean(
+      config.LARK_APP_ID.trim()
+      && config.LARK_APP_SECRET.trim()
+      && (config.LARK_VERIFICATION_TOKEN.trim() || config.LARK_WEBHOOK_SIGNING_SECRET.trim()),
+    );
+    const larkRuntimeStatus = platformLarkConfigured
+      ? {
+          configured: true,
+          appId: config.LARK_APP_ID,
+          apiBaseUrl: config.LARK_API_BASE_URL,
+          hasVerificationToken: Boolean(config.LARK_VERIFICATION_TOKEN.trim()),
+          hasSigningSecret: Boolean(config.LARK_WEBHOOK_SIGNING_SECRET.trim()),
+          hasStaticTenantAccessToken: Boolean(config.LARK_BOT_TENANT_ACCESS_TOKEN.trim()),
+          source: 'platform_env',
+        }
+      : larkWorkspaceConfig
+        ? {
+            configured: true,
+            appId: larkWorkspaceConfig.appId,
+            apiBaseUrl: larkWorkspaceConfig.apiBaseUrl,
+            hasVerificationToken: larkWorkspaceConfig.hasVerificationToken,
+            hasSigningSecret: larkWorkspaceConfig.hasSigningSecret,
+            hasStaticTenantAccessToken: larkWorkspaceConfig.hasStaticTenantAccessToken,
+            updatedAt: larkWorkspaceConfig.updatedAt.toISOString(),
+            source: 'legacy_company_config',
+          }
+        : { configured: false, source: 'missing' };
 
     return {
       companyId,
@@ -188,17 +216,7 @@ export class CompanyOnboardingService extends BaseService {
           updatedAt: latestLarkBinding.updatedAt.toISOString(),
         }
         : null,
-      larkWorkspaceConfig: larkWorkspaceConfig
-        ? {
-          configured: true,
-          appId: larkWorkspaceConfig.appId,
-          apiBaseUrl: larkWorkspaceConfig.apiBaseUrl,
-          hasVerificationToken: larkWorkspaceConfig.hasVerificationToken,
-          hasSigningSecret: larkWorkspaceConfig.hasSigningSecret,
-          hasStaticTenantAccessToken: larkWorkspaceConfig.hasStaticTenantAccessToken,
-          updatedAt: larkWorkspaceConfig.updatedAt.toISOString(),
-        }
-        : { configured: false },
+      larkWorkspaceConfig: larkRuntimeStatus,
       larkDirectorySync: larkSync,
     };
   }

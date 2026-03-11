@@ -7,6 +7,17 @@ export class MemberAuthRepository extends BaseRepository {
     return prisma.user.findUnique({ where: { email } });
   }
 
+  findUserByEmailInsensitive(email: string): Promise<User | null> {
+    return prisma.user.findFirst({
+      where: {
+        email: {
+          equals: email,
+          mode: 'insensitive',
+        },
+      },
+    });
+  }
+
   findUserById(userId: string): Promise<User | null> {
     return prisma.user.findUnique({ where: { id: userId } });
   }
@@ -27,6 +38,10 @@ export class MemberAuthRepository extends BaseRepository {
     companyId: string;
     role: string;
     channel: string;
+    authProvider?: string;
+    larkTenantKey?: string;
+    larkOpenId?: string;
+    larkUserId?: string;
     expiresAt: Date;
   }): Promise<MemberSession> {
     return prisma.memberSession.create({ data });

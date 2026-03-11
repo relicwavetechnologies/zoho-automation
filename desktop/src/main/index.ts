@@ -79,8 +79,10 @@ function handleDeepLink(url: string): void {
     const parsed = new URL(url)
     if (parsed.hostname === 'auth' && parsed.pathname === '/callback') {
       const code = parsed.searchParams.get('code')
-      if (code && mainWindow) {
-        mainWindow.webContents.send('desktop-auth:callback', { code })
+      const state = parsed.searchParams.get('state')
+      const error = parsed.searchParams.get('error')
+      if ((code || error) && mainWindow) {
+        mainWindow.webContents.send('desktop-auth:callback', { code, state, error })
       }
     }
   } catch {
@@ -90,22 +92,25 @@ function handleDeepLink(url: string): void {
 
 /* ─── IPC handlers ─── */
 
-// Auth: direct email+password login
-ipcMain.handle('desktop-auth:login', async (_event, email: string, password: string) => {
-  const res = await net.fetch(`${BACKEND_URL}/api/member/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  })
-  return res.json()
+ipcMain.handle('desktop-auth:open-lark-login', async () => {
+  const res = await net.fetch(`${BACKEND_URL}/api/desktop/auth/lark/authorize-url`)
+  const payload = (await res.json()) as {
+    success?: boolean
+    data?: { authorizeUrl?: string }
+    message?: string
+  }
+  const authorizeUrl = payload?.data?.authorizeUrl
+  if (!res.ok || !authorizeUrl) {
+    throw new Error(payload?.message || 'Could not start desktop Lark sign-in')
+  }
+  await shell.openExternal(authorizeUrl)
 })
 
-// Auth: exchange handoff code for desktop session
-ipcMain.handle('desktop-auth:exchange', async (_event, code: string) => {
-  const res = await net.fetch(`${BACKEND_URL}/api/desktop/auth/exchange`, {
+ipcMain.handle('desktop-auth:exchange-lark', async (_event, code: string, state: string) => {
+  const res = await net.fetch(`${BACKEND_URL}/api/desktop/auth/lark/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, state }),
   })
   return res.json()
 })
@@ -127,10 +132,12 @@ ipcMain.handle('desktop-auth:logout', async (_event, token: string) => {
   return res.json()
 })
 
-// Auth: open browser login
-ipcMain.handle('desktop-auth:open-login', async () => {
-  const webAppUrl = process.env.CURSORR_WEB_APP_URL ?? 'http://localhost:5173'
-  shell.openExternal(`${webAppUrl}/desktop-login?desktop=true`)
+ipcMain.handle('desktop-auth:unlink-lark', async (_event, token: string) => {
+  const res = await net.fetch(`${BACKEND_URL}/api/desktop/auth/lark/unlink`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  return res.json()
 })
 
 // Threads: list

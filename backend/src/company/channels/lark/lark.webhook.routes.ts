@@ -174,12 +174,22 @@ const defaultResolveWorkspaceVerificationConfig: LarkWebhookRouteDependencies['r
   companyId,
 ) => {
   const workspaceConfig = await larkWorkspaceConfigRepository.findByCompanyId(companyId);
-  if (!workspaceConfig) {
+  if (workspaceConfig) {
+    return {
+      signingSecret: workspaceConfig.signingSecret,
+      verificationToken: workspaceConfig.verificationToken,
+      maxSkewSeconds: config.LARK_WEBHOOK_MAX_SKEW_SECONDS,
+    };
+  }
+
+  const verificationToken = config.LARK_VERIFICATION_TOKEN.trim();
+  const signingSecret = config.LARK_WEBHOOK_SIGNING_SECRET.trim();
+  if (!verificationToken && !signingSecret) {
     return null;
   }
   return {
-    signingSecret: workspaceConfig.signingSecret,
-    verificationToken: workspaceConfig.verificationToken,
+    signingSecret: signingSecret || undefined,
+    verificationToken: verificationToken || undefined,
     maxSkewSeconds: config.LARK_WEBHOOK_MAX_SKEW_SECONDS,
   };
 };

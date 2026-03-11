@@ -55,6 +55,42 @@ class LarkTenantBindingRepository {
       },
     });
   }
+
+  async findActiveByCompany(companyId: string) {
+    return prisma.larkTenantBinding.findFirst({
+      where: {
+        companyId,
+        isActive: true,
+      },
+      orderBy: {
+        updatedAt: 'desc',
+      },
+    });
+  }
+
+  async deactivateByCompany(companyId: string) {
+    return prisma.larkTenantBinding.updateMany({
+      where: {
+        companyId,
+      },
+      data: {
+        isActive: false,
+      },
+    });
+  }
+
+  async listActiveCompanyIds() {
+    const rows = await prisma.larkTenantBinding.findMany({
+      where: {
+        isActive: true,
+      },
+      select: {
+        companyId: true,
+      },
+      distinct: ['companyId'],
+    });
+    return rows.map((row) => row.companyId);
+  }
 }
 
 export const larkTenantBindingRepository = new LarkTenantBindingRepository();

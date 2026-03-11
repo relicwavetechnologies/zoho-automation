@@ -32,9 +32,13 @@ export const createLarkDocTool = createTool({
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
     try {
+      const credentialMode =
+        requestContext?.get('larkAuthMode') === 'user_linked' ? 'user_linked' : 'tenant';
       const result = await larkDocsService.createMarkdownDoc({
         companyId: requestContext?.get('companyId') as string | undefined,
         larkTenantKey: requestContext?.get('larkTenantKey') as string | undefined,
+        appUserId: requestContext?.get('userId') as string | undefined,
+        credentialMode,
         title: inputData.title,
         markdown: inputData.markdown,
         folderToken: inputData.folderToken,

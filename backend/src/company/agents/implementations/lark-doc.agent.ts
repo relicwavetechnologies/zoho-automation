@@ -182,6 +182,8 @@ export class LarkDocAgent extends BaseAgent {
     const folderToken = asString(input.contextPacket.folderToken);
     const companyId = asString(input.contextPacket.companyId);
     const larkTenantKey = asString(input.contextPacket.larkTenantKey);
+    const appUserId = asString(input.contextPacket.userId);
+    const credentialMode = input.contextPacket.larkAuthMode === 'user_linked' ? 'user_linked' : 'tenant';
     const conversationKey = buildConversationKey(input);
     const latestDoc = conversationKey ? conversationMemoryStore.getLatestLarkDoc(conversationKey) : null;
 
@@ -206,6 +208,8 @@ export class LarkDocAgent extends BaseAgent {
         const editResult = await larkDocsService.editMarkdownDoc({
           companyId,
           larkTenantKey,
+          appUserId,
+          credentialMode,
           documentId,
           instruction: input.objective,
           newMarkdown: inferEditStrategy(input.objective) === 'delete' ? undefined : markdown,
@@ -241,6 +245,8 @@ export class LarkDocAgent extends BaseAgent {
       const result = await larkDocsService.createMarkdownDoc({
         companyId,
         larkTenantKey,
+        appUserId,
+        credentialMode,
         title,
         markdown,
         folderToken,

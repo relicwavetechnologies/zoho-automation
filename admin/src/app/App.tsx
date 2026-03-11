@@ -6,6 +6,7 @@ import { AiModelsPage } from '../pages/AiModelsPage';
 import { AdminLayout } from '../components/layout/AdminLayout';
 import { ControlsPage } from '../pages/ControlsPage';
 import { IntegrationsPage } from '../pages/IntegrationsPage';
+import { LarkOauthCallbackPage } from '../pages/LarkOauthCallbackPage';
 import { CompanyAdminSignupPage } from '../pages/CompanyAdminSignupPage';
 import { LoginPage } from '../pages/LoginPage';
 import { MemberInviteAcceptPage } from '../pages/MemberInviteAcceptPage';
@@ -62,6 +63,7 @@ export const App = () => {
           <Route path="integrations" element={<IntegrationsPage />} />
           <Route path="tool-access" element={<ToolPermissionsPage />} />
           <Route path="vector-requests" element={<VectorShareRequestsPage />} />
+          <Route path="lark/callback" element={<LarkOauthCallbackPage />} />
           <Route path="zoho/callback" element={<ZohoOauthCallbackPage />} />
         </Route>
 

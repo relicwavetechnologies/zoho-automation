@@ -5,6 +5,7 @@ import { BaseService } from '../../core/service';
 import config from '../../config';
 import { channelIdentityRepository } from '../../company/channels/channel-identity.repository';
 import { larkDirectorySyncService } from '../../company/channels/lark/lark-directory-sync.service';
+import { larkOAuthService } from '../../company/channels/lark/lark-oauth.service';
 import { larkTenantBindingRepository } from '../../company/channels/lark/lark-tenant-binding.repository';
 import { larkWorkspaceConfigRepository } from '../../company/channels/lark/lark-workspace-config.repository';
 import { auditService } from '../audit/audit.service';
@@ -12,13 +13,13 @@ import { companyOnboardingService } from '../company-onboarding/company-onboardi
 import { CompanyAdminRepository, companyAdminRepository } from './company-admin.repository';
 import {
   ConnectOnboardingDto,
+  ConnectLarkOnboardingDto,
   DisconnectOnboardingDto,
   TriggerHistoricalSyncDto,
   UpsertLarkBindingDto,
   UpsertLarkWorkspaceConfigDto,
   UpsertZohoOAuthConfigDto,
 } from './dto/connect-onboarding.dto';
-import { zohoOAuthConfigRepository } from '../../company/integrations/zoho/zoho-oauth-config.repository';
 import { CreateInviteDto } from './dto/create-invite.dto';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { aiRoleService } from '../../company/tools/ai-role.service';
@@ -49,6 +50,26 @@ const resolveCompanyScope = (session: SessionScope, requestedCompanyId?: string)
 
   return session.companyId;
 };
+
+const DEFAULT_ZOHO_SCOPES = [
+  'ZohoCRM.modules.ALL',
+  'ZohoCRM.coql.READ',
+  'ZohoCRM.settings.fields.READ',
+];
+
+const hasPlatformZohoOAuthConfig = (): boolean =>
+  Boolean(
+    config.ZOHO_CLIENT_ID.trim()
+    && config.ZOHO_CLIENT_SECRET.trim()
+    && config.ZOHO_REDIRECT_URI.trim(),
+  );
+
+const hasPlatformLarkRuntimeConfig = (): boolean =>
+  Boolean(
+    config.LARK_APP_ID.trim()
+    && config.LARK_APP_SECRET.trim()
+    && (config.LARK_VERIFICATION_TOKEN.trim() || config.LARK_WEBHOOK_SIGNING_SECRET.trim()),
+  );
 
 export class CompanyAdminService extends BaseService {
   constructor(private readonly repository: CompanyAdminRepository = companyAdminRepository) {
@@ -263,114 +284,64 @@ export class CompanyAdminService extends BaseService {
 
   async upsertLarkBinding(session: SessionScope, payload: UpsertLarkBindingDto) {
     const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
-    const binding = await larkTenantBindingRepository.upsert({
-      companyId: scopedCompanyId,
-      larkTenantKey: payload.larkTenantKey,
-      createdBy: session.userId,
-      isActive: payload.isActive,
-    });
-
     await auditService.recordLog({
       actorId: session.userId,
       companyId: scopedCompanyId,
-      action: 'company.onboarding.lark_binding.upsert',
-      outcome: 'success',
-      metadata: {
-        bindingId: binding.id,
-        larkTenantKey: binding.larkTenantKey,
-        isActive: binding.isActive,
-      },
+      action: 'company.onboarding.lark_binding.upsert.blocked',
+      outcome: 'failure',
+      metadata: {},
     });
-
-    try {
-      await larkDirectorySyncService.trigger(scopedCompanyId, 'setup');
-    } catch {
-      // setup sync is best-effort and remains available through manual trigger
-    }
-
-    return {
-      bindingId: binding.id,
-      companyId: binding.companyId,
-      larkTenantKey: binding.larkTenantKey,
-      isActive: binding.isActive,
-      updatedAt: binding.updatedAt.toISOString(),
-    };
+    throw new HttpException(403, 'Manual Lark tenant binding is disabled. Use the one-click Lark connect flow.');
   }
 
   async getLarkWorkspaceConfigStatus(session: SessionScope, companyId?: string) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
-    const status = await larkWorkspaceConfigRepository.getStatus(scopedCompanyId);
-    return status ?? { configured: false };
+    const legacyStatus = await larkWorkspaceConfigRepository.getStatus(scopedCompanyId);
+    const platformConfigured = hasPlatformLarkRuntimeConfig();
+    if (platformConfigured) {
+      return {
+        configured: true,
+        appId: config.LARK_APP_ID,
+        apiBaseUrl: config.LARK_API_BASE_URL,
+        hasVerificationToken: Boolean(config.LARK_VERIFICATION_TOKEN.trim()),
+        hasSigningSecret: Boolean(config.LARK_WEBHOOK_SIGNING_SECRET.trim()),
+        hasStaticTenantAccessToken: Boolean(config.LARK_BOT_TENANT_ACCESS_TOKEN.trim()),
+        source: 'platform_env',
+      };
+    }
+    if (legacyStatus?.configured) {
+      return {
+        ...legacyStatus,
+        source: 'legacy_company_config',
+        appId: legacyStatus.appId,
+        apiBaseUrl: legacyStatus.apiBaseUrl,
+      };
+    }
+    return { configured: false, source: 'missing' };
   }
 
   async upsertLarkWorkspaceConfig(session: SessionScope, payload: UpsertLarkWorkspaceConfigDto) {
     const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
-    const existing = await larkWorkspaceConfigRepository.findByCompanyId(scopedCompanyId);
-
-    const appSecret = payload.appSecret?.trim() || existing?.appSecret;
-    if (!appSecret) {
-      throw new HttpException(400, 'Lark appSecret is required');
-    }
-
-    const verificationToken = payload.verificationToken?.trim() || existing?.verificationToken;
-    const signingSecret = payload.signingSecret?.trim() || existing?.signingSecret;
-    if (!verificationToken && !signingSecret) {
-      throw new HttpException(400, 'Provide verificationToken or signingSecret');
-    }
-
-    const record = await larkWorkspaceConfigRepository.upsert({
-      companyId: scopedCompanyId,
-      createdBy: session.userId,
-      appId: payload.appId.trim(),
-      appSecret,
-      verificationToken,
-      signingSecret,
-      staticTenantAccessToken: payload.staticTenantAccessToken?.trim() || existing?.staticTenantAccessToken,
-      apiBaseUrl: payload.apiBaseUrl?.trim() || existing?.apiBaseUrl,
-    });
-
     await auditService.recordLog({
       actorId: session.userId,
       companyId: scopedCompanyId,
-      action: 'company.onboarding.lark_workspace_config.upsert',
-      outcome: 'success',
-      metadata: {
-        appId: payload.appId.trim(),
-      },
+      action: 'company.onboarding.lark_workspace_config.upsert.blocked',
+      outcome: 'failure',
+      metadata: {},
     });
-
-    try {
-      await larkDirectorySyncService.trigger(scopedCompanyId, 'setup');
-    } catch {
-      // setup sync is best-effort and remains available through manual trigger
-    }
-
-    return {
-      configured: true,
-      companyId: scopedCompanyId,
-      appId: record.appId,
-      apiBaseUrl: record.apiBaseUrl,
-      hasVerificationToken: Boolean(record.verificationTokenEncrypted),
-      hasSigningSecret: Boolean(record.signingSecretEncrypted),
-      hasStaticTenantAccessToken: Boolean(record.staticTenantAccessTokenEncrypted),
-      updatedAt: record.updatedAt.toISOString(),
-    };
+    throw new HttpException(403, 'Company-managed Lark credentials are disabled. Ask the platform admin to configure env-backed Lark access.');
   }
 
   async deleteLarkWorkspaceConfig(session: SessionScope, companyId?: string) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
-    await larkWorkspaceConfigRepository.delete(scopedCompanyId);
     await auditService.recordLog({
       actorId: session.userId,
       companyId: scopedCompanyId,
-      action: 'company.onboarding.lark_workspace_config.delete',
-      outcome: 'success',
+      action: 'company.onboarding.lark_workspace_config.delete.blocked',
+      outcome: 'failure',
       metadata: {},
     });
-    return {
-      companyId: scopedCompanyId,
-      deleted: true,
-    };
+    throw new HttpException(403, 'Company-managed Lark credentials are disabled. Existing legacy config is retained for compatibility.');
   }
 
   async getLarkUserSyncStatus(session: SessionScope, companyId?: string) {
@@ -398,37 +369,30 @@ export class CompanyAdminService extends BaseService {
 
   async upsertZohoOAuthConfig(session: SessionScope, payload: UpsertZohoOAuthConfigDto) {
     const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
-    const record = await zohoOAuthConfigRepository.upsert(scopedCompanyId, {
-      clientId: payload.clientId,
-      clientSecret: payload.clientSecret,
-      redirectUri: payload.redirectUri,
-      accountsBaseUrl: payload.accountsBaseUrl,
-      apiBaseUrl: payload.apiBaseUrl,
-    });
-
     await auditService.recordLog({
       actorId: session.userId,
       companyId: scopedCompanyId,
-      action: 'company.onboarding.zoho_oauth_config.upsert',
-      outcome: 'success',
-      metadata: { clientId: payload.clientId },
+      action: 'company.onboarding.zoho_oauth_config.upsert.blocked',
+      outcome: 'failure',
+      metadata: {},
     });
-
-    return {
-      companyId: scopedCompanyId,
-      clientId: record.clientId,
-      redirectUri: record.redirectUri,
-      accountsBaseUrl: record.accountsBaseUrl,
-      apiBaseUrl: record.apiBaseUrl,
-      configured: true,
-      updatedAt: record.updatedAt.toISOString(),
-    };
+    throw new HttpException(403, 'Company-managed Zoho OAuth app credentials are disabled. Zoho uses platform-managed env credentials.');
   }
 
   async getZohoOAuthConfigStatus(session: SessionScope, companyId?: string) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
-    const status = await zohoOAuthConfigRepository.getStatus(scopedCompanyId);
-    return status ?? { configured: false };
+    void scopedCompanyId;
+    if (!hasPlatformZohoOAuthConfig()) {
+      return { configured: false, source: 'missing' };
+    }
+    return {
+      configured: true,
+      clientId: config.ZOHO_CLIENT_ID,
+      redirectUri: config.ZOHO_REDIRECT_URI,
+      accountsBaseUrl: config.ZOHO_ACCOUNTS_BASE_URL,
+      apiBaseUrl: config.ZOHO_API_BASE_URL,
+      source: 'platform_env',
+    };
   }
 
   async getZohoAuthorizeUrl(
@@ -436,20 +400,14 @@ export class CompanyAdminService extends BaseService {
     input: { companyId?: string; scopes?: string; environment: 'prod' | 'sandbox' },
   ) {
     const scopedCompanyId = resolveCompanyScope(session, input.companyId);
-    const oauthStatus = await zohoOAuthConfigRepository.getStatus(scopedCompanyId);
-
-    const clientId = oauthStatus?.clientId ?? config.ZOHO_CLIENT_ID;
-    const redirectUri = oauthStatus?.redirectUri ?? config.ZOHO_REDIRECT_URI;
-    const accountsBaseUrl = oauthStatus?.accountsBaseUrl ?? config.ZOHO_ACCOUNTS_BASE_URL;
-
-    if (!clientId || !redirectUri) {
+    if (!hasPlatformZohoOAuthConfig()) {
       throw new HttpException(
         400,
-        'Zoho OAuth App is not configured. Save client ID, client secret, and redirect URI first.',
+        'Platform-managed Zoho OAuth is not configured in server env.',
       );
     }
 
-    const scopes = (input.scopes ?? 'ZohoCRM.modules.ALL')
+    const scopes = (input.scopes ?? DEFAULT_ZOHO_SCOPES.join(','))
       .split(',')
       .map((scope) => scope.trim())
       .filter((scope) => scope.length > 0);
@@ -465,13 +423,13 @@ export class CompanyAdminService extends BaseService {
     };
 
     const state = Buffer.from(JSON.stringify(statePayload), 'utf8').toString('base64');
-    const authorizeUrl = new URL('/oauth/v2/auth', accountsBaseUrl);
+    const authorizeUrl = new URL('/oauth/v2/auth', config.ZOHO_ACCOUNTS_BASE_URL);
     authorizeUrl.searchParams.set('scope', scopes.join(','));
-    authorizeUrl.searchParams.set('client_id', clientId);
+    authorizeUrl.searchParams.set('client_id', config.ZOHO_CLIENT_ID);
     authorizeUrl.searchParams.set('response_type', 'code');
     authorizeUrl.searchParams.set('access_type', 'offline');
     authorizeUrl.searchParams.set('prompt', 'consent');
-    authorizeUrl.searchParams.set('redirect_uri', redirectUri);
+    authorizeUrl.searchParams.set('redirect_uri', config.ZOHO_REDIRECT_URI);
     authorizeUrl.searchParams.set('state', state);
 
     await auditService.recordLog({
@@ -482,30 +440,122 @@ export class CompanyAdminService extends BaseService {
       metadata: {
         environment: input.environment,
         scopesCount: scopes.length,
-        oauthSource: oauthStatus?.configured ? 'company_config' : 'env_fallback',
+        oauthSource: 'platform_env',
       },
     });
 
     return {
       authorizeUrl: authorizeUrl.toString(),
-      redirectUri,
+      redirectUri: config.ZOHO_REDIRECT_URI,
       scopes,
       environment: input.environment,
-      source: oauthStatus?.configured ? 'company_config' : 'env_fallback',
+      source: 'platform_env',
     };
   }
 
   async deleteZohoOAuthConfig(session: SessionScope, companyId?: string) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
-    await zohoOAuthConfigRepository.delete(scopedCompanyId);
     await auditService.recordLog({
       actorId: session.userId,
       companyId: scopedCompanyId,
-      action: 'company.onboarding.zoho_oauth_config.delete',
+      action: 'company.onboarding.zoho_oauth_config.delete.blocked',
+      outcome: 'failure',
+      metadata: {},
+    });
+    throw new HttpException(403, 'Company-managed Zoho OAuth app credentials are disabled. Existing legacy config is retained for compatibility.');
+  }
+
+  async getLarkAuthorizeUrl(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    if (!larkOAuthService.isConfigured()) {
+      throw new HttpException(400, 'Platform-managed Lark OAuth is not configured in server env.');
+    }
+
+    const state = Buffer.from(JSON.stringify({ companyId: scopedCompanyId }), 'utf8').toString('base64');
+    const authorizeUrl = larkOAuthService.getAuthorizeUrl({ state });
+
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'company.onboarding.lark.oauth_authorize_url.generate',
       outcome: 'success',
       metadata: {},
     });
-    return { companyId: scopedCompanyId, deleted: true };
+
+    return {
+      authorizeUrl,
+      redirectUri: larkOAuthService.getRedirectUri(),
+      source: 'platform_env',
+    };
+  }
+
+  async connectLarkOnboarding(session: SessionScope, payload: ConnectLarkOnboardingDto) {
+    const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
+    try {
+      if (!hasPlatformLarkRuntimeConfig()) {
+        throw new HttpException(400, 'Platform-managed Lark runtime is not configured in server env.');
+      }
+      const tokenBundle = await larkOAuthService.exchangeAuthorizationCode(payload.authorizationCode);
+      const userInfo = await larkOAuthService.fetchUserInfo(tokenBundle.accessToken);
+      const binding = await larkTenantBindingRepository.upsert({
+        companyId: scopedCompanyId,
+        larkTenantKey: userInfo.tenantKey,
+        createdBy: session.userId,
+        isActive: true,
+      });
+
+      const sync = await larkDirectorySyncService.trigger(scopedCompanyId, 'setup');
+      await auditService.recordLog({
+        actorId: session.userId,
+        companyId: scopedCompanyId,
+        action: 'company.onboarding.lark.connect',
+        outcome: 'success',
+        metadata: {
+          bindingId: binding.id,
+          larkTenantKey: binding.larkTenantKey,
+          runId: sync.runId,
+        },
+      });
+
+      return {
+        bindingId: binding.id,
+        companyId: binding.companyId,
+        larkTenantKey: binding.larkTenantKey,
+        isActive: binding.isActive,
+        updatedAt: binding.updatedAt.toISOString(),
+        sync,
+      };
+    } catch (error) {
+      await auditService.recordLog({
+        actorId: session.userId,
+        companyId: scopedCompanyId,
+        action: 'company.onboarding.lark.connect',
+        outcome: 'failure',
+        metadata: {
+          reason: error instanceof Error ? error.message : 'unknown_error',
+        },
+      });
+      throw error;
+    }
+  }
+
+  async disconnectLarkOnboarding(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const result = await larkTenantBindingRepository.deactivateByCompany(scopedCompanyId);
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'company.onboarding.lark.disconnect',
+      outcome: 'success',
+      metadata: {
+        affectedBindings: result.count,
+      },
+    });
+    return {
+      companyId: scopedCompanyId,
+      affectedBindings: result.count,
+      disconnected: true,
+    };
   }
 
   async listChannelIdentities(session: SessionScope, companyId?: string, channel?: string) {
@@ -523,6 +573,9 @@ export class CompanyAdminService extends BaseService {
       larkUserId: row.larkUserId ?? undefined,
       sourceRoles: row.sourceRoles,
       aiRole: row.aiRole,
+      aiRoleSource: row.aiRoleSource,
+      syncedAiRole: row.syncedAiRole ?? undefined,
+      syncedFromLarkRole: row.syncedFromLarkRole ?? undefined,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     }));
@@ -631,6 +684,30 @@ export class CompanyAdminService extends BaseService {
       externalUserId: updated.externalUserId,
       displayName: updated.displayName ?? undefined,
       aiRole: updated.aiRole,
+      aiRoleSource: updated.aiRoleSource,
+    };
+  }
+
+  async resetLarkUserRole(session: SessionScope, identityId: string, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const identity = await channelIdentityRepository.findById(identityId);
+    if (!identity || identity.companyId !== scopedCompanyId) {
+      throw new HttpException(404, 'Channel identity not found');
+    }
+    const updated = await channelIdentityRepository.resetAiRoleToSynced(identityId);
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'channel_identity.ai_role.reset_to_sync',
+      outcome: 'success',
+      metadata: { identityId, syncedAiRole: updated.aiRole },
+    });
+    return {
+      id: updated.id,
+      externalUserId: updated.externalUserId,
+      displayName: updated.displayName ?? undefined,
+      aiRole: updated.aiRole,
+      aiRoleSource: updated.aiRoleSource,
     };
   }
 

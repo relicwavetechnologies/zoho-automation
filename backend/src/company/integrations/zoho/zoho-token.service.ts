@@ -109,10 +109,30 @@ export class ZohoTokenService {
     redirectUri: string;
     httpClient: ZohoHttpClient;
   }> {
+    const hasPlatformConfig = Boolean(
+      config.ZOHO_CLIENT_ID
+      && config.ZOHO_CLIENT_SECRET
+      && config.ZOHO_REDIRECT_URI,
+    );
+
+    if (hasPlatformConfig) {
+      return {
+        clientId: config.ZOHO_CLIENT_ID,
+        clientSecret: config.ZOHO_CLIENT_SECRET,
+        redirectUri: config.ZOHO_REDIRECT_URI,
+        httpClient: this.httpClient,
+      };
+    }
+
     if (companyId) {
       try {
         const perCompany = await zohoOAuthConfigRepository.getCredentials(companyId);
         if (perCompany) {
+          logger.warn('zoho.oauth.credentials.legacy_company_config_fallback', {
+            companyId,
+            accountsBaseUrl: perCompany.accountsBaseUrl,
+            apiBaseUrl: perCompany.apiBaseUrl,
+          });
           return {
             clientId: perCompany.clientId,
             clientSecret: perCompany.clientSecret,
@@ -131,20 +151,11 @@ export class ZohoTokenService {
       }
     }
 
-    if (!config.ZOHO_CLIENT_ID || !config.ZOHO_CLIENT_SECRET || !config.ZOHO_REDIRECT_URI) {
-      throw new ZohoIntegrationError({
-        message: 'Zoho OAuth credentials are not configured. Set them up in the Integrations page of the admin panel.',
-        code: 'auth_failed',
-        retriable: false,
-      });
-    }
-
-    return {
-      clientId: config.ZOHO_CLIENT_ID,
-      clientSecret: config.ZOHO_CLIENT_SECRET,
-      redirectUri: config.ZOHO_REDIRECT_URI,
-      httpClient: this.httpClient,
-    };
+    throw new ZohoIntegrationError({
+      message: 'Zoho OAuth credentials are not configured. Set them up in server env.',
+      code: 'auth_failed',
+      retriable: false,
+    });
   }
 
   async exchangeAuthorizationCode(input: {
