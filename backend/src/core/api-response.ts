@@ -17,6 +17,13 @@ export class ApiResponse {
       message,
     };
   }
+
+  static error(message: string): ApiErrorResponse {
+    return {
+      success: false,
+      message,
+    };
+  }
 }
 
 

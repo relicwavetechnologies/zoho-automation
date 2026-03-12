@@ -12,7 +12,7 @@ const TOOL_ID = 'lark-doc-agent';
 export const larkDocAgentTool = createTool({
   id: TOOL_ID,
   description:
-    'Delegate to the Lark Docs specialist for document creation and markdown export into Lark Docs.',
+    'Delegate to the Lark Docs specialist for final document creation and markdown export into Lark Docs. Use this only after the required CRM, outreach, search, or other grounded work has already been completed in the current task. Do not use this as the first step for a multi-domain research workflow.',
   inputSchema: z.object({
     query: z.string().describe('The user request for the document to create'),
   }),

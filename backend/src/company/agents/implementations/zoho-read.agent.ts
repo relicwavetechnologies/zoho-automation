@@ -75,6 +75,25 @@ const startOfWeek = (now: Date): Date => {
 const startOfMonth = (now: Date): Date =>
   new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
 
+const subtractDays = (now: Date, days: number): Date => {
+  const start = startOfDay(now);
+  start.setDate(start.getDate() - days);
+  return start;
+};
+
+const subtractWeeks = (now: Date, weeks: number): Date => subtractDays(now, weeks * 7);
+
+const subtractMonths = (now: Date, months: number): Date => {
+  const start = startOfDay(now);
+  start.setMonth(start.getMonth() - months);
+  return start;
+};
+
+const clampPositiveRange = (value: number, max: number): number => {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(max, Math.floor(value)));
+};
+
 const inferSourceTypes = (objective: string): ZohoSourceType[] => {
   const text = normalizeText(objective);
   const preferred: ZohoSourceType[] = [];
@@ -92,6 +111,26 @@ const inferSourceTypes = (objective: string): ZohoSourceType[] => {
 const inferCreatedAfter = (objective: string): Date | undefined => {
   const text = normalizeText(objective);
   const now = new Date();
+  const dynamicRange =
+    text.match(/\b(?:last|past)\s+(\d{1,3})\s+day[s]?\b/) ??
+    text.match(/\b(?:last|past)\s+(\d{1,2})\s+week[s]?\b/) ??
+    text.match(/\b(?:last|past)\s+(\d{1,2})\s+month[s]?\b/);
+
+  if (dynamicRange) {
+    const amount = Number.parseInt(dynamicRange[1] ?? '', 10);
+    if (/\bday[s]?\b/.test(dynamicRange[0])) {
+      const days = clampPositiveRange(amount, 365);
+      if (days > 0) return subtractDays(now, days);
+    }
+    if (/\bweek[s]?\b/.test(dynamicRange[0])) {
+      const weeks = clampPositiveRange(amount, 52);
+      if (weeks > 0) return subtractWeeks(now, weeks);
+    }
+    if (/\bmonth[s]?\b/.test(dynamicRange[0])) {
+      const months = clampPositiveRange(amount, 24);
+      if (months > 0) return subtractMonths(now, months);
+    }
+  }
 
   if (containsAny(text, ['this week', 'current week'])) {
     return startOfWeek(now);

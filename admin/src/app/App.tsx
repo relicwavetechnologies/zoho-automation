@@ -13,6 +13,7 @@ import { MemberInviteAcceptPage } from '../pages/MemberInviteAcceptPage';
 import { MemberLoginPage } from '../pages/MemberLoginPage';
 import { MembersPage } from '../pages/MembersPage';
 import { OverviewPage } from '../pages/OverviewPage';
+import TokenUsagePage from '../pages/TokenUsagePage';
 import { PlaceholderPage } from '../pages/PlaceholderPage';
 import { RbacPage } from '../pages/RbacPage';
 import { ToolPermissionsPage } from '../pages/ToolPermissionsPage';
@@ -60,6 +61,7 @@ export const App = () => {
           <Route path="audit" element={<AuditLogsPage />} />
           <Route path="controls" element={<ControlsPage />} />
           <Route path="ai-models" element={<AiModelsPage />} />
+          <Route path="token-usage" element={<TokenUsagePage />} />
           <Route path="integrations" element={<IntegrationsPage />} />
           <Route path="tool-access" element={<ToolPermissionsPage />} />
           <Route path="vector-requests" element={<VectorShareRequestsPage />} />

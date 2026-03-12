@@ -93,9 +93,32 @@ export type ContentBlock =
   | TextContentBlock
   | ThinkingContentBlock
 
+export type ExecutionPlanTaskStatus = 'pending' | 'running' | 'done' | 'blocked' | 'failed' | 'skipped'
+export type ExecutionPlanStatus = 'running' | 'completed' | 'failed'
+export type ExecutionPlanOwnerAgent = 'supervisor' | 'zoho' | 'outreach' | 'search' | 'larkDoc' | 'workspace' | 'terminal'
+
+export interface ExecutionPlanTask {
+  id: string
+  title: string
+  ownerAgent: ExecutionPlanOwnerAgent
+  status: ExecutionPlanTaskStatus
+  resultSummary?: string
+}
+
+export interface ExecutionPlan {
+  id: string
+  goal: string
+  successCriteria: string[]
+  status: ExecutionPlanStatus
+  createdAt: string
+  updatedAt: string
+  tasks: ExecutionPlanTask[]
+}
+
 // ─── Message metadata ─────────────────────────────────────────────────────────
 export interface MessageMetadata {
   contentBlocks?: ContentBlock[]
+  plan?: ExecutionPlan
   /** Legacy — kept for backward compat */
   toolCalls?: ToolCallInfo[]
   larkDocs?: LarkDocRef[]
@@ -132,7 +155,7 @@ export interface LarkDocRef {
 }
 
 export interface StreamEvent {
-  type: 'text' | 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'step' | 'done' | 'error'
+  type: 'text' | 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'step' | 'plan' | 'done' | 'error'
   data: unknown
 }
 

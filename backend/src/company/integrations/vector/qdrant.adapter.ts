@@ -172,6 +172,34 @@ const buildSearchFilter = (query: VectorSearchQuery): Record<string, unknown> =>
     });
   }
 
+  // RBAC: When searching file_document vectors, restrict to allowedRoles the user's aiRole is in.
+  const isFileDoctypeRequested =
+    !query.sourceTypes ||
+    query.sourceTypes.length === 0 ||
+    query.sourceTypes.includes('file_document');
+
+  if (isFileDoctypeRequested && query.requesterAiRole) {
+    filter.should = buildScopeShouldClauses(query);
+    must.push({
+      should: [
+        // Either allowedRoles is not set (legacy / unrestricted) …
+        {
+          is_empty: { key: 'allowedRoles' },
+        },
+        // … or the user's aiRole is in the allowedRoles array.
+        {
+          key: 'allowedRoles',
+          match: { any: [query.requesterAiRole] },
+        },
+        // … or the vector is not a file_document (don't restrict zoho/chat turns).
+        {
+          key: 'sourceType',
+          match: { any: ['zoho_lead', 'zoho_contact', 'zoho_deal', 'zoho_ticket', 'chat_turn'] },
+        },
+      ],
+    });
+  }
+
   if (must.length > 0) {
     filter.must = must;
   }
@@ -302,6 +330,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
       { fieldName: 'ownerUserId', fieldSchema: 'keyword' },
       { fieldName: 'referenceEmails', fieldSchema: 'keyword' },
       { fieldName: 'conversationKey', fieldSchema: 'keyword' },
+      { fieldName: 'allowedRoles', fieldSchema: 'keyword' },
       { fieldName: 'chunkIndex', fieldSchema: 'integer' },
     ];
 
@@ -372,6 +401,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
         ...record.payload,
         ...(Array.isArray(record.referenceEmails) ? { referenceEmails: record.referenceEmails } : {}),
         ...(record.connectionId ? { connectionId: record.connectionId } : {}),
+        ...(Array.isArray((record as any).allowedRoles) ? { allowedRoles: (record as any).allowedRoles } : {}),
       },
       vector: record.embedding,
     }));
@@ -475,6 +505,8 @@ export class QdrantAdapter implements VectorStoreAdapter {
         typeof item.payload?.ownerUserId === 'string' ? item.payload.ownerUserId : undefined,
       conversationKey:
         typeof item.payload?.conversationKey === 'string' ? item.payload.conversationKey : undefined,
+      allowedRoles:
+        Array.isArray(item.payload?.allowedRoles) ? (item.payload.allowedRoles as string[]) : undefined,
       payload: (item.payload ?? {}) as Record<string, unknown>,
     }));
   }

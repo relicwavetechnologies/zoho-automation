@@ -91,6 +91,11 @@ export type ValidatedEnv = {
   DOC_UPLOAD_MAX_MB: number;
   DOC_EXTRACT_MAX_WORDS: number;
   DOC_GENERATION_MAX_WORDS: number;
+  CLOUDINARY_CLOUD_NAME: string;
+  CLOUDINARY_API_KEY: string;
+  CLOUDINARY_API_SECRET: string;
+  CLOUDINARY_UPLOAD_PRESET: string;
+  CLOUDINARY_FOLDER: string;
 };
 
 export type EnvValidationResult = {
@@ -683,6 +688,11 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     DOC_UPLOAD_MAX_MB: docUploadMaxMb,
     DOC_EXTRACT_MAX_WORDS: docExtractMaxWords,
     DOC_GENERATION_MAX_WORDS: docGenerationMaxWords,
+    CLOUDINARY_CLOUD_NAME: readString(parsedRaw.CLOUDINARY_CLOUD_NAME),
+    CLOUDINARY_API_KEY: readString(parsedRaw.CLOUDINARY_API_KEY),
+    CLOUDINARY_API_SECRET: readString(parsedRaw.CLOUDINARY_API_SECRET),
+    CLOUDINARY_UPLOAD_PRESET: readString(parsedRaw.CLOUDINARY_UPLOAD_PRESET, 'zoho_automation'),
+    CLOUDINARY_FOLDER: readString(parsedRaw.CLOUDINARY_FOLDER, 'zoho_automation_files'),
   };
 
   if (!config.REDIS_URL.startsWith('redis://') && !config.REDIS_URL.startsWith('rediss://')) {

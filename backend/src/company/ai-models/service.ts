@@ -6,6 +6,9 @@ export type AiModelTargetOverrideDTO = {
   provider: AiModelProvider;
   modelId: string;
   thinkingLevel?: AiThinkingLevel;
+  fastProvider?: AiModelProvider;
+  fastModelId?: string;
+  fastThinkingLevel?: AiThinkingLevel;
   updatedBy: string;
   updatedAt: string;
 };
@@ -19,6 +22,9 @@ export type AiModelTargetResolvedDTO = {
   effectiveProvider: AiModelProvider;
   effectiveModelId: string;
   effectiveThinkingLevel?: AiThinkingLevel;
+  fastEffectiveProvider?: AiModelProvider;
+  fastEffectiveModelId?: string;
+  fastEffectiveThinkingLevel?: AiThinkingLevel;
   source: 'default' | 'override';
   override?: AiModelTargetOverrideDTO;
 };
@@ -54,6 +60,9 @@ const toOverride = (row: AiModelTargetConfigRow): AiModelTargetOverrideDTO => ({
   provider: normalizeProvider(row.provider),
   modelId: row.modelId,
   thinkingLevel: normalizeThinkingLevel(row.thinkingLevel),
+  fastProvider: row.fastProvider ? normalizeProvider(row.fastProvider) : undefined,
+  fastModelId: row.fastModelId ?? undefined,
+  fastThinkingLevel: normalizeThinkingLevel(row.fastThinkingLevel),
   updatedBy: row.updatedBy,
   updatedAt: row.updatedAt.toISOString(),
 });
@@ -77,12 +86,23 @@ class AiModelControlService {
         effectiveProvider: target.defaultProvider,
         effectiveModelId: target.defaultModelId,
         effectiveThinkingLevel: target.defaultThinkingLevel,
+        fastEffectiveProvider: target.fastDefaultProvider,
+        fastEffectiveModelId: target.fastDefaultModelId,
+        fastEffectiveThinkingLevel: target.fastDefaultThinkingLevel,
         source: 'default',
       };
     }
 
     const provider = normalizeProvider(row.provider);
     const thinkingLevel = normalizeThinkingLevel(row.thinkingLevel);
+    const fastProvider = row.fastProvider ? normalizeProvider(row.fastProvider) : undefined;
+    const fastThinkingLevel = normalizeThinkingLevel(row.fastThinkingLevel);
+
+    // If fast params are not set in the override, fallback to target defaults
+    const effectiveFastProvider = fastProvider ?? target.fastDefaultProvider;
+    const effectiveFastModelId = row.fastModelId ?? target.fastDefaultModelId;
+    const effectiveFastThinkingLevel = row.fastModelId ? fastThinkingLevel : (target.fastDefaultThinkingLevel ?? undefined);
+
     return {
       targetKey,
       label: target.label,
@@ -92,6 +112,9 @@ class AiModelControlService {
       effectiveProvider: provider,
       effectiveModelId: row.modelId,
       effectiveThinkingLevel: thinkingLevel,
+      fastEffectiveProvider: effectiveFastProvider,
+      fastEffectiveModelId: effectiveFastModelId,
+      fastEffectiveThinkingLevel: effectiveFastThinkingLevel,
       source: 'override',
       override: toOverride(row),
     };
@@ -102,22 +125,32 @@ class AiModelControlService {
     provider: AiModelProvider;
     modelId: string;
     thinkingLevel?: AiThinkingLevel;
+    fastProvider?: AiModelProvider;
+    fastModelId?: string;
+    fastThinkingLevel?: AiThinkingLevel;
   }): void {
     if (!AI_CONTROL_TARGET_MAP.has(input.targetKey)) {
       throw new HttpException(404, `Unknown AI model target: ${input.targetKey}`);
     }
 
-    const model = AI_MODEL_CATALOG_MAP.get(`${input.provider}:${input.modelId}`);
-    if (!model) {
-      throw new HttpException(400, `Model ${input.provider}/${input.modelId} is not in the approved catalog`);
-    }
+    const validateModelContext = (prov: AiModelProvider, modId: string, thinkLevel?: string) => {
+      const model = AI_MODEL_CATALOG_MAP.get(`${prov}:${modId}`);
+      if (!model) {
+        throw new HttpException(400, `Model ${prov}/${modId} is not in the approved catalog`);
+      }
 
-    if (input.thinkingLevel && input.provider !== 'google') {
-      throw new HttpException(400, 'Thinking level is only supported for Google Gemini targets in this control plane');
-    }
+      if (thinkLevel && prov !== 'google') {
+        throw new HttpException(400, 'Thinking level is only supported for Google Gemini targets in this control plane');
+      }
 
-    if (input.thinkingLevel && !model.supportsThinking) {
-      throw new HttpException(400, `Model ${input.modelId} does not support thinking level controls`);
+      if (thinkLevel && !model.supportsThinking) {
+        throw new HttpException(400, `Model ${modId} does not support thinking level controls`);
+      }
+    };
+
+    validateModelContext(input.provider, input.modelId, input.thinkingLevel);
+    if (input.fastProvider && input.fastModelId) {
+      validateModelContext(input.fastProvider, input.fastModelId, input.fastThinkingLevel);
     }
   }
 
@@ -144,6 +177,9 @@ class AiModelControlService {
     provider: string;
     modelId: string;
     thinkingLevel?: string | null;
+    fastProvider?: string | null;
+    fastModelId?: string | null;
+    fastThinkingLevel?: string | null;
     updatedBy: string;
   }): Promise<AiModelTargetResolvedDTO> {
     const provider = normalizeProvider(input.provider.trim().toLowerCase());
@@ -153,11 +189,18 @@ class AiModelControlService {
       throw new HttpException(400, 'modelId is required');
     }
 
+    const fastProvider = input.fastProvider ? normalizeProvider(input.fastProvider.trim().toLowerCase()) : undefined;
+    const fastThinkingLevel = normalizeThinkingLevel(input.fastThinkingLevel);
+    const fastModelId = input.fastModelId?.trim();
+
     this.validateSelection({
       targetKey: input.targetKey,
       provider,
       modelId,
       thinkingLevel,
+      fastProvider,
+      fastModelId,
+      fastThinkingLevel,
     });
 
     const row = await this.repository.upsert({
@@ -165,8 +208,12 @@ class AiModelControlService {
       provider,
       modelId,
       thinkingLevel: thinkingLevel ?? null,
+      fastProvider: fastProvider ?? null,
+      fastModelId: fastModelId ?? null,
+      fastThinkingLevel: fastThinkingLevel ?? null,
       updatedBy: input.updatedBy,
     });
+
     return this.resolveFromRow(input.targetKey, row);
   }
 }

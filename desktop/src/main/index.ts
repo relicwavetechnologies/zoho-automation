@@ -5,6 +5,7 @@ import { URL } from 'url'
 
 import { registerAuthHandlers } from './ipc/auth.handler'
 import { registerChatHandlers } from './ipc/chat.handler'
+import { registerFilesHandlers } from './ipc/files.handler'
 import { registerTerminalHandlers } from './ipc/terminal.handler'
 import { registerThreadHandlers } from './ipc/threads.handler'
 import { registerWorkspaceHandlers } from './ipc/workspace.handler'
@@ -98,6 +99,7 @@ app.on('open-url', (_event, url) => {
 /* ─── Register all IPC handlers ─── */
 registerAuthHandlers()
 registerChatHandlers()
+registerFilesHandlers()
 registerTerminalHandlers()
 registerThreadHandlers()
 registerWorkspaceHandlers(getMainWindow)

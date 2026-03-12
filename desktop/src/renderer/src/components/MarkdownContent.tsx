@@ -1,7 +1,7 @@
 import { Children, isValidElement, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Check, Copy } from 'lucide-react'
+import { Check, Copy, FileText } from 'lucide-react'
 
 interface Props {
   content: string
@@ -31,13 +31,27 @@ export function MarkdownContent({ content, className }: Props): JSX.Element {
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          a: ({ node: _node, ...props }) => (
-            <a
-              {...props}
-              target="_blank"
-              rel="noreferrer"
-              className="font-medium text-[hsl(210,85%,72%)] underline decoration-[hsl(210,70%,54%)] underline-offset-4 hover:text-[hsl(210,85%,80%)]"
-            />
+          a: ({ node: _node, href, ...props }) => {
+            if (href?.startsWith('attachment:')) {
+               return (
+                 <a {...props} href="#" onClick={(e) => e.preventDefault()} className="inline-flex mt-2 items-center gap-2 rounded-xl border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,11%)] px-3 py-2 text-[13px] font-medium text-[hsl(0,0%,80%)] no-underline hover:bg-[hsl(0,0%,16%)] mb-2 mr-2">
+                   <FileText size={14} className="text-[hsl(0,0%,50%)]" />
+                   {props.children}
+                 </a>
+               )
+            }
+            return (
+              <a
+                {...props}
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-[hsl(210,85%,72%)] underline decoration-[hsl(210,70%,54%)] underline-offset-4 hover:text-[hsl(210,85%,80%)]"
+              />
+            )
+          },
+          img: ({ node: _node, ...props }) => (
+            <img {...props} className="mt-2 mb-3 max-w-full rounded-xl border border-[hsl(0,0%,16%)] object-cover shadow-sm max-h-[250px]" alt={props.alt || 'Attachment'} />
           ),
           p: ({ node: _node, ...props }) => <p {...props} className="mb-4 leading-8 text-[15px] text-[hsl(0,0%,80%)] last:mb-0" />,
           ul: ({ node: _node, ...props }) => <ul {...props} className="mb-4 list-disc space-y-1.5 pl-6 last:mb-0" />,

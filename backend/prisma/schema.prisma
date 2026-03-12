@@ -14,6 +14,13 @@ enum VectorVisibility {
   public
 }
 
+enum IngestionStatus {
+  pending
+  processing
+  done
+  failed
+}
+
 model User {
   id               String            @id @default(uuid())
   email            String            @unique
@@ -53,6 +60,7 @@ model Company {
   desktopHandoffs  DesktopAuthHandoff[]
   desktopThreads   DesktopThread[]
   larkAuthLinks    LarkUserAuthLink[]
+  fileAssets       FileAsset[]
 }
 
 model AdminMembership {
@@ -285,6 +293,8 @@ model VectorDocument {
   company      Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
   connectionId String?
   connection   ZohoConnection? @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  fileAssetId  String?
+  fileAsset    FileAsset?  @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
   sourceType   String
   sourceId     String
   chunkIndex   Int
@@ -301,6 +311,44 @@ model VectorDocument {
   @@index([companyId, sourceType])
   @@index([companyId, visibility, ownerUserId])
   @@index([companyId, conversationKey])
+  @@index([fileAssetId])
+}
+
+model FileAsset {
+  id              String          @id @default(uuid())
+  companyId       String
+  company         Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  uploaderUserId  String
+  uploaderChannel String          // "lark" | "desktop"
+  fileName        String
+  mimeType        String
+  sizeBytes       Int
+  cloudinaryPublicId String
+  cloudinaryUrl   String
+  cloudinaryResourceType String   @default("raw")
+  ingestionStatus IngestionStatus @default(pending)
+  ingestionError  String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  accessPolicies  FileAccessPolicy[]
+  vectorDocs      VectorDocument[]
+
+  @@index([companyId, uploaderUserId])
+  @@index([companyId, ingestionStatus])
+}
+
+model FileAccessPolicy {
+  id          String    @id @default(uuid())
+  fileAssetId String
+  fileAsset   FileAsset @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
+  companyId   String
+  aiRole      String
+  canRead     Boolean   @default(true)
+  grantedBy   String
+  createdAt   DateTime  @default(now())
+
+  @@unique([fileAssetId, aiRole])
+  @@index([companyId, aiRole])
 }
 
 model VectorShareRequest {
@@ -417,13 +465,16 @@ model AiRoleDefinition {
 }
 
 model AiModelTargetConfig {
-  id            String   @id @default(uuid())
-  targetKey      String   @unique
-  provider       String
-  modelId        String
-  thinkingLevel  String?
-  updatedBy      String
-  updatedAt      DateTime @updatedAt
+  id                String   @id @default(uuid())
+  targetKey         String   @unique
+  provider          String
+  modelId           String
+  thinkingLevel     String?
+  fastProvider      String?
+  fastModelId       String?
+  fastThinkingLevel String?
+  updatedBy         String
+  updatedAt         DateTime @updatedAt
 
   @@index([updatedAt])
 }
@@ -520,4 +571,39 @@ model DesktopMessage {
   createdAt DateTime      @default(now())
 
   @@index([threadId, createdAt])
+}
+
+model AiTokenUsage {
+  id                    String   @id @default(uuid())
+  userId                String
+  companyId             String
+  agentTarget           String   // e.g. 'mastra.supervisor'
+  modelId               String   // e.g. 'gpt-4.1-mini'
+  provider              String   // 'openai' | 'google'
+  channel               String   // 'desktop' | 'lark' | 'web'
+  threadId              String?
+  estimatedInputTokens  Int      @default(0)
+  estimatedOutputTokens Int      @default(0)
+  // Actual token counts from AI SDK response (if available)
+  actualInputTokens     Int?
+  actualOutputTokens    Int?
+  wasCompacted          Boolean  @default(false)
+  mode                  String   @default("high")  // 'fast' | 'high'
+  createdAt             DateTime @default(now())
+
+  @@index([userId, companyId, createdAt])
+  @@index([companyId, createdAt])
+  @@index([userId, createdAt])
+  @@index([companyId, modelId, createdAt])
+}
+
+model MemberTokenPolicy {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  companyId         String
+  monthlyTokenLimit Int      @default(2000000) // 2M tokens/month default
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([companyId])
 }

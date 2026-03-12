@@ -270,6 +270,12 @@ export class AdminAuthService extends BaseService {
         roles: ['SUPER_ADMIN'],
       },
       {
+        id: 'token-usage',
+        label: 'Token Usage',
+        path: '/token-usage',
+        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
+      },
+      {
         id: 'integrations',
         label: 'Integrations',
         path: '/integrations',

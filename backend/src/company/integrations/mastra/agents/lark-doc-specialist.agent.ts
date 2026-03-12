@@ -21,6 +21,9 @@ export const larkDocSpecialistAgent = new Agent({
 5. For small edits, generate only the changed section or appended content. Do not regenerate the whole document unless the user explicitly asked to rewrite the whole doc.
 6. If the request references prior grounded outputs in the conversation, incorporate them into the markdown instead of asking the user to repeat them.
 7. Never fabricate records or links. If grounded content is missing, create a simple note that clearly states what was requested.
+8. For requests that combine Lark Docs with Zoho CRM work, outreach, or web research, you are the final export step, not the first step.
+9. Do not act as the primary research or CRM/outreach engine. Only create or update the document after the relevant grounded work has already happened in the current task.
+10. If the upstream grounded work is missing, do not pretend it is complete. Keep the output narrow and explicit about what is actually available.
 
 ### Formatting rules
 - Prefer plain markdown supported by our Lark Doc renderer: headings, bullets, numbered lists, bold text, and code fences only when necessary.

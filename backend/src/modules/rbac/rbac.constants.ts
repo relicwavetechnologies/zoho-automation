@@ -5,6 +5,9 @@ export const RBAC_ACTIONS = [
   'onboarding.manage',
   'audit.read',
   'system.controls.write',
+  'documents.upload',
+  'documents.read',
+  'documents.policy.write',
 ] as const;
 
 export type RbacAction = (typeof RBAC_ACTIONS)[number];

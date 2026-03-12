@@ -121,7 +121,7 @@ export type IngestionJobDTO = {
 
 export type VectorUpsertDTO = {
   companyId: string;
-  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket' | 'chat_turn';
+  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket' | 'chat_turn' | 'file_document';
   sourceId: string;
   chunkIndex: number;
   contentHash: string;
@@ -129,6 +129,8 @@ export type VectorUpsertDTO = {
   ownerUserId?: string;
   conversationKey?: string;
   referenceEmails?: string[];
+  fileAssetId?: string;
+  allowedRoles?: string[];
   payload: Record<string, unknown>;
 };
 

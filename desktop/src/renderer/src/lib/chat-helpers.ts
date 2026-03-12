@@ -3,6 +3,7 @@
  * No React, no state — importable from anywhere.
  */
 import type { ContentBlock, MessageMetadata, ApprovalContentBlock } from '../types'
+import type { ExecutionPlan } from '../types'
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -35,8 +36,8 @@ export type RunningCommandState = {
 }
 
 export type ActionLoopResult =
-  | { kind: 'action'; action: DesktopWorkspaceAction; blocks?: ContentBlock[] }
-  | { kind: 'answer'; message: import('../types').Message }
+  | { kind: 'action'; action: DesktopWorkspaceAction; blocks?: ContentBlock[]; plan?: ExecutionPlan | null }
+  | { kind: 'answer'; message: import('../types').Message; plan?: ExecutionPlan | null }
 
 export type ActionResultPayload = {
   kind: DesktopWorkspaceAction['kind']

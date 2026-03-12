@@ -1,4 +1,4 @@
-export type VectorSourceType = 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket' | 'chat_turn';
+export type VectorSourceType = 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket' | 'chat_turn' | 'file_document';
 export type VectorVisibility = 'personal' | 'shared' | 'public';
 
 export type VectorPayload = Record<string, unknown>;
@@ -21,6 +21,7 @@ export type VectorSearchQuery = {
   companyId: string;
   requesterUserId?: string;
   requesterEmail?: string;
+  requesterAiRole?: string;
   enforceEmailMatch?: boolean;
   vector: number[];
   limit: number;
@@ -39,6 +40,7 @@ export type VectorSearchResult = {
   visibility: VectorVisibility;
   ownerUserId?: string;
   conversationKey?: string;
+  allowedRoles?: string[];
   payload: VectorPayload;
 };
 

@@ -161,6 +161,22 @@ class ChannelIdentityRepository {
     });
   }
 
+  async findByLarkUserInfo(input: {
+    companyId: string;
+    larkTenantKey: string;
+    externalUserId: string;
+  }) {
+    return prisma.channelIdentity.findFirst({
+      where: {
+        companyId: input.companyId,
+        channel: 'lark',
+        externalTenantId: input.larkTenantKey,
+        externalUserId: input.externalUserId,
+      },
+      select: { id: true, externalUserId: true, aiRole: true, email: true },
+    });
+  }
+
   /**
    * Returns all channel identities for the company that have an admin AI role
    * and a valid Lark Open ID so we can send them direct messages.

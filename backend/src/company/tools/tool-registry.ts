@@ -115,6 +115,14 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
+    id: 'planner-agent',
+    name: 'Planner Agent',
+    description: 'Create a structured execution plan for complex multi-step requests before specialist execution.',
+    category: 'routing',
+    engines: ['mastra'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
     id: 'response',
     name: 'Response Agent',
     description: 'Handles greetings and capability questions with low-latency direct replies.',

@@ -63,7 +63,12 @@ export type DesktopAPI = {
       threadId: string,
       message: string,
       requestId: string,
+      attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
+      mode?: 'fast' | 'high'
     ) => Promise<{ success: boolean }>
+    stopStream: (
+      requestId: string,
+    ) => Promise<{ success: boolean; error?: string }>
     act: (
       token: string,
       threadId: string,
@@ -77,6 +82,15 @@ export type DesktopAPI = {
     url: string,
     options?: { method?: string; headers?: Record<string, string>; body?: string },
   ) => Promise<{ status: number; body: string }>
+  files: {
+    upload: (
+      token: string,
+      fileBuffer: ArrayBuffer,
+      fileName: string,
+      mimeType: string,
+    ) => Promise<{ success: boolean; status: number; data: unknown }>
+    list: (token: string) => Promise<{ success: boolean; data: unknown }>
+  }
 }
 
 const api: DesktopAPI = {
@@ -138,8 +152,10 @@ const api: DesktopAPI = {
       ipcRenderer.invoke('desktop:chat:send', token, threadId, message),
     getStreamUrl: (token, threadId) =>
       ipcRenderer.invoke('desktop:chat:stream-url', token, threadId),
-    startStream: (token, threadId, message, requestId) =>
-      ipcRenderer.invoke('desktop:chat:start-stream', token, threadId, message, requestId),
+    startStream: (token, threadId, message, requestId, attachedFiles, mode) =>
+      ipcRenderer.invoke('desktop:chat:startStream', token, threadId, message, requestId, attachedFiles, mode),
+    stopStream: (requestId) =>
+      ipcRenderer.invoke('desktop:chat:stopStream', requestId),
     act: (token, threadId, payload) =>
       ipcRenderer.invoke('desktop:chat:act', token, threadId, payload),
     onStreamEvent: (cb) => {
@@ -156,6 +172,12 @@ const api: DesktopAPI = {
     },
   },
   fetch: (url, options = {}) => ipcRenderer.invoke('desktop:fetch', url, options),
+  files: {
+    upload: (token, fileBuffer, fileName, mimeType) =>
+      ipcRenderer.invoke('desktop:files:upload', token, fileBuffer, fileName, mimeType),
+    list: (token) =>
+      ipcRenderer.invoke('desktop:files:list', token),
+  },
 }
 
 contextBridge.exposeInMainWorld('desktopAPI', api)

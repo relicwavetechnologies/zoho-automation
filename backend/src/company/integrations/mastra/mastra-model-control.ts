@@ -10,6 +10,7 @@ const googleClient = createGoogleGenerativeAI({
 
 export const MASTRA_AGENT_TARGETS = {
   ackAgent: 'mastra.ack',
+  plannerAgent: 'mastra.planner',
   supervisorAgent: 'mastra.supervisor',
   zohoAgent: 'mastra.zoho-specialist',
   outreachAgent: 'mastra.outreach',
@@ -20,24 +21,38 @@ export const MASTRA_AGENT_TARGETS = {
 
 export type MastraAgentTargetId = keyof typeof MASTRA_AGENT_TARGETS;
 
-export const resolveMastraLanguageModel = async (targetKey: AiControlTargetKey) => {
+import { AI_MODEL_CATALOG } from '../../ai-models/catalog';
+
+export const resolveMastraLanguageModel = async (targetKey: AiControlTargetKey, mode?: 'fast' | 'high') => {
   const resolved = await aiModelControlService.resolveTarget(targetKey);
-  if (resolved.effectiveProvider === 'google') {
-    return googleClient(resolved.effectiveModelId);
+  
+  let effectiveProvider = resolved.effectiveProvider;
+  let effectiveModelId = resolved.effectiveModelId;
+
+  if (mode === 'fast') {
+    effectiveProvider = resolved.fastEffectiveProvider || effectiveProvider;
+    effectiveModelId = resolved.fastEffectiveModelId || effectiveModelId;
   }
-  return openai(resolved.effectiveModelId);
+
+  if (effectiveProvider === 'google') {
+    return googleClient(effectiveModelId);
+  }
+  return openai(effectiveModelId);
 };
 
-export const buildMastraProviderOptions = async (targetKey: AiControlTargetKey) => {
+export const buildMastraProviderOptions = async (targetKey: AiControlTargetKey, mode?: 'fast' | 'high') => {
   const resolved = await aiModelControlService.resolveTarget(targetKey);
-  if (resolved.effectiveProvider !== 'google' || !resolved.effectiveThinkingLevel) {
+  const provider = mode === 'fast' ? (resolved.fastEffectiveProvider || resolved.effectiveProvider) : resolved.effectiveProvider;
+  const thinkingLevel = mode === 'fast' ? (resolved.fastEffectiveThinkingLevel || resolved.effectiveThinkingLevel) : resolved.effectiveThinkingLevel;
+
+  if (provider !== 'google' || !thinkingLevel) {
     return undefined;
   }
 
   return {
     google: {
       thinkingConfig: {
-        thinkingLevel: resolved.effectiveThinkingLevel,
+        thinkingLevel: thinkingLevel,
       },
     },
   };
@@ -46,8 +61,9 @@ export const buildMastraProviderOptions = async (targetKey: AiControlTargetKey) 
 export const buildMastraAgentRunOptions = async (
   targetKey: AiControlTargetKey,
   base: Record<string, unknown> = {},
+  mode?: 'fast' | 'high',
 ) => {
-  const providerOptions = await buildMastraProviderOptions(targetKey);
+  const providerOptions = await buildMastraProviderOptions(targetKey, mode);
   if (!providerOptions) {
     return base;
   }

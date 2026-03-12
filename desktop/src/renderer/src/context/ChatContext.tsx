@@ -7,7 +7,7 @@ import {
   useEffect,
   type ReactNode,
 } from 'react'
-import type { Thread, Message, ContentBlock, MessageMetadata } from '../types'
+import type { Thread, Message, ContentBlock, MessageMetadata, ExecutionPlan } from '../types'
 import { useAuth } from './AuthContext'
 import { useWorkspace } from './WorkspaceContext'
 import {
@@ -28,6 +28,19 @@ import {
 
 export type { DesktopWorkspaceAction, ActionResultPayload }
 
+const isActivityFailure = (input: { label?: string; resultSummary?: string }): boolean => {
+  const label = (input.label ?? '').toLowerCase()
+  const summary = (input.resultSummary ?? '').toLowerCase()
+  return (
+    label.includes('failed')
+    || label.includes('error')
+    || summary === 'error'
+    || summary.includes('failed')
+    || summary.includes('error:')
+    || summary.includes('not permitted')
+  )
+}
+
 // ── Context contract ──────────────────────────────────────────────────────────
 
 interface ChatState {
@@ -36,13 +49,19 @@ interface ChatState {
   messages: Message[]
   isStreaming: boolean
   isThinking: boolean
+  activePlan: ExecutionPlan | null
   liveBlocks: ContentBlock[]
   error: string | null
   loadThreads: () => Promise<void>
   selectThread: (threadId: string) => Promise<void>
   createThread: () => Promise<string | null>
   deleteThread: (threadId: string) => Promise<void>
-  sendMessage: (text: string) => Promise<void>
+  sendMessage: (
+    text: string,
+    attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
+    mode?: 'fast' | 'high'
+  ) => Promise<void>
+  stopExecution: () => Promise<void>
   approveCommand: (executionId: string) => Promise<void>
   rejectCommand: (executionId: string) => Promise<void>
   killCommand: (executionId: string) => Promise<void>
@@ -68,16 +87,19 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const [messages, setMessages] = useState<Message[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [isThinking, setIsThinking] = useState(false)
+  const [activePlan, setActivePlan] = useState<ExecutionPlan | null>(null)
   const [liveBlocks, setLiveBlocks] = useState<ContentBlock[]>([])
   const [error, setError] = useState<string | null>(null)
 
   // ── Refs for mutable cross-callback access ──
   const activeRequestIdRef = useRef<string | null>(null)
   const activeThreadRef = useRef<Thread | null>(null)
+  const activePlanRef = useRef<ExecutionPlan | null>(null)
   const liveBlocksRef = useRef<ContentBlock[]>([])
   const loadThreadsRef = useRef<(() => Promise<void>) | null>(null)
   const pendingLocalActionRef = useRef<PendingLocalActionState | null>(null)
   const runningCommandRef = useRef<RunningCommandState | null>(null)
+  const cancelRequestedRef = useRef(false)
 
   // ── Shared live-block utilities ──
   const appendOutput = useCallback((prev: string, chunk: string): string => {
@@ -94,14 +116,40 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     })
   }, [])
 
+  const replaceActivePlan = useCallback((plan: ExecutionPlan | null) => {
+    activePlanRef.current = plan
+    setActivePlan(plan)
+  }, [])
+
   const resetLiveState = useCallback(() => {
     setLiveBlocks([])
     liveBlocksRef.current = []
     setIsStreaming(false)
     setIsThinking(false)
+    replaceActivePlan(null)
     activeRequestIdRef.current = null
     pendingLocalActionRef.current = null
     runningCommandRef.current = null
+  }, [replaceActivePlan])
+
+  const commitPartialAssistant = useCallback(() => {
+    const blocks = liveBlocksRef.current
+    if (blocks.length === 0) return
+    const textContent = blocks
+      .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+      .map((block) => block.content)
+      .join('')
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `assistant-partial-${Date.now()}`,
+        threadId: activeThreadRef.current?.id ?? '',
+        role: 'assistant',
+        content: textContent,
+        createdAt: new Date().toISOString(),
+        metadata: { contentBlocks: blocks, streaming: false },
+      },
+    ])
   }, [])
 
   // ── Persist a local action summary to the thread ──
@@ -214,11 +262,14 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         message: input.initialMessage,
         workspace: { name: currentWorkspace.name, path: currentWorkspace.path },
         actionResult: input.actionResult,
+        ...(activePlanRef.current ? { plan: activePlanRef.current } : {}),
       })
 
       if (!response.success || !response.data) throw new Error(response.message || 'Desktop action loop failed')
+      if (cancelRequestedRef.current) return
 
       const payload = response.data as ActionLoopResult
+      replaceActivePlan(payload.plan ?? null)
 
       if (payload.kind === 'answer') {
         setIsThinking(false)
@@ -233,6 +284,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         const toolBlock = buildAgentActionToolBlock(action)
         replaceLiveBlocks((prev) => [...prev, toolBlock])
         const completion = await runWorkspaceAction({ action, toolBlockId: toolBlock.id, threadId: input.threadId })
+        if (cancelRequestedRef.current) return
         await runAgentLocalActionTurn({
           threadId: input.threadId,
           actionResult: { kind: action.kind, ok: completion.ok, summary: completion.actionResultSummary },
@@ -262,7 +314,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       setError(err instanceof Error ? err.message : 'Desktop action loop failed')
       resetLiveState()
     }
-  }, [currentWorkspace, finalizeLocalBlocks, replaceLiveBlocks, resetLiveState, runWorkspaceAction, token])
+  }, [currentWorkspace, finalizeLocalBlocks, replaceActivePlan, replaceLiveBlocks, resetLiveState, runWorkspaceAction, token])
 
   // ── Finish a terminal command execution ──
   const finishCommandExecution = useCallback(async (input: {
@@ -295,6 +347,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     runningCommandRef.current = null
 
     if (runningCommand.source === 'agent') {
+      if (cancelRequestedRef.current) return
       await runAgentLocalActionTurn({
         threadId: runningCommand.threadId,
         actionResult: { kind: 'run_command', ok: completion.ok, summary: completion.actionResultSummary },
@@ -303,7 +356,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     }
 
     await finalizeLocalBlocks({ threadId: runningCommand.threadId })
-  }, [finalizeLocalBlocks, persistLocalSummary, runAgentLocalActionTurn])
+  }, [finalizeLocalBlocks, persistLocalSummary, replaceActivePlan, runAgentLocalActionTurn])
 
   // ── SSE stream event subscriber ──
   useEffect(() => {
@@ -311,6 +364,9 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       if (activeRequestIdRef.current !== requestId) return
 
       switch (event.type) {
+        case 'plan':
+          replaceActivePlan((event.data as ExecutionPlan | null) ?? null)
+          break
         case 'thinking_token': {
           const delta = String(event.data ?? '')
           if (!delta) break
@@ -333,15 +389,14 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         }
         case 'activity_done': {
           const raw = event.data as { id: string; label?: string; icon?: string; name?: string; resultSummary?: string }
-          setIsThinking(true)
-          replaceLiveBlocks((prev) => [
-            ...prev.map((block) =>
+          const ok = !isActivityFailure(raw)
+          replaceLiveBlocks((prev) =>
+            prev.map((block) =>
               block.type === 'tool' && block.id === raw.id
-                ? { ...block, name: raw.name ?? block.name, label: raw.label ?? block.label, icon: raw.icon ?? block.icon, status: 'done' as const, resultSummary: raw.resultSummary }
+                ? { ...block, name: raw.name ?? block.name, label: raw.label ?? block.label, icon: raw.icon ?? block.icon, status: ok ? 'done' as const : 'failed' as const, resultSummary: raw.resultSummary }
                 : block,
             ),
-            { type: 'thinking' },
-          ])
+          )
           break
         }
         case 'text': {
@@ -355,6 +410,11 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           break
         }
         case 'error':
+          if (cancelRequestedRef.current) {
+            cancelRequestedRef.current = false
+            resetLiveState()
+            break
+          }
           setError(String(event.data ?? 'Stream failed. Please try again.'))
           resetLiveState()
           break
@@ -368,12 +428,9 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
             if (!textContent && blocks.length === 0) return prev
             return [...prev, { id: `assistant-${Date.now()}`, threadId: activeThreadRef.current?.id ?? '', role: 'assistant', content: textContent, createdAt: new Date().toISOString(), metadata: blocks.length > 0 ? { contentBlocks: blocks } : undefined }]
           })
-          setLiveBlocks([])
-          liveBlocksRef.current = []
-          setIsStreaming(false)
-          setIsThinking(false)
-          activeRequestIdRef.current = null
           void loadThreadsRef.current?.()
+          cancelRequestedRef.current = false
+          resetLiveState()
           break
         }
         default:
@@ -381,7 +438,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       }
     })
     return unsubscribe
-  }, [replaceLiveBlocks, resetLiveState])
+  }, [replaceActivePlan, replaceLiveBlocks, resetLiveState])
 
   // ── Terminal event subscriber ──
   useEffect(() => {
@@ -426,13 +483,15 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     if (!currentWorkspace) {
       setActiveThread(null)
       setMessages([])
+      replaceActivePlan(null)
       return
     }
     if (activeThreadRef.current && !isThreadInCurrentWorkspace(activeThreadRef.current.id)) {
       setActiveThread(null)
       setMessages([])
+      replaceActivePlan(null)
     }
-  }, [currentWorkspace, isThreadInCurrentWorkspace])
+  }, [currentWorkspace, isThreadInCurrentWorkspace, replaceActivePlan])
 
   const threads = currentWorkspace ? allThreads.filter((thread) => isThreadInCurrentWorkspace(thread.id)) : []
 
@@ -465,7 +524,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       return
     }
     await finalizeLocalBlocks({ threadId: pendingAction.threadId })
-  }, [appendOutput, finalizeLocalBlocks, finishCommandExecution, replaceLiveBlocks, runAgentLocalActionTurn, runWorkspaceAction])
+  }, [appendOutput, finalizeLocalBlocks, finishCommandExecution, replaceActivePlan, replaceLiveBlocks, runAgentLocalActionTurn, runWorkspaceAction])
 
   const rejectCommand = useCallback(async (executionId: string) => {
     const pendingAction = pendingLocalActionRef.current
@@ -524,12 +583,13 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         const data = res.data as { thread: Thread; messages: Message[] }
         setActiveThread(data.thread)
         setMessages(data.messages)
+        replaceActivePlan(null)
         setError(null)
       }
     } catch {
       setError('Failed to load thread')
     }
-  }, [token, currentWorkspace, isThreadInCurrentWorkspace])
+  }, [token, currentWorkspace, isThreadInCurrentWorkspace, replaceActivePlan])
 
   const createThread = useCallback(async (): Promise<string | null> => {
     if (!token || !currentWorkspace) return null
@@ -541,6 +601,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         setAllThreads((prev) => [newThread, ...prev])
         setActiveThread(newThread)
         setMessages([])
+        replaceActivePlan(null)
         return newThread.id
       }
       return null
@@ -548,17 +609,37 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       setError('Failed to create thread')
       return null
     }
-  }, [token, currentWorkspace, bindThreadToCurrentWorkspace])
+  }, [token, currentWorkspace, bindThreadToCurrentWorkspace, replaceActivePlan])
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (
+    text: string,
+    attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
+    mode: 'fast' | 'high' = 'high'
+  ) => {
     if (!token || !currentWorkspace || !activeThread || isStreaming) return
     const trimmedText = text.trim()
-    if (!trimmedText) return
+    cancelRequestedRef.current = false
 
-    const userMsg: Message = { id: `temp-${Date.now()}`, threadId: activeThread.id, role: 'user', content: trimmedText, createdAt: new Date().toISOString() }
+    let finalMessageText = trimmedText
+    if (attachedFiles && attachedFiles.length > 0) {
+      const attachmentsMd = attachedFiles.map(a => {
+        if (a.mimeType.startsWith('image/')) {
+          return `\n![${a.fileName}](${a.cloudinaryUrl})`
+        } else {
+          return `\n[${a.fileName}](attachment:${a.fileAssetId})`
+        }
+      }).join('')
+      if (finalMessageText) finalMessageText += `\n${attachmentsMd}`
+      else finalMessageText = attachmentsMd.trim()
+    }
+
+    if (!finalMessageText) return
+
+    const userMsg: Message = { id: `temp-${Date.now()}`, threadId: activeThread.id, role: 'user', content: finalMessageText, createdAt: new Date().toISOString() }
     setMessages((prev) => [...prev, userMsg])
     setIsStreaming(true)
     setIsThinking(false)
+    replaceActivePlan(null)
     setLiveBlocks([])
     liveBlocksRef.current = []
     setError(null)
@@ -583,7 +664,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     try {
       const requestId = crypto.randomUUID()
       activeRequestIdRef.current = requestId
-      const sendRes = await window.desktopAPI.chat.startStream(token, activeThread.id, trimmedText, requestId)
+      const sendRes = await window.desktopAPI.chat.startStream(token, activeThread.id, trimmedText, requestId, attachedFiles, mode)
       if (!sendRes.success) {
         setError('Failed to send message')
         setIsStreaming(false)
@@ -596,7 +677,24 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       setIsThinking(false)
       activeRequestIdRef.current = null
     }
-  }, [token, currentWorkspace, activeThread, isStreaming, runAgentLocalActionTurn])
+  }, [token, currentWorkspace, activeThread, isStreaming, replaceActivePlan, runAgentLocalActionTurn])
+
+  const stopExecution = useCallback(async () => {
+    cancelRequestedRef.current = true
+
+    const requestId = activeRequestIdRef.current
+    if (requestId) {
+      await window.desktopAPI.chat.stopStream(requestId).catch(() => undefined)
+    }
+
+    const runningCommand = runningCommandRef.current
+    if (runningCommand) {
+      await window.desktopAPI.terminal.kill(runningCommand.id).catch(() => undefined)
+    }
+
+    commitPartialAssistant()
+    resetLiveState()
+  }, [commitPartialAssistant, resetLiveState])
 
   const clearError = useCallback(() => setError(null), [])
 
@@ -607,14 +705,14 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       if (!result?.success) { setError('Failed to delete thread'); return }
       unbindThread(threadId)
       setAllThreads((prev) => prev.filter((thread) => thread.id !== threadId))
-      if (activeThreadRef.current?.id === threadId) { setActiveThread(null); setMessages([]) }
+      if (activeThreadRef.current?.id === threadId) { setActiveThread(null); setMessages([]); replaceActivePlan(null) }
     } catch {
       setError('Failed to delete thread — please restart the app and try again')
     }
-  }, [token, unbindThread])
+  }, [token, replaceActivePlan, unbindThread])
 
   return (
-    <ChatContext.Provider value={{ threads, activeThread, messages, isStreaming, isThinking, liveBlocks, error, loadThreads, selectThread, createThread, deleteThread, sendMessage, approveCommand, rejectCommand, killCommand, clearError }}>
+    <ChatContext.Provider value={{ threads, activeThread, messages, isStreaming, isThinking, activePlan, liveBlocks, error, loadThreads, selectThread, createThread, deleteThread, sendMessage, stopExecution, approveCommand, rejectCommand, killCommand, clearError }}>
       {children}
     </ChatContext.Provider>
   )

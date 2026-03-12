@@ -4,6 +4,8 @@ import type { VectorUpsertDTO } from '../../contracts';
 
 export type VectorDocumentUpsertInput = VectorUpsertDTO & {
   connectionId?: string;
+  fileAssetId?: string;
+  allowedRoles?: string[];
   embedding: number[];
 };
 
@@ -22,6 +24,7 @@ class VectorDocumentRepository {
         create: {
           companyId: record.companyId,
           connectionId: record.connectionId,
+          fileAssetId: record.fileAssetId,
           sourceType: record.sourceType,
           sourceId: record.sourceId,
           chunkIndex: record.chunkIndex,
@@ -34,6 +37,7 @@ class VectorDocumentRepository {
         },
         update: {
           connectionId: record.connectionId,
+          fileAssetId: record.fileAssetId,
           contentHash: record.contentHash,
           visibility: record.visibility ?? 'shared',
           ownerUserId: record.ownerUserId,

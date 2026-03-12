@@ -20,7 +20,7 @@ const buildConversationKey = (requestContext?: { get: (key: string) => unknown }
 export const createLarkDocTool = createTool({
   id: 'create-lark-doc',
   description:
-    'Create a Lark Doc from markdown content by converting markdown into native Lark Doc blocks. Use this when the user asks to create, export, or save a report into Lark Docs.',
+    'Create a Lark Doc from already-grounded markdown content by converting markdown into native Lark Doc blocks. Use this when the document content is already prepared and the task is at the final export/save step, not as a substitute for doing the underlying research or CRM/outreach work.',
   inputSchema: z.object({
     title: z.string().min(1).describe('The document title'),
     markdown: z.string().min(1).describe('Markdown content to import into the new Lark Doc'),

@@ -7,6 +7,7 @@ export const AI_THINKING_LEVELS: AiThinkingLevel[] = ['minimal', 'low', 'medium'
 
 export type AiControlTargetKey =
   | 'mastra.ack'
+  | 'mastra.planner'
   | 'mastra.supervisor'
   | 'mastra.zoho-specialist'
   | 'mastra.search'
@@ -27,6 +28,10 @@ export type AiModelCatalogEntry = {
   supportsThinking?: boolean;
   speed: 'fast' | 'balanced' | 'strong';
   cost: 'cheap' | 'balanced' | 'premium';
+  /** Maximum total tokens the model accepts in one request */
+  maxContextTokens: number;
+  /** Tokens to reserve for output generation + system prompt overhead */
+  outputReserveTokens: number;
 };
 
 export type AiControlTargetDefinition = {
@@ -38,6 +43,9 @@ export type AiControlTargetDefinition = {
   defaultProvider: AiModelProvider;
   defaultModelId: string;
   defaultThinkingLevel?: AiThinkingLevel;
+  fastDefaultProvider?: AiModelProvider;
+  fastDefaultModelId?: string;
+  fastDefaultThinkingLevel?: AiThinkingLevel;
 };
 
 export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
@@ -49,6 +57,8 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
     supportsThinking: true,
     speed: 'fast',
     cost: 'cheap',
+    maxContextTokens: 1_048_576,
+    outputReserveTokens: 32_768,
   },
   {
     provider: 'google',
@@ -58,6 +68,8 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
     supportsThinking: true,
     speed: 'balanced',
     cost: 'balanced',
+    maxContextTokens: 1_048_576,
+    outputReserveTokens: 32_768,
   },
   {
     provider: 'google',
@@ -68,6 +80,8 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
     supportsThinking: true,
     speed: 'fast',
     cost: 'balanced',
+    maxContextTokens: 1_048_576,
+    outputReserveTokens: 32_768,
   },
   {
     provider: 'google',
@@ -78,6 +92,8 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
     supportsThinking: true,
     speed: 'strong',
     cost: 'balanced',
+    maxContextTokens: 1_048_576,
+    outputReserveTokens: 32_768,
   },
   {
     provider: 'openai',
@@ -86,6 +102,8 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
     description: 'Cheapest GPT-4.1 variant for classification, routing, and short tool outputs.',
     speed: 'fast',
     cost: 'cheap',
+    maxContextTokens: 128_000,
+    outputReserveTokens: 16_384,
   },
   {
     provider: 'openai',
@@ -94,6 +112,8 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
     description: 'Best OpenAI balance for tool calling, synthesis, and agent orchestration.',
     speed: 'balanced',
     cost: 'balanced',
+    maxContextTokens: 128_000,
+    outputReserveTokens: 16_384,
   },
   {
     provider: 'openai',
@@ -102,6 +122,8 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
     description: 'Highest-quality OpenAI option in this control plane, with higher cost/latency.',
     speed: 'strong',
     cost: 'premium',
+    maxContextTokens: 128_000,
+    outputReserveTokens: 16_384,
   },
 ];
 
@@ -119,6 +141,19 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     defaultProvider: 'google',
     defaultModelId: 'gemini-3.1-flash-lite-preview',
     defaultThinkingLevel: 'minimal',
+    fastDefaultProvider: 'google',
+    fastDefaultModelId: 'gemini-2.5-flash-lite',
+  },
+  {
+    key: 'mastra.planner',
+    engine: 'mastra',
+    kind: 'planner',
+    label: 'Mastra Planner',
+    description: 'Desktop planning specialist that turns complex user requests into ordered execution plans and success criteria.',
+    defaultProvider: 'openai',
+    defaultModelId: 'gpt-4.1-mini',
+    fastDefaultProvider: 'openai',
+    fastDefaultModelId: 'gpt-4.1-nano',
   },
   {
     key: 'mastra.supervisor',
@@ -129,6 +164,9 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     defaultProvider: 'google',
     defaultModelId: 'gemini-3-flash-preview',
     defaultThinkingLevel: 'high',
+    fastDefaultProvider: 'google',
+    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
+    fastDefaultThinkingLevel: 'medium',
   },
   {
     key: 'mastra.zoho-specialist',
@@ -138,6 +176,8 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     description: 'CRM specialist for live Zoho reads and recovery fallback synthesis.',
     defaultProvider: 'openai',
     defaultModelId: 'gpt-4.1-mini',
+    fastDefaultProvider: 'openai',
+    fastDefaultModelId: 'gpt-4.1-nano',
   },
   {
     key: 'mastra.search',
@@ -148,6 +188,8 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     defaultProvider: 'google',
     defaultModelId: 'gemini-3.1-flash-lite-preview',
     defaultThinkingLevel: 'medium',
+    fastDefaultProvider: 'google',
+    fastDefaultModelId: 'gemini-2.5-flash-lite',
   },
   {
     key: 'mastra.outreach',
@@ -157,6 +199,8 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     description: 'SEO/outreach inventory filtering specialist for publisher discovery and ranking.',
     defaultProvider: 'openai',
     defaultModelId: 'gpt-4.1-nano',
+    fastDefaultProvider: 'openai',
+    fastDefaultModelId: 'gpt-4.1-nano',
   },
   {
     key: 'mastra.lark-doc',
@@ -166,6 +210,8 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     description: 'Document creation specialist that formats grounded markdown and creates Lark Docs through the import API.',
     defaultProvider: 'openai',
     defaultModelId: 'gpt-4.1-mini',
+    fastDefaultProvider: 'openai',
+    fastDefaultModelId: 'gpt-4.1-mini',
   },
   {
     key: 'mastra.synthesis',
@@ -175,6 +221,8 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     description: 'Response-polishing agent used to turn grounded records into concise business answers.',
     defaultProvider: 'openai',
     defaultModelId: 'gpt-4.1-mini',
+    fastDefaultProvider: 'openai',
+    fastDefaultModelId: 'gpt-4.1-nano',
   },
   {
     key: 'langgraph.supervisor',
@@ -185,6 +233,8 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     defaultProvider: 'google',
     defaultModelId: 'gemini-3-flash-preview',
     defaultThinkingLevel: 'high',
+    fastDefaultProvider: 'google',
+    fastDefaultModelId: 'gemini-2.5-flash-lite',
   },
   {
     key: 'langgraph.router',
@@ -194,6 +244,8 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     description: 'Low-latency intent/router model for classification and fast-path orchestration decisions.',
     defaultProvider: 'openai',
     defaultModelId: 'gpt-4.1-nano',
+    fastDefaultProvider: 'openai',
+    fastDefaultModelId: 'gpt-4.1-nano',
   },
   {
     key: 'langgraph.planner',
@@ -203,6 +255,8 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     description: 'Intermediate LangGraph planner for step decomposition and multi-agent task design.',
     defaultProvider: 'openai',
     defaultModelId: 'gpt-4.1-mini',
+    fastDefaultProvider: 'openai',
+    fastDefaultModelId: 'gpt-4.1-nano',
   },
   {
     key: 'langgraph.synthesis',
@@ -212,6 +266,8 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     description: 'Final LangGraph response composition model used after agent outputs are gathered.',
     defaultProvider: 'openai',
     defaultModelId: 'gpt-4.1-mini',
+    fastDefaultProvider: 'openai',
+    fastDefaultModelId: 'gpt-4.1-mini',
   },
 ];
 

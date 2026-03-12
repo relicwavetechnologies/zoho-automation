@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { requireAdminSession, requireRbacAction } from '../../middlewares/admin-auth.middleware';
 import { asyncHandler } from '../../utils/async-handler';
 import { companyAdminController } from './company-admin.controller';
+import { adminAiTokenUsageController } from '../admin-ai-models/admin-ai-token-usage.controller';
 
 const router = Router();
 
@@ -10,6 +11,7 @@ router.use(requireAdminSession());
 router.get('/members', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.listMembers));
 router.get('/invites', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.listInvites));
 router.post('/invites', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.createInvite));
+router.get('/:companyId/token-usage', requireRbacAction('onboarding.manage'), asyncHandler(adminAiTokenUsageController.getCompanyTokenUsage));
 router.post(
   '/invites/:inviteId/cancel',
   requireRbacAction('onboarding.manage'),

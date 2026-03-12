@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 import { net } from 'electron'
 
 const BACKEND_URL = process.env.CURSORR_BACKEND_URL ?? 'http://localhost:8000'
+const activeStreamControllers = new Map<string, AbortController>()
 
 export function registerChatHandlers(): void {
   ipcMain.handle(
@@ -29,20 +30,49 @@ export function registerChatHandlers(): void {
   )
 
   ipcMain.handle(
-    'desktop:chat:start-stream',
-    async (event, token: string, threadId: string, message: string, requestId: string) => {
+    'desktop:chat:startStream',
+    async (
+      event,
+      token: string,
+      threadId: string,
+      message: string,
+      requestId: string,
+      attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
+      mode?: 'fast' | 'high'
+    ) => {
       const target = event.sender
-      const res = await net.fetch(`${BACKEND_URL}/api/desktop/chat/${threadId}/send`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-        },
-        body: JSON.stringify({ message }),
-      })
+      const controller = new AbortController()
+      activeStreamControllers.set(requestId, controller)
+
+      let res: Awaited<ReturnType<typeof net.fetch>>
+      try {
+        res = await net.fetch(`${BACKEND_URL}/api/desktop/chat/${threadId}/send`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+          },
+          body: JSON.stringify({ message, attachedFiles, mode }),
+          signal: controller.signal,
+        })
+      } catch (error) {
+        activeStreamControllers.delete(requestId)
+        if (controller.signal.aborted) {
+          return { success: true, stopped: true }
+        }
+        target.send('desktop:chat:event', {
+          requestId,
+          event: {
+            type: 'error',
+            data: error instanceof Error ? error.message : 'Chat stream failed',
+          },
+        })
+        return { success: false }
+      }
 
       if (!res.ok || !res.body) {
+        activeStreamControllers.delete(requestId)
         const bodyText = await res.text()
         target.send('desktop:chat:event', {
           requestId,
@@ -100,6 +130,9 @@ export function registerChatHandlers(): void {
             }
           }
         } catch (error) {
+          if (controller.signal.aborted) {
+            return
+          }
           target.send('desktop:chat:event', {
             requestId,
             event: {
@@ -107,12 +140,24 @@ export function registerChatHandlers(): void {
               data: error instanceof Error ? error.message : 'Desktop stream failed',
             },
           })
+        } finally {
+          activeStreamControllers.delete(requestId)
         }
       })()
 
       return { success: true }
     },
   )
+
+  ipcMain.handle('desktop:chat:stopStream', async (_event, requestId: string) => {
+    const controller = activeStreamControllers.get(requestId)
+    if (!controller) {
+      return { success: false, error: 'No active stream found' }
+    }
+    controller.abort()
+    activeStreamControllers.delete(requestId)
+    return { success: true }
+  })
 
   ipcMain.handle('desktop:chat:stream-url', (_event, token: string, threadId: string) => {
     return {

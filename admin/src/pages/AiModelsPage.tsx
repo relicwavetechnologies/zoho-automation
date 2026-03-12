@@ -6,6 +6,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Skeleton } from '../components/ui/skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { toast } from '../components/ui/use-toast';
 import { api } from '../lib/api';
 
@@ -37,6 +38,9 @@ type TargetRow = {
     provider: Provider;
     modelId: string;
     thinkingLevel?: ThinkingLevel;
+    fastProvider?: Provider;
+    fastModelId?: string;
+    fastThinkingLevel?: ThinkingLevel;
     updatedBy: string;
     updatedAt: string;
   };
@@ -52,6 +56,9 @@ type DraftState = {
   provider: Provider;
   modelId: string;
   thinkingLevel?: ThinkingLevel;
+  fastProvider: Provider;
+  fastModelId: string;
+  fastThinkingLevel?: ThinkingLevel;
 };
 
 const ENGINE_ACCENT: Record<'mastra' | 'langgraph', string> = {
@@ -89,6 +96,10 @@ export function AiModelsPage() {
               provider: target.effectiveProvider,
               modelId: target.effectiveModelId,
               thinkingLevel: target.effectiveThinkingLevel,
+              // Note: For now, if no fast effective provider is in target, backfill it from standard
+              fastProvider: target.override?.fastProvider ?? (target as any).fastEffectiveProvider ?? target.effectiveProvider,
+              fastModelId: target.override?.fastModelId ?? (target as any).fastEffectiveModelId ?? target.effectiveModelId,
+              fastThinkingLevel: target.override?.fastThinkingLevel ?? (target as any).fastEffectiveThinkingLevel ?? target.effectiveThinkingLevel,
             },
           ]),
         ),
@@ -124,6 +135,11 @@ export function AiModelsPage() {
         next.modelId = providerModels[0]?.modelId ?? '';
         next.thinkingLevel = providerModels[0]?.supportsThinking ? 'medium' : undefined;
       }
+      if (patch.fastProvider && patch.fastProvider !== prev[targetKey]?.fastProvider) {
+        const providerModels = modelsByProvider[patch.fastProvider];
+        next.fastModelId = providerModels[0]?.modelId ?? '';
+        next.fastThinkingLevel = providerModels[0]?.supportsThinking ? 'medium' : undefined;
+      }
       return { ...prev, [targetKey]: next };
     });
   };
@@ -141,6 +157,9 @@ export function AiModelsPage() {
           provider: draft.provider,
           modelId: draft.modelId,
           thinkingLevel: draft.provider === 'google' ? draft.thinkingLevel ?? null : null,
+          fastProvider: draft.fastProvider,
+          fastModelId: draft.fastModelId,
+          fastThinkingLevel: draft.fastProvider === 'google' ? draft.fastThinkingLevel ?? null : null,
         },
         token,
       );
@@ -151,9 +170,12 @@ export function AiModelsPage() {
           provider: updated.effectiveProvider,
           modelId: updated.effectiveModelId,
           thinkingLevel: updated.effectiveThinkingLevel,
+          fastProvider: updated.override?.fastProvider ?? (updated as any).fastEffectiveProvider ?? updated.effectiveProvider,
+          fastModelId: updated.override?.fastModelId ?? (updated as any).fastEffectiveModelId ?? updated.effectiveModelId,
+          fastThinkingLevel: updated.override?.fastThinkingLevel ?? (updated as any).fastEffectiveThinkingLevel ?? updated.effectiveThinkingLevel,
         },
       }));
-      toast({ title: 'AI model updated', description: `${updated.label} now uses ${updated.effectiveProvider}/${updated.effectiveModelId}.`, variant: 'success' });
+      toast({ title: 'AI model updated', description: `${updated.label} primary model set to ${updated.effectiveProvider}/${updated.effectiveModelId}.`, variant: 'success' });
     } catch {
       // api util shows the error toast
     } finally {
@@ -220,68 +242,154 @@ export function AiModelsPage() {
                     <CardDescription className="text-zinc-400">{target.description}</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Provider</div>
-                        <Select value={draft?.provider} onValueChange={(value) => updateDraft(target.targetKey, { provider: value as Provider })}>
-                          <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
-                            <SelectItem value="google">Google Gemini</SelectItem>
-                            <SelectItem value="openai">OpenAI</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
+                    <Tabs defaultValue="high" className="w-full">
+                      <TabsList className="grid w-full grid-cols-2 bg-zinc-900 border border-zinc-800 text-zinc-400">
+                        <TabsTrigger value="high" className="data-[state=active]:bg-zinc-800 data-[state=active]:text-zinc-100">
+                          🔥 High Tier Modex
+                        </TabsTrigger>
+                        <TabsTrigger value="fast" className="data-[state=active]:bg-zinc-800 data-[state=active]:text-zinc-100">
+                          ⚡ Fast Tier Mode
+                        </TabsTrigger>
+                      </TabsList>
+                      
+                      <TabsContent value="high" className="space-y-4 pt-4">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="space-y-2">
+                            <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Provider</div>
+                            <Select value={draft?.provider} onValueChange={(value) => updateDraft(target.targetKey, { provider: value as Provider })}>
+                              <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
+                                <SelectItem value="google">Google Gemini</SelectItem>
+                                <SelectItem value="openai">OpenAI</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
 
-                      <div className="space-y-2">
-                        <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Model</div>
-                        <Select value={draft?.modelId} onValueChange={(value) => updateDraft(target.targetKey, { modelId: value })}>
-                          <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
-                            {models.map((model) => (
-                              <SelectItem key={`${model.provider}:${model.modelId}`} value={model.modelId}>
-                                {model.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-
-                    {draft?.provider === 'google' && selectedModel?.supportsThinking ? (
-                      <div className="space-y-2">
-                        <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Thinking Level</div>
-                        <Select
-                          value={draft.thinkingLevel ?? 'medium'}
-                          onValueChange={(value) => updateDraft(target.targetKey, { thinkingLevel: value as ThinkingLevel })}
-                        >
-                          <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
-                            {thinkingLevels.map((level) => (
-                              <SelectItem key={level} value={level}>
-                                {level}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    ) : null}
-
-                    {selectedModel ? (
-                      <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-300">
-                        <div className="flex flex-wrap items-center gap-2 pb-2">
-                          <Badge variant="outline" className="border-zinc-700 text-zinc-300">{selectedModel.speed}</Badge>
-                          <Badge variant="outline" className="border-zinc-700 text-zinc-300">{selectedModel.cost}</Badge>
-                          {selectedModel.preview ? <Badge className="border-amber-900 bg-amber-950/60 text-amber-300">Preview</Badge> : null}
+                          <div className="space-y-2">
+                            <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Model</div>
+                            <Select value={draft?.modelId} onValueChange={(value) => updateDraft(target.targetKey, { modelId: value })}>
+                              <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
+                                {models.map((model) => (
+                                  <SelectItem key={`${model.provider}:${model.modelId}`} value={model.modelId}>
+                                    {model.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
                         </div>
-                        <div>{selectedModel.description}</div>
-                      </div>
-                    ) : null}
+
+                        {draft?.provider === 'google' && selectedModel?.supportsThinking ? (
+                          <div className="space-y-2">
+                            <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Thinking Level</div>
+                            <Select
+                              value={draft.thinkingLevel ?? 'medium'}
+                              onValueChange={(value) => updateDraft(target.targetKey, { thinkingLevel: value as ThinkingLevel })}
+                            >
+                              <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
+                                {thinkingLevels.map((level) => (
+                                  <SelectItem key={level} value={level}>
+                                    {level}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        ) : null}
+
+                        {selectedModel ? (
+                          <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-300">
+                            <div className="flex flex-wrap items-center gap-2 pb-2">
+                              <Badge variant="outline" className="border-zinc-700 text-zinc-300">{selectedModel.speed}</Badge>
+                              <Badge variant="outline" className="border-zinc-700 text-zinc-300">{selectedModel.cost}</Badge>
+                              {selectedModel.preview ? <Badge className="border-amber-900 bg-amber-950/60 text-amber-300">Preview</Badge> : null}
+                            </div>
+                            <div>{selectedModel.description}</div>
+                          </div>
+                        ) : null}
+                      </TabsContent>
+
+                      <TabsContent value="fast" className="space-y-4 pt-4">
+                        {(() => {
+                          const fastModels = draft ? modelsByProvider[draft.fastProvider] : [];
+                          const selectedFastModel = fastModels.find((entry) => entry.modelId === draft?.fastModelId);
+                          return (
+                            <>
+                              <div className="grid gap-3 md:grid-cols-2">
+                                <div className="space-y-2">
+                                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Provider</div>
+                                  <Select value={draft?.fastProvider} onValueChange={(value) => updateDraft(target.targetKey, { fastProvider: value as Provider })}>
+                                    <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
+                                      <SelectItem value="google">Google Gemini</SelectItem>
+                                      <SelectItem value="openai">OpenAI</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+
+                                <div className="space-y-2">
+                                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Model</div>
+                                  <Select value={draft?.fastModelId} onValueChange={(value) => updateDraft(target.targetKey, { fastModelId: value })}>
+                                    <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
+                                      {fastModels.map((model) => (
+                                        <SelectItem key={`${model.provider}:${model.modelId}`} value={model.modelId}>
+                                          {model.label}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              </div>
+
+                              {draft?.fastProvider === 'google' && selectedFastModel?.supportsThinking ? (
+                                <div className="space-y-2">
+                                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Thinking Level</div>
+                                  <Select
+                                    value={draft.fastThinkingLevel ?? 'medium'}
+                                    onValueChange={(value) => updateDraft(target.targetKey, { fastThinkingLevel: value as ThinkingLevel })}
+                                  >
+                                    <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
+                                      {thinkingLevels.map((level) => (
+                                        <SelectItem key={level} value={level}>
+                                          {level}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              ) : null}
+
+                              {selectedFastModel ? (
+                                <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-300">
+                                  <div className="flex flex-wrap items-center gap-2 pb-2">
+                                    <Badge variant="outline" className="border-zinc-700 text-zinc-300">{selectedFastModel.speed}</Badge>
+                                    <Badge variant="outline" className="border-zinc-700 text-zinc-300">{selectedFastModel.cost}</Badge>
+                                    {selectedFastModel.preview ? <Badge className="border-amber-900 bg-amber-950/60 text-amber-300">Preview</Badge> : null}
+                                  </div>
+                                  <div>{selectedFastModel.description}</div>
+                                </div>
+                              ) : null}
+                            </>
+                          );
+                        })()}
+                      </TabsContent>
+                    </Tabs>
 
                     {target.override ? (
                       <div className="text-xs text-zinc-500">
