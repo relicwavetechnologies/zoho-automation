@@ -108,7 +108,16 @@ export type ContentBlock =
 
 export type ExecutionPlanTaskStatus = 'pending' | 'running' | 'done' | 'blocked' | 'failed' | 'skipped'
 export type ExecutionPlanStatus = 'running' | 'completed' | 'failed'
-export type ExecutionPlanOwnerAgent = 'supervisor' | 'zoho' | 'outreach' | 'search' | 'larkDoc' | 'workspace' | 'terminal'
+export type ExecutionPlanOwnerAgent =
+  | 'supervisor'
+  | 'zoho'
+  | 'outreach'
+  | 'search'
+  | 'larkBase'
+  | 'larkTask'
+  | 'larkDoc'
+  | 'workspace'
+  | 'terminal'
 export type ExecutionChannel = 'desktop' | 'lark'
 export type ExecutionMode = 'fast' | 'high' | 'xtreme' | null
 export type ExecutionRunStatus = 'running' | 'completed' | 'failed' | 'cancelled'

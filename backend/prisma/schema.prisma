@@ -47,6 +47,7 @@ model Company {
   zohoOAuthConfig ZohoOAuthConfig?
   larkTenantBindings LarkTenantBinding[]
   larkWorkspaceConfig LarkWorkspaceConfig?
+  larkOperationalConfig LarkOperationalConfig?
   larkDirectorySyncRuns LarkDirectorySyncRun[]
   adminMemberships AdminMembership[]
   adminSessions    AdminSession[]
@@ -181,6 +182,21 @@ model LarkWorkspaceConfig {
   createdBy                    String
   createdAt                    DateTime @default(now())
   updatedAt                    DateTime @updatedAt
+}
+
+model LarkOperationalConfig {
+  id                  String   @id @default(uuid())
+  companyId           String   @unique
+  company             Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  defaultBaseAppToken String?
+  defaultBaseTableId  String?
+  defaultBaseViewId   String?
+  defaultTasklistId   String?
+  defaultCalendarId   String?
+  defaultApprovalCode String?
+  createdBy           String
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 }
 
 model LarkDirectorySyncRun {

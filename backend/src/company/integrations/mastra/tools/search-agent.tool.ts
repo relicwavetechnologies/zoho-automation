@@ -12,7 +12,7 @@ const TOOL_ID = 'search-agent';
 export const searchAgentTool = createTool({
   id: TOOL_ID,
   description:
-    'Delegate to the web research agent for Serper-backed search plus exact-site page context extraction.',
+    'Delegate to the research agent for external web search, exact-site page context extraction, and authorized company document retrieval.',
   inputSchema: z.object({
     query: z.string().describe('The search query'),
   }),

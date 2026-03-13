@@ -44,7 +44,7 @@ import { aiModelControlService } from '../../company/ai-models';
 import { resolveMastraLanguageModel } from '../../company/integrations/mastra/mastra-model-control';
 import { executionService } from '../../company/observability';
 
-const KNOWN_AGENTS = ['supervisorAgent', 'zohoAgent', 'outreachAgent', 'searchAgent'] as const;
+const KNOWN_AGENTS = ['supervisorAgent', 'zohoAgent', 'outreachAgent', 'searchAgent', 'larkBaseAgent', 'larkTaskAgent'] as const;
 const DEFAULT_AGENT = 'supervisorAgent';
 
 const attachedFileSchema = z.object({
@@ -946,7 +946,7 @@ class DesktopChatController extends BaseController {
       requestContext.set('requestId', streamRequestId);
 
       const agent = mastra.getAgent(
-        agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent',
+        agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent' | 'larkBaseAgent' | 'larkTaskAgent',
       );
 
       const runOptions = await buildMastraAgentRunOptions(
@@ -1504,7 +1504,7 @@ class DesktopChatController extends BaseController {
       .join('\n');
 
     const agent = mastra.getAgent(
-      agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent',
+      agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent' | 'larkBaseAgent' | 'larkTaskAgent',
     );
 
     const agentTarget = MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId];

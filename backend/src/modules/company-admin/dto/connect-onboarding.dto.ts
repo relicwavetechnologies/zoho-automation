@@ -51,6 +51,16 @@ export const upsertLarkWorkspaceConfigSchema = z
     }
   });
 
+export const upsertLarkOperationalConfigSchema = z.object({
+  companyId: z.string().uuid().optional(),
+  defaultBaseAppToken: z.string().optional(),
+  defaultBaseTableId: z.string().optional(),
+  defaultBaseViewId: z.string().optional(),
+  defaultTasklistId: z.string().optional(),
+  defaultCalendarId: z.string().optional(),
+  defaultApprovalCode: z.string().optional(),
+});
+
 export const larkSyncQuerySchema = z.object({
   companyId: z.string().uuid().optional(),
 });
@@ -114,6 +124,7 @@ export type ConnectOnboardingDto = z.infer<typeof connectOnboardingSchema>;
 export type DisconnectOnboardingDto = z.infer<typeof disconnectOnboardingSchema>;
 export type UpsertLarkBindingDto = z.infer<typeof upsertLarkBindingSchema>;
 export type UpsertLarkWorkspaceConfigDto = z.infer<typeof upsertLarkWorkspaceConfigSchema>;
+export type UpsertLarkOperationalConfigDto = z.infer<typeof upsertLarkOperationalConfigSchema>;
 export type UpsertZohoOAuthConfigDto = z.infer<typeof upsertZohoOAuthConfigSchema>;
 export type ZohoAuthorizeUrlQueryDto = z.infer<typeof zohoAuthorizeUrlQuerySchema>;
 export type TriggerHistoricalSyncDto = z.infer<typeof triggerHistoricalSyncSchema>;

@@ -73,6 +73,16 @@ router.delete(
   asyncHandler(companyAdminController.deleteLarkWorkspaceConfig),
 );
 router.get(
+  '/onboarding/lark-operational-config',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.getLarkOperationalConfig),
+);
+router.post(
+  '/onboarding/lark-operational-config',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.upsertLarkOperationalConfig),
+);
+router.get(
   '/onboarding/lark-sync/status',
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.getLarkUserSyncStatus),

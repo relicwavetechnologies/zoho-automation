@@ -20,6 +20,8 @@ export const MASTRA_AGENT_TARGETS = {
   zohoAgent: 'mastra.zoho-specialist',
   outreachAgent: 'mastra.outreach',
   searchAgent: 'mastra.search',
+  larkBaseAgent: 'mastra.lark-doc',
+  larkTaskAgent: 'mastra.lark-doc',
   larkDocAgent: 'mastra.lark-doc',
   synthesisAgent: 'mastra.synthesis',
 } as const;

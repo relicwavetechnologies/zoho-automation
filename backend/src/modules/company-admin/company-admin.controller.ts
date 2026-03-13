@@ -12,6 +12,7 @@ import {
   zohoAuthorizeUrlQuerySchema,
   upsertLarkBindingSchema,
   upsertLarkWorkspaceConfigSchema,
+  upsertLarkOperationalConfigSchema,
   upsertZohoOAuthConfigSchema,
 } from './dto/connect-onboarding.dto';
 import { createInviteSchema } from './dto/create-invite.dto';
@@ -142,6 +143,26 @@ class CompanyAdminController extends BaseController {
     }
     const result = await this.service.upsertLarkWorkspaceConfig(session, payload);
     return res.status(201).json(ApiResponse.success(result, 'Lark workspace config saved'));
+  };
+
+  getLarkOperationalConfig = async (req: Request, res: Response) => {
+    const query = larkSyncQuerySchema.parse(req.query);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getLarkOperationalConfig(session, query.companyId);
+    return res.json(ApiResponse.success(result, 'Lark operational config loaded'));
+  };
+
+  upsertLarkOperationalConfig = async (req: Request, res: Response) => {
+    const payload = upsertLarkOperationalConfigSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.upsertLarkOperationalConfig(session, payload);
+    return res.status(201).json(ApiResponse.success(result, 'Lark operational config saved'));
   };
 
   deleteLarkWorkspaceConfig = async (req: Request, res: Response) => {

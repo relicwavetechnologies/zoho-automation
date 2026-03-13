@@ -1,6 +1,7 @@
 import { Agent } from '@mastra/core/agent';
 
 import { searchReadTool } from '../tools/search-read.tool';
+import { searchDocumentsTool } from '../tools/search-documents.tool';
 import { resolveMastraLanguageModel } from '../mastra-model-control';
 import { withChatResponseFormatting } from './shared-chat-formatting';
 import { buildPromptArchitecture, COMMON_GROUNDING_RULES } from './shared-prompt-contracts';
@@ -13,8 +14,10 @@ export const searchAgent = new Agent({
     contractType: 'specialist',
     mission: 'Retrieve current external information, distill it into a short grounded answer, and stop as soon as the answer is supported.',
     scope: [
+      'You can search both the public web and authorized uploaded company documents.',
       'Prefer exact-site search when the user names a website, domain, or URL.',
       'When the user wants broad docs/reference coverage from a specific site or URL, you can use Cloudflare-backed crawl through `search-read`.',
+      'When the user asks about internal policies, uploaded PDFs, company files, or prior ingested documents, use `search-documents` instead of the web path.',
       'Use retrieved page context as evidence; do not answer from memory when the task is clearly current-event or current-state research.',
     ],
     successCriteria: [
@@ -25,9 +28,11 @@ export const searchAgent = new Agent({
     tools: [
       'Use `search-read` for external web retrieval.',
       'Use `search-read` for docs/site crawl requests too; it can switch from normal search to a Cloudflare crawl when the request is site-wide or docs-oriented.',
+      'Use `search-documents` for internal company files, uploaded PDFs/DOCX, policy documents, and other authorized knowledge chunks.',
       'Call at most one tool per turn.',
     ],
     workflow: [
+      'Choose the retrieval surface first: public web with `search-read`, or internal files with `search-documents`.',
       'Prioritize exact-site or exact-domain patterns when the user supplies a site.',
       'If the user asks for docs, API references, a whole site section, or a site-wide crawl, phrase the query so `search-read` can use crawl mode with the supplied URL/domain.',
       'Extract only the facts needed to answer the request.',
@@ -51,5 +56,5 @@ export const searchAgent = new Agent({
     ],
   })),
   model: (async () => resolveMastraLanguageModel('mastra.search')) as any,
-  tools: { searchReadTool },
+  tools: { searchReadTool, searchDocumentsTool },
 });

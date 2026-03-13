@@ -99,6 +99,17 @@ type LarkSyncStatus = {
   updatedAt?: string;
 };
 
+type LarkOperationalConfigStatus = {
+  configured: boolean;
+  defaultBaseAppToken?: string;
+  defaultBaseTableId?: string;
+  defaultBaseViewId?: string;
+  defaultTasklistId?: string;
+  defaultCalendarId?: string;
+  defaultApprovalCode?: string;
+  updatedAt?: string;
+};
+
 type ChannelIdentity = {
   id: string;
   companyId: string;
@@ -158,12 +169,14 @@ export const IntegrationsPage = () => {
   const [identitiesLoading, setIdentitiesLoading] = useState(true);
   const [oauthConfigLoading, setOauthConfigLoading] = useState(true);
   const [larkWorkspaceConfigLoading, setLarkWorkspaceConfigLoading] = useState(true);
+  const [larkOperationalConfigLoading, setLarkOperationalConfigLoading] = useState(true);
   const [larkSyncLoading, setLarkSyncLoading] = useState(true);
   const [vectorShareLoading, setVectorShareLoading] = useState(true);
 
   const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null);
   const [larkBinding, setLarkBinding] = useState<LarkBindingResult | null>(null);
   const [larkWorkspaceConfig, setLarkWorkspaceConfig] = useState<LarkWorkspaceConfigStatus | null>(null);
+  const [larkOperationalConfig, setLarkOperationalConfig] = useState<LarkOperationalConfigStatus | null>(null);
   const [larkSyncStatus, setLarkSyncStatus] = useState<LarkSyncStatus | null>(null);
   const [oauthConfig, setOauthConfig] = useState<ZohoOAuthConfigStatus | null>(null);
   const [identities, setIdentities] = useState<ChannelIdentity[]>([]);
@@ -172,6 +185,7 @@ export const IntegrationsPage = () => {
 
   const [larkLaunching, setLarkLaunching] = useState(false);
   const [larkDisconnecting, setLarkDisconnecting] = useState(false);
+  const [larkOperationalSaving, setLarkOperationalSaving] = useState(false);
   const [larkSyncTriggering, setLarkSyncTriggering] = useState(false);
   const [vectorShareMutatingId, setVectorShareMutatingId] = useState<string | null>(null);
 
@@ -180,6 +194,14 @@ export const IntegrationsPage = () => {
   const [zohoDisconnecting, setZohoDisconnecting] = useState(false);
   const [oauthLaunching, setOauthLaunching] = useState(false);
   const [historicalSyncTriggering, setHistoricalSyncTriggering] = useState(false);
+  const [larkDefaultsForm, setLarkDefaultsForm] = useState({
+    defaultBaseAppToken: '',
+    defaultBaseTableId: '',
+    defaultBaseViewId: '',
+    defaultTasklistId: '',
+    defaultCalendarId: '',
+    defaultApprovalCode: '',
+  });
 
   const zohoRedirectUri = oauthConfig?.redirectUri || `${window.location.origin}/zoho/callback`;
 
@@ -296,6 +318,43 @@ export const IntegrationsPage = () => {
     }
   };
 
+  const loadLarkOperationalConfig = async () => {
+    if (!token) return;
+    if (isSuperAdmin && !scopedCompanyId) {
+      setLarkOperationalConfig(null);
+      setLarkOperationalConfigLoading(false);
+      return;
+    }
+    setLarkOperationalConfigLoading(true);
+    try {
+      const result = await api.get<LarkOperationalConfigStatus>(
+        `/api/admin/company/onboarding/lark-operational-config${buildQuery()}`,
+        token,
+      );
+      setLarkOperationalConfig(result);
+      setLarkDefaultsForm({
+        defaultBaseAppToken: result.defaultBaseAppToken ?? '',
+        defaultBaseTableId: result.defaultBaseTableId ?? '',
+        defaultBaseViewId: result.defaultBaseViewId ?? '',
+        defaultTasklistId: result.defaultTasklistId ?? '',
+        defaultCalendarId: result.defaultCalendarId ?? '',
+        defaultApprovalCode: result.defaultApprovalCode ?? '',
+      });
+    } catch {
+      setLarkOperationalConfig({ configured: false });
+      setLarkDefaultsForm({
+        defaultBaseAppToken: '',
+        defaultBaseTableId: '',
+        defaultBaseViewId: '',
+        defaultTasklistId: '',
+        defaultCalendarId: '',
+        defaultApprovalCode: '',
+      });
+    } finally {
+      setLarkOperationalConfigLoading(false);
+    }
+  };
+
   const loadVectorShareRequests = async () => {
     if (!token) return;
     if (isSuperAdmin && !scopedCompanyId) {
@@ -322,6 +381,7 @@ export const IntegrationsPage = () => {
     void loadIdentities();
     void loadZohoOAuthConfig();
     void loadLarkWorkspaceConfig();
+    void loadLarkOperationalConfig();
     void loadLarkSyncStatus();
     void loadVectorShareRequests();
   }, [token, scopedCompanyId, isSuperAdmin]);
@@ -366,6 +426,25 @@ export const IntegrationsPage = () => {
       // Error handled globally
     } finally {
       setLarkSyncTriggering(false);
+    }
+  };
+
+  const saveLarkOperationalConfig = async () => {
+    if (!token) return;
+    setLarkOperationalSaving(true);
+    try {
+      await api.post(
+        '/api/admin/company/onboarding/lark-operational-config',
+        {
+          companyId: scopedCompanyId || undefined,
+          ...larkDefaultsForm,
+        },
+        token,
+      );
+      toast({ title: 'Lark operational defaults saved', variant: 'success' });
+      await loadLarkOperationalConfig();
+    } finally {
+      setLarkOperationalSaving(false);
     }
   };
 
@@ -743,6 +822,78 @@ export const IntegrationsPage = () => {
           <div className="rounded-md border border-dashed border-[#2a2a2a] bg-[#0c0c0c] px-4 py-3 text-sm text-zinc-500">
             Provider credentials are platform-managed and hidden from company admins. Legacy per-company config remains read-only during migration.
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Lark Directory Sync */}
+      <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
+        <CardHeader className="border-b border-[#1a1a1a] pb-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <CardTitle className="text-zinc-100 flex items-center gap-2">
+              <Zap strokeWidth={1.5} className="h-4 w-4 text-zinc-400" />
+              Lark Operational Defaults
+            </CardTitle>
+            <CardDescription className="text-zinc-500 mt-1">
+              Default Base, Task, Calendar, and Approval identifiers used by the Lark agents when a request does not specify them explicitly.
+            </CardDescription>
+          </div>
+          {canManageWorkspaceIntegrations ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={larkOperationalSaving}
+              onClick={() => void saveLarkOperationalConfig()}
+              className="border-[#2a2a2a] text-zinc-300 hover:bg-[#1a1a1a] shrink-0"
+            >
+              {larkOperationalSaving ? 'Saving…' : 'Save defaults'}
+            </Button>
+          ) : null}
+        </CardHeader>
+        <CardContent className="pt-6">
+          {larkOperationalConfigLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {[1, 2, 3, 4, 5, 6].map((i) => (
+                <div key={i} className="space-y-2">
+                  <Skeleton className="h-3 w-28" />
+                  <Skeleton className="h-10 w-full" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[11px] uppercase tracking-wide text-zinc-500">Default Base App Token</label>
+                  <Input value={larkDefaultsForm.defaultBaseAppToken} onChange={(e) => setLarkDefaultsForm((v) => ({ ...v, defaultBaseAppToken: e.target.value }))} className="bg-[#0a0a0a] border-[#2a2a2a] text-zinc-200" placeholder="bascn..." />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[11px] uppercase tracking-wide text-zinc-500">Default Base Table ID</label>
+                  <Input value={larkDefaultsForm.defaultBaseTableId} onChange={(e) => setLarkDefaultsForm((v) => ({ ...v, defaultBaseTableId: e.target.value }))} className="bg-[#0a0a0a] border-[#2a2a2a] text-zinc-200" placeholder="tbl..." />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[11px] uppercase tracking-wide text-zinc-500">Default Base View ID</label>
+                  <Input value={larkDefaultsForm.defaultBaseViewId} onChange={(e) => setLarkDefaultsForm((v) => ({ ...v, defaultBaseViewId: e.target.value }))} className="bg-[#0a0a0a] border-[#2a2a2a] text-zinc-200" placeholder="vew..." />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[11px] uppercase tracking-wide text-zinc-500">Default Tasklist ID</label>
+                  <Input value={larkDefaultsForm.defaultTasklistId} onChange={(e) => setLarkDefaultsForm((v) => ({ ...v, defaultTasklistId: e.target.value }))} className="bg-[#0a0a0a] border-[#2a2a2a] text-zinc-200" placeholder="tasklist..." />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[11px] uppercase tracking-wide text-zinc-500">Default Calendar ID</label>
+                  <Input value={larkDefaultsForm.defaultCalendarId} onChange={(e) => setLarkDefaultsForm((v) => ({ ...v, defaultCalendarId: e.target.value }))} className="bg-[#0a0a0a] border-[#2a2a2a] text-zinc-200" placeholder="calendar..." />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[11px] uppercase tracking-wide text-zinc-500">Default Approval Code</label>
+                  <Input value={larkDefaultsForm.defaultApprovalCode} onChange={(e) => setLarkDefaultsForm((v) => ({ ...v, defaultApprovalCode: e.target.value }))} className="bg-[#0a0a0a] border-[#2a2a2a] text-zinc-200" placeholder="approval_code" />
+                </div>
+              </div>
+              <div className="rounded-md border border-dashed border-[#2a2a2a] bg-[#0c0c0c] px-4 py-3 text-sm text-zinc-500">
+                {larkOperationalConfig?.updatedAt
+                  ? `Last updated ${new Date(larkOperationalConfig.updatedAt).toLocaleString()}`
+                  : 'No Lark operational defaults configured yet.'}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

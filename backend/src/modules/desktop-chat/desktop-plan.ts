@@ -6,6 +6,8 @@ const PLAN_OWNER_AGENTS = [
   'zoho',
   'outreach',
   'search',
+  'larkBase',
+  'larkTask',
   'larkDoc',
   'workspace',
   'terminal',
@@ -168,6 +170,12 @@ export const resolvePlanOwnerFromToolName = (toolName?: string | null): Executio
   }
   if (normalized === 'search-agent' || normalized === 'search-read' || normalized === 'search-documents') {
     return 'search';
+  }
+  if (normalized === 'lark-base-agent' || normalized === 'lark-base-read' || normalized === 'lark-base-write') {
+    return 'larkBase';
+  }
+  if (normalized === 'lark-task-agent' || normalized === 'lark-task-read' || normalized === 'lark-task-write') {
+    return 'larkTask';
   }
   if (normalized === 'lark-doc-agent' || normalized === 'create-lark-doc' || normalized === 'edit-lark-doc') {
     return 'larkDoc';

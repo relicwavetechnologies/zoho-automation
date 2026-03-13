@@ -10,9 +10,9 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
     'zoho-read': 'Reads CRM data (contacts, deals, accounts, leads) from Zoho.',
     'outreach-read': 'Reads outreach publisher inventory with URL and DA/DR filters.',
     'search-read': 'Searches the web and fetches exact page context from result URLs.',
-    'lark-doc': 'Creates and edits Lark Docs from grounded content using Docx block operations.',
+    'lark-doc': 'Creates and edits Lark Docs from grounded content using Docx block operations. This does not cover Lark Tasks, Base, Calendar, Meetings, Minutes, or approvals.',
     'zoho-action': 'Executes approved Zoho side-effect actions through provider adapter.',
-    'lark-response': 'Sends a formatted message reply to the Lark chat.',
+    'lark-response': 'Sends a formatted message reply to the Lark chat. This is a delivery agent, not a business-data agent.',
     response: 'Generates a general-purpose text reply for the user.',
     'risk-check': 'Evaluates whether a write/destructive action is safe to proceed.',
 };

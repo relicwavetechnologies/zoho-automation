@@ -8,6 +8,7 @@ import { larkDirectorySyncService } from '../../company/channels/lark/lark-direc
 import { larkOAuthService } from '../../company/channels/lark/lark-oauth.service';
 import { larkTenantBindingRepository } from '../../company/channels/lark/lark-tenant-binding.repository';
 import { larkWorkspaceConfigRepository } from '../../company/channels/lark/lark-workspace-config.repository';
+import { larkOperationalConfigRepository } from '../../company/channels/lark/lark-operational-config.repository';
 import { auditService } from '../audit/audit.service';
 import { companyOnboardingService } from '../company-onboarding/company-onboarding.service';
 import { CompanyAdminRepository, companyAdminRepository } from './company-admin.repository';
@@ -17,6 +18,7 @@ import {
   DisconnectOnboardingDto,
   TriggerHistoricalSyncDto,
   UpsertLarkBindingDto,
+  UpsertLarkOperationalConfigDto,
   UpsertLarkWorkspaceConfigDto,
   UpsertZohoOAuthConfigDto,
 } from './dto/connect-onboarding.dto';
@@ -344,6 +346,57 @@ export class CompanyAdminService extends BaseService {
       metadata: {},
     });
     throw new HttpException(403, 'Company-managed Lark credentials are disabled. Existing legacy config is retained for compatibility.');
+  }
+
+  async getLarkOperationalConfig(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const configRow = await larkOperationalConfigRepository.findByCompanyId(scopedCompanyId);
+    return {
+      configured: Boolean(configRow),
+      defaultBaseAppToken: configRow?.defaultBaseAppToken ?? undefined,
+      defaultBaseTableId: configRow?.defaultBaseTableId ?? undefined,
+      defaultBaseViewId: configRow?.defaultBaseViewId ?? undefined,
+      defaultTasklistId: configRow?.defaultTasklistId ?? undefined,
+      defaultCalendarId: configRow?.defaultCalendarId ?? undefined,
+      defaultApprovalCode: configRow?.defaultApprovalCode ?? undefined,
+      updatedAt: configRow?.updatedAt?.toISOString(),
+    };
+  }
+
+  async upsertLarkOperationalConfig(session: SessionScope, payload: UpsertLarkOperationalConfigDto) {
+    const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
+    const row = await larkOperationalConfigRepository.upsert({
+      companyId: scopedCompanyId,
+      createdBy: session.userId,
+      defaultBaseAppToken: payload.defaultBaseAppToken,
+      defaultBaseTableId: payload.defaultBaseTableId,
+      defaultBaseViewId: payload.defaultBaseViewId,
+      defaultTasklistId: payload.defaultTasklistId,
+      defaultCalendarId: payload.defaultCalendarId,
+      defaultApprovalCode: payload.defaultApprovalCode,
+    });
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'company.onboarding.lark_operational_config.upsert',
+      outcome: 'success',
+      metadata: {
+        hasDefaultBase: Boolean(row.defaultBaseAppToken && row.defaultBaseTableId),
+        hasDefaultTasklist: Boolean(row.defaultTasklistId),
+        hasDefaultCalendar: Boolean(row.defaultCalendarId),
+        hasDefaultApproval: Boolean(row.defaultApprovalCode),
+      },
+    });
+    return {
+      configured: true,
+      defaultBaseAppToken: row.defaultBaseAppToken ?? undefined,
+      defaultBaseTableId: row.defaultBaseTableId ?? undefined,
+      defaultBaseViewId: row.defaultBaseViewId ?? undefined,
+      defaultTasklistId: row.defaultTasklistId ?? undefined,
+      defaultCalendarId: row.defaultCalendarId ?? undefined,
+      defaultApprovalCode: row.defaultApprovalCode ?? undefined,
+      updatedAt: row.updatedAt.toISOString(),
+    };
   }
 
   async getLarkUserSyncStatus(session: SessionScope, companyId?: string) {
