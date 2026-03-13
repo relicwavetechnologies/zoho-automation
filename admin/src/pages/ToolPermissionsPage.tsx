@@ -15,6 +15,9 @@ type ToolRow = {
   engines: ('mastra' | 'langgraph')[];
   permissions: Record<string, boolean>;
 };
+type ZohoRoleAccessRow = AiRole & {
+  companyScopedRead: boolean;
+};
 type ChannelIdentity = {
   id: string;
   externalUserId: string;
@@ -108,6 +111,7 @@ export default function ToolPermissionsPage() {
 
   const [roles, setRoles] = useState<AiRole[]>([]);
   const [tools, setTools] = useState<ToolRow[]>([]);
+  const [zohoRoleAccess, setZohoRoleAccess] = useState<ZohoRoleAccessRow[]>([]);
   const [users, setUsers] = useState<ChannelIdentity[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -136,10 +140,19 @@ export default function ToolPermissionsPage() {
     setUsers(data ?? []);
   }, [token]);
 
+  const loadZohoRoleAccess = useCallback(async () => {
+    if (!token) return;
+    const data = await api.get<ZohoRoleAccessRow[]>(
+      '/api/admin/company/zoho-role-access',
+      token,
+    );
+    setZohoRoleAccess(data ?? []);
+  }, [token]);
+
   useEffect(() => {
     setLoading(true);
-    Promise.all([loadMatrix(), loadUsers()]).finally(() => setLoading(false));
-  }, [loadMatrix, loadUsers]);
+    Promise.all([loadMatrix(), loadUsers(), loadZohoRoleAccess()]).finally(() => setLoading(false));
+  }, [loadMatrix, loadUsers, loadZohoRoleAccess]);
 
   // ── Handlers ────────────────────────────────────────────────────────────────
 
@@ -180,7 +193,7 @@ export default function ToolPermissionsPage() {
       );
       setNewRoleSlug('');
       setNewRoleLabel('');
-      await loadMatrix();
+      await Promise.all([loadMatrix(), loadZohoRoleAccess()]);
       toast({ title: 'Role created' });
     } catch {
       // api util shows error toast
@@ -194,7 +207,7 @@ export default function ToolPermissionsPage() {
     if (role.isBuiltIn) return;
     try {
       await api.delete(`/api/admin/company/ai-roles/${role.id}`, {}, token);
-      await loadMatrix();
+      await Promise.all([loadMatrix(), loadZohoRoleAccess()]);
       toast({ title: 'Role deleted' });
     } catch {
       // api util shows error toast
@@ -224,6 +237,29 @@ export default function ToolPermissionsPage() {
       toast({ title: 'User role reset to sync-managed value' });
     } catch {
       await loadUsers();
+    }
+  };
+
+  const handleZohoScopeToggle = async (roleSlug: string, newVal: boolean) => {
+    if (!token) return;
+    setZohoRoleAccess((prev) =>
+      prev.map((row) =>
+        row.slug === roleSlug ? { ...row, companyScopedRead: newVal } : row,
+      ),
+    );
+    try {
+      await api.put(
+        `/api/admin/company/zoho-role-access/${roleSlug}`,
+        { companyScopedRead: newVal },
+        token,
+      );
+      toast({ title: 'Zoho data scope updated' });
+    } catch {
+      setZohoRoleAccess((prev) =>
+        prev.map((row) =>
+          row.slug === roleSlug ? { ...row, companyScopedRead: !newVal } : row,
+        ),
+      );
     }
   };
 
@@ -275,6 +311,37 @@ export default function ToolPermissionsPage() {
       {/* ── Tool Permissions ── */}
       {tab === 'permissions' && (
         <div className="space-y-4">
+          <div className="rounded-lg border border-[#1a1a1a] bg-[#111] p-5 shadow-md shadow-black/20">
+            <div className="mb-4">
+              <h2 className="text-sm font-semibold text-zinc-200">Zoho Data Scope</h2>
+              <p className="mt-1 text-xs text-zinc-500">
+                Email-scoped Zoho access stays default. Enable company-scoped reads only for roles
+                that should see the full workspace CRM data.
+              </p>
+            </div>
+            <div className="space-y-3">
+              {zohoRoleAccess.map((row) => (
+                <div
+                  key={row.slug}
+                  className="flex items-center justify-between rounded-lg border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3"
+                >
+                  <div>
+                    <RoleBadge slug={row.slug} label={row.displayName} />
+                    <div className="mt-1 text-xs text-zinc-600">
+                      {row.companyScopedRead
+                        ? 'Reads Zoho data with company scope across live reads and search.'
+                        : 'Reads only Zoho data that matches the requester email scope.'}
+                    </div>
+                  </div>
+                  <Toggle
+                    checked={row.companyScopedRead}
+                    onChange={(v) => handleZohoScopeToggle(row.slug, v)}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
           {/* Role legend */}
           <div className="flex flex-wrap gap-2">
             {roles.map((r) => (

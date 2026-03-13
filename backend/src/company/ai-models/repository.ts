@@ -9,6 +9,9 @@ export type AiModelTargetConfigRow = {
   fastProvider: string | null;
   fastModelId: string | null;
   fastThinkingLevel: string | null;
+  xtremeProvider: string | null;
+  xtremeModelId: string | null;
+  xtremeThinkingLevel: string | null;
   updatedBy: string;
   updatedAt: Date;
 };
@@ -34,6 +37,9 @@ class AiModelTargetConfigRepository {
     fastProvider?: string | null;
     fastModelId?: string | null;
     fastThinkingLevel?: string | null;
+    xtremeProvider?: string | null;
+    xtremeModelId?: string | null;
+    xtremeThinkingLevel?: string | null;
     updatedBy: string;
   }): Promise<AiModelTargetConfigRow> {
     return prisma.aiModelTargetConfig.upsert({
@@ -46,6 +52,9 @@ class AiModelTargetConfigRepository {
         fastProvider: input.fastProvider ?? null,
         fastModelId: input.fastModelId ?? null,
         fastThinkingLevel: input.fastThinkingLevel ?? null,
+        xtremeProvider: input.xtremeProvider ?? null,
+        xtremeModelId: input.xtremeModelId ?? null,
+        xtremeThinkingLevel: input.xtremeThinkingLevel ?? null,
         updatedBy: input.updatedBy,
       },
       update: {
@@ -55,6 +64,9 @@ class AiModelTargetConfigRepository {
         fastProvider: input.fastProvider ?? null,
         fastModelId: input.fastModelId ?? null,
         fastThinkingLevel: input.fastThinkingLevel ?? null,
+        xtremeProvider: input.xtremeProvider ?? null,
+        xtremeModelId: input.xtremeModelId ?? null,
+        xtremeThinkingLevel: input.xtremeThinkingLevel ?? null,
         updatedBy: input.updatedBy,
       },
     });

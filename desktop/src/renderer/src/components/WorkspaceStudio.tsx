@@ -8,7 +8,6 @@ import {
   Folder,
   FolderOpen,
   Loader2,
-  PanelLeftOpen,
   PanelLeftClose,
   PanelRightOpen,
   PanelRightClose,
@@ -94,7 +93,13 @@ function displayName(path: string): string {
   return parts[parts.length - 1] || path
 }
 
-export function WorkspaceStudio(): JSX.Element {
+export function WorkspaceStudio({
+  isOpen,
+  onClose,
+}: {
+  isOpen: boolean
+  onClose: () => void
+}): JSX.Element | null {
   const { currentWorkspace } = useWorkspace()
   const [dirMap, setDirMap] = useState<Record<string, FileNode[]>>({})
   const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({ [ROOT_PATH]: true })
@@ -103,7 +108,6 @@ export function WorkspaceStudio(): JSX.Element {
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [panelError, setPanelError] = useState<string | null>(null)
   const [savingPath, setSavingPath] = useState<string | null>(null)
-  const [isStudioCollapsed, setIsStudioCollapsed] = useState(false)
   const [studioWidth, setStudioWidth] = useState(620)
   const [treeWidth, setTreeWidth] = useState(252)
   const [isTreeCollapsed, setIsTreeCollapsed] = useState(false)
@@ -134,6 +138,7 @@ export function WorkspaceStudio(): JSX.Element {
   const openFilesRef = useRef<OpenFile[]>([])
   const lastExpandedTreeWidthRef = useRef(252)
   const studioRef = useRef<HTMLElement | null>(null)
+  const terminalInputRef = useRef<HTMLInputElement | null>(null)
   const resizeModeRef = useRef<'studio' | 'tree' | 'terminal' | null>(null)
   const autosaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -612,16 +617,9 @@ export function WorkspaceStudio(): JSX.Element {
 
   const hasDirtyActiveFile = activeFile ? activeFile.content !== activeFile.savedContent : false
   const focusEditor = useCallback(() => {
-    setStudioWidth((prev) => Math.max(prev, 860))
-    setTreeWidth(184)
-  }, [])
-
-  const closeStudio = useCallback(() => {
-    setIsStudioCollapsed(true)
-  }, [])
-
-  const openStudio = useCallback(() => {
-    setIsStudioCollapsed(false)
+    lastExpandedTreeWidthRef.current = treeWidth
+    setIsTreeCollapsed(true)
+    setStudioWidth((prev) => Math.max(prev, 980))
   }, [])
 
   const collapseTree = useCallback(() => {
@@ -727,29 +725,17 @@ export function WorkspaceStudio(): JSX.Element {
     return () => clearInterval(interval)
   }, [activeFilePath, currentWorkspace, readWorkspaceFile, savingPath])
 
-  if (isStudioCollapsed) {
-    return (
-      <aside className="flex w-12 shrink-0 border-l border-[hsl(0,0%,12%)] bg-[linear-gradient(180deg,hsl(0,0%,6%),hsl(0,0%,4%))]">
-        <div className="flex w-full flex-col items-center gap-3 px-2 py-3">
-          <button
-            onClick={openStudio}
-            className="rounded-xl border border-[hsl(0,0%,16%)] p-2 text-[hsl(0,0%,62%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
-            title="Open editor"
-          >
-            <PanelLeftOpen size={15} />
-          </button>
-          <div className="text-[10px] uppercase tracking-[0.18em] text-[hsl(0,0%,34%)] [writing-mode:vertical-rl] rotate-180">
-            Editor
-          </div>
-        </div>
-      </aside>
-    )
-  }
+  useEffect(() => {
+    if (!isTerminalOpen) return
+    window.setTimeout(() => terminalInputRef.current?.focus(), 0)
+  }, [isTerminalOpen])
+
+  if (!isOpen) return null
 
   return (
     <aside
       ref={studioRef}
-      className="flex shrink-0 border-l border-[hsl(0,0%,12%)] bg-[linear-gradient(180deg,hsl(0,0%,6%),hsl(0,0%,4%))]"
+      className="flex h-full min-h-0 shrink-0 border-l border-[hsl(0,0%,12%)] bg-[linear-gradient(180deg,hsl(0,0%,6%),hsl(0,0%,4%))]"
       style={{ width: studioWidth }}
     >
       <div
@@ -784,7 +770,7 @@ export function WorkspaceStudio(): JSX.Element {
             <button onClick={collapseTree} className="rounded-lg p-2 text-[hsl(0,0%,55%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]" title="Collapse file pane">
               <PanelLeftClose size={14} />
             </button>
-            <button onClick={closeStudio} className="rounded-lg p-2 text-[hsl(0,0%,55%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]" title="Close editor">
+            <button onClick={onClose} className="rounded-lg p-2 text-[hsl(0,0%,55%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]" title="Close editor">
               <PanelRightClose size={14} />
             </button>
           </div>
@@ -951,51 +937,62 @@ export function WorkspaceStudio(): JSX.Element {
           <div className="flex items-center gap-2">
             {isTreeCollapsed && (
               <button
+                type="button"
                 onClick={expandTree}
-                className="rounded-xl border border-[hsl(0,0%,16%)] px-3 py-1.5 text-[12px] text-[hsl(0,0%,62%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
+                className="titlebar-no-drag cursor-pointer rounded-xl border border-[hsl(0,0%,16%)] px-3 py-1.5 text-[12px] text-[hsl(0,0%,62%)] transition-colors hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
               >
                 <PanelRightOpen size={13} className="mr-1 inline-block" />
                 Show files
               </button>
             )}
             <button
-              onClick={closeStudio}
-              className="rounded-xl border border-[hsl(0,0%,16%)] px-3 py-1.5 text-[12px] text-[hsl(0,0%,62%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
+              type="button"
+              onClick={onClose}
+              className="titlebar-no-drag cursor-pointer rounded-xl border border-[hsl(0,0%,16%)] px-3 py-1.5 text-[12px] text-[hsl(0,0%,62%)] transition-colors hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
             >
               <PanelRightClose size={13} className="mr-1 inline-block" />
               Close editor
             </button>
             <button
+              type="button"
               onClick={() => setIsTerminalOpen((prev) => !prev)}
-              className="rounded-xl border border-[hsl(0,0%,16%)] px-3 py-1.5 text-[12px] text-[hsl(0,0%,62%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
+              className={cn(
+                'titlebar-no-drag cursor-pointer rounded-xl border px-3 py-1.5 text-[12px] transition-colors',
+                isTerminalOpen
+                  ? 'border-[hsl(45,84%,58%)] bg-[hsl(45,38%,12%)] text-[hsl(45,84%,72%)]'
+                  : 'border-[hsl(0,0%,16%)] text-[hsl(0,0%,62%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]',
+              )}
             >
               <TerminalSquare size={13} className="mr-1 inline-block" />
               {isTerminalOpen ? 'Hide terminal' : 'Terminal'}
             </button>
             <button
+              type="button"
               onClick={focusEditor}
-              className="rounded-xl border border-[hsl(0,0%,16%)] px-3 py-1.5 text-[12px] text-[hsl(0,0%,62%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
+              className="titlebar-no-drag cursor-pointer rounded-xl border border-[hsl(0,0%,16%)] px-3 py-1.5 text-[12px] text-[hsl(0,0%,62%)] transition-colors hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
             >
               <PanelLeftClose size={13} className="mr-1 inline-block" />
               Focus editor
             </button>
             {activeFile && (
               <button
+                type="button"
                 onClick={() => void deleteActiveFile()}
-                className="rounded-xl border border-[hsl(0,0%,16%)] px-3 py-1.5 text-[12px] text-[hsl(0,0%,62%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
+                className="titlebar-no-drag cursor-pointer rounded-xl border border-[hsl(0,0%,16%)] px-3 py-1.5 text-[12px] text-[hsl(0,0%,62%)] transition-colors hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
               >
                 <Trash2 size={13} className="mr-1 inline-block" />
                 Delete
               </button>
             )}
             <button
+              type="button"
               onClick={() => void saveActiveFile()}
               disabled={!activeFile || !hasDirtyActiveFile || savingPath === activeFile.path}
               className={cn(
-                'rounded-xl px-3 py-1.5 text-[12px] font-medium transition-colors',
+                'titlebar-no-drag rounded-xl px-3 py-1.5 text-[12px] font-medium transition-colors',
                 !activeFile || !hasDirtyActiveFile
                   ? 'cursor-not-allowed bg-[hsl(0,0%,10%)] text-[hsl(0,0%,35%)]'
-                  : 'bg-[hsl(45,86%,58%)] text-[hsl(0,0%,10%)] hover:bg-[hsl(45,86%,63%)]',
+                  : 'cursor-pointer bg-[hsl(45,86%,58%)] text-[hsl(0,0%,10%)] hover:bg-[hsl(45,86%,63%)]',
               )}
             >
               {savingPath === activeFile?.path ? <Loader2 size={13} className="mr-1 inline-block animate-spin" /> : <Save size={13} className="mr-1 inline-block" />}
@@ -1094,6 +1091,7 @@ export function WorkspaceStudio(): JSX.Element {
                 <div className="flex items-center gap-2 border-b border-[hsl(0,0%,12%)] px-4 py-2">
                   <span className="font-mono text-[12px] text-[hsl(0,0%,46%)]">$</span>
                   <input
+                    ref={terminalInputRef}
                     value={terminalCommand}
                     onChange={(event) => setTerminalCommand(event.target.value)}
                     onKeyDown={(event) => {

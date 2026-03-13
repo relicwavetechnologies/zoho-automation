@@ -6,6 +6,7 @@ import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
 import { comparePassword } from '../../utils/bcrypt';
 import { MemberAuthRepository, memberAuthRepository } from './member-auth.repository';
+import { channelIdentityRepository } from '../../company/channels/channel-identity.repository';
 
 const MEMBER_SESSION_TTL_MINUTES = config.ADMIN_SESSION_TTL_MINUTES; // reuse same TTL
 const HANDOFF_CODE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -14,6 +15,7 @@ export interface MemberSessionDTO {
   userId: string;
   companyId: string;
   role: string;
+  aiRole?: string;
   sessionId: string;
   expiresAt: string;
   authProvider: 'password' | 'handoff' | 'lark';
@@ -82,10 +84,23 @@ export class MemberAuthService extends BaseService {
     if (session.expiresAt.getTime() <= Date.now()) return null;
 
     const user = await this.repository.findUserById(session.userId);
+    const membership = await this.repository.findActiveMembership(session.userId, session.companyId);
+    const effectiveRole = membership?.role ?? session.role;
+    const linkedIdentity = await channelIdentityRepository.findLarkIdentityForProvisioning({
+      companyId: session.companyId,
+      larkOpenId: session.larkOpenId ?? undefined,
+      larkUserId: session.larkUserId ?? undefined,
+      email: user?.email ?? undefined,
+    });
+    const effectiveAiRole =
+      typeof linkedIdentity?.aiRole === 'string' && linkedIdentity.aiRole.trim().length > 0
+        ? linkedIdentity.aiRole.trim()
+        : effectiveRole;
     return {
       userId: session.userId,
       companyId: session.companyId,
-      role: session.role,
+      role: effectiveRole,
+      aiRole: effectiveAiRole,
       sessionId: session.sessionId,
       expiresAt: session.expiresAt.toISOString(),
       authProvider: (session.authProvider as 'password' | 'handoff' | 'lark') ?? 'password',
@@ -142,6 +157,7 @@ export class MemberAuthService extends BaseService {
       userId: session.userId,
       companyId: session.companyId,
       role: session.role,
+      aiRole: session.role,
       sessionId: session.sessionId,
       expiresAt: session.expiresAt.toISOString(),
       authProvider: (session.authProvider as 'password' | 'handoff' | 'lark') ?? 'password',

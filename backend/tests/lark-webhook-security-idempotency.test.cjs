@@ -173,6 +173,40 @@ test('webhook handler returns 202 duplicate ignored when primary idempotency key
   assert.equal(enqueueCount, 0);
 });
 
+test('webhook handler returns 202 duplicate ignored when message alias was already claimed for a new event id', async () => {
+  let enqueueCount = 0;
+  const claims = [];
+  const handler = createLarkWebhookEventHandler({
+    verifyRequest: () => ({ ok: true }),
+    parsePayload: () => eventCallbackMessage('evt_newer_copy'),
+    adapter: {
+      normalizeIncomingEvent: () => normalizedMessage,
+      sendMessage: async () => ({ status: 'sent' }),
+    },
+    claimIngressKey: async (channel, keyType, key) => {
+      claims.push({ channel, keyType, key });
+      return keyType === 'event';
+    },
+    enqueueTask: async () => {
+      enqueueCount += 1;
+      return { taskId: 'task-ignored' };
+    },
+    resolveHitlAction: async () => true,
+  });
+
+  const response = await runHandler(handler, baseRequest());
+
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.body.message, 'Duplicate ingress ignored (idempotency hit)');
+  assert.equal(response.body.data.keyType, 'message');
+  assert.equal(response.body.data.idempotencyKey, 'emiac:idempotent:lark:message:om_1');
+  assert.equal(enqueueCount, 0);
+  assert.deepEqual(claims, [
+    { channel: 'lark', keyType: 'event', key: 'evt_newer_copy' },
+    { channel: 'lark', keyType: 'message', key: 'om_1' },
+  ]);
+});
+
 test('webhook handler returns 503 when idempotency store is unavailable', async () => {
   let enqueueCount = 0;
   const handler = createLarkWebhookEventHandler({
@@ -196,6 +230,34 @@ test('webhook handler returns 503 when idempotency store is unavailable', async 
 
   assert.equal(response.statusCode, 503);
   assert.equal(response.body.success, false);
+  assert.equal(enqueueCount, 0);
+});
+
+test('webhook handler ignores stale message deliveries before enqueue', async () => {
+  let enqueueCount = 0;
+  const handler = createLarkWebhookEventHandler({
+    verifyRequest: () => ({ ok: true }),
+    parsePayload: () => eventCallbackMessage('evt_stale'),
+    adapter: {
+      normalizeIncomingEvent: () => ({
+        ...normalizedMessage,
+        timestamp: new Date(Date.now() - (10 * 60 * 1000)).toISOString(),
+      }),
+      sendMessage: async () => ({ status: 'sent' }),
+    },
+    claimIngressKey: async () => true,
+    enqueueTask: async () => {
+      enqueueCount += 1;
+      return { taskId: 'task-stale' };
+    },
+    resolveHitlAction: async () => true,
+  });
+
+  const response = await runHandler(handler, baseRequest());
+
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.body.message, 'Lark event ignored because the message is too old to process safely');
+  assert.equal(response.body.data.reason, 'stale_message_delivery');
   assert.equal(enqueueCount, 0);
 });
 

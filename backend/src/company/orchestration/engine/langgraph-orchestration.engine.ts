@@ -34,8 +34,8 @@ import {
 import { buildAgentManifest, formatManifestForPrompt } from '../langgraph/agent-manifest';
 import { resolveHitlTransition } from '../langgraph/hitl-state-machine';
 import { resolvePlanContract } from '../langgraph/plan-contract';
-import { resolveRouteContract } from '../langgraph/route-contract';
-import { resolveSynthesisContract } from '../langgraph/synthesis-contract';
+import { buildRoutePrompt, resolveRouteContract } from '../langgraph/route-contract';
+import { buildSynthesisPrompt, resolveSynthesisContract } from '../langgraph/synthesis-contract';
 import {
   buildSupervisorPrompt,
   buildTier1Prompt,
@@ -436,11 +436,7 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
       .addNode(NODE_ROUTE_CLASSIFY, async (state: LangGraphRuntimeState) => {
         await runtimeControlSignalsRepository.assertRunnableAtBoundary(state.task.taskId);
 
-        const prompt = [
-          'Classify this user request and return JSON only.',
-          'Shape: {"intent":"zoho_read|write_intent|general","complexityLevel":1-5,"executionMode":"sequential|parallel|mixed"}',
-          `Text: ${state.message.text}`,
-        ].join('\n');
+        const prompt = buildRoutePrompt(state.message.text);
 
         const routeResolution = resolveRouteContract({
           rawLlmOutput: await openAiOrchestrationModels.invokePrompt('router', prompt),
@@ -845,13 +841,11 @@ export class LangGraphOrchestrationEngine implements OrchestrationEngine {
         }
         // ── Full LLM synthesis (no supervisor reply available) ─────────────────
         const deterministic = state.synthesis ?? synthesizeFromAgentResults(state.task, state.message, state.agentResults);
-        const prompt = [
-          'Synthesize final runtime response and return JSON only.',
-          'Shape: {"taskStatus":"done|failed","text":"..."}',
-          `Intent: ${state.route.intent}`,
-          `UserText: ${state.message.text}`,
-          `AgentResults: ${JSON.stringify(state.agentResults)}`,
-        ].join('\n');
+        const prompt = buildSynthesisPrompt({
+          intent: state.route.intent,
+          messageText: state.message.text,
+          agentResultsJson: JSON.stringify(state.agentResults),
+        });
 
         const synthesisResolution = resolveSynthesisContract({
           rawLlmOutput: await openAiOrchestrationModels.invokePrompt('synthesis', prompt),

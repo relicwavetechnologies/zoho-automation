@@ -224,7 +224,9 @@ export class LarkDocAgent extends BaseAgent {
           });
         }
 
-        const answer = `Updated Lark Doc. URL: ${editResult.url}`;
+        const answer = editResult.url
+          ? `Updated Lark Doc: ${editResult.url}`
+          : `Updated Lark Doc: ${editResult.documentId}`;
         return this.success(
           input,
           answer,
@@ -261,8 +263,8 @@ export class LarkDocAgent extends BaseAgent {
       }
 
       const answer = result.url
-        ? `Created Lark Doc "${result.title}". URL: ${result.url}`
-        : `Created Lark Doc "${result.title}". Document ID: ${result.documentId}`;
+        ? `Created Lark Doc: ${result.url}`
+        : `Created Lark Doc: ${result.documentId}`;
 
       return this.success(
         input,
@@ -283,7 +285,7 @@ export class LarkDocAgent extends BaseAgent {
       if (error instanceof LarkDocsIntegrationError) {
         return this.failure(
           input,
-          `Lark Doc creation failed: ${error.message}`,
+          `Lark Doc failed: ${error.message}`,
           error.code,
           error.message,
           error.code === 'lark_docs_unavailable',
@@ -297,7 +299,7 @@ export class LarkDocAgent extends BaseAgent {
       const rawMessage = error instanceof Error ? error.message : 'unknown_error';
       return this.failure(
         input,
-        `Lark Doc creation failed: ${rawMessage}`,
+        `Lark Doc failed: ${rawMessage}`,
         'lark_docs_unavailable',
         rawMessage,
         true,

@@ -109,6 +109,23 @@ export const buildExecutionPlanContext = (plan: ExecutionPlan | null | undefined
   ].join('\n');
 };
 
+export const formatExecutionPlanForLog = (plan: ExecutionPlan): string => {
+  const successCriteria = plan.successCriteria.map((item) => `- ${item}`).join('\n');
+  const tasks = plan.tasks
+    .map((task, index) => `${index + 1}. [${task.ownerAgent}] ${task.title}`)
+    .join('\n');
+
+  return [
+    `Goal: ${plan.goal}`,
+    '',
+    'Success criteria:',
+    successCriteria,
+    '',
+    'Ordered tasks:',
+    tasks,
+  ].join('\n');
+};
+
 const touchPlan = (plan: ExecutionPlan, tasks: ExecutionPlan['tasks'], status: ExecutionPlan['status']): ExecutionPlan => ({
   ...plan,
   status,

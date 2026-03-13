@@ -1,4 +1,4 @@
-export type AiModelProvider = 'google' | 'openai';
+export type AiModelProvider = 'google' | 'openai' | 'groq';
 export type AiThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
 export type AiControlEngine = 'mastra' | 'langgraph';
 export type AiControlTargetKind = 'supervisor' | 'specialist' | 'router' | 'planner' | 'synthesis' | 'ack';
@@ -46,6 +46,9 @@ export type AiControlTargetDefinition = {
   fastDefaultProvider?: AiModelProvider;
   fastDefaultModelId?: string;
   fastDefaultThinkingLevel?: AiThinkingLevel;
+  xtremeDefaultProvider?: AiModelProvider;
+  xtremeDefaultModelId?: string;
+  xtremeDefaultThinkingLevel?: AiThinkingLevel;
 };
 
 export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
@@ -125,6 +128,26 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
     maxContextTokens: 128_000,
     outputReserveTokens: 16_384,
   },
+  {
+    provider: 'groq',
+    modelId: 'llama-90b',
+    label: 'Groq Llama 3 90B',
+    description: 'Ultra-fast synthesis and structuring model via Groq LPU.',
+    speed: 'fast',
+    cost: 'cheap',
+    maxContextTokens: 8192,
+    outputReserveTokens: 1024,
+  },
+  {
+    provider: 'groq',
+    modelId: 'llama-8b',
+    label: 'Groq Llama 3 8B',
+    description: 'Instant routing and acknowledgement via Groq LPU.',
+    speed: 'fast',
+    cost: 'cheap',
+    maxContextTokens: 8192,
+    outputReserveTokens: 1024,
+  },
 ];
 
 export const AI_MODEL_CATALOG_MAP = new Map(
@@ -136,7 +159,7 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     key: 'mastra.ack',
     engine: 'mastra',
     kind: 'ack',
-    label: 'Mastra Acknowledgement',
+    label: 'Odin Acknowledgement',
     description: 'Low-latency AI acknowledgement used for placeholder/progress replies before the main supervisor finishes.',
     defaultProvider: 'google',
     defaultModelId: 'gemini-3.1-flash-lite-preview',
@@ -148,18 +171,18 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     key: 'mastra.planner',
     engine: 'mastra',
     kind: 'planner',
-    label: 'Mastra Planner',
+    label: 'Odin Planner',
     description: 'Desktop planning specialist that turns complex user requests into ordered execution plans and success criteria.',
-    defaultProvider: 'openai',
-    defaultModelId: 'gpt-4.1-mini',
-    fastDefaultProvider: 'openai',
-    fastDefaultModelId: 'gpt-4.1-nano',
+    defaultProvider: 'google',
+    defaultModelId: 'gemini-3-flash-preview',
+    fastDefaultProvider: 'google',
+    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
   },
   {
     key: 'mastra.supervisor',
     engine: 'mastra',
     kind: 'supervisor',
-    label: 'Mastra Supervisor',
+    label: 'Odin Supervisor',
     description: 'Top-level Mastra orchestrator that routes across Zoho, outreach, and web search specialists.',
     defaultProvider: 'google',
     defaultModelId: 'gemini-3-flash-preview',
@@ -172,18 +195,18 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     key: 'mastra.zoho-specialist',
     engine: 'mastra',
     kind: 'specialist',
-    label: 'Mastra Zoho Specialist',
+    label: 'Odin Zoho Specialist',
     description: 'CRM specialist for live Zoho reads and recovery fallback synthesis.',
-    defaultProvider: 'openai',
-    defaultModelId: 'gpt-4.1-mini',
-    fastDefaultProvider: 'openai',
-    fastDefaultModelId: 'gpt-4.1-nano',
+    defaultProvider: 'google',
+    defaultModelId: 'gemini-3-flash-preview',
+    fastDefaultProvider: 'google',
+    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
   },
   {
     key: 'mastra.search',
     engine: 'mastra',
     kind: 'specialist',
-    label: 'Mastra Search Specialist',
+    label: 'Odin Search Specialist',
     description: 'Serper-backed web research specialist with exact-page context extraction.',
     defaultProvider: 'google',
     defaultModelId: 'gemini-3.1-flash-lite-preview',
@@ -195,7 +218,7 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     key: 'mastra.outreach',
     engine: 'mastra',
     kind: 'specialist',
-    label: 'Mastra Outreach Specialist',
+    label: 'Odin Outreach Specialist',
     description: 'SEO/outreach inventory filtering specialist for publisher discovery and ranking.',
     defaultProvider: 'openai',
     defaultModelId: 'gpt-4.1-nano',
@@ -206,29 +229,29 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     key: 'mastra.lark-doc',
     engine: 'mastra',
     kind: 'specialist',
-    label: 'Mastra Lark Docs Specialist',
+    label: 'Odin Lark Docs Specialist',
     description: 'Document creation specialist that formats grounded markdown and creates Lark Docs through the import API.',
-    defaultProvider: 'openai',
-    defaultModelId: 'gpt-4.1-mini',
-    fastDefaultProvider: 'openai',
-    fastDefaultModelId: 'gpt-4.1-mini',
+    defaultProvider: 'google',
+    defaultModelId: 'gemini-3.1-flash-lite-preview',
+    fastDefaultProvider: 'google',
+    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
   },
   {
     key: 'mastra.synthesis',
     engine: 'mastra',
     kind: 'synthesis',
-    label: 'Mastra Synthesis',
+    label: 'Odin Synthesis',
     description: 'Response-polishing agent used to turn grounded records into concise business answers.',
-    defaultProvider: 'openai',
-    defaultModelId: 'gpt-4.1-mini',
-    fastDefaultProvider: 'openai',
-    fastDefaultModelId: 'gpt-4.1-nano',
+    defaultProvider: 'google',
+    defaultModelId: 'gemini-3.1-flash-lite-preview',
+    fastDefaultProvider: 'google',
+    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
   },
   {
     key: 'langgraph.supervisor',
     engine: 'langgraph',
     kind: 'supervisor',
-    label: 'LangGraph Supervisor',
+    label: 'Odin LangGraph Supervisor',
     description: 'Tier-2 planner/supervisor used when the LangGraph orchestration engine coordinates multiple agents.',
     defaultProvider: 'google',
     defaultModelId: 'gemini-3-flash-preview',
@@ -240,7 +263,7 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     key: 'langgraph.router',
     engine: 'langgraph',
     kind: 'router',
-    label: 'LangGraph Router',
+    label: 'Odin LangGraph Router',
     description: 'Low-latency intent/router model for classification and fast-path orchestration decisions.',
     defaultProvider: 'openai',
     defaultModelId: 'gpt-4.1-nano',
@@ -264,10 +287,10 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     kind: 'synthesis',
     label: 'LangGraph Synthesis',
     description: 'Final LangGraph response composition model used after agent outputs are gathered.',
-    defaultProvider: 'openai',
-    defaultModelId: 'gpt-4.1-mini',
-    fastDefaultProvider: 'openai',
-    fastDefaultModelId: 'gpt-4.1-mini',
+    defaultProvider: 'google',
+    defaultModelId: 'gemini-3.1-flash-lite-preview',
+    fastDefaultProvider: 'google',
+    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
   },
 ];
 

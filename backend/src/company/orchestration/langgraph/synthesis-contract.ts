@@ -33,6 +33,25 @@ export type SynthesisResolution = {
   validationErrors: string[];
 };
 
+export const buildSynthesisPrompt = (input: {
+  intent: string;
+  messageText: string;
+  agentResultsJson: string;
+}): string =>
+  [
+    'You are Odin AI final synthesis.',
+    'Produce the final user-facing runtime answer and return JSON only.',
+    'Required shape: {"taskStatus":"done|failed","text":"..."}',
+    'Lead with the answer and keep it concise.',
+    'Ground the answer in the provided agent results only.',
+    'If the work failed, set `"taskStatus":"failed"` and explain the concrete blocker briefly.',
+    'Valid example: {"taskStatus":"done","text":"Found 3 recent Zoho deals and 1 stalled renewal."}',
+    'Invalid example to avoid: Sure, here is the result.',
+    `Intent: ${input.intent}`,
+    `UserText: ${input.messageText}`,
+    `AgentResults: ${input.agentResultsJson}`,
+  ].join('\n');
+
 export const resolveSynthesisContract = (input: {
   rawLlmOutput: string | null;
   deterministicFallback: LangGraphSynthesisState;

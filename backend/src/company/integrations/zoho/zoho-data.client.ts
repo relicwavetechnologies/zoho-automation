@@ -14,6 +14,15 @@ export type ZohoHistoricalPageResult = {
   }>;
   nextCursor?: string;
   total?: number;
+  warnings?: ZohoDataWarning[];
+};
+
+export type ZohoDataWarning = {
+  code: 'module_skipped' | 'predicate_invalid';
+  message: string;
+  moduleName: string;
+  sourceType: ZohoSourceType;
+  statusCode?: number;
 };
 
 type CursorState = {
@@ -132,6 +141,7 @@ const readString = (value: unknown): string | undefined => {
 };
 
 const escapeCoqlLiteral = (value: string): string => value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+const PREDICATE_VALIDATION_EMAIL = 'scope-validation@example.invalid';
 
 const readFieldRows = (payload: ZohoFieldMetaResponse): Array<Record<string, unknown>> =>
   Array.isArray(payload.fields) ? payload.fields : [];
@@ -262,6 +272,13 @@ export class ZohoDataClient {
         records: [],
         nextCursor: fallbackCursor,
         total: 0,
+        warnings: [{
+          code: 'module_skipped',
+          message: error.message,
+          moduleName: requestedModule.moduleName,
+          sourceType: requestedModule.sourceType,
+          statusCode: error.statusCode,
+        }],
       };
     }
 
@@ -308,6 +325,7 @@ export class ZohoDataClient {
       records,
       nextCursor,
       total: payload.info?.count,
+      warnings: [],
     };
   }
 
@@ -369,59 +387,92 @@ export class ZohoDataClient {
     const perPage = Math.max(1, Math.min(50, Math.max(10, input.limit * 2)));
     const sortBy = input.sortBy ?? 'Modified_Time';
     const sortOrder = input.sortOrder ?? 'desc';
+    let lastPredicateError: ZohoIntegrationError | null = null;
+    let anyPredicateSucceeded = false;
 
-    for (let page = 1; page <= Math.max(1, input.maxPages) && records.length < input.limit; page += 1) {
-      const offset = (page - 1) * perPage;
-      const selectQuery =
-        `select id from ${moduleDef.moduleName} where ` +
-        `(${emailPaths.map((path) => `${path} = '${escapeCoqlLiteral(normalizedRequesterEmail)}'`).join(' or ')}) ` +
-        `order by ${sortBy} ${sortOrder} limit ${offset}, ${perPage}`;
+    for (const emailPath of emailPaths) {
+      for (let page = 1; page <= Math.max(1, input.maxPages) && records.length < input.limit; page += 1) {
+        const offset = (page - 1) * perPage;
+        const selectQuery =
+          `select id from ${moduleDef.moduleName} where ` +
+          `${emailPath} = '${escapeCoqlLiteral(normalizedRequesterEmail)}' ` +
+          `order by ${sortBy} ${sortOrder} limit ${offset}, ${perPage}`;
 
-      const coql = await this.requestWithRefresh<ZohoCoqlResponse>({
-        companyId: input.companyId,
-        environment,
-        path: '/crm/v8/coql',
-        method: 'POST',
-        body: { select_query: selectQuery },
+        let coql: ZohoCoqlResponse;
+        try {
+          coql = await this.requestWithRefresh<ZohoCoqlResponse>({
+            companyId: input.companyId,
+            environment,
+            path: '/crm/v8/coql',
+            method: 'POST',
+            body: { select_query: selectQuery },
+          });
+          anyPredicateSucceeded = true;
+        } catch (error) {
+          if (error instanceof ZohoIntegrationError) {
+            lastPredicateError = error;
+            logger.warn('zoho.user_scope.predicate_failed', {
+              companyId: input.companyId,
+              environment,
+              moduleName: moduleDef.moduleName,
+              sourceType: input.sourceType,
+              emailPath,
+              code: error.code,
+              statusCode: error.statusCode,
+              reason: error.message,
+            });
+            break;
+          }
+          throw error;
+        }
+
+        const ids = (coql.data ?? [])
+          .map((row) => coerceString(row.id))
+          .filter((id): id is string => Boolean(id));
+
+        if (ids.length === 0) {
+          break;
+        }
+
+        for (const sourceId of ids) {
+          if (records.length >= input.limit || seenSourceIds.has(sourceId)) {
+            continue;
+          }
+
+          const payload = await this.fetchRecordBySource({
+            companyId: input.companyId,
+            environment,
+            sourceType: input.sourceType,
+            sourceId,
+          });
+          if (!payload) {
+            continue;
+          }
+          if (!payloadReferencesEmail(payload, normalizedRequesterEmail)) {
+            continue;
+          }
+
+          seenSourceIds.add(sourceId);
+          records.push({
+            sourceType: input.sourceType,
+            sourceId,
+            payload,
+          });
+        }
+
+        if (ids.length < perPage) {
+          break;
+        }
+      }
+    }
+
+    if (!anyPredicateSucceeded && lastPredicateError) {
+      throw new ZohoIntegrationError({
+        message: `Strict user scope could not query module ${moduleDef.moduleName}: ${lastPredicateError.message}`,
+        code: lastPredicateError.code,
+        retriable: lastPredicateError.retriable,
+        statusCode: lastPredicateError.statusCode,
       });
-
-      const ids = (coql.data ?? [])
-        .map((row) => coerceString(row.id))
-        .filter((id): id is string => Boolean(id));
-
-      if (ids.length === 0) {
-        break;
-      }
-
-      for (const sourceId of ids) {
-        if (records.length >= input.limit || seenSourceIds.has(sourceId)) {
-          continue;
-        }
-
-        const payload = await this.fetchRecordBySource({
-          companyId: input.companyId,
-          environment,
-          sourceType: input.sourceType,
-          sourceId,
-        });
-        if (!payload) {
-          continue;
-        }
-        if (!payloadReferencesEmail(payload, normalizedRequesterEmail)) {
-          continue;
-        }
-
-        seenSourceIds.add(sourceId);
-        records.push({
-          sourceType: input.sourceType,
-          sourceId,
-          payload,
-        });
-      }
-
-      if (ids.length < perPage) {
-        break;
-      }
     }
 
     return records;
@@ -535,8 +586,54 @@ export class ZohoDataClient {
       method: 'GET',
     });
     const predicates = buildEmailPredicatesFromFields(readFieldRows(payload));
-    this.moduleEmailPredicateCache.set(cacheKey, predicates);
-    return predicates;
+    const validated = await this.validateEmailPredicates({
+      companyId: input.companyId,
+      environment: input.environment,
+      moduleName: input.moduleName,
+      predicates,
+    });
+    this.moduleEmailPredicateCache.set(cacheKey, validated);
+    return validated;
+  }
+
+  private async validateEmailPredicates(input: {
+    companyId: string;
+    environment: string;
+    moduleName: string;
+    predicates: string[];
+  }): Promise<string[]> {
+    const validPredicates: string[] = [];
+
+    for (const predicate of input.predicates) {
+      const selectQuery =
+        `select id from ${input.moduleName} where ` +
+        `${predicate} = '${escapeCoqlLiteral(PREDICATE_VALIDATION_EMAIL)}' limit 0, 1`;
+      try {
+        await this.requestWithRefresh<ZohoCoqlResponse>({
+          companyId: input.companyId,
+          environment: input.environment,
+          path: '/crm/v8/coql',
+          method: 'POST',
+          body: { select_query: selectQuery },
+        });
+        validPredicates.push(predicate);
+      } catch (error) {
+        if (!(error instanceof ZohoIntegrationError)) {
+          throw error;
+        }
+        logger.warn('zoho.user_scope.predicate_invalid', {
+          companyId: input.companyId,
+          environment: input.environment,
+          moduleName: input.moduleName,
+          predicate,
+          code: error.code,
+          statusCode: error.statusCode,
+          reason: error.message,
+        });
+      }
+    }
+
+    return validPredicates;
   }
 
   private async resolveApiClient(companyId: string): Promise<ZohoHttpClient> {

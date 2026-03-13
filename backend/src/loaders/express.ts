@@ -3,6 +3,7 @@ import express, { Application, NextFunction, Request, Response } from 'express';
 import config from '../config';
 import { larkWebhookRoutes } from '../company/channels';
 import adminControlsRoutes from '../modules/admin-controls/admin-controls.routes';
+import adminExecutionsRoutes from '../modules/admin-executions/admin-executions.routes';
 import adminAiModelsRoutes from '../modules/admin-ai-models/admin-ai-models.routes';
 import adminRuntimeRoutes from '../modules/admin-runtime/admin-runtime.routes';
 import adminAuthRoutes from '../modules/admin-auth/admin-auth.routes';
@@ -17,6 +18,7 @@ import memberAuthRoutes from '../modules/member-auth/member-auth.routes';
 import desktopAuthRoutes from '../modules/desktop-auth/desktop-auth.routes';
 import desktopThreadsRoutes from '../modules/desktop-threads/desktop-threads.routes';
 import desktopChatRoutes from '../modules/desktop-chat/desktop-chat.routes';
+import desktopExecutionsRoutes from '../modules/desktop-executions/desktop-executions.routes';
 import fileUploadRoutes from '../modules/file-upload/file-upload.routes';
 import { errorMiddleware } from '../middlewares/error.middleware';
 import { requestContextMiddleware, requestLoggingMiddleware } from '../middlewares/request-logging.middleware';
@@ -63,6 +65,7 @@ const expressLoader = async (app: Application): Promise<void> => {
   app.use('/api/admin/rbac', rbacRoutes);
   app.use('/api/admin/audit', auditRoutes);
   app.use('/api/admin/controls', adminControlsRoutes);
+  app.use('/api/admin/executions', adminExecutionsRoutes);
   app.use('/api/admin/ai-models', adminAiModelsRoutes);
   app.use('/api/admin/runtime', adminRuntimeRoutes);
   app.use('/api/admin/company', companyAdminRoutes);
@@ -72,6 +75,7 @@ const expressLoader = async (app: Application): Promise<void> => {
   app.use('/api/desktop/auth', desktopAuthRoutes);
   app.use('/api/desktop/threads', desktopThreadsRoutes);
   app.use('/api/desktop/chat', desktopChatRoutes);
+  app.use('/api/desktop/executions', desktopExecutionsRoutes);
   app.use('/api/member/files', fileUploadRoutes);
   app.use('/webhooks/lark', larkWebhookRoutes);
 

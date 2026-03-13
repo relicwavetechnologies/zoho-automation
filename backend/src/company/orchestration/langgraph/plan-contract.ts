@@ -17,6 +17,28 @@ const ALLOWED_BOUNDARY_STEPS = new Set([
   'finalize.task',
 ]);
 
+export const buildPlanPrompt = (input: {
+  messageText: string;
+  route: LangGraphRouteState;
+}): string =>
+  [
+    'You are Odin AI plan generation.',
+    'Return JSON only.',
+    'Required shape: {"plan":["route.classify","agent.invoke.<agentKey>", "...", "synthesis.compose"]}',
+    `Route intent: ${input.route.intent}`,
+    `Complexity level: ${input.route.complexityLevel}`,
+    `Execution mode: ${input.route.executionMode}`,
+    'Rules:',
+    '- Start with `route.classify`.',
+    '- End with `synthesis.compose`.',
+    '- Include at least one `agent.invoke.<agentKey>` step.',
+    '- Use only real registered agent keys.',
+    '- Use `agent.invoke.risk-check` for write intent plans.',
+    'Valid example: {"plan":["route.classify","agent.invoke.response","synthesis.compose"]}',
+    'Invalid example to avoid: ["response","done"]',
+    `User: ${input.messageText}`,
+  ].join('\n');
+
 const normalizeStepList = (value: unknown): string[] | null => {
   if (!Array.isArray(value)) {
     return null;

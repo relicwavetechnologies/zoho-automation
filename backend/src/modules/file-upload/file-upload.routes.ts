@@ -23,4 +23,8 @@ router.patch('/:fileAssetId/policy', asyncHandler(fileUploadController.updatePol
 // Delete a file and its vectors
 router.delete('/:fileAssetId', asyncHandler(fileUploadController.deleteFile));
 
+// Retry ingestion pipeline
+router.post('/:fileAssetId/retry', asyncHandler(fileUploadController.retryIngestion));
+router.post('/:fileAssetId/share', asyncHandler(fileUploadController.shareFile));
+
 export default router;

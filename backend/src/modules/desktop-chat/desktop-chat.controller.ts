@@ -19,6 +19,7 @@ import { buildVisionContent, type AttachedFileRef } from './file-vision.builder'
 import { conversationMemoryStore } from '../../company/state/conversation/conversation-memory.store';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { logger } from '../../utils/logger';
+import { knowledgeShareService } from '../../company/knowledge-share/knowledge-share.service';
 import {
   registerActivityBus,
   unregisterActivityBus,
@@ -41,6 +42,7 @@ import { AI_MODEL_CATALOG_MAP } from '../../company/ai-models/catalog';
 import { estimateTokens, extractActualTokenUsage } from '../../utils/token-estimator';
 import { aiModelControlService } from '../../company/ai-models';
 import { resolveMastraLanguageModel } from '../../company/integrations/mastra/mastra-model-control';
+import { executionService } from '../../company/observability';
 
 const KNOWN_AGENTS = ['supervisorAgent', 'zohoAgent', 'outreachAgent', 'searchAgent'] as const;
 const DEFAULT_AGENT = 'supervisorAgent';
@@ -56,7 +58,8 @@ const sendSchema = z.object({
   message: z.string().max(10000).optional().default(''),
   agentId: z.string().optional(),
   attachedFiles: z.array(attachedFileSchema).optional().default([]),
-  mode: z.enum(['fast', 'high']).optional().default('high'),
+  mode: z.enum(['fast', 'high', 'xtreme']).optional().default('high'),
+  executionId: z.string().uuid().optional(),
 });
 
 const workspaceSchema = z.object({
@@ -76,6 +79,12 @@ const actSchema = z.object({
   workspace: workspaceSchema,
   actionResult: actionResultSchema.optional(),
   plan: executionPlanSchema.optional(),
+  mode: z.enum(['fast', 'high', 'xtreme']).optional().default('high'),
+  executionId: z.string().uuid().optional(),
+});
+
+const shareConversationSchema = z.object({
+  reason: z.string().max(1000).optional(),
 });
 
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
@@ -93,6 +102,22 @@ type TextBlock = { type: 'text'; content: string };
 // Thinking block carries live reasoning text streamed from the model
 type ThinkingBlock = { type: 'thinking'; text?: string; durationMs?: number };
 type ContentBlock = ToolBlock | TextBlock | ThinkingBlock;
+type CitationSummary = {
+  id: string;
+  title: string;
+  url?: string;
+  kind?: string;
+  sourceType?: string;
+  sourceId?: string;
+  fileAssetId?: string;
+  chunkIndex?: number;
+};
+
+type ShareActionSummary = {
+  type: 'conversation';
+  conversationKey: string;
+  label: string;
+};
 
 type DesktopAction = {
   kind: 'list_files' | 'read_file' | 'write_file' | 'mkdir' | 'delete_path' | 'run_command';
@@ -106,7 +131,11 @@ const extractToolResultText = (resultSummary?: string): string | null => {
 
   try {
     const parsed = JSON.parse(resultSummary) as { type?: string; answer?: string };
-    if (parsed?.type === 'structured_search' && typeof parsed.answer === 'string' && parsed.answer.trim()) {
+    if (
+      (parsed?.type === 'structured_search' || parsed?.type === 'structured_knowledge')
+      && typeof parsed.answer === 'string'
+      && parsed.answer.trim()
+    ) {
       return parsed.answer.trim();
     }
   } catch {
@@ -115,6 +144,41 @@ const extractToolResultText = (resultSummary?: string): string | null => {
 
   return resultSummary.trim() || null;
 };
+
+const extractToolCitations = (resultSummary?: string): CitationSummary[] => {
+  if (!resultSummary) return [];
+
+  try {
+    const parsed = JSON.parse(resultSummary) as { type?: string; sources?: CitationSummary[] };
+    if (
+      (parsed?.type === 'structured_search' || parsed?.type === 'structured_knowledge')
+      && Array.isArray(parsed.sources)
+    ) {
+      return parsed.sources
+        .filter((source): source is CitationSummary => Boolean(source && typeof source.id === 'string'))
+        .map((source) => ({
+          id: source.id,
+          title: typeof source.title === 'string' ? source.title : source.id,
+          url: typeof source.url === 'string' ? source.url : undefined,
+          kind: typeof source.kind === 'string' ? source.kind : undefined,
+          sourceType: typeof source.sourceType === 'string' ? source.sourceType : undefined,
+          sourceId: typeof source.sourceId === 'string' ? source.sourceId : undefined,
+          fileAssetId: typeof source.fileAssetId === 'string' ? source.fileAssetId : undefined,
+          chunkIndex: typeof source.chunkIndex === 'number' ? source.chunkIndex : undefined,
+        }));
+    }
+  } catch {
+    return [];
+  }
+
+  return [];
+};
+
+const buildShareAction = (conversationKey: string): ShareActionSummary => ({
+  type: 'conversation',
+  conversationKey,
+  label: "Share this chat's knowledge",
+});
 
 const buildGroundedFallbackAssistantText = (input: {
   contentBlocks: ContentBlock[];
@@ -188,6 +252,125 @@ const buildGroundedSynthesisPrompt = (input: {
     'Grounded completed tool results:',
     toolSection,
   ].join('\n');
+};
+
+type ExecutionEventQueue = {
+  enqueue: (task: () => Promise<void>) => void;
+  flush: () => Promise<void>;
+};
+
+const createExecutionEventQueue = (): ExecutionEventQueue => {
+  let queue = Promise.resolve();
+
+  return {
+    enqueue(task) {
+      queue = queue
+        .then(task)
+        .catch((error) => {
+          logger.warn('execution.event.enqueue.failed', {
+            error: error instanceof Error ? error.message : 'unknown_execution_event_error',
+          });
+        });
+    },
+    async flush() {
+      await queue;
+    },
+  };
+};
+
+const summarizeText = (value: string | null | undefined, limit = 280): string | null => {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const buildPlanStatusSnapshot = (plan: ExecutionPlan | null | undefined): Map<string, ExecutionPlan['tasks'][number]['status']> =>
+  new Map((plan?.tasks ?? []).map((task) => [task.id, task.status]));
+
+const queuePlanLifecycleEvents = (
+  queue: ExecutionEventQueue,
+  executionId: string,
+  previousPlan: ExecutionPlan | null | undefined,
+  nextPlan: ExecutionPlan,
+): void => {
+  const previousStatuses = buildPlanStatusSnapshot(previousPlan);
+  const nextStatuses = buildPlanStatusSnapshot(nextPlan);
+
+  if (!previousPlan) {
+    queue.enqueue(async () => {
+      await executionService.appendEvent({
+        executionId,
+        phase: 'planning',
+        eventType: 'plan.created',
+        actorType: 'planner',
+        actorKey: 'planner-agent',
+        title: 'Created execution plan',
+        summary: summarizeText(nextPlan.goal),
+        status: nextPlan.status,
+        payload: {
+          goal: nextPlan.goal,
+          successCriteria: nextPlan.successCriteria,
+          tasks: nextPlan.tasks.map((task, index) => ({
+            index: index + 1,
+            id: task.id,
+            title: task.title,
+            ownerAgent: task.ownerAgent,
+            status: task.status,
+          })),
+        },
+      });
+    });
+  }
+
+  for (const task of nextPlan.tasks) {
+    const previousStatus = previousStatuses.get(task.id);
+    const nextStatus = nextStatuses.get(task.id);
+
+    if (nextStatus === 'running' && previousStatus !== 'running') {
+      queue.enqueue(async () => {
+        await executionService.appendEvent({
+          executionId,
+          phase: 'planning',
+          eventType: 'plan.task.started',
+          actorType: 'planner',
+          actorKey: task.ownerAgent,
+          title: `Started task: ${task.title}`,
+          summary: summarizeText(task.resultSummary),
+          status: task.status,
+          payload: {
+            taskId: task.id,
+            ownerAgent: task.ownerAgent,
+            title: task.title,
+          },
+        });
+      });
+    }
+
+    if (
+      previousStatus !== nextStatus
+      && nextStatus
+      && ['done', 'failed', 'blocked', 'skipped'].includes(nextStatus)
+    ) {
+      queue.enqueue(async () => {
+        await executionService.appendEvent({
+          executionId,
+          phase: 'planning',
+          eventType: 'plan.task.completed',
+          actorType: 'planner',
+          actorKey: task.ownerAgent,
+          title: `${nextStatus === 'done' ? 'Completed' : 'Updated'} task: ${task.title}`,
+          summary: summarizeText(task.resultSummary),
+          status: nextStatus,
+          payload: {
+            taskId: task.id,
+            ownerAgent: task.ownerAgent,
+            title: task.title,
+            resultSummary: summarizeText(task.resultSummary, 600),
+          },
+        });
+      });
+    }
+  }
 };
 
 const isActivityFailure = (payload: ActivityPayload): boolean => {
@@ -363,8 +546,15 @@ class DesktopChatController extends BaseController {
 
   send = async (req: Request, res: Response) => {
     const session = this.session(req);
+    const requesterAiRole = session.aiRole ?? session.role;
     const threadId = req.params.threadId;
-    const { message, agentId: requestedAgent, attachedFiles, mode } = sendSchema.parse(req.body);
+    const {
+      message,
+      agentId: requestedAgent,
+      attachedFiles,
+      mode,
+      executionId: requestedExecutionId,
+    } = sendSchema.parse(req.body);
 
     const agentId = requestedAgent && (KNOWN_AGENTS as readonly string[]).includes(requestedAgent)
       ? requestedAgent
@@ -378,7 +568,48 @@ class DesktopChatController extends BaseController {
 
     const messageId = randomUUID();
     const taskId = randomUUID();
+    const executionId = requestedExecutionId ?? randomUUID();
     const conversationKey = `desktop:${threadId}`;
+    const canShareKnowledge = await toolPermissionService.isAllowed(
+      session.companyId,
+      'share_chat_vectors',
+      requesterAiRole,
+    );
+    const executionEventQueue = createExecutionEventQueue();
+
+    await executionService.startRun({
+      id: executionId,
+      companyId: session.companyId,
+      userId: session.userId,
+      channel: 'desktop',
+      entrypoint: 'desktop_send',
+      requestId: executionId,
+      threadId,
+      chatId: threadId,
+      messageId,
+      mode,
+      agentTarget: requestedAgent ?? DEFAULT_AGENT,
+      latestSummary: summarizeText(message),
+    });
+    executionEventQueue.enqueue(async () => {
+      await executionService.appendEvent({
+        executionId,
+        phase: 'request',
+        eventType: 'execution.started',
+        actorType: 'system',
+        actorKey: requestedAgent ?? DEFAULT_AGENT,
+        title: 'Desktop execution started',
+        summary: summarizeText(message),
+        status: 'running',
+        payload: {
+          threadId,
+          chatId: threadId,
+          messageId,
+          mode,
+          attachedFileCount: attachedFiles.length,
+        },
+      });
+    });
 
     let finalMessageText = message;
     if (attachedFiles && attachedFiles.length > 0) {
@@ -395,8 +626,13 @@ class DesktopChatController extends BaseController {
         finalMessageText = attachmentsMd.trim();
       }
     }
-
-    await desktopThreadsService.addMessage(threadId, session.userId, 'user', finalMessageText);
+    await desktopThreadsService.addMessage(
+      threadId,
+      session.userId,
+      'user',
+      message,
+      attachedFiles && attachedFiles.length > 0 ? { attachedFiles } : undefined
+    );
     conversationMemoryStore.addUserMessage(conversationKey, messageId, finalMessageText);
 
     personalVectorMemoryService.storeChatTurn({
@@ -484,7 +720,7 @@ class DesktopChatController extends BaseController {
 
     await toolPermissionService.getAllowedTools(
       session.companyId,
-      session.role as 'MEMBER' | 'COMPANY_ADMIN' | 'SUPER_ADMIN',
+      requesterAiRole,
     );
 
     const requestContext = new RequestContext<Record<string, string>>();
@@ -494,7 +730,9 @@ class DesktopChatController extends BaseController {
     requestContext.set('taskId', taskId);
     requestContext.set('messageId', messageId);
     requestContext.set('channel', 'desktop');
+    requestContext.set('executionId', executionId);
     requestContext.set('requesterEmail', session.email ?? '');
+    requestContext.set('requesterAiRole', requesterAiRole);
     requestContext.set('authProvider', session.authProvider);
     requestContext.set('larkTenantKey', session.larkTenantKey ?? '');
     requestContext.set('larkOpenId', session.larkOpenId ?? '');
@@ -517,8 +755,9 @@ class DesktopChatController extends BaseController {
 	      message,
     ].filter(Boolean).join('\n');
 
-    // For vision: build multipart content and pass as CoreMessage array via `messages` runOption.
-    // For docs: inject text context directly into the objective string.
+    // For attachments: build multipart user input for the agent when needed.
+    // Images should flow as message parts, while documents can still collapse
+    // down to text-only prompt content after extraction.
     let visionMessages: Array<{ role: 'user'; content: Array<{ type: string; [k: string]: unknown }> }> | undefined;
     let objective = baseObjective;
 
@@ -527,7 +766,7 @@ class DesktopChatController extends BaseController {
         userMessage: baseObjective,
         attachedFiles: attachedFiles as AttachedFileRef[],
         companyId: session.companyId,
-        requesterAiRole: session.role,
+        requesterAiRole,
       });
 
       const hasImageParts = visionParts.some((p) => p.type === 'image');
@@ -621,6 +860,21 @@ class DesktopChatController extends BaseController {
         icon: payload.icon,
         status: 'running',
       });
+	      executionEventQueue.enqueue(async () => {
+	        await executionService.appendEvent({
+	          executionId,
+	          phase: 'tool',
+	          eventType: 'tool.started',
+	          actorType: 'tool',
+	          actorKey: payload.name,
+	          title: payload.label,
+	          status: 'running',
+	          payload: {
+	            toolId: payload.id,
+	            icon: payload.icon,
+	          },
+	        });
+	      });
     };
 
 	    const onActivityDone = (payload: ActivityPayload): void => {
@@ -633,6 +887,26 @@ class DesktopChatController extends BaseController {
 	        if (payload.resultSummary) block.resultSummary = payload.resultSummary;
 	        if (payload.label) block.label = payload.label;
 	      }
+	      executionEventQueue.enqueue(async () => {
+	        await executionService.appendEvent({
+	          executionId,
+	          phase: ok ? 'tool' : 'error',
+	          eventType: ok ? 'tool.completed' : 'tool.failed',
+	          actorType: 'tool',
+	          actorKey: payload.name,
+	          title: payload.label ?? payload.name,
+	          summary: summarizeText(payload.resultSummary, 800),
+	          status: ok ? 'done' : 'failed',
+	          payload: payload.resultSummary
+	            ? {
+	                toolId: payload.id,
+	                resultSummary: payload.resultSummary,
+	              }
+	            : {
+	                toolId: payload.id,
+	              },
+	        });
+	      });
 	      if (activePlan && payload.name !== 'planner-agent') {
 	        const ownerAgent = resolvePlanOwnerFromToolName(payload.name);
 	        if (ownerAgent) {
@@ -642,6 +916,7 @@ class DesktopChatController extends BaseController {
 	            resultSummary: payload.resultSummary,
 	          });
 	          if (nextPlan !== activePlan) {
+	            queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, nextPlan);
 	            activePlan = nextPlan;
 	            sendEvent('plan', activePlan);
 	          }
@@ -649,10 +924,11 @@ class DesktopChatController extends BaseController {
 	      }
 	    };
 
-    const streamRequestId = randomUUID();
+    const streamRequestId = executionId;
 
 	    registerPlanBus(streamRequestId, (plan) => {
 	      sawPlanEvent = true;
+	      queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, plan);
 	      activePlan = plan;
 	      sendEvent('plan', activePlan);
 	    });
@@ -676,21 +952,29 @@ class DesktopChatController extends BaseController {
       const runOptions = await buildMastraAgentRunOptions(
         MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId],
         { requestContext },
-        mode as 'fast' | 'high'
+        mode as 'fast' | 'high' | 'xtreme'
       );
 
-      // Dynamically resolve and inject the exact model based on Fast/High toggle
       const dynamicModel = await resolveMastraLanguageModel(
         MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId],
-        mode as 'fast' | 'high'
+        mode as 'fast' | 'high' | 'xtreme'
       );
 
-      const streamOptions = visionMessages
-        ? { ...runOptions, context: visionMessages as any[], model: dynamicModel }
-        : { ...runOptions, model: dynamicModel };
+      const resolvedForLog = await aiModelControlService.resolveTarget(MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId]);
+      logger.info('desktop.chat.model_resolved', {
+        taskId,
+        threadId,
+        mode,
+        agentId,
+        resolvedProvider: mode === 'xtreme' ? ((resolvedForLog as any).xtremeEffectiveProvider ?? resolvedForLog.effectiveProvider) : mode === 'fast' ? (resolvedForLog.fastEffectiveProvider ?? resolvedForLog.effectiveProvider) : resolvedForLog.effectiveProvider,
+        resolvedModelId: mode === 'xtreme' ? ((resolvedForLog as any).xtremeEffectiveModelId ?? resolvedForLog.effectiveModelId) : mode === 'fast' ? (resolvedForLog.fastEffectiveModelId ?? resolvedForLog.effectiveModelId) : resolvedForLog.effectiveModelId,
+      });
+
+      const streamOptions = { ...runOptions, model: dynamicModel };
+      const streamInput = visionMessages ?? objective;
 
       try {
-        streamResult = await agent.stream(objective, streamOptions as any);
+        streamResult = await agent.stream(streamInput as any, streamOptions as any);
       } catch (err) {
         throw new Error(`Agent stream failed to start: ${err instanceof Error ? err.message : 'Unknown error'}`);
       }
@@ -723,8 +1007,27 @@ class DesktopChatController extends BaseController {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       streamFailed = true;
       streamErrorMessage = errorMessage;
+      executionEventQueue.enqueue(async () => {
+        await executionService.appendEvent({
+          executionId,
+          phase: 'error',
+          eventType: 'execution.failed',
+          actorType: 'system',
+          actorKey: agentId,
+          title: 'Desktop execution failed',
+          summary: summarizeText(errorMessage),
+          status: 'failed',
+          payload: {
+            threadId,
+            taskId,
+            messageId,
+          },
+        });
+      });
       if (activePlan) {
-        activePlan = failExecutionPlan(activePlan, errorMessage);
+        const failedPlan = failExecutionPlan(activePlan, errorMessage);
+        queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, failedPlan);
+        activePlan = failedPlan;
         sendEvent('plan', activePlan);
       }
       logger.error('desktop.chat.stream.error', { threadId, userId: session.userId, error: errorMessage });
@@ -740,8 +1043,10 @@ class DesktopChatController extends BaseController {
       // Finalize any trailing thinking block that never got resolved
       finalizeLastThinkingBlock();
 
-	      if (activePlan && !streamFailed && (assistantText || contentBlocks.length > 0)) {
-	        activePlan = completeExecutionPlan(activePlan, assistantText || undefined);
+      if (activePlan && !streamFailed && (assistantText || contentBlocks.length > 0)) {
+	        const completedPlan = completeExecutionPlan(activePlan, assistantText || undefined);
+	        queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, completedPlan);
+	        activePlan = completedPlan;
 	        sendEvent('plan', activePlan);
 	      }
 
@@ -783,18 +1088,41 @@ class DesktopChatController extends BaseController {
 	        });
 
 	        if (synthesisPrompt) {
+	          executionEventQueue.enqueue(async () => {
+	            await executionService.appendEvent({
+	              executionId,
+	              phase: 'synthesis',
+	              eventType: 'synthesis.started',
+	              actorType: 'model',
+	              actorKey: 'synthesisAgent',
+	              title: 'Synthesizing grounded response',
+	              status: 'running',
+	            });
+	          });
 	          try {
 	            const synthesisAgent = mastra.getAgent('synthesisAgent');
 	            const synthesisRunOptions = await buildMastraAgentRunOptions(
                 'mastra.synthesis', 
                 { requestContext },
-                mode as 'fast' | 'high'
+                mode as 'fast' | 'high' | 'xtreme'
               );
 	            const synthesisResult = await synthesisAgent.generate(synthesisPrompt, synthesisRunOptions as any);
 	            const synthesizedText = typeof synthesisResult?.text === 'string' ? synthesisResult.text.trim() : '';
 	            if (synthesizedText) {
 	              assistantText = synthesizedText;
 	              contentBlocks.push({ type: 'text', content: synthesizedText });
+	              executionEventQueue.enqueue(async () => {
+	                await executionService.appendEvent({
+	                  executionId,
+	                  phase: 'synthesis',
+	                  eventType: 'synthesis.completed',
+	                  actorType: 'model',
+	                  actorKey: 'synthesisAgent',
+	                  title: 'Synthesized grounded response',
+	                  summary: summarizeText(synthesizedText, 800),
+	                  status: 'done',
+	                });
+	              });
 	              logger.warn('desktop.chat.stream.final_text_synthesized', {
 	                threadId,
 	                userId: session.userId,
@@ -803,6 +1131,18 @@ class DesktopChatController extends BaseController {
 	              });
 	            }
 	          } catch (error) {
+	            executionEventQueue.enqueue(async () => {
+	              await executionService.appendEvent({
+	                executionId,
+	                phase: 'error',
+	                eventType: 'tool.failed',
+	                actorType: 'model',
+	                actorKey: 'synthesisAgent',
+	                title: 'Grounded synthesis failed',
+	                summary: summarizeText(error instanceof Error ? error.message : 'unknown_error'),
+	                status: 'failed',
+	              });
+	            });
 	            logger.warn('desktop.chat.stream.final_text_synthesis_failed', {
 	              threadId,
 	              userId: session.userId,
@@ -822,6 +1162,18 @@ class DesktopChatController extends BaseController {
 	        if (fallbackAssistantText) {
 	          assistantText = fallbackAssistantText;
 	          contentBlocks.push({ type: 'text', content: fallbackAssistantText });
+	          executionEventQueue.enqueue(async () => {
+	            await executionService.appendEvent({
+	              executionId,
+	              phase: 'synthesis',
+	              eventType: 'synthesis.completed',
+	              actorType: 'system',
+	              actorKey: 'grounded-fallback',
+	              title: 'Built grounded fallback response',
+	              summary: summarizeText(fallbackAssistantText, 800),
+	              status: 'done',
+	            });
+	          });
 	          logger.warn('desktop.chat.stream.final_text_fallback_used', {
 	            threadId,
 	            userId: session.userId,
@@ -831,11 +1183,41 @@ class DesktopChatController extends BaseController {
 	        }
 	      }
 
+        for (const block of contentBlocks) {
+          if (block.type === 'tool' && block.status === 'running') {
+            block.status = 'failed';
+            block.resultSummary = block.resultSummary || `${block.label} did not complete. Check server logs for the underlying tool failure.`;
+          }
+        }
+
 	      if (assistantText || contentBlocks.length > 0) {
+        executionEventQueue.enqueue(async () => {
+          await executionService.appendEvent({
+            executionId,
+            phase: 'delivery',
+            eventType: 'delivery.started',
+            actorType: 'delivery',
+            actorKey: 'desktop-message',
+            title: 'Persisting assistant response',
+            summary: summarizeText(assistantText, 400),
+            status: 'running',
+            payload: {
+              threadId,
+              hasContentBlocks: contentBlocks.length > 0,
+            },
+          });
+        });
+        const citations = contentBlocks
+          .filter((block): block is ToolBlock => block.type === 'tool' && block.status === 'done')
+          .flatMap((block) => extractToolCitations(block.resultSummary))
+          .filter((citation, index, entries) => entries.findIndex((entry) => entry.id === citation.id) === index);
         const metadata: Record<string, unknown> = {
           // Save the full ordered timeline — this is what the UI reads on reload
           contentBlocks,
+          executionId,
         };
+        if (citations.length > 0) metadata.citations = citations;
+        if (canShareKnowledge) metadata.shareAction = buildShareAction(conversationKey);
         if (activePlan) metadata.plan = activePlan;
         if (streamErrorMessage) metadata.error = streamErrorMessage;
 
@@ -851,6 +1233,20 @@ class DesktopChatController extends BaseController {
             logger.error('desktop.message.persist.failed', { error: err });
             return undefined;
           });
+
+        executionEventQueue.enqueue(async () => {
+          await executionService.appendEvent({
+            executionId,
+            phase: persistedMessage ? 'delivery' : 'error',
+            eventType: persistedMessage ? 'delivery.completed' : 'execution.failed',
+            actorType: 'delivery',
+            actorKey: 'desktop-message',
+            title: persistedMessage ? 'Assistant response persisted' : 'Assistant response persistence failed',
+            summary: persistedMessage ? summarizeText(assistantText, 400) : 'Desktop message persistence returned no result',
+            status: persistedMessage ? 'done' : 'failed',
+            payload: persistedMessage ? { messageId: persistedMessage.id } : { threadId },
+          });
+        });
 
         if (!streamFailed) {
           sendEvent('done', persistedMessage ? { message: persistedMessage } : 'complete');
@@ -891,26 +1287,123 @@ class DesktopChatController extends BaseController {
           wasCompacted,
           mode,
         }).catch(() => { /* already logged inside service */ });
+        await executionEventQueue.flush();
+        if (streamFailed) {
+          await executionService.failRun({
+            executionId,
+            latestSummary: summarizeText(streamErrorMessage ?? assistantText ?? message, 400),
+            errorCode: 'desktop_stream_failed',
+            errorMessage: streamErrorMessage ?? undefined,
+          });
+        } else {
+          await executionService.completeRun({
+            executionId,
+            latestSummary: summarizeText(assistantText, 400) ?? summarizeText(message, 400),
+          });
+        }
       } else if (!streamFailed) {
         sendEvent('done', 'complete');
+        await executionEventQueue.flush();
+        await executionService.completeRun({
+          executionId,
+          latestSummary: summarizeText(message, 400),
+        });
+      } else {
+        await executionEventQueue.flush();
+        await executionService.failRun({
+          executionId,
+          latestSummary: summarizeText(streamErrorMessage ?? message, 400),
+          errorCode: 'desktop_stream_failed',
+          errorMessage: streamErrorMessage ?? undefined,
+        });
       }
 
       res.end();
     }
   };
 
+  shareConversation = async (req: Request, res: Response) => {
+    const session = this.session(req);
+    const requesterAiRole = session.aiRole ?? session.role;
+    const threadId = req.params.threadId;
+    const { reason } = shareConversationSchema.parse(req.body ?? {});
+
+    const allowed = await toolPermissionService.isAllowed(
+      session.companyId,
+      'share_chat_vectors',
+      requesterAiRole,
+    );
+    if (!allowed) {
+      throw new HttpException(403, 'Your role cannot share knowledge from desktop chats');
+    }
+
+    const result = await knowledgeShareService.requestConversationShare({
+      companyId: session.companyId,
+      requesterUserId: session.userId,
+      requesterAiRole,
+      conversationKey: `desktop:${threadId}`,
+      humanReason: reason,
+    });
+
+    return res.json(ApiResponse.success(result, 'Conversation share processed'));
+  };
+
   act = async (req: Request, res: Response) => {
     const session = this.session(req);
+    const requesterAiRole = session.aiRole ?? session.role;
     const threadId = req.params.threadId;
     const parsed = actSchema.parse(req.body);
-    const { workspace, actionResult, agentId: requestedAgent } = parsed;
+    const { workspace, actionResult, agentId: requestedAgent, mode } = parsed;
     const message = parsed.message?.trim() ?? '';
+    const executionId = parsed.executionId ?? randomUUID();
+    const shouldStartExecution = !parsed.executionId;
+    const executionEventQueue = createExecutionEventQueue();
+
+    // --- MONTHLY LIMIT CHECK ---
+    const limitExceeded = await aiTokenUsageService.checkLimitExceeded(session.userId, session.companyId);
+    if (limitExceeded) {
+      return res.status(402).json(ApiResponse.error('Monthly AI token limit reached. Contact your admin.'));
+    }
 
     const agentId = requestedAgent && (KNOWN_AGENTS as readonly string[]).includes(requestedAgent)
       ? requestedAgent
       : DEFAULT_AGENT;
 
     const conversationKey = `desktop:${threadId}`;
+
+    if (shouldStartExecution) {
+      await executionService.startRun({
+        id: executionId,
+        companyId: session.companyId,
+        userId: session.userId,
+        channel: 'desktop',
+        entrypoint: 'desktop_act',
+        requestId: executionId,
+        threadId,
+        chatId: threadId,
+        mode,
+        agentTarget: requestedAgent ?? DEFAULT_AGENT,
+        latestSummary: summarizeText(message || actionResult?.summary),
+      });
+      executionEventQueue.enqueue(async () => {
+        await executionService.appendEvent({
+          executionId,
+          phase: 'request',
+          eventType: 'execution.started',
+          actorType: 'system',
+          actorKey: requestedAgent ?? DEFAULT_AGENT,
+          title: 'Desktop execution started from action loop',
+          summary: summarizeText(message || actionResult?.summary),
+          status: 'running',
+          payload: {
+            threadId,
+            chatId: threadId,
+            mode,
+            hasActionResult: Boolean(actionResult),
+          },
+        });
+      });
+    }
 
     if (message && !actionResult) {
       const messageId = randomUUID();
@@ -948,7 +1441,7 @@ class DesktopChatController extends BaseController {
 
     await toolPermissionService.getAllowedTools(
       session.companyId,
-      session.role as 'MEMBER' | 'COMPANY_ADMIN' | 'SUPER_ADMIN',
+      requesterAiRole,
     );
 
     const requestContext = new RequestContext<Record<string, string>>();
@@ -957,21 +1450,46 @@ class DesktopChatController extends BaseController {
     requestContext.set('chatId', threadId);
     requestContext.set('channel', 'desktop');
     requestContext.set('requesterEmail', session.email ?? '');
+    requestContext.set('requesterAiRole', requesterAiRole);
     requestContext.set('workspaceName', workspace.name);
     requestContext.set('workspacePath', workspace.path);
-    const requestId = randomUUID();
+    const requestId = executionId;
     requestContext.set('requestId', requestId);
+    requestContext.set('executionId', executionId);
 
-	    let activePlan = parsed.plan ?? null;
-	    if (activePlan && actionResult) {
-	      activePlan = updateExecutionPlanTask(activePlan, {
-	        ownerAgent: resolvePlanOwnerFromActionKind(actionResult.kind),
-	        ok: actionResult.ok,
-	        resultSummary: actionResult.summary,
-	      });
-	    }
+    let activePlan = parsed.plan ?? null;
+    if (activePlan && actionResult) {
+      const nextPlan = updateExecutionPlanTask(activePlan, {
+        ownerAgent: resolvePlanOwnerFromActionKind(actionResult.kind),
+        ok: actionResult.ok,
+        resultSummary: actionResult.summary,
+      });
+      queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, nextPlan);
+      activePlan = nextPlan;
+    }
+
+    if (actionResult) {
+      executionEventQueue.enqueue(async () => {
+        await executionService.appendEvent({
+          executionId,
+          phase: actionResult.ok ? 'tool' : 'error',
+          eventType: actionResult.ok ? 'tool.completed' : 'tool.failed',
+          actorType: 'tool',
+          actorKey: actionResult.kind,
+          title: `${actionResult.ok ? 'Completed' : 'Failed'} local action: ${actionResult.kind}`,
+          summary: summarizeText(actionResult.summary, 800),
+          status: actionResult.ok ? 'done' : 'failed',
+          payload: {
+            kind: actionResult.kind,
+            ok: actionResult.ok,
+            summary: actionResult.summary,
+          },
+        });
+      });
+    }
 
     registerPlanBus(requestId, (plan) => {
+      queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, plan);
       activePlan = plan;
     });
 
@@ -989,14 +1507,43 @@ class DesktopChatController extends BaseController {
       agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent',
     );
 
+    const agentTarget = MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId];
     const runOptions = await buildMastraAgentRunOptions(
-      MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId],
+      agentTarget,
       { requestContext },
+      mode as 'fast' | 'high' | 'xtreme'
+    );
+
+    const dynamicModel = await resolveMastraLanguageModel(
+      agentTarget,
+      mode as 'fast' | 'high' | 'xtreme'
     );
 
     const generateDesktopTurn = async (prompt: string) => {
-      const result = await agent.generate(prompt, runOptions as any);
+      const result = await agent.generate(prompt, { ...runOptions, model: dynamicModel } as any);
       const assistantText = typeof result?.text === 'string' ? result.text.trim() : '';
+      
+      const estimatedInput = estimateTokens(prompt);
+      const estimatedOutput = estimateTokens(assistantText);
+      const actualUsage = extractActualTokenUsage((result as any)?.usage);
+      
+      const resolvedModel = await aiModelControlService.resolveTarget(agentTarget);
+      await aiTokenUsageService.record({
+        userId: session.userId,
+        companyId: session.companyId,
+        agentTarget: agentTarget ?? 'mastra.supervisor',
+        modelId: resolvedModel?.effectiveModelId ?? 'unknown',
+        provider: resolvedModel?.effectiveProvider ?? 'unknown',
+        channel: 'desktop',
+        threadId,
+        estimatedInputTokens: estimatedInput,
+        estimatedOutputTokens: estimatedOutput,
+        actualInputTokens: actualUsage.inputTokens || undefined,
+        actualOutputTokens: actualUsage.outputTokens || undefined,
+        wasCompacted: false,
+        mode: mode as 'fast' | 'high' | 'xtreme',
+      }).catch(() => {});
+
       return {
         assistantText,
         requestedAction: parseDesktopAction(assistantText),
@@ -1006,6 +1553,18 @@ class DesktopChatController extends BaseController {
     let assistantText = '';
     let requestedAction: DesktopAction | null = null;
     try {
+      executionEventQueue.enqueue(async () => {
+        await executionService.appendEvent({
+          executionId,
+          phase: 'synthesis',
+          eventType: 'synthesis.started',
+          actorType: 'agent',
+          actorKey: agentId,
+          title: 'Generating assistant response',
+          summary: summarizeText(message || actionResult?.summary, 400),
+          status: 'running',
+        });
+      });
       ({ assistantText, requestedAction } = await generateDesktopTurn(objective));
 
       if (
@@ -1035,36 +1594,168 @@ class DesktopChatController extends BaseController {
 
         ({ assistantText, requestedAction } = await generateDesktopTurn(retryObjective));
       }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Desktop action loop failed';
+      executionEventQueue.enqueue(async () => {
+        await executionService.appendEvent({
+          executionId,
+          phase: 'error',
+          eventType: 'execution.failed',
+          actorType: 'system',
+          actorKey: agentId,
+          title: 'Desktop action loop failed',
+          summary: summarizeText(errorMessage),
+          status: 'failed',
+          payload: {
+            threadId,
+            workspacePath: workspace.path,
+            hasActionResult: Boolean(actionResult),
+          },
+        });
+      });
+      if (activePlan) {
+        const failedPlan = failExecutionPlan(activePlan, errorMessage);
+        queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, failedPlan);
+        activePlan = failedPlan;
+      }
+      await executionEventQueue.flush();
+      await executionService.failRun({
+        executionId,
+        latestSummary: summarizeText(errorMessage, 400),
+        errorCode: 'desktop_action_loop_failed',
+        errorMessage,
+      });
+      throw error;
     } finally {
       unregisterPlanBus(requestId);
     }
 
     if (requestedAction) {
+      executionEventQueue.enqueue(async () => {
+        await executionService.appendEvent({
+          executionId,
+          phase: 'control',
+          eventType: 'control.requested',
+          actorType: 'system',
+          actorKey: requestedAction.kind,
+          title: `Requested local action: ${requestedAction.kind}`,
+          summary: summarizeText(requestedAction.kind === 'run_command' ? requestedAction.command : requestedAction.path),
+          status: 'pending',
+          payload: requestedAction as unknown as Record<string, unknown>,
+        });
+      });
+      await executionEventQueue.flush();
       return res.json(ApiResponse.success({
         kind: 'action',
         action: requestedAction,
         plan: activePlan,
+        executionId,
       }, 'Local action requested'));
     }
 
     if (activePlan) {
-      activePlan = completeExecutionPlan(activePlan, assistantText || undefined);
+      const completedPlan = completeExecutionPlan(activePlan, assistantText || undefined);
+      queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, completedPlan);
+      activePlan = completedPlan;
     }
 
-    const assistantMessage = await desktopThreadsService.addMessage(
-      threadId,
-      session.userId,
-      'assistant',
-      assistantText,
-      activePlan ? { plan: activePlan } : undefined,
+    const canShareKnowledge = await toolPermissionService.isAllowed(
+      session.companyId,
+      'share_chat_vectors',
+      requesterAiRole,
     );
-    conversationMemoryStore.addAssistantMessage(conversationKey, randomUUID(), assistantText);
 
-    return res.json(ApiResponse.success({
-      kind: 'answer',
-      message: assistantMessage,
-      plan: activePlan,
-    }, 'Assistant reply created'));
+    executionEventQueue.enqueue(async () => {
+      await executionService.appendEvent({
+        executionId,
+        phase: 'synthesis',
+        eventType: 'synthesis.completed',
+        actorType: 'agent',
+        actorKey: agentId,
+        title: 'Generated assistant response',
+        summary: summarizeText(assistantText, 800),
+        status: 'done',
+      });
+    });
+    executionEventQueue.enqueue(async () => {
+      await executionService.appendEvent({
+        executionId,
+        phase: 'delivery',
+        eventType: 'delivery.started',
+        actorType: 'delivery',
+        actorKey: 'desktop-message',
+        title: 'Persisting assistant response',
+        summary: summarizeText(assistantText, 400),
+        status: 'running',
+      });
+    });
+
+    try {
+      const assistantMessage = await desktopThreadsService.addMessage(
+        threadId,
+        session.userId,
+        'assistant',
+        assistantText,
+        {
+          executionId,
+          ...(activePlan ? { plan: activePlan } : {}),
+          ...(canShareKnowledge ? { shareAction: buildShareAction(conversationKey) } : {}),
+        },
+      );
+      executionEventQueue.enqueue(async () => {
+        await executionService.appendEvent({
+          executionId,
+          phase: 'delivery',
+          eventType: 'delivery.completed',
+          actorType: 'delivery',
+          actorKey: 'desktop-message',
+          title: 'Assistant response persisted',
+          summary: summarizeText(assistantText, 400),
+          status: 'done',
+          payload: {
+            messageId: assistantMessage.id,
+          },
+        });
+      });
+      await executionEventQueue.flush();
+      await executionService.completeRun({
+        executionId,
+        latestSummary: summarizeText(assistantText, 400),
+      });
+      conversationMemoryStore.addAssistantMessage(conversationKey, randomUUID(), assistantText);
+
+      return res.json(ApiResponse.success({
+        kind: 'answer',
+        message: assistantMessage,
+        plan: activePlan,
+        executionId,
+      }, 'Assistant reply created'));
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to persist assistant response';
+      executionEventQueue.enqueue(async () => {
+        await executionService.appendEvent({
+          executionId,
+          phase: 'error',
+          eventType: 'execution.failed',
+          actorType: 'delivery',
+          actorKey: 'desktop-message',
+          title: 'Assistant response persistence failed',
+          summary: summarizeText(errorMessage),
+          status: 'failed',
+          payload: {
+            threadId,
+          },
+        });
+      });
+      await executionEventQueue.flush();
+      await executionService.failRun({
+        executionId,
+        latestSummary: summarizeText(errorMessage, 400),
+        errorCode: 'desktop_message_persist_failed',
+        errorMessage,
+      });
+      throw error;
+    }
   };
 }
 

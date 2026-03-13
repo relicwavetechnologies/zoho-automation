@@ -20,6 +20,13 @@ export type ZohoHistoricalFetchResult = {
   records: ZohoHistoricalRecord[];
   nextCursor?: string;
   total: number;
+  warnings?: Array<{
+    code: 'module_skipped' | 'predicate_invalid';
+    message: string;
+    moduleName: string;
+    sourceType: ZohoHistoricalSourceType;
+    statusCode?: number;
+  }>;
 };
 
 export class ZohoHistoricalAdapter {
@@ -42,6 +49,7 @@ export class ZohoHistoricalAdapter {
       records: page.records,
       nextCursor: page.nextCursor,
       total: page.total ?? page.records.length,
+      warnings: page.warnings,
     };
   }
 }

@@ -1,7 +1,8 @@
 import type { CheckpointDTO } from '../../contracts';
 import config from '../../../config';
 import { redisConnection } from '../../queue/runtime/redis.connection';
-import { emitRuntimeTrace } from '../../observability';
+import { emitRuntimeTrace, executionService } from '../../observability';
+import { logger } from '../../../utils/logger';
 
 const checkpointVersionKey = (taskId: string) => `emiac:task:${taskId}:checkpoint:version`;
 const checkpointHistoryKey = (taskId: string) => `emiac:task:${taskId}:checkpoint:history`;
@@ -45,6 +46,37 @@ class CheckpointRepository {
             : undefined,
       },
     });
+    const executionId = typeof trace?.requestId === 'string' ? trace.requestId : undefined;
+    if (executionId) {
+      try {
+        await executionService.appendEvent({
+          executionId,
+          phase: 'control',
+          eventType: 'checkpoint.saved',
+          actorType: 'system',
+          actorKey: node,
+          title: `Checkpoint saved: ${node}`,
+          summary: `Checkpoint version ${version}`,
+          status: 'done',
+          payload: {
+            taskId,
+            version,
+            node,
+            routeIntent:
+              state.route && typeof state.route === 'object' && typeof (state.route as Record<string, unknown>).intent === 'string'
+                ? (state.route as Record<string, unknown>).intent
+                : undefined,
+          },
+        });
+      } catch (error) {
+        logger.warn('execution.checkpoint_event_failed', {
+          executionId,
+          taskId,
+          node,
+          error: error instanceof Error ? error.message : 'unknown_checkpoint_execution_error',
+        });
+      }
+    }
     return checkpoint;
   }
 

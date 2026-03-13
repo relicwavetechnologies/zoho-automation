@@ -118,10 +118,12 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
   // Treat as an event callback if type is explicitly 'event_callback' OR if it's schema 2.0
   if (type === 'event_callback' || schema === '2.0') {
     // ── Check for Interactive Card Action (V2) ─────────────────────────────
-    // Lark interactive card actions (V2) don't have an `event` payload,
-    // they send the action directly on the top-level envelope.
-    if (envelope.action && typeof envelope.action === 'object') {
-      if (!envelope.action.value) {
+    // Support both older top-level `action` payloads and newer nested
+    // `event.action` callback payloads.
+    const cardAction = asRecord(envelope.action)
+      ?? asRecord(envelope.event && typeof envelope.event === 'object' ? envelope.event.action : undefined);
+    if (cardAction) {
+      if (!cardAction.value) {
         return {
           kind: 'invalid',
           reason: 'missing_message_fields',
@@ -131,9 +133,8 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
       return {
         kind: 'event_callback_card_action',
         envelope,
-        actionValue: envelope.action.value,
-        eventType: 'card.action.trigger',
-        larkTenantKey: readTenantKey(envelope),
+        actionValue: cardAction.value as Record<string, unknown>,
+        ...readEventMetadata(envelope),
       };
     }
 
@@ -147,7 +148,7 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
     const metadata = readEventMetadata(envelope);
     const message = envelope.event.message;
 
-    if (metadata.eventType !== 'im.message.receive_v1' && !message) {
+    if (metadata.eventType && metadata.eventType !== 'im.message.receive_v1') {
       return {
         kind: 'event_callback_ignored',
         reason: 'unsupported_event_callback',
@@ -157,13 +158,14 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
 
     if (!message) {
       return {
-        kind: 'invalid',
-        reason: 'missing_message_fields',
+        kind: 'event_callback_ignored',
+        reason: 'unsupported_event_callback',
+        ...metadata,
       };
     }
 
     const msgType = readString(message.msg_type) ?? 'text';
-    if (msgType !== 'text' && msgType !== 'post') {
+    if (msgType !== 'text' && msgType !== 'post' && msgType !== 'image' && msgType !== 'file') {
       return {
         kind: 'event_callback_ignored',
         reason: 'unsupported_message_type',
@@ -172,7 +174,7 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
     }
 
     const parsedText = parseLarkMessageContent(message.content, msgType);
-    if (parsedText.trim().length === 0) {
+    if (parsedText.trim().length === 0 && (msgType === 'text' || msgType === 'post')) {
       return {
         kind: 'event_callback_ignored',
         reason: 'empty_text_message',

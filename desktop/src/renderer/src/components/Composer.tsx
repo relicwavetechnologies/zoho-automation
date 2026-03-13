@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { ArrowUp, AtSign, ChevronDown, Paperclip, Square, X, FileText, Image, File, Infinity, Zap, Flame } from 'lucide-react'
+import { ArrowUp, AtSign, ChevronDown, Paperclip, Square, X, FileText, Image, File, Infinity, Zap, Flame, Rocket } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useAuth } from '../context/AuthContext'
 import { useChat } from '../context/ChatContext'
 import { useWorkspace } from '../context/WorkspaceContext'
 import { PlanDrawer } from './PlanDrawer'
 import { FilesDrawer, type FileAssetRecord } from './FilesDrawer'
+
+type ComposerMode = 'fast' | 'high' | 'xtreme'
 
 // ─── File attachment types ─────────────────────────────────────────────────────
 
@@ -33,6 +35,40 @@ const ALLOWED_TYPES = new Set([
   'image/webp',
   'image/gif',
 ])
+
+const MODE_OPTIONS: Array<{
+  value: ComposerMode
+  label: string
+  description: string
+  title: string
+  icon: typeof Zap
+  iconClassName: string
+}> = [
+  {
+    value: 'fast',
+    label: 'Fast',
+    description: 'Lightweight routing, lower cost',
+    title: 'Fast mode - lightweight routing, lower cost',
+    icon: Zap,
+    iconClassName: 'text-[hsl(43,95%,60%)]',
+  },
+  {
+    value: 'high',
+    label: 'High',
+    description: 'Flagship models, full capability',
+    title: 'High mode - flagship models, full capability',
+    icon: Flame,
+    iconClassName: 'text-[hsl(210,100%,66%)]',
+  },
+  {
+    value: 'xtreme',
+    label: 'Xtreme',
+    description: 'Groq instant routing + Gemini deep planning',
+    title: 'Xtreme hybrid - Groq instant routing + Gemini deep planning',
+    icon: Rocket,
+    iconClassName: 'text-[hsl(280,100%,70%)]',
+  },
+]
 
 // ─── Helper: icon per MIME type ────────────────────────────────────────────────
 
@@ -113,9 +149,11 @@ export function Composer(): JSX.Element {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
-  const [mode, setMode] = useState<'fast' | 'high'>('high')
+  const [mode, setMode] = useState<ComposerMode>('high')
+  const [isModeMenuOpen, setIsModeMenuOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const modeMenuRef = useRef<HTMLDivElement>(null)
 
   const canSend = (text.trim().length > 0 || attachments.some(a => a.status === 'done'))
     && !isStreaming
@@ -129,6 +167,27 @@ export function Composer(): JSX.Element {
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`
     }
   }, [text])
+
+  useEffect(() => {
+    if (!isModeMenuOpen) return
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (modeMenuRef.current && !modeMenuRef.current.contains(event.target as Node)) {
+        setIsModeMenuOpen(false)
+      }
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsModeMenuOpen(false)
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown)
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [isModeMenuOpen])
 
   // ── Upload logic ──────────────────────────────────────────────────────────────
   const uploadFile = useCallback(async (attachment: AttachedFile) => {
@@ -238,6 +297,8 @@ export function Composer(): JSX.Element {
   }, [])
 
   const referencedIds = new Set(attachments.map(a => a.fileAssetId).filter(Boolean) as string[])
+  const selectedMode = MODE_OPTIONS.find((option) => option.value === mode) ?? MODE_OPTIONS[1]
+  const SelectedModeIcon = selectedMode.icon
 
   return (
     <div
@@ -298,7 +359,7 @@ export function Composer(): JSX.Element {
                 isDragOver
                   ? 'Drop to attach…'
                   : activeThread
-                    ? `Ask about ${currentWorkspace?.name ?? 'this workspace'} or run /run <command>`
+                    ? `Message Odin about ${currentWorkspace?.name ?? 'this workspace'} or run /run <command>`
                     : currentWorkspace
                       ? `Create a thread in ${currentWorkspace.name} to start`
                       : 'Open a workspace folder to start'
@@ -320,27 +381,68 @@ export function Composer(): JSX.Element {
                   className="inline-flex h-8 items-center gap-2 rounded-xl border border-[hsl(0,0%,24%)] bg-[hsl(0,0%,22%)] px-3 text-[13px] font-medium text-[hsl(0,0%,80%)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] disabled:cursor-default"
                 >
                   <Infinity size={14} />
-                  <span>Agent</span>
+                  <span>Odin</span>
                   <ChevronDown size={13} className="text-[hsl(0,0%,60%)]" />
                 </button>
 
                 {/* ── Mode toggle ───────────────────────────────────────── */}
-                <button
-                  type="button"
-                  disabled={!activeThread || isStreaming}
-                  onClick={() => setMode(m => m === 'fast' ? 'high' : 'fast')}
-                  className={cn(
-                    'inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium transition-all select-none',
-                    !activeThread || isStreaming
-                      ? 'border-transparent text-[hsl(0,0%,32%)] cursor-not-allowed'
-                      : 'border-transparent bg-[hsl(0,0%,22%)] text-[hsl(0,0%,80%)] hover:bg-[hsl(0,0%,26%)]'
+                <div className="relative" ref={modeMenuRef}>
+                  <button
+                    type="button"
+                    disabled={!activeThread || isStreaming}
+                    onClick={() => setIsModeMenuOpen(open => !open)}
+                    aria-haspopup="menu"
+                    aria-expanded={isModeMenuOpen}
+                    className={cn(
+                      'inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium transition-all select-none',
+                      !activeThread || isStreaming
+                        ? 'border-transparent text-[hsl(0,0%,32%)] cursor-not-allowed'
+                        : 'border-transparent bg-[hsl(0,0%,22%)] text-[hsl(0,0%,80%)] hover:bg-[hsl(0,0%,26%)]'
+                    )}
+                    title={selectedMode.title}
+                  >
+                    <SelectedModeIcon size={13} className={selectedMode.iconClassName} strokeWidth={2.5} />
+                    <span className="tracking-wide text-[13px]">{selectedMode.label}</span>
+                    <ChevronDown
+                      size={13}
+                      className={cn(
+                        !activeThread || isStreaming ? 'text-[hsl(0,0%,32%)]' : 'text-[hsl(0,0%,56%)]',
+                        isModeMenuOpen && 'rotate-180'
+                      )}
+                    />
+                  </button>
+
+                  {isModeMenuOpen && activeThread && !isStreaming && (
+                    <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[220px] overflow-hidden rounded-2xl border border-[hsl(0,0%,18%)] bg-[linear-gradient(180deg,hsl(0,0%,16%),hsl(0,0%,12%))] p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
+                      {MODE_OPTIONS.map((option) => {
+                        const OptionIcon = option.icon
+                        const isSelected = option.value === mode
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => {
+                              setMode(option.value)
+                              setIsModeMenuOpen(false)
+                            }}
+                            className={cn(
+                              'flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition-colors',
+                              isSelected
+                                ? 'bg-[hsl(0,0%,24%)] text-[hsl(0,0%,96%)]'
+                                : 'text-[hsl(0,0%,78%)] hover:bg-[hsl(0,0%,20%)]'
+                            )}
+                          >
+                            <OptionIcon size={14} className={option.iconClassName} strokeWidth={2.4} />
+                            <div className="min-w-0">
+                              <div className="text-[13px] font-medium leading-5">{option.label}</div>
+                              <div className="text-[11px] leading-4 text-[hsl(0,0%,52%)]">{option.description}</div>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
                   )}
-                  title={mode === 'fast' ? 'Fast mode — lightweight models, lower cost' : 'High mode — flagship models, full capability'}
-                >
-                  {mode === 'fast' ? <Zap size={13} className="text-[hsl(43,95%,60%)]" strokeWidth={2.5} /> : <Flame size={13} className="text-[hsl(210,100%,66%)]" strokeWidth={2.5} />}
-                  <span className="tracking-wide text-[13px]">{mode === 'fast' ? 'Fast' : 'High'}</span>
-                  <ChevronDown size={13} className={cn(!activeThread || isStreaming ? 'text-[hsl(0,0%,32%)]' : 'text-[hsl(0,0%,56%)]')} />
-                </button>
+                </div>
               </div>
 
               <div className="flex items-center gap-1.5 ml-auto">
@@ -406,7 +508,7 @@ export function Composer(): JSX.Element {
 
         <p className="mt-1.5 text-center text-[9px] tracking-[0.02em] text-[hsl(0,0%,28%)]">
           {currentWorkspace
-            ? `Threads are scoped to ${currentWorkspace.name}. Drag & drop or attach PDFs, DOCX, or images.`
+            ? `Message Odin for grounded Zoho work, research, documents, or workspace actions in ${currentWorkspace.name}. Drag & drop or attach PDFs, DOCX, or images.`
             : 'Open a workspace folder to begin.'}
         </p>
       </div>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { X, FileText, Image, File, Clock, Shield, ChevronUp } from 'lucide-react'
+import { X, FileText, Image as ImageIcon, File, Clock, Shield, Trash2, Loader2, RotateCcw, Share2 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useAuth } from '../context/AuthContext'
 
@@ -10,8 +10,12 @@ export type FileAssetRecord = {
   sizeBytes: number
   cloudinaryUrl: string
   ingestionStatus: string
+  ingestionError?: string | null
   createdAt: string
   accessPolicies: Array<{ aiRole: string }>
+  shareStatus?: string
+  shareSummary?: string
+  sharedCompanyWide?: boolean
 }
 
 interface FilesDrawerProps {
@@ -22,7 +26,7 @@ interface FilesDrawerProps {
 }
 
 function FileTypeIcon({ mimeType }: { mimeType: string }) {
-  if (mimeType.startsWith('image/')) return <Image size={14} className="text-blue-400" />
+  if (mimeType.startsWith('image/')) return <ImageIcon size={14} className="text-blue-400" />
   if (mimeType === 'application/pdf') return <FileText size={14} className="text-red-400" />
   return <File size={14} className="text-slate-400" />
 }
@@ -44,11 +48,24 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+function shareLabel(status?: string, sharedCompanyWide?: boolean) {
+  if (sharedCompanyWide) return { text: 'Shared', cls: 'text-emerald-400' }
+  if (status === 'pending') return { text: 'Pending approval', cls: 'text-amber-400' }
+  if (status === 'delivery_failed') return { text: 'Delivery failed', cls: 'text-orange-400' }
+  if (status === 'reverted') return { text: 'Reverted', cls: 'text-zinc-400' }
+  return null
+}
+
 export function FilesDrawer({ open, onClose, onReference, referencedIds }: FilesDrawerProps) {
   const { token } = useAuth()
   const [files, setFiles] = useState<FileAssetRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
+  const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set())
+  const [sharingIds, setSharingIds] = useState<Set<string>>(new Set())
+  const [canShare, setCanShare] = useState(false)
+  const [statusMessage, setStatusMessage] = useState<string | null>(null)
 
   const loadFiles = useCallback(async () => {
     if (!token) return
@@ -56,8 +73,9 @@ export function FilesDrawer({ open, onClose, onReference, referencedIds }: Files
     try {
       const result = await window.desktopAPI.files.list(token)
       if (result.success) {
-        const payload = result.data as { data?: FileAssetRecord[] }
-        setFiles(payload?.data ?? [])
+        const payload = result.data as { data?: { files?: FileAssetRecord[]; canShare?: boolean } }
+        setFiles(payload?.data?.files ?? [])
+        setCanShare(Boolean(payload?.data?.canShare))
       }
     } finally {
       setLoading(false)
@@ -67,6 +85,112 @@ export function FilesDrawer({ open, onClose, onReference, referencedIds }: Files
   useEffect(() => {
     if (open) loadFiles()
   }, [open, loadFiles])
+
+  useEffect(() => {
+    if (!open) return undefined
+    const hasInFlightFiles = files.some(
+      (file) => file.ingestionStatus === 'pending' || file.ingestionStatus === 'processing',
+    )
+    if (!hasInFlightFiles) return undefined
+
+    const interval = window.setInterval(() => {
+      void loadFiles()
+    }, 2500)
+
+    return () => window.clearInterval(interval)
+  }, [files, loadFiles, open])
+
+  const handleDelete = useCallback(async (e: React.MouseEvent, fileId: string) => {
+    e.stopPropagation()
+    if (!token) return
+
+    setDeletingIds(prev => {
+      const next = new Set(prev)
+      next.add(fileId)
+      return next
+    })
+
+    try {
+      const result = await window.desktopAPI.files.delete(token, fileId)
+      if (result.success) {
+        setFiles(prev => prev.filter(f => f.id !== fileId))
+        if (referencedIds.has(fileId)) {
+          // If it's referenced, removing it from our reference set happens automatically 
+          // via Composer when the file disappears, or we might need Composer to sync.
+          // For now, it just deletes from the backend. The next reload would clear it.
+        }
+      } else {
+        console.error('Failed to delete:', result.data)
+      }
+    } finally {
+      setDeletingIds(prev => {
+        const next = new Set(prev)
+        next.delete(fileId)
+        return next
+      })
+    }
+  }, [token, referencedIds])
+
+  const handleRetry = useCallback(async (e: React.MouseEvent, fileId: string) => {
+    e.stopPropagation()
+    if (!token) return
+
+    setRetryingIds(prev => {
+      const next = new Set(prev)
+      next.add(fileId)
+      return next
+    })
+
+    try {
+      const result = await window.desktopAPI.files.retry(token, fileId)
+      if (result.success) {
+        setFiles(prev => prev.map(f => f.id === fileId ? { ...f, ingestionStatus: 'pending' } : f))
+      } else {
+        console.error('Failed to retry:', result.data)
+      }
+    } finally {
+      setRetryingIds(prev => {
+        const next = new Set(prev)
+        next.delete(fileId)
+        return next
+      })
+    }
+  }, [token])
+
+  const handleShare = useCallback(async (e: React.MouseEvent, fileId: string) => {
+    e.stopPropagation()
+    if (!token) return
+
+    setStatusMessage(null)
+    setSharingIds(prev => {
+      const next = new Set(prev)
+      next.add(fileId)
+      return next
+    })
+
+    try {
+      const result = await window.desktopAPI.files.share(token, fileId)
+      const payload = result.data as { message?: string; data?: { status?: string; classification?: string } }
+      if (result.success) {
+        const status = payload?.data?.status ?? 'processed'
+        const classification = payload?.data?.classification
+        setStatusMessage(
+          classification
+            ? `Share ${status.replace(/_/g, ' ')} (${classification}).`
+            : `Share ${status.replace(/_/g, ' ')}.`
+        )
+      } else {
+        setStatusMessage(payload?.message ?? 'Failed to share file.')
+      }
+      void loadFiles()
+    } finally {
+      setSharingIds(prev => {
+        const next = new Set(prev)
+        next.delete(fileId)
+        return next
+      })
+    }
+  }, [loadFiles, token])
 
   const filtered = files.filter((f) =>
     f.fileName.toLowerCase().includes(search.toLowerCase())
@@ -116,6 +240,12 @@ export function FilesDrawer({ open, onClose, onReference, referencedIds }: Files
           />
         </div>
 
+        {statusMessage && (
+          <div className="mx-3 mt-1 rounded-xl border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,8%)] px-3 py-2 text-[11px] text-[hsl(0,0%,68%)]">
+            {statusMessage}
+          </div>
+        )}
+
         {/* File list */}
         <div className="overflow-y-auto flex-1 px-3 pb-3 space-y-1 mt-1">
           {loading && (
@@ -131,19 +261,29 @@ export function FilesDrawer({ open, onClose, onReference, referencedIds }: Files
           {filtered.map((file) => {
             const isReferenced = referencedIds.has(file.id)
             const label = ingestionLabel(file.ingestionStatus)
+            const share = shareLabel(file.shareStatus, file.sharedCompanyWide)
+            const canTriggerShare =
+              canShare
+              && file.ingestionStatus === 'done'
+              && !file.sharedCompanyWide
+              && file.shareStatus !== 'pending'
             return (
               <div
                 key={file.id}
                 className={cn(
-                  'flex items-center gap-2.5 rounded-xl px-2.5 py-1.5 cursor-pointer transition-all duration-150 border',
+                  'group flex items-center gap-2.5 rounded-xl px-2.5 py-1.5 cursor-pointer transition-all duration-150 border',
                   isReferenced
                     ? 'border-[hsl(216,80%,45%)] bg-[hsl(216,80%,15%)]'
                     : 'border-transparent hover:bg-[hsl(0,0%,16%)]'
                 )}
                 onClick={() => onReference(file)}
               >
-                <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center bg-[hsl(0,0%,15%)] border border-[hsl(0,0%,20%)] text-[hsl(0,0%,70%)]">
-                  <FileTypeIcon mimeType={file.mimeType} />
+                <div className="flex-shrink-0 w-8 h-8 md:w-10 md:h-10 rounded-lg flex items-center justify-center bg-[hsl(0,0%,15%)] border border-[hsl(0,0%,20%)] text-[hsl(0,0%,70%)] overflow-hidden">
+                  {file.mimeType.startsWith('image/') && file.cloudinaryUrl ? (
+                    <img src={file.cloudinaryUrl} alt={file.fileName} className="w-full h-full object-cover" />
+                  ) : (
+                    <FileTypeIcon mimeType={file.mimeType} />
+                  )}
                 </div>
                 <div className="flex-1 min-w-0 flex flex-col justify-center">
                   <p className="text-[12.5px] font-medium leading-none text-[hsl(0,0%,88%)] truncate">{file.fileName}</p>
@@ -168,12 +308,68 @@ export function FilesDrawer({ open, onClose, onReference, referencedIds }: Files
                       </div>
                     </div>
                   )}
+                  {share && (
+                    <div className="flex items-center gap-1.5 mt-1 overflow-hidden">
+                      <Share2 size={9} className="text-[hsl(0,0%,40%)] shrink-0" />
+                      <span className={cn('text-[10px] leading-none font-medium', share.cls)}>
+                        {share.text}
+                      </span>
+                    </div>
+                  )}
+                  {file.ingestionStatus === 'failed' && file.ingestionError && (
+                    <p className="mt-1 text-[10px] leading-snug text-red-400/80 line-clamp-2">
+                      {file.ingestionError}
+                    </p>
+                  )}
                 </div>
-                {isReferenced && (
-                  <div className="flex-shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[hsl(216,80%,20%)] text-[hsl(216,80%,70%)]">
-                    Added
-                  </div>
-                )}
+                {/* Trailing Indicators */}
+                <div className="flex items-center gap-2 ml-2">
+                  {isReferenced && (
+                    <div className="flex-shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[hsl(216,80%,20%)] text-[hsl(216,80%,70%)]">
+                      Added
+                    </div>
+                  )}
+
+                  {file.ingestionStatus === 'failed' && (
+                    retryingIds.has(file.id) ? (
+                      <Loader2 className="w-4 h-4 text-[hsl(0,0%,46%)] animate-spin" />
+                    ) : (
+                      <button
+                        onClick={(e) => handleRetry(e, file.id)}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-md hover:bg-[hsl(0,0%,24%)] text-[hsl(0,0%,46%)] hover:text-blue-400"
+                        title="Retry indexing"
+                      >
+                        <RotateCcw size={14} />
+                      </button>
+                    )
+                  )}
+
+                  {canTriggerShare && (
+                    sharingIds.has(file.id) ? (
+                      <Loader2 className="w-4 h-4 text-[hsl(0,0%,46%)] animate-spin" />
+                    ) : (
+                      <button
+                        onClick={(e) => handleShare(e, file.id)}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-md hover:bg-[hsl(0,0%,24%)] text-[hsl(0,0%,46%)] hover:text-emerald-400"
+                        title="Share to company knowledge"
+                      >
+                        <Share2 size={14} />
+                      </button>
+                    )
+                  )}
+
+                  {deletingIds.has(file.id) ? (
+                    <Loader2 className="w-4 h-4 text-[hsl(0,0%,46%)] animate-spin" />
+                  ) : (
+                    <button
+                      onClick={(e) => handleDelete(e, file.id)}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-md hover:bg-[hsl(0,0%,24%)] text-[hsl(0,0%,46%)] hover:text-red-400"
+                      title="Delete file"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
               </div>
             )
           })}

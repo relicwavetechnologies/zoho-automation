@@ -30,6 +30,29 @@ export function registerChatHandlers(): void {
   )
 
   ipcMain.handle(
+    'desktop:chat:share',
+    async (_event, token: string, threadId: string, reason?: string) => {
+      try {
+        const res = await net.fetch(`${BACKEND_URL}/api/desktop/chat/${threadId}/share`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(reason ? { reason } : {}),
+        })
+        const json = await res.json()
+        return { success: res.ok, data: json }
+      } catch (error) {
+        return {
+          success: false,
+          data: { message: error instanceof Error ? error.message : 'Failed to share conversation' },
+        }
+      }
+    },
+  )
+
+  ipcMain.handle(
     'desktop:chat:startStream',
     async (
       event,
@@ -38,7 +61,7 @@ export function registerChatHandlers(): void {
       message: string,
       requestId: string,
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-      mode?: 'fast' | 'high'
+      mode?: 'fast' | 'high' | 'xtreme'
     ) => {
       const target = event.sender
       const controller = new AbortController()
@@ -53,7 +76,7 @@ export function registerChatHandlers(): void {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
           },
-          body: JSON.stringify({ message, attachedFiles, mode }),
+          body: JSON.stringify({ message, attachedFiles, mode, executionId: requestId }),
           signal: controller.signal,
         })
       } catch (error) {

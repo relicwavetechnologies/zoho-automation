@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import type { VectorSearchResult } from '../../../integrations/vector/vector-store.adapter';
 import { embeddingService } from '../../../integrations/embedding';
 import { qdrantAdapter } from '../../../integrations/vector/qdrant.adapter';
+import { buildCitationFromVectorResult } from '../../../integrations/vector/vector-citations';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
 import { emitActivityEvent } from './activity-bus';
 
@@ -25,7 +26,9 @@ export const searchDocumentsTool = createTool({
     }
 
     const companyId = requestContext?.get('companyId') as string | undefined;
-    const userAiRole = requestContext?.get('userAiRole') as string | undefined;
+    const userAiRole =
+      (requestContext?.get('userAiRole') as string | undefined)
+      ?? (requestContext?.get('requesterAiRole') as string | undefined);
     const requestId = requestContext?.get('requestId') as string | undefined;
     const callId = randomUUID();
 
@@ -79,6 +82,24 @@ export const searchDocumentsTool = createTool({
           return `[${i + 1}] From "${fileName}" (score: ${r.score.toFixed(3)}):\n${text}`;
         })
         .join('\n\n');
+      const citations = results
+        .map((result, index) => buildCitationFromVectorResult(result, index))
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+      const answer = `Found ${results.length} relevant document section(s):\n\n${chunks}`;
+      const resultSummary = JSON.stringify({
+        type: 'structured_knowledge',
+        answer,
+        sources: citations.map((citation) => ({
+          id: citation.id,
+          title: citation.title,
+          url: citation.url,
+          kind: citation.kind,
+          sourceType: citation.sourceType,
+          sourceId: citation.sourceId,
+          fileAssetId: citation.fileAssetId,
+          chunkIndex: citation.chunkIndex,
+        })),
+      });
 
       if (requestId) {
         emitActivityEvent(requestId, 'activity_done', {
@@ -86,11 +107,11 @@ export const searchDocumentsTool = createTool({
           name: 'search-documents',
           label: 'Document search complete',
           icon: 'file-search',
-          resultSummary: `${results.length} sections found`,
+          resultSummary,
         });
       }
 
-      return { answer: `Found ${results.length} relevant document section(s):\n\n${chunks}` };
+      return { answer, citations };
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'unknown_error';
       if (requestId) {

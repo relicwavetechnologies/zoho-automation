@@ -148,7 +148,14 @@ test('ZohoDataClient.fetchUserScopedRecords filters by requester email exactly a
         }
 
         if (path === '/crm/v8/coql') {
-          assert.ok(String(body.select_query).includes("Email = 'owner@example.com'"));
+          const query = String(body.select_query);
+          assert.ok(
+            query.includes("Email = 'scope-validation@example.invalid'")
+            || query.includes("Email = 'owner@example.com'"),
+          );
+          if (query.includes("Email = 'scope-validation@example.invalid'")) {
+            return { data: [] };
+          }
           return {
             data: [{ id: 'c1' }, { id: 'c2' }],
           };

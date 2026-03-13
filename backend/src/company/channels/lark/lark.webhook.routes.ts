@@ -13,6 +13,9 @@ import { parseLarkIngressPayload } from './lark-ingress.contract';
 import { buildLarkTextHash, buildLarkTraceMeta } from './lark-observability';
 import { emitRuntimeTrace } from '../../observability';
 import { larkWorkspaceConfigRepository } from './lark-workspace-config.repository';
+import { larkUserAuthLinkRepository } from './lark-user-auth-link.repository';
+import { parseLarkAttachmentKeys } from './lark-message-content';
+import { ingestLarkAttachments } from './lark-file-ingestion';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
 type WebhookVerificationFailureReason = Exclude<LarkWebhookVerificationResult['reason'], undefined>;
@@ -28,7 +31,7 @@ type UpsertChannelIdentityInput = {
 };
 
 type LarkWebhookRouteDependencies = {
-  adapter: Pick<LarkChannelAdapter, 'normalizeIncomingEvent' | 'sendMessage'>;
+  adapter: Pick<LarkChannelAdapter, 'normalizeIncomingEvent' | 'sendMessage' | 'downloadFile'>;
   log: Pick<typeof logger, 'debug' | 'info' | 'warn' | 'error' | 'success'>;
   verifyRequest: typeof verifyLarkWebhookRequest;
   parsePayload: typeof parseLarkIngressPayload;
@@ -44,6 +47,16 @@ type LarkWebhookRouteDependencies = {
   upsertChannelIdentity: (
     input: UpsertChannelIdentityInput,
   ) => Promise<{ id: string; isNew: boolean; aiRole: string; email?: string | null }>;
+  /**
+   * Looks up whether the Lark sender has an active linked Desktop account.
+   * Returns the internal User.id if found, or null otherwise.
+   * Used to unify personal vector memory ownership across channels.
+   */
+  resolveLinkedUserId: (input: {
+    companyId: string;
+    larkOpenId?: string | null;
+    larkUserId?: string | null;
+  }) => Promise<string | null>;
 };
 
 type PrimaryIngressIdempotencyKey = {
@@ -81,6 +94,17 @@ const buildIngressTraceMeta = (input: {
     companyId: input.companyId,
   });
 
+const toCompactJson = (value: unknown, maxLength = 1200): string | undefined => {
+  if (value === undefined) return undefined;
+  try {
+    const json = JSON.stringify(value);
+    if (!json) return undefined;
+    return json.length > maxLength ? `${json.slice(0, maxLength)}...<truncated>` : json;
+  } catch {
+    return undefined;
+  }
+};
+
 const parseHitlDecision = (text: string): { actionId: string; decision: 'confirmed' | 'cancelled' } | null => {
   const normalized = text.trim().toLowerCase();
   const match = normalized.match(/^(confirm|cancel)\s+([0-9a-f-]{36})$/i);
@@ -91,6 +115,14 @@ const parseHitlDecision = (text: string): { actionId: string; decision: 'confirm
     decision: match[1] === 'confirm' ? 'confirmed' : 'cancelled',
     actionId: match[2],
   };
+};
+
+const readMessageAgeMs = (timestamp: string): number | null => {
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return Date.now() - parsed.getTime();
 };
 
 const toIdempotencyStorageKey = (channel: string, keyType: IngressIdempotencyKeyType, key: string): string =>
@@ -140,6 +172,22 @@ export const mapVerificationReasonToHttpStatus = (
 
   return 401;
 };
+
+const buildDuplicateIgnoredResponse = (input: {
+  message: Pick<NormalizedIncomingMessageDTO, 'channel' | 'messageId' | 'chatId'>;
+  keyType: IngressIdempotencyKeyType;
+  idempotencyKey: string;
+}) => ({
+  success: true,
+  message: 'Duplicate ingress ignored (idempotency hit)',
+  data: {
+    channel: input.message.channel,
+    messageId: input.message.messageId,
+    chatId: input.message.chatId,
+    keyType: input.keyType,
+    idempotencyKey: input.idempotencyKey,
+  },
+});
 
 const defaultClaimIngressKey: LarkWebhookRouteDependencies['claimIngressKey'] = async (
   channel,
@@ -199,6 +247,9 @@ const defaultUpsertChannelIdentity: LarkWebhookRouteDependencies['upsertChannelI
   return channelIdentityRepository.upsert(input);
 };
 
+const defaultResolveLinkedUserId: LarkWebhookRouteDependencies['resolveLinkedUserId'] = async (input) =>
+  larkUserAuthLinkRepository.findLinkedUserId(input);
+
 const createDefaultDependencies = (): LarkWebhookRouteDependencies => ({
   adapter: new LarkChannelAdapter(),
   log: logger,
@@ -210,6 +261,7 @@ const createDefaultDependencies = (): LarkWebhookRouteDependencies => ({
   resolveCompanyIdByTenantKey: defaultResolveCompanyIdByTenantKey,
   resolveWorkspaceVerificationConfig: defaultResolveWorkspaceVerificationConfig,
   upsertChannelIdentity: defaultUpsertChannelIdentity,
+  resolveLinkedUserId: defaultResolveLinkedUserId,
 });
 
 const isMetadataParseResult = (
@@ -359,9 +411,41 @@ export const createLarkWebhookEventHandler = (
 
       const normalized = dependencies.adapter.normalizeIncomingEvent(parsed.envelope);
       if (!normalized) {
+        const envelopeRecord = parsed.envelope as Record<string, unknown>;
+        const eventRecord =
+          envelopeRecord.event && typeof envelopeRecord.event === 'object'
+            ? (envelopeRecord.event as Record<string, unknown>)
+            : undefined;
+        const operatorRecord =
+          eventRecord?.operator && typeof eventRecord.operator === 'object'
+            ? (eventRecord.operator as Record<string, unknown>)
+            : undefined;
+        const contextRecord =
+          eventRecord?.context && typeof eventRecord.context === 'object'
+            ? (eventRecord.context as Record<string, unknown>)
+            : undefined;
+        const actionRecord =
+          eventRecord?.action && typeof eventRecord.action === 'object'
+            ? (eventRecord.action as Record<string, unknown>)
+            : undefined;
+        const hostRecord =
+          eventRecord?.host && typeof eventRecord.host === 'object'
+            ? (eventRecord.host as Record<string, unknown>)
+            : undefined;
         dependencies.log.warn('lark.webhook.contract.invalid', {
           requestId,
           reason: 'unsupported_message_shape',
+          eventType: parsed.eventType,
+          topLevelKeys: Object.keys(envelopeRecord),
+          eventKeys: eventRecord ? Object.keys(eventRecord) : [],
+          operatorKeys: operatorRecord ? Object.keys(operatorRecord) : [],
+          contextKeys: contextRecord ? Object.keys(contextRecord) : [],
+          actionKeys: actionRecord ? Object.keys(actionRecord) : [],
+          hostKeys: hostRecord ? Object.keys(hostRecord) : [],
+          operatorPreview: toCompactJson(operatorRecord),
+          contextPreview: toCompactJson(contextRecord),
+          actionPreview: toCompactJson(actionRecord),
+          hostPreview: toCompactJson(hostRecord),
         });
         return res.status(400).json({
           success: false,
@@ -371,6 +455,14 @@ export const createLarkWebhookEventHandler = (
           },
         });
       }
+
+      // File ingestion is moved to after linkedUserId resolution below
+      // so we can attribute files to the correct internal User.id when possible.
+      const msgType = (parsed.envelope as any)?.event?.message?.msg_type as string | undefined;
+      const msgContent = (parsed.envelope as any)?.event?.message?.content;
+      const msgId = normalized.messageId;
+      const attachmentKeys = parseLarkAttachmentKeys(msgContent, msgType);
+
       dependencies.log.info('lark.webhook.message.normalized', {
         requestId,
         eventId: parsed.eventId,
@@ -381,14 +473,54 @@ export const createLarkWebhookEventHandler = (
         chatId: normalized.chatId,
         chatType: normalized.chatType,
         messageId: normalized.messageId,
+        timestamp: normalized.timestamp,
+        messageAgeMs: readMessageAgeMs(normalized.timestamp),
         textPreview: normalized.text.slice(0, 120),
         textLength: normalized.text.length,
       });
       const textHash = buildLarkTextHash(normalized.text);
 
+      if (parsed.kind === 'event_callback_message') {
+        const messageAgeMs = readMessageAgeMs(normalized.timestamp);
+        const maxAcceptedAgeMs = config.LARK_WEBHOOK_MAX_SKEW_SECONDS * 1000;
+
+        if (messageAgeMs !== null && messageAgeMs > maxAcceptedAgeMs) {
+          dependencies.log.info('lark.webhook.event.ignored', {
+            requestId,
+            reason: 'stale_message_delivery',
+            eventType: parsed.eventType,
+            eventId: parsed.eventId,
+            larkTenantKey,
+            companyId: scopedCompanyId ?? undefined,
+            messageId: normalized.messageId,
+            chatId: normalized.chatId,
+            messageAgeMs,
+            maxAcceptedAgeMs,
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Lark event ignored because the message is too old to process safely',
+            data: {
+              reason: 'stale_message_delivery',
+              eventType: parsed.eventType,
+              eventId: parsed.eventId,
+              messageId: normalized.messageId,
+              chatId: normalized.chatId,
+              messageAgeMs,
+              maxAcceptedAgeMs,
+            },
+          });
+        }
+      }
+
       let channelIdentityId: string | undefined;
       let requesterEmail: string | undefined;
       let userRole = 'MEMBER';
+      // linkedUserId bridges the Lark channel identity to the user's internal Desktop account.
+      // When set, the orchestration engine will use this as the ownerUserId in Qdrant so that
+      // personal vector memory is shared across both channels for the same person.
+      let linkedUserId: string | undefined;
+
       if (!scopedCompanyId || !normalized.userId || !larkTenantKey) {
         dependencies.log.debug('lark.channel_identity.skipped', {
           requestId,
@@ -441,10 +573,77 @@ export const createLarkWebhookEventHandler = (
             error: error instanceof Error ? error.message : 'unknown_error',
           });
         }
+
+        // Resolve linked internal user ID for cross-channel vector memory unification.
+        // This lookup is non-critical — a failure here degrades gracefully (memory stays
+        // channel-scoped) but does NOT break message processing.
+        try {
+          const resolved = await dependencies.resolveLinkedUserId({
+            companyId: scopedCompanyId,
+            larkOpenId: normalized.trace?.larkOpenId,
+            larkUserId: normalized.trace?.larkUserId,
+          });
+          if (resolved) {
+            linkedUserId = resolved;
+            dependencies.log.debug('lark.linked_user.resolved', {
+              requestId,
+              channelIdentityId,
+              linkedUserId,
+              companyId: scopedCompanyId,
+            });
+          }
+        } catch (error) {
+          dependencies.log.warn('lark.linked_user.resolve_failed', {
+            requestId,
+            companyId: scopedCompanyId,
+            error: error instanceof Error ? error.message : 'unknown_error',
+          });
+        }
+      }
+
+      // ── File/Image Ingestion (runs AFTER linkedUserId resolution) ────────────────
+      // Using linkedUserId as the uploaderUserId (when available) ensures Lark-ingested
+      // files are stored under the same internal User.id as Desktop-uploaded files.
+      // This makes them visible in the Desktop File Library drawer automatically.
+      let attachedFiles = normalized.attachedFiles ?? [];
+
+      if (attachmentKeys.length > 0 && scopedCompanyId && normalized.userId) {
+        // Prefer the internal linked User.id for cross-channel file ownership.
+        // Falls back to the Lark open_id when the user hasn't linked their account yet.
+        const effectiveUploaderId = linkedUserId ?? normalized.userId;
+        try {
+          const ingested = await ingestLarkAttachments({
+            messageId: msgId,
+            chatId: normalized.chatId,
+            attachmentKeys,
+            adapter: dependencies.adapter,
+            companyId: scopedCompanyId,
+            uploaderUserId: effectiveUploaderId,
+          });
+          if (ingested.length > 0) {
+            attachedFiles = [...attachedFiles, ...ingested];
+            dependencies.log.info('lark.file.ingestion.completed', {
+              requestId,
+              messageId: msgId,
+              fileCount: ingested.length,
+              fileAssetIds: ingested.map((f) => f.fileAssetId),
+              linkedUserId: linkedUserId ?? null,
+              effectiveUploaderId,
+            });
+          }
+        } catch (fileErr) {
+          dependencies.log.warn('lark.file.ingestion.batch_failed', {
+            requestId,
+            messageId: msgId,
+            error: fileErr instanceof Error ? fileErr.message : 'unknown_error',
+          });
+        }
       }
 
       const tracedMessage: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>> = {
         ...normalized,
+        // Attach any ingested files so the AI orchestration layer can see them
+        attachedFiles: attachedFiles.length > 0 ? attachedFiles : undefined,
         trace: {
           ...(normalized.trace ?? {}),
           requestId,
@@ -455,6 +654,7 @@ export const createLarkWebhookEventHandler = (
           channelTenantId: larkTenantKey,
           companyId: scopedCompanyId ?? undefined,
           channelIdentityId,
+          linkedUserId,
           userRole,
           requesterEmail,
         },
@@ -538,22 +738,44 @@ export const createLarkWebhookEventHandler = (
             companyId: scopedCompanyId ?? undefined,
           }),
         });
-        return res.status(202).json({
-          success: true,
-          message: 'Duplicate ingress ignored (idempotency hit)',
-          data: {
-            channel: tracedMessage.channel,
-            messageId: tracedMessage.messageId,
-            chatId: tracedMessage.chatId,
-            keyType: primaryIdempotency.keyType,
-            idempotencyKey: primaryIdempotency.idempotencyKey,
-          },
-        });
+        return res.status(202).json(buildDuplicateIgnoredResponse({
+          message: tracedMessage,
+          keyType: primaryIdempotency.keyType,
+          idempotencyKey: primaryIdempotency.idempotencyKey,
+        }));
       }
 
-      if (primaryIdempotency.keyType === 'event' && tracedMessage.messageId) {
+      if (parsed.kind === 'event_callback_message' && primaryIdempotency.keyType === 'event' && tracedMessage.messageId) {
+        const messageAliasIdempotencyKey = toIdempotencyStorageKey(
+          tracedMessage.channel,
+          'message',
+          tracedMessage.messageId,
+        );
         try {
-          await dependencies.claimIngressKey(tracedMessage.channel, 'message', tracedMessage.messageId);
+          const claimedMessageAlias = await dependencies.claimIngressKey(
+            tracedMessage.channel,
+            'message',
+            tracedMessage.messageId,
+          );
+          if (!claimedMessageAlias) {
+            dependencies.log.info('lark.ingress.duplicate_ignored', {
+              ...buildIngressTraceMeta({
+                requestId,
+                message: tracedMessage,
+                eventId: parsed.eventId,
+                idempotencyKey: messageAliasIdempotencyKey,
+                keyType: 'message',
+                textHash,
+                larkTenantKey,
+                companyId: scopedCompanyId ?? undefined,
+              }),
+            });
+            return res.status(202).json(buildDuplicateIgnoredResponse({
+              message: tracedMessage,
+              keyType: 'message',
+              idempotencyKey: messageAliasIdempotencyKey,
+            }));
+          }
         } catch (error) {
           dependencies.log.warn('lark.webhook.idempotency.alias_claim_failed', {
             ...buildIngressTraceMeta({
@@ -567,6 +789,63 @@ export const createLarkWebhookEventHandler = (
             error,
           });
         }
+      }
+
+      if (parsed.kind === 'event_callback_card_action') {
+        void dependencies.enqueueTask(tracedMessage)
+          .then((task) => {
+            dependencies.log.info('lark.ingress.queued', {
+              ...buildIngressTraceMeta({
+                requestId,
+                message: tracedMessage,
+                eventId: parsed.eventId,
+                taskId: task.taskId,
+                textHash,
+                larkTenantKey,
+                companyId: scopedCompanyId ?? undefined,
+              }),
+            });
+            emitRuntimeTrace({
+              event: 'lark.ingress.queued',
+              level: 'info',
+              requestId,
+              taskId: task.taskId,
+              messageId: tracedMessage.messageId,
+              metadata: {
+                channel: tracedMessage.channel,
+                eventId: parsed.eventId,
+                chatId: tracedMessage.chatId,
+                userId: tracedMessage.userId,
+                textHash,
+                larkTenantKey,
+                companyId: scopedCompanyId ?? undefined,
+              },
+            });
+          })
+          .catch((error) => {
+            dependencies.log.error('lark.ingress.queue_failed', {
+              ...buildIngressTraceMeta({
+                requestId,
+                message: tracedMessage,
+                eventId: parsed.eventId,
+                textHash,
+                larkTenantKey,
+                companyId: scopedCompanyId ?? undefined,
+              }),
+              error: error instanceof Error ? error.message : 'unknown_error',
+            });
+          });
+
+        return res.status(200).json({
+          success: true,
+          message: 'Lark card action accepted',
+          data: {
+            channel: tracedMessage.channel,
+            messageId: tracedMessage.messageId,
+            chatId: tracedMessage.chatId,
+            eventId: parsed.eventId,
+          },
+        });
       }
 
       const task = await dependencies.enqueueTask(tracedMessage);

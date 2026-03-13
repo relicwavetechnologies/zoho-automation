@@ -2,6 +2,11 @@ import type { DesktopThread, DesktopMessage } from '../../generated/prisma';
 import { BaseRepository } from '../../core/repository';
 import { prisma } from '../../utils/prisma';
 
+export type DesktopMessagePageCursor = {
+  id: string;
+  createdAt: Date;
+};
+
 export class DesktopThreadsRepository extends BaseRepository {
   listThreads(userId: string, companyId: string): Promise<DesktopThread[]> {
     return prisma.desktopThread.findMany({
@@ -51,6 +56,54 @@ export class DesktopThreadsRepository extends BaseRepository {
       orderBy: { createdAt: 'asc' },
       take: limit,
     });
+  }
+
+  getMessageCursor(threadId: string, messageId: string): Promise<DesktopMessagePageCursor | null> {
+    return prisma.desktopMessage.findFirst({
+      where: { id: messageId, threadId },
+      select: {
+        id: true,
+        createdAt: true,
+      },
+    });
+  }
+
+  async listMessagesPage(
+    threadId: string,
+    input: {
+      limit: number;
+      before?: DesktopMessagePageCursor | null;
+    },
+  ): Promise<{ messages: DesktopMessage[]; hasMoreOlder: boolean }> {
+    const rows = await prisma.desktopMessage.findMany({
+      where: input.before
+        ? {
+          threadId,
+          OR: [
+            { createdAt: { lt: input.before.createdAt } },
+            {
+              AND: [
+                { createdAt: input.before.createdAt },
+                { id: { lt: input.before.id } },
+              ],
+            },
+          ],
+        }
+        : { threadId },
+      orderBy: [
+        { createdAt: 'desc' },
+        { id: 'desc' },
+      ],
+      take: input.limit + 1,
+    });
+
+    const hasMoreOlder = rows.length > input.limit;
+    const pageRows = hasMoreOlder ? rows.slice(0, input.limit) : rows;
+
+    return {
+      messages: pageRows.reverse(),
+      hasMoreOlder,
+    };
   }
 
   createMessage(data: {

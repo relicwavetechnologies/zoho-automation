@@ -79,8 +79,8 @@ export const createLarkDocTool = createTool({
 
       return {
         answer: result.url
-          ? `Created Lark Doc "${result.title}". URL: ${result.url}`
-          : `Created Lark Doc "${result.title}". Document ID: ${result.documentId}`,
+          ? `Created Lark Doc: ${result.url}`
+          : `Created Lark Doc: ${result.documentId}`,
         title: result.title,
         documentId: result.documentId,
         url: result.url,
@@ -98,7 +98,7 @@ export const createLarkDocTool = createTool({
         });
       }
       return {
-        answer: `Lark Doc creation failed: ${message}`,
+        answer: `Lark Doc failed: ${message}`,
         error: message,
       };
     }

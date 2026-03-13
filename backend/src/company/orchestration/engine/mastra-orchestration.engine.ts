@@ -13,9 +13,12 @@ import { conversationMemoryStore } from '../../state/conversation';
 import { applyGenerationWordLimit } from '../../support/content-limits';
 import { orchestratorService } from '../orchestrator.service';
 import { toolPermissionService } from '../../tools/tool-permission.service';
+import { knowledgeShareService } from '../../knowledge-share/knowledge-share.service';
 import { prisma } from '../../../utils/prisma';
 import type { AiRole } from '../../tools/tool-registry';
 import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
+import { buildVisionContent, type AttachedFileRef } from '../../../modules/desktop-chat/file-vision.builder';
+import { larkRecentFilesStore } from '../../channels/lark/lark-recent-files.store';
 
 // Maximum time (ms) we wait for the LLM agent to respond before aborting.
 // Keep this shorter than any upstream HTTP gateway timeout.
@@ -28,6 +31,26 @@ const PROGRESS_MAX_BUFFER_CHARS = 160;
 const HISTORY_CONTEXT_MESSAGE_LIMIT = 14;
 const HISTORY_PREFIX_LIMIT = 12;
 const PERSONAL_CONTEXT_LIMIT = 4;
+
+/**
+ * Resolves the canonical userId to use as the `ownerUserId` for personal vector memory.
+ *
+ * Priority chain (highest → lowest):
+ * 1. `trace.linkedUserId`      — the sender has linked their Lark account to an internal
+ *                                Desktop User, so we share one memory bucket for both channels.
+ * 2. `trace.channelIdentityId` — the sender is known but not linked; use the channel-scoped id.
+ * 3. `message.userId`          — raw fallback (e.g. Lark open_id) when no identity is resolved.
+ */
+const resolveRequesterUserId = (trace: {
+  linkedUserId?: string;
+  channelIdentityId?: string;
+} | undefined, fallbackUserId: string): string => {
+  const linked = trace?.linkedUserId?.trim();
+  if (linked) return linked;
+  const channelId = trace?.channelIdentityId?.trim();
+  if (channelId) return channelId;
+  return fallbackUserId;
+};
 
 const buildHistoryAwarePrompt = (
   history: Array<{ role: 'user' | 'assistant'; content: string }>,
@@ -237,73 +260,41 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
           const conversationKey = typeof action.conversationKey === 'string' ? action.conversationKey : '';
           const triggerMessageId = typeof action.triggerMessageId === 'string' ? action.triggerMessageId : undefined;
           const requesterUserId = message.userId;
+          const requesterAiRole = message.trace?.userRole ?? 'MEMBER';
 
           if (companyId && conversationKey && requesterUserId) {
-            // 1. Create (or reuse) a pending VectorShareRequest in the DB.
-            const existingPending = await prisma.vectorShareRequest.findFirst({
-              where: { companyId, requesterUserId, conversationKey, status: 'pending' },
-              orderBy: { createdAt: 'desc' },
-            });
-            const shareRequest = existingPending ?? await prisma.vectorShareRequest.create({
-              data: { companyId, requesterUserId, conversationKey, status: 'pending' },
+            const shareResult = await knowledgeShareService.requestConversationShare({
+              companyId,
+              requesterUserId,
+              requesterChannelIdentityId: message.trace?.channelIdentityId,
+              requesterAiRole,
+              conversationKey,
             });
 
-            // 2. Immediately update the user's message to "pending" so they get feedback.
+            const requesterText =
+              shareResult.status === 'auto_shared'
+                ? '_Knowledge shared company-wide._'
+                : shareResult.status === 'shared_notified'
+                  ? '_Knowledge shared company-wide and admins were notified._'
+                  : shareResult.status === 'delivery_failed'
+                    ? '_Share request created, but admin delivery failed. Check the admin dashboard logs._'
+                    : '_Share request submitted — pending administrator review._';
             if (triggerMessageId) {
               await channelAdapter.updateMessage({
                 messageId: triggerMessageId,
-                text: '_Share request submitted — pending administrator review._',
+                text: requesterText,
                 correlationId: task.taskId,
                 actions: [], // Remove the button; no double-clicks.
               });
             }
 
-            // 3. Build a short conversation preview for the admin card.
-            const previewDocs = await personalVectorMemoryService.getConversationPreview(
-              companyId, requesterUserId, conversationKey,
-            );
-
-            // 4. Dispatch DM approval cards to all company admins with Lark OpenIDs.
-            const admins = await channelIdentityRepository.findAdminsByCompany(companyId);
-            const requesterName = requesterUserId;
-            const adminCardText = [
-              `**Vector Share Request**`,
-              `*Requested by:* ${requesterName}`,
-              '',
-              `*Conversation preview:*`,
-              previewDocs ? previewDocs : '_No preview available._',
-            ].join('\n');
-
-            await Promise.allSettled(
-              admins.map((admin) =>
-                channelAdapter.sendMessage({
-                  chatId: admin.larkOpenId, // ou_ prefix → DM via open_id routing
-                  text: adminCardText,
-                  correlationId: task.taskId,
-                  actions: [
-                    {
-                      id: 'admin_share_decision',
-                      label: 'Approve',
-                      value: { requestId: shareRequest.id, decision: 'approve' },
-                      style: 'primary',
-                    },
-                    {
-                      id: 'admin_share_decision',
-                      label: 'Reject',
-                      value: { requestId: shareRequest.id, decision: 'reject' },
-                      style: 'danger',
-                    },
-                  ],
-                }),
-              ),
-            );
-
             logger.info('mastra.engine.share_vectors.request.dispatched', {
               taskId: task.taskId,
               companyId,
               conversationKey,
-              requestId: shareRequest.id,
-              adminCount: admins.length,
+              requestId: shareResult.id,
+              status: shareResult.status,
+              classification: shareResult.classification,
             });
           }
         }
@@ -312,41 +303,49 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
         if (actionId === 'admin_share_decision') {
           const requestId = typeof action.requestId === 'string' ? action.requestId : undefined;
           const decision = action.decision === 'approve' || action.decision === 'reject' ? action.decision : undefined;
-          const adminMessageId = typeof action.adminMessageId === 'string' ? action.adminMessageId : undefined;
+          const adminMessageId = message.messageId;
 
           if (requestId && decision) {
             const shareRow = await prisma.vectorShareRequest.findUnique({ where: { id: requestId } });
 
-            if (shareRow && shareRow.status === 'pending') {
+            if (shareRow && (shareRow.status === 'pending' || shareRow.status === 'delivery_failed')) {
               if (decision === 'approve') {
-                // Promote vectors in Postgres + Qdrant using the existing service.
-                await personalVectorMemoryService.shareConversation({
-                  companyId: shareRow.companyId,
-                  requesterUserId: shareRow.requesterUserId,
-                  conversationKey: shareRow.conversationKey,
+                const approved = await knowledgeShareService.approveRequest({
+                  requestId,
+                  reviewerUserId: message.userId,
                 });
-                await prisma.vectorShareRequest.update({
-                  where: { id: requestId },
-                  data: { status: 'approved', reviewedBy: message.userId, reviewedAt: new Date() },
-                });
+                if (adminMessageId) {
+                  const confirmText = [
+                    '_Approved — knowledge is now shared company-wide._',
+                    approved.summary ? `\n_Summary: ${approved.summary}_` : '',
+                  ].join('');
+                  await channelAdapter.updateMessage({
+                    messageId: adminMessageId,
+                    text: confirmText,
+                    correlationId: task.taskId,
+                    actions: [
+                      {
+                        id: 'admin_share_revert',
+                        label: 'Revert',
+                        value: { requestId },
+                        style: 'danger',
+                      },
+                    ],
+                  });
+                }
               } else {
-                await prisma.vectorShareRequest.update({
-                  where: { id: requestId },
-                  data: { status: 'rejected', reviewedBy: message.userId, reviewedAt: new Date() },
+                await knowledgeShareService.rejectRequest({
+                  requestId,
+                  reviewerUserId: message.userId,
                 });
-              }
-
-              // Update the admin's card to reflect the decision.
-              if (adminMessageId) {
-                const confirmText = decision === 'approve'
-                  ? '_Approved — knowledge is now shared company-wide._'
-                  : '_Rejected — personal vectors remain private._';
-                await channelAdapter.updateMessage({
-                  messageId: adminMessageId,
-                  text: confirmText,
-                  correlationId: task.taskId,
-                  actions: [], // Remove buttons after decision.
-                });
+                if (adminMessageId) {
+                  await channelAdapter.updateMessage({
+                    messageId: adminMessageId,
+                    text: '_Rejected — personal vectors remain private._',
+                    correlationId: task.taskId,
+                    actions: [],
+                  });
+                }
               }
 
               logger.info('mastra.engine.admin_share_decision.completed', {
@@ -354,7 +353,47 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
                 requestId,
                 decision,
               });
+            } else if (adminMessageId) {
+              await channelAdapter.updateMessage({
+                messageId: adminMessageId,
+                text: '_This share request was already handled by another admin._',
+                correlationId: task.taskId,
+                actions: [],
+              });
             }
+          }
+        }
+
+        if (actionId === 'admin_share_revert') {
+          const requestId = typeof action.requestId === 'string' ? action.requestId : undefined;
+          const adminMessageId = message.messageId;
+
+          if (requestId) {
+            const reverted = await knowledgeShareService.revertRequest({
+              requestId,
+              reviewerUserId: message.userId,
+            });
+
+            if (adminMessageId) {
+              const confirmText = reverted.status === 'reverted'
+                ? [
+                  '_Reverted — previously shared knowledge is private again._',
+                  reverted.summary ? `\n_Summary: ${reverted.summary}_` : '',
+                ].join('')
+                : '_This share request could not be reverted in its current state._';
+              await channelAdapter.updateMessage({
+                messageId: adminMessageId,
+                text: confirmText,
+                correlationId: task.taskId,
+                actions: [],
+              });
+            }
+
+            logger.info('mastra.engine.admin_share_revert.completed', {
+              taskId: task.taskId,
+              requestId,
+              status: reverted.status,
+            });
           }
         }
       } catch (error) {
@@ -484,10 +523,8 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
 
     // ── DB Lookups & Context Building ────────────────────────────────────────
     const userRole = (message.trace?.userRole ?? 'MEMBER') as AiRole;
-    const requesterUserId =
-      typeof message.trace?.channelIdentityId === 'string' && message.trace.channelIdentityId.trim().length > 0
-        ? message.trace.channelIdentityId.trim()
-        : message.userId;
+    requestContext.set('requesterAiRole', userRole);
+    const requesterUserId = resolveRequesterUserId(message.trace, message.userId);
     const allowedToolIds = companyId
       ? await toolPermissionService.getAllowedTools(companyId, userRole)
       : [];
@@ -553,10 +590,75 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     const agent = mastra.getAgent('supervisorAgent');
     const runOptions = await buildMastraAgentRunOptions('mastra.supervisor', { requestContext });
 
+    // ── Attachment vision injection ───────────────────────────────────────────
+    // Merge explicit attachedFiles (sent in same message) with recent files
+    // from the per-chat TTL store (sent in a previous Lark message).
+    // This allows follow-up questions like "what is this image?" to work
+    // even when the image was sent as a standalone message earlier.
+    const recentFiles = message.channel === 'lark'
+      ? larkRecentFilesStore.get(message.chatId)
+      : [];
+    const allAttachedFiles = [
+      ...(message.attachedFiles ?? []),
+      // Only include recent files not already in the current message
+      ...recentFiles.filter(
+        (rf) => !(message.attachedFiles ?? []).some((af) => af.fileAssetId === rf.fileAssetId),
+      ),
+    ];
+
+    if (recentFiles.length > 0) {
+      logger.info('mastra.engine.recent_files.merged', {
+        taskId: task.taskId,
+        messageId: message.messageId,
+        chatId: message.chatId,
+        recentFileCount: recentFiles.length,
+        totalFiles: allAttachedFiles.length,
+      });
+    }
+
+    // If the incoming message (from Lark or any channel) has attached files,
+    // convert them to Vercel AI SDK vision/document parts exactly like Desktop.
+    let agentInputMessages: Array<{ role: 'user'; content: string | Array<{ type: string; [k: string]: unknown }> }> = [
+      { role: 'user', content: historyAwarePrompt },
+    ];
+
+    if (allAttachedFiles.length > 0) {
+      try {
+        const visionParts = await buildVisionContent({
+          userMessage: historyAwarePrompt,
+          attachedFiles: allAttachedFiles as AttachedFileRef[],
+          companyId,
+          requesterAiRole: userRole,
+        });
+        const hasImageParts = visionParts.some((p) => p.type === 'image');
+        if (hasImageParts) {
+          // Multipart vision message for image-capable models
+          agentInputMessages = [{ role: 'user', content: visionParts as Array<{ type: string; [k: string]: unknown }> }];
+        } else {
+          // Text-only doc chunks — collapse to extended prompt string
+          const docText = visionParts.filter((p) => p.type === 'text').map((p) => (p as any).text as string).join('\n');
+          agentInputMessages = [{ role: 'user', content: docText }];
+        }
+        logger.info('mastra.engine.vision.injected', {
+          taskId: task.taskId,
+          messageId: message.messageId,
+          fileCount: allAttachedFiles.length,
+          hasImageParts,
+        });
+      } catch (visionErr) {
+        logger.warn('mastra.engine.vision.injection_failed', {
+          taskId: task.taskId,
+          messageId: message.messageId,
+          error: visionErr instanceof Error ? visionErr.message : 'unknown_error',
+        });
+        // Fall through — use plain text prompt as fallback
+      }
+    }
+
     let streamResult;
     try {
       streamResult = await withTimeout(
-        agent.stream([{ role: 'user', content: historyAwarePrompt }], runOptions as any),
+        agent.stream(agentInputMessages as any, runOptions as any),
         AGENT_GENERATE_TIMEOUT_MS,
         'supervisorAgent.stream',
       );

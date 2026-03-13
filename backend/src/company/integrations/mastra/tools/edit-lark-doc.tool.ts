@@ -98,7 +98,7 @@ export const editLarkDocTool = createTool({
       }
 
       return {
-        answer: `Updated Lark Doc. URL: ${result.url}`,
+        answer: `Updated Lark Doc: ${result.url}`,
         documentId: result.documentId,
         url: result.url,
         blocksAffected: result.blocksAffected,
@@ -115,7 +115,7 @@ export const editLarkDocTool = createTool({
         });
       }
       return {
-        answer: `Lark Doc update failed: ${message}`,
+        answer: `Lark Doc failed: ${message}`,
         error: message,
         documentId,
       };

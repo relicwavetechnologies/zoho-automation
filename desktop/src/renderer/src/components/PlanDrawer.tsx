@@ -38,20 +38,20 @@ export function PlanDrawer({ plan }: { plan: ExecutionPlan }): JSX.Element {
   const runningTaskId = plan.tasks.find((task) => task.status === 'running')?.id
 
   return (
-    <div className="relative z-0 mb-[-18px] px-2">
+    <div className="relative z-0 mb-[-12px] px-2">
       <div
         className={cn(
-          'overflow-hidden rounded-[24px] border shadow-[0_18px_44px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.03)]',
+          'overflow-hidden rounded-[20px] border shadow-[0_14px_32px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.03)]',
           'border-[hsl(0,0%,16%)] bg-[linear-gradient(180deg,rgba(28,28,29,0.98),rgba(20,20,21,0.98))]',
         )}
       >
-        <div className="flex items-start justify-between gap-4 px-5 py-4">
+        <div className="flex items-start justify-between gap-4 px-4 py-3">
           <div className="min-w-0">
-            <div className="flex items-center gap-2 text-[13px] font-medium tracking-[0.01em] text-[hsl(0,0%,68%)]">
-              <ListChecks size={15} className="text-[hsl(0,0%,72%)]" />
+            <div className="flex items-center gap-2 text-[12px] font-medium tracking-[0.01em] text-[hsl(0,0%,68%)]">
+              <ListChecks size={14} className="text-[hsl(0,0%,72%)]" />
               <span>{completedCount} out of {plan.tasks.length} tasks completed</span>
             </div>
-            <p className="mt-1 truncate text-[15px] font-medium text-[hsl(0,0%,90%)]">
+            <p className="mt-1 truncate text-[14px] font-medium text-[hsl(0,0%,90%)]">
               {plan.goal}
             </p>
           </div>
@@ -59,55 +59,50 @@ export function PlanDrawer({ plan }: { plan: ExecutionPlan }): JSX.Element {
           <button
             type="button"
             onClick={() => setCollapsed((value) => !value)}
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-[hsl(0,0%,20%)] bg-[hsl(0,0%,10%)] text-[hsl(0,0%,64%)] hover:text-[hsl(0,0%,84%)]"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[hsl(0,0%,20%)] bg-[hsl(0,0%,10%)] text-[hsl(0,0%,64%)] hover:text-[hsl(0,0%,84%)]"
             title={collapsed ? 'Expand plan' : 'Collapse plan'}
           >
-            {collapsed ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            {collapsed ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
           </button>
         </div>
 
         {!collapsed && (
-          <div className="border-t border-[hsl(0,0%,14%)] px-5 py-4">
-            {plan.successCriteria.length > 0 && (
-              <div className="mb-4 flex flex-wrap gap-2">
-                {plan.successCriteria.map((criterion, index) => (
-                  <span
-                    key={`${plan.id}-criterion-${index}`}
-                    className="rounded-full border border-[hsl(0,0%,18%)] bg-[hsl(0,0%,11%)] px-2.5 py-1 text-[11px] font-medium text-[hsl(0,0%,70%)]"
-                  >
+          <div className="border-t border-[hsl(0,0%,14%)] px-4 py-3">
+            <div className="mb-4 rounded-2xl border border-[hsl(0,0%,14%)] bg-[hsl(0,0%,9%)] px-3 py-3">
+              <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-[hsl(0,0%,48%)]">
+                Success Criteria
+              </div>
+              <div className="mt-2 space-y-1.5">
+                {plan.successCriteria.map((criterion) => (
+                  <div key={criterion} className="text-[12px] leading-5 text-[hsl(0,0%,72%)]">
                     {criterion}
-                  </span>
+                  </div>
                 ))}
               </div>
-            )}
+            </div>
 
-            <div className="space-y-2.5">
+            <div className="space-y-1.5">
               {plan.tasks.map((task, index) => (
                 <div
                   key={task.id}
                   className={cn(
-                    'flex gap-3 rounded-2xl px-2 py-1.5 transition-colors',
-                    task.id === runningTaskId ? 'bg-[hsl(43,26%,11%)]' : 'bg-transparent',
+                    'flex items-center gap-2.5 rounded-xl px-2 py-1.5 transition-colors',
+                    task.id === runningTaskId ? 'bg-[hsl(43,26%,11%)]' : 'bg-[hsla(0,0%,100%,0.01)]',
                   )}
                 >
-                  <div className="mt-1 shrink-0">
+                  <div className="shrink-0">
                     <TaskIcon task={task} />
                   </div>
                   <div className="min-w-0 flex-1">
                     <p
                       className={cn(
-                        'text-[14px] leading-6 text-[hsl(0,0%,90%)]',
+                        'text-[13px] leading-5 text-[hsl(0,0%,90%)]',
                         task.status === 'done' && 'text-[hsl(0,0%,74%)] line-through decoration-[hsl(0,0%,45%)]',
                       )}
                     >
-                      <span className="mr-2 text-[hsl(0,0%,58%)]">{index + 1}.</span>
+                      <span className="mr-1.5 text-[hsl(0,0%,50%)]">{index + 1}.</span>
                       {task.title}
                     </p>
-                    {task.resultSummary && (
-                      <p className="mt-0.5 text-[12px] text-[hsl(0,0%,52%)]">
-                        {task.resultSummary}
-                      </p>
-                    )}
                   </div>
                 </div>
               ))}

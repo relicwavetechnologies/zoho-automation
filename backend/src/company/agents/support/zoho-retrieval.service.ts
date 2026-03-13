@@ -2,6 +2,7 @@ import { embeddingService } from '../../integrations/embedding';
 import { qdrantAdapter } from '../../integrations/vector';
 import { logger } from '../../../utils/logger';
 import { normalizeEmail, payloadReferencesEmail } from '../../integrations/zoho/zoho-email-scope';
+import type { ZohoScopeMode } from '../../tools/zoho-role-access.service';
 
 export type ZohoRetrievalItem = {
   sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
@@ -16,6 +17,7 @@ export class ZohoRetrievalService {
     companyId: string;
     requesterUserId?: string;
     requesterEmail?: string;
+    scopeMode?: ZohoScopeMode;
     strictUserScopeEnabled?: boolean;
     text: string;
     limit?: number;
@@ -25,10 +27,13 @@ export class ZohoRetrievalService {
     const startedAt = Date.now();
     try {
       const strictUserScopeEnabled = input.strictUserScopeEnabled ?? true;
+      const scopeMode = input.scopeMode ?? 'email_scoped';
+      const enforceEmailScope = strictUserScopeEnabled && scopeMode !== 'company_scoped';
       const normalizedRequesterEmail = normalizeEmail(input.requesterEmail);
-      if (strictUserScopeEnabled && !normalizedRequesterEmail) {
+      if (enforceEmailScope && !normalizedRequesterEmail) {
         logger.warn('retrieval.query.blocked_missing_requester_email', {
           companyId: input.companyId,
+          scopeMode,
         });
         return [];
       }
@@ -38,7 +43,7 @@ export class ZohoRetrievalService {
         companyId: input.companyId,
         requesterUserId: input.requesterUserId,
         requesterEmail: normalizedRequesterEmail,
-        enforceEmailMatch: strictUserScopeEnabled,
+        enforceEmailMatch: enforceEmailScope,
         vector: queryVector,
         limit,
         sourceTypes: input.sourceTypes ?? ['zoho_lead', 'zoho_contact', 'zoho_deal', 'zoho_ticket'],
@@ -48,7 +53,7 @@ export class ZohoRetrievalService {
       });
 
       const safeMatches =
-        strictUserScopeEnabled && normalizedRequesterEmail
+        enforceEmailScope && normalizedRequesterEmail
           ? matches.filter((match) => payloadReferencesEmail(match.payload, normalizedRequesterEmail))
           : matches;
 
@@ -56,6 +61,7 @@ export class ZohoRetrievalService {
         companyId: input.companyId,
         limit,
         matchCount: safeMatches.length,
+        scopeMode,
         provider: embeddingService.providerName,
         latencyMs: Date.now() - startedAt,
       });

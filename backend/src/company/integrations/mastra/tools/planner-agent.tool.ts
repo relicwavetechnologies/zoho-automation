@@ -9,6 +9,7 @@ import { emitActivityEvent } from './activity-bus';
 import { emitPlanEvent } from './plan-bus';
 import {
   buildDesktopPlannerPrompt,
+  formatExecutionPlanForLog,
   initializeExecutionPlan,
   plannerDraftSchema,
 } from '../../../../modules/desktop-chat/desktop-plan';
@@ -64,7 +65,7 @@ export const plannerAgentTool = createTool({
         name: TOOL_ID,
         label: 'Planned the task',
         icon: 'list-todo',
-        resultSummary: `${plan.tasks.length} task plan created`,
+        resultSummary: formatExecutionPlanForLog(plan),
       });
     }
 

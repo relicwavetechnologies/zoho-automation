@@ -41,25 +41,25 @@ const extractExactDomain = (objective: string): string | undefined => {
   return objective.match(/\b([a-z0-9][a-z0-9.-]*\.[a-z]{2,})(?:\b|\/)/i)?.[1];
 };
 
+const extractCrawlUrl = (objective: string): string | undefined =>
+  objective.match(/\bhttps?:\/\/[^\s)]+/i)?.[0]?.trim();
+
 const buildAnswer = (result: Awaited<ReturnType<WebSearchService['search']>>): string => {
   if (result.items.length === 0) {
-    return `No web results found for "${result.query}".`;
+    return `No web results found for "${result.query}". Try a more specific site, date, or location.`;
   }
 
-  const header = result.focusedSiteSearch && result.exactDomain
+  const header = result.crawlUsed && result.crawlUrl
+    ? `Crawled ${result.items.length} page${result.items.length === 1 ? '' : 's'} from ${result.crawlUrl} for "${result.query}".`
+    : result.focusedSiteSearch && result.exactDomain
     ? `Found ${result.items.length} web result${result.items.length === 1 ? '' : 's'} for "${result.query}" with an exact-site pass on ${result.exactDomain}.`
     : `Found ${result.items.length} web result${result.items.length === 1 ? '' : 's'} for "${result.query}".`;
 
-  const lines = result.items.map((item, index) => {
-    const parts = [`${index + 1}. ${item.title}`, `(${item.domain})`, item.link];
-    if (item.snippet) {
-      parts.push(`Snippet: ${item.snippet}`);
-    }
-    const pageExcerpt = item.pageContext?.excerpt?.trim();
-    if (pageExcerpt) {
-      parts.push(`Page context: ${pageExcerpt}`);
-    } else if (item.pageContext?.error) {
-      parts.push(`Page context unavailable: ${item.pageContext.error}`);
+  const lines = result.items.slice(0, 4).map((item, index) => {
+    const evidence = item.pageContext?.excerpt?.trim() || item.snippet?.trim();
+    const parts = [`${index + 1}. ${item.title} (${item.domain})`, item.link];
+    if (evidence) {
+      parts.push(`Evidence: ${evidence}`);
     }
     return parts.join('\n');
   });
@@ -83,9 +83,10 @@ export class SearchReadAgent extends BaseAgent {
     const limit = extractLimit(objective);
 
     try {
-      const result = await this.searchService.search({
+    const result = await this.searchService.search({
         query: objective,
         exactDomain,
+        crawlUrl: extractCrawlUrl(objective),
         searchResultsLimit: limit,
         pageContextLimit: Math.min(DEFAULT_PAGE_CONTEXT_LIMIT, limit),
       });
@@ -99,6 +100,9 @@ export class SearchReadAgent extends BaseAgent {
           query: result.query,
           exactDomain: result.exactDomain,
           focusedSiteSearch: result.focusedSiteSearch,
+          crawlUsed: result.crawlUsed,
+          crawlUrl: result.crawlUrl,
+          crawlError: result.crawlError,
           items: result.items,
           sourceRefs: result.sourceRefs,
         },

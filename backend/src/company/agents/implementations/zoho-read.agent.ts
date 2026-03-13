@@ -7,6 +7,7 @@ import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
 import { zohoDataClient } from '../../integrations/zoho/zoho-data.client';
 import { normalizeEmail } from '../../integrations/zoho/zoho-email-scope';
 import { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } from '../../support/runtime-controls';
+import { zohoRoleAccessService, type ZohoScopeMode } from '../../tools/zoho-role-access.service';
 import { logger } from '../../../utils/logger';
 
 const DEFAULT_RESULT_LIMIT = 3;
@@ -39,6 +40,29 @@ type QueryIntent = {
   maxPages: number;
   sortBy: 'Created_Time' | 'Modified_Time';
   sortOrder: 'asc' | 'desc';
+};
+
+type ModuleFailure = {
+  sourceType: ZohoSourceType;
+  moduleName: string;
+  reasonCode: string;
+  reasonMessage: string;
+  statusCode?: number;
+};
+
+type LiveFetchStatus = 'success' | 'empty' | 'partial' | 'blocked' | 'degraded';
+
+type LiveFetchResult = {
+  status: LiveFetchStatus;
+  records: LiveRecord[];
+  sourceRefs: SourceRef[];
+  fallbackUsed: boolean;
+  degraded: boolean;
+  partial: boolean;
+  scopeMode: ZohoScopeMode;
+  reasonCode?: string;
+  reasonMessage?: string;
+  moduleFailures: ModuleFailure[];
 };
 
 const normalizeText = (input: string): string => input.toLowerCase().trim();
@@ -306,6 +330,56 @@ const buildDeterministicListResponse = (objective: string, liveRecords: LiveReco
   return `I found ${Math.min(liveRecords.length, limit)} matching Zoho records:\n${rows.join('\n')}`;
 };
 
+const SOURCE_MODULE_LABELS: Record<ZohoSourceType, string> = {
+  zoho_lead: 'Leads',
+  zoho_contact: 'Contacts',
+  zoho_deal: 'Deals',
+  zoho_ticket: 'Cases',
+};
+
+const buildModuleFailure = (sourceType: ZohoSourceType, error: unknown): ModuleFailure => {
+  if (error instanceof ZohoIntegrationError) {
+    return {
+      sourceType,
+      moduleName: SOURCE_MODULE_LABELS[sourceType],
+      reasonCode: error.code,
+      reasonMessage: error.message,
+      statusCode: error.statusCode,
+    };
+  }
+
+  return {
+    sourceType,
+    moduleName: SOURCE_MODULE_LABELS[sourceType],
+    reasonCode: 'unknown',
+    reasonMessage: error instanceof Error ? error.message : 'Unknown Zoho module failure',
+  };
+};
+
+const summarizeModuleFailures = (failures: ModuleFailure[]): string => {
+  const summary = failures
+    .slice(0, 2)
+    .map((failure) => `${failure.moduleName}: ${failure.reasonMessage}`)
+    .join('; ');
+  return failures.length > 2 ? `${summary}; and ${failures.length - 2} more` : summary;
+};
+
+const buildNoDataAnswer = (scopeMode: ZohoScopeMode, reasonMessage?: string): string => {
+  if (reasonMessage) {
+    return reasonMessage;
+  }
+  return scopeMode === 'company_scoped'
+    ? 'No company-scoped Zoho records matched this query.'
+    : 'No email-scoped Zoho records matched this query.';
+};
+
+const appendReasonNote = (answer: string, reasonMessage?: string): string => {
+  if (!reasonMessage || !reasonMessage.trim()) {
+    return answer;
+  }
+  return `${answer}\n\nNote: ${reasonMessage.trim()}`;
+};
+
 export class ZohoReadAgent extends BaseAgent {
   readonly key = 'zoho-read';
 
@@ -314,45 +388,62 @@ export class ZohoReadAgent extends BaseAgent {
     taskId: string;
     objective: string;
     requesterEmail?: string;
+    scopeMode: ZohoScopeMode;
     strictUserScopeEnabled: boolean;
-  }): Promise<{ records: LiveRecord[]; sourceRefs: SourceRef[]; fallbackUsed: boolean }> {
+  }): Promise<LiveFetchResult> {
     const intent = buildQueryIntent(input.objective);
     const records: LiveRecord[] = [];
+    const moduleFailures: ModuleFailure[] = [];
     const seen = new Set<string>();
-    const provider = await resolveZohoProvider({ companyId: input.companyId });
 
     logger.debug('zoho.agent.live_fetch.start', {
       taskId: input.taskId,
       companyId: input.companyId,
-      mode: provider.providerMode,
+      mode: 'rest',
       sourceTypes: intent.preferredSourceTypes,
       createdAfter: intent.createdAfter?.toISOString(),
       pageSize: intent.pageSize,
       maxPages: intent.maxPages,
       strictUserScopeEnabled: input.strictUserScopeEnabled,
+      scopeMode: input.scopeMode,
     });
 
-    if (input.strictUserScopeEnabled) {
+    if (input.scopeMode === 'email_scoped' && input.strictUserScopeEnabled) {
       const requesterEmail = normalizeEmail(input.requesterEmail);
       if (!requesterEmail) {
-        throw new ZohoIntegrationError({
-          message: 'Requester email is required for strict user-scoped Zoho reads',
-          code: 'auth_failed',
-          retriable: false,
-        });
+        return {
+          status: 'blocked',
+          records: [],
+          sourceRefs: [],
+          fallbackUsed: false,
+          degraded: true,
+          partial: false,
+          scopeMode: input.scopeMode,
+          reasonCode: 'strict_scope_missing_requester_email',
+          reasonMessage: 'No records returned: your Zoho access requires a verified email scope for this request.',
+          moduleFailures: [],
+        };
       }
 
+      const provider = await resolveZohoProvider({ companyId: input.companyId });
+
       for (const sourceType of intent.preferredSourceTypes) {
-        const scopedRecords = await zohoDataClient.fetchUserScopedRecords({
-          companyId: input.companyId,
-          environment: provider.environment,
-          sourceType,
-          requesterEmail,
-          limit: intent.targetLimit,
-          maxPages: intent.maxPages,
-          sortBy: intent.sortBy,
-          sortOrder: intent.sortOrder,
-        });
+        let scopedRecords: Array<{ sourceType: ZohoSourceType; sourceId: string; payload: Record<string, unknown> }>;
+        try {
+          scopedRecords = await zohoDataClient.fetchUserScopedRecords({
+            companyId: input.companyId,
+            environment: provider.environment,
+            sourceType,
+            requesterEmail,
+            limit: intent.targetLimit,
+            maxPages: intent.maxPages,
+            sortBy: intent.sortBy,
+            sortOrder: intent.sortOrder,
+          });
+        } catch (error) {
+          moduleFailures.push(buildModuleFailure(sourceType, error));
+          continue;
+        }
 
         for (const record of scopedRecords) {
           if (!matchesTimeFilter(record, intent.createdAfter)) {
@@ -375,30 +466,71 @@ export class ZohoReadAgent extends BaseAgent {
       }
 
       return {
+        status:
+          records.length > 0
+            ? moduleFailures.length > 0 ? 'partial' : 'success'
+            : moduleFailures.length > 0 ? 'blocked' : 'empty',
         records,
         sourceRefs: buildLiveSourceRefs(records),
         fallbackUsed: false,
+        degraded: moduleFailures.length > 0,
+        partial: records.length > 0 && moduleFailures.length > 0,
+        scopeMode: input.scopeMode,
+        reasonCode:
+          records.length === 0 && moduleFailures.length > 0
+            ? 'strict_scope_unenforceable_module'
+            : records.length === 0
+              ? 'strict_scope_no_matching_records'
+              : undefined,
+        reasonMessage:
+          records.length === 0 && moduleFailures.length > 0
+            ? `No records returned because email-scoped access could not be fully enforced: ${summarizeModuleFailures(moduleFailures)}.`
+            : records.length === 0
+              ? 'No email-scoped Zoho records matched this query.'
+              : moduleFailures.length > 0
+                ? `Returned available Zoho records, but some modules could not be fully checked: ${summarizeModuleFailures(moduleFailures)}.`
+                : undefined,
+        moduleFailures,
       };
     }
+
+    const provider = await resolveZohoProvider({ companyId: input.companyId });
 
     for (const sourceType of intent.preferredSourceTypes) {
       let cursor: string | undefined;
       let pagesFetched = 0;
 
       while (pagesFetched < intent.maxPages && records.length < intent.targetLimit) {
-        const page = await provider.adapter.fetchHistoricalPage({
-          context: {
-            companyId: input.companyId,
-            environment: provider.environment,
-            connectionId: provider.connectionId,
-          },
-          cursor,
-          pageSize: intent.pageSize,
-          sourceType,
-          sortBy: intent.sortBy,
-          sortOrder: intent.sortOrder,
-        });
+        let page;
+        try {
+          page = await provider.adapter.fetchHistoricalPage({
+            context: {
+              companyId: input.companyId,
+              environment: provider.environment,
+              connectionId: provider.connectionId,
+            },
+            cursor,
+            pageSize: intent.pageSize,
+            sourceType,
+            sortBy: intent.sortBy,
+            sortOrder: intent.sortOrder,
+          });
+        } catch (error) {
+          moduleFailures.push(buildModuleFailure(sourceType, error));
+          break;
+        }
         pagesFetched += 1;
+        if (page.warnings?.length) {
+          for (const warning of page.warnings) {
+            moduleFailures.push({
+              sourceType: warning.sourceType,
+              moduleName: warning.moduleName,
+              reasonCode: warning.code,
+              reasonMessage: warning.message,
+              statusCode: warning.statusCode,
+            });
+          }
+        }
 
         const pageRecords = page.records.map((record) => ({
           sourceType: record.sourceType,
@@ -436,9 +568,27 @@ export class ZohoReadAgent extends BaseAgent {
     }
 
     return {
+      status:
+        records.length > 0
+          ? moduleFailures.length > 0 ? 'partial' : 'success'
+          : moduleFailures.length > 0 ? 'degraded' : 'empty',
       records,
       sourceRefs: buildLiveSourceRefs(records),
       fallbackUsed: false,
+      degraded: moduleFailures.length > 0,
+      partial: records.length > 0 && moduleFailures.length > 0,
+      scopeMode: input.scopeMode,
+      reasonCode:
+        records.length === 0 && moduleFailures.length > 0
+          ? 'company_scope_partial_failure'
+          : undefined,
+      reasonMessage:
+        records.length === 0 && moduleFailures.length > 0
+          ? `No records returned because Zoho modules could not be queried cleanly: ${summarizeModuleFailures(moduleFailures)}.`
+          : moduleFailures.length > 0
+            ? `Returned available Zoho records, but some company-scoped modules failed: ${summarizeModuleFailures(moduleFailures)}.`
+            : undefined,
+      moduleFailures,
     };
   }
 
@@ -470,7 +620,7 @@ export class ZohoReadAgent extends BaseAgent {
     const promptText = [
       `User request: "${input.objective}"`,
       '',
-      'You are answering a Zoho CRM question.',
+      'You are Odin CRM synthesis for a Zoho question.',
       'Rules:',
       '- Treat live Zoho API records as the source of truth.',
       '- Use vector context only as supporting context; it may be stale.',
@@ -478,6 +628,8 @@ export class ZohoReadAgent extends BaseAgent {
       '- If you summarize records, stay grounded to the provided data.',
       '- Never say "see above", "listed above", or imply hidden UI content.',
       '- If the user asked to list records, include the actual records inline in the answer.',
+      '- Lead with the answer and keep the response concise.',
+      '- Mention only the most relevant records unless the user explicitly asked for all of them.',
       '',
       '## Live Zoho API records',
       liveSnippet,
@@ -495,7 +647,9 @@ export class ZohoReadAgent extends BaseAgent {
   async invoke(input: AgentInvokeInputDTO) {
     const startedAt = Date.now();
     let apiCalls = 0;
+    let resolvedCompanyId: string | undefined;
     let strictUserScopeEnabled = true;
+    let scopeMode: ZohoScopeMode = 'email_scoped';
 
     try {
       const VECTOR_CONTEXT_ENABLED = process.env.ZOHO_VECTOR_CONTEXT_ENABLED !== 'false';
@@ -506,30 +660,27 @@ export class ZohoReadAgent extends BaseAgent {
         companyId: input.contextPacket.companyId,
         larkTenantKey: input.contextPacket.larkTenantKey,
       });
+      resolvedCompanyId = companyId;
       apiCalls++;
       strictUserScopeEnabled = await isCompanyControlEnabled({
         controlKey: COMPANY_CONTROL_KEYS.zohoUserScopedReadStrictEnabled,
         companyId,
         defaultValue: true,
       });
+      scopeMode = strictUserScopeEnabled
+        ? await zohoRoleAccessService.resolveScopeMode(
+          companyId,
+          typeof input.contextPacket.requesterAiRole === 'string' ? input.contextPacket.requesterAiRole : undefined,
+        )
+        : 'company_scoped';
       const requesterEmail =
         typeof input.contextPacket.requesterEmail === 'string'
           ? input.contextPacket.requesterEmail.trim()
           : '';
 
-      if (strictUserScopeEnabled && !normalizeEmail(requesterEmail)) {
-        return this.failure(
-          input,
-          'Requester email is required for strict user-scoped Zoho reads.',
-          'strict_scope_missing_requester_email',
-          'Requester email missing from trusted request context',
-          false,
-          { latencyMs: Date.now() - startedAt, apiCalls },
-        );
-      }
-
       let liveRecords: LiveRecord[] = [];
       let liveSourceRefs: SourceRef[] = [];
+      let liveResult: LiveFetchResult | null = null;
 
       try {
         const live = await this.fetchLiveRecords({
@@ -537,18 +688,26 @@ export class ZohoReadAgent extends BaseAgent {
           taskId: input.taskId,
           objective: input.objective,
           requesterEmail,
+          scopeMode,
           strictUserScopeEnabled,
         });
+        liveResult = live;
         liveRecords = live.records;
         liveSourceRefs = live.sourceRefs;
         apiCalls += 2;
 
-        logger.debug('zoho.agent.live_fetch.success', {
+        logger.debug('zoho.agent.live_fetch.complete', {
           taskId: input.taskId,
           companyId,
           mode: 'rest',
           sourceTypes: intent.preferredSourceTypes,
+          scopeMode,
+          status: live.status,
           recordCount: liveRecords.length,
+          moduleFailureCount: live.moduleFailures.length,
+          degraded: live.degraded,
+          reasonCode: live.reasonCode,
+          reasonMessage: live.reasonMessage,
         });
       } catch (error) {
         const isRateLimited =
@@ -569,19 +728,12 @@ export class ZohoReadAgent extends BaseAgent {
         throw error;
       }
 
-      if (liveRecords.length === 0) {
-        if (strictUserScopeEnabled) {
-          return this.failure(
-            input,
-            'No Zoho records matched your user-scoped access.',
-            'strict_scope_no_matching_records',
-            'Strict user scope yielded zero records',
-            false,
-            { latencyMs: Date.now() - startedAt, apiCalls },
-          );
-        }
+      if (!liveResult) {
+        throw new Error('Live Zoho result was not computed');
+      }
 
-        const answer = 'The live Zoho API did not return matching records for this query.';
+      if (liveRecords.length === 0) {
+        const answer = buildNoDataAnswer(scopeMode, liveResult.reasonMessage);
         return this.success(
           input,
           answer,
@@ -594,6 +746,12 @@ export class ZohoReadAgent extends BaseAgent {
             fallbackUsed: false,
             liveRecordCount: 0,
             vectorRecordCount: 0,
+            scopeMode,
+            degraded: liveResult.degraded,
+            partial: false,
+            reasonCode: liveResult.reasonCode ?? null,
+            reasonMessage: liveResult.reasonMessage ?? null,
+            moduleFailures: liveResult.moduleFailures.length,
           },
           { latencyMs: Date.now() - startedAt, apiCalls },
         );
@@ -613,6 +771,7 @@ export class ZohoReadAgent extends BaseAgent {
             companyId,
             requesterUserId,
             requesterEmail,
+            scopeMode,
             strictUserScopeEnabled,
             text: input.objective,
             limit: retrievalLimit,
@@ -651,6 +810,7 @@ export class ZohoReadAgent extends BaseAgent {
           answer = buildPlainTextFallback(input.objective, liveRecords);
         }
       }
+      answer = appendReasonNote(answer, liveResult.reasonMessage);
 
       const allSourceRefs = [...liveSourceRefs, ...vectorSourceRefs];
       const summarySources = allSourceRefs.slice(0, 4).map((ref) => ref.id);
@@ -667,6 +827,12 @@ export class ZohoReadAgent extends BaseAgent {
           fallbackUsed: false,
           liveRecordCount: liveRecords.length,
           vectorRecordCount: vectorMatches.length,
+          scopeMode,
+          degraded: liveResult.degraded,
+          partial: liveResult.partial,
+          reasonCode: liveResult.reasonCode ?? null,
+          reasonMessage: liveResult.reasonMessage ?? null,
+          moduleFailures: liveResult.moduleFailures.length,
         },
         { latencyMs: Date.now() - startedAt, apiCalls },
       );
@@ -683,16 +849,36 @@ export class ZohoReadAgent extends BaseAgent {
       }
 
       if (error instanceof ZohoIntegrationError) {
-        const strictUnenforceable =
-          strictUserScopeEnabled
-          && error.code === 'schema_mismatch'
-          && error.message.toLowerCase().includes('strict user scope cannot be enforced');
-        return this.failure(
+        const answer = `I couldn't read Zoho CRM cleanly for this request. Reason: ${error.message}`;
+        logger.warn('zoho.agent.soft_failure', {
+          taskId: input.taskId,
+          companyId: resolvedCompanyId,
+          scopeMode,
+          code: error.code,
+          statusCode: error.statusCode,
+          reason: error.message,
+          requesterAiRole:
+            typeof input.contextPacket.requesterAiRole === 'string' ? input.contextPacket.requesterAiRole : undefined,
+        });
+        return this.success(
           input,
-          strictUnenforceable ? 'Strict user scope is not enforceable for one or more Zoho modules.' : 'Zoho provider retrieval failed',
-          strictUnenforceable ? 'strict_scope_unenforceable_module' : error.code,
-          error.message,
-          error.retriable,
+          answer,
+          {
+            companyId: resolvedCompanyId ?? input.contextPacket.companyId,
+            answer,
+            sourceRefs: [],
+            sources: [],
+            liveProviderMode: 'rest',
+            fallbackUsed: false,
+            liveRecordCount: 0,
+            vectorRecordCount: 0,
+            scopeMode,
+            degraded: true,
+            partial: false,
+            reasonCode: error.code,
+            reasonMessage: error.message,
+            moduleFailures: 0,
+          },
           { latencyMs: Date.now() - startedAt, apiCalls },
         );
       }

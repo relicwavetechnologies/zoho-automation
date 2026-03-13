@@ -63,13 +63,16 @@ class VectorDocumentRepository {
     companyId: string;
     requesterUserId: string;
     conversationKey: string;
+    createdAtLte?: Date;
+    visibility?: 'personal' | 'shared' | 'public';
   }): Promise<VectorDocument[]> {
     return prisma.vectorDocument.findMany({
       where: {
         companyId: input.companyId,
         ownerUserId: input.requesterUserId,
         conversationKey: input.conversationKey,
-        visibility: 'personal',
+        visibility: input.visibility ?? 'personal',
+        ...(input.createdAtLte ? { createdAt: { lte: input.createdAtLte } } : {}),
       },
       orderBy: [{ createdAt: 'asc' }, { chunkIndex: 'asc' }],
     });
@@ -80,16 +83,31 @@ class VectorDocumentRepository {
     requesterUserId: string;
     conversationKey: string;
     visibility: 'personal' | 'shared' | 'public';
+    createdAtLte?: Date;
   }): Promise<Prisma.BatchPayload> {
     return prisma.vectorDocument.updateMany({
       where: {
         companyId: input.companyId,
         ownerUserId: input.requesterUserId,
         conversationKey: input.conversationKey,
+        ...(input.createdAtLte ? { createdAt: { lte: input.createdAtLte } } : {}),
       },
       data: {
         visibility: input.visibility,
       },
+    });
+  }
+
+  findByFileAsset(input: {
+    companyId: string;
+    fileAssetId: string;
+  }): Promise<VectorDocument[]> {
+    return prisma.vectorDocument.findMany({
+      where: {
+        companyId: input.companyId,
+        fileAssetId: input.fileAssetId,
+      },
+      orderBy: [{ chunkIndex: 'asc' }, { createdAt: 'asc' }],
     });
   }
 }

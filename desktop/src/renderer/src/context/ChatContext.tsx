@@ -7,7 +7,15 @@ import {
   useEffect,
   type ReactNode,
 } from 'react'
-import type { Thread, Message, ContentBlock, MessageMetadata, ExecutionPlan } from '../types'
+import type {
+  Thread,
+  Message,
+  ContentBlock,
+  MessageMetadata,
+  ExecutionPlan,
+  ThreadMessagesPage,
+  ThreadMessagePagination,
+} from '../types'
 import { useAuth } from './AuthContext'
 import { useWorkspace } from './WorkspaceContext'
 import {
@@ -16,7 +24,6 @@ import {
   buildAgentActionToolBlock,
   summarizeCommandCompletion,
   summarizeWorkspaceAction,
-  truncateText,
   type DesktopWorkspaceAction,
   type NonCommandWorkspaceAction,
   type PendingLocalActionState,
@@ -47,6 +54,9 @@ interface ChatState {
   threads: Thread[]
   activeThread: Thread | null
   messages: Message[]
+  isThreadLoading: boolean
+  isLoadingOlderMessages: boolean
+  hasMoreHistory: boolean
   isStreaming: boolean
   isThinking: boolean
   activePlan: ExecutionPlan | null
@@ -54,12 +64,13 @@ interface ChatState {
   error: string | null
   loadThreads: () => Promise<void>
   selectThread: (threadId: string) => Promise<void>
+  loadOlderMessages: () => Promise<void>
   createThread: () => Promise<string | null>
   deleteThread: (threadId: string) => Promise<void>
   sendMessage: (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-    mode?: 'fast' | 'high'
+    mode?: 'fast' | 'high' | 'xtreme'
   ) => Promise<void>
   stopExecution: () => Promise<void>
   approveCommand: (executionId: string) => Promise<void>
@@ -69,6 +80,19 @@ interface ChatState {
 }
 
 const ChatContext = createContext<ChatState | null>(null)
+
+const INITIAL_THREAD_MESSAGE_LIMIT = 6
+const OLDER_THREAD_MESSAGE_LIMIT = 20
+
+const prependDistinctMessages = (older: Message[], current: Message[]): Message[] => {
+  if (older.length === 0) {
+    return current
+  }
+
+  const seen = new Set(current.map((message) => message.id))
+  const uniqueOlder = older.filter((message) => !seen.has(message.id))
+  return uniqueOlder.length > 0 ? [...uniqueOlder, ...current] : current
+}
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
@@ -85,6 +109,13 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const [allThreads, setAllThreads] = useState<Thread[]>([])
   const [activeThread, setActiveThread] = useState<Thread | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
+  const [threadPagination, setThreadPagination] = useState<ThreadMessagePagination>({
+    hasMoreOlder: false,
+    nextBeforeMessageId: null,
+    limit: INITIAL_THREAD_MESSAGE_LIMIT,
+  })
+  const [isThreadLoading, setIsThreadLoading] = useState(false)
+  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false)
   const [isStreaming, setIsStreaming] = useState(false)
   const [isThinking, setIsThinking] = useState(false)
   const [activePlan, setActivePlan] = useState<ExecutionPlan | null>(null)
@@ -94,12 +125,15 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   // ── Refs for mutable cross-callback access ──
   const activeRequestIdRef = useRef<string | null>(null)
   const activeThreadRef = useRef<Thread | null>(null)
+  const activeThreadLoadVersionRef = useRef(0)
   const activePlanRef = useRef<ExecutionPlan | null>(null)
+  const activeExecutionIdRef = useRef<string | null>(null)
   const liveBlocksRef = useRef<ContentBlock[]>([])
   const loadThreadsRef = useRef<(() => Promise<void>) | null>(null)
   const pendingLocalActionRef = useRef<PendingLocalActionState | null>(null)
   const runningCommandRef = useRef<RunningCommandState | null>(null)
   const cancelRequestedRef = useRef(false)
+  const activeModeRef = useRef<'fast' | 'high' | 'xtreme'>('high')
 
   // ── Shared live-block utilities ──
   const appendOutput = useCallback((prev: string, chunk: string): string => {
@@ -121,16 +155,21 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     setActivePlan(plan)
   }, [])
 
+  const replaceActiveExecutionId = useCallback((executionId: string | null) => {
+    activeExecutionIdRef.current = executionId
+  }, [])
+
   const resetLiveState = useCallback(() => {
     setLiveBlocks([])
     liveBlocksRef.current = []
     setIsStreaming(false)
     setIsThinking(false)
     replaceActivePlan(null)
+    replaceActiveExecutionId(null)
     activeRequestIdRef.current = null
     pendingLocalActionRef.current = null
     runningCommandRef.current = null
-  }, [replaceActivePlan])
+  }, [replaceActiveExecutionId, replaceActivePlan])
 
   const commitPartialAssistant = useCallback(() => {
     const blocks = liveBlocksRef.current
@@ -263,12 +302,15 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         workspace: { name: currentWorkspace.name, path: currentWorkspace.path },
         actionResult: input.actionResult,
         ...(activePlanRef.current ? { plan: activePlanRef.current } : {}),
+        mode: activeModeRef.current,
+        executionId: activeExecutionIdRef.current ?? crypto.randomUUID(),
       })
 
       if (!response.success || !response.data) throw new Error(response.message || 'Desktop action loop failed')
       if (cancelRequestedRef.current) return
 
       const payload = response.data as ActionLoopResult
+      replaceActiveExecutionId(payload.executionId ?? activeExecutionIdRef.current)
       replaceActivePlan(payload.plan ?? null)
 
       if (payload.kind === 'answer') {
@@ -314,7 +356,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       setError(err instanceof Error ? err.message : 'Desktop action loop failed')
       resetLiveState()
     }
-  }, [currentWorkspace, finalizeLocalBlocks, replaceActivePlan, replaceLiveBlocks, resetLiveState, runWorkspaceAction, token])
+  }, [currentWorkspace, finalizeLocalBlocks, replaceActiveExecutionId, replaceActivePlan, replaceLiveBlocks, resetLiveState, runWorkspaceAction, token])
 
   // ── Finish a terminal command execution ──
   const finishCommandExecution = useCallback(async (input: {
@@ -483,12 +525,26 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     if (!currentWorkspace) {
       setActiveThread(null)
       setMessages([])
+      setThreadPagination({
+        hasMoreOlder: false,
+        nextBeforeMessageId: null,
+        limit: INITIAL_THREAD_MESSAGE_LIMIT,
+      })
+      setIsThreadLoading(false)
+      setIsLoadingOlderMessages(false)
       replaceActivePlan(null)
       return
     }
     if (activeThreadRef.current && !isThreadInCurrentWorkspace(activeThreadRef.current.id)) {
       setActiveThread(null)
       setMessages([])
+      setThreadPagination({
+        hasMoreOlder: false,
+        nextBeforeMessageId: null,
+        limit: INITIAL_THREAD_MESSAGE_LIMIT,
+      })
+      setIsThreadLoading(false)
+      setIsLoadingOlderMessages(false)
       replaceActivePlan(null)
     }
   }, [currentWorkspace, isThreadInCurrentWorkspace, replaceActivePlan])
@@ -577,19 +633,73 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
 
   const selectThread = useCallback(async (threadId: string) => {
     if (!token || !currentWorkspace || !isThreadInCurrentWorkspace(threadId)) return
+    const requestVersion = activeThreadLoadVersionRef.current + 1
+    activeThreadLoadVersionRef.current = requestVersion
+    const threadPreview = allThreads.find((thread) => thread.id === threadId) ?? null
+    setActiveThread(threadPreview)
+    setMessages([])
+    setThreadPagination({
+      hasMoreOlder: false,
+      nextBeforeMessageId: null,
+      limit: INITIAL_THREAD_MESSAGE_LIMIT,
+    })
+    setIsThreadLoading(true)
+    setIsLoadingOlderMessages(false)
     try {
-      const res = await window.desktopAPI.threads.get(token, threadId)
+      const res = await window.desktopAPI.threads.get(token, threadId, { limit: INITIAL_THREAD_MESSAGE_LIMIT })
       if (res.success && res.data) {
-        const data = res.data as { thread: Thread; messages: Message[] }
+        const data = res.data as ThreadMessagesPage
+        if (activeThreadLoadVersionRef.current !== requestVersion) return
         setActiveThread(data.thread)
         setMessages(data.messages)
+        setThreadPagination(data.pagination)
         replaceActivePlan(null)
         setError(null)
       }
     } catch {
       setError('Failed to load thread')
+    } finally {
+      if (activeThreadLoadVersionRef.current === requestVersion) {
+        setIsThreadLoading(false)
+      }
     }
-  }, [token, currentWorkspace, isThreadInCurrentWorkspace, replaceActivePlan])
+  }, [allThreads, token, currentWorkspace, isThreadInCurrentWorkspace, replaceActivePlan])
+
+  const loadOlderMessages = useCallback(async () => {
+    const threadId = activeThreadRef.current?.id
+    if (!token || !threadId || isLoadingOlderMessages || !threadPagination.hasMoreOlder) return
+
+    const beforeMessageId = threadPagination.nextBeforeMessageId ?? messages[0]?.id
+    if (!beforeMessageId) return
+
+    const requestVersion = activeThreadLoadVersionRef.current
+    setIsLoadingOlderMessages(true)
+
+    try {
+      const res = await window.desktopAPI.threads.get(token, threadId, {
+        limit: OLDER_THREAD_MESSAGE_LIMIT,
+        beforeMessageId,
+      })
+
+      if (!res.success || !res.data) {
+        throw new Error('Failed to load older messages')
+      }
+
+      if (activeThreadLoadVersionRef.current !== requestVersion || activeThreadRef.current?.id !== threadId) {
+        return
+      }
+
+      const data = res.data as ThreadMessagesPage
+      setMessages((prev) => prependDistinctMessages(data.messages, prev))
+      setThreadPagination(data.pagination)
+    } catch {
+      setError('Failed to load older messages')
+    } finally {
+      if (activeThreadLoadVersionRef.current === requestVersion && activeThreadRef.current?.id === threadId) {
+        setIsLoadingOlderMessages(false)
+      }
+    }
+  }, [isLoadingOlderMessages, messages, threadPagination.hasMoreOlder, threadPagination.nextBeforeMessageId, token])
 
   const createThread = useCallback(async (): Promise<string | null> => {
     if (!token || !currentWorkspace) return null
@@ -601,6 +711,13 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         setAllThreads((prev) => [newThread, ...prev])
         setActiveThread(newThread)
         setMessages([])
+        setThreadPagination({
+          hasMoreOlder: false,
+          nextBeforeMessageId: null,
+          limit: INITIAL_THREAD_MESSAGE_LIMIT,
+        })
+        setIsThreadLoading(false)
+        setIsLoadingOlderMessages(false)
         replaceActivePlan(null)
         return newThread.id
       }
@@ -614,28 +731,23 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const sendMessage = useCallback(async (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-    mode: 'fast' | 'high' = 'high'
+    mode: 'fast' | 'high' | 'xtreme' = 'high'
   ) => {
     if (!token || !currentWorkspace || !activeThread || isStreaming) return
     const trimmedText = text.trim()
     cancelRequestedRef.current = false
+    activeModeRef.current = mode
 
-    let finalMessageText = trimmedText
-    if (attachedFiles && attachedFiles.length > 0) {
-      const attachmentsMd = attachedFiles.map(a => {
-        if (a.mimeType.startsWith('image/')) {
-          return `\n![${a.fileName}](${a.cloudinaryUrl})`
-        } else {
-          return `\n[${a.fileName}](attachment:${a.fileAssetId})`
-        }
-      }).join('')
-      if (finalMessageText) finalMessageText += `\n${attachmentsMd}`
-      else finalMessageText = attachmentsMd.trim()
+    if (!trimmedText && (!attachedFiles || attachedFiles.length === 0)) return
+
+    const userMsg: Message = { 
+      id: `temp-${Date.now()}`, 
+      threadId: activeThread.id, 
+      role: 'user', 
+      content: trimmedText, 
+      metadata: attachedFiles && attachedFiles.length > 0 ? { attachedFiles } : undefined,
+      createdAt: new Date().toISOString() 
     }
-
-    if (!finalMessageText) return
-
-    const userMsg: Message = { id: `temp-${Date.now()}`, threadId: activeThread.id, role: 'user', content: finalMessageText, createdAt: new Date().toISOString() }
     setMessages((prev) => [...prev, userMsg])
     setIsStreaming(true)
     setIsThinking(false)
@@ -664,20 +776,23 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     try {
       const requestId = crypto.randomUUID()
       activeRequestIdRef.current = requestId
+      replaceActiveExecutionId(requestId)
       const sendRes = await window.desktopAPI.chat.startStream(token, activeThread.id, trimmedText, requestId, attachedFiles, mode)
       if (!sendRes.success) {
         setError('Failed to send message')
         setIsStreaming(false)
         setIsThinking(false)
         activeRequestIdRef.current = null
+        replaceActiveExecutionId(null)
       }
     } catch (err) {
       if ((err as Error).name !== 'AbortError') setError('Stream failed. Please try again.')
       setIsStreaming(false)
       setIsThinking(false)
       activeRequestIdRef.current = null
+      replaceActiveExecutionId(null)
     }
-  }, [token, currentWorkspace, activeThread, isStreaming, replaceActivePlan, runAgentLocalActionTurn])
+  }, [token, currentWorkspace, activeThread, isStreaming, replaceActiveExecutionId, replaceActivePlan, runAgentLocalActionTurn])
 
   const stopExecution = useCallback(async () => {
     cancelRequestedRef.current = true
@@ -705,14 +820,48 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       if (!result?.success) { setError('Failed to delete thread'); return }
       unbindThread(threadId)
       setAllThreads((prev) => prev.filter((thread) => thread.id !== threadId))
-      if (activeThreadRef.current?.id === threadId) { setActiveThread(null); setMessages([]); replaceActivePlan(null) }
+      if (activeThreadRef.current?.id === threadId) {
+        setActiveThread(null)
+        setMessages([])
+        setThreadPagination({
+          hasMoreOlder: false,
+          nextBeforeMessageId: null,
+          limit: INITIAL_THREAD_MESSAGE_LIMIT,
+        })
+        setIsThreadLoading(false)
+        setIsLoadingOlderMessages(false)
+        replaceActivePlan(null)
+      }
     } catch {
       setError('Failed to delete thread — please restart the app and try again')
     }
   }, [token, replaceActivePlan, unbindThread])
 
   return (
-    <ChatContext.Provider value={{ threads, activeThread, messages, isStreaming, isThinking, activePlan, liveBlocks, error, loadThreads, selectThread, createThread, deleteThread, sendMessage, stopExecution, approveCommand, rejectCommand, killCommand, clearError }}>
+    <ChatContext.Provider value={{
+      threads,
+      activeThread,
+      messages,
+      isThreadLoading,
+      isLoadingOlderMessages,
+      hasMoreHistory: threadPagination.hasMoreOlder,
+      isStreaming,
+      isThinking,
+      activePlan,
+      liveBlocks,
+      error,
+      loadThreads,
+      selectThread,
+      loadOlderMessages,
+      createThread,
+      deleteThread,
+      sendMessage,
+      stopExecution,
+      approveCommand,
+      rejectCommand,
+      killCommand,
+      clearError,
+    }}>
       {children}
     </ChatContext.Provider>
   )

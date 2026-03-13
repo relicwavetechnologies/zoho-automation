@@ -100,10 +100,11 @@ export class FileUploadService {
           buffer: input.buffer,
           mimeType: input.mimeType,
           fileName: input.fileName,
+          sourceUrl: fileAsset.cloudinaryUrl,
           uploaderUserId: input.uploaderUserId,
           allowedRoles: input.allowedRoles,
         })
-        .catch((err) => {
+        .catch((err: any) => {
           logger.error('file.ingestion.failed_async', {
             fileAssetId: fileAsset.id,
             error: err instanceof Error ? err.message : 'unknown',
@@ -125,6 +126,31 @@ export class FileUploadService {
       orderBy: { createdAt: 'desc' },
       include: { accessPolicies: true },
     });
+  }
+
+  async listVisibleFiles(input: {
+    companyId: string;
+    requesterUserId: string;
+    requesterAiRole: string;
+    isAdmin?: boolean;
+  }) {
+    const files = await prisma.fileAsset.findMany({
+      where: {
+        companyId: input.companyId,
+        ...(input.isAdmin
+          ? {}
+          : {
+            OR: [
+              { uploaderUserId: input.requesterUserId },
+              { accessPolicies: { some: { aiRole: input.requesterAiRole, canRead: true } } },
+            ],
+          }),
+      },
+      orderBy: { createdAt: 'desc' },
+      include: { accessPolicies: true },
+    });
+
+    return files;
   }
 
   async updateAccessPolicy(input: {
@@ -176,6 +202,76 @@ export class FileUploadService {
     await prisma.fileAsset.delete({ where: { id: fileAssetId } });
 
     logger.info('file.asset.deleted', { fileAssetId, companyId });
+  }
+
+  async retryIngestion(fileAssetId: string, companyId: string): Promise<void> {
+    const asset = await prisma.fileAsset.findFirst({
+      where: { id: fileAssetId, companyId },
+      include: { accessPolicies: true },
+    });
+    if (!asset) throw new Error('File asset not found');
+    if (asset.ingestionStatus === 'done') throw new Error('File is already successfully ingested');
+
+    // Fetch the raw buffer from Cloudinary seamlessly
+    const res = await fetch(asset.cloudinaryUrl);
+    if (!res.ok) throw new Error(`Failed to fetch file from Cloudinary: ${res.statusText}`);
+    const arrayBuffer = await res.arrayBuffer();
+
+    // Reset status to pending
+    await prisma.fileAsset.update({
+      where: { id: fileAssetId },
+      data: { ingestionStatus: 'pending', ingestionError: null },
+    });
+
+    const allowedRoles = asset.accessPolicies.map(p => p.aiRole);
+
+    setImmediate(() => {
+      documentIngestionPipeline
+        .ingest({
+          fileAssetId: asset.id,
+          companyId: asset.companyId,
+          buffer: Buffer.from(arrayBuffer),
+          mimeType: asset.mimeType,
+          fileName: asset.fileName,
+          sourceUrl: asset.cloudinaryUrl,
+          uploaderUserId: asset.uploaderUserId,
+          allowedRoles,
+        })
+        .catch((err: any) => {
+          logger.error('file.ingestion.retry_failed', {
+            fileAssetId: asset.id,
+            error: err instanceof Error ? err.message : 'unknown',
+          });
+        });
+    });
+  }
+
+  async backfillVectorsFromSource(fileAssetId: string, companyId: string): Promise<void> {
+    const asset = await prisma.fileAsset.findFirst({
+      where: { id: fileAssetId, companyId },
+      include: { accessPolicies: true },
+    });
+    if (!asset) {
+      throw new Error('File asset not found');
+    }
+
+    const response = await fetch(asset.cloudinaryUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch file from Cloudinary: ${response.statusText}`);
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    const allowedRoles = asset.accessPolicies.map((policy) => policy.aiRole);
+
+    await documentIngestionPipeline.ingest({
+      fileAssetId: asset.id,
+      companyId: asset.companyId,
+      buffer: Buffer.from(arrayBuffer),
+      mimeType: asset.mimeType,
+      fileName: asset.fileName,
+      sourceUrl: asset.cloudinaryUrl,
+      uploaderUserId: asset.uploaderUserId,
+      allowedRoles,
+    });
   }
 }
 

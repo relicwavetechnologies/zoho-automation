@@ -181,7 +181,12 @@ class ChannelIdentityRepository {
    * Returns all channel identities for the company that have an admin AI role
    * and a valid Lark Open ID so we can send them direct messages.
    */
-  async findAdminsByCompany(companyId: string): Promise<Array<{ larkOpenId: string; displayName: string | null }>> {
+  async findAdminsByCompany(companyId: string): Promise<Array<{
+    id: string;
+    larkOpenId: string;
+    displayName: string | null;
+    email: string | null;
+  }>> {
     const rows = await prisma.channelIdentity.findMany({
       where: {
         companyId,
@@ -189,11 +194,12 @@ class ChannelIdentityRepository {
         aiRole: { in: ['COMPANY_ADMIN', 'SUPER_ADMIN'] },
         larkOpenId: { not: null },
       },
-      select: { larkOpenId: true, displayName: true },
+      select: { id: true, larkOpenId: true, displayName: true, email: true },
     });
     return rows
-      .filter((r): r is { larkOpenId: string; displayName: string | null } => typeof r.larkOpenId === 'string')
-      .map((r) => ({ larkOpenId: r.larkOpenId, displayName: r.displayName }));
+      .filter((r): r is { id: string; larkOpenId: string; displayName: string | null; email: string | null } =>
+        typeof r.larkOpenId === 'string')
+      .map((r) => ({ id: r.id, larkOpenId: r.larkOpenId, displayName: r.displayName, email: r.email }));
   }
 }
 

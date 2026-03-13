@@ -36,8 +36,8 @@ export type RunningCommandState = {
 }
 
 export type ActionLoopResult =
-  | { kind: 'action'; action: DesktopWorkspaceAction; blocks?: ContentBlock[]; plan?: ExecutionPlan | null }
-  | { kind: 'answer'; message: import('../types').Message; plan?: ExecutionPlan | null }
+  | { kind: 'action'; action: DesktopWorkspaceAction; blocks?: ContentBlock[]; plan?: ExecutionPlan | null; executionId?: string }
+  | { kind: 'answer'; message: import('../types').Message; plan?: ExecutionPlan | null; executionId?: string }
 
 export type ActionResultPayload = {
   kind: DesktopWorkspaceAction['kind']

@@ -59,4 +59,54 @@ export function registerFilesHandlers(): void {
       }
     },
   )
+  ipcMain.handle(
+    'desktop:files:share',
+    async (_event, token: string, fileId: string, reason?: string) => {
+      try {
+        const res = await net.fetch(`${BACKEND_URL}/api/member/files/${fileId}/share`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(reason ? { reason } : {}),
+        })
+        const json = await res.json()
+        return { success: res.ok, data: json }
+      } catch (error) {
+        return { success: false, data: { message: error instanceof Error ? error.message : 'Failed to share file' } }
+      }
+    },
+  )
+  ipcMain.handle(
+    'desktop:files:delete',
+    async (_event, token: string, fileId: string) => {
+      try {
+        const res = await net.fetch(`${BACKEND_URL}/api/member/files/${fileId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const json = await res.json()
+        return { success: res.ok, data: json }
+      } catch (error) {
+        return { success: false, data: { message: error instanceof Error ? error.message : 'Failed to delete file' } }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'desktop:files:retry',
+    async (_event, token: string, fileId: string) => {
+      try {
+        const res = await net.fetch(`${BACKEND_URL}/api/member/files/${fileId}/retry`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const json = await res.json()
+        return { success: res.ok, data: json }
+      } catch (error) {
+        return { success: false, data: { message: error instanceof Error ? error.message : 'Failed to retry ingestion' } }
+      }
+    },
+  )
 }

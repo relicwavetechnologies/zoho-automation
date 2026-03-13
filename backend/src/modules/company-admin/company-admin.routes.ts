@@ -112,6 +112,11 @@ router.post(
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.rejectVectorShareRequest),
 );
+router.post(
+  '/vector-share-requests/:requestId/revert',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.revertVectorShareRequest),
+);
 router.get(
   '/onboarding/zoho-oauth-config',
   requireRbacAction('onboarding.manage'),
@@ -137,10 +142,20 @@ router.get(
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.getToolPermissions),
 );
+router.get(
+  '/zoho-role-access',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.getZohoRoleAccessMatrix),
+);
 router.put(
   '/tool-permissions/:toolId/:role',
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.updateToolPermission),
+);
+router.put(
+  '/zoho-role-access/:role',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.updateZohoRoleAccess),
 );
 router.put(
   '/channel-identities/:identityId/ai-role',

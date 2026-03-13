@@ -13,6 +13,21 @@ type ShareRequest = {
     companyId: string;
     requesterUserId: string;
     conversationKey: string;
+    targetType?: 'conversation' | 'file_asset';
+    fileAssetId?: string;
+    fileName?: string;
+    summary?: string;
+    snapshotAt?: string;
+    classification?: 'safe' | 'review' | 'critical';
+    confidence?: number;
+    reasons?: string[];
+    riskFlags?: string[];
+    delivery?: {
+        recipientCount: number;
+        successCount: number;
+        failedCount: number;
+        mode: 'approval' | 'notification';
+    };
     status: string;
     reason?: string;
     decisionNote?: string;
@@ -26,6 +41,9 @@ type ShareRequest = {
 const statusBadgeClass = (status: string) => {
     if (status === 'pending') return 'bg-yellow-950/40 border-yellow-800/50 text-yellow-400';
     if (status === 'approved') return 'bg-emerald-950/40 border-emerald-800/50 text-emerald-400';
+    if (status === 'auto_shared' || status === 'shared_notified') return 'bg-blue-950/40 border-blue-800/50 text-blue-400';
+    if (status === 'reverted') return 'bg-zinc-900 border-zinc-700 text-zinc-300';
+    if (status === 'delivery_failed') return 'bg-orange-950/40 border-orange-800/50 text-orange-400';
     if (status === 'rejected') return 'bg-red-950/40 border-red-800/50 text-red-400';
     return 'bg-[#1a1a1a] text-zinc-500';
 };
@@ -87,13 +105,33 @@ export const VectorShareRequestsPage = () => {
         }
     };
 
+    const revert = async (requestId: string) => {
+        if (!token) return;
+        setActionLoading(requestId);
+        setMessage(null);
+        setError(null);
+        try {
+            await api.post(
+                `/api/admin/company/vector-share-requests/${requestId}/revert`,
+                scopedCompanyId ? { companyId: scopedCompanyId } : {},
+                token,
+            );
+            setMessage('Request reverted successfully.');
+            await load();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to revert request.');
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
     return (
         <div className="flex flex-col gap-6 max-w-5xl">
             <Card className="bg-[#111] border-[#1a1a1a] shadow-md shadow-black/20 text-zinc-300">
                 <CardHeader className="border-b border-[#1a1a1a] pb-4">
-                    <CardTitle className="text-zinc-100">Vector Share Requests</CardTitle>
+                    <CardTitle className="text-zinc-100">Knowledge Sharing</CardTitle>
                     <CardDescription className="text-zinc-500">
-                        Review and action requests from users who want to share their personal conversation knowledge company-wide.
+                        Review chat and file sharing, classifier outcomes, delivery health, and admin approvals.
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="pt-6 space-y-6">
@@ -143,6 +181,16 @@ export const VectorShareRequestsPage = () => {
                                                 <span className="text-sm font-medium text-zinc-200 truncate">
                                                     {req.requesterUserId}
                                                 </span>
+                                                {req.targetType && (
+                                                    <Badge variant="outline" className="text-[10px] uppercase px-2 border border-zinc-700 text-zinc-300">
+                                                        {req.targetType === 'file_asset' ? 'File' : 'Conversation'}
+                                                    </Badge>
+                                                )}
+                                                {req.classification && (
+                                                    <Badge variant="outline" className="text-[10px] uppercase px-2 border border-zinc-700 text-zinc-300">
+                                                        {req.classification}
+                                                    </Badge>
+                                                )}
                                                 <Badge
                                                     variant="outline"
                                                     className={`text-[10px] uppercase px-2 border ${statusBadgeClass(req.status)}`}
@@ -150,19 +198,46 @@ export const VectorShareRequestsPage = () => {
                                                     {req.status}
                                                 </Badge>
                                             </div>
-                                            <span className="text-xs text-zinc-500 font-mono truncate">{req.conversationKey}</span>
+                                            <span className="text-xs text-zinc-500 font-mono truncate">
+                                                {req.fileName ?? req.conversationKey}
+                                            </span>
                                             <div className="flex items-center gap-3 mt-1 text-xs text-zinc-600">
                                                 <span>Requested {new Date(req.createdAt).toLocaleString()}</span>
                                                 {req.promotedVectorCount > 0 && (
                                                     <span className="text-emerald-600">{req.promotedVectorCount} vectors promoted</span>
                                                 )}
+                                                {req.delivery && (
+                                                    <span className="text-zinc-500">
+                                                        delivery {req.delivery.successCount}/{req.delivery.recipientCount}
+                                                    </span>
+                                                )}
                                             </div>
+                                            {typeof req.confidence === 'number' && (
+                                                <p className="text-xs text-zinc-500 mt-1">
+                                                    confidence {(req.confidence * 100).toFixed(0)}%
+                                                </p>
+                                            )}
+                                            {req.reasons && req.reasons.length > 0 && (
+                                                <p className="text-xs text-zinc-500 mt-1">
+                                                    {req.reasons.join(' ')}
+                                                </p>
+                                            )}
+                                            {req.summary && (
+                                                <p className="text-sm text-zinc-300 mt-2 leading-6">
+                                                    {req.summary}
+                                                </p>
+                                            )}
+                                            {req.snapshotAt && (
+                                                <p className="text-xs text-zinc-600 mt-1">
+                                                    Shared snapshot through {new Date(req.snapshotAt).toLocaleString()}
+                                                </p>
+                                            )}
                                             {req.decisionNote && (
                                                 <p className="text-xs text-zinc-500 mt-1 italic">Note: {req.decisionNote}</p>
                                             )}
                                         </div>
 
-                                        {req.status === 'pending' && (
+                                        {(req.status === 'pending' || req.status === 'delivery_failed') && (
                                             <div className="flex gap-2 shrink-0">
                                                 <Button
                                                     size="sm"
@@ -181,6 +256,20 @@ export const VectorShareRequestsPage = () => {
                                                     className="border-red-900/50 text-red-400 hover:bg-red-950/30 hover:border-red-800 transition-colors"
                                                 >
                                                     {actionLoading === req.id ? '...' : 'Reject'}
+                                                </Button>
+                                            </div>
+                                        )}
+
+                                        {(req.status === 'approved' || req.status === 'auto_shared' || req.status === 'shared_notified') && (
+                                            <div className="flex gap-2 shrink-0">
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    disabled={actionLoading === req.id}
+                                                    onClick={() => void revert(req.id)}
+                                                    className="border-zinc-700 text-zinc-200 hover:bg-zinc-900 hover:border-zinc-600 transition-colors"
+                                                >
+                                                    {actionLoading === req.id ? '...' : 'Revert'}
                                                 </Button>
                                             </div>
                                         )}

@@ -15,11 +15,14 @@ export type SupervisorDecision =
 
 export const buildTier1Prompt = (messageText: string): string =>
     [
-        'You are a fast greeter/triage assistant. Decide if the user request can be answered immediately.',
-        'If yes (greeting, chitchat, very simple factual question), reply with:',
-        '  {"done":true,"reply":"<your response here>"}',
-        'If the request requires actions, data lookups, or complex reasoning, reply with:',
-        '  {"done":false}',
+        'You are Odin AI fast-path triage.',
+        'Decide whether the user request can be answered immediately without orchestration.',
+        'Only fast-path greetings, small talk, or very simple capability questions.',
+        'Do not fast-path requests that need tools, data lookup, planning, or multi-step reasoning.',
+        'If it can be answered immediately, return {"done":true,"reply":"<short reply>"}',
+        'If it requires orchestration, return {"done":false}',
+        'Valid example: {"done":true,"reply":"Hello. How can I help?"}',
+        'Invalid example to avoid: I should route this.',
         'Return JSON only. No extra text.',
         `User: ${messageText}`,
     ].join('\n');
@@ -53,7 +56,11 @@ export const buildSupervisorPrompt = (input: {
         : '(none yet)';
 
     return [
-        'You are the orchestration supervisor. You decide which agent to call next, or whether we are done.',
+        'You are Odin AI orchestration supervisor.',
+        'Decide which agent should run next, or whether the user already has enough grounded information.',
+        'Call exactly one next agent or finish the task.',
+        'Do not invent new capabilities beyond the available agent list.',
+        'Do not claim work completed unless the prior results already prove it.',
         '',
         'Available agents:',
         agentList,
@@ -66,8 +73,11 @@ export const buildSupervisorPrompt = (input: {
         '',
         'Instructions:',
         '- If more work is needed, pick the best agent from the list and return: {"next":"<agentKey>"}',
-        '- If we have enough information to answer the user, return: {"next":"FINISH","reply":"<natural language response>"}',
-        '- The reply should directly answer the user in a friendly, concise way. Use data from prior results.',
+        '- If we have enough information to answer the user, return: {"next":"FINISH","reply":"<concise grounded response>"}',
+        '- Keep the finish reply concise and grounded in prior results.',
+        '- Valid example: {"next":"search-read"} is invalid if that key is not in the available list. Use only listed agent keys.',
+        '- Valid example: {"next":"FINISH","reply":"I found 2 recent Zoho deals and 1 stalled renewal."}',
+        '- Invalid example to avoid: I think we are done.',
         '- Return JSON only. No extra text.',
     ].join('\n');
 };

@@ -125,16 +125,16 @@ function TerminalBlockCard({ block }: { block: Extract<ContentBlock, { type: 'te
 
 // ── Tool block row ────────────────────────────────────────────────────────────
 function ToolBlockRow({ block }: { block: Extract<ContentBlock, { type: 'tool' }> }): JSX.Element {
-    const [open, setOpen] = useState(false)
+    const [open, setOpen] = useState(() => block.name === 'planner-agent' || block.status === 'failed')
     const isRunning = block.status === 'running'
     const hasSummary = !!block.resultSummary && !isRunning
 
-    // Check if result summary is our structured search JSON
+    // Check if result summary is one of our structured citation payloads
     let structuredData: any = null
     if (hasSummary) {
         try {
             const parsed = JSON.parse(block.resultSummary!)
-            if (parsed.type === 'structured_search') {
+            if (parsed.type === 'structured_search' || parsed.type === 'structured_knowledge') {
                 structuredData = parsed
             }
         } catch (e) { /* not JSON */ }

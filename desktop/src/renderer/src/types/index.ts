@@ -4,6 +4,7 @@ export interface UserSession {
   name?: string
   email: string
   role: string
+  aiRole?: string
   sessionId: string
   expiresAt: string
   authProvider: 'password' | 'handoff' | 'lark'
@@ -35,6 +36,18 @@ export interface Message {
   content: string
   metadata?: MessageMetadata
   createdAt: string
+}
+
+export interface ThreadMessagePagination {
+  hasMoreOlder: boolean
+  nextBeforeMessageId: string | null
+  limit: number
+}
+
+export interface ThreadMessagesPage {
+  thread: Thread
+  messages: Message[]
+  pagination: ThreadMessagePagination
 }
 
 // ─── Content Blocks — unified ordered timeline ────────────────────────────────
@@ -96,6 +109,11 @@ export type ContentBlock =
 export type ExecutionPlanTaskStatus = 'pending' | 'running' | 'done' | 'blocked' | 'failed' | 'skipped'
 export type ExecutionPlanStatus = 'running' | 'completed' | 'failed'
 export type ExecutionPlanOwnerAgent = 'supervisor' | 'zoho' | 'outreach' | 'search' | 'larkDoc' | 'workspace' | 'terminal'
+export type ExecutionChannel = 'desktop' | 'lark'
+export type ExecutionMode = 'fast' | 'high' | 'xtreme' | null
+export type ExecutionRunStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+export type ExecutionPhase = 'request' | 'planning' | 'tool' | 'synthesis' | 'delivery' | 'error' | 'control'
+export type ExecutionActorType = 'system' | 'planner' | 'agent' | 'tool' | 'model' | 'delivery'
 
 export interface ExecutionPlanTask {
   id: string
@@ -115,10 +133,69 @@ export interface ExecutionPlan {
   tasks: ExecutionPlanTask[]
 }
 
+export interface ExecutionRunSummary {
+  id: string
+  companyId: string
+  companyName: string | null
+  userId: string | null
+  userName: string | null
+  userEmail: string | null
+  channel: ExecutionChannel
+  entrypoint: string
+  requestId: string | null
+  taskId: string | null
+  threadId: string | null
+  chatId: string | null
+  messageId: string | null
+  mode: ExecutionMode
+  agentTarget: string | null
+  status: ExecutionRunStatus
+  latestSummary: string | null
+  errorCode: string | null
+  errorMessage: string | null
+  eventCount: number
+  startedAt: string
+  finishedAt: string | null
+  durationMs: number | null
+}
+
+export interface ExecutionEventItem {
+  id: string
+  executionId: string
+  sequence: number
+  phase: ExecutionPhase
+  eventType: string
+  actorType: ExecutionActorType
+  actorKey: string | null
+  title: string
+  summary: string | null
+  status: string | null
+  payload: Record<string, unknown> | null
+  createdAt: string
+}
+
 // ─── Message metadata ─────────────────────────────────────────────────────────
 export interface MessageMetadata {
   contentBlocks?: ContentBlock[]
   plan?: ExecutionPlan
+  executionId?: string
+  attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>
+  shareAction?: {
+    type: 'conversation'
+    conversationKey: string
+    label: string
+    shared?: boolean
+  }
+  citations?: Array<{
+    id: string
+    title: string
+    url?: string
+    kind?: string
+    sourceType?: string
+    sourceId?: string
+    fileAssetId?: string
+    chunkIndex?: number
+  }>
   /** Legacy — kept for backward compat */
   toolCalls?: ToolCallInfo[]
   larkDocs?: LarkDocRef[]

@@ -39,7 +39,11 @@ export type DesktopAPI = {
   }
   threads: {
     list: (token: string) => Promise<{ success: boolean; data?: unknown[] }>
-    get: (token: string, threadId: string) => Promise<{ success: boolean; data?: unknown }>
+    get: (
+      token: string,
+      threadId: string,
+      options?: { limit?: number; beforeMessageId?: string },
+    ) => Promise<{ success: boolean; data?: unknown }>
     create: (token: string) => Promise<{ success: boolean; data?: { id: string } }>
     addMessage: (
       token: string,
@@ -64,7 +68,7 @@ export type DesktopAPI = {
       message: string,
       requestId: string,
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-      mode?: 'fast' | 'high'
+      mode?: 'fast' | 'high' | 'xtreme'
     ) => Promise<{ success: boolean }>
     stopStream: (
       requestId: string,
@@ -74,6 +78,11 @@ export type DesktopAPI = {
       threadId: string,
       payload: Record<string, unknown>,
     ) => Promise<{ success: boolean; data?: unknown; message?: string }>
+    share: (
+      token: string,
+      threadId: string,
+      reason?: string,
+    ) => Promise<{ success: boolean; data?: unknown }>
     onStreamEvent: (
       cb: (payload: { requestId: string; event: { type: string; data: unknown } }) => void,
     ) => () => void
@@ -90,6 +99,9 @@ export type DesktopAPI = {
       mimeType: string,
     ) => Promise<{ success: boolean; status: number; data: unknown }>
     list: (token: string) => Promise<{ success: boolean; data: unknown }>
+    share: (token: string, fileId: string, reason?: string) => Promise<{ success: boolean; data?: unknown }>
+    delete: (token: string, fileId: string) => Promise<{ success: boolean; data?: unknown }>
+    retry: (token: string, fileId: string) => Promise<{ success: boolean; data?: unknown }>
   }
 }
 
@@ -141,7 +153,7 @@ const api: DesktopAPI = {
   },
   threads: {
     list: (token) => ipcRenderer.invoke('desktop:threads', token),
-    get: (token, threadId) => ipcRenderer.invoke('desktop:thread', token, threadId),
+    get: (token, threadId, options) => ipcRenderer.invoke('desktop:thread', token, threadId, options),
     create: (token) => ipcRenderer.invoke('desktop:thread:create', token),
     addMessage: (token, threadId, payload) =>
       ipcRenderer.invoke('desktop:thread:add-message', token, threadId, payload),
@@ -158,6 +170,8 @@ const api: DesktopAPI = {
       ipcRenderer.invoke('desktop:chat:stopStream', requestId),
     act: (token, threadId, payload) =>
       ipcRenderer.invoke('desktop:chat:act', token, threadId, payload),
+    share: (token, threadId, reason) =>
+      ipcRenderer.invoke('desktop:chat:share', token, threadId, reason),
     onStreamEvent: (cb) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
@@ -177,6 +191,12 @@ const api: DesktopAPI = {
       ipcRenderer.invoke('desktop:files:upload', token, fileBuffer, fileName, mimeType),
     list: (token) =>
       ipcRenderer.invoke('desktop:files:list', token),
+    share: (token, fileId, reason) =>
+      ipcRenderer.invoke('desktop:files:share', token, fileId, reason),
+    delete: (token, fileId) =>
+      ipcRenderer.invoke('desktop:files:delete', token, fileId),
+    retry: (token, fileId) =>
+      ipcRenderer.invoke('desktop:files:retry', token, fileId),
   },
 }
 

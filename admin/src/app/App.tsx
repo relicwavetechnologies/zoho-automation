@@ -5,6 +5,7 @@ import { AuditLogsPage } from '../pages/AuditLogsPage';
 import { AiModelsPage } from '../pages/AiModelsPage';
 import { AdminLayout } from '../components/layout/AdminLayout';
 import { ControlsPage } from '../pages/ControlsPage';
+import { ExecutionsPage } from '../pages/ExecutionsPage';
 import { IntegrationsPage } from '../pages/IntegrationsPage';
 import { LarkOauthCallbackPage } from '../pages/LarkOauthCallbackPage';
 import { CompanyAdminSignupPage } from '../pages/CompanyAdminSignupPage';
@@ -60,6 +61,7 @@ export const App = () => {
           <Route path="rbac" element={<RbacPage />} />
           <Route path="audit" element={<AuditLogsPage />} />
           <Route path="controls" element={<ControlsPage />} />
+          <Route path="executions" element={<ExecutionsPage />} />
           <Route path="ai-models" element={<AiModelsPage />} />
           <Route path="token-usage" element={<TokenUsagePage />} />
           <Route path="integrations" element={<IntegrationsPage />} />

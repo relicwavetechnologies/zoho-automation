@@ -88,7 +88,32 @@ test('parseLarkIngressPayload ignores valid non-message event callback', () => {
   assert.equal(result.eventType, 'im.chat.member.bot.added_v1');
 });
 
-test('parseLarkIngressPayload ignores non-text message types', () => {
+test('parseLarkIngressPayload ignores non-receive event types even when a message payload is present', () => {
+  const result = parseLarkIngressPayload({
+    type: 'event_callback',
+    header: {
+      event_type: 'im.message.message_read_v1',
+      event_id: 'evt_3',
+    },
+    event: {
+      sender: {
+        employee_id: 'e_1',
+      },
+      message: {
+        msg_type: 'text',
+        message_id: 'om_3',
+        chat_id: 'oc_3',
+        content: JSON.stringify({ text: 'old message payload' }),
+      },
+    },
+  });
+
+  assert.equal(result.kind, 'event_callback_ignored');
+  assert.equal(result.reason, 'unsupported_event_callback');
+  assert.equal(result.eventType, 'im.message.message_read_v1');
+});
+
+test('parseLarkIngressPayload accepts image messages for downstream file ingestion', () => {
   const result = parseLarkIngressPayload({
     type: 'event_callback',
     event: {
@@ -104,8 +129,7 @@ test('parseLarkIngressPayload ignores non-text message types', () => {
     },
   });
 
-  assert.equal(result.kind, 'event_callback_ignored');
-  assert.equal(result.reason, 'unsupported_message_type');
+  assert.equal(result.kind, 'event_callback_message');
 });
 
 test('parseLarkIngressPayload ignores empty text messages', () => {

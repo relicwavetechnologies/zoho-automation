@@ -7,6 +7,9 @@ import { HttpException } from '../../core/http-exception';
 import { MemberSessionDTO } from '../member-auth/member-auth.service';
 import { fileUploadService } from './file-upload.service';
 import config from '../../config';
+import { toolPermissionService } from '../../company/tools/tool-permission.service';
+import { knowledgeShareService } from '../../company/knowledge-share/knowledge-share.service';
+import { prisma } from '../../utils/prisma';
 
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
 
@@ -31,6 +34,7 @@ class FileUploadController extends BaseController {
    */
   upload = async (req: Request, res: Response): Promise<void> => {
     const session = this.session(req);
+    const requesterAiRole = session.aiRole ?? session.role;
 
     if (!req.file) {
       throw new HttpException(400, 'No file provided');
@@ -41,7 +45,7 @@ class FileUploadController extends BaseController {
       : [];
 
     // Default: file is accessible only to uploader's role and above
-    const allowedRoles = rawRoles.length > 0 ? rawRoles : [session.role ?? 'MEMBER'];
+    const allowedRoles = rawRoles.length > 0 ? rawRoles : [requesterAiRole ?? 'MEMBER'];
 
     const result = await fileUploadService.upload({
       buffer: req.file.buffer,
@@ -63,8 +67,56 @@ class FileUploadController extends BaseController {
    */
   listFiles = async (req: Request, res: Response): Promise<void> => {
     const session = this.session(req);
-    const files = await fileUploadService.listFiles(session.companyId);
-    res.json(ApiResponse.success(files, 'Files retrieved'));
+    const requesterAiRole = session.aiRole ?? session.role;
+    const isAdmin = ['SUPER_ADMIN', 'COMPANY_ADMIN'].includes(requesterAiRole);
+    const files = await fileUploadService.listVisibleFiles({
+      companyId: session.companyId,
+      requesterUserId: session.userId,
+      requesterAiRole,
+      isAdmin,
+    });
+    const conversationKeys = files.map((file) => `file:${file.id}`);
+    const shareRows = conversationKeys.length > 0
+      ? await prisma.vectorShareRequest.findMany({
+        where: {
+          companyId: session.companyId,
+          conversationKey: { in: conversationKeys },
+        },
+        orderBy: { createdAt: 'desc' },
+      })
+      : [];
+    const latestShareByConversationKey = new Map<string, { status: string; summary?: string }>();
+    for (const row of shareRows) {
+      if (latestShareByConversationKey.has(row.conversationKey)) continue;
+      let summary: string | undefined;
+      try {
+        const meta = row.reason ? JSON.parse(row.reason) as { summary?: string } : null;
+        summary = typeof meta?.summary === 'string' ? meta.summary : undefined;
+      } catch {
+        summary = undefined;
+      }
+      latestShareByConversationKey.set(row.conversationKey, {
+        status: row.status,
+        summary,
+      });
+    }
+    const canShare = await toolPermissionService.isAllowed(
+      session.companyId,
+      'share_chat_vectors',
+      requesterAiRole,
+    );
+    res.json(ApiResponse.success({
+      files: files.map((file) => {
+        const share = latestShareByConversationKey.get(`file:${file.id}`);
+        return {
+          ...file,
+          shareStatus: share?.status,
+          shareSummary: share?.summary,
+          sharedCompanyWide: share ? ['approved', 'auto_shared', 'shared_notified', 'already_shared'].includes(share.status) : false,
+        };
+      }),
+      canShare,
+    }, 'Files retrieved'));
   };
 
   /**
@@ -99,6 +151,50 @@ class FileUploadController extends BaseController {
     const { fileAssetId } = req.params;
     await fileUploadService.deleteFile(fileAssetId, session.companyId);
     res.json(ApiResponse.success({ fileAssetId }, 'File deleted'));
+  };
+
+  /**
+   * POST /api/member/files/:fileAssetId/retry
+   * Fetch the failed file from cloudinary and run it back through the pipeline
+   */
+  retryIngestion = async (req: Request, res: Response): Promise<void> => {
+    const session = this.session(req);
+    const { fileAssetId } = req.params;
+    await fileUploadService.retryIngestion(fileAssetId, session.companyId);
+    res.json(ApiResponse.success({ fileAssetId }, 'Ingestion retry initiated'));
+  };
+
+  /**
+   * POST /api/member/files/:fileAssetId/share
+   * Runs the same share-access + classification pipeline used by Lark chat sharing.
+   */
+  shareFile = async (req: Request, res: Response): Promise<void> => {
+    const session = this.session(req);
+    const requesterAiRole = session.aiRole ?? session.role;
+    const { fileAssetId } = req.params;
+    const hasAccess = await toolPermissionService.isAllowed(
+      session.companyId,
+      'share_chat_vectors',
+      requesterAiRole,
+    );
+    if (!hasAccess) {
+      throw new HttpException(403, 'Your role is not allowed to share knowledge.');
+    }
+
+    const reason =
+      typeof req.body?.reason === 'string' && req.body.reason.trim().length > 0
+        ? req.body.reason.trim()
+        : undefined;
+
+    const result = await knowledgeShareService.requestFileShare({
+      companyId: session.companyId,
+      requesterUserId: session.userId,
+      requesterAiRole,
+      fileAssetId,
+      humanReason: reason,
+    });
+
+    res.json(ApiResponse.success(result, 'File share request processed'));
   };
 }
 

@@ -223,12 +223,11 @@ export class OutreachReadAgent extends BaseAgent {
         );
       }
 
-      const lines = records.map((record, index) => {
+      const lines = records.slice(0, 5).map((record, index) => {
         const website = asString(record.website) ?? asString(record.id) ?? `publisher_${index + 1}`;
         const niche = asString(record.niche) ?? 'n/a';
         const country = asString(record.webCountry) ?? 'n/a';
-        const link = asString(record.linkAttribute) ?? 'n/a';
-        return `${index + 1}. ${website} | DA ${formatNumber(record.domainAuthority)} | DR ${formatNumber(record.domainRating)} | Price ${formatPrice(record.sellingPrice)} | Niche ${niche} | Country ${country} | Link ${link}`;
+        return `${index + 1}. ${website} | DA ${formatNumber(record.domainAuthority)} | DR ${formatNumber(record.domainRating)} | Price ${formatPrice(record.sellingPrice)} | ${niche} | ${country}`;
       });
 
       const header = `Found ${records.length} outreach publisher${records.length === 1 ? '' : 's'} matching your query.`;

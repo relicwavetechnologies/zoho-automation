@@ -23,6 +23,8 @@ import {
 import { CreateInviteDto } from './dto/create-invite.dto';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { aiRoleService } from '../../company/tools/ai-role.service';
+import { zohoRoleAccessService } from '../../company/tools/zoho-role-access.service';
+import { knowledgeShareService } from '../../company/knowledge-share/knowledge-share.service';
 import { prisma } from '../../utils/prisma';
 import { qdrantAdapter, vectorDocumentRepository } from '../../company/integrations/vector';
 
@@ -586,6 +588,11 @@ export class CompanyAdminService extends BaseService {
     return toolPermissionService.getMatrix(scopedCompanyId);
   }
 
+  async getZohoRoleAccessMatrix(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    return zohoRoleAccessService.getMatrix(scopedCompanyId);
+  }
+
   async updateToolPermission(
     session: SessionScope,
     toolId: string,
@@ -612,6 +619,34 @@ export class CompanyAdminService extends BaseService {
       action: 'tool.permission.update',
       outcome: 'success',
       metadata: { toolId, role: normalizedRole, enabled },
+    });
+    return result;
+  }
+
+  async updateZohoRoleAccess(
+    session: SessionScope,
+    role: string,
+    companyScopedRead: boolean,
+    companyId?: string,
+  ) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const normalizedRole = role.trim().toUpperCase().replace(/\s+/g, '_');
+    const validRoleSlugs = await aiRoleService.getRoleSlugs(scopedCompanyId);
+    if (!validRoleSlugs.includes(normalizedRole)) {
+      throw new HttpException(404, `Unknown AI role: ${normalizedRole}`);
+    }
+    const result = await zohoRoleAccessService.updateRoleAccess(
+      scopedCompanyId,
+      normalizedRole,
+      companyScopedRead,
+      session.userId,
+    );
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'zoho.role_access.update',
+      outcome: 'success',
+      metadata: { role: normalizedRole, companyScopedRead },
     });
     return result;
   }
@@ -713,30 +748,7 @@ export class CompanyAdminService extends BaseService {
 
   async listVectorShareRequests(session: SessionScope, companyId?: string) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
-    const rows = await prisma.vectorShareRequest.findMany({
-      where: {
-        companyId: scopedCompanyId,
-      },
-      orderBy: [{ createdAt: 'desc' }],
-      take: 50,
-    });
-
-    return rows.map((row) => ({
-      id: row.id,
-      companyId: row.companyId,
-      requesterUserId: row.requesterUserId,
-      requesterChannelIdentityId: row.requesterChannelIdentityId ?? undefined,
-      conversationKey: row.conversationKey,
-      status: row.status,
-      reason: row.reason ?? undefined,
-      decisionNote: row.decisionNote ?? undefined,
-      reviewedBy: row.reviewedBy ?? undefined,
-      reviewedAt: row.reviewedAt?.toISOString(),
-      expiresAt: row.expiresAt?.toISOString(),
-      promotedVectorCount: row.promotedVectorCount,
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString(),
-    }));
+    return knowledgeShareService.listRequests(scopedCompanyId);
   }
 
   async createVectorShareRequest(
@@ -823,71 +835,14 @@ export class CompanyAdminService extends BaseService {
     if (row.companyId !== scopedCompanyId) {
       throw new HttpException(403, 'Company scope mismatch');
     }
-    if (row.status !== 'pending') {
+    if (row.status !== 'pending' && row.status !== 'delivery_failed') {
       throw new HttpException(409, 'Only pending vector share requests can be approved');
     }
-
-    const docs = await vectorDocumentRepository.findByConversation({
-      companyId: row.companyId,
-      requesterUserId: row.requesterUserId,
-      conversationKey: row.conversationKey,
+    return knowledgeShareService.approveRequest({
+      requestId,
+      reviewerUserId: session.userId,
+      decisionNote: input.decisionNote,
     });
-    if (docs.length === 0) {
-      throw new HttpException(404, 'No personal vectors found for this conversation');
-    }
-
-    await vectorDocumentRepository.reassignConversationVisibility({
-      companyId: row.companyId,
-      requesterUserId: row.requesterUserId,
-      conversationKey: row.conversationKey,
-      visibility: 'shared',
-    });
-
-    await qdrantAdapter.upsertVectors(
-      docs.map((doc) => ({
-        companyId: doc.companyId,
-        connectionId: doc.connectionId ?? undefined,
-        sourceType: doc.sourceType as 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket' | 'chat_turn',
-        sourceId: doc.sourceId,
-        chunkIndex: doc.chunkIndex,
-        contentHash: doc.contentHash,
-        visibility: 'shared' as const,
-        ownerUserId: doc.ownerUserId ?? undefined,
-        conversationKey: doc.conversationKey ?? undefined,
-        payload: (doc.payload ?? {}) as Record<string, unknown>,
-        embedding: doc.embedding,
-      })),
-    );
-
-    const updated = await prisma.vectorShareRequest.update({
-      where: { id: requestId },
-      data: {
-        status: 'approved',
-        decisionNote: input.decisionNote ?? null,
-        reviewedBy: session.userId,
-        reviewedAt: new Date(),
-        promotedVectorCount: docs.length,
-      },
-    });
-
-    await auditService.recordLog({
-      actorId: session.userId,
-      companyId: row.companyId,
-      action: 'vector_share_request.approve',
-      outcome: 'success',
-      metadata: {
-        requestId,
-        conversationKey: row.conversationKey,
-        promotedVectorCount: docs.length,
-      },
-    });
-
-    return {
-      id: updated.id,
-      status: updated.status,
-      promotedVectorCount: updated.promotedVectorCount,
-      reviewedAt: updated.reviewedAt?.toISOString(),
-    };
   }
 
   async rejectVectorShareRequest(
@@ -906,36 +861,40 @@ export class CompanyAdminService extends BaseService {
     if (row.companyId !== scopedCompanyId) {
       throw new HttpException(403, 'Company scope mismatch');
     }
-    if (row.status !== 'pending') {
+    if (row.status !== 'pending' && row.status !== 'delivery_failed') {
       throw new HttpException(409, 'Only pending vector share requests can be rejected');
     }
+    return knowledgeShareService.rejectRequest({
+      requestId,
+      reviewerUserId: session.userId,
+      decisionNote: input.decisionNote,
+    });
+  }
 
-    const updated = await prisma.vectorShareRequest.update({
+  async revertVectorShareRequest(
+    session: SessionScope,
+    requestId: string,
+    input: { companyId?: string; decisionNote?: string },
+  ) {
+    const row = await prisma.vectorShareRequest.findUnique({
       where: { id: requestId },
-      data: {
-        status: 'rejected',
-        decisionNote: input.decisionNote ?? null,
-        reviewedBy: session.userId,
-        reviewedAt: new Date(),
-      },
     });
+    if (!row) {
+      throw new HttpException(404, 'Vector share request not found');
+    }
 
-    await auditService.recordLog({
-      actorId: session.userId,
-      companyId: row.companyId,
-      action: 'vector_share_request.reject',
-      outcome: 'success',
-      metadata: {
-        requestId,
-        conversationKey: row.conversationKey,
-      },
+    const scopedCompanyId = resolveCompanyScope(session, input.companyId ?? row.companyId);
+    if (row.companyId !== scopedCompanyId) {
+      throw new HttpException(403, 'Company scope mismatch');
+    }
+    if (!['approved', 'auto_shared', 'shared_notified'].includes(row.status)) {
+      throw new HttpException(409, 'Only approved or shared requests can be reverted');
+    }
+    return knowledgeShareService.revertRequest({
+      requestId,
+      reviewerUserId: session.userId,
+      decisionNote: input.decisionNote,
     });
-
-    return {
-      id: updated.id,
-      status: updated.status,
-      reviewedAt: updated.reviewedAt?.toISOString(),
-    };
   }
 }
 

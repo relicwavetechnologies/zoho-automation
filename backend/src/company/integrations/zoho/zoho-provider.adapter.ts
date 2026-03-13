@@ -29,6 +29,13 @@ export type ZohoProviderHistoricalPageResult = {
   records: ZohoProviderHistoricalRecord[];
   nextCursor?: string;
   total?: number;
+  warnings?: Array<{
+    code: 'module_skipped' | 'predicate_invalid';
+    message: string;
+    moduleName: string;
+    sourceType: ZohoSourceType;
+    statusCode?: number;
+  }>;
 };
 
 export type ZohoProviderActionInput = {

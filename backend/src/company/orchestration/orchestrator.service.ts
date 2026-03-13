@@ -97,6 +97,7 @@ export class OrchestratorService {
           eventId: message.trace?.eventId,
           textHash: message.trace?.textHash,
           requesterEmail: message.trace?.requesterEmail,
+          requesterAiRole: userRole,
         },
         correlationId: randomUUID(),
       };

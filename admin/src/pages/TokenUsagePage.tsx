@@ -199,7 +199,7 @@ export default function TokenUsagePage() {
                         variant="outline" 
                         className={`font-mono ${member.percentUsed > 90 ? 'border-red-900 text-red-500' : member.percentUsed > 75 ? 'border-amber-900 text-amber-500' : 'border-zinc-700 text-zinc-400'}`}
                       >
-                        {member.percentUsed}%
+                        {member.percentUsed > 0 && member.percentUsed < 0.01 ? '<0.01' : member.percentUsed}%
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right text-zinc-500 text-xs">

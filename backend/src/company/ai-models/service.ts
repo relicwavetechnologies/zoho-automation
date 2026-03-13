@@ -9,6 +9,9 @@ export type AiModelTargetOverrideDTO = {
   fastProvider?: AiModelProvider;
   fastModelId?: string;
   fastThinkingLevel?: AiThinkingLevel;
+  xtremeProvider?: AiModelProvider;
+  xtremeModelId?: string;
+  xtremeThinkingLevel?: AiThinkingLevel;
   updatedBy: string;
   updatedAt: string;
 };
@@ -25,6 +28,9 @@ export type AiModelTargetResolvedDTO = {
   fastEffectiveProvider?: AiModelProvider;
   fastEffectiveModelId?: string;
   fastEffectiveThinkingLevel?: AiThinkingLevel;
+  xtremeEffectiveProvider?: AiModelProvider;
+  xtremeEffectiveModelId?: string;
+  xtremeEffectiveThinkingLevel?: AiThinkingLevel;
   source: 'default' | 'override';
   override?: AiModelTargetOverrideDTO;
 };
@@ -36,7 +42,7 @@ export type AiModelControlPlaneDTO = {
 };
 
 const normalizeProvider = (value: string): AiModelProvider => {
-  if (value === 'google' || value === 'openai') {
+  if (value === 'google' || value === 'openai' || value === 'groq') {
     return value;
   }
   throw new HttpException(400, `Unsupported provider: ${value}`);
@@ -63,6 +69,9 @@ const toOverride = (row: AiModelTargetConfigRow): AiModelTargetOverrideDTO => ({
   fastProvider: row.fastProvider ? normalizeProvider(row.fastProvider) : undefined,
   fastModelId: row.fastModelId ?? undefined,
   fastThinkingLevel: normalizeThinkingLevel(row.fastThinkingLevel),
+  xtremeProvider: row.xtremeProvider ? normalizeProvider(row.xtremeProvider) : undefined,
+  xtremeModelId: row.xtremeModelId ?? undefined,
+  xtremeThinkingLevel: normalizeThinkingLevel(row.xtremeThinkingLevel),
   updatedBy: row.updatedBy,
   updatedAt: row.updatedAt.toISOString(),
 });
@@ -89,6 +98,9 @@ class AiModelControlService {
         fastEffectiveProvider: target.fastDefaultProvider,
         fastEffectiveModelId: target.fastDefaultModelId,
         fastEffectiveThinkingLevel: target.fastDefaultThinkingLevel,
+        xtremeEffectiveProvider: target.xtremeDefaultProvider,
+        xtremeEffectiveModelId: target.xtremeDefaultModelId,
+        xtremeEffectiveThinkingLevel: target.xtremeDefaultThinkingLevel,
         source: 'default',
       };
     }
@@ -97,11 +109,17 @@ class AiModelControlService {
     const thinkingLevel = normalizeThinkingLevel(row.thinkingLevel);
     const fastProvider = row.fastProvider ? normalizeProvider(row.fastProvider) : undefined;
     const fastThinkingLevel = normalizeThinkingLevel(row.fastThinkingLevel);
+    const xtremeProvider = row.xtremeProvider ? normalizeProvider(row.xtremeProvider) : undefined;
+    const xtremeThinkingLevel = normalizeThinkingLevel(row.xtremeThinkingLevel);
 
     // If fast params are not set in the override, fallback to target defaults
     const effectiveFastProvider = fastProvider ?? target.fastDefaultProvider;
     const effectiveFastModelId = row.fastModelId ?? target.fastDefaultModelId;
     const effectiveFastThinkingLevel = row.fastModelId ? fastThinkingLevel : (target.fastDefaultThinkingLevel ?? undefined);
+
+    const effectiveXtremeProvider = xtremeProvider ?? target.xtremeDefaultProvider;
+    const effectiveXtremeModelId = row.xtremeModelId ?? target.xtremeDefaultModelId;
+    const effectiveXtremeThinkingLevel = row.xtremeModelId ? xtremeThinkingLevel : (target.xtremeDefaultThinkingLevel ?? undefined);
 
     return {
       targetKey,
@@ -115,6 +133,9 @@ class AiModelControlService {
       fastEffectiveProvider: effectiveFastProvider,
       fastEffectiveModelId: effectiveFastModelId,
       fastEffectiveThinkingLevel: effectiveFastThinkingLevel,
+      xtremeEffectiveProvider: effectiveXtremeProvider,
+      xtremeEffectiveModelId: effectiveXtremeModelId,
+      xtremeEffectiveThinkingLevel: effectiveXtremeThinkingLevel,
       source: 'override',
       override: toOverride(row),
     };
@@ -128,6 +149,9 @@ class AiModelControlService {
     fastProvider?: AiModelProvider;
     fastModelId?: string;
     fastThinkingLevel?: AiThinkingLevel;
+    xtremeProvider?: AiModelProvider;
+    xtremeModelId?: string;
+    xtremeThinkingLevel?: AiThinkingLevel;
   }): void {
     if (!AI_CONTROL_TARGET_MAP.has(input.targetKey)) {
       throw new HttpException(404, `Unknown AI model target: ${input.targetKey}`);
@@ -151,6 +175,9 @@ class AiModelControlService {
     validateModelContext(input.provider, input.modelId, input.thinkingLevel);
     if (input.fastProvider && input.fastModelId) {
       validateModelContext(input.fastProvider, input.fastModelId, input.fastThinkingLevel);
+    }
+    if (input.xtremeProvider && input.xtremeModelId) {
+      validateModelContext(input.xtremeProvider, input.xtremeModelId, input.xtremeThinkingLevel);
     }
   }
 
@@ -180,6 +207,9 @@ class AiModelControlService {
     fastProvider?: string | null;
     fastModelId?: string | null;
     fastThinkingLevel?: string | null;
+    xtremeProvider?: string | null;
+    xtremeModelId?: string | null;
+    xtremeThinkingLevel?: string | null;
     updatedBy: string;
   }): Promise<AiModelTargetResolvedDTO> {
     const provider = normalizeProvider(input.provider.trim().toLowerCase());
@@ -193,6 +223,10 @@ class AiModelControlService {
     const fastThinkingLevel = normalizeThinkingLevel(input.fastThinkingLevel);
     const fastModelId = input.fastModelId?.trim();
 
+    const xtremeProvider = input.xtremeProvider ? normalizeProvider(input.xtremeProvider.trim().toLowerCase()) : undefined;
+    const xtremeThinkingLevel = normalizeThinkingLevel(input.xtremeThinkingLevel);
+    const xtremeModelId = input.xtremeModelId?.trim();
+
     this.validateSelection({
       targetKey: input.targetKey,
       provider,
@@ -201,6 +235,9 @@ class AiModelControlService {
       fastProvider,
       fastModelId,
       fastThinkingLevel,
+      xtremeProvider,
+      xtremeModelId,
+      xtremeThinkingLevel,
     });
 
     const row = await this.repository.upsert({
@@ -211,6 +248,9 @@ class AiModelControlService {
       fastProvider: fastProvider ?? null,
       fastModelId: fastModelId ?? null,
       fastThinkingLevel: fastThinkingLevel ?? null,
+      xtremeProvider: xtremeProvider ?? null,
+      xtremeModelId: xtremeModelId ?? null,
+      xtremeThinkingLevel: xtremeThinkingLevel ?? null,
       updatedBy: input.updatedBy,
     });
 

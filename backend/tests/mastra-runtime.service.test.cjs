@@ -127,5 +127,5 @@ test('supervisorAgent treats capability prompt as general capability response', 
 
   const result = await service.generate('supervisorAgent', buildPayload('what can you do?'), 'req_4');
   assert.equal(result.output.route, 'general');
-  assert.match(result.text, /I can help with Zoho automation tasks/);
+  assert.match(result.text, /Odin AI/i);
 });

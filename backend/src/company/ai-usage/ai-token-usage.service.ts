@@ -14,7 +14,7 @@ export type RecordUsageInput = {
   actualInputTokens?: number;
   actualOutputTokens?: number;
   wasCompacted: boolean;
-  mode: 'fast' | 'high';
+  mode: 'fast' | 'high' | 'xtreme';
 };
 
 export type MonthlyUsageSummary = {
@@ -40,7 +40,7 @@ export type MemberUsageRow = {
 export type CompanyUsageBreakdown = {
   totalTokens: number;
   byModel: Record<string, { tokens: number; requests: number }>;
-  byMode: { fast: number; high: number };
+  byMode: { fast: number; high: number; xtreme: number };
   compactionRate: number;
   members: MemberUsageRow[];
 };
@@ -171,7 +171,7 @@ class AiTokenUsageService {
     });
 
     const byModel: Record<string, { tokens: number; requests: number }> = {};
-    const byMode = { fast: 0, high: 0 };
+    const byMode = { fast: 0, high: 0, xtreme: 0 };
     const byMember: Record<string, { tokens: number; compacted: number; lastModel: string; name: string | null; email: string | null }> = {};
     let totalTokens = 0;
     let totalCompacted = 0;
@@ -186,6 +186,7 @@ class AiTokenUsageService {
       byModel[row.modelId].requests += 1;
 
       if (row.mode === 'fast') byMode.fast += used;
+      else if (row.mode === 'xtreme') byMode.xtreme += used;
       else byMode.high += used;
 
       byMember[row.userId] = byMember[row.userId] ?? { tokens: 0, compacted: 0, lastModel: row.modelId, name: null, email: null };
@@ -221,7 +222,7 @@ class AiTokenUsageService {
         userEmail: data.email,
         totalTokens: data.tokens,
         monthlyLimit: limit,
-        percentUsed: Math.round((data.tokens / limit) * 100),
+        percentUsed: Number(((data.tokens / limit) * 100).toFixed(2)),
         lastModelId: data.lastModel,
         compactionEvents: data.compacted,
       };

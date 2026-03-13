@@ -2,6 +2,16 @@ import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
 import { DesktopThreadsRepository, desktopThreadsRepository } from './desktop-threads.repository';
 
+export type DesktopThreadMessagesPage = {
+  thread: Awaited<ReturnType<DesktopThreadsRepository['getThread']>>;
+  messages: Awaited<ReturnType<DesktopThreadsRepository['listMessages']>>;
+  pagination: {
+    hasMoreOlder: boolean;
+    nextBeforeMessageId: string | null;
+    limit: number;
+  };
+};
+
 export class DesktopThreadsService extends BaseService {
   constructor(private readonly repository: DesktopThreadsRepository = desktopThreadsRepository) {
     super();
@@ -17,6 +27,41 @@ export class DesktopThreadsService extends BaseService {
 
     const messages = await this.repository.listMessages(threadId);
     return { thread, messages };
+  }
+
+  async getThreadMessagesPage(
+    threadId: string,
+    userId: string,
+    input: {
+      limit: number;
+      beforeMessageId?: string;
+    },
+  ): Promise<DesktopThreadMessagesPage> {
+    const thread = await this.repository.getThread(threadId, userId);
+    if (!thread) throw new HttpException(404, 'Thread not found');
+
+    const before = input.beforeMessageId
+      ? await this.repository.getMessageCursor(threadId, input.beforeMessageId)
+      : null;
+
+    if (input.beforeMessageId && !before) {
+      throw new HttpException(404, 'Message cursor not found');
+    }
+
+    const page = await this.repository.listMessagesPage(threadId, {
+      limit: input.limit,
+      before,
+    });
+
+    return {
+      thread,
+      messages: page.messages,
+      pagination: {
+        hasMoreOlder: page.hasMoreOlder,
+        nextBeforeMessageId: page.hasMoreOlder && page.messages.length > 0 ? page.messages[0].id : null,
+        limit: input.limit,
+      },
+    };
   }
 
   async createThread(userId: string, companyId: string) {

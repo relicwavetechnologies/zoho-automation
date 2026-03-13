@@ -12,7 +12,7 @@ const TOOL_ID = 'search-read';
 export const searchReadTool = createTool({
   id: TOOL_ID,
   description:
-    'Search the web via Serper, then fetch the top result pages to extract exact page context and snippets.',
+    'Search the web via Serper, fetch exact page context, and when appropriate crawl a docs/site URL via Cloudflare Browser Rendering for broader site-grounded retrieval.',
   inputSchema: z.object({
     query: z.string().min(1).describe('The web search query'),
     exactDomain: z.string().optional().describe('Optional domain to focus with a second exact-site search'),
@@ -69,6 +69,9 @@ export const searchReadTool = createTool({
       query: result.result?.query,
       exactDomain: result.result?.exactDomain,
       focusedSiteSearch: result.result?.focusedSiteSearch,
+      crawlUsed: result.result?.crawlUsed,
+      crawlUrl: result.result?.crawlUrl,
+      crawlError: result.result?.crawlError,
       items: result.result?.items,
       sourceRefs: result.result?.sourceRefs,
     };

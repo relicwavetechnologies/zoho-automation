@@ -15,6 +15,7 @@ function AppShell(): JSX.Element {
   const { session, loading } = useAuth()
   const { hasWorkspace } = useWorkspace()
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [editorOpen, setEditorOpen] = useState(false)
 
   if (loading) {
     return (
@@ -40,16 +41,21 @@ function AppShell(): JSX.Element {
 
   return (
     <ChatProvider>
-      <div className="flex h-full" style={{ background: 'hsl(var(--background))' }}>
+      <div className="flex h-full overflow-hidden" style={{ background: 'hsl(var(--background))' }}>
         <Sidebar isOpen={sidebarOpen} onToggle={() => setSidebarOpen(false)} />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <Header sidebarOpen={sidebarOpen} toggleSidebar={() => setSidebarOpen(true)} />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <Header
+            sidebarOpen={sidebarOpen}
+            toggleSidebar={() => setSidebarOpen(true)}
+            editorOpen={editorOpen}
+            toggleEditor={() => setEditorOpen((prev) => !prev)}
+          />
           <div className="flex min-h-0 flex-1">
             <div className="flex min-w-0 flex-1 flex-col">
               <ChatPane />
               <Composer />
             </div>
-            <WorkspaceStudio />
+            <WorkspaceStudio isOpen={editorOpen} onClose={() => setEditorOpen(false)} />
           </div>
         </div>
       </div>

@@ -58,6 +58,7 @@ export const zohoReadTool = createTool({
       userId: requestContext?.get('userId'),
       channelIdentityId: requestContext?.get('channelIdentityId'),
       requesterEmail: requestContext?.get('requesterEmail'),
+      requesterAiRole: requestContext?.get('requesterAiRole'),
       chatId: requestContext?.get('chatId'),
     };
 
@@ -84,6 +85,14 @@ export const zohoReadTool = createTool({
       failureCode: failureCode ?? null,
       sourceRefCount: Array.isArray(result.result?.['sourceRefs']) ? result.result['sourceRefs'].length : 0,
     };
+    const reasonMessage =
+      typeof result.result?.['reasonMessage'] === 'string' && result.result['reasonMessage'].trim().length > 0
+        ? (result.result['reasonMessage'] as string).trim()
+        : null;
+    const resultSummary =
+      result.status === 'success'
+        ? reasonMessage ?? result.message
+        : reasonMessage ?? result.message;
 
     if (rateLimited) {
       logger.error('zoho.tool.read.rate_limited', finishMeta);
@@ -97,7 +106,7 @@ export const zohoReadTool = createTool({
         name: TOOL_ID,
         label: result.status === 'success' ? 'Read Zoho records' : 'Failed to read Zoho records',
         icon: result.status === 'success' ? 'search' : 'x-circle',
-        resultSummary: result.status === 'success' ? 'Records found' : 'Error',
+        resultSummary,
       });
     }
 

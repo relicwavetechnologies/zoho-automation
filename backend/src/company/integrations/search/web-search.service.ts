@@ -1,5 +1,6 @@
 import { logger } from '../../../utils/logger';
 import { SearchIntegrationError, serperClient, type SerperOrganicResult } from './serper.client';
+import { cloudflareCrawlClient, CloudflareCrawlError } from './cloudflare-crawl.client';
 
 const DEFAULT_SEARCH_RESULTS_LIMIT = 5;
 const MAX_SEARCH_RESULTS_LIMIT = 8;
@@ -42,12 +43,16 @@ export type WebSearchInput = {
   exactDomain?: string;
   searchResultsLimit?: number;
   pageContextLimit?: number;
+  crawlUrl?: string;
 };
 
 export type WebSearchResult = {
   query: string;
   exactDomain?: string;
   focusedSiteSearch: boolean;
+  crawlUsed?: boolean;
+  crawlUrl?: string;
+  crawlError?: string;
   items: WebSearchItem[];
   sourceRefs: Array<{ source: 'web'; id: string }>;
 };
@@ -84,6 +89,29 @@ const normalizeDomain = (value: string | undefined): string | undefined => {
     return undefined;
   }
   return toDomain(value);
+};
+
+const extractUrlCandidate = (value: string): string | undefined => {
+  const match = value.match(/\bhttps?:\/\/[^\s)]+/i)?.[0];
+  return match?.trim();
+};
+
+const shouldUseCrawl = (input: WebSearchInput): boolean => {
+  const normalized = input.query.toLowerCase();
+  if (input.crawlUrl) return true;
+  const crawlSignals = [
+    'crawl',
+    'documentation',
+    'docs',
+    'developer docs',
+    'knowledge base',
+    'whole site',
+    'entire site',
+    'all pages',
+    'api reference',
+    'sdk reference',
+  ];
+  return crawlSignals.some((signal) => normalized.includes(signal));
 };
 
 const extractTagText = (html: string, tag: string): string | undefined => {
@@ -206,6 +234,86 @@ export class WebSearchService {
     const exactDomain = normalizeDomain(input.exactDomain);
     const resultLimit = clamp(input.searchResultsLimit ?? DEFAULT_SEARCH_RESULTS_LIMIT, 1, MAX_SEARCH_RESULTS_LIMIT);
     const pageContextLimit = clamp(input.pageContextLimit ?? DEFAULT_PAGE_CONTEXT_LIMIT, 0, MAX_PAGE_CONTEXT_LIMIT);
+    const crawlUrl = input.crawlUrl ?? extractUrlCandidate(query);
+
+    if (crawlUrl && shouldUseCrawl(input) && cloudflareCrawlClient.isEnabled()) {
+      try {
+        const crawled = await cloudflareCrawlClient.crawl({
+          url: crawlUrl,
+          limit: resultLimit,
+          render: false,
+          includePatterns: exactDomain ? [`https://${exactDomain}/*`, `http://${exactDomain}/*`] : undefined,
+        });
+        const items: WebSearchItem[] = crawled.documents.map((doc, index) => ({
+          title: doc.title || doc.url,
+          link: doc.url,
+          domain: toDomain(doc.url) || (exactDomain ?? 'unknown'),
+          source: 'site',
+          position: index + 1,
+          pageContext: {
+            excerpt: doc.excerpt,
+            fetched: true,
+            contentType: 'text/markdown',
+          },
+        }));
+
+        logger.debug('web.search.crawl.completed', {
+          query,
+          crawlUrl,
+          resultCount: items.length,
+        });
+
+        return {
+          query,
+          exactDomain,
+          focusedSiteSearch: true,
+          crawlUsed: true,
+          crawlUrl,
+          items,
+          sourceRefs: items.map((item) => ({ source: 'web' as const, id: item.link })),
+        };
+      } catch (error) {
+        const crawlError = error instanceof CloudflareCrawlError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : 'unknown_crawl_error';
+        logger.warn('web.search.crawl.failed', {
+          query,
+          crawlUrl,
+          reason: crawlError,
+        });
+        // Fall through to normal search with the crawl error preserved for observability.
+        const fallback = await this.searchViaSerper({
+          query,
+          exactDomain,
+          resultLimit,
+          pageContextLimit,
+        });
+        return {
+          ...fallback,
+          crawlUsed: false,
+          crawlUrl,
+          crawlError,
+        };
+      }
+    }
+
+    return this.searchViaSerper({
+      query,
+      exactDomain,
+      resultLimit,
+      pageContextLimit,
+    });
+  }
+
+  private async searchViaSerper(input: {
+    query: string;
+    exactDomain?: string;
+    resultLimit: number;
+    pageContextLimit: number;
+  }): Promise<WebSearchResult> {
+    const { query, exactDomain, resultLimit, pageContextLimit } = input;
 
     const primary = await this.searchClient.search({
       query,
@@ -255,6 +363,7 @@ export class WebSearchService {
       query,
       exactDomain,
       focusedSiteSearch,
+      crawlUsed: false,
       items,
       sourceRefs: items.map((item) => ({ source: 'web' as const, id: item.link })),
     };

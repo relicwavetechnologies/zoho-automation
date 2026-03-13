@@ -1,7 +1,7 @@
 import { Children, isValidElement, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Check, Copy, FileText } from 'lucide-react'
+import { Check, Copy, FileText, Image } from 'lucide-react'
 
 interface Props {
   content: string
@@ -33,11 +33,23 @@ export function MarkdownContent({ content, className }: Props): JSX.Element {
         components={{
           a: ({ node: _node, href, ...props }) => {
             if (href?.startsWith('attachment:')) {
+              // Extract the filename from the markdown children if possible
+              const filename = flattenNodeText(props.children)
                return (
-                 <a {...props} href="#" onClick={(e) => e.preventDefault()} className="inline-flex mt-2 items-center gap-2 rounded-xl border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,11%)] px-3 py-2 text-[13px] font-medium text-[hsl(0,0%,80%)] no-underline hover:bg-[hsl(0,0%,16%)] mb-2 mr-2">
-                   <FileText size={14} className="text-[hsl(0,0%,50%)]" />
-                   {props.children}
-                 </a>
+                 <div className="inline-flex mt-2 items-center justify-center flex-col gap-2 rounded-xl border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,11%)] w-[120px] h-[100px] hover:bg-[hsl(0,0%,16%)] transition-colors mb-2 mr-2 overflow-hidden shadow-sm">
+                   <div className="w-10 h-10 rounded-lg bg-[hsl(0,0%,15%)] flex items-center justify-center border border-[hsl(0,0%,20%)]">
+                     {filename.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
+                       <Image size={18} className="text-blue-400" />
+                     ) : filename.match(/\.pdf$/i) ? (
+                       <FileText size={18} className="text-red-400" />
+                     ) : (
+                       <FileText size={18} className="text-slate-400" />
+                     )}
+                   </div>
+                   <div className="text-[11px] font-medium text-[hsl(0,0%,70%)] text-center w-full px-2 truncate leading-tight">
+                     {filename}
+                   </div>
+                 </div>
                )
             }
             return (

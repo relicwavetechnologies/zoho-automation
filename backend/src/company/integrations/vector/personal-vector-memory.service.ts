@@ -133,6 +133,7 @@ class PersonalVectorMemoryService {
     companyId: string;
     requesterUserId: string;
     conversationKey: string;
+    sharedThroughAt?: Date;
   }): Promise<{ sharedCount: number }> {
     // Phase 1: Fetch docs FIRST while they are still `personal` (findByConversation
     // filters on visibility='personal' so we get them before the flag changes).
@@ -140,6 +141,7 @@ class PersonalVectorMemoryService {
       companyId: input.companyId,
       requesterUserId: input.requesterUserId,
       conversationKey: input.conversationKey,
+      createdAtLte: input.sharedThroughAt,
     });
 
     if (docsToShare.length === 0) {
@@ -156,6 +158,7 @@ class PersonalVectorMemoryService {
       requesterUserId: input.requesterUserId,
       conversationKey: input.conversationKey,
       visibility: 'shared',
+      createdAtLte: input.sharedThroughAt,
     });
 
     // Phase 3: Sync the updated visibility flag to Qdrant
@@ -178,6 +181,7 @@ class PersonalVectorMemoryService {
       requesterUserId: input.requesterUserId,
       conversationKey: input.conversationKey,
       sharedCount: docsToShare.length,
+      sharedThroughAt: input.sharedThroughAt?.toISOString(),
     });
 
     return { sharedCount: docsToShare.length };

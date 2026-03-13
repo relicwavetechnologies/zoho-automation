@@ -38,6 +38,9 @@ type RuntimeTask = {
   graphNode?: string;
   graphStepHistory?: string[];
   routeIntent?: string;
+  plan: string[];
+  latestSynthesis?: string;
+  agentResultsHistory?: AgentResultHistoryEntry[];
   updatedAt: string;
 };
 
@@ -47,6 +50,25 @@ type RuntimeTaskDetail = RuntimeTask & {
     node: string;
     updatedAt: string;
   } | null;
+};
+
+type AgentResultHistoryEntry = {
+  taskId: string;
+  agentKey: string;
+  status: 'success' | 'failed' | 'needs_context' | 'hitl_paused' | 'timed_out_partial';
+  message: string;
+  result?: Record<string, unknown>;
+  error?: {
+    type?: string;
+    classifiedReason?: string;
+    rawMessage?: string;
+    retriable?: boolean;
+  };
+  metrics?: {
+    latencyMs?: number;
+    tokensUsed?: number;
+    apiCalls?: number;
+  };
 };
 
 type RuntimeTaskTrace = {
@@ -73,7 +95,10 @@ type RuntimeTaskTrace = {
     routeSource?: string;
     routeFallbackReasonCode?: string;
     planSource?: string;
+    planValidationErrors?: string[];
     responseDeliveryStatus?: string;
+    recoveryMode?: string;
+    resumeDecisionReason?: string;
   }>;
 };
 
@@ -331,7 +356,7 @@ export const ControlsPage = () => {
           </div>
 
           {runtimeDetail ? (
-            <div className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-md p-4 flex flex-col gap-3">
+            <div className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-md p-4 flex flex-col gap-4">
               <div className="flex items-center justify-between pb-3 border-b border-[#1a1a1a]">
                 <strong className="text-zinc-200 text-sm font-medium">Task Detail</strong>
                 <Badge variant={runtimeDetail.status === 'failed' ? 'destructive' : 'secondary'} className={runtimeDetail.status !== 'failed' ? "bg-[#1a1a1a] text-zinc-400" : ""}>
@@ -378,6 +403,72 @@ export const ControlsPage = () => {
                   </span>
                 ) : null}
               </div>
+
+              <div className="rounded-md border border-[#1a1a1a] bg-[#080808] p-3">
+                <div className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">Execution Plan</div>
+                <div className="mt-3 space-y-2">
+                  {runtimeDetail.plan?.length ? (
+                    runtimeDetail.plan.map((step, index) => (
+                      <div key={`${index}-${step}`} className="rounded-md border border-[#161616] bg-[#0d0d0d] px-3 py-2 text-sm text-zinc-300">
+                        <span className="mr-2 text-zinc-500">{index + 1}.</span>
+                        {step}
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-zinc-500">No plan steps were captured for this task.</p>
+                  )}
+                </div>
+              </div>
+
+              {runtimeDetail.latestSynthesis ? (
+                <div className="rounded-md border border-[#1a1a1a] bg-[#080808] p-3">
+                  <div className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">Latest Synthesis</div>
+                  <pre className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-zinc-300">
+                    {runtimeDetail.latestSynthesis}
+                  </pre>
+                </div>
+              ) : null}
+
+              <div className="rounded-md border border-[#1a1a1a] bg-[#080808] p-3">
+                <div className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">Agent Results</div>
+                <div className="mt-3 space-y-3">
+                  {runtimeDetail.agentResultsHistory?.length ? (
+                    runtimeDetail.agentResultsHistory.map((entry, index) => (
+                      <div key={`${entry.agentKey}-${index}`} className="rounded-md border border-[#161616] bg-[#0d0d0d] p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-sm font-medium text-zinc-200">{entry.agentKey}</div>
+                          <Badge
+                            variant={entry.status === 'failed' ? 'destructive' : 'outline'}
+                            className={entry.status === 'failed' ? '' : 'border-[#222] bg-transparent text-zinc-400'}
+                          >
+                            {entry.status}
+                          </Badge>
+                        </div>
+                        <p className="mt-2 text-sm leading-6 text-zinc-300">{entry.message}</p>
+                        {entry.metrics ? (
+                          <p className="mt-2 text-xs text-zinc-500">
+                            {typeof entry.metrics.latencyMs === 'number' ? `latency ${entry.metrics.latencyMs}ms` : 'latency n/a'}
+                            {typeof entry.metrics.tokensUsed === 'number' ? ` · tokens ${entry.metrics.tokensUsed}` : ''}
+                            {typeof entry.metrics.apiCalls === 'number' ? ` · api calls ${entry.metrics.apiCalls}` : ''}
+                          </p>
+                        ) : null}
+                        {entry.error ? (
+                          <div className="mt-2 rounded-md border border-[#2c1414] bg-[#180d0d] p-2 text-xs text-rose-300">
+                            {entry.error.classifiedReason ?? entry.error.rawMessage ?? 'Unknown agent error'}
+                          </div>
+                        ) : null}
+                        {entry.result ? (
+                          <pre className="mt-3 overflow-x-auto rounded-md border border-[#161616] bg-[#090909] p-3 text-xs leading-6 text-zinc-400">
+                            {JSON.stringify(entry.result, null, 2)}
+                          </pre>
+                        ) : null}
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-zinc-500">No agent results captured yet.</p>
+                  )}
+                </div>
+              </div>
             </div>
           ) : null}
 
@@ -406,8 +497,19 @@ export const ControlsPage = () => {
                         {step.graphNode ? ` · graphNode: ${step.graphNode}` : ''}
                         {step.routeIntent ? ` · intent: ${step.routeIntent}` : ''}
                         {step.routeSource ? ` · routeSource: ${step.routeSource}` : ''}
+                        {step.planSource ? ` · planSource: ${step.planSource}` : ''}
+                        {step.routeFallbackReasonCode ? ` · fallback: ${step.routeFallbackReasonCode}` : ''}
                         {step.responseDeliveryStatus ? ` · delivery: ${step.responseDeliveryStatus}` : ''}
+                        {step.recoveryMode ? ` · recovery: ${step.recoveryMode}` : ''}
                       </p>
+                      {step.planValidationErrors?.length ? (
+                        <div className="mt-2 rounded-md border border-[#241b12] bg-[#16120d] px-2 py-1.5 text-xs text-amber-300">
+                          {step.planValidationErrors.join(' | ')}
+                        </div>
+                      ) : null}
+                      {step.resumeDecisionReason ? (
+                        <p className="mt-2 text-xs text-zinc-500">{step.resumeDecisionReason}</p>
+                      ) : null}
                     </div>
                   ))}
                   {runtimeTrace.transitions.length === 0 ? (

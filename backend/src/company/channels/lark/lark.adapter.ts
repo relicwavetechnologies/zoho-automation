@@ -12,7 +12,7 @@ import type { LarkWebhookEnvelope } from './lark.types';
 import { buildLarkTraceMeta } from './lark-observability';
 import { larkTenantTokenService, LarkTenantTokenService } from './lark-tenant-token.service';
 import { emitRuntimeTrace } from '../../observability';
-import { parseLarkMessageContent } from './lark-message-content';
+import { parseLarkMessageContent, parseLarkAttachmentKeys } from './lark-message-content';
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (typeof value !== 'object' || value === null) {
@@ -161,20 +161,45 @@ export class LarkChannelAdapter implements ChannelAdapter {
 
   public normalizeIncomingEvent(event: unknown): Readonly<NormalizedIncomingMessageDTO> | null {
     const envelope = asRecord(event) as LarkWebhookEnvelope | null;
+    if (!envelope) {
+      return null;
+    }
 
     // Check if it's a card action
-    const eventType = readString(envelope?.header?.event_type);
-    if (eventType === 'card.action.trigger' && envelope?.action) {
-      const openId = readString(envelope.open_id);
-      const userId = readString(envelope.user_id) ?? openId;
-      const chatId = readString(envelope.open_chat_id);
-      const messageId = readString(envelope.open_message_id);
+    const eventType = readString(envelope.header?.event_type);
+    const nestedAction = envelope.event && typeof envelope.event === 'object' ? asRecord(envelope.event.action) : null;
+    const cardAction = asRecord(envelope.action) ?? nestedAction;
+    if (eventType === 'card.action.trigger' && cardAction) {
+      const context = envelope.event?.context;
+      const operator = envelope.event?.operator;
+      const openId =
+        readString(envelope.open_id)
+        ?? readString(operator?.open_id)
+        ?? readString(envelope.event?.operator?.operator_id?.open_id);
+      const userId =
+        readString(envelope.user_id)
+        ?? readString(operator?.user_id)
+        ?? readString(envelope.event?.operator?.operator_id?.user_id)
+        ?? openId;
+      const messageId =
+        readString(envelope.open_message_id)
+        ?? readString(context?.open_message_id)
+        ?? readString((context as Record<string, unknown> | undefined)?.message_id)
+        ?? readString((envelope.event as Record<string, unknown> | undefined)?.open_message_id)
+        ?? readString(envelope.header?.event_id);
+      const chatId =
+        readString(envelope.open_chat_id)
+        ?? readString(context?.open_chat_id)
+        ?? readString((context as Record<string, unknown> | undefined)?.chat_id)
+        ?? readString((envelope.event as Record<string, unknown> | undefined)?.open_chat_id)
+        ?? messageId
+        ?? userId;
 
       if (!userId || !chatId || !messageId) {
         return null;
       }
 
-      const payloadText = JSON.stringify(envelope.action.value ?? {});
+      const payloadText = JSON.stringify(cardAction.value ?? {});
 
       const normalized: NormalizedIncomingMessageDTO = {
         channel: 'lark',
@@ -188,7 +213,9 @@ export class LarkChannelAdapter implements ChannelAdapter {
         trace: {
           larkTenantKey: readTenantKey(envelope),
           larkOpenId: openId,
-          larkUserId: readString(envelope.user_id),
+          larkUserId:
+            readString(envelope.user_id)
+            ?? readString(operator?.user_id),
         },
       };
 
@@ -500,5 +527,50 @@ export class LarkChannelAdapter implements ChannelAdapter {
       response,
       payload,
     };
+  }
+
+  /**
+   * Downloads a file or image from Lark's message resources endpoint.
+   * messageId  — the Lark message_id containing the file
+   * fileKey    — the image_key or file_key from the content JSON
+   * fileType   — 'image' | 'file' (determines which endpoint variant)
+   */
+  public async downloadFile(input: {
+    messageId: string;
+    fileKey: string;
+    fileType: 'image' | 'file';
+  }): Promise<{ buffer: Buffer; contentType: string } | null> {
+    let token: string;
+    try {
+      token = await this.tokenService.getAccessToken();
+    } catch (error) {
+      logger.warn('lark.file.download.token_failed', { messageId: input.messageId, fileKey: input.fileKey, error });
+      return null;
+    }
+
+    const url = `${this.apiBaseUrl}/open-apis/im/v1/messages/${input.messageId}/resources/${input.fileKey}?type=${input.fileType}`;
+    try {
+      const response = await this.fetchImpl(url, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        logger.warn('lark.file.download.failed', {
+          messageId: input.messageId,
+          fileKey: input.fileKey,
+          status: response.status,
+          statusText: response.statusText,
+        });
+        return null;
+      }
+
+      const contentType = response.headers.get('content-type') ?? 'application/octet-stream';
+      const arrayBuffer = await response.arrayBuffer();
+      return { buffer: Buffer.from(arrayBuffer), contentType };
+    } catch (error) {
+      logger.warn('lark.file.download.error', { messageId: input.messageId, fileKey: input.fileKey, error });
+      return null;
+    }
   }
 }

@@ -33,6 +33,7 @@ model User {
   memberSessions   MemberSession[]
   desktopHandoffs  DesktopAuthHandoff[]
   desktopThreads   DesktopThread[]
+  executionRuns    ExecutionRun[]
   larkAuthLinks    LarkUserAuthLink[]
 }
 
@@ -53,12 +54,14 @@ model Company {
   mcpActionLogs    McpActionLog[]
   channelIdentities ChannelIdentity[]
   toolPermissions  ToolPermission[]
+  zohoRoleAccessPolicies ZohoRoleAccessPolicy[]
   aiRoleDefinitions AiRoleDefinition[]
   vectorDocuments  VectorDocument[]
   vectorShareRequests VectorShareRequest[]
   memberSessions   MemberSession[]
   desktopHandoffs  DesktopAuthHandoff[]
   desktopThreads   DesktopThread[]
+  executionRuns    ExecutionRun[]
   larkAuthLinks    LarkUserAuthLink[]
   fileAssets       FileAsset[]
 }
@@ -450,6 +453,19 @@ model ToolPermission {
   @@index([companyId, toolId])
 }
 
+model ZohoRoleAccessPolicy {
+  id                String   @id @default(uuid())
+  companyId          String
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role               String
+  companyScopedRead  Boolean  @default(false)
+  updatedAt          DateTime @updatedAt
+  updatedBy          String?
+
+  @@unique([companyId, role])
+  @@index([companyId, role])
+}
+
 model AiRoleDefinition {
   id          String   @id @default(uuid())
   companyId   String
@@ -473,6 +489,9 @@ model AiModelTargetConfig {
   fastProvider      String?
   fastModelId       String?
   fastThinkingLevel String?
+  xtremeProvider      String?
+  xtremeModelId       String?
+  xtremeThinkingLevel String?
   updatedBy         String
   updatedAt         DateTime @updatedAt
 
@@ -588,13 +607,68 @@ model AiTokenUsage {
   actualInputTokens     Int?
   actualOutputTokens    Int?
   wasCompacted          Boolean  @default(false)
-  mode                  String   @default("high")  // 'fast' | 'high'
+  mode                  String   @default("high")  // 'fast' | 'high' | 'xtreme'
   createdAt             DateTime @default(now())
 
   @@index([userId, companyId, createdAt])
   @@index([companyId, createdAt])
   @@index([userId, createdAt])
   @@index([companyId, modelId, createdAt])
+}
+
+model ExecutionRun {
+  id            String           @id @default(uuid())
+  companyId     String
+  company       Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId        String?
+  user          User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  channel       String
+  entrypoint    String
+  requestId     String?          @unique
+  taskId        String?
+  threadId      String?
+  chatId        String?
+  messageId     String?
+  mode          String?
+  agentTarget   String?
+  status        String           @default("running")
+  latestSummary String?
+  errorCode     String?
+  errorMessage  String?
+  lastSequence  Int              @default(0)
+  startedAt     DateTime         @default(now())
+  finishedAt    DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  events        ExecutionEvent[]
+
+  @@index([companyId, startedAt])
+  @@index([userId, startedAt])
+  @@index([channel, startedAt])
+  @@index([mode, startedAt])
+  @@index([status, startedAt])
+  @@index([taskId])
+  @@index([threadId])
+}
+
+model ExecutionEvent {
+  id          String       @id @default(uuid())
+  executionId String
+  execution   ExecutionRun @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  sequence    Int
+  phase       String
+  eventType   String
+  actorType   String
+  actorKey    String?
+  title       String
+  summary     String?
+  status      String?
+  payload     Json?
+  createdAt   DateTime     @default(now())
+
+  @@unique([executionId, sequence])
+  @@index([executionId, createdAt])
+  @@index([createdAt])
 }
 
 model MemberTokenPolicy {

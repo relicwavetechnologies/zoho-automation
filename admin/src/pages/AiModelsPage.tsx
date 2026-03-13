@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { toast } from '../components/ui/use-toast';
 import { api } from '../lib/api';
 
-type Provider = 'google' | 'openai';
+type Provider = 'google' | 'openai' | 'groq';
 type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
 
 type CatalogEntry = {
@@ -41,6 +41,9 @@ type TargetRow = {
     fastProvider?: Provider;
     fastModelId?: string;
     fastThinkingLevel?: ThinkingLevel;
+    xtremeProvider?: Provider;
+    xtremeModelId?: string;
+    xtremeThinkingLevel?: ThinkingLevel;
     updatedBy: string;
     updatedAt: string;
   };
@@ -59,6 +62,9 @@ type DraftState = {
   fastProvider: Provider;
   fastModelId: string;
   fastThinkingLevel?: ThinkingLevel;
+  xtremeProvider: Provider;
+  xtremeModelId: string;
+  xtremeThinkingLevel?: ThinkingLevel;
 };
 
 const ENGINE_ACCENT: Record<'mastra' | 'langgraph', string> = {
@@ -100,6 +106,9 @@ export function AiModelsPage() {
               fastProvider: target.override?.fastProvider ?? (target as any).fastEffectiveProvider ?? target.effectiveProvider,
               fastModelId: target.override?.fastModelId ?? (target as any).fastEffectiveModelId ?? target.effectiveModelId,
               fastThinkingLevel: target.override?.fastThinkingLevel ?? (target as any).fastEffectiveThinkingLevel ?? target.effectiveThinkingLevel,
+              xtremeProvider: target.override?.xtremeProvider ?? (target as any).xtremeEffectiveProvider ?? target.effectiveProvider,
+              xtremeModelId: target.override?.xtremeModelId ?? (target as any).xtremeEffectiveModelId ?? target.effectiveModelId,
+              xtremeThinkingLevel: target.override?.xtremeThinkingLevel ?? (target as any).xtremeEffectiveThinkingLevel ?? target.effectiveThinkingLevel,
             },
           ]),
         ),
@@ -117,6 +126,7 @@ export function AiModelsPage() {
     return {
       google: catalog.filter((entry) => entry.provider === 'google'),
       openai: catalog.filter((entry) => entry.provider === 'openai'),
+      groq: catalog.filter((entry) => entry.provider === 'groq'),
     };
   }, [catalog]);
 
@@ -140,6 +150,11 @@ export function AiModelsPage() {
         next.fastModelId = providerModels[0]?.modelId ?? '';
         next.fastThinkingLevel = providerModels[0]?.supportsThinking ? 'medium' : undefined;
       }
+      if (patch.xtremeProvider && patch.xtremeProvider !== prev[targetKey]?.xtremeProvider) {
+        const providerModels = modelsByProvider[patch.xtremeProvider];
+        next.xtremeModelId = providerModels[0]?.modelId ?? '';
+        next.xtremeThinkingLevel = providerModels[0]?.supportsThinking ? 'medium' : undefined;
+      }
       return { ...prev, [targetKey]: next };
     });
   };
@@ -160,6 +175,9 @@ export function AiModelsPage() {
           fastProvider: draft.fastProvider,
           fastModelId: draft.fastModelId,
           fastThinkingLevel: draft.fastProvider === 'google' ? draft.fastThinkingLevel ?? null : null,
+          xtremeProvider: draft.xtremeProvider,
+          xtremeModelId: draft.xtremeModelId,
+          xtremeThinkingLevel: draft.xtremeProvider === 'google' ? draft.xtremeThinkingLevel ?? null : null,
         },
         token,
       );
@@ -173,6 +191,9 @@ export function AiModelsPage() {
           fastProvider: updated.override?.fastProvider ?? (updated as any).fastEffectiveProvider ?? updated.effectiveProvider,
           fastModelId: updated.override?.fastModelId ?? (updated as any).fastEffectiveModelId ?? updated.effectiveModelId,
           fastThinkingLevel: updated.override?.fastThinkingLevel ?? (updated as any).fastEffectiveThinkingLevel ?? updated.effectiveThinkingLevel,
+          xtremeProvider: updated.override?.xtremeProvider ?? (updated as any).xtremeEffectiveProvider ?? updated.effectiveProvider,
+          xtremeModelId: updated.override?.xtremeModelId ?? (updated as any).xtremeEffectiveModelId ?? updated.effectiveModelId,
+          xtremeThinkingLevel: updated.override?.xtremeThinkingLevel ?? (updated as any).xtremeEffectiveThinkingLevel ?? updated.effectiveThinkingLevel,
         },
       }));
       toast({ title: 'AI model updated', description: `${updated.label} primary model set to ${updated.effectiveProvider}/${updated.effectiveModelId}.`, variant: 'success' });
@@ -243,12 +264,15 @@ export function AiModelsPage() {
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <Tabs defaultValue="high" className="w-full">
-                      <TabsList className="grid w-full grid-cols-2 bg-zinc-900 border border-zinc-800 text-zinc-400">
+                      <TabsList className="grid w-full grid-cols-3 bg-zinc-900 border border-zinc-800 text-zinc-400">
                         <TabsTrigger value="high" className="data-[state=active]:bg-zinc-800 data-[state=active]:text-zinc-100">
-                          🔥 High Tier Modex
+                          🔥 High Tier
                         </TabsTrigger>
                         <TabsTrigger value="fast" className="data-[state=active]:bg-zinc-800 data-[state=active]:text-zinc-100">
-                          ⚡ Fast Tier Mode
+                          ⚡ Fast Tier
+                        </TabsTrigger>
+                        <TabsTrigger value="xtreme" className="data-[state=active]:bg-zinc-800 data-[state=active]:text-zinc-100">
+                          🚀 Xtreme Tier
                         </TabsTrigger>
                       </TabsList>
                       
@@ -263,6 +287,7 @@ export function AiModelsPage() {
                               <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
                                 <SelectItem value="google">Google Gemini</SelectItem>
                                 <SelectItem value="openai">OpenAI</SelectItem>
+                                <SelectItem value="groq">Groq</SelectItem>
                               </SelectContent>
                             </Select>
                           </div>
@@ -333,6 +358,7 @@ export function AiModelsPage() {
                                     <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
                                       <SelectItem value="google">Google Gemini</SelectItem>
                                       <SelectItem value="openai">OpenAI</SelectItem>
+                                      <SelectItem value="groq">Groq</SelectItem>
                                     </SelectContent>
                                   </Select>
                                 </div>
@@ -383,6 +409,80 @@ export function AiModelsPage() {
                                     {selectedFastModel.preview ? <Badge className="border-amber-900 bg-amber-950/60 text-amber-300">Preview</Badge> : null}
                                   </div>
                                   <div>{selectedFastModel.description}</div>
+                                </div>
+                              ) : null}
+                            </>
+                          );
+                        })()}
+                      </TabsContent>
+
+                      <TabsContent value="xtreme" className="space-y-4 pt-4">
+                        {(() => {
+                          const xtremeModels = draft ? modelsByProvider[draft.xtremeProvider] : [];
+                          const selectedXtremeModel = xtremeModels.find((entry) => entry.modelId === draft?.xtremeModelId);
+                          return (
+                            <>
+                              <div className="grid gap-3 md:grid-cols-2">
+                                <div className="space-y-2">
+                                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Provider</div>
+                                  <Select value={draft?.xtremeProvider} onValueChange={(value) => updateDraft(target.targetKey, { xtremeProvider: value as Provider })}>
+                                    <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
+                                      <SelectItem value="google">Google Gemini</SelectItem>
+                                      <SelectItem value="openai">OpenAI</SelectItem>
+                                      <SelectItem value="groq">Groq LPU (Ultra-Fast)</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+
+                                <div className="space-y-2">
+                                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Model</div>
+                                  <Select value={draft?.xtremeModelId} onValueChange={(value) => updateDraft(target.targetKey, { xtremeModelId: value })}>
+                                    <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
+                                      {xtremeModels.map((model) => (
+                                        <SelectItem key={`${model.provider}:${model.modelId}`} value={model.modelId}>
+                                          {model.label}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              </div>
+
+                              {draft?.xtremeProvider === 'google' && selectedXtremeModel?.supportsThinking ? (
+                                <div className="space-y-2">
+                                  <div className="text-xs font-medium uppercase tracking-[0.12em] text-zinc-500">Thinking Level</div>
+                                  <Select
+                                    value={draft.xtremeThinkingLevel ?? 'medium'}
+                                    onValueChange={(value) => updateDraft(target.targetKey, { xtremeThinkingLevel: value as ThinkingLevel })}
+                                  >
+                                    <SelectTrigger className="border-zinc-800 bg-zinc-950 text-zinc-100">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent className="border-zinc-800 bg-[#111315] text-zinc-100">
+                                      {thinkingLevels.map((level) => (
+                                        <SelectItem key={level} value={level}>
+                                          {level}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              ) : null}
+
+                              {selectedXtremeModel ? (
+                                <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-sm text-zinc-300">
+                                  <div className="flex flex-wrap items-center gap-2 pb-2">
+                                    <Badge variant="outline" className="border-zinc-700 text-zinc-300">{selectedXtremeModel.speed}</Badge>
+                                    <Badge variant="outline" className="border-zinc-700 text-zinc-300">{selectedXtremeModel.cost}</Badge>
+                                    {selectedXtremeModel.preview ? <Badge className="border-amber-900 bg-amber-950/60 text-amber-300">Preview</Badge> : null}
+                                  </div>
+                                  <div>{selectedXtremeModel.description}</div>
                                 </div>
                               ) : null}
                             </>

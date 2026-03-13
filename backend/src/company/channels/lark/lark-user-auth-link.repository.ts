@@ -130,6 +130,41 @@ class LarkUserAuthLinkRepository {
     return toDecrypted(record);
   }
 
+  /**
+   * Returns the internal User.id that a Lark sender has linked their account to,
+   * or `null` if no active link exists. Resolves by larkOpenId first, then larkUserId.
+   *
+   * This is the canonical look-up used to unify personal vector memory across the
+   * Lark channel and the Desktop app — both channels store vectors under the same
+   * ownerUserId when an auth-link is present.
+   */
+  async findLinkedUserId(input: {
+    companyId: string;
+    larkOpenId?: string | null;
+    larkUserId?: string | null;
+  }): Promise<string | null> {
+    const orConditions = [
+      ...(input.larkOpenId ? [{ larkOpenId: input.larkOpenId }] : []),
+      ...(input.larkUserId ? [{ larkUserId: input.larkUserId }] : []),
+    ];
+
+    if (orConditions.length === 0) {
+      return null;
+    }
+
+    const link = await prisma.larkUserAuthLink.findFirst({
+      where: {
+        companyId: input.companyId,
+        revokedAt: null,
+        OR: orConditions,
+      },
+      select: { userId: true },
+      orderBy: { linkedAt: 'desc' },
+    });
+
+    return link?.userId ?? null;
+  }
+
   async touchLastUsed(id: string): Promise<void> {
     await prisma.larkUserAuthLink.update({
       where: { id },

@@ -335,6 +335,21 @@ class CompanyAdminController extends BaseController {
     return res.json(ApiResponse.success(result, 'Vector share request rejected'));
   };
 
+  revertVectorShareRequest = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.revertVectorShareRequest(session, req.params.requestId, {
+      companyId: typeof req.body?.companyId === 'string' ? req.body.companyId : undefined,
+      decisionNote:
+        typeof req.body?.decisionNote === 'string' && req.body.decisionNote.trim().length > 0
+          ? req.body.decisionNote.trim()
+          : undefined,
+    });
+    return res.json(ApiResponse.success(result, 'Vector share request reverted'));
+  };
+
   getToolPermissions = async (req: Request, res: Response) => {
     const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
     const session = this.readSession(req);
@@ -343,6 +358,16 @@ class CompanyAdminController extends BaseController {
     }
     const result = await this.service.getToolPermissions(session, companyId);
     return res.json(ApiResponse.success(result, 'Tool permissions loaded'));
+  };
+
+  getZohoRoleAccessMatrix = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getZohoRoleAccessMatrix(session, companyId);
+    return res.json(ApiResponse.success(result, 'Zoho role access loaded'));
   };
 
   updateToolPermission = async (req: Request, res: Response) => {
@@ -358,6 +383,21 @@ class CompanyAdminController extends BaseController {
     }
     const result = await this.service.updateToolPermission(session, toolId, role as any, enabled, companyId);
     return res.json(ApiResponse.success(result, 'Tool permission updated'));
+  };
+
+  updateZohoRoleAccess = async (req: Request, res: Response) => {
+    const { role } = req.params;
+    const { companyScopedRead } = req.body;
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    if (typeof companyScopedRead !== 'boolean') {
+      return res.status(400).json({ success: false, message: '`companyScopedRead` must be a boolean' });
+    }
+    const result = await this.service.updateZohoRoleAccess(session, role, companyScopedRead, companyId);
+    return res.json(ApiResponse.success(result, 'Zoho role access updated'));
   };
 
   setLarkUserRole = async (req: Request, res: Response) => {

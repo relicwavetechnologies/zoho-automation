@@ -56,6 +56,7 @@ export class ZohoRestAdapter implements ZohoProviderAdapter {
       records: page.records,
       nextCursor: page.nextCursor,
       total: page.total,
+      warnings: page.warnings,
     };
   }
 

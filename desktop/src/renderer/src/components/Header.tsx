@@ -1,4 +1,4 @@
-import { FolderOpen, LogOut, PanelRightClose, SquarePen } from 'lucide-react'
+import { FolderOpen, LogOut, PanelRightClose, PanelRightOpen, SquarePen } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useChat } from '../context/ChatContext'
 import { useWorkspace } from '../context/WorkspaceContext'
@@ -7,9 +7,11 @@ import { cn } from '../lib/utils'
 interface HeaderProps {
   sidebarOpen: boolean
   toggleSidebar: () => void
+  editorOpen: boolean
+  toggleEditor: () => void
 }
 
-export function Header({ sidebarOpen, toggleSidebar }: HeaderProps): JSX.Element {
+export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }: HeaderProps): JSX.Element {
   const { session, logout } = useAuth()
   const { activeThread, createThread } = useChat()
   const { currentWorkspace, selectWorkspace } = useWorkspace()
@@ -65,15 +67,28 @@ export function Header({ sidebarOpen, toggleSidebar }: HeaderProps): JSX.Element
       {/* Right: user + actions */}
       <div className="flex items-center gap-2 titlebar-no-drag">
         <button
+          type="button"
           onClick={() => void selectWorkspace()}
           title="Switch workspace folder"
           className={cn(
-            'inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors',
+            'titlebar-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors',
             'text-[hsl(0,0%,45%)] hover:text-[hsl(0,0%,78%)] hover:bg-[hsl(0,0%,12%)]',
           )}
         >
           <FolderOpen size={14} />
           <span className="text-xs">Folder</span>
+        </button>
+        <button
+          type="button"
+          onClick={toggleEditor}
+          title={editorOpen ? 'Hide editor' : 'Open editor'}
+          className={cn(
+            'titlebar-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors',
+            'text-[hsl(0,0%,45%)] hover:text-[hsl(0,0%,78%)] hover:bg-[hsl(0,0%,12%)]',
+          )}
+        >
+          {editorOpen ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+          <span className="text-xs">{editorOpen ? 'Hide editor' : 'Editor'}</span>
         </button>
         {session && (
           <>
@@ -81,10 +96,11 @@ export function Header({ sidebarOpen, toggleSidebar }: HeaderProps): JSX.Element
               {session.name ?? session.email}
             </span>
             <button
+              type="button"
               onClick={logout}
               title="Sign out"
               className={cn(
-                'p-1.5 rounded-md transition-colors',
+                'titlebar-no-drag cursor-pointer rounded-md p-1.5 transition-colors',
                 'text-[hsl(0,0%,40%)] hover:text-[hsl(0,0%,70%)] hover:bg-[hsl(0,0%,12%)]',
               )}
             >

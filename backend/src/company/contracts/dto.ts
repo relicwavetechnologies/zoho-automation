@@ -5,6 +5,14 @@ import type {
   OrchestrationTaskStatus,
 } from './status';
 
+/** Shared file reference type — carried in normalized messages and used by buildVisionContent. */
+export type NormalizedAttachedFile = {
+  fileAssetId: string;
+  cloudinaryUrl: string;
+  mimeType: string;
+  fileName: string;
+};
+
 export type NormalizedIncomingMessageDTO = {
   channel: 'lark' | 'slack' | 'whatsapp';
   userId: string;
@@ -14,6 +22,8 @@ export type NormalizedIncomingMessageDTO = {
   timestamp: string;
   text: string;
   rawEvent: unknown;
+  /** Files that were attached to this incoming message (images, docs etc). */
+  attachedFiles?: NormalizedAttachedFile[];
   trace?: {
     requestId?: string;
     eventId?: string;
@@ -25,6 +35,8 @@ export type NormalizedIncomingMessageDTO = {
     channelTenantId?: string;
     companyId?: string;
     channelIdentityId?: string;
+    /** Internal User.id if this Lark sender has linked their account via LarkUserAuthLink. */
+    linkedUserId?: string;
     userRole?: string;
     requesterEmail?: string;
   };
@@ -164,4 +176,68 @@ export type AdminNavItemDTO = {
   label: string;
   path: string;
   roles: Array<'SUPER_ADMIN' | 'COMPANY_ADMIN'>;
+};
+
+export type ExecutionChannel = 'desktop' | 'lark';
+export type ExecutionMode = 'fast' | 'high' | 'xtreme' | null;
+export type ExecutionRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+export type ExecutionPhase = 'request' | 'planning' | 'tool' | 'synthesis' | 'delivery' | 'error' | 'control';
+export type ExecutionActorType = 'system' | 'planner' | 'agent' | 'tool' | 'model' | 'delivery';
+
+export type ExecutionRunListItemDTO = {
+  id: string;
+  companyId: string;
+  companyName: string | null;
+  userId: string | null;
+  userName: string | null;
+  userEmail: string | null;
+  channel: ExecutionChannel;
+  entrypoint: string;
+  requestId: string | null;
+  taskId: string | null;
+  threadId: string | null;
+  chatId: string | null;
+  messageId: string | null;
+  mode: ExecutionMode;
+  agentTarget: string | null;
+  status: ExecutionRunStatus;
+  latestSummary: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  eventCount: number;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+};
+
+export type ExecutionRunDetailDTO = ExecutionRunListItemDTO;
+
+export type ExecutionEventItemDTO = {
+  id: string;
+  executionId: string;
+  sequence: number;
+  phase: ExecutionPhase;
+  eventType: string;
+  actorType: ExecutionActorType;
+  actorKey: string | null;
+  title: string;
+  summary: string | null;
+  status: string | null;
+  payload: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export type ExecutionRunFiltersDTO = {
+  query?: string;
+  userId?: string;
+  companyId?: string;
+  channel?: ExecutionChannel;
+  mode?: Exclude<ExecutionMode, null>;
+  status?: ExecutionRunStatus;
+  dateFrom?: string;
+  dateTo?: string;
+  phase?: ExecutionPhase;
+  actorType?: ExecutionActorType;
+  page: number;
+  pageSize: number;
 };

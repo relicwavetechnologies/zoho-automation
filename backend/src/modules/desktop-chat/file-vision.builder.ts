@@ -2,6 +2,8 @@ import { prisma } from '../../utils/prisma';
 import { qdrantAdapter } from '../../company/integrations/vector/qdrant.adapter';
 import { embeddingService } from '../../company/integrations/embedding';
 import { logger } from '../../utils/logger';
+import { extractTextFromBuffer, normalizeExtractedText } from '../file-upload/document-text-extractor';
+import { vectorDocumentRepository } from '../../company/integrations/vector/vector-document.repository';
 
 /**
  * Represents an attached file context for the AI message.
@@ -35,12 +37,44 @@ const IMAGE_MIME_TYPES = new Set([
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
 ]);
 
+const fetchIndexedFileChunks = async (input: {
+  fileAssetId: string;
+  companyId: string;
+  maxChars?: number;
+}): Promise<string> => {
+  try {
+    const documents = await vectorDocumentRepository.findByFileAsset({
+      companyId: input.companyId,
+      fileAssetId: input.fileAssetId,
+    });
+    if (documents.length === 0) return '';
+
+    const combined = documents
+      .map((doc) => {
+        const payload = (doc.payload ?? {}) as Record<string, unknown>;
+        if (typeof payload._chunk === 'string') return payload._chunk;
+        if (typeof payload.text === 'string') return payload.text;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n\n');
+
+    const maxChars = input.maxChars ?? 18000;
+    return combined.length > maxChars ? `${combined.slice(0, maxChars)}\n...[document truncated]` : combined;
+  } catch (err) {
+    logger.warn('file.vision.indexed_chunks.fetch.failed', {
+      fileAssetId: input.fileAssetId,
+      error: err instanceof Error ? err.message : 'unknown',
+    });
+    return '';
+  }
+};
+
 /**
- * Fetches RBAC-allowed vector chunks for a document file asset.
- * Re-runs semantic search over the file's chunks from Qdrant,
- * filtered by the requester's AI role.
+ * Semantic retrieval fallback for documents when the file has already been
+ * indexed but we want a query-shaped subset instead of the full chunk list.
  */
-const fetchDocumentContext = async (input: {
+const fetchRelevantDocumentChunks = async (input: {
   fileAssetId: string;
   companyId: string;
   requesterAiRole?: string;
@@ -59,7 +93,6 @@ const fetchDocumentContext = async (input: {
       requesterAiRole: input.requesterAiRole,
     });
 
-    // Filter to only the specific fileAssetId
     const fileChunks = results.filter(
       (r) => typeof r.payload.fileAssetId === 'string' && r.payload.fileAssetId === input.fileAssetId,
     );
@@ -77,7 +110,35 @@ const fetchDocumentContext = async (input: {
       .filter(Boolean)
       .join('\n\n');
   } catch (err) {
-    logger.warn('file.vision.qdrant.fetch.failed', {
+    logger.warn('file.vision.semantic_chunks.fetch.failed', {
+      fileAssetId: input.fileAssetId,
+      error: err instanceof Error ? err.message : 'unknown',
+    });
+    return '';
+  }
+};
+
+const fetchDirectDocumentText = async (input: {
+  fileAssetId: string;
+  fileName: string;
+  mimeType: string;
+  cloudinaryUrl: string;
+}): Promise<string> => {
+  try {
+    const response = await fetch(input.cloudinaryUrl);
+    if (!response.ok) {
+      logger.warn('file.vision.direct_fetch.failed', {
+        fileAssetId: input.fileAssetId,
+        status: response.status,
+      });
+      return '';
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const rawText = await extractTextFromBuffer(Buffer.from(arrayBuffer), input.mimeType, input.fileName);
+    return normalizeExtractedText(rawText);
+  } catch (err) {
+    logger.warn('file.vision.direct_fetch.error', {
       fileAssetId: input.fileAssetId,
       error: err instanceof Error ? err.message : 'unknown',
     });
@@ -104,6 +165,14 @@ export const buildVisionContent = async (input: {
 
   // Always put the user's text first
   parts.push({ type: 'text', text: input.userMessage });
+
+  const hasDocumentAttachments = input.attachedFiles.some((file) => !IMAGE_MIME_TYPES.has(file.mimeType));
+  if (hasDocumentAttachments) {
+    parts.push({
+      type: 'text',
+      text: 'One or more attached documents have already been extracted below. Use that document content directly. Do not say that you cannot access or read the attached file unless the extracted content block explicitly says it is unavailable.',
+    });
+  }
 
   for (const file of input.attachedFiles) {
     // ── RBAC gate: verify the requester has access ────────────────────────────
@@ -141,20 +210,47 @@ export const buildVisionContent = async (input: {
         mimeType: file.mimeType,
       });
     } else {
-      // Document: fetch relevant vector chunks from Qdrant (RBAC-filtered)
-      const docContext = await fetchDocumentContext({
+      const fullIndexedContext = await fetchIndexedFileChunks({
         fileAssetId: file.fileAssetId,
         companyId: input.companyId,
-        requesterAiRole: input.requesterAiRole,
-        queryText: input.userMessage,
       });
 
-      if (docContext) {
+      if (fullIndexedContext) {
         parts.push({
           type: 'text',
-          text: `\n\n--- Document context from "${file.fileName}" ---\n${docContext}\n--- End document context ---`,
+          text: `\n\n--- Attached document content from "${file.fileName}" ---\n${fullIndexedContext}\n--- End attached document content ---`,
         });
       } else {
+        const relevantContext = await fetchRelevantDocumentChunks({
+          fileAssetId: file.fileAssetId,
+          companyId: input.companyId,
+          requesterAiRole: input.requesterAiRole,
+          queryText: input.userMessage,
+        });
+
+        if (relevantContext) {
+          parts.push({
+            type: 'text',
+            text: `\n\n--- Relevant document excerpts from "${file.fileName}" ---\n${relevantContext}\n--- End relevant document excerpts ---`,
+          });
+          continue;
+        }
+
+        const directText = await fetchDirectDocumentText({
+          fileAssetId: file.fileAssetId,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          cloudinaryUrl: file.cloudinaryUrl,
+        });
+
+        if (directText) {
+          parts.push({
+            type: 'text',
+            text: `\n\n--- Direct document content from "${file.fileName}" ---\n${directText}\n--- End direct document content ---`,
+          });
+          continue;
+        }
+
         parts.push({
           type: 'text',
           text: `[Document "${file.fileName}" is being processed or has no accessible content.]`,

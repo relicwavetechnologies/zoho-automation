@@ -32,6 +32,20 @@ const buildHeuristicFallback = (
   fallbackReasonCode,
 });
 
+export const buildRoutePrompt = (messageText: string): string =>
+  [
+    'You are Odin AI route classification.',
+    'Classify the user request for orchestration and return JSON only.',
+    'Required shape: {"intent":"zoho_read|write_intent|general","complexityLevel":1-5,"executionMode":"sequential|parallel|mixed"}',
+    'Use `zoho_read` for CRM retrieval or Zoho analysis requests.',
+    'Use `write_intent` for destructive or confirmation-worthy actions.',
+    'Use `general` for everything else.',
+    'Valid example: {"intent":"zoho_read","complexityLevel":3,"executionMode":"sequential"}',
+    'Invalid example to avoid: I think this is general.',
+    'Do not explain the classification.',
+    `User: ${messageText}`,
+  ].join('\n');
+
 export const resolveRouteContract = (input: {
   rawLlmOutput: string | null;
   messageText: string;

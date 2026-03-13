@@ -42,6 +42,9 @@ class AdminAiModelsController extends BaseController {
       fastProvider: payload.fastProvider ?? undefined,
       fastModelId: payload.fastModelId ?? undefined,
       fastThinkingLevel: payload.fastThinkingLevel ?? undefined,
+      xtremeProvider: payload.xtremeProvider ?? undefined,
+      xtremeModelId: payload.xtremeModelId ?? undefined,
+      xtremeThinkingLevel: payload.xtremeThinkingLevel ?? undefined,
       updatedBy: session.userId,
     });
 
@@ -57,6 +60,9 @@ class AdminAiModelsController extends BaseController {
         fastProvider: result.fastEffectiveProvider,
         fastModelId: result.fastEffectiveModelId,
         fastThinkingLevel: result.fastEffectiveThinkingLevel,
+        xtremeProvider: result.xtremeEffectiveProvider,
+        xtremeModelId: result.xtremeEffectiveModelId,
+        xtremeThinkingLevel: result.xtremeEffectiveThinkingLevel,
       },
     });
 
