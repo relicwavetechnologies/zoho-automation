@@ -141,15 +141,15 @@ function FileCard({ attachment, onRemove }: { attachment: AttachedFile; onRemove
 
 // ─── Main Composer ─────────────────────────────────────────────────────────────
 
-export function Composer(): JSX.Element {
+export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
   const { token } = useAuth()
-  const { sendMessage, stopExecution, isStreaming, activeThread, activePlan } = useChat()
+  const { sendMessage, sendInitialMessage, stopExecution, isStreaming, activeThread, activePlan } = useChat()
   const { currentWorkspace } = useWorkspace()
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
-  const [mode, setMode] = useState<ComposerMode>('high')
+  const [mode, setMode] = useState<ComposerMode>('xtreme')
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -157,7 +157,7 @@ export function Composer(): JSX.Element {
 
   const canSend = (text.trim().length > 0 || attachments.some(a => a.status === 'done'))
     && !isStreaming
-    && !!activeThread
+    && (isHome || !!activeThread)
     && attachments.every(a => a.status !== 'uploading')
 
   // Auto-resize textarea
@@ -266,7 +266,12 @@ export function Composer(): JSX.Element {
         fileName: a.name,
       }))
 
-    sendMessage(text.trim(), payloadAttachments.length > 0 ? payloadAttachments : undefined, mode)
+    if (isHome && !activeThread) {
+      sendInitialMessage(text.trim(), payloadAttachments.length > 0 ? payloadAttachments : undefined, mode)
+    } else {
+      sendMessage(text.trim(), payloadAttachments.length > 0 ? payloadAttachments : undefined, mode)
+    }
+    
     setText('')
     setAttachments([])
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
@@ -302,7 +307,7 @@ export function Composer(): JSX.Element {
 
   return (
     <div
-      className="shrink-0 px-5 py-3 titlebar-no-drag"
+      className={cn("shrink-0 titlebar-no-drag transition-all", isHome ? "w-full mx-auto" : "px-5 py-3")}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -317,8 +322,8 @@ export function Composer(): JSX.Element {
         onChange={(e) => { if (e.target.files) { acceptFiles(e.target.files); e.target.value = '' } }}
       />
 
-      <div className="max-w-[760px] mx-auto relative">
-        {isStreaming && activePlan && <PlanDrawer plan={activePlan} />}
+      <div className={cn("mx-auto relative", isHome ? "w-full max-w-[760px]" : "max-w-[760px]")}>
+        {isStreaming && activePlan && !isHome && <PlanDrawer plan={activePlan} />}
 
         <div
           className={cn(
@@ -327,7 +332,7 @@ export function Composer(): JSX.Element {
             'transition-colors duration-150 relative z-10',
             isDragOver
               ? 'border-[hsl(216,80%,52%)] shadow-[0_0_0_2px_hsl(216,80%,42%,0.25)] '
-              : activeThread
+              : activeThread || isHome
                 ? 'border-[hsl(0,0%,16%)] focus-within:border-[hsl(216,14%,28%)]'
                 : 'border-[hsl(0,0%,16%)] opacity-60',
           )}
@@ -358,16 +363,19 @@ export function Composer(): JSX.Element {
               placeholder={
                 isDragOver
                   ? 'Drop to attach…'
-                  : activeThread
-                    ? `Message Odin about ${currentWorkspace?.name ?? 'this workspace'} or run /run <command>`
-                    : currentWorkspace
-                      ? `Create a thread in ${currentWorkspace.name} to start`
-                      : 'Open a workspace folder to start'
+                  : isHome 
+                    ? `What should we work on next in ${currentWorkspace?.name ?? 'this workspace'}?`
+                    : activeThread
+                      ? `Message Odin about ${currentWorkspace?.name ?? 'this workspace'}`
+                      : currentWorkspace
+                        ? `Create a thread in ${currentWorkspace.name} to start`
+                        : 'Open a workspace folder to start'
               }
-              disabled={!activeThread}
+              disabled={!isHome && !activeThread}
               rows={1}
               className={cn(
-                'w-full resize-none bg-transparent text-[15px] leading-6 tracking-[-0.01em]',
+                'w-full resize-none bg-transparent leading-6 tracking-[-0.01em]',
+                isHome ? 'text-[16px]' : 'text-[15px]',
                 'text-[hsl(0,0%,89%)] placeholder:text-[hsl(0,0%,46%)]',
                 'focus:outline-none disabled:cursor-not-allowed min-h-[44px]',
               )}
@@ -389,13 +397,13 @@ export function Composer(): JSX.Element {
                 <div className="relative" ref={modeMenuRef}>
                   <button
                     type="button"
-                    disabled={!activeThread || isStreaming}
+                    disabled={(!activeThread && !isHome) || isStreaming}
                     onClick={() => setIsModeMenuOpen(open => !open)}
                     aria-haspopup="menu"
                     aria-expanded={isModeMenuOpen}
                     className={cn(
                       'inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium transition-all select-none',
-                      !activeThread || isStreaming
+                      (!activeThread && !isHome) || isStreaming
                         ? 'border-transparent text-[hsl(0,0%,32%)] cursor-not-allowed'
                         : 'border-transparent bg-[hsl(0,0%,22%)] text-[hsl(0,0%,80%)] hover:bg-[hsl(0,0%,26%)]'
                     )}
@@ -412,7 +420,7 @@ export function Composer(): JSX.Element {
                     />
                   </button>
 
-                  {isModeMenuOpen && activeThread && !isStreaming && (
+                  {isModeMenuOpen && (activeThread || isHome) && !isStreaming && (
                     <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[220px] overflow-hidden rounded-2xl border border-[hsl(0,0%,18%)] bg-[linear-gradient(180deg,hsl(0,0%,16%),hsl(0,0%,12%))] p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
                       {MODE_OPTIONS.map((option) => {
                         const OptionIcon = option.icon
@@ -464,17 +472,19 @@ export function Composer(): JSX.Element {
                 {/* ── File attach button (enabled) ─────────────────────────── */}
                 <button
                   type="button"
-                  disabled={!activeThread}
-                  onClick={() => fileInputRef.current?.click()}
+                  disabled={(!activeThread && !isHome) || isStreaming}
+                  onClick={() => setIsDrawerOpen(prev => !prev)}
                   className={cn(
-                    'inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
-                    activeThread
-                      ? 'text-[hsl(0,0%,58%)] hover:bg-[hsl(0,0%,19%)] hover:text-[hsl(0,0%,80%)]'
-                      : 'text-[hsl(0,0%,38%)] cursor-not-allowed',
+                    'flex h-8 w-8 items-center justify-center rounded-xl transition-colors',
+                    (!activeThread && !isHome) || isStreaming
+                      ? 'text-[hsl(0,0%,32%)] cursor-not-allowed'
+                      : isDrawerOpen
+                        ? 'bg-[hsl(216,80%,52%,0.15)] text-[hsl(216,80%,60%)]'
+                        : 'text-[hsl(0,0%,56%)] hover:bg-[hsl(0,0%,22%)] hover:text-[hsl(0,0%,86%)]',
                   )}
-                  title="Attach file (PDF, DOCX, image…)"
-                >
-                  <Paperclip size={15} />
+                  aria-label="Toggle files drawer"
+                  title="Workspace Files"
+                >  <Paperclip size={15} />
                 </button>
 
                 {/* ── Send button ──────────────────────────────────────────── */}

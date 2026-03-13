@@ -14,7 +14,7 @@ This repository contains the backend foundation and execution plan for an extens
 ## Master Plan
 
 The canonical architecture plan lives here:
-- [docs/EMIAC-Architecture-Planning-v3.0.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/docs/EMIAC-Architecture-Planning-v3.0.md)
+- [docs/Company-Architecture-Planning-v3.0.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/docs/Company-Architecture-Planning-v3.0.md)
 - [docs/ARCHITECTURE-REFERENCE-MAP.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/docs/ARCHITECTURE-REFERENCE-MAP.md)
 - [docs/V0-DTO-SYNC-CONTRACT.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/docs/V0-DTO-SYNC-CONTRACT.md)
 - [docs/LARK-IDENTITY-VERIFICATION-FLOW.md](/Users/abhishekverma/Desktop/Cluster/Projects/cursor/cursorr/docs/LARK-IDENTITY-VERIFICATION-FLOW.md)

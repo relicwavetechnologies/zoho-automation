@@ -30,6 +30,8 @@ import {
   completeExecutionPlan,
   executionPlanSchema,
   failExecutionPlan,
+  initializeExecutionPlanFromWorkflow,
+  resolveActivePlanTaskId,
   resolvePlanOwnerFromActionKind,
   resolvePlanOwnerFromToolName,
   updateExecutionPlanTask,
@@ -44,7 +46,17 @@ import { aiModelControlService } from '../../company/ai-models';
 import { resolveMastraLanguageModel } from '../../company/integrations/mastra/mastra-model-control';
 import { executionService } from '../../company/observability';
 
-const KNOWN_AGENTS = ['supervisorAgent', 'zohoAgent', 'outreachAgent', 'searchAgent', 'larkBaseAgent', 'larkTaskAgent'] as const;
+const KNOWN_AGENTS = [
+  'supervisorAgent',
+  'zohoAgent',
+  'outreachAgent',
+  'searchAgent',
+  'larkBaseAgent',
+  'larkTaskAgent',
+  'larkCalendarAgent',
+  'larkMeetingAgent',
+  'larkApprovalAgent',
+] as const;
 const DEFAULT_AGENT = 'supervisorAgent';
 
 const attachedFileSchema = z.object({
@@ -58,7 +70,7 @@ const sendSchema = z.object({
   message: z.string().max(10000).optional().default(''),
   agentId: z.string().optional(),
   attachedFiles: z.array(attachedFileSchema).optional().default([]),
-  mode: z.enum(['fast', 'high', 'xtreme']).optional().default('high'),
+  mode: z.enum(['fast', 'high', 'xtreme']).optional().default('xtreme'),
   executionId: z.string().uuid().optional(),
 });
 
@@ -79,7 +91,7 @@ const actSchema = z.object({
   workspace: workspaceSchema,
   actionResult: actionResultSchema.optional(),
   plan: executionPlanSchema.optional(),
-  mode: z.enum(['fast', 'high', 'xtreme']).optional().default('high'),
+  mode: z.enum(['fast', 'high', 'xtreme']).optional().default('xtreme'),
   executionId: z.string().uuid().optional(),
 });
 
@@ -97,6 +109,7 @@ type ToolBlock = {
   icon: string;
   status: 'running' | 'done' | 'failed';
   resultSummary?: string;
+  externalRef?: string;
 };
 type TextBlock = { type: 'text'; content: string };
 // Thinking block carries live reasoning text streamed from the model
@@ -111,6 +124,64 @@ type CitationSummary = {
   sourceId?: string;
   fileAssetId?: string;
   chunkIndex?: number;
+};
+
+type PersistedConversationRefs = {
+  latestLarkDoc?: Record<string, unknown>;
+  latestLarkCalendarEvent?: Record<string, unknown>;
+  latestLarkTask?: Record<string, unknown>;
+};
+
+const hydrateConversationRefsFromMetadata = (
+  conversationKey: string,
+  metadata: Record<string, unknown>,
+): void => {
+  const refs = metadata.conversationRefs;
+  if (!refs || typeof refs !== 'object') {
+    return;
+  }
+
+  const record = refs as PersistedConversationRefs;
+  const latestDoc = record.latestLarkDoc;
+  if (latestDoc && typeof latestDoc === 'object') {
+    const documentId = typeof latestDoc.documentId === 'string' ? latestDoc.documentId.trim() : '';
+    if (documentId) {
+      conversationMemoryStore.addLarkDoc(conversationKey, {
+        title: typeof latestDoc.title === 'string' ? latestDoc.title : 'Lark Doc',
+        documentId,
+        url: typeof latestDoc.url === 'string' ? latestDoc.url : undefined,
+      });
+    }
+  }
+
+  const latestEvent = record.latestLarkCalendarEvent;
+  if (latestEvent && typeof latestEvent === 'object') {
+    const eventId = typeof latestEvent.eventId === 'string' ? latestEvent.eventId.trim() : '';
+    if (eventId) {
+      conversationMemoryStore.addLarkCalendarEvent(conversationKey, {
+        eventId,
+        calendarId: typeof latestEvent.calendarId === 'string' ? latestEvent.calendarId : undefined,
+        summary: typeof latestEvent.summary === 'string' ? latestEvent.summary : undefined,
+        startTime: typeof latestEvent.startTime === 'string' ? latestEvent.startTime : undefined,
+        endTime: typeof latestEvent.endTime === 'string' ? latestEvent.endTime : undefined,
+        url: typeof latestEvent.url === 'string' ? latestEvent.url : undefined,
+      });
+    }
+  }
+
+  const latestTask = record.latestLarkTask;
+  if (latestTask && typeof latestTask === 'object') {
+    const taskId = typeof latestTask.taskId === 'string' ? latestTask.taskId.trim() : '';
+    if (taskId) {
+      conversationMemoryStore.addLarkTask(conversationKey, {
+        taskId,
+        taskGuid: typeof latestTask.taskGuid === 'string' ? latestTask.taskGuid : undefined,
+        summary: typeof latestTask.summary === 'string' ? latestTask.summary : undefined,
+        status: typeof latestTask.status === 'string' ? latestTask.status : undefined,
+        url: typeof latestTask.url === 'string' ? latestTask.url : undefined,
+      });
+    }
+  }
 };
 
 type ShareActionSummary = {
@@ -179,6 +250,43 @@ const buildShareAction = (conversationKey: string): ShareActionSummary => ({
   conversationKey,
   label: "Share this chat's knowledge",
 });
+
+const buildTemporalContext = (): string => {
+  const now = new Date();
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const exactDate = new Intl.DateTimeFormat('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone,
+  }).format(now);
+  const exactTime = new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone,
+  }).format(now);
+
+  return [
+    '--- CURRENT DATE CONTEXT ---',
+    `Today is ${exactDate}. Current local time is ${exactTime}.`,
+    `Use timezone ${timeZone} for relative scheduling requests.`,
+    'Resolve relative dates like "today", "tomorrow", "next Monday", and "next week" against this date.',
+    'When scheduling or confirming dates, include the exact calendar date in the final answer.',
+    '--- END CURRENT DATE CONTEXT ---',
+  ].join('\n');
+};
+
+const RAW_TOOL_JSON_PATTERN = /\{\s*"success"\s*:\s*(true|false)[\s\S]*\}/i;
+const shouldResynthesizeAssistantText = (assistantText: string): boolean => {
+  const trimmed = assistantText.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  return RAW_TOOL_JSON_PATTERN.test(trimmed)
+    || trimmed.includes('did not complete. Check server logs for the underlying tool failure.');
+};
 
 const buildGroundedFallbackAssistantText = (input: {
   contentBlocks: ContentBlock[];
@@ -259,15 +367,33 @@ type ExecutionEventQueue = {
   flush: () => Promise<void>;
 };
 
-const createExecutionEventQueue = (): ExecutionEventQueue => {
+const isMissingExecutionRunError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) return false;
+  return error.message.includes('executionRun.update')
+    && error.message.includes('No record was found for an update');
+};
+
+const createExecutionEventQueue = (options?: {
+  executionId?: string;
+  ensureRun?: () => Promise<void>;
+}): ExecutionEventQueue => {
   let queue = Promise.resolve();
 
   return {
     enqueue(task) {
       queue = queue
         .then(task)
-        .catch((error) => {
+        .catch(async (error) => {
+          if (options?.ensureRun && isMissingExecutionRunError(error)) {
+            await options.ensureRun();
+            await task();
+            logger.warn('execution.event.enqueue.recovered', {
+              executionId: options.executionId,
+            });
+            return;
+          }
           logger.warn('execution.event.enqueue.failed', {
+            executionId: options?.executionId,
             error: error instanceof Error ? error.message : 'unknown_execution_event_error',
           });
         });
@@ -575,22 +701,28 @@ class DesktopChatController extends BaseController {
       'share_chat_vectors',
       requesterAiRole,
     );
-    const executionEventQueue = createExecutionEventQueue();
-
-    await executionService.startRun({
-      id: executionId,
-      companyId: session.companyId,
-      userId: session.userId,
-      channel: 'desktop',
-      entrypoint: 'desktop_send',
-      requestId: executionId,
-      threadId,
-      chatId: threadId,
-      messageId,
-      mode,
-      agentTarget: requestedAgent ?? DEFAULT_AGENT,
-      latestSummary: summarizeText(message),
+    const ensureExecutionRun = async () => {
+      await executionService.startRun({
+        id: executionId,
+        companyId: session.companyId,
+        userId: session.userId,
+        channel: 'desktop',
+        entrypoint: 'desktop_send',
+        requestId: executionId,
+        threadId,
+        chatId: threadId,
+        messageId,
+        mode,
+        agentTarget: requestedAgent ?? DEFAULT_AGENT,
+        latestSummary: summarizeText(message),
+      });
+    };
+    const executionEventQueue = createExecutionEventQueue({
+      executionId,
+      ensureRun: ensureExecutionRun,
     });
+
+    await ensureExecutionRun();
     executionEventQueue.enqueue(async () => {
       await executionService.appendEvent({
         executionId,
@@ -608,6 +740,18 @@ class DesktopChatController extends BaseController {
           mode,
           attachedFileCount: attachedFiles.length,
         },
+      });
+    });
+    executionEventQueue.enqueue(async () => {
+      await executionService.appendEvent({
+        executionId,
+        phase: 'synthesis',
+        eventType: 'thinking.started',
+        actorType: 'model',
+        actorKey: requestedAgent ?? DEFAULT_AGENT,
+        title: 'Thinking',
+        summary: summarizeText(message),
+        status: 'running',
       });
     });
 
@@ -701,7 +845,8 @@ class DesktopChatController extends BaseController {
     // --- CONTEXT WINDOW COMPACTION ---
     let wasCompacted = false;
     let compactedContextBlock = '';
-    if (catalogEntry) {
+    const shouldUseContextCompactor = process.env.MASTRA_OBSERVATIONAL_MEMORY_ENABLED !== 'true';
+    if (catalogEntry && shouldUseContextCompactor) {
       const compactResult = await maybeCompactHistory(history, message, catalogEntry);
       history = compactResult.messages;
       wasCompacted = compactResult.wasCompacted;
@@ -718,12 +863,12 @@ class DesktopChatController extends BaseController {
       ].filter(Boolean).join('\n');
     }
 
-    await toolPermissionService.getAllowedTools(
+    const allowedToolIds = await toolPermissionService.getAllowedTools(
       session.companyId,
       requesterAiRole,
     );
 
-    const requestContext = new RequestContext<Record<string, string>>();
+    const requestContext = new RequestContext<Record<string, unknown>>();
     requestContext.set('companyId', session.companyId);
     requestContext.set('userId', session.userId);
     requestContext.set('chatId', threadId);
@@ -734,9 +879,11 @@ class DesktopChatController extends BaseController {
     requestContext.set('requesterEmail', session.email ?? '');
     requestContext.set('requesterAiRole', requesterAiRole);
     requestContext.set('authProvider', session.authProvider);
+    requestContext.set('allowedToolIds', allowedToolIds);
     requestContext.set('larkTenantKey', session.larkTenantKey ?? '');
     requestContext.set('larkOpenId', session.larkOpenId ?? '');
     requestContext.set('larkUserId', session.larkUserId ?? '');
+    requestContext.set('timeZone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
 	    requestContext.set(
 	      'larkAuthMode',
 	      session.authProvider === 'lark' ? 'user_linked' : 'tenant',
@@ -748,6 +895,7 @@ class DesktopChatController extends BaseController {
 	    // Build agent objective: plain string normally, or with inline image/doc context for attachments
 	    const hasAttachments = attachedFiles && attachedFiles.length > 0;
 	    const baseObjective = [
+	      buildTemporalContext(),
 	      buildDesktopWorkflowEnforcementPrompt(workflowPolicy),
 	      buildExecutionPlanContext(activePlan),
 	      memoryContext,
@@ -800,6 +948,7 @@ class DesktopChatController extends BaseController {
 	    let thinkingText = '';
 	    let streamFailed = false;
 	    let streamErrorMessage: string | null = null;
+	    let workflowPlanStatus: 'completed' | 'failed' | 'partial' | null = null;
 	    let sawPlanEvent = false;
 	    let sawToolActivity = false;
 	    let sawLarkDocActivity = false;
@@ -886,6 +1035,7 @@ class DesktopChatController extends BaseController {
 	        block.status = ok ? 'done' : 'failed';
 	        if (payload.resultSummary) block.resultSummary = payload.resultSummary;
 	        if (payload.label) block.label = payload.label;
+          if (payload.externalRef) block.externalRef = payload.externalRef;
 	      }
 	      executionEventQueue.enqueue(async () => {
 	        await executionService.appendEvent({
@@ -911,6 +1061,7 @@ class DesktopChatController extends BaseController {
 	        const ownerAgent = resolvePlanOwnerFromToolName(payload.name);
 	        if (ownerAgent) {
 	          const nextPlan = updateExecutionPlanTask(activePlan, {
+	            taskId: payload.taskId,
 	            ownerAgent,
 	            ok,
 	            resultSummary: payload.resultSummary,
@@ -918,6 +1069,10 @@ class DesktopChatController extends BaseController {
 	          if (nextPlan !== activePlan) {
 	            queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, nextPlan);
 	            activePlan = nextPlan;
+              const nextActiveTaskId = resolveActivePlanTaskId(activePlan);
+              if (nextActiveTaskId) {
+                requestContext.set('activePlanTaskId', nextActiveTaskId);
+              }
 	            sendEvent('plan', activePlan);
 	          }
 	        }
@@ -930,6 +1085,10 @@ class DesktopChatController extends BaseController {
 	      sawPlanEvent = true;
 	      queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, plan);
 	      activePlan = plan;
+        const activePlanTaskId = resolveActivePlanTaskId(activePlan);
+        if (activePlanTaskId) {
+          requestContext.set('activePlanTaskId', activePlanTaskId);
+        }
 	      sendEvent('plan', activePlan);
 	    });
 
@@ -940,25 +1099,15 @@ class DesktopChatController extends BaseController {
     });
 
     let streamResult: any;
+    let workflowResult: any;
 
     try {
       requestContext.set('messageId', messageId);
       requestContext.set('requestId', streamRequestId);
-
-      const agent = mastra.getAgent(
-        agentId as 'supervisorAgent' | 'zohoAgent' | 'outreachAgent' | 'searchAgent' | 'larkBaseAgent' | 'larkTaskAgent',
-      );
-
-      const runOptions = await buildMastraAgentRunOptions(
-        MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId],
-        { requestContext },
-        mode as 'fast' | 'high' | 'xtreme'
-      );
-
-      const dynamicModel = await resolveMastraLanguageModel(
-        MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId],
-        mode as 'fast' | 'high' | 'xtreme'
-      );
+      const activePlanTaskId = resolveActivePlanTaskId(activePlan);
+      if (activePlanTaskId) {
+        requestContext.set('activePlanTaskId', activePlanTaskId);
+      }
 
       const resolvedForLog = await aiModelControlService.resolveTarget(MASTRA_AGENT_TARGETS[agentId as MastraAgentTargetId]);
       logger.info('desktop.chat.model_resolved', {
@@ -970,38 +1119,75 @@ class DesktopChatController extends BaseController {
         resolvedModelId: mode === 'xtreme' ? ((resolvedForLog as any).xtremeEffectiveModelId ?? resolvedForLog.effectiveModelId) : mode === 'fast' ? (resolvedForLog.fastEffectiveModelId ?? resolvedForLog.effectiveModelId) : resolvedForLog.effectiveModelId,
       });
 
-      const streamOptions = { ...runOptions, model: dynamicModel };
-      const streamInput = visionMessages ?? objective;
+      const workflow = mastra.getWorkflow('companyWorkflow');
+      const workflowInput = {
+        userObjective: objective,
+        requestContext: {
+          userId: session.userId,
+          permissions: allowedToolIds,
+        },
+        attachmentContent: hasAttachments ? objective : undefined,
+        agentId,
+        mode,
+        ...(visionMessages ? { agentMessages: visionMessages } : {}),
+      };
 
       try {
-        streamResult = await agent.stream(streamInput as any, streamOptions as any);
+        const run = await workflow.createRun({ runId: executionId });
+        streamResult = await run.stream({
+          inputData: workflowInput as any,
+          requestContext: requestContext as unknown as RequestContext<unknown>,
+          initialState: {
+            currentPlan: null,
+            failedTasks: [],
+            completedTasks: [],
+            replanCount: 0,
+          },
+        });
       } catch (err) {
-        throw new Error(`Agent stream failed to start: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        throw new Error(`Workflow stream failed to start: ${err instanceof Error ? err.message : 'Unknown error'}`);
       }
 
-      // ── Background: collect reasoning/thinking chunks without blocking text ──
-      // fullStream gives us fine-grained chunks. We consume reasoning-delta
-      // in the background while textStream drives the main response.
-      // NOTE: We intentionally do NOT await this — it races alongside textStream.
-      (async () => {
-        try {
-          for await (const chunk of streamResult.fullStream) {
-            const c = chunk as any;
-            const type: string = c.type ?? '';
-            if (type === 'reasoning-delta' || type === 'reasoning') {
-              const delta: string = c.payload?.textDelta ?? c.textDelta ?? '';
-              if (delta) appendThinkingChunk(delta);
-            }
-          }
-        } catch {
-          // Reasoning stream errors are non-fatal — ignore silently
-        }
-      })();
+      for await (const rawEvent of streamResult.fullStream) {
+        const event = (rawEvent as any)?.type === 'watch'
+          ? (rawEvent as any).data
+          : rawEvent;
+        const type: string = event?.type ?? '';
 
-      // ── Foreground: reliable text delivery via textStream ─────────────────
-      for await (const chunk of streamResult.textStream) {
-        appendTextChunk(chunk);
-        sendEvent('text', chunk);
+        if (type === 'reasoning-delta' || type === 'reasoning') {
+          const delta: string = event?.payload?.text ?? event?.payload?.textDelta ?? event?.text ?? '';
+          if (delta) {
+            appendThinkingChunk(delta);
+          }
+          continue;
+        }
+
+        if (type === 'workflow-step-result' && event?.payload?.id === 'planner-step' && event.payload.status === 'success') {
+          const nextPlan = initializeExecutionPlanFromWorkflow(event.payload.output);
+          sawPlanEvent = true;
+          queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, nextPlan);
+          activePlan = nextPlan;
+          const activePlanTaskId = resolveActivePlanTaskId(activePlan);
+          if (activePlanTaskId) {
+            requestContext.set('activePlanTaskId', activePlanTaskId);
+          }
+          sendEvent('plan', activePlan);
+        }
+      }
+
+      workflowResult = await streamResult.result;
+      if (workflowResult?.status !== 'success') {
+        throw new Error(
+          workflowResult?.error instanceof Error
+            ? workflowResult.error.message
+            : `Workflow finished with status ${workflowResult?.status ?? 'unknown'}`,
+        );
+      }
+
+      workflowPlanStatus = workflowResult.result?.planStatus ?? null;
+      if (workflowResult.result?.finalAnswer) {
+        appendTextChunk(workflowResult.result.finalAnswer);
+        sendEvent('text', workflowResult.result.finalAnswer);
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
@@ -1044,11 +1230,13 @@ class DesktopChatController extends BaseController {
       finalizeLastThinkingBlock();
 
       if (activePlan && !streamFailed && (assistantText || contentBlocks.length > 0)) {
-	        const completedPlan = completeExecutionPlan(activePlan, assistantText || undefined);
-	        queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, completedPlan);
-	        activePlan = completedPlan;
-	        sendEvent('plan', activePlan);
-	      }
+        const nextPlan = workflowPlanStatus === 'failed'
+          ? failExecutionPlan(activePlan, assistantText || undefined)
+          : completeExecutionPlan(activePlan, assistantText || undefined);
+        queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, nextPlan);
+        activePlan = nextPlan;
+        sendEvent('plan', activePlan);
+      }
 
 	      if (workflowPolicy.forcePlanning && !sawPlanEvent) {
 	        logger.warn('desktop.chat.workflow.plan_missing', {
@@ -1080,7 +1268,7 @@ class DesktopChatController extends BaseController {
 	        });
 	      }
 
-	      if (!assistantText.trim() && sawToolActivity) {
+	      if (sawToolActivity && (!assistantText.trim() || shouldResynthesizeAssistantText(assistantText))) {
 	        const synthesisPrompt = buildGroundedSynthesisPrompt({
 	          userMessage: message,
 	          activePlan,
@@ -1110,6 +1298,11 @@ class DesktopChatController extends BaseController {
 	            const synthesizedText = typeof synthesisResult?.text === 'string' ? synthesisResult.text.trim() : '';
 	            if (synthesizedText) {
 	              assistantText = synthesizedText;
+                for (let index = contentBlocks.length - 1; index >= 0; index -= 1) {
+                  if (contentBlocks[index]?.type === 'text') {
+                    contentBlocks.splice(index, 1);
+                  }
+                }
 	              contentBlocks.push({ type: 'text', content: synthesizedText });
 	              executionEventQueue.enqueue(async () => {
 	                await executionService.appendEvent({
@@ -1356,8 +1549,28 @@ class DesktopChatController extends BaseController {
     const { workspace, actionResult, agentId: requestedAgent, mode } = parsed;
     const message = parsed.message?.trim() ?? '';
     const executionId = parsed.executionId ?? randomUUID();
+    const taskId = randomUUID();
+    const messageId = randomUUID();
     const shouldStartExecution = !parsed.executionId;
-    const executionEventQueue = createExecutionEventQueue();
+    const ensureExecutionRun = async () => {
+      await executionService.startRun({
+        id: executionId,
+        companyId: session.companyId,
+        userId: session.userId,
+        channel: 'desktop',
+        entrypoint: 'desktop_act',
+        requestId: executionId,
+        threadId,
+        chatId: threadId,
+        mode,
+        agentTarget: requestedAgent ?? DEFAULT_AGENT,
+        latestSummary: summarizeText(message || actionResult?.summary),
+      });
+    };
+    const executionEventQueue = createExecutionEventQueue({
+      executionId,
+      ensureRun: ensureExecutionRun,
+    });
 
     // --- MONTHLY LIMIT CHECK ---
     const limitExceeded = await aiTokenUsageService.checkLimitExceeded(session.userId, session.companyId);
@@ -1372,19 +1585,7 @@ class DesktopChatController extends BaseController {
     const conversationKey = `desktop:${threadId}`;
 
     if (shouldStartExecution) {
-      await executionService.startRun({
-        id: executionId,
-        companyId: session.companyId,
-        userId: session.userId,
-        channel: 'desktop',
-        entrypoint: 'desktop_act',
-        requestId: executionId,
-        threadId,
-        chatId: threadId,
-        mode,
-        agentTarget: requestedAgent ?? DEFAULT_AGENT,
-        latestSummary: summarizeText(message || actionResult?.summary),
-      });
+      await ensureExecutionRun();
       executionEventQueue.enqueue(async () => {
         await executionService.appendEvent({
           executionId,
@@ -1401,6 +1602,18 @@ class DesktopChatController extends BaseController {
             mode,
             hasActionResult: Boolean(actionResult),
           },
+        });
+      });
+      executionEventQueue.enqueue(async () => {
+        await executionService.appendEvent({
+          executionId,
+          phase: 'synthesis',
+          eventType: 'thinking.started',
+          actorType: 'model',
+          actorKey: requestedAgent ?? DEFAULT_AGENT,
+          title: 'Thinking',
+          summary: summarizeText(message || actionResult?.summary),
+          status: 'running',
         });
       });
     }
@@ -1439,18 +1652,21 @@ class DesktopChatController extends BaseController {
         '\n--- End history ---\n';
     }
 
-    await toolPermissionService.getAllowedTools(
+    const allowedToolIds = await toolPermissionService.getAllowedTools(
       session.companyId,
       requesterAiRole,
     );
 
-    const requestContext = new RequestContext<Record<string, string>>();
+    const requestContext = new RequestContext<Record<string, unknown>>();
     requestContext.set('companyId', session.companyId);
     requestContext.set('userId', session.userId);
     requestContext.set('chatId', threadId);
+    requestContext.set('taskId', taskId);
+    requestContext.set('messageId', messageId);
     requestContext.set('channel', 'desktop');
     requestContext.set('requesterEmail', session.email ?? '');
     requestContext.set('requesterAiRole', requesterAiRole);
+    requestContext.set('allowedToolIds', allowedToolIds);
     requestContext.set('workspaceName', workspace.name);
     requestContext.set('workspacePath', workspace.path);
     const requestId = executionId;
@@ -1459,13 +1675,19 @@ class DesktopChatController extends BaseController {
 
     let activePlan = parsed.plan ?? null;
     if (activePlan && actionResult) {
+      const activePlanTaskId = resolveActivePlanTaskId(activePlan);
       const nextPlan = updateExecutionPlanTask(activePlan, {
+        taskId: activePlanTaskId,
         ownerAgent: resolvePlanOwnerFromActionKind(actionResult.kind),
         ok: actionResult.ok,
         resultSummary: actionResult.summary,
       });
       queuePlanLifecycleEvents(executionEventQueue, executionId, activePlan, nextPlan);
       activePlan = nextPlan;
+    }
+    const activePlanTaskId = resolveActivePlanTaskId(activePlan);
+    if (activePlanTaskId) {
+      requestContext.set('activePlanTaskId', activePlanTaskId);
     }
 
     if (actionResult) {

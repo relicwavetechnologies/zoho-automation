@@ -266,7 +266,7 @@ function ToolBlockRow({ block }: { block: Extract<ContentBlock, { type: 'tool' }
             {open && hasSummary && (
                 <div className={cn(
                     'mt-1.5 ml-[32px] pl-3 border-l border-[hsl(0,0%,12%)]',
-                    'desktop-markdown text-[12px] text-[hsl(0,0%,60%)] leading-relaxed',
+                    'desktop-markdown break-words [overflow-wrap:anywhere] text-[12px] text-[hsl(0,0%,60%)] leading-relaxed',
                 )}>
                     <MarkdownContent content={block.resultSummary!} />
                 </div>
@@ -390,7 +390,7 @@ function TextBlockRow({
         <div className={cn(isLast && isStreaming ? 'streaming-cursor' : '', 'mt-1 mb-1')}>
             <MarkdownContent
                 content={block.content}
-                className="desktop-markdown text-sm leading-relaxed text-[hsl(0,0%,85%)]"
+                className="desktop-markdown break-words [overflow-wrap:anywhere] text-sm leading-relaxed text-[hsl(0,0%,85%)]"
             />
         </div>
     )

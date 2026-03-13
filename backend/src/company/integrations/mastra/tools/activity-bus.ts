@@ -15,22 +15,38 @@ export interface ActivityPayload {
     name: string;
     label: string;
     icon: string;
+    taskId?: string | null;
+    externalRef?: string;
     resultSummary?: string;
 }
 
 type ActivityCallback = (type: ActivityEventType, payload: ActivityPayload) => void;
 
-/** In-memory map: requestId → callback */
-const registry = new Map<string, ActivityCallback>();
+/** In-memory map: requestId → callbacks */
+const registry = new Map<string, Set<ActivityCallback>>();
 
 /** Called by the desktop chat controller before starting agent.stream() */
 export function registerActivityBus(requestId: string, cb: ActivityCallback): void {
-    registry.set(requestId, cb);
+    const listeners = registry.get(requestId) ?? new Set<ActivityCallback>();
+    listeners.add(cb);
+    registry.set(requestId, listeners);
 }
 
 /** Called by the desktop chat controller after the stream ends */
-export function unregisterActivityBus(requestId: string): void {
-    registry.delete(requestId);
+export function unregisterActivityBus(requestId: string, cb?: ActivityCallback): void {
+    if (!cb) {
+        registry.delete(requestId);
+        return;
+    }
+
+    const listeners = registry.get(requestId);
+    if (!listeners) {
+        return;
+    }
+    listeners.delete(cb);
+    if (listeners.size === 0) {
+        registry.delete(requestId);
+    }
 }
 
 /**
@@ -42,6 +58,11 @@ export function emitActivityEvent(
     type: ActivityEventType,
     payload: ActivityPayload,
 ): void {
-    const cb = registry.get(requestId);
-    cb?.(type, payload);
+    const listeners = registry.get(requestId);
+    if (!listeners) {
+        return;
+    }
+    for (const cb of listeners) {
+        cb(type, payload);
+    }
 }

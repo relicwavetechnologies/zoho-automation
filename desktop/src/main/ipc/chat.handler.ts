@@ -172,6 +172,130 @@ export function registerChatHandlers(): void {
     },
   )
 
+  ipcMain.handle(
+    'desktop:chat:sendMessageStream',
+    async (
+      event,
+      payload: {
+        token: string
+        requestId: string
+        threadId: string
+        message: string
+        attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>
+        mode?: 'fast' | 'high' | 'xtreme'
+        companyId?: string
+      }
+    ) => {
+      const { token, requestId, threadId, message, attachedFiles, mode, companyId } = payload
+      const target = event.sender
+      const controller = new AbortController()
+      activeStreamControllers.set(requestId, controller)
+
+      let res: Awaited<ReturnType<typeof net.fetch>>
+      try {
+        res = await net.fetch(`${BACKEND_URL}/api/desktop/chat/${threadId}/send`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+          },
+          body: JSON.stringify({ message, attachedFiles, mode, companyId, executionId: requestId }),
+          signal: controller.signal,
+        })
+      } catch (error) {
+        activeStreamControllers.delete(requestId)
+        if (controller.signal.aborted) {
+          return { success: true, stopped: true }
+        }
+        target.send('desktop:chat:event', {
+          requestId,
+          event: {
+            type: 'error',
+            data: error instanceof Error ? error.message : 'Chat stream failed',
+          },
+        })
+        return { success: false }
+      }
+
+      if (!res.ok || !res.body) {
+        activeStreamControllers.delete(requestId)
+        const bodyText = await res.text()
+        target.send('desktop:chat:event', {
+          requestId,
+          event: {
+            type: 'error',
+            data: bodyText || `Chat stream failed (${res.status})`,
+          },
+        })
+        return { success: false }
+      }
+
+      ;(async () => {
+        const reader = res.body!.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+
+            buffer += decoder.decode(value, { stream: true })
+            const frames = buffer.split('\n\n')
+            buffer = frames.pop() ?? ''
+
+            for (const frame of frames) {
+              const dataLines = frame
+                .split('\n')
+                .filter((line) => line.startsWith('data: '))
+                .map((line) => line.slice(6))
+
+              if (dataLines.length === 0) continue
+              const raw = dataLines.join('\n').trim()
+              if (!raw) continue
+
+              try {
+                const parsed = JSON.parse(raw) as { type: string; data: unknown }
+                target.send('desktop:chat:event', { requestId, event: parsed })
+              } catch {
+                target.send('desktop:chat:event', {
+                  requestId,
+                  event: { type: 'error', data: 'Malformed stream event received from backend' },
+                })
+              }
+            }
+          }
+
+          const trailing = buffer.trim()
+          if (trailing.startsWith('data: ')) {
+            try {
+              const parsed = JSON.parse(trailing.slice(6).trim()) as { type: string; data: unknown }
+              target.send('desktop:chat:event', { requestId, event: parsed })
+            } catch {
+              // ignore final malformed fragment
+            }
+          }
+        } catch (error) {
+          if (controller.signal.aborted) {
+            return
+          }
+          target.send('desktop:chat:event', {
+            requestId,
+            event: {
+              type: 'error',
+              data: error instanceof Error ? error.message : 'Desktop stream failed',
+            },
+          })
+        } finally {
+          activeStreamControllers.delete(requestId)
+        }
+      })()
+
+      return { success: true }
+    },
+  )
+
   ipcMain.handle('desktop:chat:stopStream', async (_event, requestId: string) => {
     const controller = activeStreamControllers.get(requestId)
     if (!controller) {

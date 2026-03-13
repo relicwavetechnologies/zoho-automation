@@ -199,7 +199,7 @@ test('webhook handler returns 202 duplicate ignored when message alias was alrea
   assert.equal(response.statusCode, 202);
   assert.equal(response.body.message, 'Duplicate ingress ignored (idempotency hit)');
   assert.equal(response.body.data.keyType, 'message');
-  assert.equal(response.body.data.idempotencyKey, 'emiac:idempotent:lark:message:om_1');
+  assert.equal(response.body.data.idempotencyKey, 'company:idempotent:lark:message:om_1');
   assert.equal(enqueueCount, 0);
   assert.deepEqual(claims, [
     { channel: 'lark', keyType: 'event', key: 'evt_newer_copy' },
@@ -271,7 +271,7 @@ test('buildPrimaryIngressIdempotencyKey uses event key when event id is present'
   assert.deepEqual(key, {
     keyType: 'event',
     key: 'evt_123',
-    idempotencyKey: 'emiac:idempotent:lark:event:evt_123',
+    idempotencyKey: 'company:idempotent:lark:event:evt_123',
   });
 });
 
@@ -285,6 +285,6 @@ test('buildPrimaryIngressIdempotencyKey falls back to message key when event id 
   assert.deepEqual(key, {
     keyType: 'message',
     key: 'om_321',
-    idempotencyKey: 'emiac:idempotent:lark:message:om_321',
+    idempotencyKey: 'company:idempotent:lark:message:om_321',
   });
 });

@@ -51,11 +51,15 @@ export const plannerAgentTool = createTool({
         message: inputData.query,
         workspace: workspaceName && workspacePath ? { name: workspaceName, path: workspacePath } : null,
       }),
-      runOptions as any,
+      {
+        ...(runOptions as any),
+        structuredOutput: {
+          schema: plannerDraftSchema,
+        },
+      },
     );
 
-    const plannerText = typeof result?.text === 'string' ? result.text.trim() : '';
-    const draft = plannerDraftSchema.parse(JSON.parse(plannerText));
+    const draft = plannerDraftSchema.parse(result.object ?? JSON.parse(result.text.trim()));
     const plan = initializeExecutionPlan(draft);
 
     if (requestId) {

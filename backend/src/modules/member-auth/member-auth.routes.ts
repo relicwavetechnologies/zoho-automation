@@ -8,5 +8,6 @@ const router = Router();
 router.post('/login', asyncHandler(memberAuthController.login));
 router.get('/me', requireMemberSession(), asyncHandler(memberAuthController.me));
 router.post('/logout', requireMemberSession(), asyncHandler(memberAuthController.logout));
+router.get('/usage', requireMemberSession(), asyncHandler(memberAuthController.usage));
 
 export default router;

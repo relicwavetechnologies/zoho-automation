@@ -8,6 +8,7 @@ export type DesktopAPI = {
     openLarkLogin: () => Promise<void>
     exchangeLark: (code: string, state: string) => Promise<{ success: boolean; data?: { token: string; session: unknown } }>
     me: (token: string) => Promise<{ success: boolean; data?: unknown }>
+    getUsage: (token: string) => Promise<{ success: boolean; data?: unknown }>
     logout: (token: string) => Promise<{ success: boolean }>
     unlinkLark: (token: string) => Promise<{ success: boolean }>
     onCallback: (cb: (payload: { code?: string; state?: string; error?: string }) => void) => () => void
@@ -69,10 +70,19 @@ export type DesktopAPI = {
       requestId: string,
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
       mode?: 'fast' | 'high' | 'xtreme'
-    ) => Promise<{ success: boolean }>
+    ) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    sendMessageStream: (payload: {
+      token: string
+      requestId: string
+      threadId: string
+      message: string
+      attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>
+      mode?: 'fast' | 'high' | 'xtreme'
+      companyId?: string
+    }) => Promise<{ success: boolean; data?: unknown; error?: string }>
     stopStream: (
       requestId: string,
-    ) => Promise<{ success: boolean; error?: string }>
+    ) => Promise<{ success: boolean; data?: unknown; error?: string }>
     act: (
       token: string,
       threadId: string,
@@ -113,6 +123,7 @@ const api: DesktopAPI = {
     openLarkLogin: () => ipcRenderer.invoke('desktop-auth:open-lark-login'),
     exchangeLark: (code, state) => ipcRenderer.invoke('desktop-auth:exchange-lark', code, state),
     me: (token) => ipcRenderer.invoke('desktop-auth:me', token),
+    getUsage: (token) => ipcRenderer.invoke('desktop-auth:usage', token),
     logout: (token) => ipcRenderer.invoke('desktop-auth:logout', token),
     unlinkLark: (token) => ipcRenderer.invoke('desktop-auth:unlink-lark', token),
     onCallback: (cb) => {
@@ -166,6 +177,8 @@ const api: DesktopAPI = {
       ipcRenderer.invoke('desktop:chat:stream-url', token, threadId),
     startStream: (token, threadId, message, requestId, attachedFiles, mode) =>
       ipcRenderer.invoke('desktop:chat:startStream', token, threadId, message, requestId, attachedFiles, mode),
+    sendMessageStream: (payload) =>
+      ipcRenderer.invoke('desktop:chat:sendMessageStream', payload),
     stopStream: (requestId) =>
       ipcRenderer.invoke('desktop:chat:stopStream', requestId),
     act: (token, threadId, payload) =>

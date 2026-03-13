@@ -134,7 +134,7 @@ test('duplicate message path logs lark.ingress.duplicate_ignored with idempotenc
   assert.ok(duplicate);
   assert.equal(duplicate.meta.requestId, 'req-123');
   assert.equal(duplicate.meta.keyType, 'event');
-  assert.equal(duplicate.meta.idempotencyKey, 'emiac:idempotent:lark:event:evt_1');
+  assert.equal(duplicate.meta.idempotencyKey, 'company:idempotent:lark:event:evt_1');
   assert.equal(JSON.stringify(duplicate.meta).includes(messageText), false);
 });
 

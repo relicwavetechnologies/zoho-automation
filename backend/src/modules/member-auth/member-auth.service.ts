@@ -182,6 +182,24 @@ export class MemberAuthService extends BaseService {
 
     return { token, session: sessionDto };
   }
+
+  async getUsageInfo(userId: string, companyId: string) {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+    const [usage, policy] = await Promise.all([
+      this.repository.getTokenUsageForMonth(userId, companyId, monthStart, monthEnd),
+      this.repository.getMemberTokenPolicy(userId, companyId)
+    ]);
+
+    const defaultLimit = 2000000; // 2M tokens/month default limit
+
+    return {
+      used: usage,
+      limit: policy?.monthlyTokenLimit ?? defaultLimit,
+    };
+  }
 }
 
 export const memberAuthService = new MemberAuthService();

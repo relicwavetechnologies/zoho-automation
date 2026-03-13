@@ -199,7 +199,7 @@ async function main() {
   const leadsPayload = TARGET_EMAILS.map((email, index) => ({
     First_Name: index === 0 ? 'Vabhi' : 'Anish',
     Last_Name: `LeadStrict_${marker}_${index + 1}`,
-    Company: index === 0 ? 'RelicWave Labs' : 'Xemiac Systems',
+    Company: index === 0 ? 'RelicWave Labs' : 'XCompany Systems',
     Email: email,
     Lead_Status: 'Not Contacted',
     Description: `Strict-scope seeded lead for ${email}. marker=${marker}`,

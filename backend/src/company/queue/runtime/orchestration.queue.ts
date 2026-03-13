@@ -10,7 +10,7 @@ import { runtimeTaskStore, type RuntimeTaskSnapshot } from '../../orchestration/
 import { redisConnection } from './redis.connection';
 import { buildSafeJobId, isTransientQueueInfraError, sanitizeQueueName } from './queue-safety';
 
-export const ORCHESTRATION_QUEUE_NAME = sanitizeQueueName('emiac-orchestration-v0');
+export const ORCHESTRATION_QUEUE_NAME = sanitizeQueueName('company-orchestration-v0');
 export const ORCHESTRATION_JOB_NAME = 'orchestration.task.execute' as const;
 
 export type OrchestrationJobData = {

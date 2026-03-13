@@ -26,12 +26,19 @@ type MutateTaskInput = LarkTasksAuthInput & {
   body: Record<string, unknown>;
 };
 
+type GetTaskInput = LarkTasksAuthInput & {
+  taskGuid: string;
+};
+
 export type LarkTaskItem = {
   taskId: string;
+  taskGuid?: string;
   summary?: string;
   completed?: boolean;
   status?: string;
   url?: string;
+  createdAt?: string;
+  updatedAt?: string;
   raw: Record<string, unknown>;
 };
 
@@ -57,12 +64,15 @@ const normalizeTask = (value: unknown): LarkTaskItem | null => {
 
   return {
     taskId,
+    taskGuid: readLarkString(record.guid) ?? readLarkString(record.task_guid) ?? readLarkString(record.taskGuid),
     summary: readLarkString(record.summary) ?? readLarkString(record.title),
     completed: readLarkBoolean(record.completed)
       ?? readLarkBoolean(record.done)
       ?? readLarkBoolean(record.is_completed),
     status: readLarkString(record.status),
     url: readLarkString(record.url) ?? readLarkString(record.link),
+    createdAt: readLarkString(record.created_at) ?? readLarkString(record.createdAt),
+    updatedAt: readLarkString(record.updated_at) ?? readLarkString(record.updatedAt),
     raw: record,
   };
 };
@@ -114,14 +124,31 @@ class LarkTasksService {
     return task;
   }
 
-  async updateTask(input: MutateTaskInput & { taskId: string }): Promise<LarkTaskItem> {
+  async getTask(input: GetTaskInput): Promise<LarkTaskItem> {
+    const { data } = await larkRuntimeClient.requestJson({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+      appUserId: input.appUserId,
+      credentialMode: input.credentialMode ?? 'tenant',
+      method: 'GET',
+      path: `/open-apis/task/v2/tasks/${encodeURIComponent(input.taskGuid)}`,
+    });
+
+    const task = normalizeTask(data.task ?? data.item ?? data);
+    if (!task) {
+      throw new LarkRuntimeClientError('Lark task lookup returned no task payload', 'lark_runtime_invalid_response');
+    }
+    return task;
+  }
+
+  async updateTask(input: MutateTaskInput & { taskGuid: string }): Promise<LarkTaskItem> {
     const { data } = await larkRuntimeClient.requestJson({
       companyId: input.companyId,
       larkTenantKey: input.larkTenantKey,
       appUserId: input.appUserId,
       credentialMode: input.credentialMode ?? 'tenant',
       method: 'PATCH',
-      path: `/open-apis/task/v2/tasks/${encodeURIComponent(input.taskId)}`,
+      path: `/open-apis/task/v2/tasks/${encodeURIComponent(input.taskGuid)}`,
       body: input.body,
     });
 
@@ -130,6 +157,17 @@ class LarkTasksService {
       throw new LarkRuntimeClientError('Lark task update returned no task payload', 'lark_runtime_invalid_response');
     }
     return task;
+  }
+
+  async deleteTask(input: GetTaskInput): Promise<void> {
+    await larkRuntimeClient.requestJson({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+      appUserId: input.appUserId,
+      credentialMode: input.credentialMode ?? 'tenant',
+      method: 'DELETE',
+      path: `/open-apis/task/v2/tasks/${encodeURIComponent(input.taskGuid)}`,
+    });
   }
 }
 

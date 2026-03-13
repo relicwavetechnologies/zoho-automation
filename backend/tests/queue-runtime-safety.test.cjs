@@ -31,11 +31,11 @@ test('buildSafeJobId enforces maximum length cap', () => {
 });
 
 test('sanitizeQueueName strips unsupported characters and keeps bullmq-safe names', () => {
-  const queueName = sanitizeQueueName('emiac:orchestration/v1');
+  const queueName = sanitizeQueueName('company:orchestration/v1');
 
   assert.equal(queueName.includes(':'), false);
   assert.equal(queueName.includes('/'), false);
-  assert.equal(queueName, 'emiac_orchestration_v1');
+  assert.equal(queueName, 'company_orchestration_v1');
 });
 
 test('isTransientQueueInfraError detects known transient infra failures', () => {

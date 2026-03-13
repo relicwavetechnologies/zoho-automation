@@ -4,9 +4,9 @@ import { redisConnection } from '../../queue/runtime/redis.connection';
 import { emitRuntimeTrace, executionService } from '../../observability';
 import { logger } from '../../../utils/logger';
 
-const checkpointVersionKey = (taskId: string) => `emiac:task:${taskId}:checkpoint:version`;
-const checkpointHistoryKey = (taskId: string) => `emiac:task:${taskId}:checkpoint:history`;
-const checkpointLatestKey = (taskId: string) => `emiac:task:${taskId}:checkpoint:latest`;
+const checkpointVersionKey = (taskId: string) => `company:task:${taskId}:checkpoint:version`;
+const checkpointHistoryKey = (taskId: string) => `company:task:${taskId}:checkpoint:history`;
+const checkpointLatestKey = (taskId: string) => `company:task:${taskId}:checkpoint:latest`;
 
 class CheckpointRepository {
   async save(taskId: string, node: string, state: Record<string, unknown>): Promise<CheckpointDTO> {

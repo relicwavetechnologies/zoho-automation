@@ -62,7 +62,7 @@ This v3.0 document is the complete source-of-truth architecture plan provided in
 
 The complete, detailed section content (1–47) is preserved in this file as the canonical plan for execution.
 
-To keep collaboration reliable for two parallel contributors, implementation tasks in `/tasks/v0-emiac` should map back to this plan by section number.
+To keep collaboration reliable for two parallel contributors, implementation tasks in `/tasks/v0-company` should map back to this plan by section number.
 
 ---
 

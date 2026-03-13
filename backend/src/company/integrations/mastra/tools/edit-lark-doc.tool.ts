@@ -6,16 +6,7 @@ import { larkDocsService, LarkDocsIntegrationError } from '../../../channels/lar
 import { conversationMemoryStore } from '../../../state/conversation';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
 import { emitActivityEvent } from './activity-bus';
-
-const buildConversationKey = (requestContext?: { get: (key: string) => unknown }): string | null => {
-  const channel = requestContext?.get('channel');
-  const tenant = requestContext?.get('larkTenantKey');
-  const chatId = requestContext?.get('chatId');
-  if (typeof channel !== 'string' || typeof chatId !== 'string') {
-    return null;
-  }
-  return `${channel}:${typeof tenant === 'string' && tenant.trim() ? tenant.trim() : 'no_tenant'}:${chatId}`;
-};
+import { buildConversationKey } from './conversation-key';
 
 export const editLarkDocTool = createTool({
   id: 'edit-lark-doc',
@@ -88,12 +79,14 @@ export const editLarkDocTool = createTool({
       }
 
       if (requestId) {
+        const answer = `Updated Lark Doc: ${result.url}`;
         emitActivityEvent(requestId, 'activity_done', {
           id: callId,
           name: 'edit-lark-doc',
           label: 'Edited Lark Document',
           icon: 'file-text',
-          resultSummary: 'Success',
+          externalRef: result.documentId || result.url,
+          resultSummary: answer,
         });
       }
 

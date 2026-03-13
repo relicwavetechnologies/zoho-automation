@@ -6,16 +6,7 @@ import { larkDocsService, LarkDocsIntegrationError } from '../../../channels/lar
 import { conversationMemoryStore } from '../../../state/conversation';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
 import { emitActivityEvent } from './activity-bus';
-
-const buildConversationKey = (requestContext?: { get: (key: string) => unknown }): string | null => {
-  const channel = requestContext?.get('channel');
-  const tenant = requestContext?.get('larkTenantKey');
-  const chatId = requestContext?.get('chatId');
-  if (typeof channel !== 'string' || typeof chatId !== 'string') {
-    return null;
-  }
-  return `${channel}:${typeof tenant === 'string' && tenant.trim() ? tenant.trim() : 'no_tenant'}:${chatId}`;
-};
+import { buildConversationKey } from './conversation-key';
 
 export const createLarkDocTool = createTool({
   id: 'create-lark-doc',
@@ -68,12 +59,16 @@ export const createLarkDocTool = createTool({
       }
 
       if (requestId) {
+        const answer = result.url
+          ? `Created Lark Doc: ${result.url}`
+          : `Created Lark Doc: ${result.documentId}`;
         emitActivityEvent(requestId, 'activity_done', {
           id: callId,
           name: 'create-lark-doc',
           label: 'Created Lark Document',
           icon: 'file-text',
-          resultSummary: result.title,
+          externalRef: result.documentId || result.url,
+          resultSummary: answer,
         });
       }
 

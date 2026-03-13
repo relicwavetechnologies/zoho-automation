@@ -29,6 +29,7 @@ function TaskIcon({ task }: { task: ExecutionPlanTask }): JSX.Element {
 
 export function PlanDrawer({ plan }: { plan: ExecutionPlan }): JSX.Element {
   const [collapsed, setCollapsed] = useState(false)
+  const [criteriaOpen, setCriteriaOpen] = useState(false)
 
   const completedCount = useMemo(
     () => plan.tasks.filter((task) => task.status === 'done').length,
@@ -69,16 +70,36 @@ export function PlanDrawer({ plan }: { plan: ExecutionPlan }): JSX.Element {
         {!collapsed && (
           <div className="border-t border-[hsl(0,0%,14%)] px-4 py-3">
             <div className="mb-4 rounded-2xl border border-[hsl(0,0%,14%)] bg-[hsl(0,0%,9%)] px-3 py-3">
-              <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-[hsl(0,0%,48%)]">
-                Success Criteria
-              </div>
-              <div className="mt-2 space-y-1.5">
-                {plan.successCriteria.map((criterion) => (
-                  <div key={criterion} className="text-[12px] leading-5 text-[hsl(0,0%,72%)]">
-                    {criterion}
+              <button
+                type="button"
+                onClick={() => setCriteriaOpen((value) => !value)}
+                className="flex w-full items-center justify-between gap-3 text-left"
+                title={criteriaOpen ? 'Hide success criteria' : 'Show success criteria'}
+              >
+                <div>
+                  <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-[hsl(0,0%,48%)]">
+                    Success Criteria
                   </div>
-                ))}
-              </div>
+                  <div className="mt-1 text-[12px] text-[hsl(0,0%,58%)]">
+                    {plan.successCriteria.length} item{plan.successCriteria.length === 1 ? '' : 's'}
+                  </div>
+                </div>
+                {criteriaOpen ? (
+                  <ChevronUp size={15} className="shrink-0 text-[hsl(0,0%,56%)]" />
+                ) : (
+                  <ChevronDown size={15} className="shrink-0 text-[hsl(0,0%,56%)]" />
+                )}
+              </button>
+
+              {criteriaOpen && (
+                <div className="mt-2 space-y-1.5">
+                  {plan.successCriteria.map((criterion) => (
+                    <div key={criterion} className="text-[12px] leading-5 text-[hsl(0,0%,72%)]">
+                      {criterion}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="space-y-1.5">

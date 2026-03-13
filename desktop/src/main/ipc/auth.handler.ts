@@ -52,6 +52,13 @@ export function registerAuthHandlers(): void {
     return res.json()
   })
 
+  ipcMain.handle('desktop-auth:usage', async (_event, token: string) => {
+    const res = await net.fetch(`${BACKEND_URL}/api/desktop/auth/usage`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    return res.json()
+  })
+
   ipcMain.handle('desktop-auth:logout', async (_event, token: string) => {
     const res = await net.fetch(`${BACKEND_URL}/api/desktop/auth/logout`, {
       method: 'POST',

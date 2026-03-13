@@ -9,7 +9,7 @@ const MAX_PAGE_CONTEXT_LIMIT = 4;
 const PAGE_FETCH_TIMEOUT_MS = 8_000;
 const PAGE_CONTEXT_CHAR_LIMIT = 1_200;
 const USER_AGENT =
-  'Mozilla/5.0 (compatible; EMIACBot/1.0; +https://example.invalid/serper-search)';
+  'Mozilla/5.0 (compatible; CompanyBot/1.0; +https://example.invalid/serper-search)';
 
 const COMMON_HTML_ENTITIES: Record<string, string> = {
   '&nbsp;': ' ',

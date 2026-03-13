@@ -55,8 +55,17 @@ export type ActionCompletion = {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const LOCAL_WORKSPACE_SIGNAL_PATTERN = /\b(file|files|folder|folders|directory|directories|workspace|repo|repository|codebase|project folder|local path|path|terminal|shell|command|bash|zsh|run command|install|exec|execute|ls|cat|pwd|git|pnpm|npm|node|python|tsc|read file|open file|write file|save file|mkdir|delete file|delete folder)\b/i
+const REMOTE_WORKFLOW_SIGNAL_PATTERN = /\b(zoho|crm|deal|contact|lead|ticket|outreach|publisher|search the web|web research|competitor|lark(?:\s+(?:doc|docs|calendar|meeting|meetings|task|tasks|approval|approvals|base))?|schedule(?:\s+(?:a|the))?\s+meeting|calendar event)\b/i
+
 export function isLikelyLocalWorkspaceIntent(text: string): boolean {
-  return /\b(file|folder|directory|workspace|create|edit|write|rewrite|read|open|delete|remove|mkdir|terminal|command|run|install|exec|execute|ls|cat|pwd|git|pnpm|npm|node|python|tsc|markdown|md|save|export|report|summary|research|analyze|analysis|findings|brief|document)\b/i.test(text)
+  const hasLocalSignal = LOCAL_WORKSPACE_SIGNAL_PATTERN.test(text)
+  if (!hasLocalSignal) {
+    return false
+  }
+
+  const hasRemoteWorkflowSignal = REMOTE_WORKFLOW_SIGNAL_PATTERN.test(text)
+  return !hasRemoteWorkflowSignal
 }
 
 export function truncateText(text: string, maxChars: number): string {

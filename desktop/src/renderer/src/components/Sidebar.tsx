@@ -5,7 +5,7 @@ import { useChat } from '../context/ChatContext'
 import { useWorkspace } from '../context/WorkspaceContext'
 import type { Thread } from '../types'
 
-export function Sidebar({ isOpen, onToggle }: { isOpen: boolean; onToggle: () => void }): JSX.Element | null {
+export function Sidebar({ isOpen, onToggle, onSettingsClick }: { isOpen: boolean; onToggle: () => void; onSettingsClick?: () => void }): JSX.Element | null {
   const { threads, activeThread, loadThreads, selectThread, createThread } = useChat()
   const { currentWorkspace, selectWorkspace, getThreadWorkspace } = useWorkspace()
   const [filter, setFilter] = useState('')
@@ -124,7 +124,10 @@ export function Sidebar({ isOpen, onToggle }: { isOpen: boolean; onToggle: () =>
 
       {/* Bottom settings area */}
       <div className="p-3 shrink-0 flex items-center">
-        <button className="flex items-center gap-2 text-xs font-medium text-[hsl(0,0%,60%)] hover:text-[hsl(0,0%,90%)] transition-colors">
+        <button 
+          onClick={onSettingsClick}
+          className="flex items-center gap-2 text-xs font-medium text-[hsl(0,0%,60%)] hover:text-[hsl(0,0%,90%)] transition-colors"
+        >
           <Settings size={14} />
           Settings
         </button>

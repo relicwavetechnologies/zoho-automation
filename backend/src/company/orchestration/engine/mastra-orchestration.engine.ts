@@ -14,6 +14,7 @@ import { applyGenerationWordLimit } from '../../support/content-limits';
 import { orchestratorService } from '../orchestrator.service';
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import { knowledgeShareService } from '../../knowledge-share/knowledge-share.service';
+import { registerActivityBus, unregisterActivityBus, type ActivityPayload } from '../../integrations/mastra/tools/activity-bus';
 import { prisma } from '../../../utils/prisma';
 import type { AiRole } from '../../tools/tool-registry';
 import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
@@ -465,6 +466,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     requestContext.set('requestId', message.trace?.requestId ?? '');
     requestContext.set('channelIdentityId', message.trace?.channelIdentityId ?? '');
     requestContext.set('requesterEmail', message.trace?.requesterEmail ?? '');
+    requestContext.set('timeZone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
 
     // ── Stage 1: Instant "Thinking" indicator ───────────────────────────────
     // Fire this synchronously before ANY async work so the user sees feedback
@@ -655,31 +657,8 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       }
     }
 
-    let streamResult;
-    try {
-      streamResult = await withTimeout(
-        agent.stream(agentInputMessages as any, runOptions as any),
-        AGENT_GENERATE_TIMEOUT_MS,
-        'supervisorAgent.stream',
-      );
-    } catch (err) {
-      logger.error('mastra.engine.stream.failed', {
-        taskId: task.taskId,
-        messageId: message.messageId,
-        companyId,
-        reason: err instanceof Error ? err.message : 'unknown_error',
-        timedOut: err instanceof Error && err.message.includes('timed out'),
-      });
-      throw err;
-    }
-
-    // ── Handle steps and text stream for natural progress updates ────────────
-
-    // Collect the final text and handle streams
     let fullText = '';
-
-    // We run the text stream and step stream concurrently
-    const [stream, stepStream] = [streamResult.textStream, (streamResult as any).stepsStream];
+    let usedCompanyWorkflow = false;
 
     const pushProgress = async (force = false): Promise<void> => {
       const now = Date.now();
@@ -764,11 +743,130 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
       return `Understood. I’m working on "${objective}" now and will update you as I make progress.`;
     };
 
-    // Listen to steps to send progress updates to the user
-    const stepListenerPromise = (async () => {
+    const buildTemporalContext = (): string => {
+      const now = new Date();
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      const exactDate = new Intl.DateTimeFormat('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        timeZone,
+      }).format(now);
+      const exactTime = new Intl.DateTimeFormat('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZone,
+      }).format(now);
+
+      return [
+        '--- CURRENT DATE CONTEXT ---',
+        `Today is ${exactDate}. Current local time is ${exactTime}.`,
+        `Use timezone ${timeZone} for relative scheduling requests.`,
+        'Resolve relative dates like "today", "tomorrow", "next Monday", and "next week" against this date.',
+        'When scheduling or confirming dates, include the exact calendar date in the final answer.',
+        '--- END CURRENT DATE CONTEXT ---',
+      ].join('\n');
+    };
+
+    const workflowRequestId = (message.trace?.requestId ?? '').trim();
+    const workflowActivityListener = (type: 'activity' | 'activity_done', payload: ActivityPayload) => {
+      if (type !== 'activity') {
+        return;
+      }
+      void updateStageIndicator(buildToolProgressFallback([payload.name]));
+    };
+
+    if (workflowRequestId) {
+      registerActivityBus(workflowRequestId, workflowActivityListener);
+    }
+    try {
+      const workflow = mastra.getWorkflow('companyWorkflow');
+      const run = await workflow.createRun({ runId: workflowRequestId || task.taskId });
+      const workflowStream = run.stream({
+          inputData: {
+            userObjective: [buildTemporalContext(), historyAwarePrompt].join('\n\n'),
+            requestContext: {
+              userId: message.userId,
+              permissions: allowedToolIds,
+            },
+            attachmentContent: allAttachedFiles.length > 0 ? historyAwarePrompt : undefined,
+            agentId: 'supervisorAgent',
+            mode: 'high',
+            agentMessages: agentInputMessages,
+          } as any,
+          requestContext: requestContext as unknown as RequestContext<unknown>,
+          initialState: {
+            currentPlan: null,
+            failedTasks: [],
+            completedTasks: [],
+            replanCount: 0,
+          },
+        } as any);
+
+      for await (const rawEvent of workflowStream.fullStream) {
+        const event = (rawEvent as any)?.type === 'watch'
+          ? (rawEvent as any).data
+          : rawEvent;
+        if (event?.type === 'workflow-step-result' && event?.payload?.id === 'planner-step' && event.payload.status === 'success') {
+          void updateStageIndicator('_Plan ready. Working through it..._');
+        }
+      }
+
+      const workflowResult = await workflowStream.result;
+      if (workflowResult?.status !== 'success') {
+        const workflowError =
+          workflowResult?.status === 'failed' && workflowResult.error instanceof Error
+            ? workflowResult.error.message
+            : `Workflow finished with status ${workflowResult?.status ?? 'unknown'}`;
+        throw new Error(
+          workflowError,
+        );
+      }
+
+      fullText = typeof workflowResult.result?.finalAnswer === 'string'
+        ? workflowResult.result.finalAnswer.trim()
+        : '';
+      usedCompanyWorkflow = true;
+    } catch (error) {
+      logger.warn('mastra.engine.workflow.fallback', {
+        taskId: task.taskId,
+        messageId: message.messageId,
+        companyId,
+        reason: error instanceof Error ? error.message : 'unknown_error',
+      });
+    } finally {
+      if (workflowRequestId) {
+        unregisterActivityBus(workflowRequestId, workflowActivityListener);
+      }
+    }
+
+    if (!usedCompanyWorkflow) {
+      let streamResult;
       try {
-        if (stepStream) {
-          for await (const step of stepStream) {
+        streamResult = await withTimeout(
+          agent.stream(agentInputMessages as any, runOptions as any),
+          AGENT_GENERATE_TIMEOUT_MS,
+          'supervisorAgent.stream',
+        );
+      } catch (err) {
+        logger.error('mastra.engine.stream.failed', {
+          taskId: task.taskId,
+          messageId: message.messageId,
+          companyId,
+          reason: err instanceof Error ? err.message : 'unknown_error',
+          timedOut: err instanceof Error && err.message.includes('timed out'),
+        });
+        throw err;
+      }
+
+      const [stream, stepStream] = [streamResult.textStream, (streamResult as any).stepsStream];
+
+      // Listen to steps to send progress updates to the user
+      const stepListenerPromise = (async () => {
+        try {
+          if (stepStream) {
+            for await (const step of stepStream) {
             const toolResults = (step as any).toolResults || {};
             const toolCalls = (step as any).toolCalls || [];
 
@@ -819,25 +917,26 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
               lastPushedPreviewText = fallback;
               lastPushAt = Date.now();
             }
+            }
           }
+        } catch (e) {
+          logger.error('mastra.engine.progress.failed', { taskId: task.taskId, error: e });
         }
-      } catch (e) {
-        logger.error('mastra.engine.progress.failed', { taskId: task.taskId, error: e });
-      }
-    })();
+      })();
 
-    try {
-      for await (const delta of stream) {
-        fullText += delta;
-        progressBufferedText += delta;
-        await pushProgress(false);
+      try {
+        for await (const delta of stream) {
+          fullText += delta;
+          progressBufferedText += delta;
+          await pushProgress(false);
+        }
+      } catch (error) {
+        await pushProgress(true);
+        throw error;
       }
-    } catch (error) {
       await pushProgress(true);
-      throw error;
+      await stepListenerPromise;
     }
-    await pushProgress(true);
-    await stepListenerPromise;
 
     await checkpointRepository.save(task.taskId, 'synthesis.complete', {
       status: 'done',

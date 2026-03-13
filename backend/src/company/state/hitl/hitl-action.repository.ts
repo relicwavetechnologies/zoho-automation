@@ -1,8 +1,8 @@
 import type { HITLActionDTO, HitlActionStatus } from '../../contracts';
 import { redisConnection } from '../../queue/runtime/redis.connection';
 
-const actionKey = (actionId: string) => `emiac:hitl:action:${actionId}`;
-const taskActionKey = (taskId: string) => `emiac:task:${taskId}:hitl:action`;
+const actionKey = (actionId: string) => `company:hitl:action:${actionId}`;
+const taskActionKey = (taskId: string) => `company:task:${taskId}:hitl:action`;
 
 type StoredHitlAction = HITLActionDTO & {
   _chatId?: string;

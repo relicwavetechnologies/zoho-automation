@@ -44,8 +44,8 @@ export const plannerAgent = new Agent({
       ],
     }),
     buildJsonOnlyOutputContract({
-      shape: '{"goal":"string","successCriteria":["string"],"tasks":[{"title":"string","ownerAgent":"supervisor|zoho|outreach|search|larkBase|larkTask|larkDoc|workspace|terminal"}]}',
-      validExample: '{"goal":"Audit recent Zoho pipeline risks and save a summary","successCriteria":["Recent high-risk deals identified","Summary saved to Lark Doc"],"tasks":[{"title":"Review recent Zoho deals","ownerAgent":"zoho"},{"title":"Summarize the risks","ownerAgent":"supervisor"},{"title":"Save the summary to Lark","ownerAgent":"larkDoc"}]}',
+      shape: '{"goal":"string","successCriteria":["string"],"tasks":[{"title":"string","ownerAgent":"supervisor|zoho|outreach|search|larkBase|larkTask|larkCalendar|larkMeeting|larkApproval|larkDoc|workspace|terminal"}]}',
+      validExample: '{"goal":"Review open launch tasks and schedule the follow-up meeting","successCriteria":["Pending tasks reviewed","Follow-up meeting scheduled"],"tasks":[{"title":"Review Lark tasks for the launch","ownerAgent":"larkTask"},{"title":"Schedule the follow-up meeting","ownerAgent":"larkCalendar"},{"title":"Summarize the next steps","ownerAgent":"supervisor"}]}',
       invalidExample: 'Here is the plan: {"goal":"..."}',
       extraRules: [
         'Do not mention hidden reasoning, policy, or implementation details.',

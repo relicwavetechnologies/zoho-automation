@@ -206,10 +206,10 @@ type CompanyOnboardingStatusDTO = {
 
 ## Recommended Redis Key Pattern (V0)
 
-- `emiac:idempotent:{messageId}`
-- `emiac:task:{taskId}:status`
-- `emiac:session:{chatId}:{taskId}:checkpoint`
-- `emiac:hitl:{taskId}`
+- `company:idempotent:{messageId}`
+- `company:task:{taskId}:status`
+- `company:session:{chatId}:{taskId}:checkpoint`
+- `company:hitl:{taskId}`
 
 ## Minimal Transition Rules
 

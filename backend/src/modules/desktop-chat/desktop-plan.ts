@@ -1,13 +1,16 @@
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 
-const PLAN_OWNER_AGENTS = [
+export const PLAN_OWNER_AGENTS = [
   'supervisor',
   'zoho',
   'outreach',
   'search',
   'larkBase',
   'larkTask',
+  'larkCalendar',
+  'larkMeeting',
+  'larkApproval',
   'larkDoc',
   'workspace',
   'terminal',
@@ -48,6 +51,16 @@ export type ExecutionPlan = z.infer<typeof executionPlanSchema>;
 export type ExecutionPlanTask = ExecutionPlan['tasks'][number];
 export type ExecutionPlanOwner = ExecutionPlanTask['ownerAgent'];
 
+type WorkflowPlanLike = {
+  goal: string;
+  tasks: Array<{
+    taskId: string;
+    title: string;
+    ownerAgent: ExecutionPlanOwner;
+    successCriteria?: string;
+  }>;
+};
+
 export const buildDesktopPlannerPrompt = (input: {
   message: string;
   workspace?: { name: string; path: string } | null;
@@ -82,6 +95,26 @@ export const initializeExecutionPlan = (draft: PlannerDraft): ExecutionPlan => {
     updatedAt: now,
     tasks: draft.tasks.map((task, index) => ({
       id: randomUUID(),
+      title: task.title.trim(),
+      ownerAgent: task.ownerAgent,
+      status: index === 0 ? 'running' : 'pending',
+    })),
+  };
+};
+
+export const initializeExecutionPlanFromWorkflow = (plan: WorkflowPlanLike): ExecutionPlan => {
+  const now = new Date().toISOString();
+  return {
+    id: randomUUID(),
+    goal: plan.goal.trim(),
+    successCriteria: plan.tasks
+      .map((task) => task.successCriteria?.trim())
+      .filter((value): value is string => Boolean(value)),
+    status: 'running',
+    createdAt: now,
+    updatedAt: now,
+    tasks: plan.tasks.map((task, index) => ({
+      id: task.taskId,
       title: task.title.trim(),
       ownerAgent: task.ownerAgent,
       status: index === 0 ? 'running' : 'pending',
@@ -138,6 +171,12 @@ const touchPlan = (plan: ExecutionPlan, tasks: ExecutionPlan['tasks'], status: E
 const getCurrentTaskIndex = (tasks: ExecutionPlan['tasks']): number =>
   tasks.findIndex((task) => task.status === 'running');
 
+export const resolveActivePlanTaskId = (plan: ExecutionPlan | null | undefined): string | null => {
+  if (!plan) return null;
+  const runningTask = plan.tasks.find((task) => task.status === 'running');
+  return runningTask?.id ?? null;
+};
+
 const getFirstPendingIndex = (tasks: ExecutionPlan['tasks']): number =>
   tasks.findIndex((task) => task.status === 'pending');
 
@@ -177,6 +216,15 @@ export const resolvePlanOwnerFromToolName = (toolName?: string | null): Executio
   if (normalized === 'lark-task-agent' || normalized === 'lark-task-read' || normalized === 'lark-task-write') {
     return 'larkTask';
   }
+  if (normalized === 'lark-calendar-agent' || normalized === 'lark-calendar-read' || normalized === 'lark-calendar-write') {
+    return 'larkCalendar';
+  }
+  if (normalized === 'lark-meeting-agent' || normalized === 'lark-meeting-read') {
+    return 'larkMeeting';
+  }
+  if (normalized === 'lark-approval-agent' || normalized === 'lark-approval-read' || normalized === 'lark-approval-write') {
+    return 'larkApproval';
+  }
   if (normalized === 'lark-doc-agent' || normalized === 'create-lark-doc' || normalized === 'edit-lark-doc') {
     return 'larkDoc';
   }
@@ -190,6 +238,7 @@ export const resolvePlanOwnerFromActionKind = (
 export const updateExecutionPlanTask = (
   plan: ExecutionPlan,
   input: {
+    taskId?: string | null;
     ownerAgent: ExecutionPlanOwner;
     ok: boolean;
     resultSummary?: string;
@@ -198,6 +247,32 @@ export const updateExecutionPlanTask = (
   if (plan.status !== 'running') return plan;
 
   const tasks = plan.tasks.map((task) => ({ ...task }));
+  const explicitTaskIndex = input.taskId
+    ? tasks.findIndex((task) => task.id === input.taskId)
+    : -1;
+
+  if (explicitTaskIndex >= 0) {
+    const explicitTask = tasks[explicitTaskIndex];
+    explicitTask.status = input.ok ? 'done' : 'failed';
+    if (input.resultSummary) {
+      explicitTask.resultSummary = input.resultSummary.slice(0, 500);
+    }
+
+    if (!input.ok) {
+      const hasRunningTask = tasks.some((task) => task.status === 'running');
+      if (!hasRunningTask && startNextPendingTask(tasks)) {
+        return touchPlan(plan, tasks, 'running');
+      }
+      return touchPlan(plan, tasks, hasRunningTask ? 'running' : 'failed');
+    }
+
+    if (!tasks.some((task) => task.status === 'running') && startNextPendingTask(tasks)) {
+      return touchPlan(plan, tasks, 'running');
+    }
+
+    return touchPlan(plan, tasks, hasRemainingOpenTasks(tasks) ? 'running' : 'completed');
+  }
+
   const currentIndex = getCurrentTaskIndex(tasks);
   if (currentIndex === -1) return plan;
 

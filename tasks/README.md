@@ -22,7 +22,7 @@ Optional:
 - `notes.md` for deep technical exploration.
 - `handoff.md` for explicit transfer to another owner.
 
-Task programs (for example `tasks/v0-emiac`) should also include:
+Task programs (for example `tasks/v0-company`) should also include:
 - `README.md` for ordered dependency flow.
 - `CONTEXT.md` for shared baseline that applies to every task in the program.
 

@@ -86,4 +86,4 @@ Use this map for current V1 production-hardening execution tasks.
 - Current consolidated status: `/docs/APP-STATUS-2026-03-05.md`
 - DTO/sync contracts: `/docs/V0-DTO-SYNC-CONTRACT.md`
 - LangGraph runtime contract: `/docs/V1-LANGGRAPH-RUNTIME-CONTRACT.md`
-- Master architecture: `/docs/EMIAC-Architecture-Planning-v3.0.md`
+- Master architecture: `/docs/Company-Architecture-Planning-v3.0.md`

@@ -3,7 +3,7 @@ import { redisConnection } from './redis.connection';
 
 export type RuntimeControlSignal = 'running' | 'paused' | 'cancelled';
 
-const signalKey = (taskId: string) => `emiac:task:${taskId}:control_signal`;
+const signalKey = (taskId: string) => `company:task:${taskId}:control_signal`;
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => {

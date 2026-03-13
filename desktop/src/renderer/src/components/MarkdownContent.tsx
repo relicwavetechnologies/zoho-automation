@@ -27,7 +27,7 @@ export function MarkdownContent({ content, className }: Props): JSX.Element {
   }
 
   return (
-    <div className={className}>
+    <div className={`${className ?? ''} break-words [overflow-wrap:anywhere]`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -58,17 +58,17 @@ export function MarkdownContent({ content, className }: Props): JSX.Element {
                 href={href}
                 target="_blank"
                 rel="noreferrer"
-                className="font-medium text-[hsl(210,85%,72%)] underline decoration-[hsl(210,70%,54%)] underline-offset-4 hover:text-[hsl(210,85%,80%)]"
+                className="font-medium break-all text-[hsl(210,85%,72%)] underline decoration-[hsl(210,70%,54%)] underline-offset-4 hover:text-[hsl(210,85%,80%)]"
               />
             )
           },
           img: ({ node: _node, ...props }) => (
             <img {...props} className="mt-2 mb-3 max-w-full rounded-xl border border-[hsl(0,0%,16%)] object-cover shadow-sm max-h-[250px]" alt={props.alt || 'Attachment'} />
           ),
-          p: ({ node: _node, ...props }) => <p {...props} className="mb-4 leading-8 text-[15px] text-[hsl(0,0%,80%)] last:mb-0" />,
+          p: ({ node: _node, ...props }) => <p {...props} className="mb-4 whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-8 text-[15px] text-[hsl(0,0%,80%)] last:mb-0" />,
           ul: ({ node: _node, ...props }) => <ul {...props} className="mb-4 list-disc space-y-1.5 pl-6 last:mb-0" />,
           ol: ({ node: _node, ...props }) => <ol {...props} className="mb-4 list-decimal space-y-1.5 pl-6 last:mb-0" />,
-          li: ({ node: _node, ...props }) => <li {...props} className="pl-1 text-[15px] leading-8 text-[hsl(0,0%,78%)]" />,
+          li: ({ node: _node, ...props }) => <li {...props} className="pl-1 break-words [overflow-wrap:anywhere] text-[15px] leading-8 text-[hsl(0,0%,78%)]" />,
           blockquote: ({ node: _node, ...props }) => (
             <blockquote
               {...props}

@@ -4,10 +4,10 @@ import { WorkspaceProvider, useWorkspace } from './context/WorkspaceContext'
 import { LoginScreen } from './components/LoginScreen'
 import { Sidebar } from './components/Sidebar'
 import { Header } from './components/Header'
-import { ChatPane } from './components/ChatPane'
-import { Composer } from './components/Composer'
+import { ChatLayout } from './components/ChatLayout'
 import { WorkspaceGate } from './components/WorkspaceGate'
 import { WorkspaceStudio } from './components/WorkspaceStudio'
+import { ProfileLayout } from './components/profile/ProfileLayout'
 
 import { useState } from 'react'
 
@@ -16,6 +16,7 @@ function AppShell(): JSX.Element {
   const { hasWorkspace } = useWorkspace()
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [editorOpen, setEditorOpen] = useState(false)
+  const [currentView, setCurrentView] = useState<'chat' | 'settings'>('chat')
 
   if (loading) {
     return (
@@ -42,7 +43,11 @@ function AppShell(): JSX.Element {
   return (
     <ChatProvider>
       <div className="flex h-full overflow-hidden" style={{ background: 'hsl(var(--background))' }}>
-        <Sidebar isOpen={sidebarOpen} onToggle={() => setSidebarOpen(false)} />
+        <Sidebar 
+          isOpen={sidebarOpen} 
+          onToggle={() => setSidebarOpen(false)} 
+          onSettingsClick={() => setCurrentView(prev => prev === 'settings' ? 'chat' : 'settings')}
+        />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <Header
             sidebarOpen={sidebarOpen}
@@ -52,8 +57,11 @@ function AppShell(): JSX.Element {
           />
           <div className="flex min-h-0 flex-1">
             <div className="flex min-w-0 flex-1 flex-col">
-              <ChatPane />
-              <Composer />
+              {currentView === 'settings' ? (
+                <ProfileLayout onClose={() => setCurrentView('chat')} />
+              ) : (
+                <ChatLayout />
+              )}
             </div>
             <WorkspaceStudio isOpen={editorOpen} onClose={() => setEditorOpen(false)} />
           </div>

@@ -1,3 +1,7 @@
+// DEPRECATED: Observational Memory (mastra.instance.ts) now handles context
+// compression. This compactor is kept as a fallback and will be removed once
+// OM has been validated in production.
+
 import { logger } from '../../utils/logger';
 import { estimateTokens, COMPACTION_THRESHOLD } from '../../utils/token-estimator';
 import type { AiModelCatalogEntry } from '../../company/ai-models/catalog';

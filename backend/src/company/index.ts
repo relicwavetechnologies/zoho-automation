@@ -8,7 +8,7 @@ import { QUEUE_BOUNDARY } from './queue';
 import { SECURITY_BOUNDARY } from './security';
 import { STATE_BOUNDARY } from './state';
 
-export const EMIAC_BOUNDARY_MODULES = [
+export const COMPANY_BOUNDARY_MODULES = [
   CONTRACTS_BOUNDARY,
   CHANNELS_BOUNDARY,
   INTEGRATIONS_BOUNDARY,
@@ -20,7 +20,7 @@ export const EMIAC_BOUNDARY_MODULES = [
   OBSERVABILITY_BOUNDARY,
 ] as const;
 
-export type EmiacBoundaryModule = (typeof EMIAC_BOUNDARY_MODULES)[number];
+export type CompanyBoundaryModule = (typeof COMPANY_BOUNDARY_MODULES)[number];
 
 export * from './agents';
 export * from './channels';

@@ -72,6 +72,11 @@ interface ChatState {
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
     mode?: 'fast' | 'high' | 'xtreme'
   ) => Promise<void>
+  sendInitialMessage: (
+    text: string,
+    attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
+    mode?: 'fast' | 'high' | 'xtreme'
+  ) => Promise<void>
   stopExecution: () => Promise<void>
   approveCommand: (executionId: string) => Promise<void>
   rejectCommand: (executionId: string) => Promise<void>
@@ -133,7 +138,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const pendingLocalActionRef = useRef<PendingLocalActionState | null>(null)
   const runningCommandRef = useRef<RunningCommandState | null>(null)
   const cancelRequestedRef = useRef(false)
-  const activeModeRef = useRef<'fast' | 'high' | 'xtreme'>('high')
+  const activeModeRef = useRef<'fast' | 'high' | 'xtreme'>('xtreme')
 
   // ── Shared live-block utilities ──
   const appendOutput = useCallback((prev: string, chunk: string): string => {
@@ -731,7 +736,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const sendMessage = useCallback(async (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-    mode: 'fast' | 'high' | 'xtreme' = 'high'
+    mode: 'fast' | 'high' | 'xtreme' = 'xtreme'
   ) => {
     if (!token || !currentWorkspace || !activeThread || isStreaming) return
     const trimmedText = text.trim()
@@ -793,6 +798,83 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       replaceActiveExecutionId(null)
     }
   }, [token, currentWorkspace, activeThread, isStreaming, replaceActiveExecutionId, replaceActivePlan, runAgentLocalActionTurn])
+
+  const sendInitialMessage = useCallback(async (
+    text: string,
+    attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
+    mode: 'fast' | 'high' | 'xtreme' = 'xtreme'
+  ) => {
+    if (!token || !currentWorkspace || isStreaming) return
+    const trimmedText = text.trim()
+    cancelRequestedRef.current = false
+    activeModeRef.current = mode
+
+    if (!trimmedText && (!attachedFiles || attachedFiles.length === 0)) return
+
+    try {
+      const res = await window.desktopAPI.threads.create(token)
+      if (res.success && res.data) {
+        const newThread = res.data as Thread
+        bindThreadToCurrentWorkspace(newThread.id)
+        setAllThreads((prev) => [newThread, ...prev])
+        setActiveThread(newThread)
+        setMessages([])
+        setThreadPagination({
+          hasMoreOlder: false,
+          nextBeforeMessageId: null,
+          limit: INITIAL_THREAD_MESSAGE_LIMIT,
+        })
+        setIsThreadLoading(false)
+        setIsLoadingOlderMessages(false)
+        replaceActivePlan(null)
+
+        const userMsg: Message = { 
+          id: `temp-${Date.now()}`, 
+          threadId: newThread.id, 
+          role: 'user', 
+          content: trimmedText, 
+          metadata: attachedFiles && attachedFiles.length > 0 ? { attachedFiles } : undefined,
+          createdAt: new Date().toISOString() 
+        }
+
+        setMessages([userMsg])
+        setIsStreaming(true)
+        setIsThinking(false)
+        setError(null)
+
+        const requestId = crypto.randomUUID()
+        activeRequestIdRef.current = requestId
+        
+        if (typeof window.desktopAPI.chat.sendMessageStream !== 'function') {
+          console.error('[CRITICAL] window.desktopAPI.chat.sendMessageStream is not defined. The desktop app needs a full restart to load new preload scripts.')
+          setError('Application architecture changed. Please restart the desktop app to send messages.')
+          setIsStreaming(false)
+          setMessages([])
+          return
+        }
+
+        const streamResult = await window.desktopAPI.chat.sendMessageStream({
+          token,
+          requestId,
+          threadId: newThread.id,
+          message: trimmedText,
+          attachedFiles,
+          mode,
+          companyId: currentWorkspace.id,
+        })
+
+        if (!streamResult.success) {
+          setError(streamResult.error ?? 'Failed to send message')
+          setIsStreaming(false)
+          setMessages([]) // Rollback optimistic update
+          return
+        }
+      }
+    } catch (error) {
+      console.error('Failed to create thread and send message:', error)
+      setError('Failed to create thread and send message')
+    }
+  }, [token, currentWorkspace, isStreaming, bindThreadToCurrentWorkspace, replaceActivePlan])
 
   const stopExecution = useCallback(async () => {
     cancelRequestedRef.current = true
@@ -856,6 +938,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       createThread,
       deleteThread,
       sendMessage,
+      sendInitialMessage,
       stopExecution,
       approveCommand,
       rejectCommand,

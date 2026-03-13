@@ -30,6 +30,15 @@ class MemberAuthController extends BaseController {
     }
     return res.json(ApiResponse.success({ loggedOut: true }, 'Member session revoked'));
   };
+
+  usage = async (req: Request, res: Response) => {
+    const session = (req as Request & { memberSession?: { userId: string, companyId: string } }).memberSession;
+    if (!session?.userId || !session?.companyId) {
+      return res.status(401).json(ApiResponse.error('Session not found'));
+    }
+    const usageInfo = await memberAuthService.getUsageInfo(session.userId, session.companyId);
+    return res.json(ApiResponse.success(usageInfo, 'Token usage retrieved'));
+  };
 }
 
 export const memberAuthController = new MemberAuthController();

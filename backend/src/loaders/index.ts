@@ -1,10 +1,10 @@
 import { Application } from 'express';
 
 import { createApp } from '../app';
-import { initEmiacBoundaries } from './emiac-boundaries';
+import { initCompanyBoundaries } from './company-boundaries';
 
 const loaders = async (): Promise<Application> => {
-  initEmiacBoundaries();
+  initCompanyBoundaries();
   const app = await createApp();
   return app;
 };

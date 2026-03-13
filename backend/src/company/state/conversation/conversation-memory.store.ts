@@ -10,6 +10,8 @@ type ConversationTurn = {
 type ConversationBucket = {
   turns: ConversationTurn[];
   larkDocs: LarkDocReference[];
+  larkCalendarEvents: LarkCalendarEventReference[];
+  larkTasks: LarkTaskReference[];
   updatedAtMs: number;
 };
 
@@ -21,6 +23,25 @@ type ConversationMessage = {
 export type LarkDocReference = {
   title: string;
   documentId: string;
+  url?: string;
+  updatedAtMs: number;
+};
+
+export type LarkCalendarEventReference = {
+  eventId: string;
+  calendarId?: string;
+  summary?: string;
+  startTime?: string;
+  endTime?: string;
+  url?: string;
+  updatedAtMs: number;
+};
+
+export type LarkTaskReference = {
+  taskId: string;
+  taskGuid?: string;
+  summary?: string;
+  status?: string;
   url?: string;
   updatedAtMs: number;
 };
@@ -66,6 +87,8 @@ class ConversationMemoryStore {
     const created: ConversationBucket = {
       turns: [],
       larkDocs: [],
+      larkCalendarEvents: [],
+      larkTasks: [],
       updatedAtMs: nowMs,
     };
     this.buckets.set(conversationKey, created);
@@ -143,6 +166,98 @@ class ConversationMemoryStore {
       bucket.larkDocs.splice(0, bucket.larkDocs.length - 12);
     }
     bucket.updatedAtMs = nowMs;
+  }
+
+  addLarkCalendarEvent(conversationKey: string, input: {
+    eventId: string;
+    calendarId?: string;
+    summary?: string;
+    startTime?: string;
+    endTime?: string;
+    url?: string;
+  }): void {
+    const nowMs = Date.now();
+    const bucket = this.getOrCreateBucket(conversationKey, nowMs);
+    const existingIndex = bucket.larkCalendarEvents.findIndex((entry) => entry.eventId === input.eventId);
+    const next: LarkCalendarEventReference = {
+      eventId: input.eventId,
+      calendarId: input.calendarId?.trim() || undefined,
+      summary: input.summary?.trim() || undefined,
+      startTime: input.startTime?.trim() || undefined,
+      endTime: input.endTime?.trim() || undefined,
+      url: input.url?.trim() || undefined,
+      updatedAtMs: nowMs,
+    };
+
+    if (existingIndex >= 0) {
+      bucket.larkCalendarEvents.splice(existingIndex, 1);
+    }
+    bucket.larkCalendarEvents.push(next);
+    if (bucket.larkCalendarEvents.length > 24) {
+      bucket.larkCalendarEvents.splice(0, bucket.larkCalendarEvents.length - 24);
+    }
+    bucket.updatedAtMs = nowMs;
+  }
+
+  getLatestLarkCalendarEvent(conversationKey: string): LarkCalendarEventReference | null {
+    this.pruneExpired();
+    const bucket = this.buckets.get(conversationKey);
+    if (!bucket || bucket.larkCalendarEvents.length === 0) {
+      return null;
+    }
+    return bucket.larkCalendarEvents[bucket.larkCalendarEvents.length - 1] ?? null;
+  }
+
+  listLarkCalendarEvents(conversationKey: string): LarkCalendarEventReference[] {
+    this.pruneExpired();
+    const bucket = this.buckets.get(conversationKey);
+    return bucket ? [...bucket.larkCalendarEvents] : [];
+  }
+
+  addLarkTask(conversationKey: string, input: {
+    taskId: string;
+    taskGuid?: string;
+    summary?: string;
+    status?: string;
+    url?: string;
+  }): void {
+    const nowMs = Date.now();
+    const bucket = this.getOrCreateBucket(conversationKey, nowMs);
+    const existingIndex = bucket.larkTasks.findIndex((entry) =>
+      entry.taskGuid === input.taskGuid
+      || entry.taskId === input.taskId);
+    const next: LarkTaskReference = {
+      taskId: input.taskId,
+      taskGuid: input.taskGuid?.trim() || undefined,
+      summary: input.summary?.trim() || undefined,
+      status: input.status?.trim() || undefined,
+      url: input.url?.trim() || undefined,
+      updatedAtMs: nowMs,
+    };
+
+    if (existingIndex >= 0) {
+      bucket.larkTasks.splice(existingIndex, 1);
+    }
+    bucket.larkTasks.push(next);
+    if (bucket.larkTasks.length > 24) {
+      bucket.larkTasks.splice(0, bucket.larkTasks.length - 24);
+    }
+    bucket.updatedAtMs = nowMs;
+  }
+
+  getLatestLarkTask(conversationKey: string): LarkTaskReference | null {
+    this.pruneExpired();
+    const bucket = this.buckets.get(conversationKey);
+    if (!bucket || bucket.larkTasks.length === 0) {
+      return null;
+    }
+    return bucket.larkTasks[bucket.larkTasks.length - 1] ?? null;
+  }
+
+  listLarkTasks(conversationKey: string): LarkTaskReference[] {
+    this.pruneExpired();
+    const bucket = this.buckets.get(conversationKey);
+    return bucket ? [...bucket.larkTasks] : [];
   }
 
   getLatestLarkDoc(conversationKey: string): LarkDocReference | null {

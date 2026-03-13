@@ -698,6 +698,35 @@ class LarkDocsService {
     return { documentId, url, blocksAffected: Math.max(range.endIndex - range.startIndex, inserted) };
   }
 
+  async inspectDocument(input: {
+    companyId?: string;
+    larkTenantKey?: string;
+    appUserId?: string;
+    credentialMode?: 'tenant' | 'user_linked';
+    documentId: string;
+  }): Promise<{ documentId: string; url: string; exists: boolean; blockCount: number }> {
+    const companyId = await companyContextResolver.resolveCompanyId({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+    });
+    const workspaceConfig = await larkWorkspaceConfigRepository.findByCompanyId(companyId);
+    const snapshot = await this.getDocumentSnapshot({
+      companyId,
+      workspaceConfig,
+      appUserId: input.appUserId,
+      larkTenantKey: input.larkTenantKey,
+      authMode: input.credentialMode ?? 'tenant',
+      documentId: input.documentId.trim(),
+    });
+
+    return {
+      documentId: input.documentId.trim(),
+      url: `https://docs.larksuite.com/docx/${input.documentId.trim()}`,
+      exists: true,
+      blockCount: snapshot.childBlocks.length,
+    };
+  }
+
   private async createBlankDocument(input: {
     companyId: string;
     workspaceConfig: DecryptedLarkWorkspaceConfig | null;

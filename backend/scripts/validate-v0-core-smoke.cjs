@@ -128,8 +128,8 @@ const run = async () => {
         chatId: 'smoke-chat',
       });
 
-      const actionKey = `emiac:hitl:action:${action.actionId}`;
-      const taskKey = `emiac:task:${taskId}:hitl:action`;
+      const actionKey = `company:hitl:action:${action.actionId}`;
+      const taskKey = `company:task:${taskId}:hitl:action`;
       cleanupKeys.push(actionKey, taskKey);
 
       const waitPromise = hitlActionService.waitForResolution(action.actionId);

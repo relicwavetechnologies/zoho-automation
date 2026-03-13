@@ -17,7 +17,7 @@ src/
  ├── server.ts              # Entry point
  ├── config/                # env loading + config object
  ├── loaders/               # DB + Express bootstrapping
- ├── emiac/                 # V0 orchestration boundary scaffold (channels/agents/queue/etc.)
+ ├── company/               # V0 orchestration boundary scaffold (channels/agents/queue/etc.)
  ├── core/                  # Base classes, ApiResponse, HttpException
  ├── middlewares/           # Auth + error handling
  ├── modules/               # Feature modules (example, user, etc.)
@@ -80,4 +80,3 @@ For every feature `foo`, create `modules/foo/` containing:
 
 ## Extending
 Ask Cursor to “create a module: xyz” to scaffold a new feature automatically. For additional enhancements (CLI generators, advanced Prisma setups, RBAC, etc.) request the specific add-on and follow the established architecture rules.
-

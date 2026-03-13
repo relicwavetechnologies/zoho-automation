@@ -151,7 +151,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
             </div>
           )}
           {isUser ? (
-            <p className="text-sm whitespace-pre-wrap leading-relaxed text-[hsl(0,0%,85%)]">
+            <p className="text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed text-[hsl(0,0%,85%)]">
               {displayContent}
             </p>
           ) : blocks && blocks.length > 0 ? (

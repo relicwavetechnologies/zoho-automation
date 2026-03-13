@@ -126,7 +126,7 @@ const readMessageAgeMs = (timestamp: string): number | null => {
 };
 
 const toIdempotencyStorageKey = (channel: string, keyType: IngressIdempotencyKeyType, key: string): string =>
-  `emiac:idempotent:${channel}:${keyType}:${key}`;
+  `company:idempotent:${channel}:${keyType}:${key}`;
 
 export const buildPrimaryIngressIdempotencyKey = (input: {
   channel: string;

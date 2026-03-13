@@ -98,6 +98,31 @@ export class MemberAuthRepository extends BaseRepository {
       data: { revokedAt: new Date() },
     });
   }
+
+  async getTokenUsageForMonth(userId: string, companyId: string, monthStart: Date, monthEnd: Date): Promise<number> {
+    const result = await prisma.aiTokenUsage.aggregate({
+      where: {
+        userId,
+        companyId,
+        createdAt: {
+          gte: monthStart,
+          lt: monthEnd,
+        },
+      },
+      _sum: {
+        actualInputTokens: true,
+        actualOutputTokens: true,
+      },
+    });
+    
+    return (result._sum.actualInputTokens || 0) + (result._sum.actualOutputTokens || 0);
+  }
+
+  async getMemberTokenPolicy(userId: string, companyId: string) {
+    return prisma.memberTokenPolicy.findUnique({
+      where: { userId },
+    });
+  }
 }
 
 export const memberAuthRepository = new MemberAuthRepository();
