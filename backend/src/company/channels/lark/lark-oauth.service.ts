@@ -131,6 +131,62 @@ export class LarkOAuthService {
     };
   }
 
+  async refreshAccessToken(refreshToken: string): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+    tokenType?: string;
+    expiresIn?: number;
+    refreshExpiresIn?: number;
+  }> {
+    if (!this.appId || !this.appSecret) {
+      throw new Error('Lark OAuth is not configured in server env');
+    }
+
+    const appAccessToken = await this.fetchAppAccessToken();
+    const response = await fetch(`${this.apiBaseUrl}/open-apis/authen/v1/access_token`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${appAccessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken.trim(),
+      }),
+    });
+
+    const payload = (await response.json().catch(() => ({}))) as LarkOAuthTokenResponse;
+    const accessToken = payload.access_token?.trim() || payload.data?.access_token?.trim();
+    const nextRefreshToken = payload.refresh_token?.trim() || payload.data?.refresh_token?.trim() || undefined;
+    const tokenType = payload.token_type?.trim() || payload.data?.token_type?.trim() || undefined;
+    const expiresIn = typeof payload.expires_in === 'number'
+      ? payload.expires_in
+      : typeof payload.data?.expires_in === 'number'
+        ? payload.data.expires_in
+        : undefined;
+    const refreshExpiresIn = typeof payload.refresh_expires_in === 'number'
+      ? payload.refresh_expires_in
+      : typeof payload.data?.refresh_expires_in === 'number'
+        ? payload.data.refresh_expires_in
+        : undefined;
+
+    if (!response.ok || payload.code !== 0 || !accessToken) {
+      logger.warn('lark.oauth.refresh.failed', {
+        status: response.status,
+        reason: readErrorMessage(payload, 'Lark access token refresh failed'),
+      });
+      throw new Error(readErrorMessage(payload, 'Lark access token refresh failed'));
+    }
+
+    return {
+      accessToken,
+      refreshToken: nextRefreshToken,
+      tokenType,
+      expiresIn,
+      refreshExpiresIn,
+    };
+  }
+
   private async fetchAppAccessToken(): Promise<string> {
     const response = await fetch(`${this.apiBaseUrl}/open-apis/auth/v3/app_access_token/internal`, {
       method: 'POST',

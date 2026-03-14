@@ -17,6 +17,8 @@ const readArg = (name) => {
   return idx === -1 ? undefined : args[idx + 1];
 };
 
+const hasFlag = (name) => args.includes(name);
+
 const fail = async (message, details) => {
   console.error(`[lark-tasks-validate] ${message}`);
   if (details !== undefined) {
@@ -212,6 +214,98 @@ const normalizeTask = (value) => {
   };
 };
 
+const buildAssigneeProbeCandidates = (taskGuid, assigneeOpenId) => {
+  if (!taskGuid || !assigneeOpenId) return [];
+
+  return [
+    {
+      name: 'patch-task-members-root',
+      method: 'PATCH',
+      reqPath: `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}`,
+      body: {
+        task: {
+          members: [{ id: assigneeOpenId, role: 'assignee', type: 'user' }],
+        },
+        update_fields: ['members'],
+      },
+    },
+    {
+      name: 'post-task-members-subresource',
+      method: 'POST',
+      reqPath: `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}/members`,
+      body: {
+        members: [{ id: assigneeOpenId, role: 'assignee', type: 'user' }],
+      },
+    },
+    {
+      name: 'patch-task-members-subresource',
+      method: 'PATCH',
+      reqPath: `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}/members`,
+      body: {
+        members: [{ id: assigneeOpenId, role: 'assignee', type: 'user' }],
+      },
+    },
+    {
+      name: 'put-task-members-subresource',
+      method: 'PUT',
+      reqPath: `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}/members`,
+      body: {
+        members: [{ id: assigneeOpenId, role: 'assignee', type: 'user' }],
+      },
+    },
+    {
+      name: 'post-task-member-singular',
+      method: 'POST',
+      reqPath: `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}/member`,
+      body: {
+        member: { id: assigneeOpenId, role: 'assignee', type: 'user' },
+      },
+    },
+    {
+      name: 'patch-task-member-singular',
+      method: 'PATCH',
+      reqPath: `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}/member`,
+      body: {
+        member: { id: assigneeOpenId, role: 'assignee', type: 'user' },
+      },
+    },
+    {
+      name: 'post-task-members-batch-create',
+      method: 'POST',
+      reqPath: `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}/members/batch_create`,
+      body: {
+        members: [{ id: assigneeOpenId, role: 'assignee', type: 'user' }],
+      },
+    },
+    {
+      name: 'post-task-member-create',
+      method: 'POST',
+      reqPath: `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}/member/create`,
+      body: {
+        id: assigneeOpenId,
+        role: 'assignee',
+        type: 'user',
+      },
+    },
+    {
+      name: 'post-task-assignees-subresource',
+      method: 'POST',
+      reqPath: `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}/assignees`,
+      body: {
+        assignees: [{ id: assigneeOpenId, type: 'user' }],
+      },
+    },
+    {
+      name: 'patch-task-assignees-subresource',
+      method: 'PATCH',
+      reqPath: `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}/assignees`,
+      body: {
+        assignees: [{ id: assigneeOpenId, type: 'user' }],
+      },
+    },
+  ];
+};
+
 const pickArray = (payload, keys) => {
   for (const key of keys) {
     const arr = asArray(payload?.data?.[key]);
@@ -313,6 +407,46 @@ const main = async () => {
     info('Delete task response', { statusCode: deleteTask.response.status, payload: deleteTask.payload });
   }
 
+  let assigneeProbeResults = [];
+  const probeTaskId = readArg('--task-id');
+  const probeTaskGuidArg = readArg('--task-guid');
+  const probeAssigneeOpenId = readArg('--assignee-open-id');
+  if (probeAssigneeOpenId && (probeTaskId || probeTaskGuidArg || taskItems.length > 0 || createdTask?.taskGuid || createdTask?.taskId)) {
+    let probeTaskGuid = probeTaskGuidArg;
+    if (!probeTaskGuid && probeTaskId) {
+      const knownTask = taskItems.find((item) => item.taskId === probeTaskId || item.taskGuid === probeTaskId);
+      probeTaskGuid = knownTask?.taskGuid || knownTask?.taskId;
+    }
+    if (!probeTaskGuid && createdTask) {
+      probeTaskGuid = createdTask.taskGuid || createdTask.taskId;
+    }
+    if (probeTaskGuid) {
+      const candidates = buildAssigneeProbeCandidates(probeTaskGuid, probeAssigneeOpenId);
+      for (const candidate of candidates) {
+        const response = await requestJson({
+          apiBaseUrl: creds.apiBaseUrl,
+          token: tokenInfo.token,
+          method: candidate.method,
+          reqPath: candidate.reqPath,
+          body: candidate.body,
+        });
+        const result = {
+          name: candidate.name,
+          method: candidate.method,
+          reqPath: candidate.reqPath,
+          statusCode: response.response.status,
+          payloadCode: response.payload?.code ?? null,
+          message: response.payload?.msg ?? response.payload?.message ?? null,
+        };
+        assigneeProbeResults.push(result);
+        info(`Assignee probe ${candidate.name}`, result);
+        if (hasFlag('--stop-on-first-success') && response.response.ok && response.payload?.code === 0) {
+          break;
+        }
+      }
+    }
+  }
+
   console.log('');
   console.log('LARK_TASKS_VALIDATE_RESULT=' + JSON.stringify({
     source: creds.source,
@@ -327,6 +461,7 @@ const main = async () => {
     updateTaskPayloadCode: updateTask?.payload?.code ?? null,
     deleteTaskStatusCode: deleteTask?.response.status ?? null,
     deleteTaskPayloadCode: deleteTask?.payload?.code ?? null,
+    assigneeProbeResults,
   }));
   console.log('');
 

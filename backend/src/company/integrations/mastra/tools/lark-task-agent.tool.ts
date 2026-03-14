@@ -6,6 +6,12 @@ import { larkTaskSpecialistAgent } from '../agents/lark-task-specialist.agent';
 import { buildMastraAgentRunOptions } from '../mastra-model-control';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
 import { emitActivityEvent } from './activity-bus';
+import { larkTaskWriteTool } from './lark-task-write.tool';
+import {
+  parseDirectCreateTaskIntent,
+  parseDirectReassignTaskIntent,
+  parseDirectTaskStatusIntent,
+} from './lark-task-agent-intent';
 
 const TOOL_ID = 'lark-task-agent';
 
@@ -32,6 +38,89 @@ export const larkTaskAgentTool = createTool({
         label: 'Working on Lark Tasks',
         icon: 'check-square',
       });
+    }
+
+    const directCreateIntent = parseDirectCreateTaskIntent(inputData.query);
+    if (directCreateIntent) {
+      const executeWriteTool = larkTaskWriteTool.execute as ((input: Record<string, unknown>, context: unknown) => Promise<{ answer?: string }>) | undefined;
+      const directResult = executeWriteTool
+        ? await executeWriteTool({
+        action: 'create',
+        summary: directCreateIntent.summary,
+        ...(directCreateIntent.assigneeNames.length > 0 ? { assigneeNames: directCreateIntent.assigneeNames } : {}),
+        ...(directCreateIntent.assignToMe ? { assignToMe: true } : {}),
+      }, context as any)
+        : { answer: 'Lark task write failed: direct create path is unavailable.' };
+      const directAnswer = typeof directResult?.answer === 'string'
+        ? directResult.answer
+        : 'Lark task write failed: direct create path returned no answer.';
+
+      if (requestId) {
+        emitActivityEvent(requestId, 'activity_done', {
+          id: callId,
+          name: TOOL_ID,
+          label: directAnswer.includes('failed') ? 'Lark task flow failed' : 'Updated Lark Tasks',
+          icon: directAnswer.includes('failed') ? 'x-circle' : 'check-square',
+          resultSummary: directAnswer,
+        });
+      }
+
+      return { answer: directAnswer };
+    }
+
+    const directReassignIntent = parseDirectReassignTaskIntent(inputData.query);
+    if (directReassignIntent) {
+      const executeWriteTool = larkTaskWriteTool.execute as ((input: Record<string, unknown>, context: unknown) => Promise<{ answer?: string }>) | undefined;
+      const directResult = executeWriteTool
+        ? await executeWriteTool({
+          action: 'update',
+          taskId: directReassignIntent.taskRef,
+          ...(directReassignIntent.assigneeNames.length > 0 ? { assigneeNames: directReassignIntent.assigneeNames } : {}),
+          ...(directReassignIntent.assignToMe ? { assignToMe: true } : {}),
+        }, context as any)
+        : { answer: 'Lark task write failed: direct reassign path is unavailable.' };
+      const directAnswer = typeof directResult?.answer === 'string'
+        ? directResult.answer
+        : 'Lark task write failed: direct reassign path returned no answer.';
+
+      if (requestId) {
+        emitActivityEvent(requestId, 'activity_done', {
+          id: callId,
+          name: TOOL_ID,
+          label: directAnswer.includes('failed') ? 'Lark task flow failed' : 'Updated Lark Tasks',
+          icon: directAnswer.includes('failed') ? 'x-circle' : 'check-square',
+          resultSummary: directAnswer,
+        });
+      }
+
+      return { answer: directAnswer };
+    }
+
+    const directStatusIntent = parseDirectTaskStatusIntent(inputData.query);
+    if (directStatusIntent) {
+      const executeWriteTool = larkTaskWriteTool.execute as ((input: Record<string, unknown>, context: unknown) => Promise<{ answer?: string }>) | undefined;
+      const directResult = executeWriteTool
+        ? await executeWriteTool({
+          action: 'update',
+          ...(directStatusIntent.taskRef ? { taskId: directStatusIntent.taskRef } : {}),
+          completed: directStatusIntent.completed,
+        }, context as any)
+        : { answer: 'Lark task write failed: direct status update path is unavailable.' };
+      const directAnswer = typeof directResult?.answer === 'string'
+        ? directResult.answer
+        : 'Lark task write failed: direct status update path returned no answer.';
+
+      if (requestId) {
+        emitActivityEvent(requestId, 'activity_done', {
+          id: callId,
+          name: TOOL_ID,
+          label: directAnswer.includes('failed') ? 'Lark task flow failed' : 'Updated Lark Tasks',
+          icon: directAnswer.includes('failed') ? 'x-circle' : 'check-square',
+          resultSummary: directAnswer,
+        });
+      }
+
+      return { answer: directAnswer };
     }
 
     const runOptions = await buildMastraAgentRunOptions('mastra.lark-doc', { requestContext });

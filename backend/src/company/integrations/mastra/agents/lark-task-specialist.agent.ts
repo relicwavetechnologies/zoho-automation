@@ -19,11 +19,13 @@ export const larkTaskSpecialistAgent = new Agent({
     ],
     successCriteria: [
       'Choose the correct task read or write tool.',
+      'Resolve assignment targets against synced Lark teammates before creating an assigned task.',
       'Keep task updates grounded in the returned API result.',
       'Return a compact operational status.',
     ],
     tools: [
       'Use `lark-task-read` to list tasks, fetch a specific task, or return the current task from this conversation.',
+      'Use `lark-task-read` with `listAssignableUsers: true` when the user wants to know who a task can be assigned to or when you need to match a teammate name before creation.',
       'Use `lark-task-write` to create, update, or delete tasks.',
     ],
     workflow: [
@@ -31,6 +33,8 @@ export const larkTaskSpecialistAgent = new Agent({
       'Use write only when the user explicitly wants to create, update, complete, reopen, or delete a task.',
       'For follow-up requests like "update it", "mark it done", or "delete that task", prefer the latest task from this conversation before asking for an ID.',
       'If the user names a task but does not give an ID, call `lark-task-read` first to find it, then call `lark-task-write` with the matched task.',
+      'If the user wants a task assigned to someone, first call `lark-task-read` with `listAssignableUsers: true`, then call `lark-task-write` using `assigneeNames` or `assignToMe: true`.',
+      'Use `assignToMe: true` when the user says "assign it to me" or equivalent.',
       'Map natural language into the friendly task fields when possible.',
       'If the user asks for the current task, call `lark-task-read` with `currentTask: true`.',
       'If a required task detail is missing after using the current-task and read paths, ask for exactly that missing detail and stop.',

@@ -132,6 +132,64 @@ type PersistedConversationRefs = {
   latestLarkTask?: Record<string, unknown>;
 };
 
+const buildPersistedConversationRefs = (conversationKey: string): PersistedConversationRefs | null => {
+  const latestDoc = conversationMemoryStore.getLatestLarkDoc(conversationKey);
+  const latestEvent = conversationMemoryStore.getLatestLarkCalendarEvent(conversationKey);
+  const latestTask = conversationMemoryStore.getLatestLarkTask(conversationKey);
+
+  const refs: PersistedConversationRefs = {
+    ...(latestDoc ? {
+      latestLarkDoc: {
+        title: latestDoc.title,
+        documentId: latestDoc.documentId,
+        ...(latestDoc.url ? { url: latestDoc.url } : {}),
+      },
+    } : {}),
+    ...(latestEvent ? {
+      latestLarkCalendarEvent: {
+        eventId: latestEvent.eventId,
+        ...(latestEvent.calendarId ? { calendarId: latestEvent.calendarId } : {}),
+        ...(latestEvent.summary ? { summary: latestEvent.summary } : {}),
+        ...(latestEvent.startTime ? { startTime: latestEvent.startTime } : {}),
+        ...(latestEvent.endTime ? { endTime: latestEvent.endTime } : {}),
+        ...(latestEvent.url ? { url: latestEvent.url } : {}),
+      },
+    } : {}),
+    ...(latestTask ? {
+      latestLarkTask: {
+        taskId: latestTask.taskId,
+        ...(latestTask.taskGuid ? { taskGuid: latestTask.taskGuid } : {}),
+        ...(latestTask.summary ? { summary: latestTask.summary } : {}),
+        ...(latestTask.status ? { status: latestTask.status } : {}),
+        ...(latestTask.url ? { url: latestTask.url } : {}),
+      },
+    } : {}),
+  };
+
+  return Object.keys(refs).length > 0 ? refs : null;
+};
+
+const buildConversationRefsContext = (conversationKey: string): string => {
+  const latestDoc = conversationMemoryStore.getLatestLarkDoc(conversationKey);
+  const latestEvent = conversationMemoryStore.getLatestLarkCalendarEvent(conversationKey);
+  const latestTask = conversationMemoryStore.getLatestLarkTask(conversationKey);
+  const lines: string[] = [];
+
+  if (latestTask) {
+    lines.push(`Latest Lark task in this conversation: ${latestTask.summary ?? latestTask.taskId} [taskId=${latestTask.taskId}${latestTask.taskGuid ? `, taskGuid=${latestTask.taskGuid}` : ''}${latestTask.status ? `, status=${latestTask.status}` : ''}]`);
+  }
+  if (latestDoc) {
+    lines.push(`Latest Lark doc in this conversation: ${latestDoc.title} [documentId=${latestDoc.documentId}]`);
+  }
+  if (latestEvent) {
+    lines.push(`Latest Lark calendar event in this conversation: ${latestEvent.summary ?? latestEvent.eventId} [eventId=${latestEvent.eventId}]`);
+  }
+
+  return lines.length > 0
+    ? ['--- Conversation refs ---', ...lines, '--- End refs ---'].join('\n')
+    : '';
+};
+
 const hydrateConversationRefsFromMetadata = (
   conversationKey: string,
   metadata: Record<string, unknown>,
@@ -828,6 +886,9 @@ class DesktopChatController extends BaseController {
               conversationMemoryStore.addUserMessage(conversationKey, msg.id, msg.content);
             } else if (msg.role === 'assistant') {
               conversationMemoryStore.addAssistantMessage(conversationKey, msg.id, msg.content);
+              if (msg.metadata && typeof msg.metadata === 'object' && !Array.isArray(msg.metadata)) {
+                hydrateConversationRefsFromMetadata(conversationKey, msg.metadata as Record<string, unknown>);
+              }
             }
           }
           history = conversationMemoryStore.getContextMessages(conversationKey, 50);
@@ -894,13 +955,14 @@ class DesktopChatController extends BaseController {
 
 	    // Build agent objective: plain string normally, or with inline image/doc context for attachments
 	    const hasAttachments = attachedFiles && attachedFiles.length > 0;
-	    const baseObjective = [
-	      buildTemporalContext(),
-	      buildDesktopWorkflowEnforcementPrompt(workflowPolicy),
-	      buildExecutionPlanContext(activePlan),
-	      memoryContext,
-	      historyContext,
-	      message,
+    const baseObjective = [
+      buildTemporalContext(),
+      buildDesktopWorkflowEnforcementPrompt(workflowPolicy),
+      buildExecutionPlanContext(activePlan),
+      memoryContext,
+      historyContext,
+      buildConversationRefsContext(conversationKey),
+      message,
     ].filter(Boolean).join('\n');
 
     // For attachments: build multipart user input for the agent when needed.
@@ -1410,6 +1472,8 @@ class DesktopChatController extends BaseController {
           contentBlocks,
           executionId,
         };
+        const conversationRefs = buildPersistedConversationRefs(conversationKey);
+        if (conversationRefs) metadata.conversationRefs = conversationRefs;
         if (citations.length > 0) metadata.citations = citations;
         if (canShareKnowledge) metadata.shareAction = buildShareAction(conversationKey);
         if (activePlan) metadata.plan = activePlan;
@@ -1637,6 +1701,9 @@ class DesktopChatController extends BaseController {
               conversationMemoryStore.addUserMessage(conversationKey, msg.id, msg.content);
             } else if (msg.role === 'assistant') {
               conversationMemoryStore.addAssistantMessage(conversationKey, msg.id, msg.content);
+              if (msg.metadata && typeof msg.metadata === 'object' && !Array.isArray(msg.metadata)) {
+                hydrateConversationRefsFromMetadata(conversationKey, msg.metadata as Record<string, unknown>);
+              }
             }
           }
           history = conversationMemoryStore.getContextMessages(conversationKey, 14);
@@ -1721,6 +1788,7 @@ class DesktopChatController extends BaseController {
       desktopPrompt,
       buildExecutionPlanContext(activePlan),
       historyContext,
+      buildConversationRefsContext(conversationKey),
       message || 'Continue from the latest local workspace action result and finish the user request.',
     ]
       .filter(Boolean)
@@ -1921,6 +1989,7 @@ class DesktopChatController extends BaseController {
         assistantText,
         {
           executionId,
+          ...(buildPersistedConversationRefs(conversationKey) ? { conversationRefs: buildPersistedConversationRefs(conversationKey) } : {}),
           ...(activePlan ? { plan: activePlan } : {}),
           ...(canShareKnowledge ? { shareAction: buildShareAction(conversationKey) } : {}),
         },

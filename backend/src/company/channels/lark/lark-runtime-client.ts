@@ -1,6 +1,7 @@
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
 import { companyContextResolver } from '../../agents/support/company-context.resolver';
+import { larkOAuthService } from './lark-oauth.service';
 import { larkUserAuthLinkRepository } from './lark-user-auth-link.repository';
 import { LarkTenantTokenService } from './lark-tenant-token.service';
 import { larkWorkspaceConfigRepository, type DecryptedLarkWorkspaceConfig } from './lark-workspace-config.repository';
@@ -220,15 +221,43 @@ export class LarkRuntimeClient {
       );
     }
 
-    if (link.accessTokenExpiresAt && link.accessTokenExpiresAt.getTime() <= Date.now()) {
+    if (!link.accessTokenExpiresAt || link.accessTokenExpiresAt.getTime() > Date.now()) {
+      await larkUserAuthLinkRepository.touchLastUsed(link.id);
+      return link.accessToken;
+    }
+
+    if (!link.refreshToken || (link.refreshTokenExpiresAt && link.refreshTokenExpiresAt.getTime() <= Date.now())) {
       throw new LarkRuntimeClientError(
         'Linked Lark desktop session has expired. Sign in with Lark again.',
         'lark_runtime_unavailable',
       );
     }
 
-    await larkUserAuthLinkRepository.touchLastUsed(link.id);
-    return link.accessToken;
+    try {
+      const refreshed = await larkOAuthService.refreshAccessToken(link.refreshToken);
+      const updated = await larkUserAuthLinkRepository.upsert({
+        userId: link.userId,
+        companyId: link.companyId,
+        larkTenantKey: link.larkTenantKey,
+        larkOpenId: link.larkOpenId,
+        larkUserId: link.larkUserId,
+        larkEmail: link.larkEmail,
+        larkName: link.larkName,
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken ?? link.refreshToken,
+        tokenType: refreshed.tokenType ?? link.tokenType,
+        accessTokenExpiresAt: refreshed.expiresIn ? new Date(Date.now() + refreshed.expiresIn * 1000) : undefined,
+        refreshTokenExpiresAt: refreshed.refreshExpiresIn ? new Date(Date.now() + refreshed.refreshExpiresIn * 1000) : link.refreshTokenExpiresAt,
+        tokenMetadata: link.tokenMetadata,
+      });
+      await larkUserAuthLinkRepository.touchLastUsed(updated.id);
+      return updated.accessToken;
+    } catch (error) {
+      throw new LarkRuntimeClientError(
+        `Linked Lark desktop session could not be refreshed: ${error instanceof Error ? error.message : 'unknown_error'}`,
+        'lark_runtime_unavailable',
+      );
+    }
   }
 }
 

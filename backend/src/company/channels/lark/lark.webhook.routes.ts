@@ -617,15 +617,134 @@ export const createLarkWebhookEventHandler = (
         }
       }
 
-      // ── File/Image Ingestion (runs AFTER linkedUserId resolution) ────────────────
-      // Using linkedUserId as the uploaderUserId (when available) ensures Lark-ingested
-      // files are stored under the same internal User.id as Desktop-uploaded files.
-      // This makes them visible in the Desktop File Library drawer automatically.
+      const tracedMessageBase: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>> = {
+        ...normalized,
+        trace: {
+          ...(normalized.trace ?? {}),
+          requestId,
+          eventId: parsed.eventId,
+          textHash,
+          receivedAt: new Date().toISOString(),
+          larkTenantKey,
+          channelTenantId: larkTenantKey,
+          companyId: scopedCompanyId ?? undefined,
+          channelIdentityId,
+          linkedUserId,
+          userRole,
+          requesterEmail,
+        },
+      };
+
+      const primaryIdempotency = buildPrimaryIngressIdempotencyKey({
+        channel: tracedMessageBase.channel,
+        eventId: parsed.eventId,
+        messageId: tracedMessageBase.messageId,
+      });
+      let claimedPrimary = false;
+      try {
+        claimedPrimary = await dependencies.claimIngressKey(
+          tracedMessageBase.channel,
+          primaryIdempotency.keyType,
+          primaryIdempotency.key,
+        );
+      } catch (error) {
+        dependencies.log.error('lark.ingress.idempotency_unavailable', {
+          ...buildIngressTraceMeta({
+            requestId,
+            message: tracedMessageBase,
+            eventId: parsed.eventId,
+            idempotencyKey: primaryIdempotency.idempotencyKey,
+            keyType: primaryIdempotency.keyType,
+            textHash,
+            larkTenantKey,
+            companyId: scopedCompanyId ?? undefined,
+          }),
+          error,
+        });
+        return res.status(503).json({
+          success: false,
+          message: 'Ingress idempotency store unavailable, please retry.',
+        });
+      }
+
+      if (!claimedPrimary) {
+        orangeDebug('lark.ingress.duplicate', {
+          requestId,
+          eventId: parsed.eventId,
+          messageId: tracedMessageBase.messageId,
+          chatId: tracedMessageBase.chatId,
+          keyType: primaryIdempotency.keyType,
+        });
+        dependencies.log.info('lark.ingress.duplicate_ignored', {
+          ...buildIngressTraceMeta({
+            requestId,
+            message: tracedMessageBase,
+            eventId: parsed.eventId,
+            idempotencyKey: primaryIdempotency.idempotencyKey,
+            keyType: primaryIdempotency.keyType,
+            textHash,
+            larkTenantKey,
+            companyId: scopedCompanyId ?? undefined,
+          }),
+        });
+        return res.status(202).json(buildDuplicateIgnoredResponse({
+          message: tracedMessageBase,
+          keyType: primaryIdempotency.keyType,
+          idempotencyKey: primaryIdempotency.idempotencyKey,
+        }));
+      }
+
+      if (parsed.kind === 'event_callback_message' && primaryIdempotency.keyType === 'event' && tracedMessageBase.messageId) {
+        const messageAliasIdempotencyKey = toIdempotencyStorageKey(
+          tracedMessageBase.channel,
+          'message',
+          tracedMessageBase.messageId,
+        );
+        try {
+          const claimedMessageAlias = await dependencies.claimIngressKey(
+            tracedMessageBase.channel,
+            'message',
+            tracedMessageBase.messageId,
+          );
+          if (!claimedMessageAlias) {
+            dependencies.log.info('lark.ingress.duplicate_ignored', {
+              ...buildIngressTraceMeta({
+                requestId,
+                message: tracedMessageBase,
+                eventId: parsed.eventId,
+                idempotencyKey: messageAliasIdempotencyKey,
+                keyType: 'message',
+                textHash,
+                larkTenantKey,
+                companyId: scopedCompanyId ?? undefined,
+              }),
+            });
+            return res.status(202).json(buildDuplicateIgnoredResponse({
+              message: tracedMessageBase,
+              keyType: 'message',
+              idempotencyKey: messageAliasIdempotencyKey,
+            }));
+          }
+        } catch (error) {
+          dependencies.log.warn('lark.webhook.idempotency.alias_claim_failed', {
+            ...buildIngressTraceMeta({
+              requestId,
+              message: tracedMessageBase,
+              eventId: parsed.eventId,
+              textHash,
+              larkTenantKey,
+              companyId: scopedCompanyId ?? undefined,
+            }),
+            error,
+          });
+        }
+      }
+
+      // ── File/Image Ingestion (runs AFTER linkedUserId resolution and idempotency) ─────────
+      // This prevents duplicate webhook deliveries from creating duplicate FileAsset rows.
       let attachedFiles = normalized.attachedFiles ?? [];
 
       if (attachmentKeys.length > 0 && scopedCompanyId && normalized.userId) {
-        // Prefer the internal linked User.id for cross-channel file ownership.
-        // Falls back to the Lark open_id when the user hasn't linked their account yet.
         const effectiveUploaderId = linkedUserId ?? channelIdentityId ?? normalized.userId;
         const allowedRoles = Array.from(new Set([
           userRole || 'MEMBER',
@@ -674,23 +793,8 @@ export const createLarkWebhookEventHandler = (
       }
 
       const tracedMessage: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>> = {
-        ...normalized,
-        // Attach any ingested files so the AI orchestration layer can see them
+        ...tracedMessageBase,
         attachedFiles: attachedFiles.length > 0 ? attachedFiles : undefined,
-        trace: {
-          ...(normalized.trace ?? {}),
-          requestId,
-          eventId: parsed.eventId,
-          textHash,
-          receivedAt: new Date().toISOString(),
-          larkTenantKey,
-          channelTenantId: larkTenantKey,
-          companyId: scopedCompanyId ?? undefined,
-          channelIdentityId,
-          linkedUserId,
-          userRole,
-          requesterEmail,
-        },
       };
 
       const hitlDecision = parseHitlDecision(tracedMessage.text);
@@ -724,111 +828,6 @@ export const createLarkWebhookEventHandler = (
             resolved,
           },
         });
-      }
-
-      const primaryIdempotency = buildPrimaryIngressIdempotencyKey({
-        channel: tracedMessage.channel,
-        eventId: parsed.eventId,
-        messageId: tracedMessage.messageId,
-      });
-      let claimedPrimary = false;
-      try {
-        claimedPrimary = await dependencies.claimIngressKey(
-          tracedMessage.channel,
-          primaryIdempotency.keyType,
-          primaryIdempotency.key,
-        );
-      } catch (error) {
-        dependencies.log.error('lark.ingress.idempotency_unavailable', {
-          ...buildIngressTraceMeta({
-            requestId,
-            message: tracedMessage,
-            eventId: parsed.eventId,
-            idempotencyKey: primaryIdempotency.idempotencyKey,
-            keyType: primaryIdempotency.keyType,
-            textHash,
-            larkTenantKey,
-            companyId: scopedCompanyId ?? undefined,
-          }),
-          error,
-        });
-        return res.status(503).json({
-          success: false,
-          message: 'Ingress idempotency store unavailable, please retry.',
-        });
-      }
-
-      if (!claimedPrimary) {
-        orangeDebug('lark.ingress.duplicate', {
-          requestId,
-          eventId: parsed.eventId,
-          messageId: tracedMessage.messageId,
-          chatId: tracedMessage.chatId,
-          keyType: primaryIdempotency.keyType,
-        });
-        dependencies.log.info('lark.ingress.duplicate_ignored', {
-          ...buildIngressTraceMeta({
-            requestId,
-            message: tracedMessage,
-            eventId: parsed.eventId,
-            idempotencyKey: primaryIdempotency.idempotencyKey,
-            keyType: primaryIdempotency.keyType,
-            textHash,
-            larkTenantKey,
-            companyId: scopedCompanyId ?? undefined,
-          }),
-        });
-        return res.status(202).json(buildDuplicateIgnoredResponse({
-          message: tracedMessage,
-          keyType: primaryIdempotency.keyType,
-          idempotencyKey: primaryIdempotency.idempotencyKey,
-        }));
-      }
-
-      if (parsed.kind === 'event_callback_message' && primaryIdempotency.keyType === 'event' && tracedMessage.messageId) {
-        const messageAliasIdempotencyKey = toIdempotencyStorageKey(
-          tracedMessage.channel,
-          'message',
-          tracedMessage.messageId,
-        );
-        try {
-          const claimedMessageAlias = await dependencies.claimIngressKey(
-            tracedMessage.channel,
-            'message',
-            tracedMessage.messageId,
-          );
-          if (!claimedMessageAlias) {
-            dependencies.log.info('lark.ingress.duplicate_ignored', {
-              ...buildIngressTraceMeta({
-                requestId,
-                message: tracedMessage,
-                eventId: parsed.eventId,
-                idempotencyKey: messageAliasIdempotencyKey,
-                keyType: 'message',
-                textHash,
-                larkTenantKey,
-                companyId: scopedCompanyId ?? undefined,
-              }),
-            });
-            return res.status(202).json(buildDuplicateIgnoredResponse({
-              message: tracedMessage,
-              keyType: 'message',
-              idempotencyKey: messageAliasIdempotencyKey,
-            }));
-          }
-        } catch (error) {
-          dependencies.log.warn('lark.webhook.idempotency.alias_claim_failed', {
-            ...buildIngressTraceMeta({
-              requestId,
-              message: tracedMessage,
-              eventId: parsed.eventId,
-              textHash,
-              larkTenantKey,
-              companyId: scopedCompanyId ?? undefined,
-            }),
-            error,
-          });
-        }
       }
 
       if (parsed.kind === 'event_callback_card_action') {

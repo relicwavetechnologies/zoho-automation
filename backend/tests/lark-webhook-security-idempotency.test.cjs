@@ -173,6 +173,59 @@ test('webhook handler returns 202 duplicate ignored when primary idempotency key
   assert.equal(enqueueCount, 0);
 });
 
+test('webhook handler does not ingest duplicate attachment deliveries when primary idempotency key is already claimed', async () => {
+  let enqueueCount = 0;
+  let downloadCount = 0;
+  const handler = createLarkWebhookEventHandler({
+    verifyRequest: () => ({ ok: true }),
+    parsePayload: () => ({
+      kind: 'event_callback_message',
+      envelope: {
+        event: {
+          message: {
+            message_id: 'om_img_dup_1',
+            msg_type: 'image',
+            content: '{"image_key":"img_dup_1"}',
+          },
+        },
+      },
+      eventType: 'im.message.receive_v1',
+      eventId: 'evt_img_dup_1',
+    }),
+    adapter: {
+      normalizeIncomingEvent: () => ({
+        ...normalizedMessage,
+        messageId: 'om_img_dup_1',
+        text: '[User attached an image]',
+      }),
+      sendMessage: async () => ({ status: 'sent' }),
+      downloadFile: async () => {
+        downloadCount += 1;
+        return null;
+      },
+    },
+    claimIngressKey: async () => false,
+    enqueueTask: async () => {
+      enqueueCount += 1;
+      return { taskId: 'task-image-dup' };
+    },
+    resolveHitlAction: async () => true,
+    resolveCompanyIdByTenantKey: async () => 'company-1',
+    upsertChannelIdentity: async () => ({
+      id: 'identity-1',
+      isNew: false,
+      aiRole: 'MEMBER',
+    }),
+  });
+
+  const response = await runHandler(handler, baseRequest());
+
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.body.message, 'Duplicate ingress ignored (idempotency hit)');
+  assert.equal(downloadCount, 0);
+  assert.equal(enqueueCount, 0);
+});
+
 test('webhook handler returns 202 duplicate ignored when message alias was already claimed for a new event id', async () => {
   let enqueueCount = 0;
   const claims = [];

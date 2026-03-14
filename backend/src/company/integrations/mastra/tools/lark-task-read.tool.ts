@@ -9,6 +9,7 @@ import { conversationMemoryStore } from '../../../state/conversation';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
 import { emitActivityEvent } from './activity-bus';
 import { buildConversationKey } from './conversation-key';
+import { listLarkTaskAssignablePeople } from './lark-task-assignees';
 
 const TOOL_ID = 'lark-task-read';
 
@@ -25,6 +26,8 @@ const buildAnswer = (items: Array<{ taskId: string; summary?: string; status?: s
   return `Found ${items.length} Lark task(s).\n\n${lines.join('\n')}`;
 };
 
+const isUserLinkedMode = (credentialMode: LarkCredentialMode): boolean => credentialMode === 'user_linked';
+
 export const larkTaskReadTool = createTool({
   id: TOOL_ID,
   description: 'List Lark Tasks, fetch a specific task, or return the current task from this conversation.',
@@ -35,6 +38,8 @@ export const larkTaskReadTool = createTool({
     taskId: z.string().optional().describe('Optional task reference. Accepts either the short task ID or the UUID-style task GUID.'),
     currentTask: z.boolean().optional().default(false).describe('When true, prefer the latest task from this conversation, then fall back to the most recently updated visible task.'),
     query: z.string().optional().describe('Optional text filter applied client-side to the returned tasks'),
+    listAssignableUsers: z.boolean().optional().default(false).describe('When true, return synced Lark teammates who can be used as task assignees.'),
+    assigneeQuery: z.string().optional().describe('Optional name, email, or Lark ID filter applied when listing assignable teammates.'),
   }),
   execute: async (inputData, context) => {
     const requestContext = context?.requestContext;
@@ -67,6 +72,74 @@ export const larkTaskReadTool = createTool({
         appUserId: requestContext?.get('userId') as string | undefined,
         credentialMode,
       };
+      const tenantAuthInput = {
+        ...authInput,
+        credentialMode: 'tenant' as LarkCredentialMode,
+      };
+      const withTenantFallback = async <T>(fn: (auth: typeof authInput) => Promise<T>): Promise<T> => {
+        try {
+          return await fn(authInput);
+        } catch (error) {
+          if (!isUserLinkedMode(credentialMode) || !(error instanceof LarkRuntimeClientError)) {
+            throw error;
+          }
+          return fn(tenantAuthInput);
+        }
+      };
+      if (inputData.listAssignableUsers) {
+        if (!companyId) {
+          const answer = 'No company context is available for Lark assignee lookup.';
+          if (requestId) {
+            emitActivityEvent(requestId, 'activity_done', {
+              id: callId,
+              name: TOOL_ID,
+              label: 'Lark assignee lookup failed',
+              icon: 'x-circle',
+              resultSummary: answer,
+            });
+          }
+          return { answer };
+        }
+
+        const people = await listLarkTaskAssignablePeople({
+          companyId,
+          appUserId: requestContext?.get('userId') as string | undefined,
+          requestLarkOpenId: requestContext?.get('larkOpenId') as string | undefined,
+        });
+        const normalizedQuery = inputData.assigneeQuery?.trim().toLowerCase();
+        const filtered = normalizedQuery
+          ? people.filter((person) =>
+            [
+              person.displayName,
+              person.email,
+              person.externalUserId,
+              person.larkOpenId,
+              person.larkUserId,
+            ].some((value) => value?.toLowerCase().includes(normalizedQuery)))
+          : people;
+        const lines = filtered.slice(0, 12).map((person, index) => {
+          const label = person.displayName ?? person.email ?? person.externalUserId;
+          const suffix = person.isCurrentUser ? ' (me)' : '';
+          return `${index + 1}. ${label}${suffix} [${person.larkOpenId ?? person.externalUserId}]`;
+        });
+        const answer = filtered.length > 0
+          ? `Found ${filtered.length} assignable Lark teammate(s).\n\n${lines.join('\n')}`
+          : 'No assignable Lark teammates matched the request.';
+        if (requestId) {
+          emitActivityEvent(requestId, 'activity_done', {
+            id: callId,
+            name: TOOL_ID,
+            label: 'Read Lark assignees',
+            icon: 'check-square',
+            externalRef: filtered[0]?.larkOpenId ?? filtered[0]?.externalUserId,
+            resultSummary: answer,
+          });
+        }
+        return {
+          answer,
+          people: filtered,
+        };
+      }
       const conversationKey = buildConversationKey(requestContext as any);
       const latestTask = conversationKey ? conversationMemoryStore.getLatestLarkTask(conversationKey) : null;
 
@@ -88,11 +161,11 @@ export const larkTaskReadTool = createTool({
         if (latestTask && (latestTask.taskId === trimmed || latestTask.taskGuid === trimmed)) {
           return latestTask.taskGuid ?? null;
         }
-        const lookup = await larkTasksService.listTasks({
+        const lookup = await withTenantFallback((auth) => larkTasksService.listTasks({
           pageSize: 100,
           tasklistId,
-          ...authInput,
-        });
+          ...auth,
+        }));
         const match = lookup.items.find((item) =>
           item.taskId === trimmed
           || item.taskGuid === trimmed
@@ -105,10 +178,10 @@ export const larkTaskReadTool = createTool({
 
       if (inputData.currentTask) {
         if (latestTask?.taskGuid) {
-          const task = await larkTasksService.getTask({
-            taskGuid: latestTask.taskGuid,
-            ...authInput,
-          });
+          const task = await withTenantFallback((auth) => larkTasksService.getTask({
+            taskGuid: latestTask.taskGuid as string,
+            ...auth,
+          }));
           rememberTask(task);
           const answer = buildAnswer([task]);
           if (requestId) {
@@ -124,11 +197,11 @@ export const larkTaskReadTool = createTool({
           return { answer, task };
         }
 
-        const latestVisible = await larkTasksService.listTasks({
+        const latestVisible = await withTenantFallback((auth) => larkTasksService.listTasks({
           pageSize: 25,
           tasklistId,
-          ...authInput,
-        });
+          ...auth,
+        }));
         const sorted = [...latestVisible.items].sort((a, b) => Number(b.updatedAt ?? '0') - Number(a.updatedAt ?? '0'));
         const currentTask = sorted[0];
         if (!currentTask) {
@@ -174,10 +247,10 @@ export const larkTaskReadTool = createTool({
           }
           return { answer, items: [], hasMore: false };
         }
-        const task = await larkTasksService.getTask({
+        const task = await withTenantFallback((auth) => larkTasksService.getTask({
           taskGuid,
-          ...authInput,
-        });
+          ...auth,
+        }));
         rememberTask(task);
         const answer = buildAnswer([task]);
         if (requestId) {
@@ -193,12 +266,12 @@ export const larkTaskReadTool = createTool({
         return { answer, task };
       }
 
-      const result = await larkTasksService.listTasks({
+      const result = await withTenantFallback((auth) => larkTasksService.listTasks({
         pageSize: inputData.pageSize,
         pageToken: inputData.pageToken,
         tasklistId,
-        ...authInput,
-      });
+        ...auth,
+      }));
 
       const normalizedQuery = inputData.query?.trim().toLowerCase();
       const filteredItems = normalizedQuery

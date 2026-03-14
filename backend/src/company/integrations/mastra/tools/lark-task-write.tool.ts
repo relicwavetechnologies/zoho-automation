@@ -9,6 +9,7 @@ import { conversationMemoryStore } from '../../../state/conversation';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
 import { emitActivityEvent } from './activity-bus';
 import { buildConversationKey } from './conversation-key';
+import { resolveLarkTaskAssignees } from './lark-task-assignees';
 import { normalizeLarkTimestamp } from './lark-time';
 
 const TOOL_ID = 'lark-task-write';
@@ -36,6 +37,31 @@ const deriveUpdateFields = (body: Record<string, unknown>): string[] => {
 };
 
 const toCompletedAt = (completed: boolean): string => (completed ? String(Date.now()) : '0');
+
+const isUserLinkedMode = (credentialMode: LarkCredentialMode): boolean => credentialMode === 'user_linked';
+
+const extractConfirmedAssigneeIds = (raw: Record<string, unknown>): string[] => {
+  const candidateArrays = [
+    raw.members,
+    raw.assignees,
+    raw.member_list,
+  ].filter(Array.isArray) as Array<Array<Record<string, unknown>>>;
+
+  const ids = candidateArrays.flatMap((items) => items
+    .map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        return null;
+      }
+      const directId = item.id;
+      const userId = item.user_id;
+      const openId = item.open_id;
+      const memberId = item.member_id;
+      return [directId, userId, openId, memberId].find((value) => typeof value === 'string' && value.trim().length > 0) ?? null;
+    })
+    .filter((value): value is string => Boolean(value)));
+
+  return Array.from(new Set(ids));
+};
 
 const normalizeUpdateTaskPayload = (body: Record<string, unknown>): {
   task: Record<string, unknown>;
@@ -87,6 +113,8 @@ export const larkTaskWriteTool = createTool({
     dueTs: z.string().optional().describe('Optional due timestamp or ISO string'),
     completed: z.boolean().optional().describe('Optional completed state'),
     assigneeIds: z.array(z.string().min(1)).optional().describe('Optional Lark assignee IDs'),
+    assigneeNames: z.array(z.string().min(1)).optional().describe('Optional teammate names, emails, or Lark IDs to assign on task creation.'),
+    assignToMe: z.boolean().optional().describe('When true, assign the created task to the current linked Lark user.'),
     body: z.record(z.unknown()).optional().describe('Optional raw task payload override'),
   }),
   execute: async (inputData, context) => {
@@ -120,6 +148,20 @@ export const larkTaskWriteTool = createTool({
         appUserId: requestContext?.get('userId') as string | undefined,
         credentialMode,
       };
+      const tenantAuthInput = {
+        ...authInput,
+        credentialMode: 'tenant' as LarkCredentialMode,
+      };
+      const withTenantFallback = async <T>(fn: (auth: typeof authInput) => Promise<T>): Promise<T> => {
+        try {
+          return await fn(authInput);
+        } catch (error) {
+          if (!isUserLinkedMode(credentialMode) || !(error instanceof LarkRuntimeClientError)) {
+            throw error;
+          }
+          return fn(tenantAuthInput);
+        }
+      };
       const conversationKey = buildConversationKey(requestContext as any);
       const latestTask = conversationKey ? conversationMemoryStore.getLatestLarkTask(conversationKey) : null;
       const rememberTask = (task: { taskId: string; taskGuid?: string; summary?: string; status?: string; url?: string }) => {
@@ -139,11 +181,11 @@ export const larkTaskWriteTool = createTool({
         if (latestTask && (latestTask.taskId === trimmed || latestTask.taskGuid === trimmed)) {
           return latestTask.taskGuid ?? null;
         }
-        const lookup = await larkTasksService.listTasks({
+        const lookup = await withTenantFallback((auth) => larkTasksService.listTasks({
           pageSize: 100,
           tasklistId,
-          ...authInput,
-        });
+          ...auth,
+        }));
         const match = lookup.items.find((item) =>
           item.taskId === trimmed
           || item.taskGuid === trimmed
@@ -154,23 +196,63 @@ export const larkTaskWriteTool = createTool({
         return match?.taskGuid ?? null;
       };
       const requestTimeZone = (requestContext?.get('timeZone') as string | undefined)?.trim() || 'UTC';
+      const resolvedAssignees = (inputData.assignToMe || (inputData.assigneeNames?.length ?? 0) > 0)
+        ? await resolveLarkTaskAssignees({
+          companyId: companyId ?? '',
+          appUserId: requestContext?.get('userId') as string | undefined,
+          requestLarkOpenId: requestContext?.get('larkOpenId') as string | undefined,
+          assigneeNames: inputData.assigneeNames,
+          assignToMe: inputData.assignToMe,
+        })
+        : null;
+      if (resolvedAssignees?.unresolved.length) {
+        return {
+          answer: `Lark task write failed: no assignable teammate matched ${resolvedAssignees.unresolved.map((value) => `"${value}"`).join(', ')}.`,
+        };
+      }
+      if (resolvedAssignees?.ambiguous.length) {
+        const first = resolvedAssignees.ambiguous[0];
+        const options = first.matches
+          .map((person) => person.displayName ?? person.email ?? person.externalUserId)
+          .join(', ');
+        return {
+          answer: `Lark task write failed: "${first.query}" matched multiple teammates (${options}). Please be more specific.`,
+        };
+      }
+      const resolvedMembers = resolvedAssignees?.people.map((person) => ({
+        id: person.larkOpenId ?? person.externalUserId,
+        role: 'assignee',
+        type: 'user',
+      }));
+      if (inputData.action === 'update' && (resolvedMembers?.length || (inputData.assigneeIds?.length ?? 0) > 0)) {
+        return {
+          answer: 'Lark task write failed: assignee changes for an existing task are not supported by the current task update route. Create the task with assignees, or provide a raw API path once we add the dedicated member endpoint.',
+        };
+      }
       const baseBody = inputData.body ?? {
         ...(tasklistId ? { tasklist_id: tasklistId } : {}),
         ...(inputData.summary ? { summary: inputData.summary } : {}),
         ...(inputData.description ? { description: inputData.description } : {}),
         ...(inputData.dueTs ? { due: { timestamp: normalizeLarkTimestamp(inputData.dueTs, requestTimeZone) } } : {}),
         ...(inputData.completed !== undefined ? { completed_at: toCompletedAt(inputData.completed) } : {}),
-        ...(inputData.assigneeIds && inputData.assigneeIds.length > 0 ? { assignee_ids: inputData.assigneeIds } : {}),
+        ...(resolvedMembers && resolvedMembers.length > 0 ? { members: resolvedMembers } : {}),
+        ...(resolvedMembers?.length ? {} : inputData.assigneeIds && inputData.assigneeIds.length > 0 ? { assignee_ids: inputData.assigneeIds } : {}),
       };
+      const mergedBody = inputData.body && resolvedMembers?.length
+        ? {
+          ...inputData.body,
+          ...(inputData.action === 'create' && !(inputData.body as Record<string, unknown>).members ? { members: resolvedMembers } : {}),
+        }
+        : baseBody;
       const normalizedUpdate = inputData.action === 'update'
-        ? normalizeUpdateTaskPayload(baseBody)
+        ? normalizeUpdateTaskPayload(mergedBody)
         : null;
       const body = inputData.action === 'update'
         ? {
           task: normalizedUpdate?.task ?? {},
           update_fields: normalizedUpdate?.updateFields ?? [],
         }
-        : baseBody;
+        : mergedBody;
       if (inputData.action === 'create' && !inputData.body && !inputData.summary) {
         return { answer: 'Lark task create failed: summary is required unless a raw body is provided.' };
       }
@@ -188,17 +270,18 @@ export const larkTaskWriteTool = createTool({
       const task = inputData.action === 'create'
         ? await larkTasksService.createTask(commonInput)
         : inputData.action === 'update'
-          ? await larkTasksService.updateTask({
-            ...commonInput,
+          ? await withTenantFallback((auth) => larkTasksService.updateTask({
+            body,
+            ...auth,
             taskGuid: resolvedTaskGuid as string,
-          })
+          }))
           : null;
 
       if (inputData.action === 'delete') {
-        await larkTasksService.deleteTask({
+        await withTenantFallback((auth) => larkTasksService.deleteTask({
           taskGuid: resolvedTaskGuid as string,
-          ...authInput,
-        });
+          ...auth,
+        }));
         const answer = `Deleted Lark task: ${inputData.taskId?.trim() || latestTask?.summary || latestTask?.taskId || resolvedTaskGuid}`;
         if (requestId) {
           emitActivityEvent(requestId, 'activity_done', {
@@ -218,8 +301,24 @@ export const larkTaskWriteTool = createTool({
       }
 
       const label = task?.summary ?? task?.taskId ?? resolvedTaskGuid ?? 'task';
+      const requestedAssigneeLabels = resolvedAssignees?.people.map((person) =>
+        person.displayName ?? person.email ?? person.externalUserId,
+      ) ?? [];
+      const requestedAssigneeIds = resolvedAssignees?.people.map((person) =>
+        person.larkOpenId ?? person.externalUserId,
+      ) ?? [];
+      const confirmedAssigneeIds = task ? extractConfirmedAssigneeIds(task.raw) : [];
+      const assignmentConfirmed = requestedAssigneeIds.length === 0
+        || requestedAssigneeIds.every((id) => confirmedAssigneeIds.includes(id));
+      const assigneeSummary = requestedAssigneeLabels.length > 0
+        ? requestedAssigneeLabels.join(', ')
+        : null;
       const answer = inputData.action === 'create'
-        ? `Created Lark task: ${label}`
+        ? requestedAssigneeLabels.length > 0
+          ? assignmentConfirmed
+            ? `Created Lark task: ${label}, assigned to ${assigneeSummary}.`
+            : `Created Lark task: ${label}, but Lark did not confirm assignment to ${assigneeSummary}.`
+          : `Created Lark task: ${label}`
         : `Updated Lark task: ${label}`;
 
       if (requestId) {
