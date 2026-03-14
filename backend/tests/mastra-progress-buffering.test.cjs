@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  createSerializedStageUpdater,
   findProgressFlushIndex,
   splitProgressBuffer,
 } = require('../dist/company/orchestration/engine/mastra-orchestration.engine');
@@ -43,4 +44,35 @@ test('splitProgressBuffer flushes the remainder on force', () => {
     flushText: 'Partial response in progress',
     remainder: '',
   });
+});
+
+test('createSerializedStageUpdater runs stage updates one at a time in call order', async () => {
+  const callOrder = [];
+  let activeCount = 0;
+  let maxActiveCount = 0;
+
+  const queue = createSerializedStageUpdater(async (text) => {
+    callOrder.push(`start:${text}`);
+    activeCount += 1;
+    maxActiveCount = Math.max(maxActiveCount, activeCount);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    activeCount -= 1;
+    callOrder.push(`end:${text}`);
+  });
+
+  await Promise.all([
+    queue('processing'),
+    queue('retrieving'),
+    queue('generating'),
+  ]);
+
+  assert.equal(maxActiveCount, 1);
+  assert.deepEqual(callOrder, [
+    'start:processing',
+    'end:processing',
+    'start:retrieving',
+    'end:retrieving',
+    'start:generating',
+    'end:generating',
+  ]);
 });

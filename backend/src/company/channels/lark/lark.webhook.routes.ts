@@ -14,8 +14,9 @@ import { buildLarkTextHash, buildLarkTraceMeta } from './lark-observability';
 import { emitRuntimeTrace } from '../../observability';
 import { larkWorkspaceConfigRepository } from './lark-workspace-config.repository';
 import { larkUserAuthLinkRepository } from './lark-user-auth-link.repository';
-import { parseLarkAttachmentKeys } from './lark-message-content';
+import { inferLarkMessageType, parseLarkAttachmentKeys } from './lark-message-content';
 import { ingestLarkAttachments } from './lark-file-ingestion';
+import { orangeDebug } from '../../../utils/orange-debug';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
 type WebhookVerificationFailureReason = Exclude<LarkWebhookVerificationResult['reason'], undefined>;
@@ -458,10 +459,25 @@ export const createLarkWebhookEventHandler = (
 
       // File ingestion is moved to after linkedUserId resolution below
       // so we can attribute files to the correct internal User.id when possible.
-      const msgType = (parsed.envelope as any)?.event?.message?.msg_type as string | undefined;
-      const msgContent = (parsed.envelope as any)?.event?.message?.content;
+      const rawMessage = (parsed.envelope as any)?.event?.message as Record<string, unknown> | undefined;
+      const msgContent = rawMessage?.content;
+      const msgType = inferLarkMessageType({
+        msgType: typeof rawMessage?.msg_type === 'string' ? rawMessage.msg_type : undefined,
+        altMsgType: typeof rawMessage?.message_type === 'string' ? rawMessage.message_type : undefined,
+        content: msgContent,
+      });
       const msgId = normalized.messageId;
       const attachmentKeys = parseLarkAttachmentKeys(msgContent, msgType);
+      orangeDebug('lark.ingress.normalized', {
+        requestId,
+        eventId: parsed.eventId,
+        msgType: msgType ?? 'text',
+        messageId: normalized.messageId,
+        chatId: normalized.chatId,
+        userId: normalized.userId,
+        textPreview: normalized.text.slice(0, 120),
+        attachmentKeyCount: attachmentKeys.length,
+      });
 
       dependencies.log.info('lark.webhook.message.normalized', {
         requestId,
@@ -610,7 +626,12 @@ export const createLarkWebhookEventHandler = (
       if (attachmentKeys.length > 0 && scopedCompanyId && normalized.userId) {
         // Prefer the internal linked User.id for cross-channel file ownership.
         // Falls back to the Lark open_id when the user hasn't linked their account yet.
-        const effectiveUploaderId = linkedUserId ?? normalized.userId;
+        const effectiveUploaderId = linkedUserId ?? channelIdentityId ?? normalized.userId;
+        const allowedRoles = Array.from(new Set([
+          userRole || 'MEMBER',
+          'COMPANY_ADMIN',
+          'SUPER_ADMIN',
+        ]));
         try {
           const ingested = await ingestLarkAttachments({
             messageId: msgId,
@@ -619,9 +640,20 @@ export const createLarkWebhookEventHandler = (
             adapter: dependencies.adapter,
             companyId: scopedCompanyId,
             uploaderUserId: effectiveUploaderId,
+            allowedRoles,
           });
           if (ingested.length > 0) {
             attachedFiles = [...attachedFiles, ...ingested];
+            orangeDebug('lark.ingress.attachments.ingested', {
+              requestId,
+              eventId: parsed.eventId,
+              messageId: msgId,
+              chatId: normalized.chatId,
+              linkedUserId: linkedUserId ?? null,
+              effectiveUploaderId,
+              fileAssetIds: ingested.map((file) => file.fileAssetId),
+              allowedRoles,
+            });
             dependencies.log.info('lark.file.ingestion.completed', {
               requestId,
               messageId: msgId,
@@ -629,6 +661,7 @@ export const createLarkWebhookEventHandler = (
               fileAssetIds: ingested.map((f) => f.fileAssetId),
               linkedUserId: linkedUserId ?? null,
               effectiveUploaderId,
+              allowedRoles,
             });
           }
         } catch (fileErr) {
@@ -726,6 +759,13 @@ export const createLarkWebhookEventHandler = (
       }
 
       if (!claimedPrimary) {
+        orangeDebug('lark.ingress.duplicate', {
+          requestId,
+          eventId: parsed.eventId,
+          messageId: tracedMessage.messageId,
+          chatId: tracedMessage.chatId,
+          keyType: primaryIdempotency.keyType,
+        });
         dependencies.log.info('lark.ingress.duplicate_ignored', {
           ...buildIngressTraceMeta({
             requestId,
@@ -792,6 +832,12 @@ export const createLarkWebhookEventHandler = (
       }
 
       if (parsed.kind === 'event_callback_card_action') {
+        orangeDebug('lark.ingress.enqueue.card_action', {
+          requestId,
+          eventId: parsed.eventId,
+          messageId: tracedMessage.messageId,
+          chatId: tracedMessage.chatId,
+        });
         void dependencies.enqueueTask(tracedMessage)
           .then((task) => {
             dependencies.log.info('lark.ingress.queued', {
@@ -848,7 +894,58 @@ export const createLarkWebhookEventHandler = (
         });
       }
 
+      if (parsed.kind === 'event_callback_message' && (msgType === 'image' || msgType === 'file')) {
+        orangeDebug('lark.ingress.attachment_staged', {
+          requestId,
+          eventId: parsed.eventId,
+          messageId: tracedMessage.messageId,
+          chatId: tracedMessage.chatId,
+          msgType,
+          stagedFileCount: attachedFiles.length,
+          fileAssetIds: attachedFiles.map((file) => file.fileAssetId),
+        });
+        dependencies.log.info('lark.ingress.attachment_staged', {
+          ...buildIngressTraceMeta({
+            requestId,
+            message: tracedMessage,
+            eventId: parsed.eventId,
+            textHash,
+            larkTenantKey,
+            companyId: scopedCompanyId ?? undefined,
+          }),
+          msgType,
+          stagedFileCount: attachedFiles.length,
+        });
+        return res.status(202).json({
+          success: true,
+          message: 'Lark attachment stored for the next text prompt',
+          data: {
+            channel: tracedMessage.channel,
+            messageId: tracedMessage.messageId,
+            chatId: tracedMessage.chatId,
+            stagedFileCount: attachedFiles.length,
+            msgType,
+          },
+        });
+      }
+
+      orangeDebug('lark.ingress.enqueue.message', {
+        requestId,
+        eventId: parsed.eventId,
+        messageId: tracedMessage.messageId,
+        chatId: tracedMessage.chatId,
+        msgType: msgType ?? 'text',
+        attachedFileCount: attachedFiles.length,
+        fileAssetIds: attachedFiles.map((file) => file.fileAssetId),
+      });
       const task = await dependencies.enqueueTask(tracedMessage);
+      orangeDebug('lark.ingress.enqueued', {
+        requestId,
+        eventId: parsed.eventId,
+        messageId: tracedMessage.messageId,
+        chatId: tracedMessage.chatId,
+        taskId: task.taskId,
+      });
       dependencies.log.info('lark.ingress.queued', {
         ...buildIngressTraceMeta({
           requestId,

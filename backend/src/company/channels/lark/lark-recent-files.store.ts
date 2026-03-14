@@ -14,6 +14,7 @@
  */
 
 import type { NormalizedAttachedFile } from '../../contracts';
+import { orangeDebug } from '../../../utils/orange-debug';
 
 const DEFAULT_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -40,6 +41,13 @@ class LarkRecentFilesStore {
       files: merged,
       expiresAt: Date.now() + ttlMs,
     });
+    orangeDebug('lark.recent_files.add', {
+      chatId,
+      addedCount: files.length,
+      totalCount: merged.length,
+      fileAssetIds: merged.map((file) => file.fileAssetId),
+      ttlMs,
+    });
   }
 
   /**
@@ -51,9 +59,27 @@ class LarkRecentFilesStore {
     if (!entry) return [];
     if (entry.expiresAt <= Date.now()) {
       this.store.delete(chatId);
+      orangeDebug('lark.recent_files.expired', { chatId });
       return [];
     }
     return entry.files;
+  }
+
+  /**
+   * Returns the pending files for the next text turn and clears them immediately.
+   * This prevents stale attachments from leaking into later unrelated prompts.
+   */
+  consume(chatId: string): NormalizedAttachedFile[] {
+    const files = this.get(chatId);
+    if (files.length > 0) {
+      this.store.delete(chatId);
+    }
+    orangeDebug('lark.recent_files.consume', {
+      chatId,
+      fileCount: files.length,
+      fileAssetIds: files.map((file) => file.fileAssetId),
+    });
+    return files;
   }
 
   /**
@@ -62,6 +88,7 @@ class LarkRecentFilesStore {
    */
   clear(chatId: string): void {
     this.store.delete(chatId);
+    orangeDebug('lark.recent_files.clear', { chatId });
   }
 
   /** Prune all expired entries — call periodically if needed. */

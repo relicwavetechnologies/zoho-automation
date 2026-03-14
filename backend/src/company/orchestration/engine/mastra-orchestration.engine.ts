@@ -20,6 +20,7 @@ import type { AiRole } from '../../tools/tool-registry';
 import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
 import { buildVisionContent, type AttachedFileRef } from '../../../modules/desktop-chat/file-vision.builder';
 import { larkRecentFilesStore } from '../../channels/lark/lark-recent-files.store';
+import { orangeDebug } from '../../../utils/orange-debug';
 
 // Maximum time (ms) we wait for the LLM agent to respond before aborting.
 // Keep this shorter than any upstream HTTP gateway timeout.
@@ -195,6 +196,17 @@ export const splitProgressBuffer = (
   }
 
   return null;
+};
+
+export const createSerializedStageUpdater = (
+  update: (text: string) => Promise<void>,
+): ((text: string) => Promise<void>) => {
+  let chain = Promise.resolve();
+
+  return (text: string) => {
+    chain = chain.then(() => update(text));
+    return chain;
+  };
 };
 
 export class MastraOrchestrationEngine implements OrchestrationEngine {
@@ -495,6 +507,13 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
           lastPushedPreviewText = text;
           lastPushAt = Date.now();
           logger.info('mastra.engine.stage.sent', { taskId: task.taskId, stage: text.slice(0, 40) });
+          orangeDebug('mastra.stage.send', {
+            taskId: task.taskId,
+            inboundMessageId: message.messageId,
+            chatId: message.chatId,
+            progressMessageId,
+            stage: text,
+          });
         } else {
           ensureOutboundSucceeded(await channelAdapter.updateMessage({
             messageId: progressMessageId,
@@ -509,6 +528,13 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
           lastPushedPreviewText = text;
           lastPushAt = Date.now();
           logger.info('mastra.engine.stage.updated', { taskId: task.taskId, stage: text.slice(0, 40) });
+          orangeDebug('mastra.stage.update', {
+            taskId: task.taskId,
+            inboundMessageId: message.messageId,
+            chatId: message.chatId,
+            progressMessageId,
+            stage: text,
+          });
         }
       } catch (error) {
         logger.warn('mastra.engine.stage.failed', {
@@ -516,12 +542,20 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
           stage: text.slice(0, 40),
           reason: error instanceof Error ? error.message : 'unknown_error',
         });
+        orangeDebug('mastra.stage.failed', {
+          taskId: task.taskId,
+          inboundMessageId: message.messageId,
+          chatId: message.chatId,
+          stage: text,
+          error: error instanceof Error ? error.message : 'unknown_error',
+        });
       }
     };
+    const queueStageIndicator = createSerializedStageUpdater(updateStageIndicator);
 
     // Fire and do NOT await — this must never block the pipeline.
     // If Lark is slow the indicator just appears a bit late but never hangs.
-    void updateStageIndicator('_Processing your request..._');
+    void queueStageIndicator('_Processing your request..._');
 
     // ── DB Lookups & Context Building ────────────────────────────────────────
     const userRole = (message.trace?.userRole ?? 'MEMBER') as AiRole;
@@ -533,7 +567,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     requestContext.set('allowedToolIds', allowedToolIds);
 
     // ── Stage 2: Personalizing ───────────────────────────────────────────────
-    void updateStageIndicator('_Retrieving your context..._');
+    void queueStageIndicator('_Retrieving your context..._');
 
     let personalContextMatches: Array<{ role?: string; content: string }> = [];
     if (companyId && requesterUserId) {
@@ -586,7 +620,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     }
 
     // ── Stage 3: Working on it ───────────────────────────────────────────────
-    void updateStageIndicator('_Generating response..._');
+    void queueStageIndicator('_Generating response..._');
 
     // ── Agent stream ─────────────────────────────────────────────────────────
     const agent = mastra.getAgent('supervisorAgent');
@@ -598,7 +632,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
     // This allows follow-up questions like "what is this image?" to work
     // even when the image was sent as a standalone message earlier.
     const recentFiles = message.channel === 'lark'
-      ? larkRecentFilesStore.get(message.chatId)
+      ? larkRecentFilesStore.consume(message.chatId)
       : [];
     const allAttachedFiles = [
       ...(message.attachedFiles ?? []),
@@ -617,6 +651,15 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
         totalFiles: allAttachedFiles.length,
       });
     }
+    orangeDebug('mastra.attachments.resolved', {
+      taskId: task.taskId,
+      inboundMessageId: message.messageId,
+      chatId: message.chatId,
+      explicitAttachedFileCount: message.attachedFiles?.length ?? 0,
+      recentFileCount: recentFiles.length,
+      totalAttachedFileCount: allAttachedFiles.length,
+      fileAssetIds: allAttachedFiles.map((file) => file.fileAssetId),
+    });
 
     // If the incoming message (from Lark or any channel) has attached files,
     // convert them to Vercel AI SDK vision/document parts exactly like Desktop.
@@ -630,6 +673,7 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
           userMessage: historyAwarePrompt,
           attachedFiles: allAttachedFiles as AttachedFileRef[],
           companyId,
+          requesterUserId,
           requesterAiRole: userRole,
         });
         const hasImageParts = visionParts.some((p) => p.type === 'image');
@@ -647,10 +691,24 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
           fileCount: allAttachedFiles.length,
           hasImageParts,
         });
+        orangeDebug('mastra.vision.injected', {
+          taskId: task.taskId,
+          inboundMessageId: message.messageId,
+          chatId: message.chatId,
+          fileCount: allAttachedFiles.length,
+          hasImageParts,
+          partTypes: visionParts.map((part) => part.type),
+        });
       } catch (visionErr) {
         logger.warn('mastra.engine.vision.injection_failed', {
           taskId: task.taskId,
           messageId: message.messageId,
+          error: visionErr instanceof Error ? visionErr.message : 'unknown_error',
+        });
+        orangeDebug('mastra.vision.failed', {
+          taskId: task.taskId,
+          inboundMessageId: message.messageId,
+          chatId: message.chatId,
           error: visionErr instanceof Error ? visionErr.message : 'unknown_error',
         });
         // Fall through — use plain text prompt as fallback
@@ -710,6 +768,13 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
           chatId: message.chatId,
         });
         progressMessageId = outbound.messageId;
+        orangeDebug('mastra.progress.send', {
+          taskId: task.taskId,
+          inboundMessageId: message.messageId,
+          chatId: message.chatId,
+          progressMessageId,
+          previewLength: preview.length,
+        });
       } else {
         ensureOutboundSucceeded(await channelAdapter.updateMessage({
           messageId: progressMessageId,
@@ -720,6 +785,13 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
           taskId: task.taskId,
           messageId: message.messageId,
           chatId: message.chatId,
+        });
+        orangeDebug('mastra.progress.update', {
+          taskId: task.taskId,
+          inboundMessageId: message.messageId,
+          chatId: message.chatId,
+          progressMessageId,
+          previewLength: preview.length,
         });
       }
       lastPushedPreviewText = preview;
@@ -1027,6 +1099,14 @@ export class MastraOrchestrationEngine implements OrchestrationEngine {
         messageId: message.messageId,
         chatId: message.chatId,
         responseMessageId: deliveredMessageId,
+      });
+      orangeDebug('mastra.response.delivered', {
+        taskId: task.taskId,
+        inboundMessageId: message.messageId,
+        chatId: message.chatId,
+        deliveredMessageId,
+        reusedProgressMessage: !!progressMessageId,
+        finalTextLength: finalText.length,
       });
 
       await checkpointRepository.save(task.taskId, 'response.send', {

@@ -4,6 +4,7 @@ import { embeddingService } from '../../company/integrations/embedding';
 import { logger } from '../../utils/logger';
 import { extractTextFromBuffer, normalizeExtractedText } from '../file-upload/document-text-extractor';
 import { vectorDocumentRepository } from '../../company/integrations/vector/vector-document.repository';
+import { orangeDebug } from '../../utils/orange-debug';
 
 /**
  * Represents an attached file context for the AI message.
@@ -159,6 +160,7 @@ export const buildVisionContent = async (input: {
   userMessage: string;
   attachedFiles: AttachedFileRef[];
   companyId: string;
+  requesterUserId?: string;
   requesterAiRole?: string;
 }): Promise<VisionMessageContent[]> => {
   const parts: VisionMessageContent[] = [];
@@ -175,6 +177,16 @@ export const buildVisionContent = async (input: {
   }
 
   for (const file of input.attachedFiles) {
+    const asset = await prisma.fileAsset.findFirst({
+      where: {
+        id: file.fileAssetId,
+        companyId: input.companyId,
+      },
+      select: {
+        uploaderUserId: true,
+      },
+    });
+
     // ── RBAC gate: verify the requester has access ────────────────────────────
     const policy = await prisma.fileAccessPolicy.findFirst({
       where: {
@@ -187,11 +199,23 @@ export const buildVisionContent = async (input: {
 
     // Also allow if no policies exist (open file) or if requester is SUPER_ADMIN/COMPANY_ADMIN
     const isSuperRole = ['SUPER_ADMIN', 'COMPANY_ADMIN'].includes(input.requesterAiRole ?? '');
-    const hasAccess = policy !== null || isSuperRole;
+    const isOwner = !!input.requesterUserId && asset?.uploaderUserId === input.requesterUserId;
+    const hasAccess = policy !== null || isSuperRole || isOwner;
+    orangeDebug('file.vision.access.check', {
+      fileAssetId: file.fileAssetId,
+      requesterUserId: input.requesterUserId ?? null,
+      requesterAiRole: input.requesterAiRole ?? null,
+      isOwner,
+      hasRolePolicy: policy !== null,
+      isSuperRole,
+      hasAccess,
+      mimeType: file.mimeType,
+    });
 
     if (!hasAccess) {
       logger.warn('file.vision.rbac.denied', {
         fileAssetId: file.fileAssetId,
+        requesterUserId: input.requesterUserId,
         requesterAiRole: input.requesterAiRole,
       });
       parts.push({
@@ -204,6 +228,11 @@ export const buildVisionContent = async (input: {
     if (IMAGE_MIME_TYPES.has(file.mimeType)) {
       // Vision: pass the Cloudinary HTTPS URL directly
       // Vercel AI SDK automatically handles this for both GPT-4o and Gemini
+      orangeDebug('file.vision.image.part', {
+        fileAssetId: file.fileAssetId,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+      });
       parts.push({
         type: 'image',
         image: file.cloudinaryUrl,

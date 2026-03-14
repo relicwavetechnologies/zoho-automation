@@ -914,6 +914,7 @@ class DesktopChatController extends BaseController {
         userMessage: baseObjective,
         attachedFiles: attachedFiles as AttachedFileRef[],
         companyId: session.companyId,
+        requesterUserId: session.userId,
         requesterAiRole,
       });
 

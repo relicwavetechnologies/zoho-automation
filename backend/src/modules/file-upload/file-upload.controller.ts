@@ -10,6 +10,7 @@ import config from '../../config';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { knowledgeShareService } from '../../company/knowledge-share/knowledge-share.service';
 import { prisma } from '../../utils/prisma';
+import { orangeDebug } from '../../utils/orange-debug';
 
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
 
@@ -69,6 +70,15 @@ class FileUploadController extends BaseController {
     const session = this.session(req);
     const requesterAiRole = session.aiRole ?? session.role;
     const isAdmin = ['SUPER_ADMIN', 'COMPANY_ADMIN'].includes(requesterAiRole);
+    orangeDebug('file.drawer.request', {
+      sessionUserId: session.userId,
+      companyId: session.companyId,
+      requesterAiRole,
+      authProvider: session.authProvider,
+      larkOpenId: session.larkOpenId ?? null,
+      larkUserId: session.larkUserId ?? null,
+      isAdmin,
+    });
     const files = await fileUploadService.listVisibleFiles({
       companyId: session.companyId,
       requesterUserId: session.userId,

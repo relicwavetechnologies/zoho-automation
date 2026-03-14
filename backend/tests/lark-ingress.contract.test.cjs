@@ -132,6 +132,48 @@ test('parseLarkIngressPayload accepts image messages for downstream file ingesti
   assert.equal(result.kind, 'event_callback_message');
 });
 
+test('parseLarkIngressPayload accepts image messages inferred from image_key content when msg_type is missing', () => {
+  const result = parseLarkIngressPayload({
+    type: 'event_callback',
+    event: {
+      sender: {
+        employee_id: 'e_1',
+      },
+      message: {
+        message_id: 'om_3b',
+        chat_id: 'oc_3b',
+        content: '{"image_key":"img_2"}',
+      },
+    },
+  });
+
+  assert.equal(result.kind, 'event_callback_message');
+});
+
+test('parseLarkIngressPayload accepts rich-post messages with embedded image and text when msg_type is missing', () => {
+  const result = parseLarkIngressPayload({
+    type: 'event_callback',
+    event: {
+      sender: {
+        employee_id: 'e_1',
+      },
+      message: {
+        message_id: 'om_3c',
+        chat_id: 'oc_3c',
+        content: JSON.stringify({
+          title: '',
+          content: [
+            [{ tag: 'img', image_key: 'img_3' }],
+            [{ tag: 'text', text: 'What do you see in this image?' }],
+          ],
+        }),
+      },
+    },
+  });
+
+  assert.equal(result.kind, 'event_callback_message');
+});
+
 test('parseLarkIngressPayload ignores empty text messages', () => {
   const result = parseLarkIngressPayload({
     type: 'event_callback',

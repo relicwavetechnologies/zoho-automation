@@ -1,6 +1,9 @@
+import { randomUUID } from 'crypto';
+
 import { prisma } from '../../utils/prisma';
 import config from '../../config';
 import { logger } from '../../utils/logger';
+import { orangeDebug } from '../../utils/orange-debug';
 import { cloudinaryAdapter } from './cloudinary.adapter';
 import { documentIngestionPipeline } from './document-ingestion.pipeline';
 
@@ -45,6 +48,8 @@ export class FileUploadService {
       throw new Error(`Unsupported file type: ${input.mimeType}`);
     }
 
+    const fileAssetId = randomUUID();
+
     // 1. Upload to Cloudinary
     const cloudResult = await cloudinaryAdapter.uploadBuffer({
       buffer: input.buffer,
@@ -52,11 +57,13 @@ export class FileUploadService {
       fileName: input.fileName,
       folder: config.CLOUDINARY_FOLDER,
       companyId: input.companyId,
+      assetId: fileAssetId,
     });
 
     // 2. Create FileAsset record in Postgres
     const fileAsset = await prisma.fileAsset.create({
       data: {
+        id: fileAssetId,
         companyId: input.companyId,
         uploaderUserId: input.uploaderUserId,
         uploaderChannel: input.uploaderChannel,
@@ -88,6 +95,15 @@ export class FileUploadService {
       fileAssetId: fileAsset.id,
       companyId: input.companyId,
       mimeType: input.mimeType,
+      allowedRoles: input.allowedRoles,
+    });
+    orangeDebug('file.upload.created', {
+      fileAssetId: fileAsset.id,
+      companyId: input.companyId,
+      uploaderUserId: input.uploaderUserId,
+      uploaderChannel: input.uploaderChannel,
+      mimeType: input.mimeType,
+      fileName: input.fileName,
       allowedRoles: input.allowedRoles,
     });
 
@@ -134,6 +150,12 @@ export class FileUploadService {
     requesterAiRole: string;
     isAdmin?: boolean;
   }) {
+    orangeDebug('file.drawer.query.start', {
+      companyId: input.companyId,
+      requesterUserId: input.requesterUserId,
+      requesterAiRole: input.requesterAiRole,
+      isAdmin: !!input.isAdmin,
+    });
     const files = await prisma.fileAsset.findMany({
       where: {
         companyId: input.companyId,
@@ -150,6 +172,13 @@ export class FileUploadService {
       include: { accessPolicies: true },
     });
 
+    orangeDebug('file.drawer.query.result', {
+      companyId: input.companyId,
+      requesterUserId: input.requesterUserId,
+      requesterAiRole: input.requesterAiRole,
+      visibleCount: files.length,
+      fileAssetIds: files.map((file) => file.id),
+    });
     return files;
   }
 

@@ -261,6 +261,88 @@ test('webhook handler ignores stale message deliveries before enqueue', async ()
   assert.equal(enqueueCount, 0);
 });
 
+test('webhook handler stages attachment-only messages without enqueueing a task', async () => {
+  let enqueueCount = 0;
+  const handler = createLarkWebhookEventHandler({
+    verifyRequest: () => ({ ok: true }),
+    parsePayload: () => ({
+      kind: 'event_callback_message',
+      envelope: {
+        event: {
+          message: {
+            message_id: 'om_img_1',
+            msg_type: 'image',
+          },
+        },
+      },
+      eventType: 'im.message.receive_v1',
+      eventId: 'evt_img_only',
+    }),
+    adapter: {
+      normalizeIncomingEvent: () => ({
+        ...normalizedMessage,
+        messageId: 'om_img_1',
+        text: '[User attached an image]',
+      }),
+      sendMessage: async () => ({ status: 'sent' }),
+      downloadFile: async () => null,
+    },
+    claimIngressKey: async () => true,
+    enqueueTask: async () => {
+      enqueueCount += 1;
+      return { taskId: 'task-image' };
+    },
+    resolveHitlAction: async () => true,
+  });
+
+  const response = await runHandler(handler, baseRequest());
+
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.body.message, 'Lark attachment stored for the next text prompt');
+  assert.equal(enqueueCount, 0);
+});
+
+test('webhook handler stages image messages inferred from content when msg_type is missing', async () => {
+  let enqueueCount = 0;
+  const handler = createLarkWebhookEventHandler({
+    verifyRequest: () => ({ ok: true }),
+    parsePayload: () => ({
+      kind: 'event_callback_message',
+      envelope: {
+        event: {
+          message: {
+            message_id: 'om_img_2',
+            content: '{"image_key":"img_2"}',
+          },
+        },
+      },
+      eventType: 'im.message.receive_v1',
+      eventId: 'evt_img_only_2',
+    }),
+    adapter: {
+      normalizeIncomingEvent: () => ({
+        ...normalizedMessage,
+        messageId: 'om_img_2',
+        text: '[User attached an image]',
+      }),
+      sendMessage: async () => ({ status: 'sent' }),
+      downloadFile: async () => null,
+    },
+    claimIngressKey: async () => true,
+    enqueueTask: async () => {
+      enqueueCount += 1;
+      return { taskId: 'task-image-2' };
+    },
+    resolveHitlAction: async () => true,
+  });
+
+  const response = await runHandler(handler, baseRequest());
+
+  assert.equal(response.statusCode, 202);
+  assert.equal(response.body.message, 'Lark attachment stored for the next text prompt');
+  assert.equal(enqueueCount, 0);
+});
+
 test('buildPrimaryIngressIdempotencyKey uses event key when event id is present', () => {
   const key = buildPrimaryIngressIdempotencyKey({
     channel: 'lark',

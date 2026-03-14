@@ -2,6 +2,7 @@ import { Job, Worker } from 'bullmq';
 
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
+import { orangeDebug } from '../../../utils/orange-debug';
 import { classifyRuntimeError, emitRuntimeTrace, executionService } from '../../observability';
 import {
   buildTaskWithConfiguredEngine,
@@ -154,6 +155,13 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     taskId,
     jobId: job.id,
     textHash: message.trace?.textHash,
+  });
+  orangeDebug('queue.job.started', {
+    taskId,
+    jobId: job.id,
+    messageId: message.messageId,
+    chatId: message.chatId,
+    userId: message.userId,
   });
   emitRuntimeTrace({
     event: 'lark.runtime.job.started',
@@ -415,6 +423,13 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     status: result.status,
     textHash: message.trace?.textHash,
   });
+  orangeDebug('queue.job.completed', {
+    taskId,
+    jobId: job.id,
+    messageId: message.messageId,
+    chatId: message.chatId,
+    status: result.status,
+  });
   emitRuntimeTrace({
     event: 'lark.runtime.job.completed',
     level: 'info',
@@ -511,6 +526,13 @@ export const startOrchestrationWorker = (): Worker<OrchestrationJobData, void, t
   });
   worker.on('failed', (job, error) => {
     const classifiedError = classifyRuntimeError(error);
+    orangeDebug('queue.job.failed', {
+      taskId: job?.data.taskId,
+      jobId: job?.id,
+      messageId: job?.data.message.messageId,
+      chatId: job?.data.message.chatId,
+      error: classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'unknown_error',
+    });
     logger.error('Orchestration task failed', {
       taskId: job?.data.taskId,
       jobId: job?.id,

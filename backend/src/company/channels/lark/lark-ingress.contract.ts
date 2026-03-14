@@ -1,5 +1,5 @@
 import type { LarkWebhookEnvelope } from './lark.types';
-import { parseLarkMessageContent } from './lark-message-content';
+import { inferLarkMessageType, parseLarkMessageContent } from './lark-message-content';
 
 export type LarkIngressInvalidReason =
   | 'unknown_type'
@@ -164,7 +164,11 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
       };
     }
 
-    const msgType = readString(message.msg_type) ?? 'text';
+    const msgType = inferLarkMessageType({
+      msgType: readString(message.msg_type),
+      altMsgType: readString((message as Record<string, unknown>).message_type),
+      content: message.content,
+    });
     if (msgType !== 'text' && msgType !== 'post' && msgType !== 'image' && msgType !== 'file') {
       return {
         kind: 'event_callback_ignored',

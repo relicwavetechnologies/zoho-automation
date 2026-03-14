@@ -8,11 +8,12 @@ import type {
 import type { NormalizedIncomingMessageDTO } from '../../contracts';
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
+import { orangeDebug } from '../../../utils/orange-debug';
 import type { LarkWebhookEnvelope } from './lark.types';
 import { buildLarkTraceMeta } from './lark-observability';
 import { larkTenantTokenService, LarkTenantTokenService } from './lark-tenant-token.service';
 import { emitRuntimeTrace } from '../../observability';
-import { parseLarkMessageContent, parseLarkAttachmentKeys } from './lark-message-content';
+import { inferLarkMessageType, parseLarkMessageContent } from './lark-message-content';
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (typeof value !== 'object' || value === null) {
@@ -237,6 +238,11 @@ export class LarkChannelAdapter implements ChannelAdapter {
     const larkUserId = readString(sender?.sender_id?.user_id);
     const chatId = readString(message.chat_id);
     const messageId = readString(message.message_id);
+    const msgType = inferLarkMessageType({
+      msgType: readString(message.msg_type),
+      altMsgType: readString((message as Record<string, unknown>).message_type),
+      content: message.content,
+    });
 
     if (!userId || !chatId || !messageId) {
       return null;
@@ -249,7 +255,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       chatType: message.chat_type === 'group' ? 'group' : 'p2p',
       messageId,
       timestamp: toIsoTimestamp(readString(message.create_time)),
-      text: parseLarkMessageContent(message.content, readString(message.msg_type) ?? 'text'),
+      text: parseLarkMessageContent(message.content, msgType),
       rawEvent: event,
       trace: {
         larkTenantKey: readTenantKey(envelope),
@@ -279,6 +285,12 @@ export class LarkChannelAdapter implements ChannelAdapter {
       receiveIdType,
       requestPath,
       textLength: input.text.length,
+    });
+    orangeDebug('lark.egress.send.start', {
+      chatId: input.chatId,
+      correlationId: input.correlationId,
+      receiveIdType,
+      textPreview: input.text.slice(0, 120),
     });
 
     const result = await this.requestWithTokenRetry({
@@ -324,6 +336,11 @@ export class LarkChannelAdapter implements ChannelAdapter {
       messageId: outbound.messageId,
       correlationId: input.correlationId,
     }));
+    orangeDebug('lark.egress.send.success', {
+      chatId: input.chatId,
+      messageId: outbound.messageId,
+      correlationId: input.correlationId,
+    });
     emitRuntimeTrace({
       event: 'lark.egress.send.success',
       level: 'info',
@@ -344,6 +361,11 @@ export class LarkChannelAdapter implements ChannelAdapter {
       }),
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
       textLength: input.text.length,
+    });
+    orangeDebug('lark.egress.update.start', {
+      messageId: input.messageId,
+      correlationId: input.correlationId,
+      textPreview: input.text.slice(0, 120),
     });
     const result = await this.requestWithTokenRetry({
       method: 'PATCH',
@@ -386,6 +408,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
       messageId: input.messageId,
       correlationId: input.correlationId,
     }));
+    orangeDebug('lark.egress.update.success', {
+      messageId: input.messageId,
+      correlationId: input.correlationId,
+    });
     emitRuntimeTrace({
       event: 'lark.egress.update.success',
       level: 'info',

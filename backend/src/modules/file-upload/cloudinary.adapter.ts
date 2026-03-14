@@ -46,10 +46,10 @@ class CloudinaryAdapter {
     fileName: string;
     folder: string;
     companyId: string;
+    assetId?: string;
   }): Promise<CloudinaryUploadResult> {
     const resourceType = mimeToResourceType(input.mimeType);
-    const sanitizedFileName = input.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const publicId = `${input.folder}/${input.companyId}/${Date.now()}_${sanitizedFileName}`;
+    const publicId = input.assetId?.trim() || input.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
 
     return new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(

@@ -7,11 +7,11 @@
  * incoming message DTO before enqueuing the AI task.
  */
 import { logger } from '../../../utils/logger';
+import { orangeDebug } from '../../../utils/orange-debug';
 import type { LarkChannelAdapter } from './lark.adapter';
 import type { LarkAttachmentKey } from './lark-message-content';
 import type { NormalizedAttachedFile } from '../../contracts';
 import { larkRecentFilesStore } from './lark-recent-files.store';
-import * as fs from 'fs';
 
 // Lazily required to avoid circular deps at module load time.
 const getFileUploadService = (): typeof import('../../../modules/file-upload/file-upload.service')['fileUploadService'] => {
@@ -70,21 +70,35 @@ export const ingestLarkAttachments = async (input: {
   adapter: Pick<LarkChannelAdapter, 'downloadFile'>;
   companyId: string;
   uploaderUserId: string;
+  allowedRoles?: string[];
 }): Promise<NormalizedAttachedFile[]> => {
   if (input.attachmentKeys.length === 0) return [];
 
   const results: NormalizedAttachedFile[] = [];
-
-  fs.appendFileSync('/tmp/lark-ingest-trace.log', `\n[${new Date().toISOString()}] ENTERING ingestLarkAttachments for messageId: ${input.messageId}, chatId: ${input.chatId}\nKeys: ${JSON.stringify(input.attachmentKeys)}\n`);
+  orangeDebug('lark.file.ingestion.enter', {
+    messageId: input.messageId,
+    chatId: input.chatId,
+    attachmentKeys: input.attachmentKeys.map((attachment) => ({
+      key: attachment.key,
+      fileType: attachment.fileType,
+      larkFileType: attachment.larkFileType,
+      fileName: attachment.fileName,
+    })),
+  });
 
   for (const attachment of input.attachmentKeys) {
-    fs.appendFileSync('/tmp/lark-ingest-trace.log', `Processing attachment: ${attachment.key}\n`);
     try {
       logger.info('lark.file.ingestion.start', {
         messageId: input.messageId,
         fileKey: attachment.key,
         fileType: attachment.fileType,
         larkFileType: attachment.larkFileType,
+      });
+      orangeDebug('lark.file.ingestion.download.start', {
+        messageId: input.messageId,
+        chatId: input.chatId,
+        fileKey: attachment.key,
+        fileType: attachment.fileType,
       });
 
       // 1. Download bytes from Lark
@@ -95,14 +109,24 @@ export const ingestLarkAttachments = async (input: {
       });
 
       if (!downloaded) {
-        fs.appendFileSync('/tmp/lark-ingest-trace.log', `FAILED: downloadFile returned null for ${attachment.key}\n`);
         logger.warn('lark.file.ingestion.download_failed', {
           messageId: input.messageId,
           fileKey: attachment.key,
         });
+        orangeDebug('lark.file.ingestion.download.failed', {
+          messageId: input.messageId,
+          chatId: input.chatId,
+          fileKey: attachment.key,
+        });
         continue;
       }
-      fs.appendFileSync('/tmp/lark-ingest-trace.log', `SUCCESS: downloaded ${downloaded.buffer.length} bytes for ${attachment.key}\n`);
+      orangeDebug('lark.file.ingestion.download.success', {
+        messageId: input.messageId,
+        chatId: input.chatId,
+        fileKey: attachment.key,
+        sizeBytes: downloaded.buffer.length,
+        contentType: downloaded.contentType,
+      });
 
       const mimeType = resolveMimeType(downloaded.contentType, attachment.larkFileType, attachment.fileType);
       const fileName = resolveFileName(attachment);
@@ -117,10 +141,19 @@ export const ingestLarkAttachments = async (input: {
         companyId: input.companyId,
         uploaderUserId: input.uploaderUserId,
         uploaderChannel: 'lark',
-        allowedRoles: ['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN'],
+        allowedRoles: input.allowedRoles && input.allowedRoles.length > 0
+          ? input.allowedRoles
+          : ['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN'],
       });
-
-      fs.appendFileSync('/tmp/lark-ingest-trace.log', `SUCCESS: fileUploadService uploaded to ${result.cloudinaryUrl}\n`);
+      orangeDebug('lark.file.ingestion.upload.success', {
+        messageId: input.messageId,
+        chatId: input.chatId,
+        fileKey: attachment.key,
+        fileAssetId: result.fileAssetId,
+        cloudinaryUrl: result.cloudinaryUrl,
+        mimeType,
+        fileName,
+      });
 
       results.push({
         fileAssetId: result.fileAssetId,
@@ -137,9 +170,14 @@ export const ingestLarkAttachments = async (input: {
         mimeType,
       });
     } catch (error) {
-      fs.appendFileSync('/tmp/lark-ingest-trace.log', `CATCH: error processing ${attachment.key}: ${error instanceof Error ? error.stack : error}\n`);
       logger.warn('lark.file.ingestion.error', {
         messageId: input.messageId,
+        fileKey: attachment.key,
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
+      orangeDebug('lark.file.ingestion.error', {
+        messageId: input.messageId,
+        chatId: input.chatId,
         fileKey: attachment.key,
         error: error instanceof Error ? error.message : 'unknown_error',
       });
@@ -150,7 +188,11 @@ export const ingestLarkAttachments = async (input: {
   if (results.length > 0) {
     larkRecentFilesStore.add(input.chatId, results);
   }
-
-  fs.appendFileSync('/tmp/lark-ingest-trace.log', `EXITING: returning ${results.length} normalized files\n`);
+  orangeDebug('lark.file.ingestion.exit', {
+    messageId: input.messageId,
+    chatId: input.chatId,
+    fileCount: results.length,
+    fileAssetIds: results.map((result) => result.fileAssetId),
+  });
   return results;
 };
