@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { ArrowUp, AtSign, ChevronDown, Paperclip, Square, X, FileText, Image, File, Infinity, Zap, Flame, Rocket } from 'lucide-react'
+import { ArrowUp, AtSign, ChevronDown, Paperclip, Square, X, FileText, Image, File, Infinity, Zap, Flame, Rocket, Eye, EyeOff, Copy, Check } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useAuth } from '../context/AuthContext'
 import { useChat } from '../context/ChatContext'
@@ -160,6 +160,9 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [mode, setMode] = useState<ComposerMode>('xtreme')
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false)
+  const [showDebugToken, setShowDebugToken] = useState(false)
+  const [didCopyToken, setDidCopyToken] = useState(false)
+  const [didCopyThreadId, setDidCopyThreadId] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const modeMenuRef = useRef<HTMLDivElement>(null)
@@ -309,6 +312,28 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
       }]
     })
   }, [])
+
+  const handleCopyToken = useCallback(async () => {
+    if (!token) return
+    try {
+      await navigator.clipboard.writeText(token)
+      setDidCopyToken(true)
+      window.setTimeout(() => setDidCopyToken(false), 1500)
+    } catch {
+      setDidCopyToken(false)
+    }
+  }, [token])
+
+  const handleCopyThreadId = useCallback(async () => {
+    if (!activeThread?.id) return
+    try {
+      await navigator.clipboard.writeText(activeThread.id)
+      setDidCopyThreadId(true)
+      window.setTimeout(() => setDidCopyThreadId(false), 1500)
+    } catch {
+      setDidCopyThreadId(false)
+    }
+  }, [activeThread])
 
   const referencedIds = new Set(attachments.map(a => a.fileAssetId).filter(Boolean) as string[])
   const selectedMode = MODE_OPTIONS.find((option) => option.value === mode) ?? MODE_OPTIONS[1]
@@ -558,6 +583,50 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
             ? `Message Odin for grounded Zoho work, research, documents, or workspace actions in ${currentWorkspace.name}. Drag & drop or attach PDFs, DOCX, or images.`
             : 'Open a workspace folder to begin.'}
         </p>
+
+        {token && (
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-2 text-[10px] text-[hsl(0,0%,50%)]">
+            <button
+              type="button"
+              onClick={() => setShowDebugToken((prev) => !prev)}
+              className="inline-flex items-center gap-1 rounded-md border border-[hsl(0,0%,20%)] bg-[hsl(0,0%,12%)] px-2 py-1 font-medium text-[hsl(0,0%,68%)] hover:text-[hsl(0,0%,88%)]"
+              title={showDebugToken ? 'Hide debug token' : 'Reveal debug token'}
+            >
+              {showDebugToken ? <EyeOff size={11} /> : <Eye size={11} />}
+              <span>{showDebugToken ? 'Hide token' : 'Show token'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { void handleCopyToken() }}
+              className="inline-flex items-center gap-1 rounded-md border border-[hsl(0,0%,20%)] bg-[hsl(0,0%,12%)] px-2 py-1 font-medium text-[hsl(0,0%,68%)] hover:text-[hsl(0,0%,88%)]"
+              title="Copy debug token"
+            >
+              {didCopyToken ? <Check size={11} /> : <Copy size={11} />}
+              <span>{didCopyToken ? 'Copied' : 'Copy token'}</span>
+            </button>
+            <div className="max-w-[420px] truncate rounded-md border border-[hsl(0,0%,18%)] bg-[hsl(0,0%,10%)] px-2 py-1 font-mono text-[10px] text-[hsl(0,0%,72%)]">
+              {showDebugToken ? token : `${token.slice(0, 10)}...${token.slice(-6)}`}
+            </div>
+            <button
+              type="button"
+              onClick={() => { void handleCopyThreadId() }}
+              disabled={!activeThread?.id}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-md border px-2 py-1 font-medium',
+                activeThread?.id
+                  ? 'border-[hsl(0,0%,20%)] bg-[hsl(0,0%,12%)] text-[hsl(0,0%,68%)] hover:text-[hsl(0,0%,88%)]'
+                  : 'border-[hsl(0,0%,16%)] bg-[hsl(0,0%,10%)] text-[hsl(0,0%,34%)] cursor-not-allowed'
+              )}
+              title="Copy active thread id"
+            >
+              {didCopyThreadId ? <Check size={11} /> : <Copy size={11} />}
+              <span>{didCopyThreadId ? 'Copied thread' : 'Copy thread id'}</span>
+            </button>
+            <div className="max-w-[320px] truncate rounded-md border border-[hsl(0,0%,18%)] bg-[hsl(0,0%,10%)] px-2 py-1 font-mono text-[10px] text-[hsl(0,0%,72%)]">
+              {activeThread?.id ?? 'No active thread'}
+            </div>
+          </div>
+        )}
       </div>
 
       <FilesDrawer

@@ -10,6 +10,7 @@ import { larkMeetingAgentTool } from '../../company/integrations/mastra/tools/la
 import { larkApprovalAgentTool } from '../../company/integrations/mastra/tools/lark-approval-agent.tool';
 import { larkDocAgentTool } from '../../company/integrations/mastra/tools/lark-doc-agent.tool';
 import type { ControllerRuntimeState, WorkerCapability, WorkerInvocation, WorkerObservation } from '../../company/orchestration/controller-runtime';
+import { getSkillDocument, searchSkillMetadata } from '../../company/orchestration/controller-runtime';
 import { runRepoWorker, type RepoWorkerInput } from './repo-worker';
 import type { ActionResultPayload, DesktopAction } from './desktop-controller.types';
 
@@ -51,6 +52,16 @@ const extractToolCitations = (resultSummary?: string): CitationSummary[] => {
 };
 
 export const DESKTOP_WORKER_CAPABILITIES: WorkerCapability[] = [
+  {
+    workerKey: 'skills',
+    description: 'Search skill metadata and retrieve full SKILL.md guidance when a structured workflow may help',
+    actionKinds: ['DISCOVER_CANDIDATES', 'RETRIEVE_ARTIFACT', 'VERIFY_OUTPUT'],
+    domains: ['skills', 'workflow', 'protocol'],
+    artifactTypes: ['skill_metadata', 'skill_document'],
+    canMutateWorkspace: false,
+    requiresApproval: false,
+    verificationHints: ['skill_metadata', 'skill_document'],
+  },
   {
     workerKey: 'repo',
     description: 'Discover GitHub repositories, inspect them, and retrieve grounded files',
@@ -179,10 +190,6 @@ const basenameOf = (value: string): string => {
 };
 
 const inferOutputPath = (state: ControllerRuntimeState<DesktopAction>): string => {
-  const workspaceOutput = state.objective.requestedOutputs.find((output) => output.kind === 'workspace_mutation');
-  const explicitPath = typeof workspaceOutput?.metadata?.targetPath === 'string' ? workspaceOutput.metadata.targetPath : '';
-  if (explicitPath.trim()) return explicitPath.trim();
-
   const repositoryFile = state.observations
     .flatMap((observation) => observation.artifacts)
     .find((artifact) => artifact.type === 'repository_file');
@@ -195,11 +202,7 @@ export const buildDesktopLocalAction = (
   kind: 'MUTATE_WORKSPACE' | 'EXECUTE_COMMAND',
 ): DesktopAction | null => {
   if (kind === 'EXECUTE_COMMAND') {
-    const terminalOutput = state.objective.requestedOutputs.find((output) => output.kind === 'terminal_result');
-    const commandHint = typeof terminalOutput?.metadata?.commandHint === 'string'
-      ? terminalOutput.metadata.commandHint
-      : state.userRequest;
-    return { kind: 'run_command', command: commandHint };
+    return null;
   }
 
   const retrieved = state.observations.find((observation) =>
@@ -213,6 +216,86 @@ export const buildDesktopLocalAction = (
     kind: 'write_file',
     path: inferOutputPath(state),
     content,
+  };
+};
+
+const normalizeSkillsObservation = (invocation: WorkerInvocation): WorkerObservation => {
+  if (invocation.actionKind === 'DISCOVER_CANDIDATES') {
+    const query = typeof invocation.input.query === 'string' ? invocation.input.query : '';
+    const matches = searchSkillMetadata(query);
+    return {
+      ok: matches.length > 0,
+      workerKey: 'skills',
+      actionKind: invocation.actionKind,
+      summary: matches.length > 0
+        ? `Found ${matches.length} relevant skill${matches.length === 1 ? '' : 's'}`
+        : `No matching skills found for "${query}"`,
+      entities: matches.map((skill) => ({ type: 'skill', id: skill.id, title: skill.name })),
+      facts: matches.map((skill) => `${skill.name}: ${skill.description}`),
+      artifacts: matches.map((skill) => ({
+        id: skill.id,
+        type: 'skill_metadata',
+        title: skill.name,
+        metadata: {
+          description: skill.description,
+          whenToUse: skill.whenToUse,
+          tags: skill.tags,
+          toolHints: skill.toolHints,
+        },
+      })),
+      citations: [],
+      rawOutput: { query, matches },
+      blockingReason: matches.length === 0 ? `No skill metadata matched "${query}".` : undefined,
+      verificationHints: ['skill_metadata'],
+    };
+  }
+
+  const skillId = typeof invocation.input.id === 'string' ? invocation.input.id.trim() : '';
+  if (!skillId) {
+    return {
+      ok: false,
+      workerKey: 'skills',
+      actionKind: invocation.actionKind,
+      summary: 'skills.RETRIEVE_ARTIFACT requires input.id',
+      entities: [],
+      facts: [],
+      artifacts: [],
+      citations: [],
+      rawOutput: {
+        errorCode: 'invalid_input',
+        expectedInput: { id: 'string' },
+        receivedKeys: Object.keys(invocation.input),
+      },
+      blockingReason: 'The skills worker requires the canonical key "id" for RETRIEVE_ARTIFACT.',
+      retryHint: 'Retry with input.id set to the selected skill metadata id.',
+      verificationHints: ['skill_document'],
+    };
+  }
+
+  const skill = getSkillDocument(skillId);
+  return {
+    ok: Boolean(skill),
+    workerKey: 'skills',
+    actionKind: invocation.actionKind,
+    summary: skill ? `Loaded SKILL.md for ${skill.name}` : `Skill "${skillId}" is not available`,
+    entities: skill ? [{ type: 'skill', id: skill.id, title: skill.name }] : [],
+    facts: skill ? [skill.description] : [],
+    artifacts: skill ? [{
+      id: skill.id,
+      type: 'skill_document',
+      title: skill.name,
+      metadata: {
+        description: skill.description,
+        whenToUse: skill.whenToUse,
+        tags: skill.tags,
+        toolHints: skill.toolHints,
+        contentLength: skill.content.length,
+      },
+    }] : [],
+    citations: [],
+    rawOutput: skill ? { id: skill.id, content: skill.content, contentLength: skill.content.length, metadata: skill } : { id: skillId },
+    blockingReason: skill ? undefined : `Skill "${skillId}" could not be loaded.`,
+    verificationHints: ['skill_document'],
   };
 };
 
@@ -309,18 +392,69 @@ const normalizeToolObservation = (workerKey: string, actionKind: WorkerObservati
   const citations = workerKey === 'search'
     ? extractToolCitations(typeof record.summary === 'string' ? record.summary : typeof record.answer === 'string' ? record.answer : undefined)
     : [];
-  const ok = record.success === false
-    ? false
-    : typeof record.error !== 'string'
-      && !/failed|error|not permitted/i.test(summary);
+  const cleanedSummary = summary
+    .replace(/^```[\w]*\n?/, '')
+    .replace(/\n?```$/, '')
+    .trim();
+  const summaryJson = (() => {
+    try {
+      return JSON.parse(cleanedSummary) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  })();
+  const ok = (() => {
+    if (record.success === true) return true;
+    if (record.success === false) return false;
+    if (summaryJson?.success === true) return true;
+    if (summaryJson?.error === null && typeof summaryJson?.summary === 'string') return true;
+    if (typeof record.error === 'string') return false;
+    const lower = cleanedSummary.toLowerCase();
+    if (/failed|not permitted/.test(lower)) return false;
+    if (
+      lower.includes('found')
+      || lower.includes('retrieved')
+      || lower.includes('loaded')
+      || lower.includes('matched')
+      || lower.includes('created')
+      || lower.includes('updated')
+    ) {
+      return true;
+    }
+    return !lower.includes('error');
+  })();
+  const entities = [
+    typeof record.recordId === 'string'
+      ? {
+        type: typeof record.recordType === 'string' && record.recordType.trim() ? record.recordType : workerKey,
+        id: record.recordId,
+        title: summary,
+      }
+      : null,
+    typeof record.taskId === 'string'
+      ? { type: 'lark_task', id: record.taskId, title: summary }
+      : null,
+    typeof record.documentId === 'string'
+      ? { type: 'lark_doc', id: record.documentId, title: summary }
+      : null,
+    typeof record.eventId === 'string'
+      ? { type: 'lark_event', id: record.eventId, title: summary }
+      : null,
+  ].filter((value): value is NonNullable<typeof value> => Boolean(value));
+  const artifacts = citations.map((citation) => ({
+    id: citation.id,
+    type: 'citation',
+    title: citation.title,
+    ...(citation.url ? { url: citation.url } : {}),
+  }));
   return {
     ok,
     workerKey,
     actionKind,
     summary,
-    entities: [],
+    entities,
     facts: [summary],
-    artifacts: [],
+    artifacts,
     citations,
     rawOutput: result,
     blockingReason: /which|what|provide|share|missing|\?/.test(summary.toLowerCase()) ? summary : undefined,
@@ -333,6 +467,10 @@ export const executeDesktopWorker = async (input: {
   invocation: WorkerInvocation;
   requestContext: RequestContext<Record<string, unknown>>;
 }): Promise<WorkerObservation> => {
+  if (input.invocation.workerKey === 'skills') {
+    return normalizeSkillsObservation(input.invocation);
+  }
+
   if (input.invocation.workerKey === 'repo') {
     const repoInput = input.invocation.input as RepoWorkerInput;
     return normalizeRepoObservation(await runRepoWorker(repoInput));

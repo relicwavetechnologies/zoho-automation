@@ -289,6 +289,10 @@ class ConversationMemoryStore {
       content: entry.content,
     }));
   }
+
+  clearConversation(conversationKey: string): void {
+    this.buckets.delete(conversationKey);
+  }
 }
 
 export const conversationMemoryStore = new ConversationMemoryStore();

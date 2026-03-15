@@ -10,14 +10,6 @@ export type ControllerActionKind =
   | 'COMPLETE'
   | 'FAIL';
 
-export type ObjectiveOutputKind =
-  | 'direct_reply'
-  | 'research_answer'
-  | 'remote_artifact'
-  | 'workspace_mutation'
-  | 'terminal_result'
-  | 'remote_entity';
-
 export type VerificationRequirement =
   | 'non_empty_content'
   | 'source_citation'
@@ -25,7 +17,9 @@ export type VerificationRequirement =
   | 'workspace_content'
   | 'terminal_exit'
   | 'terminal_output'
-  | 'entity_evidence';
+  | 'entity_evidence'
+  | 'skill_metadata'
+  | 'skill_document';
 
 export type VerificationStatus = 'pending' | 'satisfied' | 'failed';
 
@@ -50,31 +44,27 @@ export type CitationRecord = {
   url?: string;
 };
 
-export type VerificationPolicy = {
-  outputId: string;
-  outputKind: ObjectiveOutputKind;
-  description: string;
-  requirements: VerificationRequirement[];
-};
-
-export type ObjectiveOutput = {
+export type SkillMetadata = {
   id: string;
-  kind: ObjectiveOutputKind;
+  name: string;
   description: string;
-  verification: VerificationRequirement[];
-  metadata?: Record<string, unknown>;
+  whenToUse: string[];
+  tags: string[];
+  toolHints: string[];
 };
 
-export type ObjectiveContract = {
-  objectiveSummary: string;
-  successCriteria: string[];
-  requestedOutputs: ObjectiveOutput[];
-  allowLocalMutation: boolean;
-  requiresApproval: boolean;
-  blockingQuestions: string[];
-  planVisibility: 'hidden' | 'compact' | 'detailed';
+export type SkillDocument = SkillMetadata & {
+  content: string;
+};
+
+export type ControllerTaskProfile = {
+  summary: string;
+  complexity: 'ambient' | 'simple' | 'structured';
+  shouldUseSkills: boolean;
+  skillQuery?: string;
+  deliverables: string[];
+  missingInputs: string[];
   directReply?: string;
-  domains: string[];
   notes: string[];
 };
 
@@ -97,7 +87,7 @@ export type WorkerInvocation = {
 };
 
 export type VerificationResult = {
-  outputId: string;
+  checkId: string;
   status: VerificationStatus;
   detail: string;
   evidence: string[];
@@ -130,6 +120,7 @@ export type ProgressRecord = {
   step: number;
   actionSignature: string;
   workerKey: string;
+  actionKind?: Exclude<ControllerActionKind, 'ASK_USER' | 'COMPLETE' | 'FAIL'>;
   inputHash: string;
   artifactsAdded: string[];
   factsAdded: string[];
@@ -158,16 +149,52 @@ export type LocalActionRecord<LocalAction = unknown> = {
   observationSummary?: string;
 };
 
+export type TodoListState = {
+  required: string[];
+  completed: string[];
+  failed: string[];
+  retryCounts: Record<string, number>;
+  initialized: boolean;
+} | null;
+
 export type ControllerRuntimeState<LocalAction = unknown> = {
   executionId: string;
   userRequest: string;
-  objective: ObjectiveContract;
+  profile: ControllerTaskProfile;
+  bootstrap?: ControllerTaskProfile;
+  inferredInputs?: Record<string, string | undefined>;
+  readinessConfirmed: boolean;
+  todoList?: TodoListState;
+  terminalEventEmitted?: boolean;
   observations: WorkerObservation[];
+  workerResults: Array<{
+    hopIndex: number;
+    workerKey: string;
+    actionKind: string;
+    input: Record<string, unknown>;
+    rawResponse: unknown;
+    success: boolean;
+    hasSubstantiveContent: boolean;
+    llmSummary?: string;
+    error?: string;
+  }>;
   progressLedger: ProgressRecord[];
   verifications: VerificationResult[];
   stepCount: number;
+  hopCount: number;
+  retryCount: number;
   lifecyclePhase: LocalActionPhase;
   localActionHistory: LocalActionRecord<LocalAction>[];
+  pendingSkillId?: string | null;
+  resolvedSkillId?: string | null;
+  loadedSkillContent?: string | null;
+  availableSkills?: SkillMetadata[];
+  lastAction?: {
+    workerKey: string;
+    actionKind: Exclude<ControllerActionKind, 'ASK_USER' | 'COMPLETE' | 'FAIL'>;
+    success: boolean;
+  } | null;
+  lastContractViolation?: string | null;
   pendingLocalAction?: {
     id: string;
     actionKind: 'MUTATE_WORKSPACE' | 'EXECUTE_COMMAND';
@@ -180,11 +207,16 @@ export type ControllerRuntimeState<LocalAction = unknown> = {
 
 export type ControllerRuntimeResult<LocalAction = unknown> =
   | { kind: 'action'; action: LocalAction; state: ControllerRuntimeState<LocalAction> }
-  | { kind: 'answer'; text: string; state: ControllerRuntimeState<LocalAction> };
+  | {
+    kind: 'answer';
+    text: string;
+    terminalState: 'COMPLETE' | 'ASK_USER' | 'FAIL' | 'UNKNOWN';
+    state: ControllerRuntimeState<LocalAction>;
+  };
 
 export type ControllerRuntimeHooks<LocalAction = unknown, PlanView = unknown> = {
   projectPlan?: (state: ControllerRuntimeState<LocalAction>) => PlanView | null;
-  onObjective?: (state: ControllerRuntimeState<LocalAction>, plan: PlanView | null) => Promise<void> | void;
+  onBootstrap?: (state: ControllerRuntimeState<LocalAction>, plan: PlanView | null) => Promise<void> | void;
   onDecision?: (state: ControllerRuntimeState<LocalAction>, decision: ControllerDecision<LocalAction>, plan: PlanView | null) => Promise<void> | void;
   onLocalActionRequest?: (
     state: ControllerRuntimeState<LocalAction>,

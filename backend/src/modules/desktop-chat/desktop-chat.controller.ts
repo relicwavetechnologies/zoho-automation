@@ -776,6 +776,17 @@ class DesktopChatController extends BaseController {
 
     const engineUsed = await this.resolveDesktopEngine(threadId, session.userId, requestedEngine);
     if (engineUsed === 'langgraph') {
+      logger.info('desktop.flow.entry', {
+        file: 'backend/src/modules/desktop-chat/desktop-chat.controller.ts',
+        method: 'send',
+        threadId,
+        userId: session.userId,
+        executionId: requestedExecutionId ?? null,
+        mode,
+        engineUsed,
+        hasMessage: message.trim().length > 0,
+        attachedFileCount: attachedFiles.length,
+      }, { always: true });
       await langGraphDesktopChatEngine.stream({
         session,
         threadId,
@@ -1686,6 +1697,17 @@ class DesktopChatController extends BaseController {
 
     const engineUsed = await this.resolveDesktopEngine(threadId, session.userId, requestedEngine);
     if (engineUsed === 'langgraph') {
+      logger.info('desktop.flow.entry', {
+        file: 'backend/src/modules/desktop-chat/desktop-chat.controller.ts',
+        method: 'act',
+        threadId,
+        userId: session.userId,
+        executionId,
+        mode,
+        engineUsed,
+        hasMessage: Boolean(message && message.trim()),
+        hasActionResult: Boolean(actionResult),
+      }, { always: true });
       const acceptsStream = String(req.headers.accept ?? '').includes('text/event-stream');
       if (acceptsStream) {
         await langGraphDesktopChatEngine.streamAct({

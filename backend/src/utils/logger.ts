@@ -43,6 +43,8 @@ const parseLogLevel = (value: string): LogLevel => {
 };
 
 const minimumLevel = parseLogLevel(config.LOG_LEVEL.toLowerCase());
+const TRACE_ONLY_LOGS = process.env.CURSORR_TRACE_ONLY_LOGS !== 'false';
+const TRACE_PREFIXES = ['desktop.flow', 'llm.context', 'llm.response'];
 
 const redactSensitiveValue = (key: string, value: unknown): unknown => {
   const lowered = key.toLowerCase();
@@ -106,6 +108,9 @@ const sanitize = (value: unknown, depth = 0): unknown => {
 };
 
 const shouldLog = (level: LogLevel, options?: LogOptions, randomFn: () => number = Math.random): boolean => {
+  if (TRACE_ONLY_LOGS) {
+    return true;
+  }
   if (options?.always) {
     return true;
   }
@@ -184,6 +189,13 @@ const prettyLine = (level: LogLevel, message: string, meta?: unknown): string =>
 // ─── Emit ────────────────────────────────────────────────────────────────────
 
 const emit = (level: LogLevel, message: string, meta?: unknown, options?: LogOptions): void => {
+  if (
+    TRACE_ONLY_LOGS
+    && !TRACE_PREFIXES.some((prefix) => message.startsWith(prefix))
+    && level !== 'fatal'
+  ) {
+    return;
+  }
   if (!shouldLog(level, options)) {
     return;
   }

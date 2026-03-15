@@ -16,6 +16,10 @@ export type DesktopWorkspaceAction =
   | { kind: 'run_command'; command: string }
 
 export type NonCommandWorkspaceAction = Exclude<DesktopWorkspaceAction, { kind: 'run_command' }>
+export type ApprovalRequiredWorkspaceAction = Extract<
+  DesktopWorkspaceAction,
+  { kind: 'run_command' | 'write_file' | 'mkdir' | 'delete_path' }
+>
 
 export type PendingLocalActionState = {
   id: string
@@ -25,6 +29,7 @@ export type PendingLocalActionState = {
   action: DesktopWorkspaceAction
   source: 'manual' | 'agent'
   engine?: 'mastra' | 'langgraph'
+  status?: 'pending' | 'approved' | 'running'
 }
 
 export type RunningCommandState = {
@@ -98,19 +103,42 @@ export function buildAgentActionToolBlock(
 
 export function buildApprovalBlock(
   id: string,
-  action: Extract<DesktopWorkspaceAction, { kind: 'run_command' | 'write_file' | 'mkdir' | 'delete_path' }>,
+  action: ApprovalRequiredWorkspaceAction,
   workspacePath: string,
+  status: ApprovalContentBlock['status'] = 'pending',
 ): ApprovalContentBlock {
   switch (action.kind) {
     case 'run_command':
-      return { type: 'approval', id, kind: action.kind, title: 'Command approval', description: 'Run this shell command inside the selected workspace.', subject: `$ ${action.command}`, footer: workspacePath, status: 'pending' }
+      return { type: 'approval', id, kind: action.kind, title: 'Command approval', description: 'Run this shell command inside the selected workspace.', subject: `$ ${action.command}`, footer: workspacePath, status }
     case 'write_file':
-      return { type: 'approval', id, kind: action.kind, title: 'File change approval', description: 'Write this file inside the selected workspace.', subject: action.path, footer: workspacePath, status: 'pending' }
+      return { type: 'approval', id, kind: action.kind, title: 'File change approval', description: 'Write this file inside the selected workspace.', subject: action.path, footer: workspacePath, status }
     case 'mkdir':
-      return { type: 'approval', id, kind: action.kind, title: 'Folder creation approval', description: 'Create this folder inside the selected workspace.', subject: action.path, footer: workspacePath, status: 'pending' }
+      return { type: 'approval', id, kind: action.kind, title: 'Folder creation approval', description: 'Create this folder inside the selected workspace.', subject: action.path, footer: workspacePath, status }
     case 'delete_path':
-      return { type: 'approval', id, kind: action.kind, title: 'Delete approval', description: 'Delete this path inside the selected workspace.', subject: action.path, footer: workspacePath, status: 'pending' }
+      return { type: 'approval', id, kind: action.kind, title: 'Delete approval', description: 'Delete this path inside the selected workspace.', subject: action.path, footer: workspacePath, status }
   }
+}
+
+export function buildTerminalBlock(
+  id: string,
+  command: string,
+  cwd: string,
+  status: 'running' | 'done' | 'failed' = 'running',
+): Extract<ContentBlock, { type: 'terminal' }> {
+  return { type: 'terminal', id, command, cwd, status, stdout: '', stderr: '' }
+}
+
+export function isApprovalRequiredAction(action: DesktopWorkspaceAction): action is ApprovalRequiredWorkspaceAction {
+  return (
+    action.kind === 'run_command'
+    || action.kind === 'write_file'
+    || action.kind === 'mkdir'
+    || action.kind === 'delete_path'
+  )
+}
+
+export function isImmediateWorkspaceAction(action: DesktopWorkspaceAction): action is Extract<DesktopWorkspaceAction, { kind: 'list_files' | 'read_file' }> {
+  return action.kind === 'list_files' || action.kind === 'read_file'
 }
 
 export function summarizeCommandCompletion(input: {

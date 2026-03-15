@@ -1,3 +1,4 @@
 export * from './types';
-export * from './objective-contract';
+export * from './prompts';
+export * from './skills-registry';
 export * from './runtime';

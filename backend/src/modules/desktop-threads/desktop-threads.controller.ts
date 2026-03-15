@@ -146,6 +146,12 @@ class DesktopThreadsController extends BaseController {
     await desktopThreadsService.deleteThread(req.params.threadId, s.userId);
     return res.status(204).send();
   };
+
+  clearHistory = async (req: Request, res: Response) => {
+    const s = this.session(req);
+    await desktopThreadsService.clearThreadHistory(req.params.threadId, s.userId);
+    return res.status(204).send();
+  };
 }
 
 export const desktopThreadsController = new DesktopThreadsController();

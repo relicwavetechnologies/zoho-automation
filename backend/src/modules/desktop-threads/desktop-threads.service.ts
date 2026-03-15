@@ -1,6 +1,7 @@
 import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
 import { DesktopThreadsRepository, desktopThreadsRepository } from './desktop-threads.repository';
+import { conversationMemoryStore } from '../../company/state/conversation/conversation-memory.store';
 
 export type DesktopThreadMessagesPage = {
   thread: Awaited<ReturnType<DesktopThreadsRepository['getThread']>>;
@@ -117,6 +118,13 @@ export class DesktopThreadsService extends BaseService {
 
   async deleteThread(threadId: string, userId: string): Promise<void> {
     await this.repository.deleteThread(threadId, userId);
+  }
+
+  async clearThreadHistory(threadId: string, userId: string): Promise<void> {
+    const thread = await this.repository.getThread(threadId, userId);
+    if (!thread) throw new HttpException(404, 'Thread not found');
+    await this.repository.clearThreadMessages(threadId, userId);
+    conversationMemoryStore.clearConversation(`desktop:${threadId}`);
   }
 }
 
