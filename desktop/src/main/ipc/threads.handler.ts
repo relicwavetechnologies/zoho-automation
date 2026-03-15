@@ -34,14 +34,34 @@ export function registerThreadHandlers(): void {
     },
   )
 
-  ipcMain.handle('desktop:thread:create', async (_event, token: string) => {
+  ipcMain.handle(
+    'desktop:thread:create',
+    async (_event, token: string, payload?: { preferredEngine?: 'mastra' | 'langgraph' }) => {
     const res = await net.fetch(`${BACKEND_URL}/api/desktop/threads`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify(payload ?? {}),
     })
     return res.json()
-  })
+    },
+  )
+
+  ipcMain.handle(
+    'desktop:thread:update-preferences',
+    async (
+      _event,
+      token: string,
+      threadId: string,
+      payload: { preferredEngine: 'mastra' | 'langgraph' },
+    ) => {
+      const res = await net.fetch(`${BACKEND_URL}/api/desktop/threads/${threadId}/preferences`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      return res.json()
+    },
+  )
 
   ipcMain.handle(
     'desktop:thread:add-message',

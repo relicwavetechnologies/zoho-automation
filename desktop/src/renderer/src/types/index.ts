@@ -22,6 +22,7 @@ export interface WorkspaceFolder {
 export interface Thread {
   id: string
   title: string | null
+  preferredEngine: 'mastra' | 'langgraph'
   lastMessageAt: string | null
   createdAt: string
   updatedAt: string
@@ -110,6 +111,7 @@ export type ExecutionPlanTaskStatus = 'pending' | 'running' | 'done' | 'blocked'
 export type ExecutionPlanStatus = 'running' | 'completed' | 'failed'
 export type ExecutionPlanOwnerAgent =
   | 'supervisor'
+  | 'repo'
   | 'zoho'
   | 'outreach'
   | 'search'
@@ -191,6 +193,7 @@ export interface MessageMetadata {
   contentBlocks?: ContentBlock[]
   plan?: ExecutionPlan
   executionId?: string
+  engineUsed?: 'mastra' | 'langgraph'
   attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>
   shareAction?: {
     type: 'conversation'
@@ -244,7 +247,7 @@ export interface LarkDocRef {
 }
 
 export interface StreamEvent {
-  type: 'text' | 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'step' | 'plan' | 'done' | 'error'
+  type: 'text' | 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'step' | 'plan' | 'done' | 'error' | 'action'
   data: unknown
 }
 

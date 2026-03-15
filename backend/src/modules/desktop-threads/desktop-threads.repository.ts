@@ -22,9 +22,20 @@ export class DesktopThreadsRepository extends BaseRepository {
     });
   }
 
-  createThread(userId: string, companyId: string): Promise<DesktopThread> {
+  createThread(
+    userId: string,
+    companyId: string,
+    preferredEngine: 'mastra' | 'langgraph' = 'langgraph',
+  ): Promise<DesktopThread> {
     return prisma.desktopThread.create({
-      data: { userId, companyId },
+      data: { userId, companyId, preferredEngine },
+    });
+  }
+
+  updatePreferredEngine(threadId: string, userId: string, preferredEngine: 'mastra' | 'langgraph'): Promise<DesktopThread> {
+    return prisma.desktopThread.update({
+      where: { id: threadId },
+      data: { preferredEngine },
     });
   }
 

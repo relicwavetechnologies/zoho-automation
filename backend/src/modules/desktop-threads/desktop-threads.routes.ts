@@ -9,6 +9,7 @@ router.use(requireMemberSession());
 
 router.get('/', asyncHandler(desktopThreadsController.list));
 router.post('/', asyncHandler(desktopThreadsController.create));
+router.patch('/:threadId/preferences', asyncHandler(desktopThreadsController.updatePreferences));
 router.post('/:threadId/messages', asyncHandler(desktopThreadsController.addMessage));
 router.get('/:threadId', asyncHandler(desktopThreadsController.get));
 router.delete('/:threadId', asyncHandler(desktopThreadsController.delete));

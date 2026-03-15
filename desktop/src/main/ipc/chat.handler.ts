@@ -4,6 +4,120 @@ import { net } from 'electron'
 const BACKEND_URL = process.env.CURSORR_BACKEND_URL ?? 'http://localhost:8000'
 const activeStreamControllers = new Map<string, AbortController>()
 
+async function startDesktopSseStream(input: {
+  target: Electron.WebContents
+  requestId: string
+  url: string
+  token: string
+  payload: Record<string, unknown>
+}): Promise<{ success: boolean; stopped?: boolean }> {
+  const controller = new AbortController()
+  activeStreamControllers.set(input.requestId, controller)
+
+  let res: Awaited<ReturnType<typeof net.fetch>>
+  try {
+    res = await net.fetch(input.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${input.token}`,
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify(input.payload),
+      signal: controller.signal,
+    })
+  } catch (error) {
+    activeStreamControllers.delete(input.requestId)
+    if (controller.signal.aborted) {
+      return { success: true, stopped: true }
+    }
+    input.target.send('desktop:chat:event', {
+      requestId: input.requestId,
+      event: {
+        type: 'error',
+        data: error instanceof Error ? error.message : 'Chat stream failed',
+      },
+    })
+    return { success: false }
+  }
+
+  if (!res.ok || !res.body) {
+    activeStreamControllers.delete(input.requestId)
+    const bodyText = await res.text()
+    input.target.send('desktop:chat:event', {
+      requestId: input.requestId,
+      event: {
+        type: 'error',
+        data: bodyText || `Chat stream failed (${res.status})`,
+      },
+    })
+    return { success: false }
+  }
+
+  ;(async () => {
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const frames = buffer.split('\n\n')
+        buffer = frames.pop() ?? ''
+
+        for (const frame of frames) {
+          const dataLines = frame
+            .split('\n')
+            .filter((line) => line.startsWith('data: '))
+            .map((line) => line.slice(6))
+
+          if (dataLines.length === 0) continue
+          const raw = dataLines.join('\n').trim()
+          if (!raw) continue
+
+          try {
+            const parsed = JSON.parse(raw) as { type: string; data: unknown }
+            input.target.send('desktop:chat:event', { requestId: input.requestId, event: parsed })
+          } catch {
+            input.target.send('desktop:chat:event', {
+              requestId: input.requestId,
+              event: { type: 'error', data: 'Malformed stream event received from backend' },
+            })
+          }
+        }
+      }
+
+      const trailing = buffer.trim()
+      if (trailing.startsWith('data: ')) {
+        try {
+          const parsed = JSON.parse(trailing.slice(6).trim()) as { type: string; data: unknown }
+          input.target.send('desktop:chat:event', { requestId: input.requestId, event: parsed })
+        } catch {
+          // ignore final malformed fragment
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return
+      }
+      input.target.send('desktop:chat:event', {
+        requestId: input.requestId,
+        event: {
+          type: 'error',
+          data: error instanceof Error ? error.message : 'Desktop stream failed',
+        },
+      })
+    } finally {
+      activeStreamControllers.delete(input.requestId)
+    }
+  })()
+
+  return { success: true }
+}
+
 export function registerChatHandlers(): void {
   ipcMain.handle(
     'desktop:chat:send',
@@ -61,114 +175,17 @@ export function registerChatHandlers(): void {
       message: string,
       requestId: string,
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-      mode?: 'fast' | 'high' | 'xtreme'
+      mode?: 'fast' | 'high' | 'xtreme',
+      engine?: 'mastra' | 'langgraph',
+      workspace?: { name: string; path: string },
     ) => {
-      const target = event.sender
-      const controller = new AbortController()
-      activeStreamControllers.set(requestId, controller)
-
-      let res: Awaited<ReturnType<typeof net.fetch>>
-      try {
-        res = await net.fetch(`${BACKEND_URL}/api/desktop/chat/${threadId}/send`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-            Accept: 'text/event-stream',
-          },
-          body: JSON.stringify({ message, attachedFiles, mode, executionId: requestId }),
-          signal: controller.signal,
-        })
-      } catch (error) {
-        activeStreamControllers.delete(requestId)
-        if (controller.signal.aborted) {
-          return { success: true, stopped: true }
-        }
-        target.send('desktop:chat:event', {
-          requestId,
-          event: {
-            type: 'error',
-            data: error instanceof Error ? error.message : 'Chat stream failed',
-          },
-        })
-        return { success: false }
-      }
-
-      if (!res.ok || !res.body) {
-        activeStreamControllers.delete(requestId)
-        const bodyText = await res.text()
-        target.send('desktop:chat:event', {
-          requestId,
-          event: {
-            type: 'error',
-            data: bodyText || `Chat stream failed (${res.status})`,
-          },
-        })
-        return { success: false }
-      }
-
-      ;(async () => {
-        const reader = res.body!.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-
-            buffer += decoder.decode(value, { stream: true })
-            const frames = buffer.split('\n\n')
-            buffer = frames.pop() ?? ''
-
-            for (const frame of frames) {
-              const dataLines = frame
-                .split('\n')
-                .filter((line) => line.startsWith('data: '))
-                .map((line) => line.slice(6))
-
-              if (dataLines.length === 0) continue
-              const raw = dataLines.join('\n').trim()
-              if (!raw) continue
-
-              try {
-                const parsed = JSON.parse(raw) as { type: string; data: unknown }
-                target.send('desktop:chat:event', { requestId, event: parsed })
-              } catch {
-                target.send('desktop:chat:event', {
-                  requestId,
-                  event: { type: 'error', data: 'Malformed stream event received from backend' },
-                })
-              }
-            }
-          }
-
-          const trailing = buffer.trim()
-          if (trailing.startsWith('data: ')) {
-            try {
-              const parsed = JSON.parse(trailing.slice(6).trim()) as { type: string; data: unknown }
-              target.send('desktop:chat:event', { requestId, event: parsed })
-            } catch {
-              // ignore final malformed fragment
-            }
-          }
-        } catch (error) {
-          if (controller.signal.aborted) {
-            return
-          }
-          target.send('desktop:chat:event', {
-            requestId,
-            event: {
-              type: 'error',
-              data: error instanceof Error ? error.message : 'Desktop stream failed',
-            },
-          })
-        } finally {
-          activeStreamControllers.delete(requestId)
-        }
-      })()
-
-      return { success: true }
+      return startDesktopSseStream({
+        target: event.sender,
+        requestId,
+        url: `${BACKEND_URL}/api/desktop/chat/${threadId}/send`,
+        token,
+        payload: { message, attachedFiles, mode, engine, workspace, executionId: requestId },
+      })
     },
   )
 
@@ -183,116 +200,46 @@ export function registerChatHandlers(): void {
         message: string
         attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>
         mode?: 'fast' | 'high' | 'xtreme'
+        engine?: 'mastra' | 'langgraph'
+        workspace?: { name: string; path: string }
         companyId?: string
       }
     ) => {
-      const { token, requestId, threadId, message, attachedFiles, mode, companyId } = payload
-      const target = event.sender
-      const controller = new AbortController()
-      activeStreamControllers.set(requestId, controller)
+      const { token, requestId, threadId, message, attachedFiles, mode, engine, workspace, companyId } = payload
+      return startDesktopSseStream({
+        target: event.sender,
+        requestId,
+        url: `${BACKEND_URL}/api/desktop/chat/${threadId}/send`,
+        token,
+        payload: { message, attachedFiles, mode, engine, workspace, companyId, executionId: requestId },
+      })
+    },
+  )
 
-      let res: Awaited<ReturnType<typeof net.fetch>>
-      try {
-        res = await net.fetch(`${BACKEND_URL}/api/desktop/chat/${threadId}/send`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-            Accept: 'text/event-stream',
-          },
-          body: JSON.stringify({ message, attachedFiles, mode, companyId, executionId: requestId }),
-          signal: controller.signal,
-        })
-      } catch (error) {
-        activeStreamControllers.delete(requestId)
-        if (controller.signal.aborted) {
-          return { success: true, stopped: true }
-        }
-        target.send('desktop:chat:event', {
-          requestId,
-          event: {
-            type: 'error',
-            data: error instanceof Error ? error.message : 'Chat stream failed',
-          },
-        })
-        return { success: false }
+  ipcMain.handle(
+    'desktop:chat:actStream',
+    async (
+      event,
+      payload: {
+        token: string
+        requestId: string
+        threadId: string
+        message?: string
+        workspace: { name: string; path: string }
+        actionResult?: Record<string, unknown>
+        plan?: Record<string, unknown> | null
+        mode?: 'fast' | 'high' | 'xtreme'
+        engine?: 'mastra' | 'langgraph'
       }
-
-      if (!res.ok || !res.body) {
-        activeStreamControllers.delete(requestId)
-        const bodyText = await res.text()
-        target.send('desktop:chat:event', {
-          requestId,
-          event: {
-            type: 'error',
-            data: bodyText || `Chat stream failed (${res.status})`,
-          },
-        })
-        return { success: false }
-      }
-
-      ;(async () => {
-        const reader = res.body!.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-
-            buffer += decoder.decode(value, { stream: true })
-            const frames = buffer.split('\n\n')
-            buffer = frames.pop() ?? ''
-
-            for (const frame of frames) {
-              const dataLines = frame
-                .split('\n')
-                .filter((line) => line.startsWith('data: '))
-                .map((line) => line.slice(6))
-
-              if (dataLines.length === 0) continue
-              const raw = dataLines.join('\n').trim()
-              if (!raw) continue
-
-              try {
-                const parsed = JSON.parse(raw) as { type: string; data: unknown }
-                target.send('desktop:chat:event', { requestId, event: parsed })
-              } catch {
-                target.send('desktop:chat:event', {
-                  requestId,
-                  event: { type: 'error', data: 'Malformed stream event received from backend' },
-                })
-              }
-            }
-          }
-
-          const trailing = buffer.trim()
-          if (trailing.startsWith('data: ')) {
-            try {
-              const parsed = JSON.parse(trailing.slice(6).trim()) as { type: string; data: unknown }
-              target.send('desktop:chat:event', { requestId, event: parsed })
-            } catch {
-              // ignore final malformed fragment
-            }
-          }
-        } catch (error) {
-          if (controller.signal.aborted) {
-            return
-          }
-          target.send('desktop:chat:event', {
-            requestId,
-            event: {
-              type: 'error',
-              data: error instanceof Error ? error.message : 'Desktop stream failed',
-            },
-          })
-        } finally {
-          activeStreamControllers.delete(requestId)
-        }
-      })()
-
-      return { success: true }
+    ) => {
+      const { token, requestId, threadId, ...rest } = payload
+      return startDesktopSseStream({
+        target: event.sender,
+        requestId,
+        url: `${BACKEND_URL}/api/desktop/chat/${threadId}/act`,
+        token,
+        payload: { ...rest, executionId: requestId },
+      })
     },
   )
 

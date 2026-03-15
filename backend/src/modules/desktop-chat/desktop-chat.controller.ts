@@ -45,6 +45,7 @@ import { estimateTokens, extractActualTokenUsage } from '../../utils/token-estim
 import { aiModelControlService } from '../../company/ai-models';
 import { resolveMastraLanguageModel } from '../../company/integrations/mastra/mastra-model-control';
 import { executionService } from '../../company/observability';
+import { langGraphDesktopChatEngine } from './langgraph-desktop.engine';
 
 const KNOWN_AGENTS = [
   'supervisorAgent',
@@ -66,23 +67,26 @@ const attachedFileSchema = z.object({
   fileName: z.string(),
 });
 
+const workspaceSchema = z.object({
+  name: z.string().min(1).max(255),
+  path: z.string().min(1).max(4096),
+});
+
 const sendSchema = z.object({
   message: z.string().max(10000).optional().default(''),
   agentId: z.string().optional(),
   attachedFiles: z.array(attachedFileSchema).optional().default([]),
   mode: z.enum(['fast', 'high', 'xtreme']).optional().default('xtreme'),
+  engine: z.enum(['mastra', 'langgraph']).optional(),
+  workspace: workspaceSchema.optional(),
   executionId: z.string().uuid().optional(),
-});
-
-const workspaceSchema = z.object({
-  name: z.string().min(1).max(255),
-  path: z.string().min(1).max(4096),
 });
 
 const actionResultSchema = z.object({
   kind: z.enum(['list_files', 'read_file', 'write_file', 'mkdir', 'delete_path', 'run_command']),
   ok: z.boolean(),
   summary: z.string().min(1).max(30000),
+  details: z.record(z.string(), z.unknown()).optional(),
 });
 
 const actSchema = z.object({
@@ -92,6 +96,7 @@ const actSchema = z.object({
   actionResult: actionResultSchema.optional(),
   plan: executionPlanSchema.optional(),
   mode: z.enum(['fast', 'high', 'xtreme']).optional().default('xtreme'),
+  engine: z.enum(['mastra', 'langgraph']).optional(),
   executionId: z.string().uuid().optional(),
 });
 
@@ -100,6 +105,7 @@ const shareConversationSchema = z.object({
 });
 
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
+type DesktopEngine = 'mastra' | 'langgraph';
 
 type ToolBlock = {
   type: 'tool';
@@ -728,6 +734,22 @@ class DesktopChatController extends BaseController {
     return s;
   }
 
+  private async resolveDesktopEngine(
+    threadId: string,
+    userId: string,
+    requestedEngine?: DesktopEngine,
+  ): Promise<DesktopEngine> {
+    const thread = await desktopThreadsService.getThreadRecord(threadId, userId);
+    const preferredEngine = thread.preferredEngine === 'mastra' ? 'mastra' : 'langgraph';
+    const engine = requestedEngine ?? preferredEngine;
+
+    if (requestedEngine && requestedEngine !== preferredEngine) {
+      await desktopThreadsService.updatePreferredEngine(threadId, userId, requestedEngine);
+    }
+
+    return engine;
+  }
+
   send = async (req: Request, res: Response) => {
     const session = this.session(req);
     const requesterAiRole = session.aiRole ?? session.role;
@@ -737,6 +759,8 @@ class DesktopChatController extends BaseController {
       agentId: requestedAgent,
       attachedFiles,
       mode,
+      engine: requestedEngine,
+      workspace,
       executionId: requestedExecutionId,
     } = sendSchema.parse(req.body);
 
@@ -748,6 +772,21 @@ class DesktopChatController extends BaseController {
     const limitExceeded = await aiTokenUsageService.checkLimitExceeded(session.userId, session.companyId);
     if (limitExceeded) {
       return res.status(402).json(ApiResponse.error('Monthly AI token limit reached. Contact your admin.'));
+    }
+
+    const engineUsed = await this.resolveDesktopEngine(threadId, session.userId, requestedEngine);
+    if (engineUsed === 'langgraph') {
+      await langGraphDesktopChatEngine.stream({
+        session,
+        threadId,
+        message,
+        attachedFiles,
+        mode,
+        executionId: requestedExecutionId ?? randomUUID(),
+        workspace,
+        res,
+      });
+      return;
     }
 
     const messageId = randomUUID();
@@ -796,6 +835,7 @@ class DesktopChatController extends BaseController {
           chatId: threadId,
           messageId,
           mode,
+          engineUsed,
           attachedFileCount: attachedFiles.length,
         },
       });
@@ -1471,6 +1511,7 @@ class DesktopChatController extends BaseController {
           // Save the full ordered timeline — this is what the UI reads on reload
           contentBlocks,
           executionId,
+          engineUsed,
         };
         const conversationRefs = buildPersistedConversationRefs(conversationKey);
         if (conversationRefs) metadata.conversationRefs = conversationRefs;
@@ -1611,7 +1652,7 @@ class DesktopChatController extends BaseController {
     const requesterAiRole = session.aiRole ?? session.role;
     const threadId = req.params.threadId;
     const parsed = actSchema.parse(req.body);
-    const { workspace, actionResult, agentId: requestedAgent, mode } = parsed;
+    const { workspace, actionResult, agentId: requestedAgent, mode, engine: requestedEngine } = parsed;
     const message = parsed.message?.trim() ?? '';
     const executionId = parsed.executionId ?? randomUUID();
     const taskId = randomUUID();
@@ -1643,6 +1684,37 @@ class DesktopChatController extends BaseController {
       return res.status(402).json(ApiResponse.error('Monthly AI token limit reached. Contact your admin.'));
     }
 
+    const engineUsed = await this.resolveDesktopEngine(threadId, session.userId, requestedEngine);
+    if (engineUsed === 'langgraph') {
+      const acceptsStream = String(req.headers.accept ?? '').includes('text/event-stream');
+      if (acceptsStream) {
+        await langGraphDesktopChatEngine.streamAct({
+          session,
+          threadId,
+          message: message || undefined,
+          workspace,
+          actionResult,
+          mode,
+          executionId,
+          res,
+        });
+        return;
+      }
+      const result = await langGraphDesktopChatEngine.act({
+        session,
+        threadId,
+        message: message || undefined,
+        workspace,
+        actionResult,
+        mode,
+        executionId,
+      });
+      if (result.kind === 'action') {
+        return res.json(ApiResponse.success(result, 'Local action requested'));
+      }
+      return res.json(ApiResponse.success(result, 'Assistant reply created'));
+    }
+
     const agentId = requestedAgent && (KNOWN_AGENTS as readonly string[]).includes(requestedAgent)
       ? requestedAgent
       : DEFAULT_AGENT;
@@ -1665,6 +1737,7 @@ class DesktopChatController extends BaseController {
             threadId,
             chatId: threadId,
             mode,
+            engineUsed,
             hasActionResult: Boolean(actionResult),
           },
         });
@@ -1989,6 +2062,7 @@ class DesktopChatController extends BaseController {
         assistantText,
         {
           executionId,
+          engineUsed,
           ...(buildPersistedConversationRefs(conversationKey) ? { conversationRefs: buildPersistedConversationRefs(conversationKey) } : {}),
           ...(activePlan ? { plan: activePlan } : {}),
           ...(canShareKnowledge ? { shareAction: buildShareAction(conversationKey) } : {}),

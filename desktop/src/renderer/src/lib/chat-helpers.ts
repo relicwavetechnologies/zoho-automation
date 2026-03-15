@@ -24,6 +24,7 @@ export type PendingLocalActionState = {
   workspacePath: string
   action: DesktopWorkspaceAction
   source: 'manual' | 'agent'
+  engine?: 'mastra' | 'langgraph'
 }
 
 export type RunningCommandState = {
@@ -33,6 +34,7 @@ export type RunningCommandState = {
   cwd: string
   command: string
   source: 'manual' | 'agent'
+  engine?: 'mastra' | 'langgraph'
 }
 
 export type ActionLoopResult =
@@ -43,11 +45,13 @@ export type ActionResultPayload = {
   kind: DesktopWorkspaceAction['kind']
   ok: boolean
   summary: string
+  details?: Record<string, unknown>
 }
 
 export type ActionCompletion = {
   ok: boolean
   actionResultSummary: string
+  actionResultDetails?: Record<string, unknown>
   summaryContent: string
   summaryMetadata: MessageMetadata
   toolResultSummary?: string
@@ -129,6 +133,10 @@ export function summarizeCommandCompletion(input: {
     return {
       ok: false,
       actionResultSummary: `User rejected command: ${input.command}`,
+      actionResultDetails: {
+        cwd: input.cwd,
+        status: 'rejected',
+      },
       summaryContent: `Rejected command \`${input.command}\`.`,
       summaryMetadata: { localCommandSummary: { command: input.command, cwd: input.cwd, status: 'rejected' } },
       toolResultSummary: 'Rejected',
@@ -148,6 +156,14 @@ export function summarizeCommandCompletion(input: {
   return {
     ok: input.status === 'done',
     actionResultSummary,
+    actionResultDetails: {
+      cwd: input.cwd,
+      exitCode: input.exitCode ?? null,
+      signal: input.signal ?? null,
+      durationMs: input.durationMs,
+      stdout: input.stdout,
+      stderr: input.stderr,
+    },
     summaryContent: `Executed \`${input.command}\` in \`${input.cwd}\` with ${exitLabel}${signalLabel}${durationLabel}.`,
     summaryMetadata: {
       localCommandSummary: {
@@ -173,6 +189,7 @@ export function summarizeWorkspaceAction(
     return {
       ok: false,
       actionResultSummary: `Failed to ${action.kind} ${targetPath}: ${errorMessage}`,
+      actionResultDetails: { path: targetPath, error: errorMessage },
       summaryContent: `Failed to ${action.kind.replace('_', ' ')} \`${targetPath}\`.`,
       summaryMetadata: { localFileSummary: { kind: action.kind, path: targetPath, status: 'failed' } },
       toolResultSummary: errorMessage,
@@ -188,6 +205,7 @@ export function summarizeWorkspaceAction(
       return {
         ok: true,
         actionResultSummary: `Directory listing for ${targetPath}:\n${preview}${truncatedLabel}`.trim(),
+        actionResultDetails: { path: targetPath, itemCount: items.length },
         summaryContent: `Listed files in \`${targetPath}\`.`,
         summaryMetadata: { localFileSummary: { kind: action.kind, path: targetPath, status: 'done' } },
         toolResultSummary: `Found ${items.length} item${items.length === 1 ? '' : 's'}`,
@@ -199,6 +217,7 @@ export function summarizeWorkspaceAction(
       return {
         ok: true,
         actionResultSummary: `File content for ${targetPath}:\n\n${content}`,
+        actionResultDetails: { path: targetPath, content: payload.content ?? '' },
         summaryContent: `Read file \`${targetPath}\`.`,
         summaryMetadata: { localFileSummary: { kind: action.kind, path: targetPath, status: 'done' } },
         toolResultSummary: 'Read complete',
@@ -209,6 +228,7 @@ export function summarizeWorkspaceAction(
       return {
         ok: true,
         actionResultSummary: `Wrote ${targetPath}${typeof payload.bytes === 'number' ? ` (${payload.bytes} bytes)` : ''}.`,
+        actionResultDetails: { path: targetPath, bytes: payload.bytes },
         summaryContent: `Wrote file \`${targetPath}\`.`,
         summaryMetadata: { localFileSummary: { kind: action.kind, path: targetPath, status: 'done' } },
         toolResultSummary: 'Write complete',
@@ -218,6 +238,7 @@ export function summarizeWorkspaceAction(
       return {
         ok: true,
         actionResultSummary: `Created folder ${targetPath}.`,
+        actionResultDetails: { path: targetPath },
         summaryContent: `Created folder \`${targetPath}\`.`,
         summaryMetadata: { localFileSummary: { kind: action.kind, path: targetPath, status: 'done' } },
         toolResultSummary: 'Folder created',
@@ -226,6 +247,7 @@ export function summarizeWorkspaceAction(
       return {
         ok: true,
         actionResultSummary: `Deleted ${targetPath}.`,
+        actionResultDetails: { path: targetPath },
         summaryContent: `Deleted \`${targetPath}\`.`,
         summaryMetadata: { localFileSummary: { kind: action.kind, path: targetPath, status: 'done' } },
         toolResultSummary: 'Deleted',

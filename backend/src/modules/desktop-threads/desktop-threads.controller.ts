@@ -16,6 +16,14 @@ const createMessageSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
+const createThreadSchema = z.object({
+  preferredEngine: z.enum(['mastra', 'langgraph']).optional().default('langgraph'),
+});
+
+const updateThreadPreferencesSchema = z.object({
+  preferredEngine: z.enum(['mastra', 'langgraph']),
+});
+
 const getThreadQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional(),
   beforeMessageId: z.string().uuid().optional(),
@@ -114,8 +122,16 @@ class DesktopThreadsController extends BaseController {
 
   create = async (req: Request, res: Response) => {
     const s = this.session(req);
-    const thread = await desktopThreadsService.createThread(s.userId, s.companyId);
+    const { preferredEngine } = createThreadSchema.parse(req.body ?? {});
+    const thread = await desktopThreadsService.createThreadWithEngine(s.userId, s.companyId, preferredEngine);
     return res.status(201).json(ApiResponse.success(thread, 'Thread created'));
+  };
+
+  updatePreferences = async (req: Request, res: Response) => {
+    const s = this.session(req);
+    const { preferredEngine } = updateThreadPreferencesSchema.parse(req.body);
+    const thread = await desktopThreadsService.updatePreferredEngine(req.params.threadId, s.userId, preferredEngine);
+    return res.json(ApiResponse.success(thread, 'Thread preferences updated'));
   };
 
   addMessage = async (req: Request, res: Response) => {

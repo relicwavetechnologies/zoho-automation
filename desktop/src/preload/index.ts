@@ -45,7 +45,15 @@ export type DesktopAPI = {
       threadId: string,
       options?: { limit?: number; beforeMessageId?: string },
     ) => Promise<{ success: boolean; data?: unknown }>
-    create: (token: string) => Promise<{ success: boolean; data?: { id: string } }>
+    create: (
+      token: string,
+      payload?: { preferredEngine?: 'mastra' | 'langgraph' },
+    ) => Promise<{ success: boolean; data?: { id: string } }>
+    updatePreferences: (
+      token: string,
+      threadId: string,
+      payload: { preferredEngine: 'mastra' | 'langgraph' },
+    ) => Promise<{ success: boolean; data?: unknown }>
     addMessage: (
       token: string,
       threadId: string,
@@ -69,7 +77,9 @@ export type DesktopAPI = {
       message: string,
       requestId: string,
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-      mode?: 'fast' | 'high' | 'xtreme'
+      mode?: 'fast' | 'high' | 'xtreme',
+      engine?: 'mastra' | 'langgraph',
+      workspace?: { name: string; path: string },
     ) => Promise<{ success: boolean; data?: unknown; error?: string }>
     sendMessageStream: (payload: {
       token: string
@@ -78,7 +88,20 @@ export type DesktopAPI = {
       message: string
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>
       mode?: 'fast' | 'high' | 'xtreme'
+      engine?: 'mastra' | 'langgraph'
+      workspace?: { name: string; path: string }
       companyId?: string
+    }) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    actStream: (payload: {
+      token: string
+      requestId: string
+      threadId: string
+      message?: string
+      workspace: { name: string; path: string }
+      actionResult?: Record<string, unknown>
+      plan?: unknown
+      mode?: 'fast' | 'high' | 'xtreme'
+      engine?: 'mastra' | 'langgraph'
     }) => Promise<{ success: boolean; data?: unknown; error?: string }>
     stopStream: (
       requestId: string,
@@ -165,7 +188,9 @@ const api: DesktopAPI = {
   threads: {
     list: (token) => ipcRenderer.invoke('desktop:threads', token),
     get: (token, threadId, options) => ipcRenderer.invoke('desktop:thread', token, threadId, options),
-    create: (token) => ipcRenderer.invoke('desktop:thread:create', token),
+    create: (token, payload) => ipcRenderer.invoke('desktop:thread:create', token, payload),
+    updatePreferences: (token, threadId, payload) =>
+      ipcRenderer.invoke('desktop:thread:update-preferences', token, threadId, payload),
     addMessage: (token, threadId, payload) =>
       ipcRenderer.invoke('desktop:thread:add-message', token, threadId, payload),
     delete: (token, threadId) => ipcRenderer.invoke('desktop:thread:delete', token, threadId),
@@ -175,10 +200,12 @@ const api: DesktopAPI = {
       ipcRenderer.invoke('desktop:chat:send', token, threadId, message),
     getStreamUrl: (token, threadId) =>
       ipcRenderer.invoke('desktop:chat:stream-url', token, threadId),
-    startStream: (token, threadId, message, requestId, attachedFiles, mode) =>
-      ipcRenderer.invoke('desktop:chat:startStream', token, threadId, message, requestId, attachedFiles, mode),
+    startStream: (token, threadId, message, requestId, attachedFiles, mode, engine, workspace) =>
+      ipcRenderer.invoke('desktop:chat:startStream', token, threadId, message, requestId, attachedFiles, mode, engine, workspace),
     sendMessageStream: (payload) =>
       ipcRenderer.invoke('desktop:chat:sendMessageStream', payload),
+    actStream: (payload) =>
+      ipcRenderer.invoke('desktop:chat:actStream', payload),
     stopStream: (requestId) =>
       ipcRenderer.invoke('desktop:chat:stopStream', requestId),
     act: (token, threadId, payload) =>

@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 export const PLAN_OWNER_AGENTS = [
   'supervisor',
+  'repo',
   'zoho',
   'outreach',
   'search',
@@ -201,6 +202,9 @@ export const resolvePlanOwnerFromToolName = (toolName?: string | null): Executio
   if (!toolName) return null;
   const normalized = toolName.trim().toLowerCase();
 
+  if (normalized === 'repo-worker' || normalized === 'github-repo-worker' || normalized === 'repo-fetch') {
+    return 'repo';
+  }
   if (normalized === 'zoho-agent' || normalized === 'read-zoho-records' || normalized === 'zoho-read' || normalized === 'zoho-search') {
     return 'zoho';
   }

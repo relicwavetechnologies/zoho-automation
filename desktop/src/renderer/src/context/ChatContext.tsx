@@ -61,12 +61,14 @@ interface ChatState {
   isThinking: boolean
   activePlan: ExecutionPlan | null
   liveBlocks: ContentBlock[]
+  selectedEngine: 'mastra' | 'langgraph'
   error: string | null
   loadThreads: () => Promise<void>
   selectThread: (threadId: string) => Promise<void>
   loadOlderMessages: () => Promise<void>
   createThread: () => Promise<string | null>
   deleteThread: (threadId: string) => Promise<void>
+  setSelectedEngine: (engine: 'mastra' | 'langgraph') => Promise<void>
   sendMessage: (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
@@ -125,6 +127,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const [isThinking, setIsThinking] = useState(false)
   const [activePlan, setActivePlan] = useState<ExecutionPlan | null>(null)
   const [liveBlocks, setLiveBlocks] = useState<ContentBlock[]>([])
+  const [selectedEngine, setSelectedEngineState] = useState<'mastra' | 'langgraph'>('langgraph')
   const [error, setError] = useState<string | null>(null)
 
   // ── Refs for mutable cross-callback access ──
@@ -139,6 +142,8 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const runningCommandRef = useRef<RunningCommandState | null>(null)
   const cancelRequestedRef = useRef(false)
   const activeModeRef = useRef<'fast' | 'high' | 'xtreme'>('xtreme')
+  const selectedEngineRef = useRef<'mastra' | 'langgraph'>('langgraph')
+  const activeExecutionEngineRef = useRef<'mastra' | 'langgraph'>('langgraph')
 
   // ── Shared live-block utilities ──
   const appendOutput = useCallback((prev: string, chunk: string): string => {
@@ -160,6 +165,20 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     setActivePlan(plan)
   }, [])
 
+  const ensureStreamingThinkingBlock = useCallback(() => {
+    setIsThinking(true)
+    replaceLiveBlocks((prev) => {
+      const last = prev[prev.length - 1]
+      if (last?.type === 'thinking') return prev
+      return [...prev, { type: 'thinking' }]
+    })
+  }, [replaceLiveBlocks])
+
+  const replaceSelectedEngine = useCallback((engine: 'mastra' | 'langgraph') => {
+    selectedEngineRef.current = engine
+    setSelectedEngineState(engine)
+  }, [])
+
   const replaceActiveExecutionId = useCallback((executionId: string | null) => {
     activeExecutionIdRef.current = executionId
   }, [])
@@ -172,6 +191,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     replaceActivePlan(null)
     replaceActiveExecutionId(null)
     activeRequestIdRef.current = null
+    activeExecutionEngineRef.current = selectedEngineRef.current
     pendingLocalActionRef.current = null
     runningCommandRef.current = null
   }, [replaceActiveExecutionId, replaceActivePlan])
@@ -291,23 +311,53 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     threadId: string
     initialMessage?: string
     actionResult?: ActionResultPayload
+    engineOverride?: 'mastra' | 'langgraph'
   }): Promise<void> => {
     if (!token || !currentWorkspace) return
-    if (typeof window.desktopAPI.chat.act !== 'function') {
-      setError('Workspace tools are not loaded in this desktop session. Restart the Electron app to enable file and terminal actions.')
-      resetLiveState()
-      return
-    }
-
-    setIsThinking(true)
-
     try {
+      const engine = input.engineOverride ?? selectedEngineRef.current
+      activeExecutionEngineRef.current = engine
+      const canUseActStream = engine === 'langgraph' && typeof window.desktopAPI.chat.actStream === 'function'
+      const canUseActJson = typeof window.desktopAPI.chat.act === 'function'
+      if (!canUseActStream && !canUseActJson) {
+        setError('Workspace tools are not loaded in this desktop session. Restart the Electron app to enable file and terminal actions.')
+        resetLiveState()
+        return
+      }
+
+      ensureStreamingThinkingBlock()
+
+      if (engine === 'langgraph' && typeof window.desktopAPI.chat.actStream === 'function') {
+        const requestId = activeExecutionIdRef.current ?? crypto.randomUUID()
+        activeRequestIdRef.current = requestId
+        replaceActiveExecutionId(requestId)
+        setIsStreaming(true)
+
+        const streamResult = await window.desktopAPI.chat.actStream({
+          token,
+          requestId,
+          threadId: input.threadId,
+          message: input.initialMessage,
+          workspace: { name: currentWorkspace.name, path: currentWorkspace.path },
+          actionResult: input.actionResult,
+          ...(activePlanRef.current ? { plan: activePlanRef.current } : {}),
+          mode: activeModeRef.current,
+          engine,
+        })
+
+        if (!streamResult.success) {
+          throw new Error(streamResult.error ?? 'Desktop action loop failed')
+        }
+        return
+      }
+
       const response = await window.desktopAPI.chat.act(token, input.threadId, {
         message: input.initialMessage,
         workspace: { name: currentWorkspace.name, path: currentWorkspace.path },
         actionResult: input.actionResult,
         ...(activePlanRef.current ? { plan: activePlanRef.current } : {}),
         mode: activeModeRef.current,
+        engine,
         executionId: activeExecutionIdRef.current ?? crypto.randomUUID(),
       })
 
@@ -334,7 +384,8 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         if (cancelRequestedRef.current) return
         await runAgentLocalActionTurn({
           threadId: input.threadId,
-          actionResult: { kind: action.kind, ok: completion.ok, summary: completion.actionResultSummary },
+          actionResult: { kind: action.kind, ok: completion.ok, summary: completion.actionResultSummary, details: completion.actionResultDetails },
+          engineOverride: engine,
         })
         return
       }
@@ -347,6 +398,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         workspacePath: currentWorkspace.path,
         action,
         source: 'agent',
+        engine,
       }
 
       replaceLiveBlocks((prev) => [
@@ -361,7 +413,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       setError(err instanceof Error ? err.message : 'Desktop action loop failed')
       resetLiveState()
     }
-  }, [currentWorkspace, finalizeLocalBlocks, replaceActiveExecutionId, replaceActivePlan, replaceLiveBlocks, resetLiveState, runWorkspaceAction, token])
+  }, [currentWorkspace, ensureStreamingThinkingBlock, finalizeLocalBlocks, replaceActiveExecutionId, replaceActivePlan, replaceLiveBlocks, resetLiveState, runWorkspaceAction, token])
 
   // ── Finish a terminal command execution ──
   const finishCommandExecution = useCallback(async (input: {
@@ -397,7 +449,8 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       if (cancelRequestedRef.current) return
       await runAgentLocalActionTurn({
         threadId: runningCommand.threadId,
-        actionResult: { kind: 'run_command', ok: completion.ok, summary: completion.actionResultSummary },
+        actionResult: { kind: 'run_command', ok: completion.ok, summary: completion.actionResultSummary, details: completion.actionResultDetails },
+        engineOverride: runningCommand.engine,
       })
       return
     }
@@ -425,8 +478,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           break
         }
         case 'thinking':
-          setIsThinking(true)
-          replaceLiveBlocks((prev) => [...prev, { type: 'thinking' }])
+          ensureStreamingThinkingBlock()
           break
         case 'activity': {
           const raw = event.data as { id: string; name: string; label: string; icon: string }
@@ -480,12 +532,61 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           resetLiveState()
           break
         }
+        case 'action': {
+          const payload = event.data as ActionLoopResult
+          if (payload.kind !== 'action' || !currentWorkspace || !activeThreadRef.current) break
+          setIsThinking(false)
+          setIsStreaming(false)
+          activeRequestIdRef.current = null
+          replaceActiveExecutionId(payload.executionId ?? activeExecutionIdRef.current)
+          replaceActivePlan(payload.plan ?? null)
+
+          const { action } = payload
+          if (action.kind === 'list_files' || action.kind === 'read_file') {
+            const toolBlock = buildAgentActionToolBlock(action)
+            replaceLiveBlocks((prev) => [...prev, toolBlock])
+            void runWorkspaceAction({
+              action,
+              toolBlockId: toolBlock.id,
+              threadId: activeThreadRef.current.id,
+            }).then((completion) => {
+              if (cancelRequestedRef.current) return
+              return runAgentLocalActionTurn({
+                threadId: activeThreadRef.current!.id,
+                actionResult: { kind: action.kind, ok: completion.ok, summary: completion.actionResultSummary, details: completion.actionResultDetails },
+                engineOverride: activeExecutionEngineRef.current,
+              })
+            })
+            break
+          }
+
+          const actionId = crypto.randomUUID()
+          pendingLocalActionRef.current = {
+            id: actionId,
+            threadId: activeThreadRef.current.id,
+            workspaceName: currentWorkspace.name,
+            workspacePath: currentWorkspace.path,
+            action,
+            source: 'agent',
+            engine: activeExecutionEngineRef.current,
+          }
+
+          replaceLiveBlocks((prev) => [
+            ...prev,
+            buildApprovalBlock(
+              actionId,
+              action as Extract<DesktopWorkspaceAction, { kind: 'run_command' | 'write_file' | 'mkdir' | 'delete_path' }>,
+              currentWorkspace.path,
+            ),
+          ])
+          break
+        }
         default:
           break
       }
     })
     return unsubscribe
-  }, [replaceActivePlan, replaceLiveBlocks, resetLiveState])
+  }, [currentWorkspace, replaceActiveExecutionId, replaceActivePlan, replaceLiveBlocks, resetLiveState, runAgentLocalActionTurn, runWorkspaceAction])
 
   // ── Terminal event subscriber ──
   useEffect(() => {
@@ -538,6 +639,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       setIsThreadLoading(false)
       setIsLoadingOlderMessages(false)
       replaceActivePlan(null)
+      replaceSelectedEngine('langgraph')
       return
     }
     if (activeThreadRef.current && !isThreadInCurrentWorkspace(activeThreadRef.current.id)) {
@@ -551,8 +653,9 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       setIsThreadLoading(false)
       setIsLoadingOlderMessages(false)
       replaceActivePlan(null)
+      replaceSelectedEngine('langgraph')
     }
-  }, [currentWorkspace, isThreadInCurrentWorkspace, replaceActivePlan])
+  }, [currentWorkspace, isThreadInCurrentWorkspace, replaceActivePlan, replaceSelectedEngine])
 
   const threads = currentWorkspace ? allThreads.filter((thread) => isThreadInCurrentWorkspace(thread.id)) : []
 
@@ -566,7 +669,15 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
 
     if (pendingAction.action.kind === 'run_command') {
       const command = pendingAction.action.command
-      runningCommandRef.current = { id: executionId, threadId: pendingAction.threadId, workspaceName: pendingAction.workspaceName, cwd: pendingAction.workspacePath, command, source: pendingAction.source }
+      runningCommandRef.current = {
+        id: executionId,
+        threadId: pendingAction.threadId,
+        workspaceName: pendingAction.workspaceName,
+        cwd: pendingAction.workspacePath,
+        command,
+        source: pendingAction.source,
+        engine: pendingAction.engine,
+      }
       replaceLiveBlocks((prev) => [...prev, { type: 'terminal', id: executionId, command, cwd: pendingAction.workspacePath, status: 'running', stdout: '', stderr: '' }])
       const result = await window.desktopAPI.terminal.exec(executionId, command, pendingAction.workspacePath)
       if (!result.success) {
@@ -581,7 +692,11 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     const completion = await runWorkspaceAction({ action: pendingAction.action as NonCommandWorkspaceAction, toolBlockId: toolBlock.id, threadId: pendingAction.threadId })
 
     if (pendingAction.source === 'agent') {
-      await runAgentLocalActionTurn({ threadId: pendingAction.threadId, actionResult: { kind: pendingAction.action.kind, ok: completion.ok, summary: completion.actionResultSummary } })
+      await runAgentLocalActionTurn({
+        threadId: pendingAction.threadId,
+        actionResult: { kind: pendingAction.action.kind, ok: completion.ok, summary: completion.actionResultSummary, details: completion.actionResultDetails },
+        engineOverride: pendingAction.engine,
+      })
       return
     }
     await finalizeLocalBlocks({ threadId: pendingAction.threadId })
@@ -598,7 +713,11 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       const completion = summarizeCommandCompletion({ command: pendingAction.action.command, cwd: pendingAction.workspacePath, status: 'rejected' })
       if (pendingAction.source === 'agent') {
         await persistLocalSummary({ threadId: pendingAction.threadId, content: completion.summaryContent, metadata: completion.summaryMetadata })
-        await runAgentLocalActionTurn({ threadId: pendingAction.threadId, actionResult: { kind: 'run_command', ok: false, summary: completion.actionResultSummary } })
+        await runAgentLocalActionTurn({
+          threadId: pendingAction.threadId,
+          actionResult: { kind: 'run_command', ok: false, summary: completion.actionResultSummary, details: completion.actionResultDetails },
+          engineOverride: pendingAction.engine,
+        })
         return
       }
       await finalizeLocalBlocks({ threadId: pendingAction.threadId, summaryContent: completion.summaryContent, summaryMetadata: completion.summaryMetadata })
@@ -610,7 +729,11 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     const summaryMetadata: MessageMetadata = { localFileSummary: { kind: fileAction.kind, path: fileAction.path, status: 'rejected' } }
     if (pendingAction.source === 'agent') {
       await persistLocalSummary({ threadId: pendingAction.threadId, content: summaryContent, metadata: summaryMetadata })
-      await runAgentLocalActionTurn({ threadId: pendingAction.threadId, actionResult: { kind: fileAction.kind, ok: false, summary: `User rejected ${fileAction.kind} for ${fileAction.path}` } })
+      await runAgentLocalActionTurn({
+        threadId: pendingAction.threadId,
+        actionResult: { kind: fileAction.kind, ok: false, summary: `User rejected ${fileAction.kind} for ${fileAction.path}`, details: { path: fileAction.path } },
+        engineOverride: pendingAction.engine,
+      })
       return
     }
     await finalizeLocalBlocks({ threadId: pendingAction.threadId, summaryContent, summaryMetadata })
@@ -659,6 +782,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         setMessages(data.messages)
         setThreadPagination(data.pagination)
         replaceActivePlan(null)
+        replaceSelectedEngine(data.thread.preferredEngine ?? 'langgraph')
         setError(null)
       }
     } catch {
@@ -668,7 +792,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         setIsThreadLoading(false)
       }
     }
-  }, [allThreads, token, currentWorkspace, isThreadInCurrentWorkspace, replaceActivePlan])
+  }, [allThreads, token, currentWorkspace, isThreadInCurrentWorkspace, replaceActivePlan, replaceSelectedEngine])
 
   const loadOlderMessages = useCallback(async () => {
     const threadId = activeThreadRef.current?.id
@@ -709,7 +833,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const createThread = useCallback(async (): Promise<string | null> => {
     if (!token || !currentWorkspace) return null
     try {
-      const res = await window.desktopAPI.threads.create(token)
+      const res = await window.desktopAPI.threads.create(token, { preferredEngine: selectedEngineRef.current })
       if (res.success && res.data) {
         const newThread = res.data as Thread
         bindThreadToCurrentWorkspace(newThread.id)
@@ -724,6 +848,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         setIsThreadLoading(false)
         setIsLoadingOlderMessages(false)
         replaceActivePlan(null)
+        replaceSelectedEngine(newThread.preferredEngine ?? selectedEngineRef.current)
         return newThread.id
       }
       return null
@@ -731,7 +856,31 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       setError('Failed to create thread')
       return null
     }
-  }, [token, currentWorkspace, bindThreadToCurrentWorkspace, replaceActivePlan])
+  }, [token, currentWorkspace, bindThreadToCurrentWorkspace, replaceActivePlan, replaceSelectedEngine])
+
+  const setSelectedEngine = useCallback(async (engine: 'mastra' | 'langgraph') => {
+    replaceSelectedEngine(engine)
+    if (!token || !activeThreadRef.current) {
+      return
+    }
+
+    setAllThreads((prev) =>
+      prev.map((thread) =>
+        thread.id === activeThreadRef.current?.id
+          ? { ...thread, preferredEngine: engine }
+          : thread,
+      ),
+    )
+    setActiveThread((prev) => (prev ? { ...prev, preferredEngine: engine } : prev))
+
+    try {
+      await window.desktopAPI.threads.updatePreferences(token, activeThreadRef.current.id, {
+        preferredEngine: engine,
+      })
+    } catch {
+      setError('Failed to save engine preference')
+    }
+  }, [token, replaceSelectedEngine])
 
   const sendMessage = useCallback(async (
     text: string,
@@ -755,10 +904,10 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     }
     setMessages((prev) => [...prev, userMsg])
     setIsStreaming(true)
-    setIsThinking(false)
+    setIsThinking(true)
     replaceActivePlan(null)
-    setLiveBlocks([])
-    liveBlocksRef.current = []
+    setLiveBlocks([{ type: 'thinking' }])
+    liveBlocksRef.current = [{ type: 'thinking' }]
     setError(null)
 
     const runMatch = trimmedText.match(/^\/run\s+([\s\S]+)$/i)
@@ -766,7 +915,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       const command = runMatch[1].trim()
       try { await window.desktopAPI.threads.addMessage(token, activeThread.id, { role: 'user', content: trimmedText }) } catch { setError('Failed to save the command request.') }
       const executionId = crypto.randomUUID()
-      pendingLocalActionRef.current = { id: executionId, threadId: activeThread.id, workspaceName: currentWorkspace.name, workspacePath: currentWorkspace.path, action: { kind: 'run_command', command }, source: 'manual' }
+      pendingLocalActionRef.current = { id: executionId, threadId: activeThread.id, workspaceName: currentWorkspace.name, workspacePath: currentWorkspace.path, action: { kind: 'run_command', command }, source: 'manual', engine: selectedEngineRef.current }
       const approvalBlock = buildApprovalBlock(executionId, { kind: 'run_command', command }, currentWorkspace.path)
       setLiveBlocks([approvalBlock])
       liveBlocksRef.current = [approvalBlock]
@@ -774,7 +923,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     }
 
     if (isLikelyLocalWorkspaceIntent(trimmedText)) {
-      await runAgentLocalActionTurn({ threadId: activeThread.id, initialMessage: trimmedText })
+      await runAgentLocalActionTurn({ threadId: activeThread.id, initialMessage: trimmedText, engineOverride: selectedEngineRef.current })
       return
     }
 
@@ -782,7 +931,18 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       const requestId = crypto.randomUUID()
       activeRequestIdRef.current = requestId
       replaceActiveExecutionId(requestId)
-      const sendRes = await window.desktopAPI.chat.startStream(token, activeThread.id, trimmedText, requestId, attachedFiles, mode)
+      activeExecutionEngineRef.current = selectedEngineRef.current
+      ensureStreamingThinkingBlock()
+      const sendRes = await window.desktopAPI.chat.startStream(
+        token,
+        activeThread.id,
+        trimmedText,
+        requestId,
+        attachedFiles,
+        mode,
+        selectedEngineRef.current,
+        { name: currentWorkspace.name, path: currentWorkspace.path },
+      )
       if (!sendRes.success) {
         setError('Failed to send message')
         setIsStreaming(false)
@@ -797,7 +957,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       activeRequestIdRef.current = null
       replaceActiveExecutionId(null)
     }
-  }, [token, currentWorkspace, activeThread, isStreaming, replaceActiveExecutionId, replaceActivePlan, runAgentLocalActionTurn])
+  }, [token, currentWorkspace, activeThread, isStreaming, replaceActiveExecutionId, replaceActivePlan, runAgentLocalActionTurn, ensureStreamingThinkingBlock])
 
   const sendInitialMessage = useCallback(async (
     text: string,
@@ -812,7 +972,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     if (!trimmedText && (!attachedFiles || attachedFiles.length === 0)) return
 
     try {
-      const res = await window.desktopAPI.threads.create(token)
+      const res = await window.desktopAPI.threads.create(token, { preferredEngine: selectedEngineRef.current })
       if (res.success && res.data) {
         const newThread = res.data as Thread
         bindThreadToCurrentWorkspace(newThread.id)
@@ -839,11 +999,14 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
 
         setMessages([userMsg])
         setIsStreaming(true)
-        setIsThinking(false)
+        setIsThinking(true)
+        setLiveBlocks([{ type: 'thinking' }])
+        liveBlocksRef.current = [{ type: 'thinking' }]
         setError(null)
 
         const requestId = crypto.randomUUID()
         activeRequestIdRef.current = requestId
+        activeExecutionEngineRef.current = selectedEngineRef.current
         
         if (typeof window.desktopAPI.chat.sendMessageStream !== 'function') {
           console.error('[CRITICAL] window.desktopAPI.chat.sendMessageStream is not defined. The desktop app needs a full restart to load new preload scripts.')
@@ -860,6 +1023,8 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           message: trimmedText,
           attachedFiles,
           mode,
+          engine: selectedEngineRef.current,
+          workspace: { name: currentWorkspace.name, path: currentWorkspace.path },
           companyId: currentWorkspace.id,
         })
 
@@ -931,12 +1096,14 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       isThinking,
       activePlan,
       liveBlocks,
+      selectedEngine,
       error,
       loadThreads,
       selectThread,
       loadOlderMessages,
       createThread,
       deleteThread,
+      setSelectedEngine,
       sendMessage,
       sendInitialMessage,
       stopExecution,

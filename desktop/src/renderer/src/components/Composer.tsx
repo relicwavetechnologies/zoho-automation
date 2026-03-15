@@ -143,7 +143,16 @@ function FileCard({ attachment, onRemove }: { attachment: AttachedFile; onRemove
 
 export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
   const { token } = useAuth()
-  const { sendMessage, sendInitialMessage, stopExecution, isStreaming, activeThread, activePlan } = useChat()
+  const {
+    sendMessage,
+    sendInitialMessage,
+    stopExecution,
+    isStreaming,
+    activeThread,
+    activePlan,
+    selectedEngine,
+    setSelectedEngine,
+  } = useChat()
   const { currentWorkspace } = useWorkspace()
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
@@ -392,6 +401,34 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   <span>Odin</span>
                   <ChevronDown size={13} className="text-[hsl(0,0%,60%)]" />
                 </button>
+
+                <div className="inline-flex h-8 items-center rounded-xl border border-[hsl(0,0%,24%)] bg-[hsl(0,0%,22%)] p-0.5">
+                  {([
+                    { value: 'mastra', label: 'Mastra' },
+                    { value: 'langgraph', label: 'LangGraph' },
+                  ] as const).map((option) => {
+                    const active = selectedEngine === option.value
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        disabled={isStreaming}
+                        onClick={() => { void setSelectedEngine(option.value) }}
+                        className={cn(
+                          'rounded-[10px] px-2.5 py-1 text-[11px] font-medium transition-colors',
+                          isStreaming
+                            ? 'cursor-not-allowed text-[hsl(0,0%,36%)]'
+                            : active
+                              ? 'bg-[hsl(216,80%,52%,0.18)] text-[hsl(216,80%,72%)]'
+                              : 'text-[hsl(0,0%,62%)] hover:text-[hsl(0,0%,84%)]'
+                        )}
+                        title={option.value === 'mastra' ? 'Legacy desktop orchestration path' : 'New LangGraph desktop orchestration path'}
+                      >
+                        {option.label}
+                      </button>
+                    )
+                  })}
+                </div>
 
                 {/* ── Mode toggle ───────────────────────────────────────── */}
                 <div className="relative" ref={modeMenuRef}>

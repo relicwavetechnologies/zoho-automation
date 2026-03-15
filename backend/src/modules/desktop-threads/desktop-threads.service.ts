@@ -29,6 +29,12 @@ export class DesktopThreadsService extends BaseService {
     return { thread, messages };
   }
 
+  async getThreadRecord(threadId: string, userId: string) {
+    const thread = await this.repository.getThread(threadId, userId);
+    if (!thread) throw new HttpException(404, 'Thread not found');
+    return thread;
+  }
+
   async getThreadMessagesPage(
     threadId: string,
     userId: string,
@@ -66,6 +72,24 @@ export class DesktopThreadsService extends BaseService {
 
   async createThread(userId: string, companyId: string) {
     return this.repository.createThread(userId, companyId);
+  }
+
+  async createThreadWithEngine(
+    userId: string,
+    companyId: string,
+    preferredEngine: 'mastra' | 'langgraph' = 'langgraph',
+  ) {
+    return this.repository.createThread(userId, companyId, preferredEngine);
+  }
+
+  async updatePreferredEngine(
+    threadId: string,
+    userId: string,
+    preferredEngine: 'mastra' | 'langgraph',
+  ) {
+    const thread = await this.repository.getThread(threadId, userId);
+    if (!thread) throw new HttpException(404, 'Thread not found');
+    return this.repository.updatePreferredEngine(threadId, userId, preferredEngine);
   }
 
   async addMessage(
