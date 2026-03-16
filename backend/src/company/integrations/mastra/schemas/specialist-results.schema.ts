@@ -17,6 +17,19 @@ export const larkDocResultSchema = z.object({
   error: z.string().optional(),
 });
 
+export const larkOperationalResultSchema = z.object({
+  success: z.boolean(),
+  summary: z.string(),
+  error: z.string().optional(),
+  errorKind: z.enum(['missing_input', 'unsupported', 'permission', 'api_failure', 'unknown']).optional(),
+  retryable: z.boolean().optional(),
+  userAction: z.string().optional(),
+  taskId: z.string().optional(),
+  eventId: z.string().optional(),
+  documentId: z.string().optional(),
+  recordId: z.string().optional(),
+});
+
 export const outreachResultSchema = z.object({
   success: z.boolean(),
   campaignId: z.string().optional(),
@@ -32,7 +45,22 @@ export const searchResultSchema = z.object({
   sources: z.array(z.string()).optional(),
 });
 
+export const terminalOperationalResultSchema = z.object({
+  success: z.boolean(),
+  summary: z.string(),
+  command: z.string().optional(),
+  cwdHint: z.string().optional(),
+  verificationCommand: z.string().optional(),
+  writesToWorkspace: z.boolean().optional(),
+  needsApproval: z.boolean().optional(),
+  error: z.string().optional(),
+  retryable: z.boolean().optional(),
+  userAction: z.string().optional(),
+});
+
 export type ZohoResult = z.infer<typeof zohoResultSchema>;
 export type LarkDocResult = z.infer<typeof larkDocResultSchema>;
+export type LarkOperationalResult = z.infer<typeof larkOperationalResultSchema>;
 export type OutreachResult = z.infer<typeof outreachResultSchema>;
 export type SearchResult = z.infer<typeof searchResultSchema>;
+export type TerminalOperationalResult = z.infer<typeof terminalOperationalResultSchema>;

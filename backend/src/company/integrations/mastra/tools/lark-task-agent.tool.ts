@@ -6,12 +6,14 @@ import { larkTaskSpecialistAgent } from '../agents/lark-task-specialist.agent';
 import { buildMastraAgentRunOptions } from '../mastra-model-control';
 import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
 import { emitActivityEvent } from './activity-bus';
+import { larkOperationalResultSchema } from '../schemas/specialist-results.schema';
 import { larkTaskWriteTool } from './lark-task-write.tool';
 import {
   parseDirectCreateTaskIntent,
   parseDirectReassignTaskIntent,
   parseDirectTaskStatusIntent,
 } from './lark-task-agent-intent';
+import { normalizeLarkOperationalResult } from './specialist-result-helpers';
 
 const TOOL_ID = 'lark-task-agent';
 
@@ -21,12 +23,13 @@ export const larkTaskAgentTool = createTool({
   inputSchema: z.object({
     query: z.string().describe('The Lark task work to perform'),
   }),
+  outputSchema: larkOperationalResultSchema,
   execute: async (inputData, context) => {
     const requestContext = context?.requestContext;
     const allowedToolIds = requestContext?.get('allowedToolIds') as string[] | undefined;
     if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID)) {
       const name = TOOL_REGISTRY_MAP.get(TOOL_ID)?.name ?? TOOL_ID;
-      return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
+      return normalizeLarkOperationalResult(`Access to "${name}" is not permitted for your role. Please contact your admin.`);
     }
 
     const requestId = requestContext?.get('requestId') as string | undefined;
@@ -54,18 +57,19 @@ export const larkTaskAgentTool = createTool({
       const directAnswer = typeof directResult?.answer === 'string'
         ? directResult.answer
         : 'Lark task write failed: direct create path returned no answer.';
+      const normalized = normalizeLarkOperationalResult(directAnswer);
 
       if (requestId) {
         emitActivityEvent(requestId, 'activity_done', {
           id: callId,
           name: TOOL_ID,
-          label: directAnswer.includes('failed') ? 'Lark task flow failed' : 'Updated Lark Tasks',
-          icon: directAnswer.includes('failed') ? 'x-circle' : 'check-square',
-          resultSummary: directAnswer,
+          label: normalized.success ? 'Updated Lark Tasks' : 'Lark task flow failed',
+          icon: normalized.success ? 'check-square' : 'x-circle',
+          resultSummary: normalized.summary,
         });
       }
 
-      return { answer: directAnswer };
+      return normalized;
     }
 
     const directReassignIntent = parseDirectReassignTaskIntent(inputData.query);
@@ -82,18 +86,19 @@ export const larkTaskAgentTool = createTool({
       const directAnswer = typeof directResult?.answer === 'string'
         ? directResult.answer
         : 'Lark task write failed: direct reassign path returned no answer.';
+      const normalized = normalizeLarkOperationalResult(directAnswer);
 
       if (requestId) {
         emitActivityEvent(requestId, 'activity_done', {
           id: callId,
           name: TOOL_ID,
-          label: directAnswer.includes('failed') ? 'Lark task flow failed' : 'Updated Lark Tasks',
-          icon: directAnswer.includes('failed') ? 'x-circle' : 'check-square',
-          resultSummary: directAnswer,
+          label: normalized.success ? 'Updated Lark Tasks' : 'Lark task flow failed',
+          icon: normalized.success ? 'check-square' : 'x-circle',
+          resultSummary: normalized.summary,
         });
       }
 
-      return { answer: directAnswer };
+      return normalized;
     }
 
     const directStatusIntent = parseDirectTaskStatusIntent(inputData.query);
@@ -109,18 +114,19 @@ export const larkTaskAgentTool = createTool({
       const directAnswer = typeof directResult?.answer === 'string'
         ? directResult.answer
         : 'Lark task write failed: direct status update path returned no answer.';
+      const normalized = normalizeLarkOperationalResult(directAnswer);
 
       if (requestId) {
         emitActivityEvent(requestId, 'activity_done', {
           id: callId,
           name: TOOL_ID,
-          label: directAnswer.includes('failed') ? 'Lark task flow failed' : 'Updated Lark Tasks',
-          icon: directAnswer.includes('failed') ? 'x-circle' : 'check-square',
-          resultSummary: directAnswer,
+          label: normalized.success ? 'Updated Lark Tasks' : 'Lark task flow failed',
+          icon: normalized.success ? 'check-square' : 'x-circle',
+          resultSummary: normalized.summary,
         });
       }
 
-      return { answer: directAnswer };
+      return normalized;
     }
 
     const runOptions = await buildMastraAgentRunOptions('mastra.lark-doc', { requestContext });
@@ -129,16 +135,17 @@ export const larkTaskAgentTool = createTool({
       runOptions as any,
     );
 
+    const normalized = normalizeLarkOperationalResult(result.text);
     if (requestId) {
       emitActivityEvent(requestId, 'activity_done', {
         id: callId,
         name: TOOL_ID,
-        label: 'Updated Lark Tasks',
-        icon: 'check-square',
-        resultSummary: result.text,
+        label: normalized.success ? 'Updated Lark Tasks' : 'Lark task flow failed',
+        icon: normalized.success ? 'check-square' : 'x-circle',
+        resultSummary: normalized.summary,
       });
     }
 
-    return { answer: result.text };
+    return normalized;
   },
 });

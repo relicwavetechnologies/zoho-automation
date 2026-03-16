@@ -26,15 +26,13 @@ const parseFlatAllowedTools = (frontmatter: string): string[] => {
     .filter(Boolean);
 };
 
-export const parseSkillToolRequirements = (content: string | null | undefined): SkillToolRequirements => {
-  const frontmatter = extractFrontmatter(content);
-  if (!frontmatter) {
-    return { required: [], optional: [], action: [], all: [] };
-  }
-
-  const requiredMatch = frontmatter.match(/(?:^|\n)allowed_tools:\s*\n\s{2}required:\s*\n((?:\s{4}-\s*[^\n]+\n?)+)/);
-  const optionalMatch = frontmatter.match(/(?:^|\n)\s{2}optional:\s*\n((?:\s{4}-\s*[^\n]+\n?)+)/);
-  const actionMatch = frontmatter.match(/(?:^|\n)\s{2}action:\s*\n((?:\s{4}-\s*[^\n]+\n?)+)/);
+const parseNestedToolsSection = (
+  frontmatter: string,
+  rootKey: 'allowed_tools' | 'tools',
+): SkillToolRequirements | null => {
+  const requiredMatch = frontmatter.match(new RegExp(`(?:^|\\n)${rootKey}:\\s*\\n\\s{2}required:\\s*\\n((?:\\s{4}-\\s*[^\\n]+\\n?)+)`));
+  const optionalMatch = frontmatter.match(new RegExp(`(?:^|\\n)\\s{2}optional:\\s*\\n((?:\\s{4}-\\s*[^\\n]+\\n?)+)`));
+  const actionMatch = frontmatter.match(new RegExp(`(?:^|\\n)\\s{2}action:\\s*\\n((?:\\s{4}-\\s*[^\\n]+\\n?)+)`));
 
   const parseNestedList = (block: string | undefined): string[] =>
     (block ?? '')
@@ -44,17 +42,29 @@ export const parseSkillToolRequirements = (content: string | null | undefined): 
       .map((line) => line.slice(2).trim())
       .filter(Boolean);
 
-  if (requiredMatch || optionalMatch || actionMatch) {
-    const required = parseNestedList(requiredMatch?.[1]);
-    const optional = parseNestedList(optionalMatch?.[1]);
-    const action = parseNestedList(actionMatch?.[1]);
-    return {
-      required,
-      optional,
-      action,
-      all: unique([...required, ...optional, ...action]),
-    };
+  if (!requiredMatch && !optionalMatch && !actionMatch) return null;
+
+  const required = parseNestedList(requiredMatch?.[1]);
+  const optional = parseNestedList(optionalMatch?.[1]);
+  const action = parseNestedList(actionMatch?.[1]);
+
+  return {
+    required,
+    optional,
+    action,
+    all: unique([...required, ...optional, ...action]),
+  };
+};
+
+export const parseSkillToolRequirements = (content: string | null | undefined): SkillToolRequirements => {
+  const frontmatter = extractFrontmatter(content);
+  if (!frontmatter) {
+    return { required: [], optional: [], action: [], all: [] };
   }
+
+  const explicitTools = parseNestedToolsSection(frontmatter, 'tools')
+    ?? parseNestedToolsSection(frontmatter, 'allowed_tools');
+  if (explicitTools) return explicitTools;
 
   const flat = parseFlatAllowedTools(frontmatter);
   return {

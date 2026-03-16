@@ -43,6 +43,17 @@ let sink: TraceSink = buildSink();
 
 let sinkFailureLogSuppressed = false;
 
+const disableTracingAfterFailure = (): void => {
+  sink = new NoopTraceSink();
+  sinkFailureLogSuppressed = false;
+  process.env.LANGSMITH_TRACING = 'false';
+  process.env.LANGCHAIN_TRACING_V2 = 'false';
+  process.env.LANGCHAIN_CALLBACKS_BACKGROUND = 'false';
+  process.env.LANGSMITH_API_KEY = '';
+  process.env.LANGSMITH_PROJECT = '';
+  process.env.LANGSMITH_ENDPOINT = '';
+};
+
 export const emitRuntimeTrace = (event: Omit<RuntimeTraceEvent, 'occurredAt'> & { occurredAt?: string }): void => {
   const payload = sanitizeEvent({
     ...event,
@@ -50,6 +61,7 @@ export const emitRuntimeTrace = (event: Omit<RuntimeTraceEvent, 'occurredAt'> & 
   });
 
   void sink.emit(payload).catch((error) => {
+    disableTracingAfterFailure();
     if (sinkFailureLogSuppressed) {
       return;
     }
@@ -76,4 +88,3 @@ export const __test__ = {
     return sink.mode;
   },
 };
-

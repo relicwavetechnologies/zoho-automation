@@ -15,6 +15,7 @@ import {
   type ControllerRuntimeState,
   type WorkerObservation,
 } from '../../company/orchestration/controller-runtime';
+import { appendLlmAuditLog, deriveAuditResponseFields, roughTokenEstimate } from '../../company/orchestration/controller-runtime/llm-audit-logger';
 import { extractJsonObject } from '../../company/orchestration/langchain/json-output';
 import { getRequiredSkillTools } from '../../company/orchestration/controller-runtime/skill-tool-requirements';
 import {
@@ -31,6 +32,8 @@ import { aiTokenUsageService } from '../../company/ai-usage/ai-token-usage.servi
 import { openAiOrchestrationModels } from '../../company/orchestration/langchain';
 import { estimateTokens } from '../../utils/token-estimator';
 import { logger } from '../../utils/logger';
+import type { ExecutionActorType, ExecutionPhase } from '../../company/contracts';
+import type { AppendExecutionEventInput } from '../../company/observability/executions/types';
 import {
   completeExecutionPlan,
   failExecutionPlan,
@@ -127,6 +130,11 @@ type PersistedRuntimeState = ControllerRuntimeState<DesktopAction>;
 type PersistedObservation = Pick<WorkerObservation, 'ok' | 'workerKey' | 'actionKind' | 'summary' | 'entities' | 'facts' | 'artifacts' | 'citations' | 'blockingReason' | 'verificationHints'>;
 type PersistedControllerProfile = PersistedRuntimeState['profile'];
 type PersistedRuntimeSnapshot = PersistedRuntimeState;
+type StreamEventEnvelope = { type: string; data: unknown };
+type ExecutionEventQueue = {
+  enqueue: (task: () => Promise<void>) => void;
+  flush: () => Promise<void>;
+};
 
 const HISTORY_LIMIT = 16;
 const presentationAdapter = new PresentationAdapter();
@@ -137,6 +145,369 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   const compact = value.replace(/\s+/g, ' ').trim();
   if (!compact) return null;
   return compact.length > limit ? `${compact.slice(0, limit - 3).trimEnd()}...` : compact;
+};
+
+const isMissingExecutionRunError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) return false;
+  return error.message.includes('executionRun.update')
+    && error.message.includes('No record was found for an update');
+};
+
+const createExecutionEventQueue = (options?: {
+  executionId?: string;
+  ensureRun?: () => Promise<void>;
+}): ExecutionEventQueue => {
+  let queue = Promise.resolve();
+
+  return {
+    enqueue(task) {
+      queue = queue
+        .then(task)
+        .catch(async (error) => {
+          if (options?.ensureRun && isMissingExecutionRunError(error)) {
+            await options.ensureRun();
+            await task();
+            logger.warn('execution.event.enqueue.recovered', {
+              executionId: options.executionId,
+            });
+            return;
+          }
+          logger.warn('execution.event.enqueue.failed', {
+            executionId: options?.executionId,
+            error: error instanceof Error ? error.message : 'unknown_execution_event_error',
+          });
+        });
+    },
+    async flush() {
+      await queue;
+    },
+  };
+};
+
+const deriveThinkingPhase = (state: PersistedRuntimeState | null | undefined): ExecutionPhase => {
+  if (state?.pendingLocalAction) return 'control';
+  if (state?.todoList?.currentTool) return 'tool';
+  if ((state?.todoList?.items ?? []).some((item) => item.status === 'running')) return 'tool';
+  return 'planning';
+};
+
+const mapProgressEventToExecutionEvent = (
+  executionId: string,
+  progress: ProgressEvent,
+): AppendExecutionEventInput => {
+  switch (progress.type) {
+    case 'bootstrap':
+      return {
+        executionId,
+        phase: 'planning',
+        eventType: 'progress.bootstrap',
+        actorType: 'planner',
+        actorKey: 'langgraph.supervisor',
+        title: 'Built controller profile',
+        summary: summarizeText(`Complexity: ${progress.complexity}${progress.skillQuery ? ` · skill query: ${progress.skillQuery}` : ''}`),
+        status: 'done',
+        payload: {
+          streamType: 'progress',
+          streamData: progress,
+        },
+      };
+    case 'skill_loaded':
+      return {
+        executionId,
+        phase: 'planning',
+        eventType: 'progress.skill_loaded',
+        actorType: 'planner',
+        actorKey: 'skills',
+        title: `Loaded skill ${progress.skillId}`,
+        summary: `Loaded SKILL.md for ${progress.skillId}`,
+        status: 'done',
+        payload: {
+          streamType: 'progress',
+          streamData: progress,
+        },
+      };
+    case 'worker_dispatched':
+      return {
+        executionId,
+        phase: 'tool',
+        eventType: 'progress.worker_dispatched',
+        actorType: 'agent',
+        actorKey: progress.workerKey,
+        title: `Dispatched ${progress.workerKey}`,
+        summary: summarizeText(`${progress.workerKey} / ${progress.actionKind}`),
+        status: 'running',
+        payload: {
+          streamType: 'progress',
+          streamData: progress,
+        },
+      };
+    case 'worker_result':
+      return {
+        executionId,
+        phase: 'tool',
+        eventType: 'progress.worker_result',
+        actorType: 'agent',
+        actorKey: progress.workerKey,
+        title: `${progress.workerKey} returned ${progress.success ? 'success' : 'failure'}`,
+        summary: summarizeText(progress.summary, 600),
+        status: progress.success ? 'done' : 'failed',
+        payload: {
+          streamType: 'progress',
+          streamData: progress,
+        },
+      };
+    case 'decision':
+      return {
+        executionId,
+        phase: 'planning',
+        eventType: 'progress.decision',
+        actorType: 'planner',
+        actorKey: progress.workerKey ?? 'langgraph.supervisor',
+        title: `Controller chose ${progress.decision.toLowerCase()}`,
+        summary: summarizeText(
+          progress.workerKey
+            ? `${progress.workerKey}${progress.actionKind ? ` / ${progress.actionKind}` : ''}`
+            : progress.decision,
+        ),
+        status: 'done',
+        payload: {
+          streamType: 'progress',
+          streamData: progress,
+        },
+      };
+    case 'complete':
+      return {
+        executionId,
+        phase: 'delivery',
+        eventType: 'progress.complete',
+        actorType: 'planner',
+        actorKey: 'langgraph.supervisor',
+        title: 'Controller chose complete',
+        summary: summarizeText(progress.reply, 600),
+        status: 'completed',
+        payload: {
+          streamType: 'progress',
+          streamData: progress,
+        },
+      };
+    case 'ask_user':
+      return {
+        executionId,
+        phase: 'control',
+        eventType: 'progress.ask_user',
+        actorType: 'planner',
+        actorKey: 'langgraph.supervisor',
+        title: 'Controller asked user for input',
+        summary: summarizeText(progress.question, 600),
+        status: 'pending',
+        payload: {
+          streamType: 'progress',
+          streamData: progress,
+        },
+      };
+    case 'fail':
+      return {
+        executionId,
+        phase: 'error',
+        eventType: 'progress.fail',
+        actorType: 'planner',
+        actorKey: 'langgraph.supervisor',
+        title: 'Controller reported failure',
+        summary: summarizeText(progress.reason, 600),
+        status: 'failed',
+        payload: {
+          streamType: 'progress',
+          streamData: progress,
+        },
+      };
+  }
+};
+
+const mapStreamEventToExecutionEvent = (input: {
+  executionId: string;
+  event: StreamEventEnvelope;
+  latestState: PersistedRuntimeState | null;
+}): AppendExecutionEventInput | null => {
+  const { executionId, event, latestState } = input;
+
+  switch (event.type) {
+    case 'thinking':
+      return {
+        executionId,
+        phase: deriveThinkingPhase(latestState),
+        eventType: 'thinking',
+        actorType: 'model',
+        actorKey: 'langgraph.supervisor',
+        title: 'Model thinking',
+        summary: summarizeText(String(event.data ?? 'Thinking...')),
+        status: 'running',
+        payload: {
+          streamType: event.type,
+          streamData: event.data as Record<string, unknown> | string | null,
+        },
+      };
+    case 'thinking_token':
+      return {
+        executionId,
+        phase: deriveThinkingPhase(latestState),
+        eventType: 'thinking_token',
+        actorType: 'model',
+        actorKey: 'langgraph.supervisor',
+        title: 'Model thinking token',
+        summary: summarizeText(String(event.data ?? ''), 120),
+        status: 'running',
+        payload: {
+          streamType: event.type,
+          streamData: { delta: String(event.data ?? '') },
+        },
+      };
+    case 'progress':
+      return mapProgressEventToExecutionEvent(executionId, event.data as ProgressEvent);
+    case 'activity': {
+      const payload = event.data as ActivityPayload;
+      return {
+        executionId,
+        phase: 'tool',
+        eventType: 'activity.started',
+        actorType: 'tool',
+        actorKey: payload.name,
+        title: payload.label,
+        summary: summarizeText(payload.label),
+        status: 'running',
+        payload: {
+          streamType: event.type,
+          streamData: payload as unknown as Record<string, unknown>,
+        },
+      };
+    }
+    case 'activity_done': {
+      const payload = event.data as ActivityPayload;
+      const isFailed = /failed|error|not permitted/i.test((payload.resultSummary ?? '').toLowerCase());
+      return {
+        executionId,
+        phase: 'tool',
+        eventType: 'activity.completed',
+        actorType: 'tool',
+        actorKey: payload.name,
+        title: payload.label,
+        summary: summarizeText(payload.resultSummary ?? payload.label, 600),
+        status: isFailed ? 'failed' : 'done',
+        payload: {
+          streamType: event.type,
+          streamData: payload as unknown as Record<string, unknown>,
+        },
+      };
+    }
+    case 'plan': {
+      const plan = event.data as ExecutionPlan;
+      return {
+        executionId,
+        phase: 'planning',
+        eventType: 'plan.snapshot',
+        actorType: 'planner',
+        actorKey: 'langgraph.supervisor',
+        title: 'Updated execution plan',
+        summary: summarizeText(plan.goal),
+        status: plan.status,
+        payload: {
+          streamType: event.type,
+          streamData: plan as unknown as Record<string, unknown>,
+        },
+      };
+    }
+    case 'text':
+      return {
+        executionId,
+        phase: 'delivery',
+        eventType: 'text',
+        actorType: 'delivery',
+        actorKey: 'assistant',
+        title: 'Delivered assistant text',
+        summary: summarizeText(String(event.data ?? ''), 600),
+        status: 'done',
+        payload: {
+          streamType: event.type,
+          streamData: { text: String(event.data ?? '') },
+        },
+      };
+    case 'action': {
+      const payload = event.data as { kind?: string; action?: { kind?: string } };
+      const actionKind = payload?.action?.kind ?? payload?.kind ?? 'action';
+      return {
+        executionId,
+        phase: 'control',
+        eventType: 'action',
+        actorType: 'agent',
+        actorKey: actionKind,
+        title: `Requested local action: ${actionKind}`,
+        summary: summarizeText(actionKind),
+        status: 'pending',
+        payload: {
+          streamType: event.type,
+          streamData: payload as unknown as Record<string, unknown>,
+        },
+      };
+    }
+    case 'done': {
+      const payload = event.data as { message?: { id?: string; content?: string } } | null;
+      return {
+        executionId,
+        phase: 'delivery',
+        eventType: 'done',
+        actorType: 'delivery',
+        actorKey: 'assistant',
+        title: 'Completed stream delivery',
+        summary: summarizeText(payload?.message?.content ?? 'Assistant turn persisted'),
+        status: 'completed',
+        payload: {
+          streamType: event.type,
+          streamData: payload as unknown as Record<string, unknown>,
+        },
+      };
+    }
+    default:
+      return null;
+  }
+};
+
+const createCanonicalStreamEmitter = (input: {
+  executionId: string;
+  sendSse: (type: string, data: unknown) => void;
+  latestState: () => PersistedRuntimeState | null;
+  ensureRun?: () => Promise<void>;
+}) => {
+  const queue = createExecutionEventQueue({
+    executionId: input.executionId,
+    ensureRun: input.ensureRun,
+  });
+
+  return {
+    emit(type: string, data: unknown, mutateLocal?: () => void): void {
+      mutateLocal?.();
+      queue.enqueue(async () => {
+        try {
+          const mapped = mapStreamEventToExecutionEvent({
+            executionId: input.executionId,
+            event: { type, data },
+            latestState: input.latestState(),
+          });
+          if (mapped) {
+            await executionService.appendEvent(mapped);
+          }
+        } catch (error) {
+          logger.warn('desktop.execution.event.persist_failed', {
+            executionId: input.executionId,
+            eventType: type,
+            error: error instanceof Error ? error.message : 'unknown_execution_event_persist_error',
+          });
+        }
+        input.sendSse(type, data);
+      });
+    },
+    async flush(): Promise<void> {
+      await queue.flush();
+    },
+  };
 };
 
 const truncateInline = (value: string, limit: number): string =>
@@ -476,6 +847,7 @@ const sanitizeRuntimeStateForPersistence = (state: PersistedRuntimeState): Persi
   bootstrap: state.bootstrap,
   inferredInputs: state.inferredInputs,
   readinessConfirmed: state.readinessConfirmed,
+  scopeExpanded: state.scopeExpanded,
   todoList: state.todoList ?? null,
   observations: state.observations,
   workerResults: state.workerResults,
@@ -584,6 +956,50 @@ const shouldContinueFromSnapshotSmart = async (input: {
   return kind === 'controller_meta_explain' || kind === 'controller_meta_retry' || kind === 'workflow_continue';
 };
 
+const isAdditiveFollowup = (message: string): boolean =>
+  /^(also|and|additionally|plus|include|check also)\b/i.test(message.trim());
+
+const mergeProfileForContinuation = (input: {
+  snapshot: PersistedRuntimeSnapshot;
+  followupMessage: string;
+}): PersistedControllerProfile => {
+  const base = inferBootstrapFallback(input.followupMessage);
+  const additive = isAdditiveFollowup(input.followupMessage);
+  if (!additive) {
+    return applyInferredInputsToProfile({
+      ...input.snapshot.profile,
+      summary: base.summary,
+      complexity: base.complexity === 'ambient' ? 'structured' : base.complexity,
+      shouldUseSkills: base.shouldUseSkills || input.snapshot.profile.shouldUseSkills,
+      skillQuery: base.skillQuery ?? input.snapshot.profile.skillQuery,
+      deliverables: base.deliverables.length > 0 ? base.deliverables : input.snapshot.profile.deliverables,
+      missingInputs: [],
+      notes: [
+        ...(input.snapshot.profile.notes ?? []),
+        ...(input.followupMessage.trim() ? [`follow-up user input: ${input.followupMessage.trim()}`] : []),
+      ].slice(-8),
+    }, input.snapshot.inferredInputs ?? {});
+  }
+
+  const mergedDeliverables = Array.from(new Set([
+    ...(input.snapshot.profile.deliverables ?? []),
+    ...(base.deliverables ?? []),
+  ]));
+  return applyInferredInputsToProfile({
+    ...input.snapshot.profile,
+    summary: `${input.snapshot.profile.summary} + ${base.summary}`.trim(),
+    complexity: 'structured',
+    shouldUseSkills: input.snapshot.profile.shouldUseSkills || base.shouldUseSkills,
+    skillQuery: input.snapshot.profile.skillQuery ?? base.skillQuery,
+    deliverables: mergedDeliverables,
+    missingInputs: [],
+    notes: [
+      ...(input.snapshot.profile.notes ?? []),
+      ...(input.followupMessage.trim() ? [`follow-up user input: ${input.followupMessage.trim()}`] : []),
+    ].slice(-8),
+  }, input.snapshot.inferredInputs ?? {});
+};
+
 const buildContinuationState = (input: {
   executionId: string;
   snapshot: PersistedRuntimeSnapshot;
@@ -591,19 +1007,14 @@ const buildContinuationState = (input: {
 }): PersistedRuntimeState => ({
   ...(() => {
     const nextInferredInputs = input.snapshot.inferredInputs ?? {};
-    const nextProfile = applyInferredInputsToProfile({
-      ...input.snapshot.profile,
-      missingInputs: [],
-      notes: [
-        ...(input.snapshot.profile.notes ?? []),
-        ...(input.followupMessage.trim() ? [`follow-up user input: ${input.followupMessage.trim()}`] : []),
-      ].slice(-8),
-    }, nextInferredInputs);
+    const nextProfile = mergeProfileForContinuation(input);
+    const scopeExpanded = isAdditiveFollowup(input.followupMessage);
     return {
       profile: nextProfile,
       inferredInputs: nextInferredInputs,
       readinessConfirmed: true,
-      todoList: input.snapshot.todoList ?? null,
+      scopeExpanded,
+      todoList: null,
     };
   })(),
   executionId: input.executionId,
@@ -614,7 +1025,7 @@ const buildContinuationState = (input: {
   observations: input.snapshot.observations,
   workerResults: input.snapshot.workerResults ?? [],
   progressLedger: input.snapshot.progressLedger,
-  verifications: input.snapshot.verifications,
+  verifications: [],
   stepCount: input.snapshot.stepCount,
   hopCount: input.snapshot.hopCount ?? 0,
   retryCount: 0,
@@ -625,8 +1036,6 @@ const buildContinuationState = (input: {
   availableSkills: input.snapshot.availableSkills ?? [],
   lastAction: input.snapshot.lastAction ?? null,
   lastContractViolation: null,
-  readinessConfirmed: input.snapshot.readinessConfirmed ?? true,
-  todoList: input.snapshot.todoList ?? null,
   localActionHistory: input.snapshot.localActionHistory ?? [],
   pendingLocalAction: undefined,
 });
@@ -764,7 +1173,7 @@ const projectExecutionPlan = (state: PersistedRuntimeState): ExecutionPlan | nul
     });
   }
 
-  const finalSupervisorSatisfied = state.verifications.every((item) => item.status === 'satisfied');
+  const finalSupervisorSatisfied = hasCompletedPlannedWork(state) && !state.pendingLocalAction;
   tasks.push({
     id: `${state.executionId}:supervisor`,
     title: 'Respond with the verified result',
@@ -885,19 +1294,19 @@ const summarizeVerificationState = (state: PersistedRuntimeState): string => {
       failed.length > 0 ? `failed: ${failed.map((item) => item.label).join(' | ')}` : '',
     ].filter(Boolean).join(', ');
   }
-  const satisfied = state.verifications.filter((item) => item.status === 'satisfied').length;
-  const pending = state.verifications.filter((item) => item.status !== 'satisfied').length;
-  const todoFailed = state.todoList?.failed ?? [];
-  const pendingRequired = state.todoList?.initialized ? state.todoList.required : [];
-  if (pendingRequired.length > 0) {
-    return `${satisfied} of ${state.verifications.length} checks satisfied, required tools pending: ${pendingRequired.join(', ')}`;
+  if (state.profile.missingInputs.length > 0) {
+    return `Waiting for input: ${state.profile.missingInputs.join(' | ')}`;
   }
-  if (todoFailed.length > 0) {
-    return `All required tools attempted (${todoFailed.length} failed: ${todoFailed.join(', ')})`;
+  if (state.scopeExpanded && hasNonSkillSuccess(state)) {
+    return 'Replanning with prior work context';
   }
-  return pending > 0
-    ? `${satisfied} internal checks satisfied, ${pending} still pending`
-    : `All ${satisfied} internal checks satisfied`;
+  if (hasNonSkillSuccess(state)) {
+    return 'Work completed without an explicit todo plan';
+  }
+  if (state.profile.shouldUseSkills && !state.loadedSkillContent) {
+    return 'Loading workflow guidance';
+  }
+  return 'Planning next steps';
 };
 
 const summarizeLocalAction = (action: DesktopAction): string => {
@@ -909,6 +1318,14 @@ const summarizeLocalAction = (action: DesktopAction): string => {
   return `Awaiting approval to delete ${action.path}`;
 };
 
+const hasNonSkillSuccess = (state: PersistedRuntimeState): boolean =>
+  (state.workerResults ?? []).some((result) => result.workerKey !== 'skills' && result.success);
+
+const hasCompletedPlannedWork = (state: PersistedRuntimeState): boolean =>
+  state.todoList?.initialized
+    ? state.todoList.required.length === 0
+    : hasNonSkillSuccess(state) || state.profile.complexity === 'ambient';
+
 class LangGraphDesktopChatEngine {
   async stream(input: StreamInput): Promise<void> {
     let streamClosed = false
@@ -918,7 +1335,7 @@ class LangGraphDesktopChatEngine {
     input.res.on('close', markStreamClosed)
     input.res.on('finish', markStreamClosed)
     input.res.on('error', markStreamClosed)
-    const sendEvent = (type: string, data: unknown): void => {
+    const sendSse = (type: string, data: unknown): void => {
       if (streamClosed || input.res.writableEnded || input.res.destroyed) {
         logger.error('desktop.flow.stream.write.closed', {
           file: 'backend/src/modules/desktop-chat/langgraph-desktop.engine.ts',
@@ -958,27 +1375,56 @@ class LangGraphDesktopChatEngine {
     const progressEvents: ProgressEvent[] = [];
     const conversationKey = `desktop:${input.threadId}`;
     let latestState: PersistedRuntimeState | null = null;
+    let executionRunReady = false;
+    const eventEmitter = createCanonicalStreamEmitter({
+      executionId: input.executionId,
+      sendSse,
+      latestState: () => latestState,
+      ensureRun: async () => {
+        if (executionRunReady) return;
+        await executionService.startRun({
+          id: input.executionId,
+          companyId: input.session.companyId,
+          userId: input.session.userId,
+          channel: 'desktop',
+          entrypoint: 'desktop_send',
+          requestId: input.executionId,
+          threadId: input.threadId,
+          chatId: input.threadId,
+          messageId: input.executionId,
+          mode: input.mode,
+          agentTarget: 'langgraph.supervisor',
+          latestSummary: summarizeText(input.message) ?? input.message,
+        });
+        executionRunReady = true;
+      },
+    });
+    const sendEvent = (type: string, data: unknown, mutateLocal?: () => void): void => {
+      eventEmitter.emit(type, data, mutateLocal);
+    };
 
     const onActivity = (payload: ActivityPayload) => {
-      contentBlocks.push({
-        type: 'tool',
-        id: payload.id,
-        name: payload.name,
-        label: payload.label,
-        icon: payload.icon,
-        status: 'running',
+      sendEvent('activity', payload, () => {
+        contentBlocks.push({
+          type: 'tool',
+          id: payload.id,
+          name: payload.name,
+          label: payload.label,
+          icon: payload.icon,
+          status: 'running',
+        });
       });
-      sendEvent('activity', payload);
     };
 
     const onActivityDone = (payload: ActivityPayload) => {
-      const block = contentBlocks.find((candidate): candidate is ToolBlock => candidate.type === 'tool' && candidate.id === payload.id);
-      if (block) {
-        block.status = /failed|error|not permitted/i.test((payload.resultSummary ?? '').toLowerCase()) ? 'failed' : 'done';
-        block.resultSummary = payload.resultSummary;
-        block.externalRef = payload.externalRef;
-      }
-      sendEvent('activity_done', payload);
+      sendEvent('activity_done', payload, () => {
+        const block = contentBlocks.find((candidate): candidate is ToolBlock => candidate.type === 'tool' && candidate.id === payload.id);
+        if (block) {
+          block.status = /failed|error|not permitted/i.test((payload.resultSummary ?? '').toLowerCase()) ? 'failed' : 'done';
+          block.resultSummary = payload.resultSummary;
+          block.externalRef = payload.externalRef;
+        }
+      });
     };
 
     registerActivityBus(input.executionId, (type, payload) => {
@@ -1017,9 +1463,11 @@ class LangGraphDesktopChatEngine {
         agentTarget: 'langgraph.supervisor',
         latestSummary: summarizeText(input.message) ?? input.message,
       });
+      executionRunReady = true;
 
-      sendEvent('thinking', 'Thinking...');
-      contentBlocks.push({ type: 'thinking' });
+      sendEvent('thinking', 'Thinking...', () => {
+        contentBlocks.push({ type: 'thinking' });
+      });
 
       const result = await this.runSharedRuntime({
         session: input.session,
@@ -1030,7 +1478,7 @@ class LangGraphDesktopChatEngine {
         executionId: input.executionId,
         workspace: input.workspace,
         stream: {
-          sendEvent,
+          sendEvent: (type, data) => sendEvent(type, data),
           contentBlocks,
           progressEvents,
           setLatestState: (state) => {
@@ -1046,6 +1494,7 @@ class LangGraphDesktopChatEngine {
           plan: result.plan,
           executionId: input.executionId,
         });
+        await eventEmitter.flush();
         input.res.end();
         return;
       }
@@ -1069,8 +1518,10 @@ class LangGraphDesktopChatEngine {
         sendEvent('plan', result.plan);
       }
 
-      contentBlocks.push({ type: 'text', content: finalText });
-      sendEvent('text', finalText);
+      sendEvent('text', finalText, () => {
+        contentBlocks.push({ type: 'text', content: finalText });
+      });
+      await eventEmitter.flush();
       const persisted = await persistAssistantTurn({
         threadId: input.threadId,
         userId: input.session.userId,
@@ -1085,6 +1536,7 @@ class LangGraphDesktopChatEngine {
         state: result.state,
       });
       sendEvent('done', { message: persisted });
+      await eventEmitter.flush();
       await executionService.completeRun({
         executionId: input.executionId,
         latestSummary: summarizeText(finalText) ?? finalText,
@@ -1120,15 +1572,17 @@ class LangGraphDesktopChatEngine {
       }).content;
       emitProgressEvent(
         {
-          sendEvent,
+          sendEvent: (type, data) => sendEvent(type, data),
           contentBlocks,
           progressEvents,
           setLatestState: () => undefined,
         },
         { type: 'fail', reason: friendly },
       );
-      contentBlocks.push({ type: 'text', content: friendly });
-      sendEvent('text', friendly);
+      sendEvent('text', friendly, () => {
+        contentBlocks.push({ type: 'text', content: friendly });
+      });
+      await eventEmitter.flush();
       const persistedState = latestState as PersistedRuntimeState | null;
       const persisted = await persistAssistantTurn({
         threadId: input.threadId,
@@ -1144,6 +1598,7 @@ class LangGraphDesktopChatEngine {
       }).catch(() => null);
       if (persisted) {
         sendEvent('done', { message: persisted });
+        await eventEmitter.flush();
       }
       await executionService.failRun({
         executionId: input.executionId,
@@ -1165,7 +1620,7 @@ class LangGraphDesktopChatEngine {
     input.res.on('close', markStreamClosed)
     input.res.on('finish', markStreamClosed)
     input.res.on('error', markStreamClosed)
-    const sendEvent = (type: string, data: unknown): void => {
+    const sendSse = (type: string, data: unknown): void => {
       if (streamClosed || input.res.writableEnded || input.res.destroyed) {
         logger.error('desktop.flow.stream.write.closed', {
           file: 'backend/src/modules/desktop-chat/langgraph-desktop.engine.ts',
@@ -1205,25 +1660,54 @@ class LangGraphDesktopChatEngine {
     const progressEvents: ProgressEvent[] = [];
     const conversationKey = `desktop:${input.threadId}`;
     let latestState: PersistedRuntimeState | null = null;
+    let executionRunReady = false;
+    const eventEmitter = createCanonicalStreamEmitter({
+      executionId: input.executionId,
+      sendSse,
+      latestState: () => latestState,
+      ensureRun: async () => {
+        if (executionRunReady) return;
+        await executionService.startRun({
+          id: input.executionId,
+          companyId: input.session.companyId,
+          userId: input.session.userId,
+          channel: 'desktop',
+          entrypoint: 'desktop_act',
+          requestId: input.executionId,
+          threadId: input.threadId,
+          chatId: input.threadId,
+          messageId: input.executionId,
+          mode: input.mode,
+          agentTarget: 'langgraph.supervisor',
+          latestSummary: summarizeText(input.message ?? input.actionResult?.summary) ?? input.executionId,
+        });
+        executionRunReady = true;
+      },
+    });
+    const sendEvent = (type: string, data: unknown, mutateLocal?: () => void): void => {
+      eventEmitter.emit(type, data, mutateLocal);
+    };
     const onActivity = (payload: ActivityPayload) => {
-      contentBlocks.push({
-        type: 'tool',
-        id: payload.id,
-        name: payload.name,
-        label: payload.label,
-        icon: payload.icon,
-        status: 'running',
+      sendEvent('activity', payload, () => {
+        contentBlocks.push({
+          type: 'tool',
+          id: payload.id,
+          name: payload.name,
+          label: payload.label,
+          icon: payload.icon,
+          status: 'running',
+        });
       });
-      sendEvent('activity', payload);
     };
     const onActivityDone = (payload: ActivityPayload) => {
-      const block = contentBlocks.find((candidate): candidate is ToolBlock => candidate.type === 'tool' && candidate.id === payload.id);
-      if (block) {
-        block.status = /failed|error|not permitted/i.test((payload.resultSummary ?? '').toLowerCase()) ? 'failed' : 'done';
-        block.resultSummary = payload.resultSummary;
-        block.externalRef = payload.externalRef;
-      }
-      sendEvent('activity_done', payload);
+      sendEvent('activity_done', payload, () => {
+        const block = contentBlocks.find((candidate): candidate is ToolBlock => candidate.type === 'tool' && candidate.id === payload.id);
+        if (block) {
+          block.status = /failed|error|not permitted/i.test((payload.resultSummary ?? '').toLowerCase()) ? 'failed' : 'done';
+          block.resultSummary = payload.resultSummary;
+          block.externalRef = payload.externalRef;
+        }
+      });
     };
 
     registerActivityBus(input.executionId, (type, payload) => {
@@ -1264,9 +1748,11 @@ class LangGraphDesktopChatEngine {
         agentTarget: 'langgraph.supervisor',
         latestSummary: summarizeText(input.message ?? input.actionResult?.summary) ?? input.executionId,
       });
+      executionRunReady = true;
 
-      sendEvent('thinking', 'Thinking...');
-      contentBlocks.push({ type: 'thinking' });
+      sendEvent('thinking', 'Thinking...', () => {
+        contentBlocks.push({ type: 'thinking' });
+      });
 
       const result = await this.runSharedRuntime({
         session: input.session,
@@ -1278,7 +1764,7 @@ class LangGraphDesktopChatEngine {
         workspace: input.workspace,
         actionResult: input.actionResult,
         stream: {
-          sendEvent,
+          sendEvent: (type, data) => sendEvent(type, data),
           contentBlocks,
           progressEvents,
           setLatestState: (state) => {
@@ -1294,6 +1780,7 @@ class LangGraphDesktopChatEngine {
           plan: result.plan,
           executionId: input.executionId,
         });
+        await eventEmitter.flush();
         input.res.end();
         return;
       }
@@ -1316,8 +1803,10 @@ class LangGraphDesktopChatEngine {
       if (result.plan) {
         sendEvent('plan', result.plan);
       }
-      contentBlocks.push({ type: 'text', content: finalText });
-      sendEvent('text', finalText);
+      sendEvent('text', finalText, () => {
+        contentBlocks.push({ type: 'text', content: finalText });
+      });
+      await eventEmitter.flush();
       const message = await persistAssistantTurn({
         threadId: input.threadId,
         userId: input.session.userId,
@@ -1332,6 +1821,7 @@ class LangGraphDesktopChatEngine {
         state: result.state,
       });
       sendEvent('done', { message });
+      await eventEmitter.flush();
       await executionService.completeRun({
         executionId: input.executionId,
         latestSummary: summarizeText(finalText) ?? finalText,
@@ -1352,15 +1842,17 @@ class LangGraphDesktopChatEngine {
       }).content;
       emitProgressEvent(
         {
-          sendEvent,
+          sendEvent: (type, data) => sendEvent(type, data),
           contentBlocks,
           progressEvents,
           setLatestState: () => undefined,
         },
         { type: 'fail', reason: friendly },
       );
-      contentBlocks.push({ type: 'text', content: friendly });
-      sendEvent('text', friendly);
+      sendEvent('text', friendly, () => {
+        contentBlocks.push({ type: 'text', content: friendly });
+      });
+      await eventEmitter.flush();
       const persistedState = latestState as PersistedRuntimeState | null;
       const persisted = await persistAssistantTurn({
         threadId: input.threadId,
@@ -1376,6 +1868,7 @@ class LangGraphDesktopChatEngine {
       }).catch(() => null);
       if (persisted) {
         sendEvent('done', { message: persisted });
+        await eventEmitter.flush();
       }
       await executionService.failRun({
         executionId: input.executionId,
@@ -1515,6 +2008,18 @@ class LangGraphDesktopChatEngine {
     let initialState: PersistedRuntimeState;
     const restoredMessage = typeof restoredState?.userRequest === 'string' ? restoredState.userRequest : '';
     const message = input.message.trim() || restoredMessage;
+    try {
+      appendLlmAuditLog({
+        ts: new Date().toISOString(),
+        executionId: input.executionId,
+        type: 'session_start',
+        message,
+        mode: input.mode,
+        threadId: input.threadId,
+      });
+    } catch {
+      // Never break execution on audit log failure.
+    }
 
     if (restoredState) {
       initialState = restoredState;
@@ -1548,22 +2053,19 @@ class LangGraphDesktopChatEngine {
         history: controllerContext.history,
         latestProfile: controllerContext.latestProfile,
       });
-      const rawProfile = await openAiOrchestrationModels.invokeSupervisor(buildBootstrapPrompt({
+      const bootstrapPrompt = buildBootstrapPrompt({
         message,
         contextBlock: [controllerContext.historyContext, controllerContext.conversationRefs].filter(Boolean).join('\n\n'),
         workers: DESKTOP_WORKER_CAPABILITIES,
         skills: skillCatalog,
-      }));
+      });
+      const bootstrapStartedAt = Date.now();
+      const rawProfile = await openAiOrchestrationModels.invokeSupervisor(bootstrapPrompt);
       logger.info('llm.context.bootstrap', {
         file: 'backend/src/modules/desktop-chat/langgraph-desktop.engine.ts',
         executionId: input.executionId,
         threadId: input.threadId,
-        prompt: compactTracePrompt(buildBootstrapPrompt({
-          message,
-          contextBlock: [controllerContext.historyContext, controllerContext.conversationRefs].filter(Boolean).join('\n\n'),
-          workers: DESKTOP_WORKER_CAPABILITIES,
-          skills: skillCatalog,
-        })),
+        prompt: compactTracePrompt(bootstrapPrompt),
       }, { always: true });
       logger.info('llm.response.bootstrap', {
         file: 'backend/src/modules/desktop-chat/langgraph-desktop.engine.ts',
@@ -1571,10 +2073,25 @@ class LangGraphDesktopChatEngine {
         raw: compactTraceResponse(rawProfile),
       }, { always: true });
       const profile = parseControllerProfile(rawProfile, fallbackProfile);
+      try {
+        appendLlmAuditLog({
+          ts: new Date().toISOString(),
+          executionId: input.executionId,
+          hop: 0,
+          type: 'bootstrap',
+          promptTokenEstimate: roughTokenEstimate(bootstrapPrompt),
+          responseTokenEstimate: roughTokenEstimate(rawProfile),
+          ...deriveAuditResponseFields(rawProfile),
+          latencyMs: Date.now() - bootstrapStartedAt,
+          prompt: bootstrapPrompt,
+          rawResponse: rawProfile ?? '',
+          parsed: profile,
+        });
+      } catch {
+        // Never break execution on audit log failure.
+      }
       const exactSkillId = findExactSkillMatch(profile.skillQuery, skillCatalog);
-      const inferredInputs = exactSkillId
-        ? inferenceEngine.infer(exactSkillId, message, profile)
-        : {};
+      const inferredInputs = inferenceEngine.infer(exactSkillId, message, profile);
       const profileWithInference = applyInferredInputsToProfile(profile, inferredInputs);
       initialState = {
         executionId: input.executionId,
@@ -1858,6 +2375,7 @@ class LangGraphDesktopChatEngine {
         }
         return raw;
       },
+      invokeParamController: async (prompt) => openAiOrchestrationModels.invokePrompt('router', prompt),
       executeWorker: (invocation) => executeDesktopWorker({ invocation, requestContext }),
       buildLocalAction: (state, kind) => {
         if (!input.workspace) return null;
@@ -1900,7 +2418,7 @@ class LangGraphDesktopChatEngine {
     }
 
     const finalPlan = plan
-      ? runtimeResult.state.verifications.every((item) => item.status === 'satisfied')
+      ? hasCompletedPlannedWork(runtimeResult.state)
         ? completeExecutionPlan(plan, runtimeResult.text)
         : failExecutionPlan(plan, runtimeResult.text)
       : null;

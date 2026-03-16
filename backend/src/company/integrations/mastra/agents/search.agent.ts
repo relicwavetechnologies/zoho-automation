@@ -15,6 +15,7 @@ export const searchAgent = new Agent({
     mission: 'Retrieve current external information, distill it into a short grounded answer, and stop as soon as the answer is supported.',
     scope: [
       'You can search both the public web and authorized uploaded company documents.',
+      'Default to public web search unless the user explicitly asks about internal policies, uploaded files, company documents, or private knowledge.',
       'Prefer exact-site search when the user names a website, domain, or URL.',
       'When the user wants broad docs/reference coverage from a specific site or URL, you can use Cloudflare-backed crawl through `search-read`.',
       'When the user asks about internal policies, uploaded PDFs, company files, or prior ingested documents, use `search-documents` instead of the web path.',

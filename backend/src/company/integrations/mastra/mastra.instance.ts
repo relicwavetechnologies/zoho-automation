@@ -13,6 +13,7 @@ import { zohoSpecialistAgent } from './agents/zoho-specialist.agent';
 import { searchAgent } from './agents/search.agent';
 import { synthesisAgent } from './agents/synthesis.agent';
 import { outreachSpecialistAgent } from './agents/outreach-specialist.agent';
+import { terminalSpecialistAgent } from './agents/terminal-specialist.agent';
 import { companyWorkflow } from './workflows/company.workflow';
 
 export const mastra = new Mastra({
@@ -29,6 +30,7 @@ export const mastra = new Mastra({
     larkMeetingAgent: larkMeetingSpecialistAgent,
     larkApprovalAgent: larkApprovalSpecialistAgent,
     larkDocAgent: larkDocSpecialistAgent,
+    terminalAgent: terminalSpecialistAgent,
     synthesisAgent,
   },
   workflows: {

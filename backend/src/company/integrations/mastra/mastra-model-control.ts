@@ -26,6 +26,7 @@ export const MASTRA_AGENT_TARGETS = {
   larkMeetingAgent: 'mastra.lark-doc',
   larkApprovalAgent: 'mastra.lark-doc',
   larkDocAgent: 'mastra.lark-doc',
+  terminalAgent: 'mastra.supervisor',
   synthesisAgent: 'mastra.synthesis',
 } as const;
 

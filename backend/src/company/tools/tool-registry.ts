@@ -243,6 +243,14 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
+    id: 'terminal-agent',
+    name: 'Terminal Agent',
+    description: 'Plan safe local terminal commands, reusable scripts, curl checks, and verification steps before approval-gated execution.',
+    category: 'workspace',
+    engines: ['mastra'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
     id: 'zoho-read',
     name: 'Zoho Read',
     description: 'Live Zoho CRM read via MCP or REST with vector augmentation.',

@@ -151,9 +151,12 @@ export type LocalActionRecord<LocalAction = unknown> = {
 };
 
 export type TodoItemStatus = 'pending' | 'running' | 'done' | 'failed';
+export type TodoMode = 'read' | 'write' | 'verify';
 
 export type TodoItem = {
+  key: string;
   tool: string;
+  mode: TodoMode;
   label: string;
   status: TodoItemStatus;
   lastSummary?: string;
@@ -190,6 +193,7 @@ export type ControllerRuntimeState<LocalAction = unknown> = {
   bootstrap?: ControllerTaskProfile;
   inferredInputs?: Record<string, string | undefined>;
   readinessConfirmed: boolean;
+  scopeExpanded?: boolean;
   todoList?: TodoListState;
   terminalEventEmitted?: boolean;
   observations: WorkerObservation[];

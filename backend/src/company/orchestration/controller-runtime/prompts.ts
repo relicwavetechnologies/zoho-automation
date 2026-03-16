@@ -60,9 +60,16 @@ export const buildBootstrapPrompt = (input: {
 
 export const inferBootstrapFallback = (message: string): ControllerTaskProfile => {
   const trimmed = message.trim();
+  const codingIntentCount = [
+    'code', 'coding', 'bug', 'fix', 'debug', 'refactor', 'script', 'scripts', 'test', 'tests',
+    'build', 'lint', 'terminal', 'command', 'shell', 'workspace', 'file', 'files', 'patch',
+    'curl', 'pnpm', 'npm', 'node', 'python', 'python3', 'git',
+  ].filter((token) => new RegExp(`\\b${token}\\b`, 'i').test(trimmed)).length;
   const larkSurfaceCount = ['task', 'tasks', 'calendar', 'meeting', 'meetings', 'approval', 'approvals', 'doc', 'docs', 'base']
     .filter((token) => new RegExp(`\\b${token}\\b`, 'i').test(trimmed))
     .length;
+  const shouldUseCodingSkill = /\b(coding-ops)\b/i.test(trimmed)
+    || (codingIntentCount >= 2 && /\b(fix|debug|refactor|script|test|build|lint|run|execute|edit|write|patch|terminal|workspace|curl)\b/i.test(trimmed));
   const shouldUseLarkSkill = /\b(lark-ops)\b/i.test(trimmed)
     || (/\b(lark|feishu)\b/i.test(trimmed) && /\b(workflow|process|protocol|playbook|skill|ops)\b/i.test(trimmed))
     || (/\b(lark|feishu)\b/i.test(trimmed) && larkSurfaceCount >= 2);
@@ -83,9 +90,11 @@ export const inferBootstrapFallback = (message: string): ControllerTaskProfile =
     complexity: /\b(workflow|process|daily-stuff|protocol|follow-up|schedule|doc|task|plan|compare|research)\b/i.test(trimmed)
       ? 'structured'
       : 'simple',
-    shouldUseSkills: /\b(daily-stuff|workflow|process|protocol|playbook|skill)\b/i.test(trimmed) || shouldUseLarkSkill,
+    shouldUseSkills: /\b(daily-stuff|workflow|process|protocol|playbook|skill)\b/i.test(trimmed) || shouldUseLarkSkill || shouldUseCodingSkill,
     skillQuery: /\b(daily-stuff)\b/i.test(trimmed)
       ? 'daily-stuff'
+      : shouldUseCodingSkill
+        ? 'coding-ops'
       : shouldUseLarkSkill
         ? 'lark-ops'
         : trimmed,
@@ -294,18 +303,31 @@ export const buildSynthesisPrompt = (input: {
   objective: string;
   results: string[];
   failures: string[];
+  unresolved: string[];
 }): string => [
-  'You have completed a workflow. Summarize the results for the user.',
-  input.workflowName ? `Workflow: ${input.workflowName}` : '',
+  'Write the final user-facing answer for a completed task.',
+  'Respond directly to the user, not as a workflow report.',
   `Objective: ${input.objective || 'none provided'}`,
   'Results:',
   input.results.length > 0 ? input.results.map((r) => `- ${r}`).join('\n') : '- none',
   'Failed tools (if any):',
   input.failures.length > 0 ? input.failures.map((f) => `- ${f}`).join('\n') : '- none',
-  'Write a natural language summary. Be specific — mention actual deal names, task titles, meeting subjects.',
-  'If something failed, say so honestly and tell the user what they can do about it.',
-  'Prefer short paragraphs. Use bullet points only if there are more than 4 distinct findings.',
-  'Do not start with "I have completed...".',
+  'Unresolved items (never attempted or not confirmed — do NOT claim these were done):',
+  input.unresolved.length > 0 ? input.unresolved.map((item) => `- ${item}`).join('\n') : '- none',
+  'Rules:',
+  '- Do not mention workflow names, skill names, or that you "ran a workflow".',
+  '- Do not use headings like "Workflow Status" or phrases like "let\'s break down".',
+  '- Do not start with a title, heading, or bold label like "**Today\'s ...**".',
+  '- Do not narrate your process with phrases like "Alright" or "I\'ve just checked".',
+  '- Start with the findings themselves.',
+  '- Be specific — mention actual deal names, task titles, and meeting subjects when available.',
+  '- If something failed, say so honestly and tell the user what they can do about it.',
+  '- Never say "I scheduled", "I created", "I added", or similar unless that action is confirmed in the Results list above.',
+  '- For any unresolved item, say it was not completed and why in one short sentence.',
+  '- Prefer short paragraphs. Use bullet points only if there are more than 4 distinct findings.',
+  '- Keep the answer concise and operational.',
+  'Good style example:',
+  'Here’s what I found for today: one cancelled calendar event from 16:30 to 17:30, and 10 Lark tasks, all marked done. If you want, I can turn this into a cleaner summary.',
 ].filter(Boolean).join('\n\n');
 
 export const buildFollowupIntentPrompt = (input: {

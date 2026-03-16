@@ -4,6 +4,15 @@ import { EnvValidationError, EnvValidationIssue, validateEnvironmentContract } f
 
 dotenv.config();
 
+// Temporarily hard-disable LangSmith/LangChain tracing for the whole backend process.
+// This must happen before environment validation and before any SDK/model clients initialize.
+process.env.LANGSMITH_TRACING = 'false';
+process.env.LANGCHAIN_TRACING_V2 = 'false';
+process.env.LANGCHAIN_CALLBACKS_BACKGROUND = 'false';
+process.env.LANGSMITH_API_KEY = '';
+process.env.LANGSMITH_PROJECT = '';
+process.env.LANGSMITH_ENDPOINT = '';
+
 const IS_DEV_BOOT = process.env['NODE_ENV'] !== 'production';
 
 const emitValidationLog = (

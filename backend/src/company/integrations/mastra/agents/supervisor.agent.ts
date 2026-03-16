@@ -9,6 +9,7 @@ import { larkDocAgentTool } from '../tools/lark-doc-agent.tool';
 import { larkMeetingAgentTool } from '../tools/lark-meeting-agent.tool';
 import { larkApprovalAgentTool } from '../tools/lark-approval-agent.tool';
 import { larkTaskAgentTool } from '../tools/lark-task-agent.tool';
+import { terminalAgentTool } from '../tools/terminal-agent.tool';
 import { plannerAgentTool } from '../tools/planner-agent.tool';
 import { resolveMastraLanguageModel } from '../mastra-model-control';
 import { withChatResponseFormatting } from './shared-chat-formatting';
@@ -100,6 +101,7 @@ export const supervisorAgent = new Agent({
         'Use `lark-meeting-agent` for Lark meeting lookup and minute retrieval.',
         'Use `lark-approval-agent` for Lark approval instance workflows.',
         'Use `lark-doc-agent` only as the final export/edit step after the underlying work is already grounded.',
+        'Use `terminal-agent` when the task is really about local command strategy, test/build execution, reusable scripts, curl checks, or shell-based verification.',
         'Call at most one tool per turn.',
       ],
       workflow: [
@@ -109,6 +111,7 @@ export const supervisorAgent = new Agent({
         'For research-plus-document tasks, gather the grounded findings first and use the Lark Docs path last.',
         'Use the Lark Base, Tasks, Calendar, Meetings, and Approvals paths only when the request is actually about those products or when a plan explicitly calls for them.',
         'Route meeting scheduling through the calendar specialist, and use the meetings specialist for inspection and minute retrieval.',
+        'Use the terminal specialist to plan command execution. Do not pretend a command ran unless the desktop execution path actually confirms it.',
         'Never route Lark product requests to a non-existent specialist. If the request is about unsupported Lark surfaces, say that clearly and continue only with the supported part of the job.',
         'If a step fails or returns no data, explain the impact briefly and adapt explicitly instead of pretending the task is complete.',
         'Handle purely ambient turns with short natural replies and no capability advertising.',
@@ -149,5 +152,6 @@ export const supervisorAgent = new Agent({
     larkMeetingAgentTool,
     larkApprovalAgentTool,
     larkDocAgentTool,
+    terminalAgentTool,
   },
 });

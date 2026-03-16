@@ -9,6 +9,7 @@ const LIVE_SUPERVISOR_CAPABILITY_LINES = [
   '`lark-meeting-agent` handles Lark meeting lookup and minute retrieval.',
   '`lark-approval-agent` handles Lark approval instance reads and creation when approval template details are known.',
   '`lark-doc-agent` handles Lark Docs creation and editing only after the required research or CRM work is already grounded.',
+  '`terminal-agent` plans safe local terminal commands, reusable script execution, curl checks, and verification commands before approval-gated execution.',
   'Current live Lark action coverage includes Lark Docs, Lark Base, Lark Tasks, Calendar scheduling, meeting/minute lookup, and approval instance workflows.',
 ];
 

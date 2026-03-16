@@ -74,7 +74,7 @@ export const DESKTOP_WORKER_CAPABILITIES: WorkerCapability[] = [
   },
   {
     workerKey: 'search',
-    description: 'Run grounded web and documentation research',
+    description: 'Run grounded external web search and public documentation research',
     actionKinds: ['DISCOVER_CANDIDATES', 'QUERY_REMOTE_SYSTEM', 'VERIFY_OUTPUT'],
     domains: ['research', 'docs', 'web'],
     artifactTypes: ['citation'],

@@ -2,6 +2,171 @@ import type { SkillDocument, SkillMetadata } from './types';
 
 const HARD_CODED_SKILLS: SkillDocument[] = [
   {
+    id: 'coding-ops',
+    name: 'coding-ops',
+    description: 'A focused workflow guide for coding tasks that use local workspace edits, terminal commands, reusable scripts, tests, and optional research without guessing or unsafe mutations.',
+    whenToUse: [
+      'when the request is about coding, fixing, refactoring, debugging, testing, scripting, or running local commands',
+      'when the user wants to read code, change files, run scripts, run builds, run tests, or use curl in the local workspace',
+      'when safe local execution, verification, and reusable script workflows matter',
+    ],
+    tags: ['coding', 'code', 'workspace', 'terminal', 'scripts', 'tests', 'debugging', 'refactor', 'patch', 'curl'],
+    toolHints: ['repo', 'workspace', 'terminal', 'search'],
+    content: `---
+name: coding-ops
+description: A focused workflow guide for coding work that may require code inspection, local file edits, terminal commands, reusable scripts, tests, and optional external docs.
+when_to_use:
+  - when the request is about coding, debugging, scripting, testing, or refactoring
+  - when the user wants local workspace edits or terminal execution
+  - when safe command order and verification matter
+tools:
+  optional:
+    - repo
+    - search
+  action:
+    - workspace
+    - terminal
+inputs:
+  - name: objective
+    infer: true
+  - name: target_paths
+    infer: true
+  - name: command_goal
+    infer: true
+  - name: external_reference
+    infer: false
+success_criteria:
+  - code changes are grounded in inspected files or explicit user direction
+  - terminal commands are verified by exit status and useful output
+  - reusable scripts are written to stable workspace paths when that improves repeatability
+  - the final answer reports what changed, what ran, and what remains risky
+blocking_rules:
+  - do not claim a command succeeded unless terminal output or exit status confirms it
+  - do not claim a file changed unless the workspace action or command actually changed it
+  - do not mutate the workspace when a read, inspect, or dry-run step should happen first
+---
+
+# Purpose
+
+Use this skill for real coding work in the local workspace. This skill is guidance only. Loading it does not automatically run commands or edit files. It helps the controller choose when to inspect code, when to edit files directly, when to run terminal commands, and how to verify the result.
+
+# Core Rules
+
+- Start from the coding outcome, not from a tool.
+- Inspect before mutating when the current state of code or files matters.
+- Prefer the narrowest safe action that moves the task forward.
+- Use direct workspace writes when the exact file content is already known.
+- Use terminal commands when execution, tests, builds, scripts, package managers, git inspection, curl requests, or search utilities are needed.
+- After every change, verify with a concrete follow-up step whenever possible.
+- Reusable scripts are good. One-off shell hacks are not, unless the task is truly one-off.
+
+# Tool Routing
+
+## Repo
+
+Use \`repo\` for grounded code and repository inspection when the task needs file content, file paths, or repository context as evidence.
+
+Use it for:
+- locating files
+- retrieving existing code or config content
+- grounding a patch or refactor in actual files
+
+Rules:
+- prefer reading or inspecting before writing when the codebase shape is unclear
+- use repo evidence to decide which file should change
+
+## Workspace
+
+Use \`workspace\` for explicit local file mutations.
+
+Use it for:
+- writing a new file with known content
+- replacing a file with prepared content
+- creating directories
+- deleting paths only when the user clearly asked or cleanup is obviously required
+
+Rules:
+- prefer \`workspace\` over shell redirection when you already know the exact file content
+- use stable paths for reusable scripts, such as \`scripts/\`, \`tools/\`, or task-specific utility files in the repo
+- when creating a reusable script, make the filename descriptive and reusable, not a random scratch name
+
+## Terminal
+
+Use \`terminal\` for command execution.
+
+Use it for:
+- \`rg\`, \`ls\`, \`cat\`, and other local inspection commands
+- package manager commands such as \`pnpm\`, \`npm\`, \`node\`, \`python\`, \`python3\`
+- tests, builds, linting, migrations, and script execution
+- git inspection commands
+- curl or HTTP debugging when the user wants real network verification
+
+Rules:
+- use read-only inspection commands first when the workspace state is unclear
+- prefer deterministic commands with clear output
+- if the exact command is likely to be reused, write a script file first and run that script instead of repeating long inline commands
+- after running a command, verify success from exit status and output, not from intention
+- if a command fails, summarize the real failure and choose the next step from evidence
+
+## Search
+
+Use \`search\` only when the task needs external docs, package references, API behavior, or current public information.
+
+Rules:
+- do not use search when the answer is already in the codebase or command output
+- use search for docs, API contracts, version-specific behavior, and debugging external tools
+
+# Coding Patterns
+
+## Debugging
+
+- inspect the relevant file or failure output first
+- reproduce with the smallest useful command
+- fix the smallest real cause
+- rerun the relevant verification command
+
+## Refactor
+
+- inspect all touched files first
+- make the code change
+- run the narrowest validation command that proves the refactor did not break behavior
+
+## Reusable Script Workflow
+
+- if the task needs repeated data manipulation, repeated API checks, or a long multi-step shell command, create a reusable script in the workspace
+- keep the script focused and name it for the job it performs
+- run the script through \`terminal\`
+- report where the script was written and how it was verified
+
+## Curl And External Calls
+
+- use \`curl\` through \`terminal\` when the user wants a real local request or API verification
+- include only the headers and payload actually needed
+- summarize the important status code and response facts
+
+# Bad Routes To Avoid
+
+- do not use terminal for blind destructive changes when workspace writes are more precise
+- do not write files before understanding the target path
+- do not claim tests passed if you did not run them
+- do not treat a failed command as success just because the intended file exists
+- do not create throwaway scripts when a simple verified command is enough
+
+# Tool Guidance
+
+- \`repo\`: inspect grounded files, code, and repository structure before deciding what to edit.
+- \`workspace\`: write or update known file content, create reusable scripts, and make precise local mutations.
+- \`terminal\`: run inspection commands, scripts, tests, builds, curl requests, and verification commands. Always ground claims in exit status and output.
+- \`search\`: use only for external docs or current public references that are not already available locally.
+
+# Delivery
+
+- report what you inspected, what you changed, what you ran, and what actually succeeded
+- if a script was created, mention its path and purpose
+- if verification was partial, say exactly what was and was not checked
+`,
+  },
+  {
     id: 'lark-ops',
     name: 'lark-ops',
     description: 'A focused workflow guide for choosing the right Lark surface, asking for the right identifiers, handling RBAC/defaults safely, and sequencing multi-step Lark work across tasks, calendar, meetings, approvals, docs, and base.',
@@ -19,24 +184,29 @@ when_to_use:
   - when the request spans multiple Lark products
   - when the request is about how to use Lark tools correctly
   - when identifiers, defaults, access control, or read-before-write behavior matter
-allowed_tools:
-  optional:
+tools:
+  required:
     - larkTask
     - larkCalendar
+  optional:
     - larkMeeting
     - larkApproval
-    - larkDoc
     - larkBase
   action:
     - larkDoc
-required_inputs:
-  - objective
-optional_inputs:
-  - date_scope
-  - identifiers
-  - target_people
-  - calendar_name
-  - approval_code
+inputs:
+  - name: objective
+    infer: true
+  - name: date_scope
+    infer: true
+  - name: identifiers
+    infer: false
+  - name: target_people
+    infer: false
+  - name: calendar_name
+    infer: false
+  - name: approval_code
+    infer: false
 success_criteria:
   - the correct Lark surface is chosen
   - missing identifiers are asked only when truly needed
@@ -113,6 +283,7 @@ Use it for:
 - reading one event
 - listing available calendars
 - creating, updating, or deleting an event
+- scheduling a meeting when the user says "create a meeting", "book a meeting", or "schedule a meeting"
 
 Read actions commonly available:
 - \`list\`
@@ -130,6 +301,7 @@ Parameter guidance:
 
 Routing rule:
 - if the user asks "what do I have today", calendar is usually the first Lark source
+- if the user wants to create or schedule a meeting, route to \`larkCalendar\` because meetings are created as calendar events in this system
 
 ## Lark Meetings
 
@@ -154,6 +326,7 @@ Routing rules:
 - do not send scheduling requests to \`larkMeeting\`
 - do not use \`larkMeeting\` for generic day-based discovery if calendar events can answer the question better
 - if the user only gives a date and asks about meetings, start with calendar
+- if the user says "create a meeting", "schedule a meeting", or "book a meeting", do not route to \`larkMeeting\`; route to \`larkCalendar\`
 
 ## Lark Approvals
 
@@ -256,6 +429,15 @@ Ask only for the narrowest missing thing:
 
 Do not ask for optional formatting preferences unless the next step truly depends on them.
 
+# Tool Guidance
+
+- \`larkTask\`: query tasks for the resolved date_scope and return titles, assignees, due times, and completion state.
+- \`larkCalendar\`: query events for the resolved date_scope and return titles, times, status, and attendees when available.
+- \`larkMeeting\`: inspect a known meeting or minute. Do not use this for generic day-based discovery when calendar can answer the question, and do not use it to schedule meetings.
+- \`larkApproval\`: discover definitions or inspect approval instances only when the request is about approvals.
+- \`larkBase\`: use only when the request is actually about Base records, tables, apps, or views.
+- \`larkDoc\`: create or edit a doc only when the user explicitly asked for a document or artifact.
+
 # Bad Routes To Avoid
 
 - Do not use \`larkDoc\` as the first step for factual discovery.
@@ -287,7 +469,7 @@ description: A structured operating workflow for recurring daily work that may r
 when_to_use:
   - when the user explicitly mentions "daily-stuff"
   - when the request sounds like recurring operational work
-allowed_tools:
+tools:
   required:
     - zoho
     - outreach
@@ -298,12 +480,15 @@ allowed_tools:
     - search
   action:
     - larkDoc
-required_inputs:
-  - objective
-optional_inputs:
-  - date_scope
-  - stakeholders
-  - delivery_style
+inputs:
+  - name: objective
+    infer: true
+  - name: date_scope
+    infer: true
+  - name: stakeholders
+    infer: false
+  - name: delivery_style
+    infer: false
 success_criteria:
   - requested information gathered
   - requested outputs delivered
@@ -329,11 +514,13 @@ Use this skill for structured daily operating work. The goal is not to force a f
 
 # Tool Guidance
 
-- Zoho and Outreach are for internal business context.
-- Search is for external web context or current documentation.
-- Lark Docs are for writing out grounded results after the factual work is done.
-- Lark Tasks are for explicit follow-up actions.
-- Lark Calendar and Meetings are for scheduling or reviewing meetings only when the user asks for them or the workflow clearly requires them.
+- \`zoho\`: query active deals, leads, and key CRM context for the resolved date_scope. Return deal name, stage, value, and contact.
+- \`outreach\`: query outreach activity or publisher matches for the resolved date_scope. Return campaign or recipient counts and useful names when available.
+- \`larkTask\`: query tasks due on the resolved date_scope. Return titles, assignees, due times, and completion state.
+- \`larkCalendar\`: query events scheduled on the resolved date_scope. Return titles, times, statuses, and attendees when available.
+- \`larkMeeting\`: inspect meetings only when meeting-specific detail is actually needed. Do not use it as the first source for generic day-based scheduling questions.
+- \`search\`: use only if the user asked for external research or current public context.
+- \`larkDoc\`: create a document only if the user explicitly asked for one or an artifact is clearly required.
 
 # Delivery Rules
 

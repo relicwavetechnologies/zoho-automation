@@ -13,6 +13,7 @@ import type {
   ContentBlock,
   MessageMetadata,
   ExecutionPlan,
+  ExecutionEventItem,
   ThreadMessagesPage,
   ThreadMessagePagination,
 } from '../types'
@@ -35,21 +36,9 @@ import {
   type ActionResultPayload,
   type ActionCompletion,
 } from '../lib/chat-helpers'
+import { applyLiveStreamEventToLedger, replayExecutionEvents } from '../lib/execution-ledger'
 
 export type { DesktopWorkspaceAction, ActionResultPayload }
-
-const isActivityFailure = (input: { label?: string; resultSummary?: string }): boolean => {
-  const label = (input.label ?? '').toLowerCase()
-  const summary = (input.resultSummary ?? '').toLowerCase()
-  return (
-    label.includes('failed')
-    || label.includes('error')
-    || summary === 'error'
-    || summary.includes('failed')
-    || summary.includes('error:')
-    || summary.includes('not permitted')
-  )
-}
 
 // ── Context contract ──────────────────────────────────────────────────────────
 
@@ -215,6 +204,10 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const activePlanRef = useRef<ExecutionPlan | null>(null)
   const activeExecutionIdRef = useRef<string | null>(null)
   const liveBlocksRef = useRef<ContentBlock[]>([])
+  const liveThinkingStartedAtRef = useRef<number | null>(null)
+  const liveExecutionEventsRef = useRef<Array<{ type: string; data: unknown; createdAtMs: number }>>([])
+  const executionEventCacheRef = useRef<Map<string, ExecutionEventItem[]>>(new Map())
+  const isRecoveringStreamRef = useRef(false)
   const lastEventTimestampRef = useRef<number>(Date.now())
   const isStreamingRef = useRef(false)
   const loadThreadsRef = useRef<(() => Promise<void>) | null>(null)
@@ -245,8 +238,26 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     setActivePlan(plan)
   }, [])
 
+  const applyLiveLedgerEvent = useCallback((event: { type: string; data: unknown }) => {
+    const createdAtMs = Date.now()
+    liveExecutionEventsRef.current = [...liveExecutionEventsRef.current, { ...event, createdAtMs }]
+    const next = applyLiveStreamEventToLedger({
+      blocks: liveBlocksRef.current,
+      plan: activePlanRef.current,
+      activeThinkingStartedAtMs: liveThinkingStartedAtRef.current,
+      event,
+      createdAtMs,
+    })
+    liveThinkingStartedAtRef.current = next.activeThinkingStartedAtMs
+    replaceLiveBlocks(() => next.blocks)
+    replaceActivePlan(next.plan)
+  }, [replaceActivePlan, replaceLiveBlocks])
+
   const ensureStreamingThinkingBlock = useCallback(() => {
     setIsThinking(true)
+    if (liveThinkingStartedAtRef.current == null) {
+      liveThinkingStartedAtRef.current = Date.now()
+    }
     replaceLiveBlocks((prev) => {
       const last = prev[prev.length - 1]
       if (last?.type === 'thinking') return prev
@@ -321,6 +332,25 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     }
   }, [currentWorkspace, isStreaming, isThinking])
 
+  const fetchExecutionEvents = useCallback(async (executionId: string): Promise<ExecutionEventItem[]> => {
+    const cached = executionEventCacheRef.current.get(executionId)
+    if (cached) return cached
+    if (!token) return []
+
+    const response = await window.desktopAPI.fetch(`/api/desktop/executions/${executionId}/events`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (response.status < 200 || response.status >= 300) {
+      return []
+    }
+    const body = JSON.parse(response.body) as { data?: { items?: ExecutionEventItem[] } }
+    const events = Array.isArray(body.data?.items) ? body.data.items : []
+    if (events.length > 0) {
+      executionEventCacheRef.current.set(executionId, events)
+    }
+    return events
+  }, [token])
+
   const persistActiveThread = useCallback((threadId: string | null) => {
     if (!currentWorkspace) return
     const next = readStoredJson<PersistedActiveThreadMap>(ACTIVE_THREAD_KEY, {})
@@ -332,6 +362,9 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const resetLiveState = useCallback(() => {
     setLiveBlocks([])
     liveBlocksRef.current = []
+    liveThinkingStartedAtRef.current = null
+    liveExecutionEventsRef.current = []
+    isRecoveringStreamRef.current = false
     setIsStreaming(false)
     setIsThinking(false)
     replaceActivePlan(null)
@@ -606,203 +639,6 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     await finalizeLocalBlocks({ threadId: runningCommand.threadId })
   }, [finalizeLocalBlocks, persistLocalSummary, replaceActivePlan, runAgentLocalActionTurn])
 
-  // ── SSE stream event subscriber ──
-  useEffect(() => {
-    const unsubscribe = window.desktopAPI.chat.onStreamEvent(({ requestId, event }) => {
-      if (activeRequestIdRef.current !== requestId) return
-      lastEventTimestampRef.current = Date.now()
-
-      switch (event.type) {
-        case 'plan':
-          replaceActivePlan((event.data as ExecutionPlan | null) ?? null)
-          break
-        case 'progress': {
-          const p = event.data as {
-            type: string
-            workerKey?: string
-            actionKind?: string
-            skillId?: string
-            success?: boolean
-            summary?: string
-            decision?: string
-            reply?: string
-            question?: string
-            reason?: string
-          }
-          if (p.type === 'skill_loaded' && p.skillId) {
-            replaceLiveBlocks((prev) => {
-              const idx = [...prev].reverse().findIndex((b) => b.type === 'tool' && b.status === 'running')
-              if (idx === -1) return prev
-              const realIdx = prev.length - 1 - idx
-              return prev.map((b, i) =>
-                i === realIdx && b.type === 'tool'
-                  ? { ...b, status: 'done' as const, resultSummary: `Loaded SKILL.md for ${p.skillId}` }
-                  : b,
-              )
-            })
-          }
-          if (p.type === 'worker_result' && p.success === false && p.workerKey) {
-            replaceLiveBlocks((prev) => {
-              const idx = [...prev].reverse().findIndex((b) => b.type === 'tool' && b.status === 'running')
-              if (idx === -1) return prev
-              const realIdx = prev.length - 1 - idx
-              return prev.map((b, i) =>
-                i === realIdx && b.type === 'tool'
-                  ? { ...b, status: 'failed' as const, resultSummary: p.summary ?? `${p.workerKey} failed` }
-                  : b,
-              )
-            })
-          }
-          if (p.type === 'fail' && p.reason) {
-            const reason = p.reason
-            setIsThinking(false)
-            replaceLiveBlocks((prev) => {
-              const last = prev[prev.length - 1]
-              if (last?.type === 'text') return prev
-              return [...prev, { type: 'text', content: reason }]
-            })
-          }
-          break
-        }
-        case 'thinking_token': {
-          const delta = String(event.data ?? '')
-          if (!delta) break
-          replaceLiveBlocks((prev) => {
-            const last = prev[prev.length - 1]
-            if (last?.type !== 'thinking') return prev
-            return [...prev.slice(0, -1), { ...last, text: ((last as Extract<ContentBlock, { type: 'thinking' }>).text || '') + delta }]
-          })
-          break
-        }
-        case 'thinking':
-          ensureStreamingThinkingBlock()
-          break
-        case 'activity': {
-          const raw = event.data as { id: string; name: string; label: string; icon: string }
-          setIsThinking(false)
-          replaceLiveBlocks((prev) => [...prev, { type: 'tool', id: raw.id ?? String(Date.now()), name: raw.name ?? '', label: raw.label ?? raw.name ?? 'Working...', icon: raw.icon ?? 'zap', status: 'running' }])
-          break
-        }
-        case 'activity_done': {
-          const raw = event.data as { id: string; label?: string; icon?: string; name?: string; resultSummary?: string }
-          const ok = !isActivityFailure(raw)
-          replaceLiveBlocks((prev) =>
-            prev.map((block) =>
-              block.type === 'tool' && block.id === raw.id
-                ? { ...block, name: raw.name ?? block.name, label: raw.label ?? block.label, icon: raw.icon ?? block.icon, status: ok ? 'done' as const : 'failed' as const, resultSummary: raw.resultSummary }
-                : block,
-            ),
-          )
-          break
-        }
-        case 'text': {
-          const chunk = String(event.data ?? '')
-          setIsThinking(false)
-          replaceLiveBlocks((prev) => {
-            const last = prev[prev.length - 1]
-            if (last?.type === 'text') return [...prev.slice(0, -1), { type: 'text', content: last.content + chunk }]
-            return [...prev, { type: 'text', content: chunk }]
-          })
-          break
-        }
-        case 'error':
-          if (cancelRequestedRef.current) {
-            cancelRequestedRef.current = false
-            resetLiveState()
-            break
-          }
-          setError(String(event.data ?? 'Stream failed. Please try again.'))
-          resetLiveState()
-          break
-        case 'done': {
-          const raw = event.data as { message?: Message } | null
-          const persistedMessage = raw?.message
-          setMessages((prev) => {
-            if (persistedMessage) return [...prev, persistedMessage]
-            const blocks = liveBlocksRef.current
-            const textContent = blocks.filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text').map((b) => b.content).join('')
-            if (!textContent && blocks.length === 0) return prev
-            return [...prev, { id: `assistant-${Date.now()}`, threadId: activeThreadRef.current?.id ?? '', role: 'assistant', content: textContent, createdAt: new Date().toISOString(), metadata: blocks.length > 0 ? { contentBlocks: blocks } : undefined }]
-          })
-          void loadThreadsRef.current?.()
-          cancelRequestedRef.current = false
-          resetLiveState()
-          break
-        }
-        case 'action': {
-          try {
-            const payload = event.data as ActionLoopResult
-            if (payload.kind !== 'action' || !currentWorkspace || !activeThreadRef.current) break
-            setIsThinking(false)
-            setIsStreaming(false)
-            activeRequestIdRef.current = null
-            replaceActiveExecutionId(payload.executionId ?? activeExecutionIdRef.current)
-            replaceActivePlan(payload.plan ?? null)
-
-            const { action } = payload
-            if (isImmediateWorkspaceAction(action)) {
-              const toolBlock = buildAgentActionToolBlock(action)
-              replaceLiveBlocks((prev) => [...prev, toolBlock])
-              void runWorkspaceAction({
-                action,
-                toolBlockId: toolBlock.id,
-                threadId: activeThreadRef.current.id,
-              }).then((completion) => {
-                if (cancelRequestedRef.current) return
-                return runAgentLocalActionTurn({
-                  threadId: activeThreadRef.current!.id,
-                  actionResult: { kind: action.kind, ok: completion.ok, summary: completion.actionResultSummary, details: completion.actionResultDetails },
-                  engineOverride: activeExecutionEngineRef.current,
-                })
-              })
-              break
-            }
-
-            if (!isApprovalRequiredAction(action)) {
-              throw new Error(`Unsupported local action kind received: ${(action as DesktopWorkspaceAction).kind}`)
-            }
-
-            const actionId = crypto.randomUUID()
-            pendingLocalActionRef.current = {
-              id: actionId,
-              threadId: activeThreadRef.current.id,
-              workspaceName: currentWorkspace.name,
-              workspacePath: currentWorkspace.path,
-              action,
-              source: 'agent',
-              engine: activeExecutionEngineRef.current,
-              status: 'pending',
-            }
-            persistExecutionSession()
-
-            replaceLiveBlocks((prev) => [
-              ...prev,
-              buildApprovalBlock(actionId, action, currentWorkspace.path),
-            ])
-          } catch (error) {
-            setError(error instanceof Error ? error.message : 'Failed to handle local action request')
-            persistExecutionSession()
-          }
-          break
-        }
-        default:
-          break
-      }
-    })
-    const stallTimeoutId = window.setInterval(() => {
-      if (!isStreamingRef.current) return
-      const lastEventAge = Date.now() - lastEventTimestampRef.current
-      if (lastEventAge > 45_000) {
-        setError('The connection timed out. Please try again.')
-        resetLiveState()
-      }
-    }, 10_000)
-    return () => {
-      unsubscribe()
-      window.clearInterval(stallTimeoutId)
-    }
-  }, [currentWorkspace, persistExecutionSession, replaceActiveExecutionId, replaceActivePlan, replaceLiveBlocks, resetLiveState, runAgentLocalActionTurn, runWorkspaceAction])
-
   // ── Terminal event subscriber ──
   useEffect(() => {
     const unsubscribe = window.desktopAPI.terminal.onEvent(({ executionId, event }) => {
@@ -1008,8 +844,10 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       if (res.success && res.data) {
         const data = res.data as ThreadMessagesPage
         if (activeThreadLoadVersionRef.current !== requestVersion) return
+        const hydratedMessages = await hydrateMessagesWithExecutionEvents(data.messages)
+        if (activeThreadLoadVersionRef.current !== requestVersion) return
         setActiveThread(data.thread)
-        setMessages(data.messages)
+        setMessages(hydratedMessages)
         setThreadPagination(data.pagination)
         replaceActivePlan(null)
         replaceSelectedEngine(data.thread.preferredEngine ?? 'langgraph')
@@ -1067,6 +905,250 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     setIsThinking(stored.isThinking)
   }, [activeThread, currentWorkspace, replaceActiveExecutionId, replaceActivePlan])
 
+  async function hydrateMessagesWithExecutionEvents(items: Message[]): Promise<Message[]> {
+    if (!token) return items
+
+    const executionIds = Array.from(new Set(
+      items
+        .filter((message) => message.role === 'assistant' && typeof message.metadata?.executionId === 'string')
+        .map((message) => message.metadata!.executionId!)
+    ))
+
+    if (executionIds.length === 0) return items
+
+    const eventsByExecutionId = new Map<string, ExecutionEventItem[]>()
+
+    await Promise.all(executionIds.map(async (executionId) => {
+      try {
+        const events = await fetchExecutionEvents(executionId)
+        if (events.length > 0) {
+          eventsByExecutionId.set(executionId, events)
+        }
+      } catch {
+        // keep metadata fallback when ledger fetch is unavailable
+      }
+    }))
+
+    return items.map((message) => {
+      const executionId = message.metadata?.executionId
+      if (!executionId) return message
+      const events = eventsByExecutionId.get(executionId)
+      if (!events || events.length === 0) return message
+      const replayed = replayExecutionEvents(events)
+      return {
+        ...message,
+        metadata: {
+          ...(message.metadata ?? {}),
+          executionId,
+          contentBlocks: replayed.blocks,
+          ...(replayed.plan ? { plan: replayed.plan } : {}),
+        },
+      }
+    })
+  }
+
+  const recoverStreamingExecution = useCallback(async (): Promise<boolean> => {
+    const executionId = activeExecutionIdRef.current
+    const threadId = activeThreadRef.current?.id
+    if (!token || !executionId || !threadId || isRecoveringStreamRef.current) return false
+    isRecoveringStreamRef.current = true
+
+    try {
+      const [runResponse, events] = await Promise.all([
+        window.desktopAPI.fetch(`/api/desktop/executions/${executionId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+        fetchExecutionEvents(executionId),
+      ])
+
+      if (events.length > 0) {
+        const replayed = replayExecutionEvents(events)
+        liveBlocksRef.current = replayed.blocks
+        setLiveBlocks(replayed.blocks)
+        replaceActivePlan(replayed.plan)
+      }
+
+      if (runResponse.status >= 200 && runResponse.status < 300) {
+        const runBody = JSON.parse(runResponse.body) as { data?: { run?: { status?: string } } }
+        const status = runBody.data?.run?.status
+        if (status === 'running') {
+          lastEventTimestampRef.current = Date.now()
+          setError(null)
+          return true
+        }
+      }
+
+      const threadRes = await window.desktopAPI.threads.get(token, threadId, { limit: INITIAL_THREAD_MESSAGE_LIMIT })
+      if (threadRes.success && threadRes.data) {
+        const data = threadRes.data as ThreadMessagesPage
+        const hydratedMessages = await hydrateMessagesWithExecutionEvents(data.messages)
+        setMessages(hydratedMessages)
+        setThreadPagination(data.pagination)
+      }
+      cancelRequestedRef.current = false
+      resetLiveState()
+      return true
+    } catch {
+      return false
+    } finally {
+      isRecoveringStreamRef.current = false
+    }
+  }, [fetchExecutionEvents, hydrateMessagesWithExecutionEvents, replaceActivePlan, resetLiveState, token])
+
+  // ── SSE stream event subscriber ──
+  useEffect(() => {
+    const unsubscribe = window.desktopAPI.chat.onStreamEvent(({ requestId, event }) => {
+      if (activeRequestIdRef.current !== requestId) return
+      lastEventTimestampRef.current = Date.now()
+
+      switch (event.type) {
+        case 'plan':
+          applyLiveLedgerEvent({ type: event.type, data: event.data })
+          break
+        case 'progress': {
+          const p = event.data as {
+            type: string
+            reason?: string
+          }
+          applyLiveLedgerEvent({ type: event.type, data: event.data })
+          if (p.type === 'fail' && p.reason) setIsThinking(false)
+          break
+        }
+        case 'thinking_token': {
+          applyLiveLedgerEvent({ type: event.type, data: event.data })
+          break
+        }
+        case 'thinking':
+          setIsThinking(true)
+          applyLiveLedgerEvent({ type: event.type, data: event.data })
+          break
+        case 'activity': {
+          setIsThinking(false)
+          applyLiveLedgerEvent({ type: event.type, data: event.data })
+          break
+        }
+        case 'activity_done': {
+          applyLiveLedgerEvent({ type: event.type, data: event.data })
+          break
+        }
+        case 'text': {
+          setIsThinking(false)
+          applyLiveLedgerEvent({ type: event.type, data: event.data })
+          break
+        }
+        case 'error':
+          if (cancelRequestedRef.current) {
+            cancelRequestedRef.current = false
+            resetLiveState()
+            break
+          }
+          setError(String(event.data ?? 'Stream failed. Please try again.'))
+          resetLiveState()
+          break
+        case 'done': {
+          const raw = event.data as { message?: Message } | null
+          const persistedMessage = raw?.message
+          setMessages((prev) => {
+            if (persistedMessage) {
+              const blocks = liveBlocksRef.current
+              return [...prev, {
+                ...persistedMessage,
+                metadata: {
+                  ...(persistedMessage.metadata ?? {}),
+                  ...(persistedMessage.metadata?.executionId ? { executionId: persistedMessage.metadata.executionId } : {}),
+                  ...(blocks.length > 0 ? { contentBlocks: blocks } : {}),
+                  ...(activePlanRef.current ? { plan: activePlanRef.current } : {}),
+                },
+              }]
+            }
+            const blocks = liveBlocksRef.current
+            const textContent = blocks.filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text').map((b) => b.content).join('')
+            if (!textContent && blocks.length === 0) return prev
+            return [...prev, { id: `assistant-${Date.now()}`, threadId: activeThreadRef.current?.id ?? '', role: 'assistant', content: textContent, createdAt: new Date().toISOString(), metadata: blocks.length > 0 ? { contentBlocks: blocks } : undefined }]
+          })
+          void loadThreadsRef.current?.()
+          cancelRequestedRef.current = false
+          resetLiveState()
+          break
+        }
+        case 'action': {
+          try {
+            const payload = event.data as ActionLoopResult
+            if (payload.kind !== 'action' || !currentWorkspace || !activeThreadRef.current) break
+            setIsThinking(false)
+            setIsStreaming(false)
+            activeRequestIdRef.current = null
+            replaceActiveExecutionId(payload.executionId ?? activeExecutionIdRef.current)
+            replaceActivePlan(payload.plan ?? null)
+
+            const { action } = payload
+            if (isImmediateWorkspaceAction(action)) {
+              const toolBlock = buildAgentActionToolBlock(action)
+              replaceLiveBlocks((prev) => [...prev, toolBlock])
+              void runWorkspaceAction({
+                action,
+                toolBlockId: toolBlock.id,
+                threadId: activeThreadRef.current.id,
+              }).then((completion) => {
+                if (cancelRequestedRef.current) return
+                return runAgentLocalActionTurn({
+                  threadId: activeThreadRef.current!.id,
+                  actionResult: { kind: action.kind, ok: completion.ok, summary: completion.actionResultSummary, details: completion.actionResultDetails },
+                  engineOverride: activeExecutionEngineRef.current,
+                })
+              })
+              break
+            }
+
+            if (!isApprovalRequiredAction(action)) {
+              throw new Error(`Unsupported local action kind received: ${(action as DesktopWorkspaceAction).kind}`)
+            }
+
+            const actionId = crypto.randomUUID()
+            pendingLocalActionRef.current = {
+              id: actionId,
+              threadId: activeThreadRef.current.id,
+              workspaceName: currentWorkspace.name,
+              workspacePath: currentWorkspace.path,
+              action,
+              source: 'agent',
+              engine: activeExecutionEngineRef.current,
+              status: 'pending',
+            }
+            persistExecutionSession()
+
+            replaceLiveBlocks((prev) => [
+              ...prev,
+              buildApprovalBlock(actionId, action, currentWorkspace.path),
+            ])
+          } catch (error) {
+            setError(error instanceof Error ? error.message : 'Failed to handle local action request')
+            persistExecutionSession()
+          }
+          break
+        }
+        default:
+          break
+      }
+    })
+    const stallTimeoutId = window.setInterval(() => {
+      if (!isStreamingRef.current) return
+      const lastEventAge = Date.now() - lastEventTimestampRef.current
+      if (lastEventAge > 45_000) {
+        void recoverStreamingExecution().then((recovered) => {
+          if (!recovered) {
+            setError('The connection timed out. Please try again.')
+            resetLiveState()
+          }
+        })
+      }
+    }, 10_000)
+    return () => {
+      unsubscribe()
+      window.clearInterval(stallTimeoutId)
+    }
+  }, [applyLiveLedgerEvent, currentWorkspace, persistExecutionSession, recoverStreamingExecution, replaceActiveExecutionId, replaceActivePlan, replaceLiveBlocks, resetLiveState, runAgentLocalActionTurn, runWorkspaceAction])
+
   const loadOlderMessages = useCallback(async () => {
     const threadId = activeThreadRef.current?.id
     if (!token || !threadId || isLoadingOlderMessages || !threadPagination.hasMoreOlder) return
@@ -1092,7 +1174,8 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       }
 
       const data = res.data as ThreadMessagesPage
-      setMessages((prev) => prependDistinctMessages(data.messages, prev))
+      const hydratedMessages = await hydrateMessagesWithExecutionEvents(data.messages)
+      setMessages((prev) => prependDistinctMessages(hydratedMessages, prev))
       setThreadPagination(data.pagination)
     } catch {
       setError('Failed to load older messages')
@@ -1179,6 +1262,8 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     setIsStreaming(true)
     setIsThinking(true)
     replaceActivePlan(null)
+    liveThinkingStartedAtRef.current = Date.now()
+    liveExecutionEventsRef.current = []
     setLiveBlocks([{ type: 'thinking' }])
     liveBlocksRef.current = [{ type: 'thinking' }]
     setError(null)
@@ -1273,6 +1358,8 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         setMessages([userMsg])
         setIsStreaming(true)
         setIsThinking(true)
+        liveThinkingStartedAtRef.current = Date.now()
+        liveExecutionEventsRef.current = []
         setLiveBlocks([{ type: 'thinking' }])
         liveBlocksRef.current = [{ type: 'thinking' }]
         setError(null)
