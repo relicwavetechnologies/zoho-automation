@@ -23,10 +23,11 @@ export const larkApprovalSpecialistAgent = new Agent({
       'Return a compact operational status.',
     ],
     tools: [
-      'Use `lark-approval-read` to list or inspect approval instances.',
+      'Use `lark-approval-read` to list approval definitions, inspect one definition, list approval instances, or inspect one instance.',
       'Use `lark-approval-write` to create an approval instance.',
     ],
     workflow: [
+      'If the user needs to understand which approval template to use, read definitions first.',
       'Use read for status lookup, approval queues, or instance inspection.',
       'Use write only when the request explicitly wants to create an approval instance.',
       'If required template or form details are missing, ask for exactly those details and stop.',

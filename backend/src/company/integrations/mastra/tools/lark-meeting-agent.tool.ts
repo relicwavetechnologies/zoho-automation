@@ -8,6 +8,7 @@ import { TOOL_REGISTRY_MAP } from '../../../tools/tool-registry';
 import { emitActivityEvent } from './activity-bus';
 
 const TOOL_ID = 'lark-meeting-agent';
+const DATE_ONLY_PATTERN = /\b(\d{4}-\d{2}-\d{2})\b/;
 
 export const larkMeetingAgentTool = createTool({
   id: TOOL_ID,
@@ -32,6 +33,27 @@ export const larkMeetingAgentTool = createTool({
         label: 'Working on Lark meetings',
         icon: 'video',
       });
+    }
+
+    const dateMatch = inputData.query.match(DATE_ONLY_PATTERN)?.[1];
+    if (dateMatch && /\bmeetings?\b/i.test(inputData.query) && !/\bminute\b/i.test(inputData.query)) {
+      const directResult = {
+        answer: `Lark meeting read failed: date-only meeting discovery is not supported by the VC meetings API without a meeting number or meeting ID. Use Lark Calendar for day-based discovery, or provide a specific meeting identifier.`,
+      };
+
+      if (requestId) {
+        emitActivityEvent(requestId, 'activity_done', {
+          id: callId,
+          name: TOOL_ID,
+          label: 'Reviewed Lark meetings',
+          icon: 'video',
+          resultSummary: typeof (directResult as { answer?: unknown })?.answer === 'string'
+            ? (directResult as { answer: string }).answer
+            : JSON.stringify(directResult),
+        });
+      }
+
+      return directResult;
     }
 
     const runOptions = await buildMastraAgentRunOptions('mastra.lark-doc', { requestContext });

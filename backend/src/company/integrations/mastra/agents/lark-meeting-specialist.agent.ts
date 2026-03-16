@@ -22,7 +22,7 @@ export const larkMeetingSpecialistAgent = new Agent({
       'Return a compact operational status.',
     ],
     tools: [
-      'Use `lark-meeting-read` to list meetings, fetch one meeting, or fetch a minute.',
+      'Use `lark-meeting-read` to list meetings with query/time filters, fetch one meeting by ID or URL, or fetch a minute.',
     ],
     workflow: [
       'Use list for upcoming meeting discovery.',

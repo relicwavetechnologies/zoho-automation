@@ -3,7 +3,7 @@ import type { ZodTypeAny } from 'zod';
 import { logger } from '../../../utils/logger';
 
 import { extractJsonObject } from '../langchain/json-output';
-import { buildDecisionPrompt, buildParamPrompt, buildSynthesisPrompt, normalizeActionKind } from './prompts';
+import { buildDecisionPrompt, buildFollowupIntentPrompt, buildParamPrompt, buildSynthesisPrompt, buildTodoPlanningPrompt, normalizeActionKind } from './prompts';
 import { getRequiredSkillTools, parseSkillToolRequirements } from './skill-tool-requirements';
 import type {
   ArtifactRecord,
@@ -13,11 +13,13 @@ import type {
   ControllerRuntimeState,
   LocalActionRecord,
   SkillMetadata,
+  TodoItem,
   TodoListState,
   VerificationResult,
   WorkerCapability,
   WorkerInvocation,
   WorkerObservation,
+  WorkerResultDTO,
 } from './types';
 import { evaluateCheckRegistry } from '../../../modules/desktop-chat/check-registry';
 import { DecisionRouter, MAX_HOPS } from '../../../modules/desktop-chat/decision-router';
@@ -239,6 +241,13 @@ const humanizeWorkerSummary = (value: unknown): string => {
   return cleaned;
 };
 
+const condenseSummary = (value: string): string => {
+  const cleaned = humanizeWorkerSummary(value).replace(/\s+/g, ' ').trim();
+  if (!cleaned) return '';
+  const sentences = cleaned.match(/[^.!?]+[.!?]?/g)?.map((item) => item.trim()).filter(Boolean) ?? [cleaned];
+  return sentences.slice(0, 2).join(' ').slice(0, 320);
+};
+
 const getWorkerDisplayName = (workerKey: string): string => {
   switch (workerKey) {
     case 'zoho':
@@ -264,6 +273,52 @@ const getWorkerDisplayName = (workerKey: string): string => {
   }
 };
 
+const buildTodoLabel = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+  tool: string,
+): string => {
+  const dateScope = state.inferredInputs?.date_scope;
+  switch (tool) {
+    case 'larkTask':
+      return dateScope ? `Get Lark tasks for ${dateScope}` : 'Get Lark tasks';
+    case 'larkCalendar':
+      return dateScope ? `Get Lark calendar events for ${dateScope}` : 'Get Lark calendar events';
+    case 'larkMeeting':
+      return dateScope ? `Inspect Lark meetings for ${dateScope}` : 'Inspect Lark meetings';
+    case 'larkApproval':
+      return 'Inspect Lark approvals';
+    case 'larkDoc':
+      return 'Work with Lark docs';
+    case 'larkBase':
+      return 'Inspect Lark Base data';
+    case 'zoho':
+      return 'Check Zoho';
+    case 'outreach':
+      return 'Check Outreach';
+    case 'search':
+      return 'Search the web';
+    default:
+      return `Run ${getWorkerDisplayName(tool)}`;
+  }
+};
+
+const ensureTodoItems = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+  requiredTools: string[],
+): TodoItem[] =>
+  requiredTools.map((tool) => ({
+    tool,
+    label: buildTodoLabel(state, tool),
+    status: 'pending',
+  }));
+
+const patchTodoItem = (
+  items: TodoItem[],
+  tool: string,
+  patch: Partial<TodoItem>,
+): TodoItem[] =>
+  items.map((item) => item.tool === tool ? { ...item, ...patch } : item);
+
 const shouldUseRawCompleteReply = (reply: string): boolean => {
   const trimmed = reply.trim();
   if (!trimmed) return false;
@@ -280,11 +335,7 @@ const buildFallbackCompleteReply = <LocalAction>(
   const findings = (state.workerResults ?? [])
     .filter((result) => result.workerKey !== 'skills')
     .map((result) => {
-      const rawSummary =
-        result.rawResponse && typeof result.rawResponse === 'object'
-          ? (result.rawResponse as Record<string, unknown>).summary
-          : null;
-      const summary = humanizeWorkerSummary(rawSummary ?? result.llmSummary ?? '');
+      const summary = humanizeWorkerSummary(result.summary);
       if (!summary) return null;
       return `${getWorkerDisplayName(result.workerKey)} — ${summary}`;
     })
@@ -359,6 +410,81 @@ const collectPreferredWorkerHints = (
   return unique([...metadataHints, ...allowedTools]).map((hint) => hint.trim()).filter(Boolean);
 };
 
+const scoreWorkerForPlan = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+  worker: WorkerCapability,
+  preferredHints: Set<string>,
+): number => {
+  if (worker.requiresApproval || worker.workerKey === 'skills' || worker.workerKey === 'workspace' || worker.workerKey === 'terminal') {
+    return -1;
+  }
+  const requestTokens = new Set(tokenize([
+    state.userRequest,
+    state.profile.summary,
+    ...(state.profile.deliverables ?? []),
+    state.inferredInputs?.objective ?? '',
+    state.inferredInputs?.date_scope ?? '',
+  ].filter(Boolean).join(' ')));
+  const workerTokens = unique(tokenize([
+    worker.workerKey,
+    worker.description,
+    worker.domains.join(' '),
+    worker.artifactTypes.join(' '),
+  ].join(' ')));
+
+  let score = 0;
+  if (preferredHints.has(worker.workerKey.toLowerCase())) score += 8;
+  if (worker.domains.some((domain) => preferredHints.has(domain.toLowerCase()))) score += 3;
+  if (worker.actionKinds.includes('QUERY_REMOTE_SYSTEM')) score += 2;
+  for (const token of workerTokens) {
+    if (requestTokens.has(token)) score += 2;
+  }
+  for (const deliverable of state.profile.deliverables ?? []) {
+    const lower = deliverable.toLowerCase();
+    if (lower.includes(worker.workerKey.toLowerCase())) score += 4;
+    if (worker.domains.some((domain) => lower.includes(domain.toLowerCase()))) score += 3;
+  }
+  if (state.userRequest.toLowerCase().includes(worker.workerKey.toLowerCase())) score += 6;
+  return score;
+};
+
+const deriveTodoToolsFromState = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+  workers: WorkerCapability[],
+  skills: SkillMetadata[],
+): string[] => {
+  const preferredHints = new Set(collectPreferredWorkerHints(state, skills).map((hint) => hint.toLowerCase()));
+  const ranked = workers
+    .map((worker) => ({ workerKey: worker.workerKey, score: scoreWorkerForPlan(state, worker, preferredHints) }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  const deliverableCount = Math.max(0, state.profile.deliverables.length);
+  const desiredCount = deliverableCount > 1
+    ? Math.min(Math.max(deliverableCount, 2), 5)
+    : ranked.filter((item) => item.score >= Math.max((ranked[0]?.score ?? 0) - 2, 1)).length > 1
+      ? Math.min(3, ranked.length)
+      : 0;
+
+  if (desiredCount <= 1) return [];
+  return unique(ranked.slice(0, desiredCount).map((item) => item.workerKey));
+};
+
+const shouldBuildTodoPlan = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+  workers: WorkerCapability[],
+  skills: SkillMetadata[],
+): boolean => {
+  if (state.todoList?.initialized) return false;
+  if (state.pendingLocalAction) return false;
+  if (hasMeaningfulWorkEvidence(state)) return false;
+  if (state.profile.missingInputs.length > 0) return false;
+  if (state.profile.complexity !== 'structured') return false;
+  if (state.profile.shouldUseSkills && !hasSkillDocumentArtifact(state)) return false;
+  if (state.profile.deliverables.length > 1) return true;
+  return deriveTodoToolsFromState(state, workers, skills).length > 1;
+};
+
 const inferQueryForWorker = (
   worker: WorkerCapability,
   state: ControllerRuntimeState<unknown>,
@@ -382,6 +508,9 @@ const inferQueryForWorker = (
   }
   return objective || request;
 };
+
+const shouldForceDeterministicTodoQuery = (workerKey: string): boolean =>
+  workerKey === 'larkTask' || workerKey === 'larkCalendar' || workerKey === 'larkMeeting';
 
 const chooseCapabilityFallbackInvocation = <LocalAction>(
   state: ControllerRuntimeState<LocalAction>,
@@ -518,16 +647,102 @@ const extractToolPurposeFromSkill = (content: string | null | undefined, toolKey
 
 const buildResultSummaryLine = (result: {
   workerKey: string;
-  rawResponse: unknown;
-  llmSummary?: string;
+  summary: string;
+  keyData?: Record<string, unknown>;
   error?: string;
 }): string => {
-  const rawSummary =
-    result.rawResponse && typeof result.rawResponse === 'object'
-      ? (result.rawResponse as Record<string, unknown>).summary
-      : null;
-  const summary = humanizeWorkerSummary(rawSummary ?? result.llmSummary ?? result.error ?? '');
+  const summary = humanizeWorkerSummary(result.summary || (result.error ?? ''));
+  const keyData = formatKeyDataForPrompt(result.workerKey, result.keyData ?? {});
+  if (summary && keyData) {
+    return `${getWorkerDisplayName(result.workerKey)} — ${summary} (${keyData.replace(/^[^:]+:\s*/, '')})`;
+  }
   return summary ? `${getWorkerDisplayName(result.workerKey)} — ${summary}` : getWorkerDisplayName(result.workerKey);
+};
+
+const extractStructuredKeyData = (
+  observation: WorkerObservation,
+): Record<string, unknown> => {
+  const raw = observation.rawOutput && typeof observation.rawOutput === 'object'
+    ? observation.rawOutput as Record<string, unknown>
+    : null;
+  const summary = humanizeWorkerSummary(observation.summary);
+  const keyData: Record<string, unknown> = {};
+
+  if (raw) {
+    for (const [key, value] of Object.entries(raw)) {
+      if (value === null || value === undefined) continue;
+      if (key === 'summary' || key === 'answer' || key === 'error') continue;
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        keyData[key] = value;
+      } else if (Array.isArray(value)) {
+        keyData[`${key}Count`] = value.length;
+      }
+    }
+  }
+
+  if (observation.workerKey === 'zoho') {
+    const dealName = summary.match(/deal\s*\(([^)]+)\)/i)?.[1]?.trim();
+    const stage = summary.match(/\)\s+in\s+([^.,]+?)\s+stage/i)?.[1]?.trim();
+    const value = summary.match(/stage\s*\((Rs\.\s*[\d,]+)\)/i)?.[1]?.trim();
+    const closeDate = summary.match(/closing\s+([0-9]{4}-[0-9]{2}-[0-9]{2})/i)?.[1]?.trim();
+    const contactName = summary.match(/Associated contact:\s*([^.\n]+)/i)?.[1]?.trim();
+    if (dealName) keyData.dealName = dealName;
+    if (stage) keyData.stage = stage;
+    if (value) keyData.value = value;
+    if (closeDate) keyData.closeDate = closeDate;
+    if (contactName) keyData.contactName = contactName;
+  }
+
+  if (observation.workerKey === 'outreach') {
+    const recipientCount = summary.match(/\b(\d+)\s+(?:outreach\s+)?(?:publishers|recipients|matches)\b/i)?.[1];
+    if (recipientCount) keyData.recipientCount = Number(recipientCount);
+  }
+
+  if ((observation.workerKey === 'larkTask' || observation.workerKey === 'larkCalendar' || observation.workerKey === 'larkMeeting') && raw) {
+    const items = Array.isArray(raw.items) ? raw.items : [];
+    if (items.length > 0) {
+      keyData.itemCount = items.length;
+      keyData.titles = items
+        .map((item) => item && typeof item === 'object'
+          ? (item as Record<string, unknown>).summary
+            ?? (item as Record<string, unknown>).topic
+            ?? (item as Record<string, unknown>).title
+            ?? (item as Record<string, unknown>).name
+          : null)
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .slice(0, 5);
+    }
+  }
+
+  return keyData;
+};
+
+const serializeFullPayload = (value: unknown): string => {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+};
+
+const formatKeyDataForPrompt = (workerKey: string, keyData: Record<string, unknown>): string | null => {
+  const entries = Object.entries(keyData).filter(([, value]) => value !== undefined && value !== null && `${value}`.trim() !== '');
+  if (entries.length === 0) return null;
+  return `${getWorkerDisplayName(workerKey)} key data: ${entries.map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`).join('; ')}`;
+};
+
+const collectPriorKeyDataContext = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+  nextTool: string,
+): string[] => {
+  const requiredTools = state.todoList?.initialized ? [...state.todoList.completed, ...state.todoList.required, ...state.todoList.failed] : getRequiredSkillTools(state.loadedSkillContent);
+  const nextIndex = requiredTools.indexOf(nextTool);
+  const eligibleTools = nextIndex >= 0 ? requiredTools.slice(0, nextIndex) : state.todoList?.completed ?? [];
+  return (state.workerResults ?? [])
+    .filter((result) => result.success && eligibleTools.includes(result.workerKey))
+    .map((result) => formatKeyDataForPrompt(result.workerKey, result.keyData))
+    .filter((value): value is string => Boolean(value));
 };
 
 const buildSynthesisReplyFromState = async <LocalAction>(
@@ -548,6 +763,64 @@ const buildSynthesisReplyFromState = async <LocalAction>(
   }));
   const text = typeof raw === 'string' ? raw.trim() : '';
   return shouldUseRawCompleteReply(text) ? text : buildFallbackCompleteReply(state);
+};
+
+const extractLatestUserTurn = (userRequest: string): string => {
+  const marker = '\n\nFollow-up user input:';
+  const index = userRequest.lastIndexOf(marker);
+  return (index >= 0 ? userRequest.slice(index + marker.length) : userRequest).trim();
+};
+
+const getLatestFailedWorkerResult = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+): WorkerResultDTO | null => {
+  const failed = (state.workerResults ?? []).filter((result) => result.workerKey !== 'skills' && !result.success);
+  return failed.length > 0 ? failed[failed.length - 1] ?? null : null;
+};
+
+const isDeterministicFailure = (result: WorkerResultDTO): boolean => {
+  const text = `${result.error ?? ''} ${result.summary}`.toLowerCase();
+  return (
+    text.includes('field validation failed')
+    || text.includes('missing')
+    || text.includes('requires')
+    || text.includes('not supported')
+    || text.includes('invalid')
+    || text.includes('meeting number')
+    || text.includes('meeting id')
+  );
+};
+
+const buildFailureFollowupReply = (result: WorkerResultDTO): string => {
+  const workerName = getWorkerDisplayName(result.workerKey);
+  const reason = humanizeWorkerSummary(result.error ?? result.summary) || 'an unknown error';
+  if (result.workerKey === 'larkMeeting') {
+    return `${workerName} failed because ${reason}. This worker cannot answer a generic date-only question like "meetings for 2026-03-15" from the VC API alone. If you want me to inspect a specific meeting, send a meeting ID or meeting number. For day-based discovery, Lark Calendar is the right source.`;
+  }
+  return `The last failed step was ${workerName}. It failed because ${reason}.`;
+};
+
+const getLatestSuccessfulWorkerResult = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+): WorkerResultDTO | null => {
+  const successful = (state.workerResults ?? []).filter((result) => result.workerKey !== 'skills' && result.success);
+  return successful.length > 0 ? successful[successful.length - 1] ?? null : null;
+};
+
+const parseFollowupIntent = (
+  raw: string | null,
+): 'controller_meta_explain' | 'controller_meta_retry' | 'workflow_continue' | 'new_task' | null => {
+  const parsed = extractJsonObject(raw);
+  if (!parsed || typeof parsed.kind !== 'string') return null;
+  if (
+    parsed.kind === 'controller_meta_explain'
+    || parsed.kind === 'controller_meta_retry'
+    || parsed.kind === 'workflow_continue'
+    || parsed.kind === 'new_task'
+  ) {
+    return parsed.kind;
+  }
+  return null;
 };
 
 const parseParamDecision = (
@@ -571,12 +844,35 @@ const summarizeProgressLedger = (state: ControllerRuntimeState<unknown>): string
 
 const normalizeState = <LocalAction>(
   state: ControllerRuntimeState<LocalAction>,
-): ControllerRuntimeState<LocalAction> => ({
-  ...state,
+): ControllerRuntimeState<LocalAction> => {
+  const todoList = state.todoList
+    ? {
+      ...state.todoList,
+      items: Array.isArray(state.todoList.items) && state.todoList.items.length > 0
+        ? state.todoList.items
+        : ensureTodoItems(state, [
+          ...state.todoList.completed,
+          ...state.todoList.required,
+          ...state.todoList.failed,
+        ]).map((item) => ({
+          ...item,
+          status: state.todoList?.completed.includes(item.tool)
+            ? ('done' as const)
+            : state.todoList?.failed.includes(item.tool)
+              ? ('failed' as const)
+              : state.todoList?.currentTool === item.tool
+                ? ('running' as const)
+                : ('pending' as const),
+        })),
+      currentTool: state.todoList.currentTool ?? null,
+    }
+    : null;
+  return {
+    ...state,
   bootstrap: state.bootstrap ?? state.profile,
   inferredInputs: state.inferredInputs ?? {},
   readinessConfirmed: Boolean(state.readinessConfirmed),
-  todoList: state.todoList ?? null,
+  todoList,
   terminalEventEmitted: Boolean(state.terminalEventEmitted),
   workerResults: Array.isArray(state.workerResults) ? state.workerResults : [],
   hopCount: typeof state.hopCount === 'number' ? state.hopCount : 0,
@@ -599,7 +895,8 @@ const normalizeState = <LocalAction>(
         : state.stepCount,
     }
     : undefined,
-});
+  };
+};
 
 const buildStateSummary = (
   state: ControllerRuntimeState<unknown>,
@@ -607,17 +904,12 @@ const buildStateSummary = (
   skills: SkillMetadata[],
 ): string => {
   const recentWorkerResults = (state.workerResults ?? []).slice(-4).map((result) => {
-    const raw = result.rawResponse && typeof result.rawResponse === 'object'
-      ? result.rawResponse as Record<string, unknown>
-      : null;
-    const skillContent = typeof raw?.content === 'string'
-      ? raw.content.slice(0, 4000)
-      : null;
-    const summary = humanizeWorkerSummary((raw?.summary as string | undefined) ?? result.llmSummary ?? '');
+    const summary = humanizeWorkerSummary(result.summary);
+    const keyData = Object.keys(result.keyData ?? {}).length > 0 ? `keyData: ${JSON.stringify(result.keyData)}` : '';
     return [
       `hop=${result.hopIndex} worker=${result.workerKey} action=${result.actionKind} success=${String(result.success)} substantive=${String(result.hasSubstantiveContent)}`,
       summary ? `summary: ${summary}` : '',
-      skillContent ? `artifact.content:\n\`\`\`md\n${skillContent}\n\`\`\`` : '',
+      keyData,
     ].filter(Boolean).join('\n');
   }).join('\n\n');
   const recentObservations = state.observations.map((observation, index) => {
@@ -641,21 +933,21 @@ const buildStateSummary = (
     .map((worker) => `- ${worker.workerKey}: actions=${worker.actionKinds.join(', ')} domains=${worker.domains.join(', ') || 'general'}`)
     .join('\n');
   const preferredWorkerHints = collectPreferredWorkerHints(state, skills);
-  const requiredTools = getRequiredSkillTools(state.loadedSkillContent);
-  const attemptedWorkers = new Set(
-    (state.workerResults ?? [])
-      .filter((result) => result.workerKey !== 'skills')
-      .map((result) => result.workerKey),
-  );
-  const completedRequiredTools = requiredTools.filter((tool) => attemptedWorkers.has(tool));
-  const pendingRequiredTools = requiredTools.filter((tool) => !attemptedWorkers.has(tool));
-  const requiredToolsProgress = requiredTools.length > 0
+  const requiredToolsProgress = state.todoList?.initialized
     ? [
-      'Required tools progress:',
-      ...completedRequiredTools.map((tool) => `- [x] ${tool} — attempted`),
-      ...pendingRequiredTools.map((tool) => `- [ ] ${tool} — NOT YET CALLED`),
-      pendingRequiredTools.length > 0
-        ? `You must call the remaining tools before completing: ${pendingRequiredTools.join(', ')}`
+      'Actual work items:',
+      ...state.todoList.items.map((item) => {
+        const prefix = item.status === 'done'
+          ? '- [x]'
+          : item.status === 'running'
+            ? '- [>]'
+            : item.status === 'failed'
+              ? '- [!]'
+              : '- [ ]';
+        return `${prefix} ${item.label}${item.lastSummary ? ` :: ${item.lastSummary}` : ''}`;
+      }),
+      state.todoList.required.length > 0
+        ? `Still pending: ${state.todoList.items.filter((item) => item.status === 'pending' || item.status === 'running').map((item) => item.label).join(' | ')}`
         : 'All required tools have been attempted. You may now complete.',
     ].join('\n')
     : '';
@@ -679,19 +971,39 @@ const buildStateSummary = (
       : '',
     state.profile.notes.length > 0 ? `Notes: ${state.profile.notes.join(' | ')}` : '',
     preferredWorkerHints.length > 0 ? `Preferred worker hints from skill guidance: ${preferredWorkerHints.join(' | ')}` : '',
-    requiredToolsProgress,
     !state.readinessConfirmed && hasSkillDocumentArtifact(state) && !hasMeaningfulWorkEvidence(state)
       ? 'Readiness gate is pending. Before the first real worker call, decide whether you already know the objective, scope, and enough context to make the next worker call useful. If yes, proceed immediately. If not, ask one focused readiness question covering all missing context.'
       : '',
     !hasMeaningfulWorkEvidence(state)
       ? 'No grounded non-skill evidence has been gathered yet. The next step should usually be a concrete non-local worker call that starts gathering evidence.'
       : '',
-    `Checks:\n${summarizeChecks(state)}`,
+    `Internal workflow checks (not task completion):\n${summarizeChecks(state)}`,
     state.progressLedger.length > 0 ? `Recent progress ledger:\n${summarizeProgressLedger(state)}` : 'Recent progress ledger: none',
     recentWorkerResults ? `Recent worker results:\n${recentWorkerResults}` : 'Recent worker results: none',
     recentObservations ? `Recent observations:\n${recentObservations}` : 'Recent observations: none',
     `Available worker capabilities:\n${workerSummary}`,
+    requiredToolsProgress,
   ].filter(Boolean).join('\n\n');
+};
+
+const buildTodoProgressSummary = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+): string => {
+  if (!state.todoList?.initialized) return '';
+  const items = state.todoList.items;
+  const completed = items.filter((item) => item.status === 'done');
+  const failed = items.filter((item) => item.status === 'failed');
+  const running = items.filter((item) => item.status === 'running');
+  const pending = items.filter((item) => item.status === 'pending');
+  const total = items.length;
+
+  return [
+    `${completed.length} of ${total} work items done`,
+    ...completed.map((item) => `[x] ${item.label}`),
+    ...running.map((item) => `[>] ${item.label}`),
+    ...failed.map((item) => `[!] ${item.label}`),
+    ...pending.map((item) => `[ ] ${item.label}`),
+  ].join('\n');
 };
 
 const parseDecision = <LocalAction>(raw: string | null): ControllerDecision<LocalAction> | null => {
@@ -740,6 +1052,19 @@ const parseDecision = <LocalAction>(raw: string | null): ControllerDecision<Loca
 
   if (parsed.decision === 'ASK_USER' && typeof parsed.question === 'string' && parsed.question.trim()) {
     return { decision: 'ASK_USER', question: parsed.question.trim() };
+  }
+
+  if (parsed.decision === 'SET_TODOS' && Array.isArray(parsed.requiredTools)) {
+    const requiredTools = parsed.requiredTools
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .map((item) => item.trim());
+    if (requiredTools.length > 0) {
+      return {
+        decision: 'SET_TODOS',
+        requiredTools: unique(requiredTools),
+        reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : undefined,
+      };
+    }
   }
 
   if (parsed.decision === 'COMPLETE' && typeof parsed.reply === 'string' && parsed.reply.trim()) {
@@ -923,6 +1248,9 @@ const applyProgress = (
     .map((verification) => `${verification.checkId}:${verification.status}`);
   const hasSubstantiveContent = inferObservationSubstantive(reconciledObservation, inferredSuccess);
   const madeProgress = inferredSuccess && hasSubstantiveContent && (factsAdded.length > 0 || artifactsAdded.length > 0 || verificationStateChanges.length > 0);
+  const summary = condenseSummary(reconciledObservation.summary);
+  const keyData = extractStructuredKeyData(reconciledObservation);
+  const fullPayload = serializeFullPayload(reconciledObservation.rawOutput);
   const inputHash = hashInput(invocation.input);
   const raw = reconciledObservation.rawOutput && typeof reconciledObservation.rawOutput === 'object'
     ? reconciledObservation.rawOutput as Record<string, unknown>
@@ -943,17 +1271,6 @@ const applyProgress = (
   const nextTodoList: TodoListState = (() => {
     let todo = state.todoList ?? null;
 
-    if ((!todo || !todo.initialized) && nextLoadedSkillContent) {
-      const requiredTools = getRequiredSkillTools(nextLoadedSkillContent);
-      todo = {
-        required: requiredTools,
-        completed: [],
-        failed: [],
-        retryCounts: {},
-        initialized: true,
-      };
-    }
-
     if (!todo || reconciledObservation.workerKey === 'skills') {
       return todo;
     }
@@ -966,6 +1283,11 @@ const applyProgress = (
         required: todo.required.filter((tool) => tool !== workerKey),
         completed: todo.completed.includes(workerKey) ? todo.completed : [...todo.completed, workerKey],
         failed: todo.failed.filter((tool) => tool !== workerKey),
+        currentTool: todo.currentTool === workerKey ? null : todo.currentTool,
+        items: patchTodoItem(todo.items, workerKey, {
+          status: 'done',
+          lastSummary: summary,
+        }),
       };
     }
 
@@ -978,6 +1300,11 @@ const applyProgress = (
       ...todo,
       required: retries >= 2 ? todo.required.filter((tool) => tool !== workerKey) : todo.required,
       failed: retries >= 2 && !todo.failed.includes(workerKey) ? [...todo.failed, workerKey] : todo.failed,
+      currentTool: todo.currentTool === workerKey ? null : todo.currentTool,
+      items: patchTodoItem(todo.items, workerKey, {
+        status: retries >= 2 ? 'failed' : 'pending',
+        lastSummary: summary,
+      }),
       retryCounts: {
         ...todo.retryCounts,
         [workerKey]: retries,
@@ -1006,11 +1333,13 @@ const applyProgress = (
         workerKey: invocation.workerKey,
         actionKind: invocation.actionKind,
         input: invocation.input,
-        rawResponse: reconciledObservation.rawOutput,
         success: inferredSuccess,
         hasSubstantiveContent,
-        llmSummary: reconciledObservation.summary,
-        ...(inferredSuccess ? {} : { error: reconciledObservation.blockingReason ?? reconciledObservation.summary }),
+        summary,
+        keyData,
+        fullPayload,
+        timestamp: Date.now(),
+        ...(inferredSuccess ? {} : { error: reconciledObservation.blockingReason ?? (summary || reconciledObservation.summary) }),
       },
     ],
     verifications: nextVerifications,
@@ -1124,6 +1453,121 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
       await hooks.onVerification(state, hooks.projectPlan ? hooks.projectPlan(state) : null);
     }
 
+    const latestTurn = extractLatestUserTurn(state.userRequest);
+    if (state.hopCount === 1 && state.userRequest.includes('Follow-up user input:') && latestTurn.length > 0) {
+      const latestFailedResult = getLatestFailedWorkerResult(state);
+      const latestSuccessfulResult = getLatestSuccessfulWorkerResult(state);
+      const followupIntent = parseFollowupIntent(await input.invokeController(buildFollowupIntentPrompt({
+        latestUserTurn: latestTurn,
+        workflowSummary: state.profile.summary,
+        lastFailed: latestFailedResult ? buildResultSummaryLine(latestFailedResult) : undefined,
+        lastSuccessful: latestSuccessfulResult ? buildResultSummaryLine(latestSuccessfulResult) : undefined,
+      })));
+
+      if (followupIntent === 'controller_meta_explain' && latestFailedResult) {
+        return {
+          kind: 'answer',
+          text: buildFailureFollowupReply(latestFailedResult),
+          terminalState: 'COMPLETE',
+          state: { ...state, terminalEventEmitted: true },
+        };
+      }
+
+      if (followupIntent === 'controller_meta_retry' && latestFailedResult) {
+        if (state.todoList?.failed.includes(latestFailedResult.workerKey) && !isDeterministicFailure(latestFailedResult)) {
+          state = {
+            ...state,
+            todoList: {
+              ...state.todoList,
+              required: [latestFailedResult.workerKey, ...state.todoList.required.filter((tool) => tool !== latestFailedResult.workerKey)],
+              failed: state.todoList.failed.filter((tool) => tool !== latestFailedResult.workerKey),
+              currentTool: null,
+              items: patchTodoItem(state.todoList.items, latestFailedResult.workerKey, {
+                status: 'pending',
+              }),
+              retryCounts: {
+                ...state.todoList.retryCounts,
+                [latestFailedResult.workerKey]: 0,
+              },
+            },
+            userRequest: state.userRequest.replace(/Follow-up user input:[\s\S]*$/m, '').trim(),
+          };
+        } else {
+          return {
+            kind: 'answer',
+            text: buildFailureFollowupReply(latestFailedResult),
+            terminalState: 'COMPLETE',
+            state: { ...state, terminalEventEmitted: true },
+          };
+        }
+      }
+    }
+
+    if (shouldBuildTodoPlan(state, input.workers, input.skills)) {
+      const candidateTools = deriveTodoToolsFromState(state, input.workers, input.skills);
+      const rawPlanDecision = await input.invokeController(buildTodoPlanningPrompt({
+        userRequest: state.userRequest,
+        objective: state.inferredInputs?.objective ?? state.profile.summary,
+        dateScope: state.inferredInputs?.date_scope,
+        workflowName: state.resolvedSkillId ?? undefined,
+        deliverables: state.profile.deliverables,
+        workers: input.workers,
+        candidateTools,
+        stateSummary: buildStateSummary(state, input.workers, input.skills),
+      }));
+      const plannedDecision = parseDecision<LocalAction>(rawPlanDecision);
+      if (plannedDecision?.decision === 'SET_TODOS') {
+        const validWorkerKeys = new Set(input.workers.map((worker) => worker.workerKey));
+        const requestedTools = plannedDecision.requiredTools.filter((tool) => validWorkerKeys.has(tool));
+        if (requestedTools.length > 0) {
+          state = {
+            ...state,
+            todoList: {
+              required: requestedTools,
+              completed: [],
+              failed: [],
+              retryCounts: {},
+              items: ensureTodoItems(state, requestedTools),
+              currentTool: null,
+              initialized: true,
+            },
+          };
+          continue;
+        }
+      }
+      if (plannedDecision?.decision === 'ASK_USER') {
+        return {
+          kind: 'answer',
+          text: plannedDecision.question,
+          terminalState: 'ASK_USER',
+          state: { ...state, terminalEventEmitted: true },
+        };
+      }
+      if (plannedDecision?.decision === 'COMPLETE') {
+        return {
+          kind: 'answer',
+          text: plannedDecision.reply,
+          terminalState: 'COMPLETE',
+          state: { ...state, terminalEventEmitted: true },
+        };
+      }
+      if (candidateTools.length > 1) {
+        state = {
+          ...state,
+          todoList: {
+            required: candidateTools,
+            completed: [],
+            failed: [],
+            retryCounts: {},
+            items: ensureTodoItems(state, candidateTools),
+            currentTool: null,
+            initialized: true,
+          },
+        };
+        continue;
+      }
+    }
+
     const todoReady = state.todoList?.initialized ?? false;
     const todoEmpty = todoReady && (state.todoList?.required.length ?? 0) === 0;
     const budgetExhausted = state.hopCount >= MAX_HOPS - 2;
@@ -1148,9 +1592,14 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
         state = {
           ...state,
           todoList: {
-            ...(state.todoList ?? { required: [], completed: [], failed: [], retryCounts: {}, initialized: true }),
+            ...(state.todoList ?? { required: [], completed: [], failed: [], retryCounts: {}, items: [], currentTool: null, initialized: true }),
             required: state.todoList.required.filter((tool) => tool !== nextTool),
             failed: state.todoList.failed.includes(nextTool) ? state.todoList.failed : [...state.todoList.failed, nextTool],
+            currentTool: null,
+            items: patchTodoItem(state.todoList.items, nextTool, {
+              status: 'failed',
+              lastSummary: 'No valid worker route was available.',
+            }),
           },
         };
         continue;
@@ -1165,6 +1614,7 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
         dateScope: state.inferredInputs?.date_scope,
         skillGuidance: extractToolPurposeFromSkill(state.loadedSkillContent, nextTool),
         previousResults: (state.workerResults ?? []).slice(-2).map((result) => buildResultSummaryLine(result)),
+        priorKeyData: collectPriorKeyDataContext(state, nextTool),
         completedTools: state.todoList.completed,
         toolPurpose: extractToolPurposeFromSkill(state.loadedSkillContent, nextTool),
       }));
@@ -1188,6 +1638,13 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
           ...state.todoList,
           required: retries >= 2 ? state.todoList.required.filter((tool) => tool !== nextTool) : state.todoList.required,
           failed: retries >= 2 && !state.todoList.failed.includes(nextTool) ? [...state.todoList.failed, nextTool] : state.todoList.failed,
+          currentTool: null,
+          items: patchTodoItem(state.todoList.items, nextTool, {
+            status: retries >= 2 ? 'failed' : 'pending',
+            lastSummary: schema && parsedParams && !contractResult.success
+              ? contractResult.error.message
+              : `Could not generate valid parameters for ${nextTool}.`,
+          }),
           retryCounts: {
             ...state.todoList.retryCounts,
             [nextTool]: retries,
@@ -1216,7 +1673,9 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
         invocation: {
           workerKey: nextTool,
           actionKind,
-          input: contractResult.data,
+          input: shouldForceDeterministicTodoQuery(nextTool)
+            ? deterministicFallbackParams
+            : contractResult.data,
         },
       };
     } else {
@@ -1227,33 +1686,43 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
           stateSummary: buildStateSummary(state, input.workers, input.skills),
           workers: input.workers,
           skills: input.skills,
+          objective: state.inferredInputs?.objective ?? state.profile.summary,
+          dateScope: state.inferredInputs?.date_scope,
+          workflowName: state.resolvedSkillId ?? undefined,
+          todoMode: state.todoList?.initialized === true,
+          todoProgress: buildTodoProgressSummary(state),
         }));
 
       decision = deterministicDecision ?? parseDecision<LocalAction>(rawDecision) ?? buildFallbackDecision(state, input.workers, input.skills, input.buildLocalAction);
     }
 
     if (decision.decision === 'CALL_WORKER') {
+      const isRequiredTodoDispatch =
+        Boolean(state.todoList?.initialized)
+        && state.todoList?.required.includes(decision.invocation.workerKey) === true;
       if (decision.invocation.workerKey === 'skills' && decision.invocation.actionKind === 'RETRIEVE_ARTIFACT') {
         state = {
           ...state,
           pendingSkillId: typeof decision.invocation.input.id === 'string' ? decision.invocation.input.id : state.pendingSkillId ?? null,
         };
       }
-      const noProgressAttempts = countNoProgressAttemptsByWorkerAction(
-        state,
-        decision.invocation.workerKey,
-        decision.invocation.actionKind,
-      );
-      if (noProgressAttempts >= 2) {
-        decision = {
-          decision: 'FAIL',
-          reason: buildRepeatedWorkerFailureReason(state, decision.invocation.workerKey, decision.invocation.actionKind),
-        };
-      }
-      if (decision.decision === 'CALL_WORKER') {
-        const progressInfo = classifyNoProgress(state, decision.invocation);
-        if (progressInfo.repeatedNoProgress || progressInfo.attemptCount > 1) {
-          decision = buildFallbackDecision(state, input.workers, input.skills, input.buildLocalAction);
+      if (!isRequiredTodoDispatch) {
+        const noProgressAttempts = countNoProgressAttemptsByWorkerAction(
+          state,
+          decision.invocation.workerKey,
+          decision.invocation.actionKind,
+        );
+        if (noProgressAttempts >= 2) {
+          decision = {
+            decision: 'FAIL',
+            reason: buildRepeatedWorkerFailureReason(state, decision.invocation.workerKey, decision.invocation.actionKind),
+          };
+        }
+        if (decision.decision === 'CALL_WORKER') {
+          const progressInfo = classifyNoProgress(state, decision.invocation);
+          if (progressInfo.repeatedNoProgress || progressInfo.attemptCount > 1) {
+            decision = buildFallbackDecision(state, input.workers, input.skills, input.buildLocalAction);
+          }
         }
       }
     }
@@ -1284,6 +1753,48 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
           decision: 'CALL_WORKER',
           invocation: capabilityFallback,
         };
+      }
+    }
+
+    if (decision.decision === 'SET_TODOS') {
+      const disallowedTodoWorkers = new Set(['skills', 'workspace', 'terminal']);
+      const validWorkerKeys = new Set(
+        input.workers
+          .map((worker) => worker.workerKey)
+          .filter((workerKey) => !disallowedTodoWorkers.has(workerKey)),
+      );
+      const requestedTools = decision.requiredTools.filter((tool) => validWorkerKeys.has(tool));
+      if (requestedTools.length === 0) {
+        decision = buildFallbackDecision(state, input.workers, input.skills, input.buildLocalAction);
+      } else {
+        const completed = unique(
+          requestedTools.filter((tool) =>
+            (state.workerResults ?? []).some((result) => result.workerKey === tool && result.success)),
+        );
+        const failed = unique(
+          requestedTools.filter((tool) =>
+            (state.workerResults ?? []).some((result) => result.workerKey === tool && !result.success)),
+        );
+        state = {
+          ...state,
+          todoList: {
+            required: requestedTools.filter((tool) => !completed.includes(tool) && !failed.includes(tool)),
+            completed,
+            failed,
+            retryCounts: Object.fromEntries(failed.map((tool) => [tool, 2])),
+            items: ensureTodoItems(state, requestedTools).map((item) => ({
+              ...item,
+              status: completed.includes(item.tool)
+                ? 'done'
+                : failed.includes(item.tool)
+                  ? 'failed'
+                  : 'pending',
+            })),
+            currentTool: null,
+            initialized: true,
+          },
+        };
+        continue;
       }
     }
 
@@ -1377,13 +1888,17 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
               ? decision.question
               : decision.decision === 'FAIL'
                 ? decision.reason
-                : decision.reply,
+                : decision.decision === 'COMPLETE'
+                  ? decision.reply
+                  : 'Could not finalize the workflow plan.',
           terminalState:
             decision.decision === 'ASK_USER'
               ? 'ASK_USER'
               : decision.decision === 'FAIL'
                 ? 'FAIL'
-                : 'COMPLETE',
+                : decision.decision === 'COMPLETE'
+                  ? 'COMPLETE'
+                  : 'FAIL',
           state: { ...state, terminalEventEmitted: true },
         };
       }
@@ -1441,6 +1956,18 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
         state = {
           ...state,
           readinessConfirmed: true,
+        };
+      }
+      if (state.todoList?.initialized && validatedInvocation.workerKey !== 'skills') {
+        state = {
+          ...state,
+          todoList: {
+            ...state.todoList,
+            currentTool: validatedInvocation.workerKey,
+            items: patchTodoItem(state.todoList.items, validatedInvocation.workerKey, {
+              status: 'running',
+            }),
+          },
         };
       }
       logger.info('desktop.flow.worker.dispatch', {

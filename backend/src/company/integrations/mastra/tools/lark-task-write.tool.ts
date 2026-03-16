@@ -110,8 +110,14 @@ export const larkTaskWriteTool = createTool({
     tasklistId: z.string().optional().describe('Optional tasklist ID. Falls back to company default when configured.'),
     summary: z.string().optional().describe('Task title or summary'),
     description: z.string().optional().describe('Optional task description'),
+    startTs: z.string().optional().describe('Optional start timestamp or ISO string'),
     dueTs: z.string().optional().describe('Optional due timestamp or ISO string'),
     completed: z.boolean().optional().describe('Optional completed state'),
+    repeatRule: z.record(z.unknown()).optional().describe('Optional repeat rule payload'),
+    customFields: z.array(z.record(z.unknown())).optional().describe('Optional typed custom fields payload'),
+    extra: z.record(z.unknown()).optional().describe('Optional extra metadata payload'),
+    isMilestone: z.boolean().optional().describe('Optional milestone flag'),
+    mode: z.number().int().optional().describe('Optional task mode when supported by Lark'),
     assigneeIds: z.array(z.string().min(1)).optional().describe('Optional Lark assignee IDs'),
     assigneeNames: z.array(z.string().min(1)).optional().describe('Optional teammate names, emails, or Lark IDs to assign on task creation.'),
     assignToMe: z.boolean().optional().describe('When true, assign the created task to the current linked Lark user.'),
@@ -120,7 +126,7 @@ export const larkTaskWriteTool = createTool({
   execute: async (inputData, context) => {
     const requestContext = context?.requestContext;
     const allowedToolIds = requestContext?.get('allowedToolIds') as string[] | undefined;
-    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID)) {
+    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID) && !allowedToolIds.includes('lark-task-agent')) {
       const name = TOOL_REGISTRY_MAP.get(TOOL_ID)?.name ?? TOOL_ID;
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
@@ -233,8 +239,14 @@ export const larkTaskWriteTool = createTool({
         ...(tasklistId ? { tasklist_id: tasklistId } : {}),
         ...(inputData.summary ? { summary: inputData.summary } : {}),
         ...(inputData.description ? { description: inputData.description } : {}),
+        ...(inputData.startTs ? { start: { timestamp: normalizeLarkTimestamp(inputData.startTs, requestTimeZone) } } : {}),
         ...(inputData.dueTs ? { due: { timestamp: normalizeLarkTimestamp(inputData.dueTs, requestTimeZone) } } : {}),
         ...(inputData.completed !== undefined ? { completed_at: toCompletedAt(inputData.completed) } : {}),
+        ...(inputData.repeatRule ? { repeat_rule: inputData.repeatRule } : {}),
+        ...(inputData.customFields ? { custom_fields: inputData.customFields } : {}),
+        ...(inputData.extra ? { extra: inputData.extra } : {}),
+        ...(inputData.isMilestone !== undefined ? { is_milestone: inputData.isMilestone } : {}),
+        ...(inputData.mode !== undefined ? { mode: inputData.mode } : {}),
         ...(resolvedMembers && resolvedMembers.length > 0 ? { members: resolvedMembers } : {}),
         ...(resolvedMembers?.length ? {} : inputData.assigneeIds && inputData.assigneeIds.length > 0 ? { assignee_ids: inputData.assigneeIds } : {}),
       };

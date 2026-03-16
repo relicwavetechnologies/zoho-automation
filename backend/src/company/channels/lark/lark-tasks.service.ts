@@ -19,6 +19,18 @@ type ListTasksInput = LarkTasksAuthInput & {
   pageSize?: number;
   pageToken?: string;
   tasklistId?: string;
+  userId?: string;
+  openId?: string;
+  creatorId?: string;
+  summary?: string;
+  completed?: boolean;
+  dueBefore?: string;
+  dueAfter?: string;
+};
+
+type ListTasklistsInput = LarkTasksAuthInput & {
+  pageSize?: number;
+  pageToken?: string;
 };
 
 type MutateTaskInput = LarkTasksAuthInput & {
@@ -44,6 +56,19 @@ export type LarkTaskItem = {
 
 export type LarkListTasksResult = {
   items: LarkTaskItem[];
+  pageToken?: string;
+  hasMore: boolean;
+};
+
+export type LarkTasklistItem = {
+  tasklistId: string;
+  title?: string;
+  url?: string;
+  raw: Record<string, unknown>;
+};
+
+export type LarkListTasklistsResult = {
+  items: LarkTasklistItem[];
   pageToken?: string;
   hasMore: boolean;
 };
@@ -77,6 +102,28 @@ const normalizeTask = (value: unknown): LarkTaskItem | null => {
   };
 };
 
+const normalizeTasklist = (value: unknown): LarkTasklistItem | null => {
+  const record = readLarkRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  const tasklistId = readLarkString(record.tasklist_id)
+    ?? readLarkString(record.tasklistId)
+    ?? readLarkString(record.guid)
+    ?? readLarkString(record.id);
+  if (!tasklistId) {
+    return null;
+  }
+
+  return {
+    tasklistId,
+    title: readLarkString(record.title) ?? readLarkString(record.summary) ?? readLarkString(record.name),
+    url: readLarkString(record.url) ?? readLarkString(record.link),
+    raw: record,
+  };
+};
+
 class LarkTasksService {
   async listTasks(input: ListTasksInput): Promise<LarkListTasksResult> {
     const { data } = await larkRuntimeClient.requestJson({
@@ -90,6 +137,13 @@ class LarkTasksService {
         page_size: input.pageSize,
         page_token: input.pageToken,
         tasklist_id: input.tasklistId,
+        user_id: input.userId,
+        open_id: input.openId,
+        creator_id: input.creatorId,
+        summary: input.summary,
+        completed: input.completed,
+        due_before: input.dueBefore,
+        due_after: input.dueAfter,
       },
     });
 
@@ -101,6 +155,33 @@ class LarkTasksService {
       items: itemsSource
         .map((item) => normalizeTask(item))
         .filter((item): item is LarkTaskItem => Boolean(item)),
+      pageToken: readLarkString(data.page_token),
+      hasMore: readLarkBoolean(data.has_more) ?? false,
+    };
+  }
+
+  async listTasklists(input: ListTasklistsInput): Promise<LarkListTasklistsResult> {
+    const { data } = await larkRuntimeClient.requestJson({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+      appUserId: input.appUserId,
+      credentialMode: input.credentialMode ?? 'tenant',
+      method: 'GET',
+      path: '/open-apis/task/v2/tasklists',
+      query: {
+        page_size: input.pageSize,
+        page_token: input.pageToken,
+      },
+    });
+
+    const itemsSource = readLarkArray(data.items).length > 0
+      ? readLarkArray(data.items)
+      : readLarkArray(data.tasklists);
+
+    return {
+      items: itemsSource
+        .map((item) => normalizeTasklist(item))
+        .filter((item): item is LarkTasklistItem => Boolean(item)),
       pageToken: readLarkString(data.page_token),
       hasMore: readLarkBoolean(data.has_more) ?? false,
     };

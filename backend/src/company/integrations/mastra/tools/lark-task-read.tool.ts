@@ -32,6 +32,7 @@ export const larkTaskReadTool = createTool({
   id: TOOL_ID,
   description: 'List Lark Tasks, fetch a specific task, or return the current task from this conversation.',
   inputSchema: z.object({
+    action: z.enum(['listTasks', 'getTask', 'currentTask', 'listTasklists', 'listAssignableUsers']).optional().default('listTasks'),
     pageSize: z.number().int().min(1).max(50).optional().default(10),
     pageToken: z.string().optional(),
     tasklistId: z.string().optional().describe('Optional tasklist ID. Falls back to company default when configured.'),
@@ -40,11 +41,18 @@ export const larkTaskReadTool = createTool({
     query: z.string().optional().describe('Optional text filter applied client-side to the returned tasks'),
     listAssignableUsers: z.boolean().optional().default(false).describe('When true, return synced Lark teammates who can be used as task assignees.'),
     assigneeQuery: z.string().optional().describe('Optional name, email, or Lark ID filter applied when listing assignable teammates.'),
+    completed: z.boolean().optional().describe('Optional server-side completed filter when supported.'),
+    creatorId: z.string().optional().describe('Optional creator user ID filter when supported.'),
+    userId: z.string().optional().describe('Optional user ID filter when supported.'),
+    openId: z.string().optional().describe('Optional open ID filter when supported.'),
+    summary: z.string().optional().describe('Optional summary/title filter when supported.'),
+    dueAfter: z.string().optional().describe('Optional lower due-time bound.'),
+    dueBefore: z.string().optional().describe('Optional upper due-time bound.'),
   }),
   execute: async (inputData, context) => {
     const requestContext = context?.requestContext;
     const allowedToolIds = requestContext?.get('allowedToolIds') as string[] | undefined;
-    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID)) {
+    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID) && !allowedToolIds.includes('lark-task-agent')) {
       const name = TOOL_REGISTRY_MAP.get(TOOL_ID)?.name ?? TOOL_ID;
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
@@ -86,7 +94,15 @@ export const larkTaskReadTool = createTool({
           return fn(tenantAuthInput);
         }
       };
-      if (inputData.listAssignableUsers) {
+      const effectiveAction = inputData.listAssignableUsers
+        ? 'listAssignableUsers'
+        : inputData.currentTask
+          ? 'currentTask'
+          : inputData.taskId?.trim()
+            ? 'getTask'
+            : inputData.action;
+
+      if (effectiveAction === 'listAssignableUsers') {
         if (!companyId) {
           const answer = 'No company context is available for Lark assignee lookup.';
           if (requestId) {
@@ -176,7 +192,38 @@ export const larkTaskReadTool = createTool({
         return match?.taskGuid ?? null;
       };
 
-      if (inputData.currentTask) {
+      if (effectiveAction === 'listTasklists') {
+        const result = await withTenantFallback((auth) => larkTasksService.listTasklists({
+          pageSize: inputData.pageSize,
+          pageToken: inputData.pageToken,
+          ...auth,
+        }));
+        const normalizedQuery = inputData.query?.trim().toLowerCase();
+        const items = normalizedQuery
+          ? result.items.filter((item) => `${item.tasklistId} ${item.title ?? ''}`.toLowerCase().includes(normalizedQuery))
+          : result.items;
+        const answer = items.length > 0
+          ? `Found ${items.length} Lark tasklist(s).\n\n${items.slice(0, 8).map((item, index) => `${index + 1}. ${item.title ?? item.tasklistId}`).join('\n')}`
+          : 'No Lark tasklists matched the request.';
+        if (requestId) {
+          emitActivityEvent(requestId, 'activity_done', {
+            id: callId,
+            name: TOOL_ID,
+            label: 'Read Lark tasklists',
+            icon: 'check-square',
+            externalRef: items[0]?.tasklistId,
+            resultSummary: answer,
+          });
+        }
+        return {
+          answer,
+          items,
+          pageToken: result.pageToken,
+          hasMore: result.hasMore,
+        };
+      }
+
+      if (effectiveAction === 'currentTask') {
         if (latestTask?.taskGuid) {
           const task = await withTenantFallback((auth) => larkTasksService.getTask({
             taskGuid: latestTask.taskGuid as string,
@@ -232,7 +279,7 @@ export const larkTaskReadTool = createTool({
         return { answer, task: currentTask };
       }
 
-      if (inputData.taskId?.trim()) {
+      if (effectiveAction === 'getTask' && inputData.taskId?.trim()) {
         const taskGuid = await resolveTaskGuid(inputData.taskId);
         if (!taskGuid) {
           const answer = `No Lark task matched "${inputData.taskId.trim()}".`;
@@ -270,6 +317,13 @@ export const larkTaskReadTool = createTool({
         pageSize: inputData.pageSize,
         pageToken: inputData.pageToken,
         tasklistId,
+        creatorId: inputData.creatorId?.trim(),
+        userId: inputData.userId?.trim(),
+        openId: inputData.openId?.trim(),
+        summary: inputData.summary?.trim(),
+        completed: inputData.completed,
+        dueAfter: inputData.dueAfter?.trim(),
+        dueBefore: inputData.dueBefore?.trim(),
         ...auth,
       }));
 

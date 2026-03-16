@@ -14,10 +14,13 @@ export interface WorkerResult {
   workerKey: string;
   actionKind: string;
   input: Record<string, unknown>;
-  rawResponse: unknown;
   success: boolean;
   hasSubstantiveContent: boolean;
-  llmSummary?: string;
+  summary: string;
+  keyData: Record<string, unknown>;
+  fullPayload: string;
+  timestamp: number;
+  error?: string;
 }
 
 export interface LastActionState {

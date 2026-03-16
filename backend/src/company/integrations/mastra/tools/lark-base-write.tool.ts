@@ -14,22 +14,22 @@ export const larkBaseWriteTool = createTool({
   id: TOOL_ID,
   description: 'Create or update a Lark Base record when the Base app token, table ID, and fields are known.',
   inputSchema: z.object({
-    action: z.enum(['create', 'update']),
+    action: z.enum(['create', 'update', 'delete']),
     appToken: z.string().optional().describe('Optional Lark Base app token. Falls back to company default when configured.'),
     tableId: z.string().optional().describe('Optional Lark Base table ID. Falls back to company default when configured.'),
     recordId: z.string().optional().describe('Required for updates'),
-    fields: z.record(z.unknown()).describe('Field payload for the record'),
+    fields: z.record(z.unknown()).optional().describe('Field payload for the record'),
   }),
   execute: async (inputData, context) => {
     const requestContext = context?.requestContext;
     const allowedToolIds = requestContext?.get('allowedToolIds') as string[] | undefined;
-    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID)) {
+    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID) && !allowedToolIds.includes('lark-base-agent')) {
       const name = TOOL_REGISTRY_MAP.get(TOOL_ID)?.name ?? TOOL_ID;
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
 
-    if (inputData.action === 'update' && !inputData.recordId) {
-      return { answer: 'Lark Base update failed: recordId is required for updates.' };
+    if ((inputData.action === 'update' || inputData.action === 'delete') && !inputData.recordId) {
+      return { answer: `Lark Base ${inputData.action} failed: recordId is required.` };
     }
 
     const requestId = requestContext?.get('requestId') as string | undefined;
@@ -38,7 +38,7 @@ export const larkBaseWriteTool = createTool({
       emitActivityEvent(requestId, 'activity', {
         id: callId,
         name: TOOL_ID,
-        label: inputData.action === 'create' ? 'Creating Lark Base record' : 'Updating Lark Base record',
+        label: inputData.action === 'create' ? 'Creating Lark Base record' : inputData.action === 'update' ? 'Updating Lark Base record' : 'Deleting Lark Base record',
         icon: 'table2',
       });
     }
@@ -53,13 +53,16 @@ export const larkBaseWriteTool = createTool({
           answer: 'Lark Base write failed: appToken and tableId are required. Set company defaults in Integrations or provide them explicitly.',
         };
       }
+      if ((inputData.action === 'create' || inputData.action === 'update') && !inputData.fields) {
+        return { answer: `Lark Base ${inputData.action} failed: fields are required.` };
+      }
 
       const credentialMode: LarkCredentialMode =
         requestContext?.get('larkAuthMode') === 'user_linked' ? 'user_linked' : 'tenant';
       const commonInput = {
         appToken,
         tableId,
-        fields: inputData.fields,
+        fields: inputData.fields ?? {},
         companyId,
         larkTenantKey: requestContext?.get('larkTenantKey') as string | undefined,
         appUserId: requestContext?.get('userId') as string | undefined,
@@ -68,10 +71,38 @@ export const larkBaseWriteTool = createTool({
 
       const record = inputData.action === 'create'
         ? await larkBaseService.createRecord(commonInput)
-        : await larkBaseService.updateRecord({
+        : inputData.action === 'update'
+          ? await larkBaseService.updateRecord({
           ...commonInput,
           recordId: inputData.recordId as string,
+          })
+          : null;
+
+      if (inputData.action === 'delete') {
+        await larkBaseService.deleteRecord({
+          appToken,
+          tableId,
+          recordId: inputData.recordId as string,
+          companyId,
+          larkTenantKey: requestContext?.get('larkTenantKey') as string | undefined,
+          appUserId: requestContext?.get('userId') as string | undefined,
+          credentialMode,
         });
+        const answer = `Deleted Lark Base record: ${inputData.recordId}`;
+        if (requestId) {
+          emitActivityEvent(requestId, 'activity_done', {
+            id: callId,
+            name: TOOL_ID,
+            label: 'Deleted Lark Base record',
+            icon: 'table2',
+            resultSummary: answer,
+          });
+        }
+        return { answer, deletedRecordId: inputData.recordId };
+      }
+      if (!record) {
+        return { answer: `Lark Base ${inputData.action} failed: no record payload was returned.` };
+      }
 
       const answer = inputData.action === 'create'
         ? `Created Lark Base record: ${record.recordId}`

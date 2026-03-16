@@ -52,7 +52,9 @@ export const larkCalendarReadTool = createTool({
   id: TOOL_ID,
   description: 'List events from a Lark Calendar. Falls back to the company default calendar when configured.',
   inputSchema: z.object({
+    action: z.enum(['list', 'getEvent']).optional().default('list'),
     calendarId: z.string().optional().describe('Optional calendar ID. Falls back to company default when configured.'),
+    eventId: z.string().optional().describe('Required for getEvent unless the latest calendar event from this conversation should be used.'),
     query: z.string().optional().describe('Optional text filter applied client-side to returned events'),
     startTime: z.string().optional().describe('Optional lower time bound'),
     endTime: z.string().optional().describe('Optional upper time bound'),
@@ -62,7 +64,7 @@ export const larkCalendarReadTool = createTool({
   execute: async (inputData, context) => {
     const requestContext = context?.requestContext;
     const allowedToolIds = requestContext?.get('allowedToolIds') as string[] | undefined;
-    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID)) {
+    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID) && !allowedToolIds.includes('lark-calendar-agent')) {
       const name = TOOL_REGISTRY_MAP.get(TOOL_ID)?.name ?? TOOL_ID;
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
@@ -118,6 +120,46 @@ export const larkCalendarReadTool = createTool({
       }
 
       const requestTimeZone = (requestContext?.get('timeZone') as string | undefined)?.trim() || 'UTC';
+      const conversationKey = buildConversationKey(requestContext as any);
+      const latestEvent = conversationKey ? conversationMemoryStore.getLatestLarkCalendarEvent(conversationKey) : null;
+      const credentialMode = requestContext?.get('larkAuthMode') === 'user_linked' ? 'user_linked' : 'tenant';
+      if (inputData.action === 'getEvent') {
+        const resolvedEventId = inputData.eventId?.trim() || latestEvent?.eventId;
+        if (!resolvedEventId) {
+          return { answer: 'Lark calendar read failed: eventId is required for getEvent unless a prior event exists in this conversation.' };
+        }
+        const event = await larkCalendarService.getEvent({
+          calendarId,
+          eventId: resolvedEventId,
+          companyId,
+          larkTenantKey: requestContext?.get('larkTenantKey') as string | undefined,
+          appUserId: requestContext?.get('userId') as string | undefined,
+          credentialMode,
+        });
+        if (conversationKey) {
+          conversationMemoryStore.addLarkCalendarEvent(conversationKey, {
+            eventId: event.eventId,
+            calendarId,
+            summary: event.summary,
+            startTime: event.startTime,
+            endTime: event.endTime,
+            url: event.url,
+          });
+        }
+        const answer = buildAnswer([event]);
+        if (requestId) {
+          emitActivityEvent(requestId, 'activity_done', {
+            id: callId,
+            name: TOOL_ID,
+            label: 'Read Lark calendar event',
+            icon: 'calendar-days',
+            externalRef: event.eventId,
+            resultSummary: answer,
+          });
+        }
+        return { answer, event };
+      }
+
       const result = await larkCalendarService.listEvents({
         calendarId,
         pageSize: inputData.pageSize,
@@ -127,7 +169,7 @@ export const larkCalendarReadTool = createTool({
         companyId,
         larkTenantKey: requestContext?.get('larkTenantKey') as string | undefined,
         appUserId: requestContext?.get('userId') as string | undefined,
-        credentialMode: requestContext?.get('larkAuthMode') === 'user_linked' ? 'user_linked' : 'tenant',
+        credentialMode,
       });
 
       const normalizedQuery = inputData.query?.trim().toLowerCase();
@@ -138,7 +180,6 @@ export const larkCalendarReadTool = createTool({
         })
         : result.items;
 
-      const conversationKey = buildConversationKey(requestContext as any);
       if (conversationKey) {
         for (const item of filteredItems) {
           conversationMemoryStore.addLarkCalendarEvent(conversationKey, {

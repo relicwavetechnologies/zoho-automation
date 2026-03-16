@@ -44,6 +44,14 @@ export type LarkEditDocResult = {
   blocksAffected: number;
 };
 
+export type LarkReadDocResult = {
+  documentId: string;
+  url: string;
+  blockCount: number;
+  text: string;
+  headings: string[];
+};
+
 type RequestOptions = {
   companyId: string;
   workspaceConfig: DecryptedLarkWorkspaceConfig | null;
@@ -302,6 +310,46 @@ const selectRelevantMarkdown = (
     return heading.includes(target) || target.includes(heading);
   });
   return matched?.markdown ?? normalized;
+};
+
+const remoteBlocksToPlainText = (blocks: RemoteDocBlock[]): { text: string; headings: string[] } => {
+  const lines: string[] = [];
+  const headings: string[] = [];
+
+  for (const block of blocks) {
+    const text = block.text.trim();
+    if (!text) {
+      continue;
+    }
+    const level = headingLevelForBlockType(block.blockType);
+    if (level !== null) {
+      headings.push(text);
+      lines.push(`${'#'.repeat(Math.max(1, Math.min(level, 6)))} ${text}`);
+      continue;
+    }
+    if (block.blockType === 12) {
+      lines.push(`- ${text}`);
+      continue;
+    }
+    if (block.blockType === 13) {
+      lines.push(`1. ${text}`);
+      continue;
+    }
+    if (block.blockType === 14) {
+      lines.push(`\`\`\`\n${text}\n\`\`\``);
+      continue;
+    }
+    if (block.blockType === 15) {
+      lines.push(`> ${text}`);
+      continue;
+    }
+    lines.push(text);
+  }
+
+  return {
+    text: lines.join('\n\n').trim(),
+    headings,
+  };
 };
 
 export class LarkDocsIntegrationError extends Error {
@@ -724,6 +772,37 @@ class LarkDocsService {
       url: `https://docs.larksuite.com/docx/${input.documentId.trim()}`,
       exists: true,
       blockCount: snapshot.childBlocks.length,
+    };
+  }
+
+  async readDocument(input: {
+    companyId?: string;
+    larkTenantKey?: string;
+    appUserId?: string;
+    credentialMode?: 'tenant' | 'user_linked';
+    documentId: string;
+  }): Promise<LarkReadDocResult> {
+    const companyId = await companyContextResolver.resolveCompanyId({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+    });
+    const workspaceConfig = await larkWorkspaceConfigRepository.findByCompanyId(companyId);
+    const documentId = input.documentId.trim();
+    const snapshot = await this.getDocumentSnapshot({
+      companyId,
+      workspaceConfig,
+      appUserId: input.appUserId,
+      larkTenantKey: input.larkTenantKey,
+      authMode: input.credentialMode ?? 'tenant',
+      documentId,
+    });
+    const rendered = remoteBlocksToPlainText(snapshot.childBlocks);
+    return {
+      documentId,
+      url: `https://docs.larksuite.com/docx/${documentId}`,
+      blockCount: snapshot.childBlocks.length,
+      text: rendered.text,
+      headings: rendered.headings,
     };
   }
 

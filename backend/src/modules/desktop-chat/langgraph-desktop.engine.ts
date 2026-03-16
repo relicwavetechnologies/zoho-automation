@@ -5,6 +5,7 @@ import { desktopThreadsService } from '../desktop-threads/desktop-threads.servic
 import type { MemberSessionDTO } from '../member-auth/member-auth.service';
 import {
   buildBootstrapPrompt,
+  buildFollowupIntentPrompt,
   inferBootstrapFallback,
   listSkillMetadata,
   parseControllerProfile,
@@ -14,6 +15,7 @@ import {
   type ControllerRuntimeState,
   type WorkerObservation,
 } from '../../company/orchestration/controller-runtime';
+import { extractJsonObject } from '../../company/orchestration/langchain/json-output';
 import { getRequiredSkillTools } from '../../company/orchestration/controller-runtime/skill-tool-requirements';
 import {
   registerActivityBus,
@@ -548,6 +550,40 @@ const shouldContinueFromSnapshot = (input: {
   return trimmed.length <= 200 && Boolean(previousAssistant?.content.includes('?'));
 };
 
+const summarizeSnapshotWorkerResult = (
+  snapshot: PersistedRuntimeSnapshot | null,
+  success: boolean,
+): string | undefined => {
+  const results = (snapshot?.workerResults ?? []).filter((result) => result.workerKey !== 'skills' && result.success === success);
+  const latest = results.length > 0 ? results[results.length - 1] : null;
+  if (!latest) return undefined;
+  return `${latest.workerKey}: ${latest.summary}${latest.error ? ` (${latest.error})` : ''}`;
+};
+
+const shouldContinueFromSnapshotSmart = async (input: {
+  message: string;
+  history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  snapshot: PersistedRuntimeSnapshot | null;
+}): Promise<boolean> => {
+  if (shouldContinueFromSnapshot(input)) return true;
+  if (!input.snapshot) return false;
+  const trimmed = input.message.trim();
+  if (!trimmed || trimmed.length > 220) return false;
+  const previousAssistant = [...input.history].reverse().find((item) => item.role === 'assistant');
+  if (previousAssistant) {
+    return true;
+  }
+  const raw = await openAiOrchestrationModels.invokeSupervisor(buildFollowupIntentPrompt({
+    latestUserTurn: trimmed,
+    workflowSummary: input.snapshot.profile.summary,
+    lastFailed: summarizeSnapshotWorkerResult(input.snapshot, false),
+    lastSuccessful: summarizeSnapshotWorkerResult(input.snapshot, true),
+  }));
+  const parsed = extractJsonObject(raw);
+  const kind = typeof parsed?.kind === 'string' ? parsed.kind : '';
+  return kind === 'controller_meta_explain' || kind === 'controller_meta_retry' || kind === 'workflow_continue';
+};
+
 const buildContinuationState = (input: {
   executionId: string;
   snapshot: PersistedRuntimeSnapshot;
@@ -682,6 +718,23 @@ const projectExecutionPlan = (state: PersistedRuntimeState): ExecutionPlan | nul
 
   const now = new Date().toISOString();
   const tasks: ExecutionPlan['tasks'] = [];
+  if (state.todoList?.initialized && state.todoList.items.length > 0) {
+    for (const item of state.todoList.items) {
+      tasks.push({
+        id: `${state.executionId}:todo:${item.tool}`,
+        title: item.label,
+        ownerAgent: item.tool as ExecutionPlanOwner,
+        status:
+          item.status === 'done'
+            ? 'done'
+            : item.status === 'failed'
+              ? 'failed'
+              : item.status === 'running'
+                ? 'running'
+                : 'pending',
+      });
+    }
+  }
   if (state.profile.shouldUseSkills) {
     const hasSkillMeta = state.observations.some((observation) => observation.artifacts.some((artifact) => artifact.type === 'skill_metadata'));
     const hasSkillDoc = state.observations.some((observation) => observation.artifacts.some((artifact) => artifact.type === 'skill_document'));
@@ -794,6 +847,7 @@ const summarizeDecisionLabel = (decision: {
   invocation?: { workerKey: string; actionKind: string; input: Record<string, unknown> };
   actionKind?: string;
   localAction?: DesktopAction;
+  requiredTools?: string[];
   question?: string;
   reply?: string;
   reason?: string;
@@ -810,27 +864,40 @@ const summarizeDecisionLabel = (decision: {
     if (action?.kind === 'delete_path') return `Requesting delete: ${action.path}`;
     return `Requesting ${decision.actionKind?.toLowerCase() ?? 'local action'}`;
   }
+  if (decision.decision === 'SET_TODOS') {
+    return `Planning todo list: ${(decision.requiredTools ?? []).join(', ') || 'no tools selected'}`;
+  }
   if (decision.decision === 'ASK_USER') return decision.question ?? 'Asking the user for clarification';
   if (decision.decision === 'COMPLETE') return 'Preparing verified final response';
   return decision.reason ?? 'Failing with a precise reason';
 };
 
 const summarizeVerificationState = (state: PersistedRuntimeState): string => {
+  if (state.todoList?.initialized && state.todoList.items.length > 0) {
+    const done = state.todoList.items.filter((item) => item.status === 'done');
+    const running = state.todoList.items.find((item) => item.status === 'running');
+    const pending = state.todoList.items.filter((item) => item.status === 'pending');
+    const failed = state.todoList.items.filter((item) => item.status === 'failed');
+    return [
+      `${done.length} of ${state.todoList.items.length} work items done`,
+      running ? `doing now: ${running.label}` : '',
+      pending.length > 0 ? `pending: ${pending.map((item) => item.label).join(' | ')}` : '',
+      failed.length > 0 ? `failed: ${failed.map((item) => item.label).join(' | ')}` : '',
+    ].filter(Boolean).join(', ');
+  }
   const satisfied = state.verifications.filter((item) => item.status === 'satisfied').length;
   const pending = state.verifications.filter((item) => item.status !== 'satisfied').length;
-  const requiredTools = getRequiredSkillTools(state.loadedSkillContent);
-  const attempted = new Set(
-    (state.workerResults ?? [])
-      .filter((result) => result.workerKey !== 'skills')
-      .map((result) => result.workerKey),
-  );
-  const pendingRequired = requiredTools.filter((tool: string) => !attempted.has(tool));
+  const todoFailed = state.todoList?.failed ?? [];
+  const pendingRequired = state.todoList?.initialized ? state.todoList.required : [];
   if (pendingRequired.length > 0) {
     return `${satisfied} of ${state.verifications.length} checks satisfied, required tools pending: ${pendingRequired.join(', ')}`;
   }
+  if (todoFailed.length > 0) {
+    return `All required tools attempted (${todoFailed.length} failed: ${todoFailed.join(', ')})`;
+  }
   return pending > 0
-    ? `${satisfied} outputs verified, ${pending} still pending`
-    : `All ${satisfied} requested outputs are verified`;
+    ? `${satisfied} internal checks satisfied, ${pending} still pending`
+    : `All ${satisfied} internal checks satisfied`;
 };
 
 const summarizeLocalAction = (action: DesktopAction): string => {
@@ -1458,7 +1525,7 @@ class LangGraphDesktopChatEngine {
         message,
         attachedFiles: input.attachedFiles,
       });
-      if (shouldContinueFromSnapshot({
+      if (await shouldContinueFromSnapshotSmart({
         message,
         history: controllerContext.history,
         snapshot: controllerContext.latestSnapshot,

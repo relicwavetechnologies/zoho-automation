@@ -16,6 +16,7 @@ export const larkApprovalWriteTool = createTool({
   inputSchema: z.object({
     approvalCode: z.string().optional().describe('Optional approval code. Falls back to company default when configured.'),
     form: z.string().optional().describe('Approval form JSON string required by the target template unless a raw body is provided.'),
+    formValues: z.record(z.unknown()).optional().describe('Optional structured approval form object. It will be JSON-stringified into `form` when provided.'),
     userId: z.string().optional().describe('Optional applicant user ID'),
     openId: z.string().optional().describe('Optional applicant open ID'),
     departmentId: z.string().optional().describe('Optional department ID'),
@@ -25,7 +26,7 @@ export const larkApprovalWriteTool = createTool({
   execute: async (inputData, context) => {
     const requestContext = context?.requestContext;
     const allowedToolIds = requestContext?.get('allowedToolIds') as string[] | undefined;
-    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID)) {
+    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID) && !allowedToolIds.includes('lark-approval-agent')) {
       const name = TOOL_REGISTRY_MAP.get(TOOL_ID)?.name ?? TOOL_ID;
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
@@ -50,8 +51,8 @@ export const larkApprovalWriteTool = createTool({
           answer: 'Lark approval create failed: approvalCode is required. Set a company default approval code in Integrations or provide it explicitly.',
         };
       }
-      if (!inputData.body && !inputData.form) {
-        return { answer: 'Lark approval create failed: form is required unless a raw body is provided.' };
+      if (!inputData.body && !inputData.form && !inputData.formValues) {
+        return { answer: 'Lark approval create failed: form or formValues is required unless a raw body is provided.' };
       }
 
       const credentialMode: LarkCredentialMode =
@@ -59,6 +60,7 @@ export const larkApprovalWriteTool = createTool({
       const body = inputData.body ?? {
         ...(approvalCode ? { approval_code: approvalCode } : {}),
         ...(inputData.form ? { form: inputData.form } : {}),
+        ...(!inputData.form && inputData.formValues ? { form: JSON.stringify(inputData.formValues) } : {}),
         ...(inputData.userId ? { user_id: inputData.userId } : {}),
         ...(inputData.openId ? { open_id: inputData.openId } : {}),
         ...(inputData.departmentId ? { department_id: inputData.departmentId } : {}),

@@ -131,6 +131,7 @@ export type ProgressRecord = {
 
 export type ControllerDecision<LocalAction = unknown> =
   | { decision: 'CALL_WORKER'; invocation: WorkerInvocation; reasoning?: string }
+  | { decision: 'SET_TODOS'; requiredTools: string[]; reasoning?: string }
   | { decision: 'REQUEST_LOCAL_ACTION'; actionKind: 'MUTATE_WORKSPACE' | 'EXECUTE_COMMAND'; localAction: LocalAction; reasoning?: string }
   | { decision: 'ASK_USER'; question: string }
   | { decision: 'COMPLETE'; reply: string }
@@ -149,13 +150,38 @@ export type LocalActionRecord<LocalAction = unknown> = {
   observationSummary?: string;
 };
 
+export type TodoItemStatus = 'pending' | 'running' | 'done' | 'failed';
+
+export type TodoItem = {
+  tool: string;
+  label: string;
+  status: TodoItemStatus;
+  lastSummary?: string;
+};
+
 export type TodoListState = {
   required: string[];
   completed: string[];
   failed: string[];
   retryCounts: Record<string, number>;
+  items: TodoItem[];
+  currentTool?: string | null;
   initialized: boolean;
 } | null;
+
+export type WorkerResultDTO = {
+  hopIndex: number;
+  workerKey: string;
+  actionKind: string;
+  input: Record<string, unknown>;
+  success: boolean;
+  hasSubstantiveContent: boolean;
+  summary: string;
+  keyData: Record<string, unknown>;
+  fullPayload: string;
+  timestamp: number;
+  error?: string;
+};
 
 export type ControllerRuntimeState<LocalAction = unknown> = {
   executionId: string;
@@ -167,17 +193,7 @@ export type ControllerRuntimeState<LocalAction = unknown> = {
   todoList?: TodoListState;
   terminalEventEmitted?: boolean;
   observations: WorkerObservation[];
-  workerResults: Array<{
-    hopIndex: number;
-    workerKey: string;
-    actionKind: string;
-    input: Record<string, unknown>;
-    rawResponse: unknown;
-    success: boolean;
-    hasSubstantiveContent: boolean;
-    llmSummary?: string;
-    error?: string;
-  }>;
+  workerResults: WorkerResultDTO[];
   progressLedger: ProgressRecord[];
   verifications: VerificationResult[];
   stepCount: number;

@@ -25,8 +25,8 @@ export const larkCalendarSpecialistAgent = new Agent({
     ],
     tools: [
       'Use `lark-calendar-list` to list available calendars and resolve calendar names to calendar IDs.',
-      'Use `lark-calendar-read` to list calendar events.',
-      'Use `lark-calendar-write` to create, update, or delete calendar events.',
+      'Use `lark-calendar-read` to list calendar events or fetch one event by ID.',
+      'Use `lark-calendar-write` to create, update, or delete calendar events, including richer event payloads when needed.',
     ],
     workflow: [
       'If no company default calendar is configured and the user did not name a calendar, call `lark-calendar-list` and ask which calendar name to use.',

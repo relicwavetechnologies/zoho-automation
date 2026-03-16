@@ -60,6 +60,12 @@ export const buildBootstrapPrompt = (input: {
 
 export const inferBootstrapFallback = (message: string): ControllerTaskProfile => {
   const trimmed = message.trim();
+  const larkSurfaceCount = ['task', 'tasks', 'calendar', 'meeting', 'meetings', 'approval', 'approvals', 'doc', 'docs', 'base']
+    .filter((token) => new RegExp(`\\b${token}\\b`, 'i').test(trimmed))
+    .length;
+  const shouldUseLarkSkill = /\b(lark-ops)\b/i.test(trimmed)
+    || (/\b(lark|feishu)\b/i.test(trimmed) && /\b(workflow|process|protocol|playbook|skill|ops)\b/i.test(trimmed))
+    || (/\b(lark|feishu)\b/i.test(trimmed) && larkSurfaceCount >= 2);
   if (GREETING_PATTERN.test(trimmed) && trimmed.length < 80) {
     return {
       summary: 'Respond naturally to the greeting',
@@ -77,8 +83,12 @@ export const inferBootstrapFallback = (message: string): ControllerTaskProfile =
     complexity: /\b(workflow|process|daily-stuff|protocol|follow-up|schedule|doc|task|plan|compare|research)\b/i.test(trimmed)
       ? 'structured'
       : 'simple',
-    shouldUseSkills: /\b(daily-stuff|workflow|process|protocol|playbook|skill)\b/i.test(trimmed),
-    skillQuery: /\b(daily-stuff)\b/i.test(trimmed) ? 'daily-stuff' : trimmed,
+    shouldUseSkills: /\b(daily-stuff|workflow|process|protocol|playbook|skill)\b/i.test(trimmed) || shouldUseLarkSkill,
+    skillQuery: /\b(daily-stuff)\b/i.test(trimmed)
+      ? 'daily-stuff'
+      : shouldUseLarkSkill
+        ? 'lark-ops'
+        : trimmed,
     deliverables: ['complete the user request'],
     missingInputs: [],
     notes: [],
@@ -110,77 +120,138 @@ export const buildDecisionPrompt = (input: {
   stateSummary: string;
   workers: WorkerCapability[];
   skills: SkillMetadata[];
+  objective?: string;
+  dateScope?: string;
+  workflowName?: string;
+  todoProgress?: string;
+  // todoMode=true means the runtime is driving required tools automatically.
+  // todoMode=false (default) means the model is the primary decision maker.
+  todoMode?: boolean;
 }): string => {
+  const todoMode = input.todoMode === true;
+
   const promptLines = [
-    'You are the single controller for this assistant.',
+    // Role
+    'You are the controller for a tool-using assistant.',
+    'Your job is to decide the single next action.',
     'Return JSON only.',
-    'You have tools/workers available. Solve simple requests directly when possible.',
-    'For complex or protocol-heavy work, inspect skill metadata first instead of blindly loading skills.',
-    'If a skill looks relevant, fetch and read the full SKILL.md.',
-    'Use the skill as workflow guidance, not as a replacement for tool reality.',
-    'If required inputs are missing, ask one focused question.',
-    'After every tool or worker result, reconsider the next step.',
-    'Continue until done or genuinely blocked.',
+
+    // Current context — always populated from state at call site
+    [
+      'Current context:',
+      input.objective    ? `- Objective: ${input.objective}`    : '- Objective: not set',
+      input.dateScope    ? `- Date scope: ${input.dateScope}`   : '- Date scope: not set',
+      input.workflowName ? `- Workflow: ${input.workflowName}`  : '',
+    ].filter(Boolean).join('\n'),
+
+    // Allowed decision shapes
     'Allowed decision JSON shapes:',
     '- {"decision":"CALL_WORKER","invocation":{"workerKey":"...","actionKind":"DISCOVER_CANDIDATES|INSPECT_CANDIDATE|RETRIEVE_ARTIFACT|QUERY_REMOTE_SYSTEM|VERIFY_OUTPUT","input":{...}},"reasoning":"optional"}',
+    '- {"decision":"SET_TODOS","requiredTools":["workerKey1","workerKey2"],"reasoning":"optional"}',
     '- {"decision":"REQUEST_LOCAL_ACTION","actionKind":"MUTATE_WORKSPACE|EXECUTE_COMMAND","localAction":{...},"reasoning":"optional"}',
     '- {"decision":"ASK_USER","question":"..."}',
     '- {"decision":"COMPLETE","reply":"..."}',
     '- {"decision":"FAIL","reason":"..."}',
-    'Completion policy (read before emitting COMPLETE):',
-    '- "All outputs verified" means the check system is satisfied. It does NOT mean the workflow is done. The check system only tracks infrastructure (skill loaded, inputs present, evidence exists). It does not track whether you have queried all relevant systems.',
-    '- Before emitting COMPLETE for any skill-based workflow, you must have attempted every worker listed in the skill\'s allowed_tools that could plausibly return relevant data. One worker result, even a good one, is not enough to complete a multi-system workflow.',
-    '- If the SKILL.md lists 6 allowed_tools and you have only called 1, you are not done. Call the remaining ones.',
-    '- An empty result like "No X found" still counts as attempted. You do not need to retry empty results.',
-    '- A failed worker result should be retried once if the failure looks transient, then counted as attempted.',
-    '- Only emit COMPLETE when either: (a) all allowed_tools have been attempted, OR (b) you have enough grounded data to fully answer the user\'s request AND the remaining tools are clearly irrelevant to this specific request.',
-    '- For the daily-stuff skill specifically, allowed_tools are: zoho, outreach, search, larkDoc, larkTask, larkCalendar, larkMeeting.',
-    '- You must attempt all of them before completing unless one is clearly irrelevant. For example, do not create a larkDoc unless the user asked for one.',
-    'Rules:',
-    '- Do not choose a worker unless it can realistically move the task forward.',
-    '- If the request is already answerable without tools, COMPLETE directly.',
-    '- Do not load full skill documents unless metadata suggests they are relevant.',
-    '- For the skills worker, DISCOVER_CANDIDATES must use input {"query":"..."} and RETRIEVE_ARTIFACT must use input {"id":"..."} where id comes from skill metadata.',
-    '- If the available skill metadata already contains an exact matching skill id or name, skip DISCOVER_CANDIDATES and go directly to RETRIEVE_ARTIFACT.',
-    '- Do not claim a side effect succeeded unless a worker or local action actually succeeded.',
-    '- Do not emit FAIL while there is still a plausible non-local worker that could gather the first piece of evidence.',
-    '- If no grounded evidence exists yet and no blocking inputs are missing, prefer CALL_WORKER over ASK_USER or FAIL.',
-    '- For concrete requests that already map to a worker (for example tasks, meetings, calendar, Zoho, Outreach, docs, or search), do the worker call directly instead of loading a skill unless the user explicitly asked for a named skill or workflow.',
-    'Skill execution rules (apply when a SKILL.md is loaded):',
-    '- required_inputs in the skill spec are NOT hard gates. They are hints about what the skill needs to do useful work.',
-    '- Before asking the user for any required_input, check if it can be reasonably inferred from the conversation.',
-    '- objective: if the user explicitly named a skill, the objective IS the standard execution of that skill. Do not ask for it. Infer objective = "run the [skill-name] workflow for [date_scope]".',
-    '- date_scope: if the user said "today", "this week", "yesterday", or any clear time reference, infer it directly. Do not ask.',
-    '- stakeholders: optional. Never ask unless the next real step genuinely requires specific people.',
-    '- delivery_style: optional. Never ask unless the user expressed a preference or the next real step requires it.',
-    '- Only emit ASK_USER if a required_input cannot be inferred AND its absence would cause the very next worker call to fail or return meaningless results.',
-    '- If inputs can be inferred, proceed to the first real worker step immediately. For an operational workflow skill, the first real step is usually querying internal systems to gather context.',
-    'Readiness gate (apply once, after SKILL.md is loaded, before first real worker call):',
-    '- After loading a SKILL.md, before calling any non-skills worker, run a silent readiness check.',
-    '- Ask yourself: (1) do I know the objective, (2) do I know the scope such as date or time range, and (3) do I have enough context to make the first worker call return something useful?',
-    '- If all of those are answerable, proceed directly to the first worker call and do not ask the user anything.',
-    '- If any of them cannot be answered and the gap would make worker calls meaningless, emit one ASK_USER that covers all missing context in a single focused question.',
-    '- Do not ask about optional fields. Do not ask about things you can infer. Do not ask more than once.',
-    '- The readiness gate fires only once per workflow execution. After the first real worker call, never re-enter it.',
-    'COMPLETE reply rules (mandatory — violations are incorrect behavior):',
-    '- The reply field in {"decision":"COMPLETE","reply":"..."} must be written as if you are a human assistant responding directly to the user. It must never contain raw JSON strings or objects, worker summary strings like "Loaded SKILL.md for daily-stuff", system internals like workerKey, actionKind, executionId, or recordId, or concatenated facts without structure or prose.',
-    '- The reply must open with a direct answer to what the user asked.',
-    '- The reply must present findings in clean readable prose or a simple bullet list.',
-    '- The reply must group findings by system such as Zoho, Lark, and Outreach.',
-    '- The reply must clearly state what was found and what was not found.',
-    '- The reply must end with a concrete next step or offer.',
-    '- Transform worker results before using them: if a worker returned JSON, extract the human-readable summary field only; if a worker returned "No X found", say "No X found for today" in prose; if a worker returned a real record, describe it in one sentence.',
-    '- The reply should look like: "Here\'s what I found for today (March 15): Zoho — One active deal: StrictScope Deal 1 in Qualification stage (Rs. 65,000), contact: Vabhi StrictScope. Outreach — 10 publisher matches ready for today\'s campaigns. Lark Tasks — No tasks due today. Lark Calendar — No events scheduled for today. Lark Meetings — No meetings found for today. Everything looks clear. Want me to create a daily summary doc or add any follow-up tasks based on this?"',
-    '- The reply must NEVER look like this: "Loaded SKILL.md for daily-stuff { success: true, recordId: ... }".',
+
+    // Mode-specific guidance — only inject the block that matches current runtime state
+    todoMode
+      ? [
+          'Runtime mode: skill workflow (todo-list active)',
+          '- Required tools are dispatched automatically. You are only consulted for optional tools and ASK_USER decisions.',
+          '- If optional tools like search or larkDoc are relevant to this specific request, emit CALL_WORKER for the next one.',
+          '- If no optional tools are needed, emit COMPLETE.',
+        ].join('\n')
+      : [
+          'Runtime mode: free decision',
+          '- Choose the single best next action to move the task forward.',
+          '- Reading a skill gives you knowledge only. It does not automatically create an execution plan.',
+          '- You may read more than one skill before planning if that helps you understand the workflow.',
+          '- When you have enough context for a multi-step workflow, emit SET_TODOS with the worker keys to run in order.',
+          '- If the request maps directly to a worker (tasks, meetings, calendar, Zoho, Outreach, docs, search), call that worker directly.',
+          '- Do not load a skill unless the user explicitly named one or the request is clearly protocol-heavy.',
+          '- If the request is already answerable without tools, emit COMPLETE directly.',
+          '- Do not emit FAIL while there is a plausible worker that could gather the first piece of evidence.',
+        ].join('\n'),
+
+    // Readiness gate — only relevant in todo mode after a skill just loaded
+    todoMode
+      ? [
+          'Readiness gate (fires once only, before the first worker call after skill load):',
+          '- If objective and date scope are both clear, proceed immediately. Do not ask the user anything.',
+          '- If either is missing and cannot be inferred, emit one ASK_USER covering all gaps.',
+          '- required_inputs in the skill are hints not gates. Infer from the message before asking.',
+          '- After the first real worker call, never re-enter this gate.',
+        ].join('\n')
+      : '',
+
+    // COMPLETE reply rules — always required regardless of mode
+    'COMPLETE reply rules — violations are incorrect behavior:',
+    '- The reply field must be written as a human assistant responding directly to the user.',
+    '- Never include raw JSON, worker key names, system internals like executionId or recordId, or concatenated fact strings.',
+    '- Open with a direct answer to what the user asked.',
+    '- Group findings by system (Zoho, Lark, Outreach etc.) in clean prose or a simple bullet list.',
+    '- Clearly state what was found and what was not found.',
+    '- If a tool failed, say so honestly and tell the user what they can do about it.',
+    '- End with a concrete next step or offer.',
+    '- Good example: "Here\'s what I found for today (March 15): Zoho — one active deal: StrictScope Deal 1 in Qualification (Rs. 65,000). Outreach — 10 publisher matches ready. Lark Tasks — none due today. Lark Calendar — no events. Lark Meetings — could not retrieve (date format error). Want me to add any follow-up tasks?"',
+    '- Bad example: "Loaded SKILL.md for daily-stuff { success: true, recordId: ... }"',
+
+    // Workers and skills catalog
     'Available workers:',
     buildWorkerCatalogContext(input.workers),
     'Available skill metadata:',
     buildSkillCatalogContext(input.skills),
+
+    // State summary
     input.stateSummary,
+
+    // Todo progress — always last, maximum recency weight
+    input.todoProgress ? `Current progress:\n${input.todoProgress}` : '',
   ];
 
-  return promptLines.join('\n\n');
+  return promptLines.filter(Boolean).join('\n\n');
 };
+
+export const buildTodoPlanningPrompt = (input: {
+  userRequest: string;
+  objective?: string;
+  dateScope?: string;
+  workflowName?: string;
+  deliverables: string[];
+  workers: WorkerCapability[];
+  candidateTools: string[];
+  stateSummary: string;
+}): string => [
+  'You are planning the work list for a tool-using assistant.',
+  'Return JSON only.',
+  'Your job is to decide the real work items before execution starts.',
+  'Reading skills gives knowledge. This step creates the execution plan.',
+  'Allowed decision JSON shapes:',
+  '- {"decision":"SET_TODOS","requiredTools":["workerKey1","workerKey2"],"reasoning":"optional"}',
+  '- {"decision":"ASK_USER","question":"..."}',
+  '- {"decision":"COMPLETE","reply":"..."}',
+  'Rules:',
+  '- If the request clearly needs more than one real worker step, emit SET_TODOS.',
+  '- Do not emit CALL_WORKER in this planning step.',
+  '- Do not include skills, workspace, or terminal in SET_TODOS. Those are not user work items.',
+  '- Do not include unrelated tools just because they exist in a skill.',
+  '- Include only the workers actually needed to satisfy the user request.',
+  '- Prefer read/query tools before write tools unless the user explicitly asked for a mutation.',
+  '- If the request is missing one blocker needed to build the plan, emit one ASK_USER.',
+  '- If the request is already answerable without tools, emit COMPLETE.',
+  [
+    'Current context:',
+    input.objective ? `- Objective: ${input.objective}` : '- Objective: not set',
+    input.dateScope ? `- Date scope: ${input.dateScope}` : '- Date scope: not set',
+    input.workflowName ? `- Workflow: ${input.workflowName}` : '',
+  ].filter(Boolean).join('\n'),
+  input.deliverables.length > 0 ? `Deliverables: ${input.deliverables.join(' | ')}` : '',
+  input.candidateTools.length > 0 ? `Likely worker candidates: ${input.candidateTools.join(', ')}` : '',
+  'Available workers:',
+  buildWorkerCatalogContext(input.workers),
+  input.stateSummary,
+  `User request: ${input.userRequest}`,
+].filter(Boolean).join('\n\n');
 
 export const buildParamPrompt = (input: {
   workerKey: string;
@@ -190,6 +261,7 @@ export const buildParamPrompt = (input: {
   dateScope?: string;
   skillGuidance?: string;
   previousResults: string[];
+  priorKeyData?: string[];
   completedTools: string[];
   toolPurpose?: string;
 }): string => [
@@ -199,16 +271,20 @@ export const buildParamPrompt = (input: {
   `Worker contract: ${input.contract}`,
   'Context:',
   `- Objective: ${input.objective || 'none provided'}`,
-  input.dateScope ? `- Date scope: ${input.dateScope}` : '- Date scope: none provided',
-  input.skillGuidance ? `- Skill guidance: ${input.skillGuidance}` : '',
-  input.toolPurpose ? `- This tool's purpose in the workflow: ${input.toolPurpose}` : '',
+  input.dateScope    ? `- Date scope: ${input.dateScope}`                                                                         : '- Date scope: none provided',
+  input.skillGuidance ? `- Skill guidance: ${input.skillGuidance}`                                                                : '',
+  input.toolPurpose  ? `- This tool\'s purpose in the workflow: ${input.toolPurpose}`                                             : '',
   input.previousResults.length > 0
-    ? `- Previous results:\n${input.previousResults.map((item) => `  - ${item}`).join('\n')}`
+    ? `- Previous results:\n${input.previousResults.map((r) => `  - ${r}`).join('\n')}`
     : '- Previous results: none',
+  input.priorKeyData && input.priorKeyData.length > 0
+    ? `- Relevant prior key data:\n${input.priorKeyData.map((d) => `  - ${d}`).join('\n')}`
+    : '- Relevant prior key data: none',
   input.completedTools.length > 0
     ? `Completed tools: ${input.completedTools.join(', ')}`
     : 'Completed tools: none',
   'Return ONLY a JSON object with the parameters for this worker.',
+  'This is a read/query step. Do not create, update, schedule, or mutate anything unless the user explicitly asked for that side effect.',
   'Do not explain. Do not add commentary.',
   `Format exactly: {"actionKind":"${input.actionKind}","params":{...}}`,
 ].filter(Boolean).join('\n\n');
@@ -223,13 +299,33 @@ export const buildSynthesisPrompt = (input: {
   input.workflowName ? `Workflow: ${input.workflowName}` : '',
   `Objective: ${input.objective || 'none provided'}`,
   'Results:',
-  input.results.length > 0 ? input.results.map((item) => `- ${item}`).join('\n') : '- none',
+  input.results.length > 0 ? input.results.map((r) => `- ${r}`).join('\n') : '- none',
   'Failed tools (if any):',
-  input.failures.length > 0 ? input.failures.map((item) => `- ${item}`).join('\n') : '- none',
-  'Write a natural language summary. Be specific. Mention actual data such as deal names, task titles, or meeting subjects.',
-  'If something failed, say so honestly and what the user can do about it.',
-  'Do not use bullet points unless listing more than 4 items.',
+  input.failures.length > 0 ? input.failures.map((f) => `- ${f}`).join('\n') : '- none',
+  'Write a natural language summary. Be specific — mention actual deal names, task titles, meeting subjects.',
+  'If something failed, say so honestly and tell the user what they can do about it.',
+  'Prefer short paragraphs. Use bullet points only if there are more than 4 distinct findings.',
   'Do not start with "I have completed...".',
+].filter(Boolean).join('\n\n');
+
+export const buildFollowupIntentPrompt = (input: {
+  latestUserTurn: string;
+  workflowSummary: string;
+  lastFailed?: string;
+  lastSuccessful?: string;
+}): string => [
+  'You are classifying a follow-up message after a workflow run.',
+  'Return JSON only.',
+  'Allowed JSON:',
+  '{"kind":"controller_meta_explain|controller_meta_retry|workflow_continue|new_task","reason":"..."}',
+  'Use controller_meta_explain when the user is asking about why something failed, what happened, or to explain the previous run.',
+  'Use controller_meta_retry when the user wants the previously failed workflow step retried.',
+  'Use workflow_continue when the user is providing new information to continue the same workflow.',
+  'Use new_task when the user is asking for a fresh external task that should be handled normally.',
+  `Workflow summary: ${input.workflowSummary}`,
+  input.lastFailed     ? `Last failed step: ${input.lastFailed}`         : 'Last failed step: none',
+  input.lastSuccessful ? `Last successful step: ${input.lastSuccessful}` : 'Last successful step: none',
+  `Latest user turn: ${input.latestUserTurn}`,
 ].filter(Boolean).join('\n\n');
 
 export const normalizeActionKind = (value: unknown): ControllerActionKind | null => {

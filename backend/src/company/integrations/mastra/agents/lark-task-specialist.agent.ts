@@ -2,6 +2,7 @@ import { Agent } from '@mastra/core/agent';
 
 import { resolveMastraLanguageModel } from '../mastra-model-control';
 import { buildPromptArchitecture, COMMON_GROUNDING_RULES, TERSE_ACTION_STATUS_RULES } from './shared-prompt-contracts';
+import { larkPeopleReadTool } from '../tools/lark-people-read.tool';
 import { larkTaskReadTool } from '../tools/lark-task-read.tool';
 import { larkTaskWriteTool } from '../tools/lark-task-write.tool';
 
@@ -26,6 +27,7 @@ export const larkTaskSpecialistAgent = new Agent({
     tools: [
       'Use `lark-task-read` to list tasks, fetch a specific task, or return the current task from this conversation.',
       'Use `lark-task-read` with `listAssignableUsers: true` when the user wants to know who a task can be assigned to or when you need to match a teammate name before creation.',
+      'Use `lark-people-read` when you need broader teammate lookup than task assignee listing, including role/email/open ID resolution.',
       'Use `lark-task-write` to create, update, or delete tasks.',
     ],
     workflow: [
@@ -56,5 +58,5 @@ export const larkTaskSpecialistAgent = new Agent({
     ],
   }),
   model: (async () => resolveMastraLanguageModel('mastra.lark-doc')) as any,
-  tools: { larkTaskReadTool, larkTaskWriteTool },
+  tools: { larkPeopleReadTool, larkTaskReadTool, larkTaskWriteTool },
 });

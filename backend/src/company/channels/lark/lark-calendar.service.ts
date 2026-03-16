@@ -205,6 +205,23 @@ class LarkCalendarService {
     };
   }
 
+  async getEvent(input: LarkCalendarAuthInput & { calendarId: string; eventId: string }): Promise<LarkCalendarEvent> {
+    const { data } = await larkRuntimeClient.requestJson({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+      appUserId: input.appUserId,
+      credentialMode: input.credentialMode ?? 'tenant',
+      method: 'GET',
+      path: `/open-apis/calendar/v4/calendars/${encodeURIComponent(input.calendarId)}/events/${encodeURIComponent(input.eventId)}`,
+    });
+
+    const event = normalizeEvent(data.event ?? data.item ?? data);
+    if (!event) {
+      throw new LarkRuntimeClientError('Lark calendar event lookup returned no event payload', 'lark_runtime_invalid_response');
+    }
+    return event;
+  }
+
   async createEvent(input: MutateCalendarEventInput): Promise<LarkCalendarEvent> {
     const { data } = await larkRuntimeClient.requestJson({
       companyId: input.companyId,

@@ -46,12 +46,20 @@ export const larkCalendarWriteTool = createTool({
     description: z.string().optional().describe('Optional event description'),
     startTime: z.string().optional().describe('Event start timestamp or ISO string'),
     endTime: z.string().optional().describe('Event end timestamp or ISO string'),
+    location: z.record(z.unknown()).optional().describe('Optional event location payload'),
+    recurrence: z.record(z.unknown()).optional().describe('Optional recurrence rule payload'),
+    reminders: z.array(z.record(z.unknown())).optional().describe('Optional reminders payload'),
+    visibility: z.string().optional().describe('Optional visibility value'),
+    freeBusyStatus: z.string().optional().describe('Optional free/busy status'),
+    color: z.number().int().optional().describe('Optional calendar color index'),
+    meetingSettings: z.record(z.unknown()).optional().describe('Optional meeting settings payload'),
+    attendees: z.array(z.record(z.unknown())).optional().describe('Optional attendee payload list'),
     body: z.record(z.unknown()).optional().describe('Optional raw event payload override'),
   }),
   execute: async (inputData, context) => {
     const requestContext = context?.requestContext;
     const allowedToolIds = requestContext?.get('allowedToolIds') as string[] | undefined;
-    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID)) {
+    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID) && !allowedToolIds.includes('lark-calendar-agent')) {
       const name = TOOL_REGISTRY_MAP.get(TOOL_ID)?.name ?? TOOL_ID;
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
@@ -137,6 +145,14 @@ export const larkCalendarWriteTool = createTool({
         ...(inputData.description ? { description: inputData.description } : {}),
         ...(startTimestamp ? { start_time: { timestamp: startTimestamp } } : {}),
         ...(endTimestamp ? { end_time: { timestamp: endTimestamp } } : {}),
+        ...(inputData.location ? { location: inputData.location } : {}),
+        ...(inputData.recurrence ? { recurrence: inputData.recurrence } : {}),
+        ...(inputData.reminders ? { reminders: inputData.reminders } : {}),
+        ...(inputData.visibility ? { visibility: inputData.visibility } : {}),
+        ...(inputData.freeBusyStatus ? { free_busy_status: inputData.freeBusyStatus } : {}),
+        ...(inputData.color !== undefined ? { color: inputData.color } : {}),
+        ...(inputData.meetingSettings ? { meeting_settings: inputData.meetingSettings } : {}),
+        ...(inputData.attendees ? { attendees: inputData.attendees } : {}),
       };
 
       const commonInput = {

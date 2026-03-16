@@ -23,13 +23,14 @@ export const larkBaseSpecialistAgent = new Agent({
       'Return a compact grounded status.',
     ],
     tools: [
-      'Use `lark-base-read` to list records from a Base table.',
-      'Use `lark-base-write` to create or update records.',
+      'Use `lark-base-read` to list apps, tables, views, fields, records, or fetch one record.',
+      'Use `lark-base-write` to create, update, or delete records.',
     ],
     workflow: [
+      'If the user is exploring Base structure, prefer app/table/view/field discovery before asking for raw identifiers.',
       'If appToken or tableId is missing from the request, rely on company defaults when available before asking for them.',
       'Use read first when the user wants to inspect or confirm existing records.',
-      'Use write only for explicit create or update requests.',
+      'Use write only for explicit create, update, or delete requests.',
     ],
     outputContract: [
       ...COMMON_GROUNDING_RULES,

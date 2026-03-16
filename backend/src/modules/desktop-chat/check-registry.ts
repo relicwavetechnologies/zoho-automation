@@ -19,11 +19,7 @@ const hasGroundedNonSkillEvidence = (state: ControllerRuntimeState<unknown>): bo
     if (!result.success) return false;
     if (!result.hasSubstantiveContent) return false;
     if (result.workerKey === 'skills') return false;
-    const raw = result.rawResponse && typeof result.rawResponse === 'object'
-      ? result.rawResponse as Record<string, unknown>
-      : null;
-    const summary = raw?.summary ?? (typeof result.rawResponse === 'string' ? result.rawResponse : '');
-    const lower = String(summary).toLowerCase().trim();
+    const lower = String(result.summary ?? '').toLowerCase().trim();
     const isEmpty =
       (lower.startsWith('no ') && (lower.includes('found') || lower.includes('matched') || lower.includes('result')))
       || lower === ''
@@ -90,6 +86,9 @@ const checks: Check[] = [
     id: 'grounded_evidence',
     label: 'Grounded work evidence',
     evaluate: (state) => {
+      if (!state.todoList?.initialized) {
+        return hasGroundedNonSkillEvidence(state) ? 'satisfied' : 'pending';
+      }
       const requiredTools = getRequiredSkillTools(state.loadedSkillContent);
       if (requiredTools.length <= 1) {
         return hasGroundedNonSkillEvidence(state) ? 'satisfied' : 'pending';
@@ -98,6 +97,11 @@ const checks: Check[] = [
     },
     detail: (state) =>
       (() => {
+        if (!state.todoList?.initialized) {
+          return hasGroundedNonSkillEvidence(state)
+            ? 'Grounded work evidence is present'
+            : 'Grounded work evidence is still pending';
+        }
         const requiredTools = getRequiredSkillTools(state.loadedSkillContent);
         if (requiredTools.length <= 1) {
           return hasGroundedNonSkillEvidence(state)
@@ -119,21 +123,24 @@ const checks: Check[] = [
     evaluate: (state) => {
       const requiredTools = getRequiredSkillTools(state.loadedSkillContent);
       if (requiredTools.length === 0) return 'satisfied';
-      const attempted = getAttemptedNonSkillWorkers(state);
-      return requiredTools.every((tool) => attempted.has(tool)) ? 'satisfied' : 'pending';
+      if (!state.todoList?.initialized) return 'satisfied';
+      return state.todoList.required.length === 0 ? 'satisfied' : 'pending';
     },
     detail: (state) => {
       const requiredTools = getRequiredSkillTools(state.loadedSkillContent);
       if (requiredTools.length === 0) return 'No required tools declared';
-      const attempted = getAttemptedNonSkillWorkers(state);
-      const pending = requiredTools.filter((tool) => !attempted.has(tool));
+      if (!state.todoList?.initialized) return 'Execution plan not created yet';
+      const pending = state.todoList.required;
+      const failed = state.todoList?.failed ?? [];
       return pending.length === 0
-        ? 'All required tools attempted'
+        ? failed.length > 0
+          ? `All required tools attempted (${failed.length} failed: ${failed.join(', ')})`
+          : 'All required tools attempted'
         : `Still pending: ${pending.join(', ')}`;
     },
     evidence: (state) => {
-      const attempted = getAttemptedNonSkillWorkers(state);
-      return getRequiredSkillTools(state.loadedSkillContent).filter((tool) => attempted.has(tool));
+      if (!state.todoList?.initialized) return [];
+      return [...state.todoList.completed, ...state.todoList.failed];
     },
   },
   {

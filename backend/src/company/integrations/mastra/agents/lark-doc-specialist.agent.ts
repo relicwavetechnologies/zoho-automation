@@ -1,6 +1,7 @@
 import { Agent } from '@mastra/core/agent';
 
 import { createLarkDocTool } from '../tools/create-lark-doc.tool';
+import { larkDocReadTool } from '../tools/lark-doc-read.tool';
 import { editLarkDocTool } from '../tools/edit-lark-doc.tool';
 import { resolveMastraLanguageModel } from '../mastra-model-control';
 import { buildPromptArchitecture, COMMON_GROUNDING_RULES, TERSE_ACTION_STATUS_RULES } from './shared-prompt-contracts';
@@ -23,6 +24,7 @@ export const larkDocSpecialistAgent = new Agent({
     ],
     tools: [
       'Use `create-lark-doc` for new docs, saved notes, reports, and exports.',
+      'Use `lark-doc-read` to inspect or read an existing Lark Doc before making a targeted follow-up edit.',
       'Use `edit-lark-doc` for updates, rewrites, appends, removals, and small edits.',
       'If the user refers to "that doc", rely on the latest chat-scoped doc when available.',
     ],
@@ -51,5 +53,5 @@ export const larkDocSpecialistAgent = new Agent({
     ],
   }),
   model: (async () => resolveMastraLanguageModel('mastra.lark-doc')) as any,
-  tools: { createLarkDocTool, editLarkDocTool },
+  tools: { createLarkDocTool, larkDocReadTool, editLarkDocTool },
 });

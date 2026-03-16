@@ -25,7 +25,7 @@ export const larkApprovalReadTool = createTool({
   id: TOOL_ID,
   description: 'List or fetch Lark approval instances. Falls back to the company default approval code when configured.',
   inputSchema: z.object({
-    action: z.enum(['list', 'get']),
+    action: z.enum(['list', 'get', 'listDefinitions', 'getDefinition']),
     instanceCode: z.string().optional().describe('Required for get'),
     approvalCode: z.string().optional().describe('Optional approval code. Falls back to company default when configured.'),
     status: z.string().optional().describe('Optional approval status filter when listing'),
@@ -35,13 +35,16 @@ export const larkApprovalReadTool = createTool({
   execute: async (inputData, context) => {
     const requestContext = context?.requestContext;
     const allowedToolIds = requestContext?.get('allowedToolIds') as string[] | undefined;
-    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID)) {
+    if (allowedToolIds !== undefined && !allowedToolIds.includes(TOOL_ID) && !allowedToolIds.includes('lark-approval-agent')) {
       const name = TOOL_REGISTRY_MAP.get(TOOL_ID)?.name ?? TOOL_ID;
       return { answer: `Access to "${name}" is not permitted for your role. Please contact your admin.` };
     }
 
     if (inputData.action === 'get' && !inputData.instanceCode) {
       return { answer: 'Lark approval read failed: instanceCode is required for get.' };
+    }
+    if (inputData.action === 'getDefinition' && !inputData.approvalCode) {
+      return { answer: 'Lark approval read failed: approvalCode is required for getDefinition.' };
     }
 
     const requestId = requestContext?.get('requestId') as string | undefined;
@@ -67,6 +70,24 @@ export const larkApprovalReadTool = createTool({
         credentialMode,
       };
 
+      if (inputData.action === 'getDefinition') {
+        const definition = await larkApprovalsService.getDefinition({
+          ...authInput,
+          approvalCode: inputData.approvalCode as string,
+        });
+        const answer = `Fetched Lark approval definition: ${definition.name ?? definition.approvalCode}`;
+        if (requestId) {
+          emitActivityEvent(requestId, 'activity_done', {
+            id: callId,
+            name: TOOL_ID,
+            label: 'Fetched Lark approval definition',
+            icon: 'badge-check',
+            resultSummary: answer,
+          });
+        }
+        return { answer, definition };
+      }
+
       if (inputData.action === 'get') {
         const instance = await larkApprovalsService.getInstance({
           ...authInput,
@@ -83,6 +104,32 @@ export const larkApprovalReadTool = createTool({
           });
         }
         return { answer, instance };
+      }
+
+      if (inputData.action === 'listDefinitions') {
+        const result = await larkApprovalsService.listDefinitions({
+          ...authInput,
+          pageSize: inputData.pageSize,
+          pageToken: inputData.pageToken,
+        });
+        const answer = result.items.length > 0
+          ? `Found ${result.items.length} Lark approval definition(s).\n\n${result.items.slice(0, 8).map((item, index) => `${index + 1}. ${item.name ?? item.approvalCode}`).join('\n')}`
+          : 'No Lark approval definitions matched the request.';
+        if (requestId) {
+          emitActivityEvent(requestId, 'activity_done', {
+            id: callId,
+            name: TOOL_ID,
+            label: 'Read Lark approval definitions',
+            icon: 'badge-check',
+            resultSummary: answer,
+          });
+        }
+        return {
+          answer,
+          items: result.items,
+          pageToken: result.pageToken,
+          hasMore: result.hasMore,
+        };
       }
 
       const approvalCode = inputData.approvalCode?.trim() || defaults?.defaultApprovalCode;
