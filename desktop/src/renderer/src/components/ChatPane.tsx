@@ -18,6 +18,7 @@ export function ChatPane(): JSX.Element {
     clearError,
     loadOlderMessages,
   } = useChat()
+  const hasLiveExecution = isStreaming || liveBlocks.length > 0
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const restoreScrollRef = useRef<{ previousHeight: number; previousTop: number } | null>(null)
@@ -104,7 +105,7 @@ export function ChatPane(): JSX.Element {
         )}
 
         {/* Messages */}
-        {messages.length === 0 && !isStreaming && !isThreadLoading && (
+        {messages.length === 0 && !hasLiveExecution && !isThreadLoading && (
           <div className="text-center text-[hsl(0,0%,30%)] text-sm mt-16">
             Start a conversation below.
           </div>
@@ -121,7 +122,7 @@ export function ChatPane(): JSX.Element {
         ))}
 
         {/* ── Live agentic response ─────────────────────────────────────── */}
-        {isStreaming && (
+        {hasLiveExecution && (
           <div className="mb-4">
             <div className="flex gap-3">
               {/* AI avatar */}
@@ -135,13 +136,13 @@ export function ChatPane(): JSX.Element {
                   show a "Working..." shimmer so the user knows the request is being processed.
                   Once blocks arrive, they replace this indicator.
                 */}
-                {liveBlocks.length === 0 && (
+                {isStreaming && liveBlocks.length === 0 && (
                   <ThinkingShimmer label="Working..." />
                 )}
 
                 {/* Ordered timeline — tool rows, thinking shimmer/labels, text blocks */}
                 {liveBlocks.length > 0 && (
-                  <BlocksRenderer blocks={liveBlocks} isStreaming />
+                  <BlocksRenderer blocks={liveBlocks} isStreaming={isStreaming} />
                 )}
               </div>
             </div>

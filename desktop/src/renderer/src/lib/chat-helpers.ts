@@ -141,6 +141,36 @@ export function isImmediateWorkspaceAction(action: DesktopWorkspaceAction): acti
   return action.kind === 'list_files' || action.kind === 'read_file'
 }
 
+export function normalizeDesktopWorkspaceAction(raw: unknown): DesktopWorkspaceAction | null {
+  if (!raw || typeof raw !== 'object') return null
+  const record = raw as Record<string, unknown>
+  if (record.kind === 'list_files') {
+    return { kind: 'list_files', ...(typeof record.path === 'string' ? { path: record.path } : {}) }
+  }
+  if (record.kind === 'read_file' && typeof record.path === 'string') {
+    return { kind: 'read_file', path: record.path }
+  }
+  if (record.kind === 'write_file' && typeof record.path === 'string' && typeof record.content === 'string') {
+    return { kind: 'write_file', path: record.path, content: record.content }
+  }
+  if (record.kind === 'mkdir' && typeof record.path === 'string') {
+    return { kind: 'mkdir', path: record.path }
+  }
+  if (record.kind === 'delete_path' && typeof record.path === 'string') {
+    return { kind: 'delete_path', path: record.path }
+  }
+  if (record.kind === 'run_command' && typeof record.command === 'string') {
+    return { kind: 'run_command', command: record.command }
+  }
+  if (typeof record.command === 'string' && record.command.trim().length > 0) {
+    return { kind: 'run_command', command: record.command.trim() }
+  }
+  if (typeof record.path === 'string' && typeof record.content === 'string') {
+    return { kind: 'write_file', path: record.path, content: record.content }
+  }
+  return null
+}
+
 export function summarizeCommandCompletion(input: {
   command: string
   cwd: string

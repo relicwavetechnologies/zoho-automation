@@ -24,6 +24,7 @@ import {
   buildApprovalBlock,
   buildAgentActionToolBlock,
   buildTerminalBlock,
+  normalizeDesktopWorkspaceAction,
   isApprovalRequiredAction,
   isImmediateWorkspaceAction,
   summarizeCommandCompletion,
@@ -37,6 +38,7 @@ import {
   type ActionCompletion,
 } from '../lib/chat-helpers'
 import { applyLiveStreamEventToLedger, replayExecutionEvents } from '../lib/execution-ledger'
+import { appendFrontendDebugLog } from '../lib/frontend-debug-log'
 
 export type { DesktopWorkspaceAction, ActionResultPayload }
 
@@ -85,6 +87,10 @@ const OLDER_THREAD_MESSAGE_LIMIT = 20
 const ACTIVE_THREAD_KEY = 'cursorr_desktop_active_thread_by_workspace'
 const LIVE_SESSION_KEY = 'cursorr_desktop_live_session'
 const MAX_PERSISTED_TOOL_BLOCKS = 24
+const MAX_BACKEND_PLAN_GOAL_CHARS = 240
+const MAX_BACKEND_PLAN_TASKS = 6
+const MAX_BACKEND_PLAN_TASK_TITLE_CHARS = 160
+const MAX_BACKEND_PLAN_RESULT_CHARS = 500
 
 type PersistedActiveThreadMap = Record<string, string>
 
@@ -168,6 +174,28 @@ const prependDistinctMessages = (older: Message[], current: Message[]): Message[
   return uniqueOlder.length > 0 ? [...uniqueOlder, ...current] : current
 }
 
+const truncateForBackend = (value: string | null | undefined, max: number): string | undefined => {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  return trimmed.length <= max ? trimmed : trimmed.slice(0, max)
+}
+
+const sanitizePlanForBackend = (plan: ExecutionPlan | null): ExecutionPlan | null => {
+  if (!plan) return null
+  return {
+    ...plan,
+    goal: truncateForBackend(plan.goal, MAX_BACKEND_PLAN_GOAL_CHARS) ?? 'Continue the current task',
+    tasks: plan.tasks.slice(0, MAX_BACKEND_PLAN_TASKS).map((task) => ({
+      ...task,
+      title: truncateForBackend(task.title, MAX_BACKEND_PLAN_TASK_TITLE_CHARS) ?? 'Untitled task',
+      ...(task.resultSummary
+        ? { resultSummary: truncateForBackend(task.resultSummary, MAX_BACKEND_PLAN_RESULT_CHARS) }
+        : {}),
+    })),
+  }
+}
+
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 export function ChatProvider({ children }: { children: ReactNode }): JSX.Element {
@@ -217,6 +245,16 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const activeModeRef = useRef<'fast' | 'high' | 'xtreme'>('xtreme')
   const selectedEngineRef = useRef<'mastra' | 'langgraph'>('langgraph')
   const activeExecutionEngineRef = useRef<'mastra' | 'langgraph'>('langgraph')
+
+  useEffect(() => {
+    appendFrontendDebugLog('chat', 'provider_mounted', {
+      hasWorkspace: Boolean(currentWorkspace),
+      workspaceId: currentWorkspace?.id,
+    })
+    if (import.meta.hot) {
+      appendFrontendDebugLog('chat', 'hmr_enabled')
+    }
+  }, [currentWorkspace])
 
   // ── Shared live-block utilities ──
   const appendOutput = useCallback((prev: string, chunk: string): string => {
@@ -508,26 +546,46 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       ensureStreamingThinkingBlock()
 
       if (engine === 'langgraph' && typeof window.desktopAPI.chat.actStream === 'function') {
-        const requestId = activeExecutionIdRef.current ?? crypto.randomUUID()
+        const executionId = activeExecutionIdRef.current ?? crypto.randomUUID()
+        const requestId = crypto.randomUUID()
+        appendFrontendDebugLog('chat', 'act_stream_start', {
+          threadId: input.threadId,
+          requestId,
+          executionId,
+          hasInitialMessage: Boolean(input.initialMessage),
+          hasActionResult: Boolean(input.actionResult),
+        })
         activeRequestIdRef.current = requestId
-        replaceActiveExecutionId(requestId)
+        replaceActiveExecutionId(executionId)
         setIsStreaming(true)
 
         const streamResult = await window.desktopAPI.chat.actStream({
           token,
           requestId,
+          executionId,
           threadId: input.threadId,
           message: input.initialMessage,
           workspace: { name: currentWorkspace.name, path: currentWorkspace.path },
           actionResult: input.actionResult,
-          ...(activePlanRef.current ? { plan: activePlanRef.current } : {}),
+          ...(activePlanRef.current ? { plan: sanitizePlanForBackend(activePlanRef.current) } : {}),
           mode: activeModeRef.current,
           engine,
         })
 
         if (!streamResult.success) {
+          appendFrontendDebugLog('chat', 'act_stream_failed', {
+            threadId: input.threadId,
+            requestId,
+            executionId,
+            error: streamResult.error ?? 'Desktop action loop failed',
+          })
           throw new Error(streamResult.error ?? 'Desktop action loop failed')
         }
+        appendFrontendDebugLog('chat', 'act_stream_started', {
+          threadId: input.threadId,
+          requestId,
+          executionId,
+        })
         return
       }
 
@@ -535,7 +593,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         message: input.initialMessage,
         workspace: { name: currentWorkspace.name, path: currentWorkspace.path },
         actionResult: input.actionResult,
-        ...(activePlanRef.current ? { plan: activePlanRef.current } : {}),
+        ...(activePlanRef.current ? { plan: sanitizePlanForBackend(activePlanRef.current) } : {}),
         mode: activeModeRef.current,
         engine,
         executionId: activeExecutionIdRef.current ?? crypto.randomUUID(),
@@ -591,6 +649,10 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         ),
       ])
     } catch (err) {
+      appendFrontendDebugLog('chat', 'action_loop_failed', {
+        threadId: input.threadId,
+        error: err instanceof Error ? err.message : 'Desktop action loop failed',
+      })
       setError(err instanceof Error ? err.message : 'Desktop action loop failed')
       resetLiveState()
     }
@@ -732,6 +794,11 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
 
     if (pendingAction.action.kind === 'run_command') {
       const command = pendingAction.action.command
+      appendFrontendDebugLog('chat', 'approve_command', {
+        executionId,
+        threadId: pendingAction.threadId,
+        command,
+      })
       runningCommandRef.current = {
         id: executionId,
         threadId: pendingAction.threadId,
@@ -745,6 +812,11 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       replaceLiveBlocks((prev) => [...prev, { type: 'terminal', id: executionId, command, cwd: pendingAction.workspacePath, status: 'running', stdout: '', stderr: '' }])
       const result = await window.desktopAPI.terminal.exec(executionId, command, pendingAction.workspacePath)
       if (!result.success) {
+        appendFrontendDebugLog('chat', 'terminal_exec_failed_to_start', {
+          executionId,
+          threadId: pendingAction.threadId,
+          error: result.error ?? 'Execution failed',
+        })
         replaceLiveBlocks((prev) => prev.map((block) => block.type === 'terminal' && block.id === executionId ? { ...block, status: 'failed', stderr: appendOutput(block.stderr, `${result.error ?? 'Execution failed'}\n`) } : block))
         await finishCommandExecution({ executionId, status: 'failed' })
       }
@@ -1037,6 +1109,10 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           break
         }
         case 'error':
+          appendFrontendDebugLog('chat', 'terminal_event_error', {
+            executionId,
+            message: (event.data as { message?: string })?.message ?? 'Execution failed',
+          })
           if (cancelRequestedRef.current) {
             cancelRequestedRef.current = false
             resetLiveState()
@@ -1046,6 +1122,11 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           resetLiveState()
           break
         case 'done': {
+          appendFrontendDebugLog('chat', 'stream_done', {
+            requestId,
+            hasPersistedMessage: Boolean((event.data as { message?: Message } | null)?.message),
+            liveBlockCount: liveBlocksRef.current.length,
+          })
           const raw = event.data as { message?: Message } | null
           const persistedMessage = raw?.message
           setMessages((prev) => {
@@ -1075,33 +1156,62 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           try {
             const payload = event.data as ActionLoopResult
             if (payload.kind !== 'action' || !currentWorkspace || !activeThreadRef.current) break
+            appendFrontendDebugLog('chat', 'stream_action_received', {
+              requestId,
+              executionId: payload.executionId,
+              rawActionKind: typeof (payload as { action?: { kind?: unknown } }).action?.kind === 'string'
+                ? (payload as { action?: { kind?: string } }).action?.kind
+                : null,
+            })
             setIsThinking(false)
             setIsStreaming(false)
             activeRequestIdRef.current = null
             replaceActiveExecutionId(payload.executionId ?? activeExecutionIdRef.current)
             replaceActivePlan(payload.plan ?? null)
 
-            const { action } = payload
-            if (isImmediateWorkspaceAction(action)) {
-              const toolBlock = buildAgentActionToolBlock(action)
+            const normalizedAction = normalizeDesktopWorkspaceAction(payload.action)
+            if (!normalizedAction) {
+              appendFrontendDebugLog('chat', 'stream_action_invalid', {
+                requestId,
+                executionId: payload.executionId,
+                payload: payload.action as Record<string, unknown> | undefined,
+              })
+              setError('Received an invalid local action from the controller.')
+              replaceLiveBlocks((prev) => [
+                ...prev,
+                { type: 'text', content: 'The controller returned a malformed local action, so I could not continue this step automatically.' },
+              ])
+              persistExecutionSession()
+              break
+            }
+
+            if (isImmediateWorkspaceAction(normalizedAction)) {
+              const toolBlock = buildAgentActionToolBlock(normalizedAction)
               replaceLiveBlocks((prev) => [...prev, toolBlock])
               void runWorkspaceAction({
-                action,
+                action: normalizedAction,
                 toolBlockId: toolBlock.id,
                 threadId: activeThreadRef.current.id,
               }).then((completion) => {
                 if (cancelRequestedRef.current) return
                 return runAgentLocalActionTurn({
                   threadId: activeThreadRef.current!.id,
-                  actionResult: { kind: action.kind, ok: completion.ok, summary: completion.actionResultSummary, details: completion.actionResultDetails },
+                  actionResult: { kind: normalizedAction.kind, ok: completion.ok, summary: completion.actionResultSummary, details: completion.actionResultDetails },
                   engineOverride: activeExecutionEngineRef.current,
                 })
               })
               break
             }
 
-            if (!isApprovalRequiredAction(action)) {
-              throw new Error(`Unsupported local action kind received: ${(action as DesktopWorkspaceAction).kind}`)
+            if (!isApprovalRequiredAction(normalizedAction)) {
+              appendFrontendDebugLog('chat', 'stream_action_unsupported', {
+                requestId,
+                executionId: payload.executionId,
+                kind: normalizedAction.kind,
+              })
+              setError(`Unsupported local action kind received: ${normalizedAction.kind}`)
+              persistExecutionSession()
+              break
             }
 
             const actionId = crypto.randomUUID()
@@ -1110,18 +1220,27 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
               threadId: activeThreadRef.current.id,
               workspaceName: currentWorkspace.name,
               workspacePath: currentWorkspace.path,
-              action,
+              action: normalizedAction,
               source: 'agent',
               engine: activeExecutionEngineRef.current,
               status: 'pending',
             }
             persistExecutionSession()
+            appendFrontendDebugLog('chat', 'approval_requested', {
+              requestId,
+              executionId: payload.executionId,
+              actionKind: normalizedAction.kind,
+            })
 
             replaceLiveBlocks((prev) => [
               ...prev,
-              buildApprovalBlock(actionId, action, currentWorkspace.path),
+              buildApprovalBlock(actionId, normalizedAction, currentWorkspace.path),
             ])
           } catch (error) {
+            appendFrontendDebugLog('chat', 'stream_action_handler_failed', {
+              requestId,
+              error: error instanceof Error ? error.message : 'Failed to handle local action request',
+            })
             setError(error instanceof Error ? error.message : 'Failed to handle local action request')
             persistExecutionSession()
           }

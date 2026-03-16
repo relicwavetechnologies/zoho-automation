@@ -1,5 +1,19 @@
 import { z } from 'zod';
 
+export const specialistResultSchema = z.object({
+  workerKey: z.string(),
+  success: z.boolean(),
+  summary: z.string(),
+  keyData: z.record(z.string(), z.unknown()).default({}),
+  fullPayload: z.string().default(''),
+  sourceUrls: z.array(z.string()).default([]),
+  timestamp: z.number(),
+  retryCount: z.number().default(0),
+  errorKind: z.string().optional(),
+  retryable: z.boolean().optional(),
+  error: z.string().optional(),
+});
+
 export const zohoResultSchema = z.object({
   success: z.boolean(),
   recordId: z.string().optional(),
@@ -64,3 +78,4 @@ export type LarkOperationalResult = z.infer<typeof larkOperationalResultSchema>;
 export type OutreachResult = z.infer<typeof outreachResultSchema>;
 export type SearchResult = z.infer<typeof searchResultSchema>;
 export type TerminalOperationalResult = z.infer<typeof terminalOperationalResultSchema>;
+export type SpecialistResultRecord = z.infer<typeof specialistResultSchema>;

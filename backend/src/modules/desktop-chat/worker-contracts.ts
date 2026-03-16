@@ -46,6 +46,26 @@ export const WorkerContracts = {
       criteria: z.string().min(1).optional(),
     }).passthrough(),
   },
+  webSearch: {
+    DISCOVER_CANDIDATES: querySchema,
+    QUERY_REMOTE_SYSTEM: querySchema,
+    VERIFY_OUTPUT: z.object({
+      artifactId: z.string().min(1).optional(),
+      criteria: z.string().min(1).optional(),
+    }).passthrough(),
+  },
+  docSearch: {
+    DISCOVER_CANDIDATES: querySchema,
+    QUERY_REMOTE_SYSTEM: querySchema,
+    VERIFY_OUTPUT: z.object({
+      artifactId: z.string().min(1).optional(),
+      criteria: z.string().min(1).optional(),
+    }).passthrough(),
+  },
+  coding: {
+    QUERY_REMOTE_SYSTEM: querySchema,
+    VERIFY_OUTPUT: z.object({ criteria: z.string().min(1).optional() }).passthrough(),
+  },
   zoho: {
     QUERY_REMOTE_SYSTEM: querySchema,
     VERIFY_OUTPUT: z.object({ criteria: z.string().min(1).optional() }).passthrough(),

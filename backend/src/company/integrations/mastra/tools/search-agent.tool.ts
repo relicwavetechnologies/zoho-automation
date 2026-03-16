@@ -23,6 +23,7 @@ export const searchAgentTool = createTool({
     'Delegate to the research agent for external web search, exact-site page context extraction, and authorized company document retrieval.',
   inputSchema: z.object({
     query: z.string().describe('The search query'),
+    surface: z.enum(['auto', 'web', 'documents']).optional().describe('Retrieval surface preference'),
     taskId: z.string().optional().describe('Optional plan task identifier for execution tracking.'),
   }),
   outputSchema: searchResultSchema,
@@ -56,7 +57,11 @@ export const searchAgentTool = createTool({
       [{
         role: 'user',
         content: buildStructuredJsonPrompt(
-          inputData.query,
+          inputData.surface === 'documents'
+            ? `Use internal company documents only for this request.\n\n${inputData.query}`
+            : inputData.surface === 'web'
+              ? `Use the public web only for this request.\n\n${inputData.query}`
+              : inputData.query,
           '{"success":boolean,"resultCount":"number","summary":"string","sources":["string"]}',
         ),
       }],

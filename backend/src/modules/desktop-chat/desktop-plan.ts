@@ -4,9 +4,12 @@ import { z } from 'zod';
 export const PLAN_OWNER_AGENTS = [
   'supervisor',
   'repo',
+  'coding',
   'zoho',
   'outreach',
   'search',
+  'webSearch',
+  'docSearch',
   'larkBase',
   'larkTask',
   'larkCalendar',
@@ -213,6 +216,15 @@ export const resolvePlanOwnerFromToolName = (toolName?: string | null): Executio
   }
   if (normalized === 'search-agent' || normalized === 'search-read' || normalized === 'search-documents') {
     return 'search';
+  }
+  if (normalized === 'websearch' || normalized === 'web-search' || normalized === 'public-web-search') {
+    return 'webSearch';
+  }
+  if (normalized === 'docsearch' || normalized === 'doc-search' || normalized === 'internal-doc-search') {
+    return 'docSearch';
+  }
+  if (normalized === 'coding' || normalized === 'terminal-agent') {
+    return 'coding';
   }
   if (normalized === 'lark-base-agent' || normalized === 'lark-base-read' || normalized === 'lark-base-write') {
     return 'larkBase';

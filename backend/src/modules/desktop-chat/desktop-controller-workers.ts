@@ -1,6 +1,7 @@
 import type { RequestContext } from '@mastra/core/di';
 
 import { searchAgentTool } from '../../company/integrations/mastra/tools/search-agent.tool';
+import { terminalAgentTool } from '../../company/integrations/mastra/tools/terminal-agent.tool';
 import { zohoAgentTool } from '../../company/integrations/mastra/tools/zoho-agent.tool';
 import { outreachAgentTool } from '../../company/integrations/mastra/tools/outreach-agent.tool';
 import { larkTaskAgentTool } from '../../company/integrations/mastra/tools/lark-task-agent.tool';
@@ -16,6 +17,9 @@ import type { ActionResultPayload, DesktopAction } from './desktop-controller.ty
 
 const WORKER_TOOL_BY_KEY: Record<string, { execute: (input: Record<string, unknown>, context: { requestContext: RequestContext<Record<string, unknown>> }) => Promise<unknown> }> = {
   search: searchAgentTool as any,
+  webSearch: searchAgentTool as any,
+  docSearch: searchAgentTool as any,
+  coding: terminalAgentTool as any,
   zoho: zohoAgentTool as any,
   outreach: outreachAgentTool as any,
   larkTask: larkTaskAgentTool as any,
@@ -74,13 +78,43 @@ export const DESKTOP_WORKER_CAPABILITIES: WorkerCapability[] = [
   },
   {
     workerKey: 'search',
-    description: 'Run grounded external web search and public documentation research',
+    description: 'Run grounded research with automatic selection between public web and internal document retrieval',
     actionKinds: ['DISCOVER_CANDIDATES', 'QUERY_REMOTE_SYSTEM', 'VERIFY_OUTPUT'],
     domains: ['research', 'docs', 'web'],
     artifactTypes: ['citation'],
     canMutateWorkspace: false,
     requiresApproval: false,
     verificationHints: ['source_citation'],
+  },
+  {
+    workerKey: 'webSearch',
+    description: 'Run grounded public web search and public documentation research',
+    actionKinds: ['DISCOVER_CANDIDATES', 'QUERY_REMOTE_SYSTEM', 'VERIFY_OUTPUT'],
+    domains: ['research', 'web', 'public_docs'],
+    artifactTypes: ['citation'],
+    canMutateWorkspace: false,
+    requiresApproval: false,
+    verificationHints: ['source_citation'],
+  },
+  {
+    workerKey: 'docSearch',
+    description: 'Search grounded internal company documents and authorized private knowledge',
+    actionKinds: ['DISCOVER_CANDIDATES', 'QUERY_REMOTE_SYSTEM', 'VERIFY_OUTPUT'],
+    domains: ['research', 'internal_docs', 'private_knowledge'],
+    artifactTypes: ['citation'],
+    canMutateWorkspace: false,
+    requiresApproval: false,
+    verificationHints: ['source_citation'],
+  },
+  {
+    workerKey: 'coding',
+    description: 'Plan local coding and command execution steps before approval-gated terminal or workspace actions',
+    actionKinds: ['QUERY_REMOTE_SYSTEM', 'VERIFY_OUTPUT'],
+    domains: ['coding', 'workspace', 'terminal', 'scripts'],
+    artifactTypes: ['terminal_result'],
+    canMutateWorkspace: false,
+    requiresApproval: false,
+    verificationHints: ['terminal_output'],
   },
   {
     workerKey: 'zoho',
@@ -202,7 +236,18 @@ export const buildDesktopLocalAction = (
   kind: 'MUTATE_WORKSPACE' | 'EXECUTE_COMMAND',
 ): DesktopAction | null => {
   if (kind === 'EXECUTE_COMMAND') {
-    return null;
+    const plannedTerminal = [...state.observations]
+      .reverse()
+      .find((observation) => observation.workerKey === 'coding' && observation.actionKind === 'QUERY_REMOTE_SYSTEM' && observation.ok);
+    const raw = plannedTerminal?.rawOutput && typeof plannedTerminal.rawOutput === 'object'
+      ? plannedTerminal.rawOutput as { command?: string }
+      : null;
+    const command = typeof raw?.command === 'string' ? raw.command.trim() : '';
+    if (!command) return null;
+    return {
+      kind: 'run_command',
+      command,
+    };
   }
 
   const retrieved = state.observations.find((observation) =>
@@ -389,7 +434,7 @@ const normalizeToolObservation = (workerKey: string, actionKind: WorkerObservati
       : typeof record.error === 'string'
         ? record.error
         : JSON.stringify(result);
-  const citations = workerKey === 'search'
+  const citations = workerKey === 'search' || workerKey === 'webSearch' || workerKey === 'docSearch'
     ? extractToolCitations(typeof record.summary === 'string' ? record.summary : typeof record.answer === 'string' ? record.answer : undefined)
     : [];
   const cleanedSummary = summary
@@ -459,7 +504,11 @@ const normalizeToolObservation = (workerKey: string, actionKind: WorkerObservati
     rawOutput: result,
     blockingReason: /which|what|provide|share|missing|\?/.test(summary.toLowerCase()) ? summary : undefined,
     retryHint: ok ? undefined : 'Inspect the worker result and switch strategy if it did not add evidence.',
-    verificationHints: workerKey === 'search' ? ['source_citation'] : ['entity_evidence'],
+    verificationHints: workerKey === 'search' || workerKey === 'webSearch' || workerKey === 'docSearch'
+      ? ['source_citation']
+      : workerKey === 'coding'
+        ? ['terminal_output']
+        : ['entity_evidence'],
   };
 };
 
@@ -493,13 +542,20 @@ export const executeDesktopWorker = async (input: {
   }
 
   const result = await tool.execute(
-    {
-      query: typeof input.invocation.input.query === 'string'
+    (() => {
+      const query = typeof input.invocation.input.query === 'string'
         ? input.invocation.input.query
         : typeof input.invocation.input.prompt === 'string'
           ? input.invocation.input.prompt
-          : '',
-    },
+          : '';
+      if (input.invocation.workerKey === 'webSearch') {
+        return { query, surface: 'web' };
+      }
+      if (input.invocation.workerKey === 'docSearch') {
+        return { query, surface: 'documents' };
+      }
+      return { query };
+    })(),
     { requestContext: input.requestContext },
   );
   return normalizeToolObservation(input.invocation.workerKey, input.invocation.actionKind, result);

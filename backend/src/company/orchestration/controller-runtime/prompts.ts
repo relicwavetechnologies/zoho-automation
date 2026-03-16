@@ -33,6 +33,7 @@ export const buildBootstrapPrompt = (input: {
   contextBlock: string;
   workers: WorkerCapability[];
   skills: SkillMetadata[];
+  workspaceContext?: { name: string; path: string };
 }): string => [
   'You are the single controller for a tool-using assistant.',
   'Return JSON only.',
@@ -50,6 +51,9 @@ export const buildBootstrapPrompt = (input: {
   '- If the request already maps directly to an available worker (for example tasks, meetings, calendar, Zoho, Outreach, docs, or search), prefer shouldUseSkills=false unless the user explicitly invoked a skill or asked for a workflow/protocol.',
   '- List only truly missing inputs that block progress now.',
   '- Keep deliverables concrete and short.',
+  input.workspaceContext
+    ? `Local workspace is open for this chat.\n- Workspace name: ${input.workspaceContext.name}\n- Workspace root path: ${input.workspaceContext.path}\n- "this repo" or "this workspace" refers to that root folder.\n- Local terminal commands and workspace mutations can operate inside this root through approval-gated actions.`
+    : '',
   'Available workers:',
   buildWorkerCatalogContext(input.workers),
   'Available skill metadata:',
@@ -133,6 +137,7 @@ export const buildDecisionPrompt = (input: {
   dateScope?: string;
   workflowName?: string;
   todoProgress?: string;
+  workspaceContext?: { name: string; path: string };
   // todoMode=true means the runtime is driving required tools automatically.
   // todoMode=false (default) means the model is the primary decision maker.
   todoMode?: boolean;
@@ -151,6 +156,7 @@ export const buildDecisionPrompt = (input: {
       input.objective    ? `- Objective: ${input.objective}`    : '- Objective: not set',
       input.dateScope    ? `- Date scope: ${input.dateScope}`   : '- Date scope: not set',
       input.workflowName ? `- Workflow: ${input.workflowName}`  : '',
+      input.workspaceContext ? `- Open workspace: ${input.workspaceContext.name} (${input.workspaceContext.path})` : '',
     ].filter(Boolean).join('\n'),
 
     // Allowed decision shapes
@@ -273,6 +279,7 @@ export const buildParamPrompt = (input: {
   priorKeyData?: string[];
   completedTools: string[];
   toolPurpose?: string;
+  workspaceContext?: { name: string; path: string };
 }): string => [
   'You are generating parameters for a single worker call.',
   `Worker: ${input.workerKey}`,
@@ -283,6 +290,7 @@ export const buildParamPrompt = (input: {
   input.dateScope    ? `- Date scope: ${input.dateScope}`                                                                         : '- Date scope: none provided',
   input.skillGuidance ? `- Skill guidance: ${input.skillGuidance}`                                                                : '',
   input.toolPurpose  ? `- This tool\'s purpose in the workflow: ${input.toolPurpose}`                                             : '',
+  input.workspaceContext ? `- Open workspace root: ${input.workspaceContext.path}`                                                : '',
   input.previousResults.length > 0
     ? `- Previous results:\n${input.previousResults.map((r) => `  - ${r}`).join('\n')}`
     : '- Previous results: none',

@@ -43,5 +43,15 @@ export const errorMiddleware = (
     ...baseMeta,
     error: err,
   });
-  return res.status(500).json({ success: false, message: 'Internal Server Error' });
+  const isDev = process.env.NODE_ENV !== 'production';
+  return res.status(500).json({
+    success: false,
+    message: 'Internal Server Error',
+    ...(isDev
+      ? {
+          details: err.message,
+          requestId: requestId ?? 'missing_request_id',
+        }
+      : {}),
+  });
 };

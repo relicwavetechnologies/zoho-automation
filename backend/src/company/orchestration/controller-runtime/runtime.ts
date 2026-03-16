@@ -12,6 +12,7 @@ import type {
   ControllerRuntimeHooks,
   ControllerRuntimeResult,
   ControllerRuntimeState,
+  IntentItem,
   LocalActionRecord,
   SkillMetadata,
   TodoItem,
@@ -267,8 +268,13 @@ const getWorkerDisplayName = (workerKey: string): string => {
   }
 };
 
-const MUTATION_INTENT_PATTERN = /\b(create|schedule|add|set up|setup|make|book|send|update|edit|change|move|reschedule|delete|remove|assign|summarize|document|write|put)\b/i;
+const MUTATION_INTENT_PATTERN = /\b(create|schedule|add|set up|setup|make|book|send|update|edit|change|move|reschedule|delete|remove|assign|summarize|document|write|put|download|run|clean|generate|fix|patch|refactor)\b/i;
 const WRITE_RESULT_PATTERN = /\b(created|scheduled|updated|deleted|added|booked|assigned|sent|rescheduled|edited)\b/i;
+const INTERNAL_DOC_PATTERN = /\b(internal|company docs?|company documents?|uploaded (?:files?|docs?|pdfs?)|private knowledge|policy|policies|handbook|sop)\b/i;
+const PUBLIC_WEB_PATTERN = /\b(public|google|internet|web|website|hugging face|dataset|docs|documentation|api|reference|latest|news|search online)\b/i;
+const CODING_PATTERN = /\b(code|coding|repo|repository|workspace|script|python|node|npm|pnpm|terminal|command|build|test|lint|debug|refactor|patch|curl|csv|dataset|clean)\b/i;
+const REPO_PATTERN = /\b(repo|repository|codebase|file|files|src|package\.json|tsconfig|empty repo|workspace)\b/i;
+const REMOTE_REPO_PATTERN = /\bgithub|gitlab|bitbucket|owner\/repo|repository url|repo url\b|https?:\/\/(www\.)?(github|gitlab|bitbucket)\.com/i;
 
 const buildTodoKey = (tool: string, mode: TodoMode): string => `${tool}:${mode}`;
 
@@ -279,7 +285,7 @@ const parseTodoKey = (key: string): { tool: string; mode: TodoMode } => {
 };
 
 const getLatestRequestText = (state: ControllerRuntimeState<unknown>): string =>
-  extractLatestUserTurn(state.userRequest);
+  state.latestUserMessage?.trim() || extractLatestUserTurn(state.userRequest);
 
 const toolSupportsWriteMode = (tool: string): boolean =>
   tool === 'larkTask'
@@ -291,12 +297,20 @@ const toolSupportsWriteMode = (tool: string): boolean =>
 const scoreToolForLatestIntent = (tool: string, text: string): number => {
   const lower = text.toLowerCase();
   switch (tool) {
+    case 'webSearch':
+      return PUBLIC_WEB_PATTERN.test(lower) && !INTERNAL_DOC_PATTERN.test(lower) ? 6 : 0;
+    case 'docSearch':
+      return INTERNAL_DOC_PATTERN.test(lower) ? 7 : 0;
+    case 'coding':
+      return CODING_PATTERN.test(lower) ? 8 : 0;
+    case 'repo':
+      return REMOTE_REPO_PATTERN.test(lower) ? 7 : 0;
     case 'larkTask':
       return /\btask|tasks|todo\b/.test(lower) ? 3 : 0;
     case 'larkCalendar':
       return /\bcalendar|event|events|meeting|meetings|schedule|book|tomorrow|today\b/.test(lower) ? 4 : 0;
     case 'larkDoc':
-      return /\bdoc|docs|document|note|summary|summarize|write a doc|create a doc|make a doc|put it in\b/.test(lower) ? 6 : 0;
+      return /\b(lark doc|doc|docs|document|write a doc|create a doc|make a doc|put it in a doc|put it in lark doc)\b/.test(lower) ? 6 : 0;
     case 'larkApproval':
       return /\bapproval|approvals|approve|request\b/.test(lower) ? 4 : 0;
     case 'larkBase':
@@ -359,6 +373,14 @@ const buildTodoListFromTodoKeys = <LocalAction>(
     currentTool: null,
     initialized: true,
   };
+};
+
+const buildTodoListFromIntentItems = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+  intentItems: IntentItem[],
+): TodoListState => {
+  const todoKeys = unique(intentItems.map((item) => buildTodoKey(item.workerKey, item.mode)));
+  return buildTodoListFromTodoKeys(state, todoKeys);
 };
 
 const extractWorkItemsFromLatestTurn = <LocalAction>(
@@ -430,10 +452,89 @@ const buildTodoLabel = <LocalAction>(
     case 'outreach':
       return 'Check Outreach';
     case 'search':
-      return 'Search the web';
+      return 'Search';
+    case 'webSearch':
+      return 'Search the public web';
+    case 'docSearch':
+      return 'Search internal documents';
+    case 'coding':
+      return mode === 'write' ? 'Plan and run coding actions' : 'Inspect coding workflow';
     default:
       return `Run ${getWorkerDisplayName(tool)}`;
   }
+};
+
+const buildIntentId = (workerKey: string, mode: TodoMode, latestUserMessage: string): string =>
+  `${workerKey}:${mode}:${hashInput(latestUserMessage)}`;
+
+const extractIntentItemsFromState = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+  workers: WorkerCapability[],
+): IntentItem[] => {
+  const latest = getLatestRequestText(state);
+  if (!latest) return [];
+
+  const source: IntentItem['source'] = state.scopeExpanded ? 'followup' : 'user';
+  const objective = state.resolvedObjective ?? state.profile.summary;
+  const items: IntentItem[] = [];
+  const seen = new Set<string>();
+
+  const pushIntent = (workerKey: string, mode: TodoMode, label?: string, queryHint?: string): void => {
+    const key = `${workerKey}:${mode}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push({
+      id: buildIntentId(workerKey, mode, latest),
+      kind: mode === 'write' ? 'write' : 'read',
+      workerKey,
+      label: label ?? buildTodoLabel(state, workerKey, mode),
+      source,
+      latestUserMessage: latest,
+      objective,
+      mode,
+      needsFreshExecution: mode !== 'read',
+      queryHint,
+    });
+  };
+
+  const requestLower = latest.toLowerCase();
+  const relevantWorkers = workers.map((worker) => worker.workerKey);
+
+  if (relevantWorkers.includes('webSearch') && PUBLIC_WEB_PATTERN.test(requestLower) && !INTERNAL_DOC_PATTERN.test(requestLower)) {
+    pushIntent('webSearch', 'read', 'Research the public web', latest);
+  }
+  if (relevantWorkers.includes('docSearch') && INTERNAL_DOC_PATTERN.test(requestLower)) {
+    pushIntent('docSearch', 'read', 'Search internal documents', latest);
+  }
+  const shouldUseRemoteRepo = REMOTE_REPO_PATTERN.test(requestLower) || !state.workspaceContext?.path;
+  if (relevantWorkers.includes('repo') && shouldUseRemoteRepo && REPO_PATTERN.test(requestLower)) {
+    pushIntent('repo', 'read', 'Inspect repository and files', latest);
+  }
+  if (relevantWorkers.includes('coding') && CODING_PATTERN.test(requestLower)) {
+    pushIntent('coding', MUTATION_INTENT_PATTERN.test(requestLower) ? 'write' : 'read', 'Plan coding and terminal execution', latest);
+  }
+
+  for (const worker of workers) {
+    const score = scoreToolForLatestIntent(worker.workerKey, latest);
+    if (score <= 0) continue;
+    if (worker.workerKey === 'skills' || worker.workerKey === 'workspace' || worker.workerKey === 'terminal') continue;
+    if (worker.workerKey === 'search' || worker.workerKey === 'webSearch' || worker.workerKey === 'docSearch' || worker.workerKey === 'repo' || worker.workerKey === 'coding') {
+      continue;
+    }
+    const mode: TodoMode =
+      MUTATION_INTENT_PATTERN.test(requestLower) && toolSupportsWriteMode(worker.workerKey) ? 'write' : 'read';
+    pushIntent(worker.workerKey, mode, buildTodoLabel(state, worker.workerKey, mode), latest);
+  }
+
+  if (items.length === 0) {
+    const legacy = extractWorkItemsFromLatestTurn(state, workers);
+    for (const todoKey of legacy) {
+      const { tool, mode } = parseTodoKey(todoKey);
+      pushIntent(tool, mode, buildTodoLabel(state, tool, mode), latest);
+    }
+  }
+
+  return items;
 };
 
 const ensureTodoItems = <LocalAction>(
@@ -580,6 +681,9 @@ const scoreWorkerForPlan = <LocalAction>(
   if (worker.requiresApproval || worker.workerKey === 'skills' || worker.workerKey === 'workspace' || worker.workerKey === 'terminal') {
     return -1;
   }
+  if (worker.workerKey === 'repo' && state.workspaceContext?.path && !REMOTE_REPO_PATTERN.test(state.userRequest)) {
+    return -1;
+  }
   const requestTokens = new Set(tokenize([
     state.userRequest,
     state.profile.summary,
@@ -596,6 +700,7 @@ const scoreWorkerForPlan = <LocalAction>(
 
   let score = 0;
   if (preferredHints.has(worker.workerKey.toLowerCase())) score += 8;
+  if (worker.workerKey === 'search') score -= 2;
   if (worker.domains.some((domain) => preferredHints.has(domain.toLowerCase()))) score += 3;
   if (worker.actionKinds.includes('QUERY_REMOTE_SYSTEM')) score += 2;
   for (const token of workerTokens) {
@@ -615,6 +720,10 @@ const deriveTodoToolsFromState = <LocalAction>(
   workers: WorkerCapability[],
   skills: SkillMetadata[],
 ): string[] => {
+  if ((state.intentItems ?? []).length > 0) {
+    return unique((state.intentItems ?? []).map((item) => item.workerKey))
+      .filter((workerKey) => workers.some((worker) => worker.workerKey === workerKey));
+  }
   const preferredHints = new Set(collectPreferredWorkerHints(state, skills).map((hint) => hint.toLowerCase()));
   const ranked = workers
     .map((worker) => ({ workerKey: worker.workerKey, score: scoreWorkerForPlan(state, worker, preferredHints) }))
@@ -646,6 +755,7 @@ const shouldBuildTodoPlan = <LocalAction>(
   if (state.profile.missingInputs.length > 0) return false;
   if (state.profile.complexity !== 'structured') return false;
   if (state.profile.shouldUseSkills && !hasSkillDocumentArtifact(state)) return false;
+  if ((state.intentItems ?? []).length > 1) return true;
   if (state.profile.deliverables.length > 1) return true;
   return deriveTodoToolsFromState(state, workers, skills).length > 1;
 };
@@ -659,7 +769,13 @@ const inferQueryForWorker = (
   const request = state.userRequest.trim();
   const workerText = `${worker.workerKey} ${worker.description}`.toLowerCase();
 
-  if (worker.workerKey === 'search' || worker.workerKey === 'repo') {
+  if (
+    worker.workerKey === 'search'
+    || worker.workerKey === 'webSearch'
+    || worker.workerKey === 'docSearch'
+    || worker.workerKey === 'repo'
+    || worker.workerKey === 'coding'
+  ) {
     return request || objective;
   }
 
@@ -707,6 +823,9 @@ const chooseCapabilityFallbackInvocation = <LocalAction>(
     if (worker.requiresApproval || worker.workerKey === 'skills' || worker.workerKey === 'workspace' || worker.workerKey === 'terminal') {
       continue;
     }
+    if (worker.workerKey === 'repo' && state.workspaceContext?.path && !REMOTE_REPO_PATTERN.test(state.userRequest)) {
+      continue;
+    }
 
     const actionKind = worker.actionKinds.includes('QUERY_REMOTE_SYSTEM')
       ? 'QUERY_REMOTE_SYSTEM'
@@ -732,6 +851,7 @@ const chooseCapabilityFallbackInvocation = <LocalAction>(
     if (actionKind === 'QUERY_REMOTE_SYSTEM') score += 4;
     if (worker.artifactTypes.includes('remote_entity')) score += 5;
     if (worker.artifactTypes.includes('citation')) score += 1;
+    if (worker.workerKey === 'search') score -= 2;
     if (preferredHints.has(worker.workerKey.toLowerCase())) score += 8;
     if (worker.domains.some((domain) => preferredHints.has(domain.toLowerCase()))) score += 3;
 
@@ -953,7 +1073,7 @@ const buildSynthesisReplyFromState = async <LocalAction>(
     : [];
   const prompt = buildSynthesisPrompt({
     workflowName: state.resolvedSkillId ?? undefined,
-    objective: state.inferredInputs?.objective ?? state.profile.summary,
+    objective: state.resolvedObjective ?? state.inferredInputs?.objective ?? state.profile.summary,
     results,
     failures,
     unresolved,
@@ -1089,8 +1209,28 @@ const normalizeState = <LocalAction>(
     : null;
   return {
     ...state,
+    latestUserMessage: state.latestUserMessage ?? extractLatestUserTurn(state.userRequest),
+    conversationWindow: Array.isArray(state.conversationWindow) ? state.conversationWindow : [],
+    workspaceContext: state.workspaceContext,
     bootstrap: state.bootstrap ?? state.profile,
+    resolvedObjective: typeof state.resolvedObjective === 'string' && state.resolvedObjective.trim().length > 0
+      ? state.resolvedObjective
+      : extractLatestUserTurn(state.userRequest),
+    activeSkill: typeof state.activeSkill === 'string' ? state.activeSkill : (state.resolvedSkillId ?? null),
+    loadedSkills: Array.isArray(state.loadedSkills) ? state.loadedSkills : (state.resolvedSkillId ? [state.resolvedSkillId] : []),
+    skillKnowledge: state.skillKnowledge && typeof state.skillKnowledge === 'object'
+      ? state.skillKnowledge
+      : {},
     inferredInputs: state.inferredInputs ?? {},
+    sessionContext: state.sessionContext ?? {
+      recentMessages: [],
+      refs: [],
+      knownFacts: [],
+      priorFailures: [],
+      preferences: [],
+    },
+    intentItems: Array.isArray(state.intentItems) ? state.intentItems : [],
+    unresolvedItems: Array.isArray(state.unresolvedItems) ? state.unresolvedItems : [],
     readinessConfirmed: Boolean(state.readinessConfirmed),
     scopeExpanded: Boolean(state.scopeExpanded),
     todoList,
@@ -1106,6 +1246,7 @@ const normalizeState = <LocalAction>(
     lastContractViolation: typeof state.lastContractViolation === 'string' ? state.lastContractViolation : null,
     lifecyclePhase: state.lifecyclePhase ?? 'running',
     localActionHistory: Array.isArray(state.localActionHistory) ? state.localActionHistory : [],
+    localActionPlan: state.localActionPlan ?? null,
     pendingLocalAction: state.pendingLocalAction
       ? {
         ...state.pendingLocalAction,
@@ -1116,6 +1257,7 @@ const normalizeState = <LocalAction>(
           : state.stepCount,
       }
       : undefined,
+    finalReplyDraft: typeof state.finalReplyDraft === 'string' ? state.finalReplyDraft : null,
   };
 };
 
@@ -1133,7 +1275,7 @@ const buildStateSummary = (
       keyData,
     ].filter(Boolean).join('\n');
   }).join('\n\n');
-  const recentObservations = state.observations.map((observation, index) => {
+  const recentObservations = state.observations.slice(-4).map((observation, index) => {
     const citations = observation.citations.map((citation) => citation.url ?? citation.title).filter(Boolean).join(' | ');
     const artifacts = observation.artifacts.map((artifact) => artifact.title ?? artifact.id).join(' | ');
     const summary = humanizeWorkerSummary(observation.summary);
@@ -1151,6 +1293,7 @@ const buildStateSummary = (
   }).join('\n\n');
 
   const preferredWorkerHints = collectPreferredWorkerHints(state, skills);
+  const sessionRefs = (state.sessionContext?.refs ?? []).slice(0, 4).map((ref) => `${ref.type}:${ref.title ?? ref.id}`).join(' | ');
   const requiredToolsProgress = state.todoList?.initialized
     ? [
       'Actual work items:',
@@ -1173,6 +1316,9 @@ const buildStateSummary = (
   return [
     `Task summary: ${state.profile.summary}`,
     `User request: ${state.userRequest}`,
+    state.resolvedObjective ? `Resolved objective: ${state.resolvedObjective}` : '',
+    state.activeSkill ? `Active skill: ${state.activeSkill}` : '',
+    state.workspaceContext ? `Open workspace: ${state.workspaceContext.name} (${state.workspaceContext.path})` : '',
     `Complexity: ${state.profile.complexity}`,
     `Use skills first: ${String(state.profile.shouldUseSkills)}`,
     state.profile.skillQuery ? `Skill query: ${state.profile.skillQuery}` : '',
@@ -1188,6 +1334,7 @@ const buildStateSummary = (
         .join('\n')}`
       : '',
     state.profile.notes.length > 0 ? `Notes: ${state.profile.notes.join(' | ')}` : '',
+    sessionRefs ? `Session context refs: ${sessionRefs}` : '',
     preferredWorkerHints.length > 0 ? `Preferred worker hints from skill guidance: ${preferredWorkerHints.join(' | ')}` : '',
     !state.readinessConfirmed && hasSkillDocumentArtifact(state) && !hasMeaningfulWorkEvidence(state)
       ? 'Readiness gate is pending. Before the first real worker call, decide whether you already know the objective, scope, and enough context to make the next worker call useful. If yes, proceed immediately. If not, ask one focused readiness question covering all missing context.'
@@ -1220,6 +1367,25 @@ const buildTodoProgressSummary = <LocalAction>(
     ...failed.map((item) => `[!] ${item.label}`),
     ...pending.map((item) => `[ ] ${item.label}`),
   ].join('\n');
+};
+
+const syncIntentLedger = <LocalAction>(
+  state: ControllerRuntimeState<LocalAction>,
+  workers: WorkerCapability[],
+): ControllerRuntimeState<LocalAction> => {
+  const intentItems = extractIntentItemsFromState(state, workers);
+  const unresolvedItems = intentItems.filter((item) => {
+    if (item.needsFreshExecution) {
+      return !(state.todoList?.completed ?? []).includes(buildTodoKey(item.workerKey, item.mode));
+    }
+    return !(state.workerResults ?? []).some((result) => result.workerKey === item.workerKey && result.success);
+  });
+  return {
+    ...state,
+    latestUserMessage: getLatestRequestText(state),
+    intentItems,
+    unresolvedItems,
+  };
 };
 
 const parseDecision = <LocalAction>(raw: string | null): ControllerDecision<LocalAction> | null => {
@@ -1264,15 +1430,59 @@ const parseDecision = <LocalAction>(raw: string | null): ControllerDecision<Loca
     }
   }
 
+  const normalizeLocalAction = (
+    actionKind: 'MUTATE_WORKSPACE' | 'EXECUTE_COMMAND',
+    rawLocalAction: unknown,
+  ): LocalAction | null => {
+    if (!rawLocalAction || typeof rawLocalAction !== 'object') return null;
+    const record = rawLocalAction as Record<string, unknown>;
+    if (typeof record.kind === 'string' && record.kind.trim().length > 0) {
+      return record as LocalAction;
+    }
+    if (actionKind === 'EXECUTE_COMMAND' && typeof record.command === 'string' && record.command.trim().length > 0) {
+      return {
+        ...record,
+        kind: 'run_command',
+        command: record.command.trim(),
+      } as LocalAction;
+    }
+    if (actionKind === 'MUTATE_WORKSPACE' && typeof record.path === 'string' && record.path.trim().length > 0) {
+      if (typeof record.content === 'string') {
+        return {
+          ...record,
+          kind: 'write_file',
+          path: record.path.trim(),
+        } as LocalAction;
+      }
+      if (record.operation === 'mkdir' || record.type === 'mkdir' || record.kindHint === 'mkdir') {
+        return {
+          ...record,
+          kind: 'mkdir',
+          path: record.path.trim(),
+        } as LocalAction;
+      }
+      if (record.operation === 'delete' || record.type === 'delete_path' || record.kindHint === 'delete_path') {
+        return {
+          ...record,
+          kind: 'delete_path',
+          path: record.path.trim(),
+        } as LocalAction;
+      }
+    }
+    return null;
+  };
+
   if (
     parsed.decision === 'REQUEST_LOCAL_ACTION'
     && (parsed.actionKind === 'MUTATE_WORKSPACE' || parsed.actionKind === 'EXECUTE_COMMAND')
     && parsed.localAction
   ) {
+    const normalizedLocalAction = normalizeLocalAction(parsed.actionKind, parsed.localAction);
+    if (!normalizedLocalAction) return null;
     return {
       decision: 'REQUEST_LOCAL_ACTION',
       actionKind: parsed.actionKind,
-      localAction: parsed.localAction as LocalAction,
+      localAction: normalizedLocalAction,
       reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : undefined,
     };
   }
@@ -1545,6 +1755,16 @@ const applyProgress = (
     ...nextState,
     retryCount: nextRetryCount,
     todoList: nextTodoList,
+    activeSkill: nextResolvedSkillId,
+    loadedSkills: nextResolvedSkillId
+      ? unique([...(state.loadedSkills ?? []), nextResolvedSkillId])
+      : (state.loadedSkills ?? []),
+    skillKnowledge: nextLoadedSkillContent && nextResolvedSkillId
+      ? {
+        ...(state.skillKnowledge ?? {}),
+        [nextResolvedSkillId]: nextLoadedSkillContent,
+      }
+      : (state.skillKnowledge ?? {}),
     pendingSkillId: reconciledObservation.workerKey === 'skills' && reconciledObservation.actionKind === 'RETRIEVE_ARTIFACT'
       ? nextResolvedSkillId
       : state.pendingSkillId ?? null,
@@ -1565,9 +1785,11 @@ const applyProgress = (
         input: invocation.input,
         success: inferredSuccess,
         hasSubstantiveContent,
+        retryCount: nextRetryCount,
         summary,
         keyData,
         fullPayload,
+        sourceUrls: reconciledObservation.citations.map((citation) => citation.url).filter((value): value is string => Boolean(value)),
         timestamp: Date.now(),
         ...(inferredSuccess ? {} : { error: reconciledObservation.blockingReason ?? (summary || reconciledObservation.summary) }),
       },
@@ -1655,10 +1877,10 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
   maxSteps?: number;
 }): Promise<ControllerRuntimeResult<LocalAction>> => {
   const router = new DecisionRouter<LocalAction>();
-  let state = normalizeState({
+  let state = syncIntentLedger(normalizeState({
     ...input.initialState,
     verifications: evaluateVerifications(input.initialState),
-  });
+  }), input.workers);
   const hooks = input.hooks;
   const maxSteps = input.maxSteps ?? MAX_CONTROLLER_STEPS;
 
@@ -1674,11 +1896,11 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
   }
 
   for (let index = 0; index < maxSteps; index += 1) {
-    state = {
+    state = syncIntentLedger({
       ...state,
       hopCount: (state.hopCount ?? 0) + 1,
       verifications: evaluateVerifications(state),
-    };
+    }, input.workers);
 
     if (hooks?.onVerification) {
       await hooks.onVerification(state, hooks.projectPlan ? hooks.projectPlan(state) : null);
@@ -1690,7 +1912,7 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
       const latestSuccessfulResult = getLatestSuccessfulWorkerResult(state);
       const followupPrompt = buildFollowupIntentPrompt({
         latestUserTurn: latestTurn,
-        workflowSummary: state.profile.summary,
+        workflowSummary: state.resolvedObjective ?? state.profile.summary,
         lastFailed: latestFailedResult ? buildResultSummaryLine(latestFailedResult) : undefined,
         lastSuccessful: latestSuccessfulResult ? buildResultSummaryLine(latestSuccessfulResult) : undefined,
       });
@@ -1765,7 +1987,7 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
     }
 
     if (state.scopeExpanded && latestTurn.length > 0) {
-      const newTodoKeys = extractWorkItemsFromLatestTurn(state, input.workers);
+      const newTodoKeys = (state.intentItems ?? []).map((item) => buildTodoKey(item.workerKey, item.mode));
       if (newTodoKeys.length > 0) {
         const priorCompletedReadKeys = unique(
           (state.workerResults ?? [])
@@ -1781,11 +2003,20 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
       }
     }
 
+    if (!state.todoList?.initialized && (state.intentItems ?? []).length > 0 && (state.profile.complexity === 'structured' || state.scopeExpanded)) {
+      state = {
+        ...state,
+        scopeExpanded: false,
+        todoList: buildTodoListFromIntentItems(state, state.intentItems ?? []),
+      };
+      continue;
+    }
+
     if (shouldBuildTodoPlan(state, input.workers, input.skills)) {
       const candidateTools = deriveTodoToolsFromState(state, input.workers, input.skills);
       const planningPrompt = buildTodoPlanningPrompt({
         userRequest: state.userRequest,
-        objective: state.inferredInputs?.objective ?? state.profile.summary,
+        objective: state.resolvedObjective ?? state.inferredInputs?.objective ?? state.profile.summary,
         dateScope: state.inferredInputs?.date_scope,
         workflowName: state.resolvedSkillId ?? undefined,
         deliverables: state.profile.deliverables,
@@ -1855,6 +2086,122 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
     const todoEmpty = todoReady && (state.todoList?.required.length ?? 0) === 0;
     const budgetExhausted = state.hopCount >= MAX_HOPS - 2;
 
+    if (todoEmpty && !state.pendingLocalAction) {
+      const workspaceAction = input.buildLocalAction(state, 'MUTATE_WORKSPACE');
+      if (workspaceAction && !shouldBlockRepeatedLocalAction(state, 'MUTATE_WORKSPACE', workspaceAction)) {
+        const localDecision: ControllerDecision<LocalAction> = {
+          decision: 'REQUEST_LOCAL_ACTION',
+          actionKind: 'MUTATE_WORKSPACE',
+          localAction: workspaceAction,
+        };
+        const plan = hooks?.projectPlan ? hooks.projectPlan(state) : null;
+        if (hooks?.onDecision) {
+          await hooks.onDecision(state, localDecision, plan);
+        }
+        if (hooks?.onCheckpoint) {
+          await hooks.onCheckpoint(`controller.step.${state.stepCount + 1}`, state, { decision: localDecision });
+        }
+        const actionHash = hashLocalAction(workspaceAction);
+        const actionRequestId = `local-action:${state.stepCount + 1}:${actionHash}`;
+        const nextState = {
+          ...state,
+          lifecyclePhase: 'awaiting_local_action' as const,
+          localActionPlan: {
+            originIntentId: (state.intentItems ?? []).find((item) => item.mode === 'write')?.id ?? 'unknown',
+            actionKind: 'MUTATE_WORKSPACE' as const,
+            summary: 'Workspace mutation planned from coding flow',
+          },
+          localActionHistory: [
+            ...state.localActionHistory,
+            {
+              id: actionRequestId,
+              actionKind: 'MUTATE_WORKSPACE' as const,
+              localAction: workspaceAction,
+              actionHash,
+              status: 'pending' as const,
+              requestedAtStep: state.stepCount,
+            },
+          ],
+          pendingLocalAction: {
+            id: actionRequestId,
+            actionKind: 'MUTATE_WORKSPACE' as const,
+            localAction: workspaceAction,
+            actionHash,
+            summary: 'Workspace mutation planned from coding flow',
+            requestedAtStep: state.stepCount,
+          },
+        };
+        if (hooks?.onLocalActionRequest) {
+          await hooks.onLocalActionRequest(nextState, localDecision, plan);
+        }
+        if (hooks?.onCheckpoint) {
+          await hooks.onCheckpoint('controller.local_action.requested', nextState, { decision: localDecision });
+        }
+        return {
+          kind: 'action',
+          action: workspaceAction,
+          state: nextState,
+        };
+      }
+
+      const terminalAction = input.buildLocalAction(state, 'EXECUTE_COMMAND');
+      if (terminalAction && !shouldBlockRepeatedLocalAction(state, 'EXECUTE_COMMAND', terminalAction)) {
+        const localDecision: ControllerDecision<LocalAction> = {
+          decision: 'REQUEST_LOCAL_ACTION',
+          actionKind: 'EXECUTE_COMMAND',
+          localAction: terminalAction,
+        };
+        const plan = hooks?.projectPlan ? hooks.projectPlan(state) : null;
+        if (hooks?.onDecision) {
+          await hooks.onDecision(state, localDecision, plan);
+        }
+        if (hooks?.onCheckpoint) {
+          await hooks.onCheckpoint(`controller.step.${state.stepCount + 1}`, state, { decision: localDecision });
+        }
+        const actionHash = hashLocalAction(terminalAction);
+        const actionRequestId = `local-action:${state.stepCount + 1}:${actionHash}`;
+        const nextState = {
+          ...state,
+          lifecyclePhase: 'awaiting_local_action' as const,
+          localActionPlan: {
+            originIntentId: (state.intentItems ?? []).find((item) => item.workerKey === 'coding')?.id ?? 'unknown',
+            actionKind: 'EXECUTE_COMMAND' as const,
+            summary: 'Terminal command planned from coding flow',
+          },
+          localActionHistory: [
+            ...state.localActionHistory,
+            {
+              id: actionRequestId,
+              actionKind: 'EXECUTE_COMMAND' as const,
+              localAction: terminalAction,
+              actionHash,
+              status: 'pending' as const,
+              requestedAtStep: state.stepCount,
+            },
+          ],
+          pendingLocalAction: {
+            id: actionRequestId,
+            actionKind: 'EXECUTE_COMMAND' as const,
+            localAction: terminalAction,
+            actionHash,
+            summary: 'Terminal command planned from coding flow',
+            requestedAtStep: state.stepCount,
+          },
+        };
+        if (hooks?.onLocalActionRequest) {
+          await hooks.onLocalActionRequest(nextState, localDecision, plan);
+        }
+        if (hooks?.onCheckpoint) {
+          await hooks.onCheckpoint('controller.local_action.requested', nextState, { decision: localDecision });
+        }
+        return {
+          kind: 'action',
+          action: terminalAction,
+          state: nextState,
+        };
+      }
+    }
+
     if (todoEmpty || budgetExhausted) {
       const reply = await buildSynthesisReplyFromState(state, input.invokeController);
       return {
@@ -1894,9 +2241,10 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
         workerKey: nextTool,
         actionKind,
         contract: describeWorkerContract(schema),
-        objective: state.inferredInputs?.objective ?? state.profile.summary,
+        objective: state.resolvedObjective ?? state.inferredInputs?.objective ?? state.profile.summary,
         dateScope: state.inferredInputs?.date_scope,
         skillGuidance: extractToolPurposeFromSkill(state.loadedSkillContent, nextTool),
+        workspaceContext: state.workspaceContext,
         previousResults: (state.workerResults ?? []).slice(-2).map((result) => buildResultSummaryLine(result)),
         priorKeyData: collectPriorKeyDataContext(state, nextTool),
         completedTools: state.todoList.completed.map((key) => parseTodoKey(key).tool),
@@ -1989,9 +2337,10 @@ export const runControllerRuntime = async <LocalAction, PlanView>(input: {
           stateSummary: buildStateSummary(state, input.workers, input.skills),
           workers: input.workers,
           skills: input.skills,
-          objective: state.inferredInputs?.objective ?? state.profile.summary,
+          objective: state.resolvedObjective ?? state.inferredInputs?.objective ?? state.profile.summary,
           dateScope: state.inferredInputs?.date_scope,
           workflowName: state.resolvedSkillId ?? undefined,
+          workspaceContext: state.workspaceContext,
           todoMode: state.todoList?.initialized === true,
           todoProgress: buildTodoProgressSummary(state),
         });

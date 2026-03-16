@@ -11,7 +11,7 @@ const HARD_CODED_SKILLS: SkillDocument[] = [
       'when safe local execution, verification, and reusable script workflows matter',
     ],
     tags: ['coding', 'code', 'workspace', 'terminal', 'scripts', 'tests', 'debugging', 'refactor', 'patch', 'curl'],
-    toolHints: ['repo', 'workspace', 'terminal', 'search'],
+    toolHints: ['repo', 'coding', 'webSearch', 'docSearch', 'workspace', 'terminal'],
     content: `---
 name: coding-ops
 description: A focused workflow guide for coding work that may require code inspection, local file edits, terminal commands, reusable scripts, tests, and optional external docs.
@@ -22,8 +22,10 @@ when_to_use:
 tools:
   optional:
     - repo
-    - search
+    - webSearch
+    - docSearch
   action:
+    - coding
     - workspace
     - terminal
 inputs:
@@ -90,6 +92,15 @@ Rules:
 - use stable paths for reusable scripts, such as \`scripts/\`, \`tools/\`, or task-specific utility files in the repo
 - when creating a reusable script, make the filename descriptive and reusable, not a random scratch name
 
+## Coding
+
+Use \`coding\` for high-level coding execution planning when the request needs shell commands, repeatable scripts, verification commands, or approval-gated local execution.
+
+Rules:
+- use \`coding\` to plan the next concrete local action, not to pretend the command already ran
+- when the task mixes repo inspection, external docs, and terminal execution, use \`coding\` as the execution-planning step after evidence gathering
+- prefer reusable script paths when the same command or transformation will be run more than once
+
 ## Terminal
 
 Use \`terminal\` for command execution.
@@ -110,7 +121,9 @@ Rules:
 
 ## Search
 
-Use \`search\` only when the task needs external docs, package references, API behavior, or current public information.
+Use \`webSearch\` only when the task needs external docs, package references, API behavior, or current public information.
+
+Use \`docSearch\` when the task is specifically about internal company documents, uploaded files, policies, or private knowledge.
 
 Rules:
 - do not use search when the answer is already in the codebase or command output

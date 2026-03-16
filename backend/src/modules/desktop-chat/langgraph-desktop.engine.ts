@@ -140,6 +140,12 @@ const HISTORY_LIMIT = 16;
 const presentationAdapter = new PresentationAdapter();
 const inferenceEngine = new InferenceEngine();
 
+const extractLatestTurnText = (userRequest: string): string => {
+  const marker = '\n\nFollow-up user input:';
+  const index = userRequest.lastIndexOf(marker);
+  return (index >= 0 ? userRequest.slice(index + marker.length) : userRequest).trim();
+};
+
 const summarizeText = (value: string | null | undefined, limit = 280): string | null => {
   if (!value) return null;
   const compact = value.replace(/\s+/g, ' ').trim();
@@ -645,6 +651,71 @@ const buildPersistedConversationRefs = (conversationKey: string): Record<string,
   return Object.keys(refs).length > 0 ? refs : null;
 };
 
+const buildSessionContext = (input: {
+  conversationKey: string;
+  history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  latestSnapshot: PersistedRuntimeSnapshot | null;
+}): NonNullable<PersistedRuntimeState['sessionContext']> => {
+  const refsRecord = buildPersistedConversationRefs(input.conversationKey) ?? {};
+  const refs = [
+    refsRecord.latestLarkDoc && typeof refsRecord.latestLarkDoc === 'object'
+      ? {
+        type: 'lark_doc' as const,
+        id: String((refsRecord.latestLarkDoc as Record<string, unknown>).documentId ?? 'unknown-doc'),
+        title: typeof (refsRecord.latestLarkDoc as Record<string, unknown>).title === 'string'
+          ? String((refsRecord.latestLarkDoc as Record<string, unknown>).title)
+          : undefined,
+        url: typeof (refsRecord.latestLarkDoc as Record<string, unknown>).url === 'string'
+          ? String((refsRecord.latestLarkDoc as Record<string, unknown>).url)
+          : undefined,
+      }
+      : null,
+    refsRecord.latestLarkCalendarEvent && typeof refsRecord.latestLarkCalendarEvent === 'object'
+      ? {
+        type: 'lark_event' as const,
+        id: String((refsRecord.latestLarkCalendarEvent as Record<string, unknown>).eventId ?? 'unknown-event'),
+        title: typeof (refsRecord.latestLarkCalendarEvent as Record<string, unknown>).summary === 'string'
+          ? String((refsRecord.latestLarkCalendarEvent as Record<string, unknown>).summary)
+          : undefined,
+        url: typeof (refsRecord.latestLarkCalendarEvent as Record<string, unknown>).url === 'string'
+          ? String((refsRecord.latestLarkCalendarEvent as Record<string, unknown>).url)
+          : undefined,
+      }
+      : null,
+    refsRecord.latestLarkTask && typeof refsRecord.latestLarkTask === 'object'
+      ? {
+        type: 'lark_task' as const,
+        id: String((refsRecord.latestLarkTask as Record<string, unknown>).taskId ?? 'unknown-task'),
+        title: typeof (refsRecord.latestLarkTask as Record<string, unknown>).summary === 'string'
+          ? String((refsRecord.latestLarkTask as Record<string, unknown>).summary)
+          : undefined,
+        url: typeof (refsRecord.latestLarkTask as Record<string, unknown>).url === 'string'
+          ? String((refsRecord.latestLarkTask as Record<string, unknown>).url)
+          : undefined,
+      }
+      : null,
+  ].filter((value): value is NonNullable<typeof value> => Boolean(value));
+
+  const priorFailures = (input.latestSnapshot?.workerResults ?? [])
+    .filter((result) => result.workerKey !== 'skills' && !result.success)
+    .slice(-4)
+    .map((result) => `${result.workerKey}: ${result.error ?? result.summary}`);
+
+  const knownFacts = (input.latestSnapshot?.observations ?? [])
+    .flatMap((observation) => observation.facts ?? [])
+    .filter((value): value is string => typeof value === 'string')
+    .slice(-8);
+
+  return {
+    conversationKey: input.conversationKey,
+    recentMessages: input.history.slice(-8),
+    refs,
+    knownFacts,
+    priorFailures,
+    preferences: [],
+  };
+};
+
 const buildHistoryAwareMessage = (
   history: Array<{ role: 'user' | 'assistant'; content: string }>,
   observationContext: string,
@@ -841,11 +912,23 @@ const persistAssistantTurn = async (input: {
 };
 
 const sanitizeRuntimeStateForPersistence = (state: PersistedRuntimeState): PersistedRuntimeSnapshot => ({
+  threadId: state.threadId,
   executionId: state.executionId,
+  eventSequence: state.eventSequence,
   userRequest: state.userRequest,
+  latestUserMessage: state.latestUserMessage,
+  conversationWindow: state.conversationWindow,
+  workspaceContext: state.workspaceContext,
   profile: state.profile,
   bootstrap: state.bootstrap,
+  resolvedObjective: state.resolvedObjective,
+  activeSkill: state.activeSkill,
+  loadedSkills: state.loadedSkills,
+  skillKnowledge: state.skillKnowledge,
   inferredInputs: state.inferredInputs,
+  sessionContext: state.sessionContext,
+  intentItems: state.intentItems,
+  unresolvedItems: state.unresolvedItems,
   readinessConfirmed: state.readinessConfirmed,
   scopeExpanded: state.scopeExpanded,
   todoList: state.todoList ?? null,
@@ -857,6 +940,7 @@ const sanitizeRuntimeStateForPersistence = (state: PersistedRuntimeState): Persi
   hopCount: state.hopCount,
   retryCount: state.retryCount,
   lifecyclePhase: state.lifecyclePhase,
+  localActionPlan: state.localActionPlan,
   pendingSkillId: state.pendingSkillId,
   resolvedSkillId: state.resolvedSkillId,
   loadedSkillContent: state.loadedSkillContent,
@@ -865,6 +949,7 @@ const sanitizeRuntimeStateForPersistence = (state: PersistedRuntimeState): Persi
   lastContractViolation: state.lastContractViolation,
   localActionHistory: state.localActionHistory,
   pendingLocalAction: state.pendingLocalAction,
+  finalReplyDraft: state.finalReplyDraft,
 });
 
 const getLatestRuntimeSnapshot = (
@@ -1018,10 +1103,19 @@ const buildContinuationState = (input: {
     };
   })(),
   executionId: input.executionId,
+  threadId: input.snapshot.threadId,
+  eventSequence: input.snapshot.eventSequence ?? 0,
   userRequest: input.followupMessage.trim()
     ? `${input.snapshot.userRequest}\n\nFollow-up user input: ${input.followupMessage.trim()}`
     : input.snapshot.userRequest,
+  latestUserMessage: input.followupMessage.trim() || input.snapshot.latestUserMessage || extractLatestTurnText(input.snapshot.userRequest),
+  conversationWindow: input.snapshot.conversationWindow ?? [],
+  workspaceContext: input.snapshot.workspaceContext,
   bootstrap: input.snapshot.bootstrap ?? input.snapshot.profile,
+  resolvedObjective: input.snapshot.resolvedObjective ?? extractLatestTurnText(input.snapshot.userRequest),
+  activeSkill: input.snapshot.activeSkill ?? input.snapshot.resolvedSkillId ?? null,
+  loadedSkills: input.snapshot.loadedSkills ?? (input.snapshot.resolvedSkillId ? [input.snapshot.resolvedSkillId] : []),
+  skillKnowledge: input.snapshot.skillKnowledge ?? {},
   observations: input.snapshot.observations,
   workerResults: input.snapshot.workerResults ?? [],
   progressLedger: input.snapshot.progressLedger,
@@ -1034,10 +1128,15 @@ const buildContinuationState = (input: {
   resolvedSkillId: input.snapshot.resolvedSkillId ?? null,
   loadedSkillContent: input.snapshot.loadedSkillContent ?? null,
   availableSkills: input.snapshot.availableSkills ?? [],
+  sessionContext: input.snapshot.sessionContext,
+  intentItems: [],
+  unresolvedItems: [],
   lastAction: input.snapshot.lastAction ?? null,
   lastContractViolation: null,
   localActionHistory: input.snapshot.localActionHistory ?? [],
+  localActionPlan: input.snapshot.localActionPlan ?? null,
   pendingLocalAction: undefined,
+  finalReplyDraft: null,
 });
 
 const buildRequestContext = async (input: {
@@ -1086,6 +1185,7 @@ const loadConversationContext = async (input: {
   latestProfile: PersistedControllerProfile | null;
   latestSnapshot: PersistedRuntimeSnapshot | null;
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  sessionContext: NonNullable<PersistedRuntimeState['sessionContext']>;
 }> => {
   const conversationKey = `desktop:${input.threadId}`;
   let history = conversationMemoryStore.getContextMessages(conversationKey, HISTORY_LIMIT);
@@ -1111,12 +1211,18 @@ const loadConversationContext = async (input: {
   const observationContext = buildObservationContext(persistedMessages);
   const profileContext = buildProfileContext(getLatestControllerProfile(persistedMessages));
 
+  const latestSnapshot = getLatestRuntimeSnapshot(persistedMessages);
   return {
     historyContext: buildHistoryAwareMessage(history, [profileContext, observationContext].filter(Boolean).join('\n\n'), input.message, input.attachedFiles),
     conversationRefs: buildConversationRefsContext(conversationKey),
     latestProfile: getLatestControllerProfile(persistedMessages),
     history,
-    latestSnapshot: getLatestRuntimeSnapshot(persistedMessages),
+    latestSnapshot,
+    sessionContext: buildSessionContext({
+      conversationKey,
+      history,
+      latestSnapshot,
+    }),
   };
 };
 
@@ -1183,7 +1289,7 @@ const projectExecutionPlan = (state: PersistedRuntimeState): ExecutionPlan | nul
 
   return {
     id: state.executionId,
-    goal: state.profile.summary,
+    goal: state.resolvedObjective ?? state.profile.summary,
     successCriteria: state.profile.deliverables.length > 0
       ? state.profile.deliverables.slice(0, 4)
       : ['Complete the user request'],
@@ -1240,10 +1346,16 @@ const summarizeWorkerInvocation = (invocation: {
     }
   }
 
-  if (invocation.actionKind === 'QUERY_REMOTE_SYSTEM') {
-    const query = typeof invocation.input.query === 'string' ? invocation.input.query : 'the user request';
-    if (invocation.workerKey === 'search') {
+    if (invocation.actionKind === 'QUERY_REMOTE_SYSTEM') {
+      const query = typeof invocation.input.query === 'string' ? invocation.input.query : 'the user request';
+    if (invocation.workerKey === 'search' || invocation.workerKey === 'webSearch') {
       return `Searching for "${query}"`;
+    }
+    if (invocation.workerKey === 'docSearch') {
+      return `Searching internal docs for "${query}"`;
+    }
+    if (invocation.workerKey === 'coding') {
+      return `Planning coding execution for "${query}"`;
     }
     return `Querying ${invocation.workerKey} for "${query}"`;
   }
@@ -2022,7 +2134,12 @@ class LangGraphDesktopChatEngine {
     }
 
     if (restoredState) {
-      initialState = restoredState;
+      initialState = {
+        ...restoredState,
+        threadId: input.threadId,
+        latestUserMessage: restoredState.latestUserMessage ?? restoredState.userRequest,
+        workspaceContext: restoredState.workspaceContext ?? (input.workspace ? { name: input.workspace.name, path: input.workspace.path } : undefined),
+      };
     } else {
       const controllerContext = await loadConversationContext({
         session: input.session,
@@ -2058,6 +2175,7 @@ class LangGraphDesktopChatEngine {
         contextBlock: [controllerContext.historyContext, controllerContext.conversationRefs].filter(Boolean).join('\n\n'),
         workers: DESKTOP_WORKER_CAPABILITIES,
         skills: skillCatalog,
+        workspaceContext: input.workspace ? { name: input.workspace.name, path: input.workspace.path } : undefined,
       });
       const bootstrapStartedAt = Date.now();
       const rawProfile = await openAiOrchestrationModels.invokeSupervisor(bootstrapPrompt);
@@ -2094,11 +2212,23 @@ class LangGraphDesktopChatEngine {
       const inferredInputs = inferenceEngine.infer(exactSkillId, message, profile);
       const profileWithInference = applyInferredInputsToProfile(profile, inferredInputs);
       initialState = {
+        threadId: input.threadId,
         executionId: input.executionId,
+        eventSequence: 0,
         userRequest: message,
+        latestUserMessage: message,
+        conversationWindow: controllerContext.history.slice(-8),
+        workspaceContext: input.workspace ? { name: input.workspace.name, path: input.workspace.path } : undefined,
         profile: profileWithInference,
         bootstrap: profile,
+        resolvedObjective: message,
+        activeSkill: exactSkillId,
+        loadedSkills: exactSkillId ? [exactSkillId] : [],
+        skillKnowledge: {},
         inferredInputs,
+        sessionContext: controllerContext.sessionContext,
+        intentItems: [],
+        unresolvedItems: [],
         readinessConfirmed: false,
         todoList: null,
         observations: [],
@@ -2109,6 +2239,7 @@ class LangGraphDesktopChatEngine {
         hopCount: 0,
         retryCount: 0,
         lifecyclePhase: 'running',
+        localActionPlan: null,
         pendingSkillId: exactSkillId,
         resolvedSkillId: exactSkillId,
         loadedSkillContent: null,
@@ -2116,6 +2247,7 @@ class LangGraphDesktopChatEngine {
         lastAction: null,
         lastContractViolation: null,
         localActionHistory: [],
+        finalReplyDraft: null,
       };
       }
     }

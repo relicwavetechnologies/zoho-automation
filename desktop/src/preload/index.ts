@@ -95,6 +95,7 @@ export type DesktopAPI = {
     actStream: (payload: {
       token: string
       requestId: string
+      executionId: string
       threadId: string
       message?: string
       workspace: { name: string; path: string }

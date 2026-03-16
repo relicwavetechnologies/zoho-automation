@@ -86,6 +86,73 @@ export type WorkerInvocation = {
   reason?: string;
 };
 
+export type SessionContextMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+export type SessionContextRef = {
+  type: 'lark_doc' | 'lark_event' | 'lark_task' | 'entity' | 'artifact';
+  id: string;
+  title?: string;
+  url?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type SessionContext = {
+  conversationKey?: string;
+  recentMessages: SessionContextMessage[];
+  refs: SessionContextRef[];
+  knownFacts: string[];
+  priorFailures: string[];
+  preferences: string[];
+};
+
+export type WorkspaceContext = {
+  name: string;
+  path: string;
+};
+
+export type IntentKind = 'read' | 'write' | 'meta' | 'verify' | 'local_action';
+
+export type IntentItem = {
+  id: string;
+  kind: IntentKind;
+  workerKey: string;
+  label: string;
+  source: 'user' | 'followup' | 'skill';
+  latestUserMessage: string;
+  objective: string;
+  mode: TodoMode;
+  needsFreshExecution: boolean;
+  queryHint?: string;
+};
+
+export type SpecialistResult = {
+  workerKey: string;
+  intentItem?: IntentItem;
+  success: boolean;
+  summary: string;
+  keyData: Record<string, unknown>;
+  fullPayload: string;
+  sourceUrls: string[];
+  timestamp: number;
+  retryCount: number;
+  errorKind?: string;
+  retryable?: boolean;
+  error?: string;
+};
+
+export type LocalActionPlan = {
+  originIntentId: string;
+  actionKind: 'MUTATE_WORKSPACE' | 'EXECUTE_COMMAND';
+  summary: string;
+  workingDirectory?: string;
+  expectedOutputs?: string[];
+  verificationRule?: string;
+  artifacts?: string[];
+};
+
 export type VerificationResult = {
   checkId: string;
   status: VerificationStatus;
@@ -174,24 +241,30 @@ export type TodoListState = {
 
 export type WorkerResultDTO = {
   hopIndex: number;
-  workerKey: string;
   actionKind: string;
   input: Record<string, unknown>;
-  success: boolean;
   hasSubstantiveContent: boolean;
-  summary: string;
-  keyData: Record<string, unknown>;
-  fullPayload: string;
-  timestamp: number;
-  error?: string;
-};
+  intentItemId?: string;
+} & SpecialistResult;
 
 export type ControllerRuntimeState<LocalAction = unknown> = {
+  threadId?: string;
   executionId: string;
+  eventSequence?: number;
   userRequest: string;
+  latestUserMessage?: string;
+  conversationWindow?: SessionContextMessage[];
+  workspaceContext?: WorkspaceContext;
   profile: ControllerTaskProfile;
   bootstrap?: ControllerTaskProfile;
+  resolvedObjective?: string;
+  activeSkill?: string | null;
+  loadedSkills?: string[];
+  skillKnowledge?: Record<string, string>;
   inferredInputs?: Record<string, string | undefined>;
+  sessionContext?: SessionContext;
+  intentItems?: IntentItem[];
+  unresolvedItems?: IntentItem[];
   readinessConfirmed: boolean;
   scopeExpanded?: boolean;
   todoList?: TodoListState;
@@ -205,6 +278,7 @@ export type ControllerRuntimeState<LocalAction = unknown> = {
   retryCount: number;
   lifecyclePhase: LocalActionPhase;
   localActionHistory: LocalActionRecord<LocalAction>[];
+  localActionPlan?: LocalActionPlan | null;
   pendingSkillId?: string | null;
   resolvedSkillId?: string | null;
   loadedSkillContent?: string | null;
@@ -223,7 +297,10 @@ export type ControllerRuntimeState<LocalAction = unknown> = {
     summary: string;
     requestedAtStep: number;
   };
+  finalReplyDraft?: string | null;
 };
+
+export type GraphState<LocalAction = unknown> = ControllerRuntimeState<LocalAction>;
 
 export type ControllerRuntimeResult<LocalAction = unknown> =
   | { kind: 'action'; action: LocalAction; state: ControllerRuntimeState<LocalAction> }
