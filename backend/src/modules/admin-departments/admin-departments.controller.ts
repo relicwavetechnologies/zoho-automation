@@ -38,12 +38,13 @@ const createRoleSchema = z.object({
 
 const updateRoleSchema = z.object({
   name: z.string().min(1).max(120),
+  isDefault: z.boolean().optional(),
 });
 
 const upsertMembershipSchema = z.object({
   userId: z.string().uuid().optional(),
   channelIdentityId: z.string().uuid().optional(),
-  roleId: z.string().uuid(),
+  roleId: z.string().uuid().optional(),
   status: z.enum(['active', 'inactive']).optional(),
 });
 
@@ -127,7 +128,7 @@ class AdminDepartmentsController extends BaseController {
   updateRole = async (req: Request, res: Response) => {
     const session = this.readSession(req);
     const payload = updateRoleSchema.parse(req.body);
-    const result = await departmentService.updateDepartmentRole(
+    const result = await departmentService.updateDepartmentRoleSettings(
       session,
       req.params.departmentId,
       req.params.roleId,

@@ -105,12 +105,7 @@ export class AdminAuthService extends BaseService {
       return this.issueSession(user.id, 'COMPANY_ADMIN', membership.companyId);
     }
 
-    const managerMembership = await this.repository.findManagedDepartmentMembership(user.id, payload.companyId);
-    if (!managerMembership?.department.companyId) {
-      throw new HttpException(403, 'User is not an active workspace admin or department manager for this company');
-    }
-
-    return this.issueSession(user.id, 'DEPARTMENT_MANAGER', managerMembership.department.companyId);
+    throw new HttpException(403, 'User is not an active company admin for this company');
   }
 
   async signupCompanyAdmin(payload: SignupCompanyAdminDto): Promise<AdminLoginResult> {
@@ -233,9 +228,9 @@ export class AdminAuthService extends BaseService {
   getCapabilities(session: AdminSessionDTO): { navItems: AdminNavItemDTO[] } {
     const allItems: AdminNavItemDTO[] = [
       {
-        id: 'overview',
-        label: 'Overview',
-        path: '/overview',
+        id: 'home',
+        label: 'Home',
+        path: '/home',
         roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
       },
       {
@@ -245,64 +240,28 @@ export class AdminAuthService extends BaseService {
         roles: ['SUPER_ADMIN'],
       },
       {
-        id: 'members',
-        label: 'Members',
-        path: '/members',
-        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
-      },
-      {
-        id: 'rbac',
-        label: 'RBAC',
-        path: '/rbac',
-        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
-      },
-      {
-        id: 'audit',
-        label: 'Audit Logs',
-        path: '/audit',
-        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
-      },
-      {
-        id: 'controls',
-        label: 'System Controls',
-        path: '/controls',
-        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
-      },
-      {
-        id: 'executions',
-        label: 'AI Executions',
-        path: '/executions',
-        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
-      },
-      {
-        id: 'ai-models',
-        label: 'AI Models',
-        path: '/ai-models',
-        roles: ['SUPER_ADMIN'],
-      },
-      {
-        id: 'token-usage',
-        label: 'Token Usage',
-        path: '/token-usage',
-        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
-      },
-      {
-        id: 'integrations',
-        label: 'Integrations',
-        path: '/integrations',
-        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
-      },
-      {
-        id: 'vector-requests',
-        label: 'Share Requests',
-        path: '/vector-requests',
+        id: 'people',
+        label: 'People',
+        path: '/people',
         roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
       },
       {
         id: 'departments',
         label: 'Departments',
         path: '/departments',
-        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN', 'DEPARTMENT_MANAGER'],
+        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
+      },
+      {
+        id: 'ai-ops',
+        label: 'AI Ops',
+        path: '/ai-ops',
+        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
+      },
+      {
+        id: 'settings',
+        label: 'Settings',
+        path: '/settings',
+        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
       },
     ];
 

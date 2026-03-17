@@ -15,7 +15,7 @@ export const LoginPage = () => {
   const [submitting, setSubmitting] = useState(false);
 
   if (session) {
-    return <Navigate to={session.role === 'DEPARTMENT_MANAGER' ? '/departments' : '/overview'} replace />;
+    return <Navigate to="/home" replace />;
   }
 
   const onSubmit = async (event: FormEvent) => {
@@ -48,7 +48,7 @@ export const LoginPage = () => {
             Control Hub Sign In
           </CardTitle>
           <CardDescription className="text-center text-zinc-500">
-            Role and workspace scope are resolved from backend session only.
+            Role and company scope are resolved from backend session only.
           </CardDescription>
         </CardHeader>
 
@@ -56,10 +56,10 @@ export const LoginPage = () => {
           <form onSubmit={onSubmit} className="flex flex-col gap-5">
             <div className="flex flex-col gap-2 mb-2 text-sm text-center">
               <Link className="text-zinc-400 hover:text-zinc-200 underline decoration-zinc-700 underline-offset-4" to="/signup/company-admin">
-                Create workspace admin account
+                Create company admin account
               </Link>
               <Link className="text-zinc-400 hover:text-zinc-200 underline decoration-zinc-700 underline-offset-4" to="/signup/member-invite">
-                Accept invite to join workspace
+                Accept invite to join company
               </Link>
             </div>
 
@@ -76,7 +76,7 @@ export const LoginPage = () => {
                 className={`flex-1 py-1.5 text-sm rounded transition-colors ${mode === 'company' ? 'bg-[#222] text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}
                 onClick={() => setMode('company')}
               >
-                Workspace Admin / Manager
+                Company Admin
               </button>
             </div>
 

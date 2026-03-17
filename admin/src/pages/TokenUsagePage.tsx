@@ -32,6 +32,10 @@ export default function TokenUsagePage() {
 
   useEffect(() => {
     if (!session || !token) return;
+    if (!session.companyId) {
+      setLoading(false);
+      return;
+    }
 
     api
       .get<UsageBreakdown>(`/api/admin/company/${session.companyId}/token-usage`, token)
@@ -61,7 +65,11 @@ export default function TokenUsagePage() {
       <Card className="border-zinc-800 bg-[#111315] text-zinc-100">
         <CardHeader>
           <CardTitle>Token Usage</CardTitle>
-          <CardDescription className="text-zinc-400">Failed to load payload.</CardDescription>
+          <CardDescription className="text-zinc-400">
+            {session?.companyId
+              ? 'Failed to load payload.'
+              : 'Token usage is company-scoped. Open this view from a company-admin session.'}
+          </CardDescription>
         </CardHeader>
       </Card>
     );

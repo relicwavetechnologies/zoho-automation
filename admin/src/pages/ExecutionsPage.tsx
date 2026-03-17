@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { X } from 'lucide-react'
+import { X, Search, Filter, Calendar, Cpu, Zap, Activity, Clock, ChevronRight, ChevronLeft, ArrowUpRight, MessageSquare, Terminal, Layout, Share2, Shield, Info } from 'lucide-react'
 
 import { useAdminAuth } from '../auth/AdminAuthProvider'
 import { Badge } from '../components/ui/badge'
@@ -11,6 +11,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Skeleton } from '../components/ui/skeleton'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
+import { Button } from '../components/ui/button'
+import { Separator } from '../components/ui/separator'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 
 type ExecutionMode = 'fast' | 'high' | 'xtreme' | null
 type ExecutionRunStatus = 'running' | 'completed' | 'failed' | 'cancelled'
@@ -91,20 +94,21 @@ const formatDuration = (durationMs: number | null): string => {
   return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`
 }
 
-const statusTone = (status: string | null | undefined): string => {
+const statusBadge = (status: string | null | undefined) => {
   switch (status) {
     case 'completed':
     case 'done':
-      return 'border-[#17311f] bg-[#0e1712] text-emerald-400'
+      return <Badge variant="secondary" className="bg-emerald-500/5 text-emerald-500 border-emerald-500/10 text-[10px] font-bold uppercase tracking-tight h-5">Completed</Badge>
     case 'failed':
-    case 'cancelled':
-    case 'blocked':
-      return 'border-[#311717] bg-[#190f0f] text-rose-400'
+    case 'error':
+      return <Badge variant="secondary" className="bg-red-500/5 text-red-500 border-red-500/10 text-[10px] font-bold uppercase tracking-tight h-5">Failed</Badge>
     case 'running':
     case 'pending':
-      return 'border-[#32260e] bg-[#171109] text-amber-300'
+      return <Badge variant="secondary" className="bg-amber-500/5 text-amber-500 border-amber-500/10 text-[10px] font-bold uppercase tracking-tight h-5">Running</Badge>
+    case 'cancelled':
+      return <Badge variant="secondary" className="bg-zinc-500/5 text-zinc-500 border-zinc-500/10 text-[10px] font-bold uppercase tracking-tight h-5">Cancelled</Badge>
     default:
-      return 'border-[#222] bg-[#111] text-zinc-400'
+      return <Badge variant="outline" className="text-[10px] font-bold uppercase tracking-tight h-5">{status || 'Unknown'}</Badge>
   }
 }
 
@@ -131,7 +135,7 @@ const truncate = (value: string | null | undefined, maxChars: number): string =>
 }
 
 const buildTabLabel = (run: ExecutionRun | null | undefined, executionId: string): string =>
-  truncate(run?.latestSummary, 58) || truncate(run?.errorMessage, 58) || `Prompt ${executionId.slice(0, 8)}`
+  truncate(run?.latestSummary, 40) || truncate(run?.errorMessage, 40) || `Execution ${executionId.slice(0, 8)}`
 
 export const ExecutionsPage = () => {
   const { token, session } = useAdminAuth()
@@ -190,9 +194,7 @@ export const ExecutionsPage = () => {
     setDetailById((prev) => ({ ...prev, [run.id]: prev[run.id] ?? run }))
     setOpenedExecutionIds((prev) => (prev.includes(run.id) ? prev : [...prev, run.id]))
     updateFilters({ selected: run.id }, { preservePage: true })
-    window.requestAnimationFrame(() => {
-      detailCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    })
+    // No scrollIntoView here to avoid jumping if not desired
   }
 
   const closeExecution = (executionId: string) => {
@@ -205,55 +207,59 @@ export const ExecutionsPage = () => {
     })
   }
 
-  useEffect(() => {
+  const loadRuns = useCallback(async (options?: { silent?: boolean }) => {
     if (!token) return
+    if (!options?.silent) setLoadingRuns(true)
+    try {
+      const query = new URLSearchParams({
+        page: String(filters.page),
+        pageSize: String(DEFAULT_PAGE_SIZE),
+        dateFrom: filters.dateFrom,
+        dateTo: filters.dateTo,
+      })
+      if (filters.query) query.set('query', filters.query)
+      if (filters.channel !== 'all') query.set('channel', filters.channel)
+      if (filters.mode !== 'all') query.set('mode', filters.mode)
+      if (filters.status !== 'all') query.set('status', filters.status)
+      if (filters.phase !== 'all') query.set('phase', filters.phase)
+      if (filters.actorType !== 'all') query.set('actorType', filters.actorType)
 
-    let cancelled = false
-
-    const loadRuns = async () => {
-      try {
-        setLoadingRuns(true)
-        const query = new URLSearchParams({
-          page: String(filters.page),
-          pageSize: String(DEFAULT_PAGE_SIZE),
-          dateFrom: filters.dateFrom,
-          dateTo: filters.dateTo,
-        })
-        if (filters.query) query.set('query', filters.query)
-        if (filters.channel !== 'all') query.set('channel', filters.channel)
-        if (filters.mode !== 'all') query.set('mode', filters.mode)
-        if (filters.status !== 'all') query.set('status', filters.status)
-        if (filters.phase !== 'all') query.set('phase', filters.phase)
-        if (filters.actorType !== 'all') query.set('actorType', filters.actorType)
-
-        const response = await api.get<ExecutionListResponse>(`/api/admin/executions?${query.toString()}`, token)
-        if (cancelled) return
-        setRuns(response.items)
-        setSummary(response.summary)
-        setTotal(response.total)
-        setDetailById((prev) => {
-          const next = { ...prev }
-          for (const run of response.items) {
-            if (openedExecutionIds.includes(run.id) || run.id === activeExecutionId) {
-              next[run.id] = { ...next[run.id], ...run }
-            }
+      const response = await api.get<ExecutionListResponse>(`/api/admin/executions?${query.toString()}`, token)
+      setRuns(response.items)
+      setSummary(response.summary)
+      setTotal(response.total)
+      setDetailById((prev) => {
+        const next = { ...prev }
+        for (const run of response.items) {
+          if (openedExecutionIds.includes(run.id) || run.id === activeExecutionId) {
+            next[run.id] = { ...next[run.id], ...run }
           }
-          return next
-        })
-      } finally {
-        if (!cancelled) {
-          setLoadingRuns(false)
         }
-      }
+        return next
+      })
+    } finally {
+      setLoadingRuns(false)
     }
+  }, [filters, activeExecutionId, openedExecutionIds, token])
 
+  const loadDetail = useCallback(async (executionId: string, options?: { silent?: boolean }) => {
+    if (!token || !executionId) return
+    if (!options?.silent) setLoadingDetailById((prev) => ({ ...prev, [executionId]: true }))
+    try {
+      const [runResponse, eventsResponse] = await Promise.all([
+        api.get<{ run: ExecutionRun }>(`/api/admin/executions/${executionId}`, token),
+        api.get<{ items: ExecutionEvent[] }>(`/api/admin/executions/${executionId}/events`, token),
+      ])
+      setDetailById((prev) => ({ ...prev, [executionId]: runResponse.run }))
+      setEventsById((prev) => ({ ...prev, [executionId]: eventsResponse.items }))
+    } finally {
+      setLoadingDetailById((prev) => ({ ...prev, [executionId]: false }))
+    }
+  }, [token])
+
+  useEffect(() => {
     void loadRuns()
-
-    return () => {
-      cancelled = true
-    }
   }, [
-    activeExecutionId,
     filters.actorType,
     filters.channel,
     filters.dateFrom,
@@ -263,452 +269,328 @@ export const ExecutionsPage = () => {
     filters.phase,
     filters.query,
     filters.status,
-    openedExecutionIds,
-    token,
+    token
   ])
+
+  useEffect(() => {
+    if (activeExecutionId) {
+      void loadDetail(activeExecutionId)
+    }
+  }, [activeExecutionId, token])
 
   useEffect(() => {
     if (!filters.selected) return
     setOpenedExecutionIds((prev) => (prev.includes(filters.selected) ? prev : [...prev, filters.selected]))
   }, [filters.selected])
 
-  useEffect(() => {
-    if (!token || !activeExecutionId) return
-
-    let cancelled = false
-
-    const loadDetail = async () => {
-      try {
-        setLoadingDetailById((prev) => ({ ...prev, [activeExecutionId]: true }))
-        const [runResponse, eventsResponse] = await Promise.all([
-          api.get<{ run: ExecutionRun }>(`/api/admin/executions/${activeExecutionId}`, token),
-          api.get<{ items: ExecutionEvent[] }>(`/api/admin/executions/${activeExecutionId}/events`, token),
-        ])
-        if (cancelled) return
-        setDetailById((prev) => ({ ...prev, [activeExecutionId]: runResponse.run }))
-        setEventsById((prev) => ({ ...prev, [activeExecutionId]: eventsResponse.items }))
-      } finally {
-        if (!cancelled) {
-          setLoadingDetailById((prev) => ({ ...prev, [activeExecutionId]: false }))
-        }
-      }
-    }
-
-    void loadDetail()
-
-    return () => {
-      cancelled = true
-    }
-  }, [activeExecutionId, token])
-
   return (
-    <div className="flex max-w-[1500px] flex-col gap-6">
-      <Card className="border-[#1a1a1a] bg-[#111] text-zinc-300 shadow-md shadow-black/20">
-        <CardHeader className="border-b border-[#1a1a1a] pb-4">
-          <CardTitle className="text-zinc-100">AI Executions</CardTitle>
-          <CardDescription className="mt-1 text-zinc-500">
-            Unified desktop and Lark execution timelines with scoped filtering for user, mode, status, and lifecycle events.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4 pt-6">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+    <TooltipProvider delayDuration={0}>
+      <div className="flex flex-col gap-8 p-8 rounded-3xl border border-border/40 bg-card/30 backdrop-blur-xl shadow-2xl">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="relative group flex-1 max-w-lg">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/50 group-focus-within:text-primary transition-colors" />
             <Input
               value={filters.query}
               onChange={(event) => updateFilters({ query: event.target.value || null })}
-              placeholder="Search execution, request, task, thread, user"
-              className="border-[#222] bg-[#0a0a0a]"
+              placeholder="Search traces, tasks, or users..."
+              className="bg-background/50 border-border/30 h-11 pl-12 rounded-xl focus-visible:ring-primary/20"
             />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
             <Select value={filters.channel} onValueChange={(value) => updateFilters({ channel: value })}>
-              <SelectTrigger className="border-[#222] bg-[#0a0a0a]">
+              <SelectTrigger className="bg-background/50 border-border/30 h-11 w-[160px] text-xs font-bold uppercase tracking-widest rounded-xl">
                 <SelectValue placeholder="Channel" />
               </SelectTrigger>
-              <SelectContent className="border-[#222] bg-[#111] text-zinc-300">
-                <SelectItem value="all">All channels</SelectItem>
+              <SelectContent>
+                <SelectItem value="all">All Channels</SelectItem>
                 <SelectItem value="desktop">Desktop</SelectItem>
                 <SelectItem value="lark">Lark</SelectItem>
               </SelectContent>
             </Select>
-            <Select value={filters.mode} onValueChange={(value) => updateFilters({ mode: value })}>
-              <SelectTrigger className="border-[#222] bg-[#0a0a0a]">
-                <SelectValue placeholder="Mode" />
-              </SelectTrigger>
-              <SelectContent className="border-[#222] bg-[#111] text-zinc-300">
-                <SelectItem value="all">All modes</SelectItem>
-                <SelectItem value="fast">Fast</SelectItem>
-                <SelectItem value="high">High</SelectItem>
-                <SelectItem value="xtreme">Xtreme</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={filters.status} onValueChange={(value) => updateFilters({ status: value })}>
-              <SelectTrigger className="border-[#222] bg-[#0a0a0a]">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent className="border-[#222] bg-[#111] text-zinc-300">
-                <SelectItem value="all">All statuses</SelectItem>
-                <SelectItem value="running">Running</SelectItem>
-                <SelectItem value="completed">Completed</SelectItem>
-                <SelectItem value="failed">Failed</SelectItem>
-                <SelectItem value="cancelled">Cancelled</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={filters.phase} onValueChange={(value) => updateFilters({ phase: value })}>
-              <SelectTrigger className="border-[#222] bg-[#0a0a0a]">
-                <SelectValue placeholder="Phase" />
-              </SelectTrigger>
-              <SelectContent className="border-[#222] bg-[#111] text-zinc-300">
-                <SelectItem value="all">All phases</SelectItem>
-                <SelectItem value="request">Request</SelectItem>
-                <SelectItem value="planning">Planning</SelectItem>
-                <SelectItem value="tool">Tool</SelectItem>
-                <SelectItem value="synthesis">Synthesis</SelectItem>
-                <SelectItem value="delivery">Delivery</SelectItem>
-                <SelectItem value="error">Error</SelectItem>
-                <SelectItem value="control">Control</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={filters.actorType} onValueChange={(value) => updateFilters({ actorType: value })}>
-              <SelectTrigger className="border-[#222] bg-[#0a0a0a]">
-                <SelectValue placeholder="Actor type" />
-              </SelectTrigger>
-              <SelectContent className="border-[#222] bg-[#111] text-zinc-300">
-                <SelectItem value="all">All actors</SelectItem>
-                <SelectItem value="system">System</SelectItem>
-                <SelectItem value="planner">Planner</SelectItem>
-                <SelectItem value="agent">Agent</SelectItem>
-                <SelectItem value="tool">Tool</SelectItem>
-                <SelectItem value="model">Model</SelectItem>
-                <SelectItem value="delivery">Delivery</SelectItem>
-              </SelectContent>
-            </Select>
-            <Input
-              type="date"
-              value={filters.dateFrom}
-              onChange={(event) => updateFilters({ dateFrom: event.target.value })}
-              className="border-[#222] bg-[#0a0a0a]"
-            />
-            <Input
-              type="date"
-              value={filters.dateTo}
-              onChange={(event) => updateFilters({ dateTo: event.target.value })}
-              className="border-[#222] bg-[#0a0a0a]"
-            />
+            <div className="flex items-center gap-3 bg-background/50 border border-border/30 rounded-xl px-4 h-11 shadow-sm">
+              <Calendar className="h-4 w-4 text-muted-foreground/60" />
+              <input 
+                type="date" 
+                value={filters.dateFrom} 
+                onChange={(e) => updateFilters({ dateFrom: e.target.value })}
+                className="bg-transparent text-[11px] font-bold uppercase tracking-tighter outline-none text-foreground"
+              />
+              <Separator orientation="vertical" className="h-4 bg-border/40" />
+              <input 
+                type="date" 
+                value={filters.dateTo} 
+                onChange={(e) => updateFilters({ dateTo: e.target.value })}
+                className="bg-transparent text-[11px] font-bold uppercase tracking-tighter outline-none text-foreground"
+              />
+            </div>
           </div>
+        </div>
 
-          <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-            <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3">
-              <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">Total</div>
-              <div className="mt-2 text-2xl font-semibold text-zinc-100">{summary?.totalRuns ?? 0}</div>
+        <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
+          {[
+            { label: 'Total', value: summary?.totalRuns, color: 'text-foreground' },
+            { label: 'Failures', value: summary?.failedRuns, color: 'text-red-500' },
+            { label: 'Active', value: summary?.activeRuns, color: 'text-amber-500' },
+            { label: 'Desktop', value: summary?.byChannel.desktop, color: 'text-foreground' },
+            { label: 'Lark', value: summary?.byChannel.lark, color: 'text-foreground' },
+            { label: 'Xtreme', value: summary?.byMode.xtreme, color: 'text-primary' },
+          ].map((stat, i) => (
+            <div key={i} className="p-5 rounded-2xl border border-border/30 bg-muted/10 space-y-2 group hover:border-primary/20 transition-all">
+              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60 group-hover:text-primary transition-colors">{stat.label}</span>
+              <div className={cn("text-2xl font-bold tracking-tight", stat.color)}>{stat.value ?? 0}</div>
             </div>
-            <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3">
-              <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">Failures</div>
-              <div className="mt-2 text-2xl font-semibold text-rose-400">{summary?.failedRuns ?? 0}</div>
-            </div>
-            <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3">
-              <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">Running</div>
-              <div className="mt-2 text-2xl font-semibold text-amber-300">{summary?.activeRuns ?? 0}</div>
-            </div>
-            <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3">
-              <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">Desktop</div>
-              <div className="mt-2 text-2xl font-semibold text-zinc-100">{summary?.byChannel.desktop ?? 0}</div>
-            </div>
-            <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3">
-              <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">Lark</div>
-              <div className="mt-2 text-2xl font-semibold text-zinc-100">{summary?.byChannel.lark ?? 0}</div>
-            </div>
-            <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3">
-              <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">Modes</div>
-              <div className="mt-2 flex flex-wrap gap-2 text-xs text-zinc-300">
-                <span>fast {summary?.byMode.fast ?? 0}</span>
-                <span>high {summary?.byMode.high ?? 0}</span>
-                <span>xtreme {summary?.byMode.xtreme ?? 0}</span>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid gap-10 xl:grid-cols-[1fr_460px] h-[calc(100vh-340px)] min-h-[600px]">
+        <div className="flex flex-col min-h-0">
+          <Card className="bg-card/20 border-border/40 shadow-2xl overflow-hidden backdrop-blur-sm rounded-3xl flex-1 flex flex-col">
+            <CardHeader className="border-b border-border/40 bg-muted/20 p-8 flex flex-row items-center justify-between shrink-0">
+              <div>
+                <CardTitle className="text-xl font-bold tracking-tight">Execution Timeline</CardTitle>
+                <CardDescription className="text-sm font-medium text-muted-foreground/70">Live telemetry across platform orchestration nodes.</CardDescription>
               </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className="border-[#1a1a1a] bg-[#111] text-zinc-300 shadow-md shadow-black/20">
-        <CardHeader className="border-b border-[#1a1a1a] pb-4">
-          <CardTitle className="text-zinc-100">Execution Runs</CardTitle>
-          <CardDescription className="mt-1 text-zinc-500">
-            Open a run below to explore it in the full-page prompt tabs. {session?.role === 'COMPANY_ADMIN' ? 'Scoped to your company.' : 'Cross-company super-admin view.'}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="pt-6">
-          <div className="space-y-3">
-            {loadingRuns ? (
-              Array.from({ length: 6 }).map((_, index) => (
-                <div key={index} className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] p-4">
-                  <Skeleton className="h-4 w-40" />
-                  <Skeleton className="mt-2 h-3 w-64" />
-                  <Skeleton className="mt-3 h-3 w-32" />
-                </div>
-              ))
-            ) : runs.length > 0 ? (
-              runs.map((run) => (
-                <button
-                  key={run.id}
-                  type="button"
-                  onClick={() => openExecution(run)}
-                  className={cn(
-                    'w-full rounded-xl border bg-[#0a0a0a] p-4 text-left transition-colors',
-                    activeExecutionId === run.id ? 'border-[#333] bg-[#121212]' : 'border-[#1a1a1a] hover:border-[#252525] hover:bg-[#101010]',
-                  )}
+              <div className="flex items-center gap-3">
+                <Button 
+                  variant="outline" 
+                  size="icon" 
+                  className="h-10 w-10 rounded-xl border-border/40 bg-background/50"
+                  disabled={filters.page <= 1}
+                  onClick={() => updateFilters({ page: String(filters.page - 1) })}
                 >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="font-mono text-sm text-zinc-100">{run.id.slice(0, 8)}</div>
-                        <Badge variant="outline" className="border-[#222] bg-transparent text-zinc-400">
-                          {run.channel}
-                        </Badge>
-                        {run.mode ? (
-                          <Badge variant="outline" className="border-[#222] bg-transparent text-zinc-400">
-                            {run.mode}
-                          </Badge>
-                        ) : null}
-                        <span className={cn('rounded-full border px-2 py-0.5 text-[11px] capitalize', statusTone(run.status))}>
-                          {run.status}
-                        </span>
-                      </div>
-                      <div className="mt-2 text-sm text-zinc-300">
-                        {run.userEmail ?? run.userName ?? run.userId ?? 'Unknown user'}
-                        <span className="text-zinc-500"> · {run.companyName ?? run.companyId}</span>
-                      </div>
-                      <div className="mt-2 line-clamp-2 text-sm leading-6 text-zinc-500">
-                        {run.latestSummary ?? 'No summary captured.'}
-                      </div>
-                    </div>
-                    <div className="text-right text-xs text-zinc-500">
-                      <div>{formatDateTime(run.startedAt)}</div>
-                      <div className="mt-1">{formatDuration(run.durationMs)}</div>
-                      <div className="mt-1">{run.eventCount} events</div>
-                    </div>
-                  </div>
-                </button>
-              ))
-            ) : (
-              <div className="rounded-xl border border-dashed border-[#222] bg-[#0a0a0a] px-4 py-6 text-sm text-zinc-500">
-                No executions found for the current filters.
+                  <ChevronLeft className="h-5 w-5" />
+                </Button>
+                <div className="bg-muted/30 px-4 py-2 rounded-xl border border-border/20">
+                  <span className="text-[10px] font-bold text-foreground tracking-widest uppercase">{filters.page} / {totalPages}</span>
+                </div>
+                <Button 
+                  variant="outline" 
+                  size="icon" 
+                  className="h-10 w-10 rounded-xl border-border/40 bg-background/50"
+                  disabled={filters.page >= totalPages}
+                  onClick={() => updateFilters({ page: String(filters.page + 1) })}
+                >
+                  <ChevronRight className="h-5 w-5" />
+                </Button>
               </div>
-            )}
-          </div>
-
-          <div className="mt-4 flex items-center justify-between border-t border-[#1a1a1a] pt-4 text-sm text-zinc-500">
-            <span>Page {filters.page} of {totalPages}</span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                disabled={filters.page <= 1}
-                onClick={() => updateFilters({ page: String(filters.page - 1) })}
-                className="rounded-lg border border-[#222] px-3 py-1.5 disabled:opacity-40"
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                disabled={filters.page >= totalPages}
-                onClick={() => updateFilters({ page: String(filters.page + 1) })}
-                className="rounded-lg border border-[#222] px-3 py-1.5 disabled:opacity-40"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card ref={detailCardRef} className="border-[#1a1a1a] bg-[#111] text-zinc-300 shadow-md shadow-black/20">
-        <CardHeader className="border-b border-[#1a1a1a] pb-4">
-          <CardTitle className="text-zinc-100">Prompt Explorer</CardTitle>
-          <CardDescription className="mt-1 text-zinc-500">
-            Open prompts appear as tabs. Switch between them without losing your place in the timeline.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="pt-6">
-          {openedExecutionIds.length > 0 ? (
-            <div className="space-y-5">
-              <ScrollArea className="w-full whitespace-nowrap rounded-xl border border-[#1a1a1a] bg-[#0a0a0a]">
-                <div className="flex min-w-full gap-2 p-3">
-                  {openedExecutionIds.map((executionId) => {
-                    const run = detailById[executionId] ?? runs.find((entry) => entry.id === executionId) ?? null
-                    const isActive = activeExecutionId === executionId
-                    return (
-                      <div
-                        key={executionId}
+            </CardHeader>
+            <CardContent className="p-0 flex-1 min-h-0">
+              <ScrollArea className="h-full">
+                <div className="divide-y divide-border/40">
+                  {loadingRuns ? (
+                    Array.from({ length: 8 }).map((_, i) => (
+                      <div key={i} className="p-8 space-y-4">
+                        <Skeleton className="h-5 w-1/4 rounded-lg opacity-40" />
+                        <Skeleton className="h-4 w-1/2 rounded-lg opacity-20" />
+                      </div>
+                    ))
+                  ) : runs.length > 0 ? (
+                    runs.map((run) => (
+                      <button
+                        key={run.id}
+                        onClick={() => openExecution(run)}
                         className={cn(
-                          'flex min-w-[240px] max-w-[360px] items-center gap-2 rounded-xl border px-3 py-2',
-                          isActive ? 'border-[#3a3a3a] bg-[#151515]' : 'border-[#202020] bg-[#0f0f0f]',
+                          "w-full p-8 text-left transition-all hover:bg-primary/[0.03] flex items-start justify-between group relative overflow-hidden",
+                          activeExecutionId === run.id && "bg-primary/[0.05]"
                         )}
                       >
-                        <button
-                          type="button"
-                          onClick={() => updateFilters({ selected: executionId }, { preservePage: true })}
-                          className="min-w-0 flex-1 text-left"
-                        >
-                          <div className="truncate text-sm font-medium text-zinc-100">
-                            {buildTabLabel(run, executionId)}
+                        {activeExecutionId === run.id && <div className="absolute top-0 left-0 w-1.5 h-full bg-primary shadow-[0_0_15px_rgba(var(--primary),0.5)]" />}
+                        <div className="flex items-start gap-6 min-w-0">
+                          <div className={cn(
+                            "h-14 w-14 rounded-2xl border flex items-center justify-center shrink-0 transition-all duration-500 shadow-sm",
+                            activeExecutionId === run.id ? "bg-primary/10 border-primary/30 text-primary scale-110 shadow-lg" : "bg-muted/50 border-border/40 text-muted-foreground group-hover:bg-background group-hover:text-foreground"
+                          )}>
+                            {run.channel === 'lark' ? <MessageSquare className="h-6 w-6" /> : <Activity className="h-6 w-6" />}
                           </div>
-                          <div className="mt-1 flex items-center gap-2 text-xs text-zinc-500">
-                            <span className="font-mono">{executionId.slice(0, 8)}</span>
-                            {run?.status ? (
-                              <span className={cn('rounded-full border px-2 py-0.5 capitalize', statusTone(run.status))}>
-                                {run.status}
+                          <div className="min-w-0 space-y-2">
+                            <div className="flex items-center gap-3 flex-wrap">
+                              <span className="text-base font-bold text-foreground truncate tracking-tight">
+                                {run.userEmail || run.userName || 'System Auth'}
                               </span>
-                            ) : null}
+                              <Badge variant="outline" className="text-[10px] font-mono border-border/40 h-5 px-2 bg-muted/20">{run.id.slice(0, 8)}</Badge>
+                              {statusBadge(run.status)}
+                            </div>
+                            <p className="text-sm text-muted-foreground/80 font-medium line-clamp-1 italic">
+                              {run.latestSummary ? `"${run.latestSummary}"` : 'Initializing execution flow...'}
+                            </p>
+                            <div className="flex items-center gap-4 pt-1">
+                              <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-tighter text-muted-foreground/60">
+                                <Clock className="h-3.5 w-3.5" />
+                                {formatDuration(run.durationMs)}
+                              </div>
+                              <Separator orientation="vertical" className="h-3 bg-border/40" />
+                              <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-tighter text-muted-foreground/60">
+                                <Terminal className="h-3.5 w-3.5" />
+                                {run.eventCount} Events
+                              </div>
+                              {run.mode && (
+                                <Badge variant="outline" className="text-[9px] font-bold uppercase tracking-widest h-5 bg-primary/5 text-primary border-primary/20">{run.mode}</Badge>
+                              )}
+                            </div>
                           </div>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => closeExecution(executionId)}
-                          className="rounded-lg border border-[#222] p-1.5 text-zinc-500 hover:text-zinc-200"
-                          aria-label={`Close ${executionId}`}
-                        >
-                          <X size={14} />
-                        </button>
+                        </div>
+                        <div className="flex flex-col items-end gap-3 shrink-0 pt-1">
+                          <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">{formatDateTime(run.startedAt)}</span>
+                          <ChevronRight className={cn(
+                            "h-5 w-5 transition-all duration-500 opacity-0 group-hover:opacity-100",
+                            activeExecutionId === run.id ? "text-primary opacity-100 translate-x-1" : "text-muted-foreground"
+                          )} />
+                        </div>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="p-32 text-center flex flex-col items-center gap-6">
+                      <div className="h-20 w-20 rounded-3xl bg-muted/20 border border-border/30 flex items-center justify-center shadow-inner">
+                        <Activity className="h-10 w-10 text-muted-foreground/20" />
                       </div>
-                    )
-                  })}
+                      <p className="text-sm font-bold uppercase tracking-widest text-muted-foreground/50">No operational data detected.</p>
+                    </div>
+                  )}
                 </div>
               </ScrollArea>
+            </CardContent>
+          </Card>
+        </div>
 
-              {activeLoadingDetail ? (
-                <div className="space-y-3">
-                  <Skeleton className="h-20 w-full" />
-                  <Skeleton className="h-40 w-full" />
-                  <Skeleton className="h-48 w-full" />
+        <div className="flex flex-col min-h-0">
+          <Card ref={detailCardRef} className="bg-card/30 border-border/40 shadow-2xl overflow-hidden flex-1 flex flex-col backdrop-blur-xl rounded-3xl">
+            {!activeExecutionId ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-16 text-center bg-muted/5">
+                <div className="h-24 w-24 rounded-[2.5rem] bg-muted/20 border border-border/20 flex items-center justify-center mb-8 shadow-inner">
+                  <Zap className="h-12 w-12 text-muted-foreground/30" />
                 </div>
-              ) : activeDetail ? (
-                <div className="space-y-4">
-                  <div className="grid gap-3 xl:grid-cols-4">
-                    <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3">
-                      <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">Execution</div>
-                      <div className="mt-2 font-mono text-sm text-zinc-100">{activeDetail.id}</div>
-                      <div className="mt-2 text-sm text-zinc-500">{activeDetail.entrypoint}</div>
+                <h3 className="text-xl font-bold tracking-tight">Trace Inspector</h3>
+                <p className="text-sm text-muted-foreground/70 font-medium max-w-[280px] mt-3 leading-relaxed">
+                  Select an operational flow from the timeline to perform deep-packet inspection of its lifecycle.
+                </p>
+              </div>
+            ) : activeLoadingDetail ? (
+              <div className="p-10 space-y-10 flex-1">
+                <div className="flex items-center gap-6">
+                  <Skeleton className="h-16 w-16 rounded-2xl opacity-40" />
+                  <div className="space-y-3">
+                    <Skeleton className="h-6 w-56 opacity-40" />
+                    <Skeleton className="h-4 w-32 opacity-20" />
+                  </div>
+                </div>
+                <Skeleton className="h-[400px] w-full rounded-3xl opacity-10" />
+              </div>
+            ) : (
+              <>
+                <div className="p-8 border-b border-border/40 bg-muted/20 flex items-center justify-between backdrop-blur-sm shrink-0">
+                  <div className="flex items-center gap-6">
+                    <div className="h-16 w-16 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shadow-lg">
+                      <Activity className="h-8 w-8" />
                     </div>
-                    <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3">
-                      <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">User / Company</div>
-                      <div className="mt-2 text-sm text-zinc-100">{activeDetail.userEmail ?? activeDetail.userName ?? activeDetail.userId ?? 'Unknown user'}</div>
-                      <div className="mt-2 text-sm text-zinc-500">{activeDetail.companyName ?? activeDetail.companyId}</div>
-                    </div>
-                    <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3">
-                      <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">Started</div>
-                      <div className="mt-2 text-sm text-zinc-100">{formatDateTime(activeDetail.startedAt)}</div>
-                      <div className="mt-2 text-sm text-zinc-500">Duration {formatDuration(activeDetail.durationMs)}</div>
-                    </div>
-                    <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3">
-                      <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">Identifiers</div>
-                      <div className="mt-2 space-y-1 text-sm text-zinc-500">
-                        <div>request {activeDetail.requestId ?? 'n/a'}</div>
-                        <div>task {activeDetail.taskId ?? 'n/a'}</div>
-                        <div>thread {activeDetail.threadId ?? 'n/a'}</div>
+                    <div className="min-w-0">
+                      <div className="text-lg font-bold truncate pr-4 tracking-tight">{activeDetail?.id.slice(0, 16)}...</div>
+                      <div className="flex items-center gap-3 mt-1.5">
+                        {statusBadge(activeDetail?.status)}
+                        <Badge variant="outline" className="text-[10px] font-bold uppercase tracking-widest bg-muted/30 border-border/20">{activeDetail?.channel}</Badge>
                       </div>
                     </div>
                   </div>
+                  <Button variant="ghost" size="icon" className="h-10 w-10 rounded-full hover:bg-accent/50 transition-colors" onClick={() => updateFilters({ selected: null })}>
+                    <X className="h-5 w-5" />
+                  </Button>
+                </div>
 
-                  {activePlanPayload ? (
-                    <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-4">
-                      <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">Execution Plan</div>
-                      <div className="mt-2 text-sm text-zinc-100">
-                        {typeof activePlanPayload.goal === 'string' ? activePlanPayload.goal : 'Execution plan'}
-                      </div>
-                      {Array.isArray(activePlanPayload.tasks) ? (
-                        <div className="mt-3 grid gap-2 xl:grid-cols-2">
-                          {activePlanPayload.tasks.map((task, index) => {
-                            const entry = task as { title?: string; ownerAgent?: string; status?: string }
-                            return (
-                              <div key={`${index}-${entry.title ?? 'task'}`} className="rounded-lg border border-[#1a1a1a] bg-[#101010] px-3 py-3">
-                                <div className="text-sm text-zinc-200">{index + 1}. {entry.title ?? 'Untitled task'}</div>
-                                <div className="mt-1 text-xs text-zinc-500">{entry.ownerAgent ?? 'planner'} · {entry.status ?? 'pending'}</div>
-                              </div>
-                            )
-                          })}
+                <div className="px-8 py-6 border-b border-border/40 flex items-center gap-8 bg-muted/10 shrink-0">
+                  <div className="flex-1 space-y-1.5">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">Operator</div>
+                    <div className="text-sm font-bold truncate text-foreground/90">{activeDetail?.userEmail || 'System Core'}</div>
+                  </div>
+                  <Separator orientation="vertical" className="h-10 bg-border/40" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">Runtime</div>
+                    <div className="text-sm font-bold text-foreground/90">{formatDuration(activeDetail?.durationMs)}</div>
+                  </div>
+                </div>
+
+                <ScrollArea className="flex-1 min-h-0">
+                  <div className="p-8 space-y-10">
+                    {activeSynthesisEvent && (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-primary">
+                          <ArrowUpRight className="h-4 w-4" />
+                          Final Agent Synthesis
                         </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {activeSynthesisEvent?.summary ? (
-                    <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-4">
-                      <div className="text-xs uppercase tracking-[0.14em] text-zinc-500">Final Synthesis</div>
-                      <div className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-300">
-                        {activeSynthesisEvent.summary}
+                        <div className="p-6 rounded-2xl bg-primary/5 border border-primary/10 text-sm font-medium leading-relaxed text-foreground whitespace-pre-wrap italic shadow-inner">
+                          "{activeSynthesisEvent.summary}"
+                        </div>
                       </div>
-                    </div>
-                  ) : null}
+                    )}
 
-                  <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a]">
-                    <div className="border-b border-[#1a1a1a] px-4 py-3 text-xs uppercase tracking-[0.14em] text-zinc-500">
-                      Lifecycle Timeline
-                    </div>
-                    <ScrollArea className="h-[720px]">
-                      <div className="space-y-3 p-4">
-                        {activeEvents.map((event) => {
-                          const payloadOpen = expandedPayloads[event.id] ?? (event.status === 'failed' || event.status === 'running')
+                    <div className="space-y-6">
+                      <div className="flex items-center justify-between">
+                        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">Operational Event Log</div>
+                        <Badge variant="secondary" className="text-[10px] h-5 font-bold px-2 bg-muted/30 border-border/20">{activeEvents.length} Sequence Nodes</Badge>
+                      </div>
+
+                      <div className="relative pl-6 border-l-2 border-border/40 space-y-8 ml-3">
+                        {activeEvents.map((event, i) => {
+                          const isOpen = expandedPayloads[event.id]
                           return (
-                            <div key={event.id} className="rounded-xl border border-[#1a1a1a] bg-[#101010] px-4 py-3">
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <Badge variant="outline" className="border-[#222] bg-transparent text-zinc-400">
-                                      {phaseLabel[event.phase]}
-                                    </Badge>
-                                    {event.status ? (
-                                      <span className={cn('rounded-full border px-2 py-0.5 text-[11px] capitalize', statusTone(event.status))}>
-                                        {event.status}
-                                      </span>
-                                    ) : null}
-                                    <span className="text-xs text-zinc-500">#{event.sequence}</span>
-                                  </div>
-                                  <div className="mt-2 text-sm font-medium text-zinc-100">{event.title}</div>
-                                  {event.summary ? (
-                                    <div className="mt-1 whitespace-pre-wrap text-sm leading-6 text-zinc-400">
-                                      {event.summary}
-                                    </div>
-                                  ) : null}
-                                  <div className="mt-2 text-xs text-zinc-500">
-                                    {formatDateTime(event.createdAt)}
-                                    {event.actorKey ? ` · ${event.actorKey}` : ''}
-                                  </div>
+                            <div key={event.id} className="relative group/event">
+                              <div className={cn(
+                                "absolute -left-[33px] top-1 h-4 w-4 rounded-full bg-background border-4 transition-all duration-500",
+                                isOpen ? "border-primary scale-125 shadow-[0_0_10px_rgba(var(--primary),0.5)]" : "border-border group-hover/event:border-primary/50"
+                              )} />
+                              <div className="space-y-2.5">
+                                <div className="flex items-center justify-between gap-4">
+                                  <span className="text-sm font-bold text-foreground/90 leading-tight">{event.title}</span>
+                                  <span className="text-[10px] font-bold text-muted-foreground/50 tabular-nums uppercase">{new Date(event.createdAt).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
                                 </div>
-                                {event.payload ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => setExpandedPayloads((prev) => ({ ...prev, [event.id]: !payloadOpen }))}
-                                    className="rounded-lg border border-[#222] px-2.5 py-1 text-xs text-zinc-400 hover:text-zinc-200"
-                                  >
-                                    {payloadOpen ? 'Hide payload' : 'Show payload'}
-                                  </button>
-                                ) : null}
+                                {event.summary && (
+                                  <p className="text-[13px] text-muted-foreground/80 font-medium leading-relaxed pr-6">{event.summary}</p>
+                                )}
+                                <div className="flex items-center gap-3">
+                                  <Badge variant="outline" className="text-[9px] font-bold h-4 px-1.5 uppercase tracking-widest border-border/40 text-muted-foreground/70 bg-muted/10 font-mono">
+                                    {event.phase}
+                                  </Badge>
+                                  {event.payload && (
+                                    <button 
+                                      onClick={() => setExpandedPayloads(prev => ({ ...prev, [event.id]: !isOpen }))}
+                                      className="text-[10px] font-bold text-primary hover:underline uppercase tracking-widest decoration-2 underline-offset-4"
+                                    >
+                                      {isOpen ? 'Close Data' : 'View Payload'}
+                                    </button>
+                                  )}
+                                </div>
+                                {isOpen && event.payload && (
+                                  <div className="mt-4 p-5 rounded-2xl bg-black/40 border border-border/40 overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300">
+                                    <pre className="text-[10px] font-mono text-zinc-400 overflow-auto max-h-[400px] custom-scrollbar leading-relaxed">
+                                      {JSON.stringify(event.payload, null, 2)}
+                                    </pre>
+                                  </div>
+                                )}
                               </div>
-                              {payloadOpen && event.payload ? (
-                                <pre className="mt-3 overflow-x-auto rounded-lg border border-[#181818] bg-[#090909] p-3 text-xs leading-6 text-zinc-400">
-                                  {JSON.stringify(event.payload, null, 2)}
-                                </pre>
-                              ) : null}
                             </div>
                           )
                         })}
-                        {activeEvents.length === 0 ? (
-                          <div className="text-sm text-zinc-500">No events recorded for this execution.</div>
-                        ) : null}
                       </div>
-                    </ScrollArea>
+                    </div>
+                  </div>
+                </ScrollArea>
+
+                <div className="p-6 border-t border-border/40 bg-muted/20 shrink-0">
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground/50 font-bold uppercase tracking-[0.2em]">
+                    <div className="flex items-center gap-2">
+                      <Shield className="h-3 w-3" />
+                      <span>REQ: {activeDetail?.requestId?.slice(0, 12) || 'N/A'}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Layers className="h-3 w-3" />
+                      <span>THRD: {activeDetail?.threadId?.slice(0, 12) || 'N/A'}</span>
+                    </div>
                   </div>
                 </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-[#222] bg-[#0a0a0a] px-4 py-6 text-sm text-zinc-500">
-                  Select a prompt from the execution list to open it as a full-page exploration tab.
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="rounded-xl border border-dashed border-[#222] bg-[#0a0a0a] px-4 py-6 text-sm text-zinc-500">
-              No prompt tabs are open yet. Select an execution run above to explore it.
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+              </>
+            )}
+          </Card>
+        </div>
+      </div>
+    </TooltipProvider>
   )
 }

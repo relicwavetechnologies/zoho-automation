@@ -7,7 +7,7 @@ import { adminDepartmentsController } from './admin-departments.controller';
 const router = Router();
 
 router.use(requireAdminSession());
-router.use(requireAdminRole('SUPER_ADMIN', 'COMPANY_ADMIN', 'DEPARTMENT_MANAGER'));
+router.use(requireAdminRole('SUPER_ADMIN', 'COMPANY_ADMIN'));
 
 router.get('/', asyncHandler(adminDepartmentsController.list));
 router.get('/:departmentId', asyncHandler(adminDepartmentsController.detail));

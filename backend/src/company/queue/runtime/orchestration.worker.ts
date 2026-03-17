@@ -235,6 +235,8 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     message,
     latestCheckpoint,
   });
+  const rolledBackFrom = null;
+  const rollbackReasonCode = null;
   const resolvedCompanyId = extractCompanyIdFromAgentResults(result.agentResults as Array<Record<string, unknown>>);
   if (!trackedCompanyId && resolvedCompanyId) {
     trackedCompanyId = resolvedCompanyId;

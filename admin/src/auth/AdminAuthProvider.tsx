@@ -41,6 +41,9 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
       api.get<AdminSession>('/api/admin/auth/me', activeToken),
       api.get<{ navItems: AdminNavItem[] }>('/api/admin/auth/capabilities', activeToken),
     ]);
+    if (resolvedSession.role === 'DEPARTMENT_MANAGER') {
+      throw new Error('Department managers do not have admin dashboard access in this phase.');
+    }
     setSession(resolvedSession);
     setNavItems(
       capabilities.navItems.map((item) => ({

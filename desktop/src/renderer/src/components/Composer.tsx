@@ -23,11 +23,6 @@ type AttachedFile = {
   errorMsg?: string
 }
 
-function maskValue(value: string, start = 8, end = 6): string {
-  if (value.length <= start + end + 1) return value
-  return `${value.slice(0, start)}...${value.slice(-end)}`
-}
-
 const MAX_MB = 25
 const ALLOWED_TYPES = new Set([
   'application/pdf',
@@ -156,7 +151,6 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [mode, setMode] = useState<ComposerMode>('high')
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false)
-  const [copiedField, setCopiedField] = useState<'thread' | 'token' | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const modeMenuRef = useRef<HTMLDivElement>(null)
@@ -310,18 +304,6 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
   const referencedIds = new Set(attachments.map(a => a.fileAssetId).filter(Boolean) as string[])
   const selectedMode = MODE_OPTIONS.find((option) => option.value === mode) ?? MODE_OPTIONS[1]
   const SelectedModeIcon = selectedMode.icon
-  const visibleThreadId = activeThread?.id ?? null
-  const visibleToken = token ?? null
-
-  const handleCopy = useCallback(async (field: 'thread' | 'token', value: string) => {
-    try {
-      await navigator.clipboard.writeText(value)
-      setCopiedField(field)
-      window.setTimeout(() => setCopiedField((current) => current === field ? null : current), 1600)
-    } catch {
-      setCopiedField(null)
-    }
-  }, [])
 
   return (
     <div
@@ -533,36 +515,6 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
             </div>
           </div>
         </div>
-
-        {(visibleThreadId || visibleToken) && (
-          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-2xl border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,8%)] px-3 py-2 text-[11px] text-[hsl(0,0%,64%)]">
-            <span className="font-medium uppercase tracking-[0.16em] text-[hsl(0,0%,42%)]">Harness</span>
-            {visibleThreadId && (
-              <button
-                type="button"
-                onClick={() => void handleCopy('thread', visibleThreadId)}
-                className="inline-flex max-w-full items-center gap-2 rounded-xl border border-[hsl(0,0%,18%)] bg-[hsl(0,0%,11%)] px-2.5 py-1 text-left hover:border-[hsl(0,0%,26%)] hover:text-[hsl(0,0%,86%)]"
-                title={visibleThreadId}
-              >
-                <span className="shrink-0 text-[hsl(0,0%,46%)]">Thread</span>
-                <span className="truncate font-mono text-[hsl(0,0%,82%)]">{maskValue(visibleThreadId, 8, 8)}</span>
-                <span className="shrink-0 text-[hsl(210,100%,70%)]">{copiedField === 'thread' ? 'Copied' : 'Copy'}</span>
-              </button>
-            )}
-            {visibleToken && (
-              <button
-                type="button"
-                onClick={() => void handleCopy('token', visibleToken)}
-                className="inline-flex max-w-full items-center gap-2 rounded-xl border border-[hsl(0,0%,18%)] bg-[hsl(0,0%,11%)] px-2.5 py-1 text-left hover:border-[hsl(0,0%,26%)] hover:text-[hsl(0,0%,86%)]"
-                title={visibleToken}
-              >
-                <span className="shrink-0 text-[hsl(0,0%,46%)]">Token</span>
-                <span className="truncate font-mono text-[hsl(0,0%,82%)]">{maskValue(visibleToken, 10, 8)}</span>
-                <span className="shrink-0 text-[hsl(210,100%,70%)]">{copiedField === 'token' ? 'Copied' : 'Copy'}</span>
-              </button>
-            )}
-          </div>
-        )}
 
         <p className="mt-1.5 text-center text-[9px] tracking-[0.02em] text-[hsl(0,0%,28%)]">
           {currentWorkspace

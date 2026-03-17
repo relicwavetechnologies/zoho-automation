@@ -92,7 +92,7 @@ export const requireCompanyScope = () => {
       return next();
     }
 
-    if ((session.role === 'COMPANY_ADMIN' || session.role === 'DEPARTMENT_MANAGER') && session.companyId === requestedCompanyId) {
+    if (session.role === 'COMPANY_ADMIN' && session.companyId === requestedCompanyId) {
       return next();
     }
 

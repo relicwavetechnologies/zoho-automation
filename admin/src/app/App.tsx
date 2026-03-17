@@ -1,13 +1,8 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { useAdminAuth } from '../auth/AdminAuthProvider';
-import { AuditLogsPage } from '../pages/AuditLogsPage';
-import { AiModelsPage } from '../pages/AiModelsPage';
 import { AdminLayout } from '../components/layout/AdminLayout';
-import { ControlsPage } from '../pages/ControlsPage';
 import { DepartmentsPage } from '../pages/DepartmentsPage';
-import { ExecutionsPage } from '../pages/ExecutionsPage';
-import { IntegrationsPage } from '../pages/IntegrationsPage';
 import { LarkOauthCallbackPage } from '../pages/LarkOauthCallbackPage';
 import { CompanyAdminSignupPage } from '../pages/CompanyAdminSignupPage';
 import { LoginPage } from '../pages/LoginPage';
@@ -15,10 +10,9 @@ import { MemberInviteAcceptPage } from '../pages/MemberInviteAcceptPage';
 import { MemberLoginPage } from '../pages/MemberLoginPage';
 import { MembersPage } from '../pages/MembersPage';
 import { OverviewPage } from '../pages/OverviewPage';
-import TokenUsagePage from '../pages/TokenUsagePage';
+import { AiOpsPage } from '../pages/AiOpsPage';
+import { SettingsPage } from '../pages/SettingsPage';
 import { PlaceholderPage } from '../pages/PlaceholderPage';
-import { RbacPage } from '../pages/RbacPage';
-import { VectorShareRequestsPage } from '../pages/VectorShareRequestsPage';
 import { ZohoOauthCallbackPage } from '../pages/ZohoOauthCallbackPage';
 import { Toaster } from '../components/ui/toaster';
 
@@ -38,7 +32,7 @@ const Protected = ({ children }: { children: JSX.Element }) => {
 
 const DefaultProtectedRoute = () => {
   const { navItems } = useAdminAuth()
-  const fallbackPath = navItems[0]?.path ?? '/overview'
+  const fallbackPath = navItems[0]?.path ?? '/home'
   return <Navigate to={fallbackPath} replace />
 }
 
@@ -61,18 +55,22 @@ export const App = () => {
           }
         >
           <Route index element={<DefaultProtectedRoute />} />
-          <Route path="overview" element={<OverviewPage />} />
+          <Route path="home" element={<OverviewPage />} />
+          <Route path="overview" element={<Navigate to="/home" replace />} />
           <Route path="workspaces" element={<PlaceholderPage title="Workspaces" />} />
-          <Route path="members" element={<MembersPage />} />
-          <Route path="rbac" element={<RbacPage />} />
-          <Route path="audit" element={<AuditLogsPage />} />
-          <Route path="controls" element={<ControlsPage />} />
-          <Route path="executions" element={<ExecutionsPage />} />
-          <Route path="ai-models" element={<AiModelsPage />} />
-          <Route path="token-usage" element={<TokenUsagePage />} />
-          <Route path="integrations" element={<IntegrationsPage />} />
-          <Route path="vector-requests" element={<VectorShareRequestsPage />} />
+          <Route path="people" element={<MembersPage />} />
+          <Route path="members" element={<Navigate to="/people" replace />} />
+          <Route path="rbac" element={<Navigate to="/settings?tab=governance" replace />} />
+          <Route path="executions" element={<Navigate to="/ai-ops?tab=executions" replace />} />
+          <Route path="token-usage" element={<Navigate to="/ai-ops?tab=token-usage" replace />} />
+          <Route path="integrations" element={<Navigate to="/settings?tab=integrations" replace />} />
+          <Route path="audit" element={<Navigate to="/settings?tab=audit" replace />} />
+          <Route path="controls" element={<Navigate to="/settings?tab=controls" replace />} />
+          <Route path="vector-requests" element={<Navigate to="/settings?tab=share-requests" replace />} />
+          <Route path="ai-models" element={<Navigate to="/ai-ops?tab=models" replace />} />
           <Route path="departments" element={<DepartmentsPage />} />
+          <Route path="ai-ops" element={<AiOpsPage />} />
+          <Route path="settings" element={<SettingsPage />} />
           <Route path="lark/callback" element={<LarkOauthCallbackPage />} />
           <Route path="zoho/callback" element={<ZohoOauthCallbackPage />} />
         </Route>

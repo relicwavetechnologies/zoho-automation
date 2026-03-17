@@ -775,7 +775,7 @@ class DepartmentService {
           name: 'Manager',
           slug: 'MANAGER',
           isSystem: true,
-          isDefault: true,
+          isDefault: false,
         },
       });
       const memberRole = await tx.departmentRole.create({
@@ -943,6 +943,50 @@ class DepartmentService {
     };
   }
 
+  async updateDepartmentRoleSettings(
+    session: DepartmentAdminSession,
+    departmentId: string,
+    roleId: string,
+    input: { name: string; isDefault?: boolean },
+  ) {
+    await this.assertDepartmentAccess(session, departmentId);
+    const existing = await prisma.departmentRole.findFirst({
+      where: { id: roleId, departmentId },
+    });
+    if (!existing) {
+      throw new HttpException(404, 'Department role not found.');
+    }
+
+    const nextName = input.name.trim();
+    if (!nextName) {
+      throw new HttpException(400, 'Role name is required.');
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      if (input.isDefault) {
+        await tx.departmentRole.updateMany({
+          where: { departmentId },
+          data: { isDefault: false },
+        });
+      }
+
+      return tx.departmentRole.update({
+        where: { id: roleId },
+        data: {
+          name: nextName,
+          ...(input.isDefault !== undefined ? { isDefault: input.isDefault } : {}),
+        },
+      });
+    });
+
+    return {
+      id: updated.id,
+      name: updated.name,
+      slug: updated.slug,
+      isDefault: updated.isDefault,
+    };
+  }
+
   async deleteDepartmentRole(session: DepartmentAdminSession, departmentId: string, roleId: string) {
     await this.assertDepartmentAccess(session, departmentId);
     const existing = await prisma.departmentRole.findFirst({
@@ -953,6 +997,9 @@ class DepartmentService {
     }
     if (existing.isSystem) {
       throw new HttpException(400, 'System roles cannot be deleted.');
+    }
+    if (existing.isDefault) {
+      throw new HttpException(409, 'Choose a different default role before deleting this one.');
     }
     const membershipCount = await prisma.departmentMembership.count({ where: { roleId, status: 'active' } });
     if (membershipCount > 0) {
@@ -965,7 +1012,7 @@ class DepartmentService {
   async upsertDepartmentMembership(session: DepartmentAdminSession, departmentId: string, input: {
     userId?: string;
     channelIdentityId?: string;
-    roleId: string;
+    roleId?: string;
     status?: string;
   }) {
     const department = await this.assertDepartmentAccess(session, departmentId);
@@ -990,11 +1037,16 @@ class DepartmentService {
     if (!workspaceMember) {
       throw new HttpException(400, 'User must already be an active workspace member.');
     }
-    const role = await prisma.departmentRole.findFirst({
-      where: { id: input.roleId, departmentId },
-    });
+    const role = input.roleId
+      ? await prisma.departmentRole.findFirst({
+        where: { id: input.roleId, departmentId },
+      })
+      : await prisma.departmentRole.findFirst({
+        where: { departmentId, isDefault: true },
+        orderBy: [{ updatedAt: 'desc' }],
+      });
     if (!role) {
-      throw new HttpException(404, 'Department role not found.');
+      throw new HttpException(404, 'Department role not found. Configure a default department role first.');
     }
 
     const membership = await prisma.departmentMembership.upsert({
@@ -1011,7 +1063,7 @@ class DepartmentService {
       create: {
         departmentId,
         userId: resolvedUserId,
-        roleId: input.roleId,
+        roleId: role.id,
         status: input.status ?? 'active',
       },
       include: {

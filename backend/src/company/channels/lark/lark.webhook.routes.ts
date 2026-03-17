@@ -16,6 +16,7 @@ import { larkWorkspaceConfigRepository } from './lark-workspace-config.repositor
 import { larkUserAuthLinkRepository } from './lark-user-auth-link.repository';
 import { inferLarkMessageType, parseLarkAttachmentKeys } from './lark-message-content';
 import { ingestLarkAttachments } from './lark-file-ingestion';
+import { larkRecentFilesStore } from './lark-recent-files.store';
 import { orangeDebug } from '../../../utils/orange-debug';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
@@ -792,6 +793,30 @@ export const createLarkWebhookEventHandler = (
         }
       }
 
+      const shouldConsumeRecentFiles =
+        parsed.kind === 'event_callback_message'
+        && attachmentKeys.length === 0
+        && (msgType === 'text' || msgType === 'post');
+
+      if (shouldConsumeRecentFiles) {
+        const recentFiles = larkRecentFilesStore.consume(normalized.chatId);
+        if (recentFiles.length > 0) {
+          attachedFiles = [...attachedFiles, ...recentFiles];
+          dependencies.log.info('lark.ingress.recent_attachments_consumed', {
+            ...buildIngressTraceMeta({
+              requestId,
+              message: tracedMessageBase,
+              eventId: parsed.eventId,
+              textHash,
+              larkTenantKey,
+              companyId: scopedCompanyId ?? undefined,
+            }),
+            consumedFileCount: recentFiles.length,
+            fileAssetIds: recentFiles.map((file) => file.fileAssetId),
+          });
+        }
+      }
+
       const tracedMessage: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>> = {
         ...tracedMessageBase,
         attachedFiles: attachedFiles.length > 0 ? attachedFiles : undefined,
@@ -893,7 +918,7 @@ export const createLarkWebhookEventHandler = (
         });
       }
 
-      if (parsed.kind === 'event_callback_message' && (msgType === 'image' || msgType === 'file')) {
+      if (parsed.kind === 'event_callback_message' && (msgType === 'image' || msgType === 'file' || msgType === 'media')) {
         orangeDebug('lark.ingress.attachment_staged', {
           requestId,
           eventId: parsed.eventId,

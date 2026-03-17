@@ -1,5 +1,13 @@
 import { NavLink } from 'react-router-dom';
-import { Settings2, Users, LayoutDashboard, Shield, ChevronRight, Plug, Share2, Activity, Workflow, Building2 } from 'lucide-react';
+import {
+  Settings2,
+  Users,
+  LayoutDashboard,
+  ChevronRight,
+  Activity,
+  Workflow,
+  Building2,
+} from 'lucide-react';
 import type { AdminNavItem } from '../../auth/types';
 import { Badge } from '../ui/badge';
 import { ScrollArea } from '../ui/scroll-area';
@@ -7,15 +15,12 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/
 import { cn } from '../../lib/utils';
 
 const iconMap: Record<string, React.ReactNode> = {
-  Overview: <LayoutDashboard strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
-  Members: <Users strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
-  Controls: <Settings2 strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
-  'AI Executions': <Workflow strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
+  Home: <LayoutDashboard strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
+  People: <Users strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
   Departments: <Building2 strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
-  RBAC: <Shield strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
-  Integrations: <Plug strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
-  'Share Requests': <Share2 strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
-  'Token Usage': <Activity strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
+  'AI Ops': <Workflow strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
+  Settings: <Settings2 strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
+  Workspaces: <Activity strokeWidth={1.5} className="h-4 w-4 shrink-0" />,
 };
 
 interface SidebarProps {
@@ -38,7 +43,7 @@ export const Sidebar = ({ navItems, isCollapsed = false }: SidebarProps) => {
             {!isCollapsed && (
               <div className="flex flex-col">
                 <h1 className="text-sm font-medium text-zinc-200 uppercase tracking-widest">Control Hub</h1>
-                <p className="text-[10px] text-zinc-600 leading-tight">Role-scoped operations</p>
+                <p className="text-[10px] text-zinc-600 leading-tight">Company control plane</p>
               </div>
             )}
           </div>

@@ -17,6 +17,7 @@ export class LarkResponseAgent extends BaseAgent {
   async invoke(input: AgentInvokeInputDTO) {
     const channel = readContextString(input, 'channel');
     const chatId = readContextString(input, 'chatId');
+    const statusMessageId = readContextString(input, 'statusMessageId');
 
     if (!channel || !chatId) {
       return this.failure(
@@ -31,6 +32,19 @@ export class LarkResponseAgent extends BaseAgent {
         input,
         `Unsupported response channel: ${channel}`,
         'unsupported_response_channel',
+      );
+    }
+
+    if (statusMessageId) {
+      return this.success(
+        input,
+        'Lark runtime status message already exists',
+        {
+          chatId,
+          channel,
+          messageId: statusMessageId,
+        },
+        { latencyMs: 1, apiCalls: 0 },
       );
     }
 

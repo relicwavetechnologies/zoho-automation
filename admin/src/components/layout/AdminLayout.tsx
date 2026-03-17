@@ -1,81 +1,63 @@
-import { useState } from 'react';
-import { Outlet } from 'react-router-dom';
-import { LogOut, User, Menu } from 'lucide-react';
-import { useAdminAuth } from '../../auth/AdminAuthProvider';
-import { Sidebar } from './Sidebar';
-import { Button } from '../ui/button';
-import { roleLabel } from '../../lib/labels';
-import { Avatar, AvatarFallback } from '../ui/avatar';
+import { Outlet } from "react-router-dom"
+import { Menu, Search, Bell, HelpCircle } from "lucide-react"
 
-export const AdminLayout = () => {
-  const { session, navItems, logout } = useAdminAuth();
-  const [isCollapsed, setIsCollapsed] = useState(false);
-  const isSuperAdmin = session?.role === 'SUPER_ADMIN';
-  const isDepartmentManager = session?.role === 'DEPARTMENT_MANAGER';
-  const scopeTitle = isSuperAdmin
-    ? 'Global Control Plane'
-    : isDepartmentManager
-      ? 'Department Control Plane'
-      : 'Workspace Control Plane';
-  const scopeLabel = isSuperAdmin ? 'All workspaces' : session?.companyId ?? 'Workspace scope pending';
+import { useAdminAuth } from "../../auth/AdminAuthProvider"
+import { AppSidebar } from "./AppSidebar"
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "../ui/sidebar"
+import { Separator } from "../ui/separator"
+import { Button } from "../ui/button"
+import { Input } from "../ui/input"
+
+export function AdminLayout() {
+  const { session } = useAdminAuth()
+  const isSuperAdmin = session?.role === "SUPER_ADMIN"
 
   return (
-    <div className="flex h-screen w-full bg-[#0c0c0c] text-zinc-300 font-sans overflow-hidden antialiased selection:bg-zinc-800">
-      <Sidebar navItems={navItems} isCollapsed={isCollapsed} />
-
-      <main className="flex-1 flex flex-col min-w-0 bg-[#0c0c0c]">
-        <header className="h-14 border-b border-[#1a1a1a] flex items-center justify-between px-6 shrink-0 bg-[#0c0c0c]/95 backdrop-blur supports-[backdrop-filter]:bg-[#0c0c0c]/60">
-          <div className="flex items-center gap-4">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-zinc-400 hover:text-zinc-100 hover:bg-[#1a1a1a] -ml-2"
-              onClick={() => setIsCollapsed(!isCollapsed)}
-            >
-              <Menu className="h-4 w-4" />
-            </Button>
-            <div className="flex flex-col">
-              <h2 className="text-sm font-medium text-zinc-100">{scopeTitle}</h2>
-              <span className="text-[11px] text-zinc-500">{scopeLabel}</span>
+    <SidebarProvider>
+      <AppSidebar />
+      <SidebarInset className="bg-background/50">
+        <header className="flex h-14 shrink-0 items-center gap-4 border-b border-border/40 px-6 sticky top-0 z-30 bg-background/60 backdrop-blur-xl">
+          <SidebarTrigger className="-ml-2 hover:bg-accent/50 transition-colors" />
+          <Separator orientation="vertical" className="mr-2 h-4 bg-border/40" />
+          <div className="flex-1 flex items-center gap-4">
+            <div className="relative w-full max-w-[420px] group hidden md:block">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/70 transition-colors group-focus-within:text-primary" />
+              <Input
+                type="search"
+                placeholder="Search control plane..."
+                className="w-full bg-muted/30 pl-9 h-9 text-xs border-border/20 focus-visible:ring-primary/20 focus-visible:bg-background/80 transition-all rounded-full"
+              />
             </div>
           </div>
-
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-3">
-              <div className="flex flex-col items-end">
-                <span className="text-xs font-medium text-zinc-200">
-                  {isSuperAdmin ? 'Super Admin Session' : isDepartmentManager ? 'Department Manager Session' : 'Workspace Admin Session'}
-                </span>
-                <span className="text-[10px] text-zinc-500">{roleLabel(session?.role)} · {navItems.length} panels</span>
-              </div>
-              <Avatar className="h-8 w-8 rounded-md border border-[#222]">
-                <AvatarFallback className="bg-[#111] text-zinc-300 rounded-md">
-                  <User className="h-4 w-4" />
-                </AvatarFallback>
-              </Avatar>
-            </div>
-
-            <div className="w-px h-4 bg-[#222] mx-1"></div>
-
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="text-zinc-400 hover:text-zinc-100 hover:bg-[#1a1a1a]"
-              onClick={() => void logout()}
-            >
-              <LogOut className="h-4 w-4 mr-2" />
-              Sign out
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground/80 hover:text-foreground hover:bg-accent/50">
+              <HelpCircle className="h-4 w-4" />
             </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground/80 hover:text-foreground hover:bg-accent/50 relative">
+              <Bell className="h-4 w-4" />
+              <span className="absolute top-2 right-2 h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_8px_rgba(var(--primary),0.5)]" />
+            </Button>
+            <Separator orientation="vertical" className="mx-2 h-4 bg-border/40" />
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-muted/40 border border-border/20 shadow-sm">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/90">
+                {isSuperAdmin ? "Global" : "Company"}
+              </span>
+              <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+            </div>
           </div>
         </header>
-
-        <div className="flex-1 overflow-auto bg-[#0a0a0a]">
-          <div className="max-w-6xl mx-auto p-8 w-full">
-            <Outlet />
+        <main className="flex-1 overflow-hidden flex flex-col">
+          <div className="flex-1 overflow-auto">
+            <div className="mx-auto w-full max-w-7xl p-6 lg:p-8 animate-in fade-in slide-in-from-bottom-2 duration-700">
+              <Outlet />
+            </div>
           </div>
-        </div>
-      </main>
-    </div>
-  );
-};
+        </main>
+      </SidebarInset>
+    </SidebarProvider>
+  )
+}

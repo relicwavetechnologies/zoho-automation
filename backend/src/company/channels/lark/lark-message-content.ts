@@ -94,9 +94,15 @@ export const inferLarkMessageType = (input: {
   msgType?: string | null;
   altMsgType?: string | null;
   content?: unknown;
-}): 'text' | 'post' | 'image' | 'file' => {
+}): 'text' | 'post' | 'image' | 'file' | 'media' => {
   const directType = readString(input.msgType) ?? readString(input.altMsgType);
-  if (directType === 'text' || directType === 'post' || directType === 'image' || directType === 'file') {
+  if (
+    directType === 'text'
+    || directType === 'post'
+    || directType === 'image'
+    || directType === 'file'
+    || directType === 'media'
+  ) {
     return directType;
   }
 
@@ -131,6 +137,10 @@ export const parseLarkMessageContent = (content: unknown, msgType?: string): str
       const fileName = readString(parsed.file_name);
       return fileName ? `[User attached a file: ${fileName}]` : '[User attached a file]';
     }
+    if (msgType === 'media') {
+      const fileName = readString(parsed.file_name) ?? readString(parsed.title);
+      return fileName ? `[User attached media: ${fileName}]` : '[User attached media]';
+    }
     if (msgType === 'post') {
       return parsePostContent(parsed) || raw;
     }
@@ -149,6 +159,9 @@ export const parseLarkMessageContent = (content: unknown, msgType?: string): str
     }
     if (msgType === 'file') {
       return '[User attached a file]';
+    }
+    if (msgType === 'media') {
+      return '[User attached media]';
     }
     return raw;
   }
@@ -226,6 +239,13 @@ export const parseLarkAttachmentKeys = (content: unknown, msgType?: string): Lar
       const fileKey = readString(parsed.file_key);
       const larkFileType = readString(parsed.file_type);
       const fileName = readString(parsed.file_name);
+      if (fileKey) return [{ key: fileKey, fileType: 'file', larkFileType, fileName }];
+    }
+
+    if (msgType === 'media') {
+      const fileKey = readString(parsed.file_key);
+      const larkFileType = readString(parsed.file_type) ?? readString(parsed.media_type);
+      const fileName = readString(parsed.file_name) ?? readString(parsed.title);
       if (fileKey) return [{ key: fileKey, fileType: 'file', larkFileType, fileName }];
     }
 

@@ -36,6 +36,25 @@ export type SessionScope = {
   companyId?: string;
 };
 
+type CompanyDirectoryEntry = {
+  key: string;
+  userId?: string;
+  channelIdentityId?: string;
+  name?: string;
+  email?: string;
+  source: 'app' | 'lark' | 'app+lark';
+  appStatus: 'joined_app' | 'lark_only';
+  companyRole?: string;
+  larkLinked: boolean;
+  googleConnected: boolean;
+  departmentCount: number;
+  managerDepartmentCount: number;
+  departmentNames: string[];
+  larkRoles: string[];
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 const resolveCompanyScope = (session: SessionScope, requestedCompanyId?: string): string => {
   if (session.role === 'SUPER_ADMIN') {
     if (!requestedCompanyId) {
@@ -92,6 +111,170 @@ export class CompanyAdminService extends BaseService {
       name: row.user.name,
       createdAt: row.createdAt.toISOString(),
     }));
+  }
+
+  async getCompanyDirectory(session: SessionScope, companyId?: string): Promise<CompanyDirectoryEntry[]> {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const [activeMembers, larkIdentities, larkLinks, googleLinks, departmentMemberships] = await Promise.all([
+      prisma.adminMembership.findMany({
+        where: {
+          companyId: scopedCompanyId,
+          isActive: true,
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              name: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          },
+        },
+        orderBy: [{ role: 'asc' }, { createdAt: 'desc' }],
+      }),
+      prisma.channelIdentity.findMany({
+        where: {
+          companyId: scopedCompanyId,
+          channel: 'lark',
+        },
+        orderBy: [{ updatedAt: 'desc' }],
+      }),
+      prisma.larkUserAuthLink.findMany({
+        where: {
+          companyId: scopedCompanyId,
+          revokedAt: null,
+        },
+        select: {
+          userId: true,
+        },
+      }),
+      prisma.googleUserAuthLink.findMany({
+        where: {
+          companyId: scopedCompanyId,
+          revokedAt: null,
+        },
+        select: {
+          userId: true,
+        },
+      }),
+      prisma.departmentMembership.findMany({
+        where: {
+          status: 'active',
+          department: {
+            companyId: scopedCompanyId,
+          },
+        },
+        include: {
+          role: {
+            select: {
+              slug: true,
+            },
+          },
+          department: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const larkLinkedUserIds = new Set(larkLinks.map((row) => row.userId));
+    const googleLinkedUserIds = new Set(googleLinks.map((row) => row.userId));
+
+    const departmentSummaryByUserId = new Map<
+      string,
+      { departmentCount: number; managerDepartmentCount: number; departmentNames: string[] }
+    >();
+
+    for (const membership of departmentMemberships) {
+      const current = departmentSummaryByUserId.get(membership.userId) ?? {
+        departmentCount: 0,
+        managerDepartmentCount: 0,
+        departmentNames: [],
+      };
+      current.departmentCount += 1;
+      if (membership.role.slug === 'MANAGER') {
+        current.managerDepartmentCount += 1;
+      }
+      if (!current.departmentNames.includes(membership.department.name)) {
+        current.departmentNames.push(membership.department.name);
+      }
+      departmentSummaryByUserId.set(membership.userId, current);
+    }
+
+    const memberByEmail = new Map<string, (typeof activeMembers)[number]>();
+    const memberByUserId = new Map<string, (typeof activeMembers)[number]>();
+    for (const member of activeMembers) {
+      memberByUserId.set(member.userId, member);
+      const email = member.user.email.trim().toLowerCase();
+      if (!memberByEmail.has(email)) {
+        memberByEmail.set(email, member);
+      }
+    }
+
+    const entries = new Map<string, CompanyDirectoryEntry>();
+
+    for (const identity of larkIdentities) {
+      const normalizedEmail = identity.email?.trim().toLowerCase();
+      const matchedMember = normalizedEmail ? memberByEmail.get(normalizedEmail) : undefined;
+      const userId = matchedMember?.userId;
+      const departmentSummary = userId ? departmentSummaryByUserId.get(userId) : undefined;
+      const key = userId ? `user:${userId}` : `lark:${identity.id}`;
+
+      entries.set(key, {
+        key,
+        userId,
+        channelIdentityId: identity.id,
+        name: matchedMember?.user.name ?? identity.displayName ?? undefined,
+        email: matchedMember?.user.email ?? identity.email ?? undefined,
+        source: userId ? 'app+lark' : 'lark',
+        appStatus: userId ? 'joined_app' : 'lark_only',
+        companyRole: matchedMember?.role,
+        larkLinked: userId ? larkLinkedUserIds.has(userId) : false,
+        googleConnected: userId ? googleLinkedUserIds.has(userId) : false,
+        departmentCount: departmentSummary?.departmentCount ?? 0,
+        managerDepartmentCount: departmentSummary?.managerDepartmentCount ?? 0,
+        departmentNames: departmentSummary?.departmentNames ?? [],
+        larkRoles: identity.sourceRoles,
+        createdAt: matchedMember?.createdAt.toISOString() ?? identity.createdAt.toISOString(),
+        updatedAt: identity.updatedAt.toISOString(),
+      });
+    }
+
+    for (const member of activeMembers) {
+      const key = `user:${member.userId}`;
+      if (entries.has(key)) {
+        continue;
+      }
+      const departmentSummary = departmentSummaryByUserId.get(member.userId);
+      entries.set(key, {
+        key,
+        userId: member.userId,
+        name: member.user.name ?? undefined,
+        email: member.user.email,
+        source: 'app',
+        appStatus: 'joined_app',
+        companyRole: member.role,
+        larkLinked: larkLinkedUserIds.has(member.userId),
+        googleConnected: googleLinkedUserIds.has(member.userId),
+        departmentCount: departmentSummary?.departmentCount ?? 0,
+        managerDepartmentCount: departmentSummary?.managerDepartmentCount ?? 0,
+        departmentNames: departmentSummary?.departmentNames ?? [],
+        larkRoles: [],
+        createdAt: member.createdAt.toISOString(),
+        updatedAt: member.updatedAt.toISOString(),
+      });
+    }
+
+    return [...entries.values()].sort((left, right) => {
+      const leftStatus = left.appStatus === 'joined_app' ? 1 : 0;
+      const rightStatus = right.appStatus === 'joined_app' ? 1 : 0;
+      if (rightStatus !== leftStatus) return rightStatus - leftStatus;
+      return (left.name ?? left.email ?? left.key).localeCompare(right.name ?? right.email ?? right.key);
+    });
   }
 
   async createInvite(session: SessionScope, payload: CreateInviteDto) {

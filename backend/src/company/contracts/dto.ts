@@ -39,6 +39,8 @@ export type NormalizedIncomingMessageDTO = {
     linkedUserId?: string;
     userRole?: string;
     requesterEmail?: string;
+    /** Runtime-owned progress/status message id for channel UIs that support in-place updates. */
+    statusMessageId?: string;
   };
 };
 

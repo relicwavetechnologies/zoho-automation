@@ -9,6 +9,7 @@ const router = Router();
 
 router.use(requireAdminSession());
 router.get('/members', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.listMembers));
+router.get('/directory', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.getCompanyDirectory));
 router.get('/invites', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.listInvites));
 router.post('/invites', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.createInvite));
 router.get('/:companyId/token-usage', requireRbacAction('onboarding.manage'), asyncHandler(adminAiTokenUsageController.getCompanyTokenUsage));

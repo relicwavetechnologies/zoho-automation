@@ -169,7 +169,13 @@ export const parseLarkIngressPayload = (payload: unknown): LarkIngressParseResul
       altMsgType: readString((message as Record<string, unknown>).message_type),
       content: message.content,
     });
-    if (msgType !== 'text' && msgType !== 'post' && msgType !== 'image' && msgType !== 'file') {
+    if (
+      msgType !== 'text'
+      && msgType !== 'post'
+      && msgType !== 'image'
+      && msgType !== 'file'
+      && msgType !== 'media'
+    ) {
       return {
         kind: 'event_callback_ignored',
         reason: 'unsupported_message_type',

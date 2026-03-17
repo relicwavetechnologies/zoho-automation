@@ -42,6 +42,16 @@ class CompanyAdminController extends BaseController {
     return res.json(ApiResponse.success(result, 'Members loaded'));
   };
 
+  getCompanyDirectory = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getCompanyDirectory(session, companyId);
+    return res.json(ApiResponse.success(result, 'Company directory loaded'));
+  };
+
   createInvite = async (req: Request, res: Response) => {
     const payload = createInviteSchema.parse(req.body);
     const session = this.readSession(req);

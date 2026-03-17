@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Search, Building2, Users, Shield, Terminal, BookOpen, Settings, MoreHorizontal, Trash2, Archive, Globe, Lock, RefreshCw } from 'lucide-react'
 
 import { useAdminAuth } from '../auth/AdminAuthProvider'
 import { api } from '../lib/api'
@@ -10,6 +10,8 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
+import { Avatar, AvatarFallback } from '../components/ui/avatar'
 import { Input } from '../components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { Skeleton } from '../components/ui/skeleton'
@@ -19,6 +21,7 @@ import { ScrollArea } from '../components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 import { toast } from '../components/ui/use-toast'
+import { Separator } from '../components/ui/separator'
 
 type DepartmentListItem = {
   id: string
@@ -149,10 +152,8 @@ type DepartmentDetail = {
   availableTools: DepartmentAvailableTool[]
 }
 
-const pillForStatus = (status: string): string =>
-  status === 'active'
-    ? 'bg-emerald-950 text-emerald-300 border-emerald-900'
-    : 'bg-zinc-900 text-zinc-400 border-zinc-800'
+const statusBadgeVariant = (status: string) =>
+  status === 'active' ? 'outline' : 'secondary'
 
 const memberLabel = (member: { name?: string | null; email?: string | null; userId: string }) =>
   member.name?.trim() || member.email?.trim() || member.userId
@@ -170,7 +171,6 @@ export const DepartmentsPage = () => {
   const [detail, setDetail] = useState<DepartmentDetail | null>(null)
   const [loadingList, setLoadingList] = useState(false)
   const [loadingDetail, setLoadingDetail] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [isSkillDialogOpen, setIsSkillDialogOpen] = useState(false)
   const [editingSkillId, setEditingSkillId] = useState<string | null>(null)
@@ -207,7 +207,6 @@ export const DepartmentsPage = () => {
   const selectedTab: (typeof DEPARTMENT_TABS)[number] = isDepartmentTab(rawTab) ? rawTab : 'profile'
 
   const isSuperAdmin = session?.role === 'SUPER_ADMIN'
-  const isDepartmentManager = session?.role === 'DEPARTMENT_MANAGER'
   const effectiveCompanyId = useMemo(
     () => (isSuperAdmin ? companyId.trim() : session?.companyId ?? ''),
     [companyId, isSuperAdmin, session?.companyId],
@@ -232,7 +231,7 @@ export const DepartmentsPage = () => {
     })
   }, [updateSearchParam])
 
-  const loadDepartments = useCallback(async () => {
+  const loadDepartments = useCallback(async (options?: { silent?: boolean }) => {
     if (!token) return
     if (isSuperAdmin && !effectiveCompanyId) {
       setDepartments([])
@@ -241,7 +240,7 @@ export const DepartmentsPage = () => {
       return
     }
 
-    setLoadingList(true)
+    if (!options?.silent) setLoadingList(true)
     try {
       const query = effectiveCompanyId ? `?companyId=${encodeURIComponent(effectiveCompanyId)}` : ''
       const data = await api.get<DepartmentListItem[]>(`/api/admin/departments${query}`, token)
@@ -258,9 +257,9 @@ export const DepartmentsPage = () => {
     }
   }, [effectiveCompanyId, isSuperAdmin, selectDepartment, selectedDepartmentId, token])
 
-  const loadDetail = useCallback(async (departmentId: string) => {
+  const loadDetail = useCallback(async (departmentId: string, options?: { silent?: boolean }) => {
     if (!token) return
-    setLoadingDetail(true)
+    if (!options?.silent) setLoadingDetail(true)
     try {
       const data = await api.get<DepartmentDetail>(`/api/admin/departments/${departmentId}`, token)
       setDetail(data)
@@ -274,7 +273,7 @@ export const DepartmentsPage = () => {
         skillsMarkdown: data.config.skillsMarkdown,
         isActive: data.config.isActive,
       })
-      setMembershipRoleId(data.roles[0]?.id ?? '')
+      setMembershipRoleId(data.roles.find((role) => role.isDefault)?.id ?? data.roles[0]?.id ?? '')
       setOverrideUserId(data.memberships[0]?.userId ?? '')
       setOverrideToolId(data.availableTools[0]?.toolId ?? '')
     } finally {
@@ -284,7 +283,7 @@ export const DepartmentsPage = () => {
 
   useEffect(() => {
     void loadDepartments()
-  }, [loadDepartments])
+  }, [effectiveCompanyId, isSuperAdmin, token]) // Reduced dependencies to avoid re-triggering on selection
 
   useEffect(() => {
     if (selectedDepartmentId) {
@@ -292,7 +291,7 @@ export const DepartmentsPage = () => {
     } else {
       setDetail(null)
     }
-  }, [loadDetail, selectedDepartmentId])
+  }, [selectedDepartmentId, token])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -336,8 +335,11 @@ export const DepartmentsPage = () => {
 
   const refreshDetail = async () => {
     if (!selectedDepartmentId) return
-    await loadDetail(selectedDepartmentId)
-    await loadDepartments()
+    // Use silent refresh to avoid full UI flicker
+    await Promise.all([
+      loadDetail(selectedDepartmentId, { silent: true }),
+      loadDepartments({ silent: true })
+    ])
   }
 
   const createDepartment = async () => {
@@ -481,10 +483,10 @@ export const DepartmentsPage = () => {
   }
 
   const assignMember = async () => {
-    if (!token || !selectedDepartmentId || !membershipUserId || !membershipRoleId) return
+    if (!token || !selectedDepartmentId || !membershipUserId) return
     await api.put(
       `/api/admin/departments/${selectedDepartmentId}/memberships`,
-      { userId: membershipUserId, roleId: membershipRoleId, status: 'active' },
+      { userId: membershipUserId, roleId: membershipRoleId || undefined, status: 'active' },
       token,
     )
     toast({ title: 'Department membership saved' })
@@ -492,28 +494,19 @@ export const DepartmentsPage = () => {
   }
 
   const assignMemberCandidate = async (candidate: DepartmentCandidate) => {
-    if (!token || !selectedDepartmentId || !membershipRoleId) return
+    if (!token || !selectedDepartmentId) return
     setMembershipUserId(candidate.userId ?? '')
     await api.put(
       `/api/admin/departments/${selectedDepartmentId}/memberships`,
       {
         userId: candidate.userId,
         channelIdentityId: candidate.channelIdentityId,
-        roleId: membershipRoleId,
+        roleId: membershipRoleId || undefined,
         status: 'active',
       },
       token,
     )
-    toast({ title: 'Member added to department' })
-    setMemberSearch('')
-    setCandidateResults([])
-    await refreshDetail()
-  }
-
-  const removeMember = async (userId: string) => {
-    if (!token || !selectedDepartmentId) return
-    await api.delete(`/api/admin/departments/${selectedDepartmentId}/memberships/${userId}`, {}, token)
-    toast({ title: 'Department membership removed' })
+    toast({ title: 'Department membership saved' })
     await refreshDetail()
   }
 
@@ -524,46 +517,30 @@ export const DepartmentsPage = () => {
       { userId, roleId, status: 'active' },
       token,
     )
-    toast({ title: 'Department member updated' })
+    toast({ title: 'Member role updated' })
     await refreshDetail()
   }
 
-  const toggleRolePermission = async (roleId: string, toolId: string, nextAllowed: boolean) => {
-    if (!token || !selectedDepartmentId || !detail) return
+  const removeMember = async (userId: string) => {
+    if (!token || !selectedDepartmentId) return
+    await api.delete(`/api/admin/departments/${selectedDepartmentId}/memberships/${userId}`, {}, token)
+    toast({ title: 'Member removed from department' })
+    await refreshDetail()
+  }
+
+  const toggleRolePermission = async (roleId: string, toolId: string, allowed: boolean) => {
+    if (!token || !selectedDepartmentId) return
     const key = `${roleId}:${toolId}`
-    const previousPermissions = detail.toolPermissions
-
-    const existing = previousPermissions.find((row) => row.roleId === roleId && row.toolId === toolId)
-    const nextPermissions = existing
-      ? previousPermissions.map((row) =>
-        row.roleId === roleId && row.toolId === toolId
-          ? { ...row, allowed: nextAllowed }
-          : row,
-      )
-      : [
-        ...previousPermissions,
-        {
-          id: `optimistic:${key}`,
-          roleId,
-          toolId,
-          allowed: nextAllowed,
-        },
-      ]
-
     setPendingPermissionKey(key)
-    setDetail((prev) => (prev ? { ...prev, toolPermissions: nextPermissions } : prev))
-
     try {
       await api.put(
         `/api/admin/departments/${selectedDepartmentId}/role-permissions/${roleId}/${toolId}`,
-        { allowed: nextAllowed },
+        { allowed },
         token,
       )
-    } catch (error) {
-      setDetail((prev) => (prev ? { ...prev, toolPermissions: previousPermissions } : prev))
-      throw error
+      await refreshDetail()
     } finally {
-      setPendingPermissionKey((current) => (current === key ? null : current))
+      setPendingPermissionKey(null)
     }
   }
 
@@ -578,32 +555,33 @@ export const DepartmentsPage = () => {
     await refreshDetail()
   }
 
+  const filteredDepartments = useMemo(() => {
+    const q = departmentSearch.trim().toLowerCase()
+    if (!q) return departments
+    return departments.filter(
+      (d) => d.name.toLowerCase().includes(q) || d.slug.toLowerCase().includes(q),
+    )
+  }, [departments, departmentSearch])
+
+  const availableDepartmentCandidates = useMemo(() => {
+    return candidateResults.filter((c) => !c.isAlreadyAssigned)
+  }, [candidateResults])
+
   const rolePermissionMap = useMemo(() => {
     const map = new Map<string, boolean>()
-    for (const row of detail?.toolPermissions ?? []) {
-      map.set(`${row.roleId}:${row.toolId}`, row.allowed)
-    }
+    detail?.toolPermissions.forEach((p) => {
+      map.set(`${p.roleId}:${p.toolId}`, p.allowed)
+    })
     return map
   }, [detail?.toolPermissions])
 
-  const availableDepartmentCandidates = useMemo(
-    () => candidateResults.filter((candidate) => !candidate.isAlreadyAssigned),
-    [candidateResults],
-  )
-
-  const filteredDepartments = useMemo(() => {
-    const query = departmentSearch.trim().toLowerCase()
-    if (!query) return departments
-    return departments.filter((department) => {
-      const name = department.name.toLowerCase()
-      const slug = department.slug.toLowerCase()
-      const description = (department.description ?? '').toLowerCase()
-      return name.includes(query) || slug.includes(query) || description.includes(query)
-    })
-  }, [departments, departmentSearch])
-
   const candidateLabel = (candidate: DepartmentCandidate) =>
     candidate.name?.trim() || candidate.email?.trim() || candidate.larkDisplayName?.trim() || candidate.channelIdentityId
+
+  const defaultRole = useMemo(
+    () => detail?.roles.find((role) => role.isDefault) ?? null,
+    [detail?.roles],
+  )
 
   const setSelectedTab = (tab: (typeof DEPARTMENT_TABS)[number]) => {
     updateSearchParam((next) => {
@@ -611,818 +589,886 @@ export const DepartmentsPage = () => {
     })
   }
 
+  const setDefaultRole = async (roleId: string, roleName: string) => {
+    if (!token || !selectedDepartmentId) return
+    await api.put(
+      `/api/admin/departments/${selectedDepartmentId}/roles/${roleId}`,
+      { name: roleName, isDefault: true },
+      token,
+    )
+    toast({ title: 'Default department role updated' })
+    await refreshDetail()
+  }
+
   return (
     <TooltipProvider delayDuration={0}>
-      <div className="flex flex-col gap-6 w-full">
-      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div className="space-y-1">
-          <h1 className="text-xl font-semibold text-zinc-100">Departments</h1>
-          <p className="text-sm text-zinc-500">
-            Configure department-specific prompts, skills, memberships, and Vercel tool access.
-          </p>
-        </div>
-        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-end md:gap-4">
-          {isSuperAdmin ? (
-            <div className="w-full md:w-[360px] space-y-2">
-              <div className="text-sm text-zinc-400">Workspace ID</div>
-              <Input
-                value={companyId}
-                onChange={(event) => setCompanyId(event.target.value)}
-                placeholder="Paste workspace UUID"
-                className="bg-[#0a0a0a] border-[#222]"
-              />
-            </div>
-          ) : null}
-          {!isDepartmentManager ? (
-            <Button
-              type="button"
-              onClick={() => setIsCreateDialogOpen(true)}
-              className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
-            >
-              <Plus className="h-4 w-4" />
-              New Department
-            </Button>
-          ) : null}
-        </div>
-      </div>
-
-      <div className={cn(
-        "grid gap-6 items-start",
-        sidebarCollapsed ? "lg:grid-cols-[92px_minmax(0,1fr)]" : "lg:grid-cols-[340px_minmax(0,1fr)]",
-      )}>
-        <Card className="bg-[#111] border-[#1a1a1a] text-zinc-300">
-          <CardHeader className={cn("border-b border-[#1a1a1a]", sidebarCollapsed ? "p-3" : "p-6")}>
-            <div className={cn("flex items-start justify-between gap-2", sidebarCollapsed && "flex-col items-center")}>
-              <div className={cn("space-y-1 min-w-0", sidebarCollapsed && "hidden")}>
-                <CardTitle className="text-zinc-100">Departments</CardTitle>
-                <CardDescription className="text-zinc-500">
-                  Pick a department to manage. Selection stays in the URL.
-                </CardDescription>
-              </div>
-              <div className={cn("flex items-center gap-1", sidebarCollapsed && "flex-col")}>
-                {!isDepartmentManager ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setIsCreateDialogOpen(true)}
-                        className="h-8 w-8 text-zinc-400 hover:text-zinc-100 hover:bg-[#1a1a1a]"
-                      >
-                        <Plus className="h-4 w-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="right" className="bg-[#1a1a1a] text-zinc-200 border-[#333]">
-                      New department
-                    </TooltipContent>
-                  </Tooltip>
-                ) : null}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => setSidebarCollapsed((prev) => !prev)}
-                      className="h-8 w-8 text-zinc-400 hover:text-zinc-100 hover:bg-[#1a1a1a]"
-                    >
-                      {sidebarCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" className="bg-[#1a1a1a] text-zinc-200 border-[#333]">
-                    {sidebarCollapsed ? 'Expand list' : 'Collapse list'}
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-            </div>
-          </CardHeader>
-
-          <CardContent className={cn(sidebarCollapsed ? "p-2" : "p-6 pt-4")}>
-            {!sidebarCollapsed ? (
-              <div className="pb-4">
+      <div className="flex flex-col gap-6 w-full animate-in fade-in duration-700">
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
+              <Building2 className="h-6 w-6 text-primary" />
+              Departments
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Configure department prompts, skills, members, and scoped tool access.
+            </p>
+          </div>
+          <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-end md:gap-4">
+            {isSuperAdmin ? (
+              <div className="w-full md:w-[320px] relative">
                 <Input
-                  value={departmentSearch}
-                  onChange={(event) => setDepartmentSearch(event.target.value)}
-                  placeholder="Search departments..."
-                  className="bg-[#0a0a0a] border-[#222]"
+                  value={companyId}
+                  onChange={(event) => setCompanyId(event.target.value)}
+                  placeholder="Paste workspace UUID"
+                  className="bg-secondary/30 border-border/50 h-9 text-xs"
                 />
               </div>
             ) : null}
+            <Button
+              type="button"
+              onClick={() => setIsCreateDialogOpen(true)}
+              className="bg-primary text-primary-foreground h-9 shadow-sm"
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              New Department
+            </Button>
+          </div>
+        </div>
 
-            <ScrollArea className="h-[min(680px,calc(100vh-320px))]">
-              <div className={cn("grid gap-1", sidebarCollapsed ? "px-0" : "px-0")}>
+        <div className="flex flex-col lg:flex-row h-[calc(100vh-180px)] gap-8 overflow-hidden">
+          {/* Department List Sidebar */}
+          <div className="w-full lg:w-80 flex flex-col border border-border/40 rounded-2xl bg-card/30 overflow-hidden shrink-0 shadow-2xl transition-all duration-300 backdrop-blur-sm">
+            <div className="p-5 border-b border-border/40 bg-muted/20">
+              <div className="flex items-center justify-between mb-4">
+                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                  Business Units ({filteredDepartments.length})
+                </span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-accent/50" onClick={() => void loadDepartments()}>
+                      <RefreshCw className={cn("h-3.5 w-3.5", loadingList && "animate-spin")} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right">Sync Directory</TooltipContent>
+                </Tooltip>
+              </div>
+              <div className="relative group">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 group-focus-within:text-primary transition-colors" />
+                <Input
+                  value={departmentSearch}
+                  onChange={(event) => setDepartmentSearch(event.target.value)}
+                  placeholder="Filter departments..."
+                  className="bg-background/50 border-border/30 h-9 text-xs pl-9 transition-all rounded-lg"
+                />
+              </div>
+            </div>
+
+            <ScrollArea className="flex-1">
+              <div className="p-3 flex flex-col gap-2">
                 {loadingList ? (
-                  <>
-                    <Skeleton className="h-11 w-full" />
-                    <Skeleton className="h-11 w-full" />
-                    <Skeleton className="h-11 w-full" />
-                  </>
+                  <div className="space-y-3 p-2">
+                    <Skeleton className="h-16 w-full rounded-xl opacity-50" />
+                    <Skeleton className="h-16 w-full rounded-xl opacity-30" />
+                    <Skeleton className="h-16 w-full rounded-xl opacity-10" />
+                  </div>
                 ) : filteredDepartments.length === 0 ? (
-                  <div className={cn(
-                    "rounded-md border border-dashed border-[#222] bg-[#0a0a0a] p-4 text-sm text-zinc-500",
-                    sidebarCollapsed && "text-center p-3 text-xs",
-                  )}>
-                    No departments found.
+                  <div className="p-8 text-center border border-dashed border-border/30 rounded-xl m-2 bg-muted/5">
+                    <p className="text-[11px] font-medium text-muted-foreground">No units found.</p>
                   </div>
                 ) : (
                   filteredDepartments.map((department) => {
                     const isActive = selectedDepartmentId === department.id
-                    const initial = (department.name.trim()[0] ?? 'D').toUpperCase()
-
-                    const item = (
+                    return (
                       <button
                         key={department.id}
                         type="button"
                         onClick={() => selectDepartment(department.id)}
                         className={cn(
-                          "w-full rounded-lg border border-transparent transition-colors",
-                          isActive ? "bg-[#1a1a1a] text-zinc-100" : "text-zinc-400 hover:bg-[#101010] hover:text-zinc-200",
-                          sidebarCollapsed ? "p-0" : "px-3 py-2",
+                          "w-full group flex flex-col gap-2 p-4 rounded-xl border transition-all duration-300 text-left relative overflow-hidden",
+                          isActive 
+                            ? "bg-primary/[0.03] border-primary/30 shadow-lg" 
+                            : "border-transparent hover:bg-muted/30 hover:border-border/40"
                         )}
                       >
-                        {sidebarCollapsed ? (
-                          <div className={cn(
-                            "mx-auto flex h-10 w-10 items-center justify-center rounded-lg border bg-[#0a0a0a] text-sm font-semibold",
-                            isActive ? "border-[#333] bg-[#151515] text-zinc-100" : "border-[#222] text-zinc-300",
+                        {isActive && <div className="absolute top-0 left-0 w-1 h-full bg-primary" />}
+                        <div className="flex items-start justify-between gap-2">
+                          <span className={cn(
+                            "text-sm font-bold truncate tracking-tight",
+                            isActive ? "text-primary" : "text-foreground group-hover:text-primary transition-colors"
                           )}>
-                            {initial}
+                            {department.name}
+                          </span>
+                          <Badge variant={statusBadgeVariant(department.status)} className="text-[8px] px-1.5 h-4 uppercase font-bold tracking-widest bg-muted/50 border-border/20">
+                            {department.status}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-3 text-[10px] text-muted-foreground/70 font-bold uppercase tracking-tighter">
+                          <div className="flex items-center gap-1">
+                            <Users className="h-3 w-3" />
+                            <span>{department.memberCount}</span>
                           </div>
-                        ) : (
-                          <div className="flex items-center gap-3">
-                            <div className={cn(
-                              "flex h-9 w-9 items-center justify-center rounded-lg border bg-[#0a0a0a] text-sm font-semibold",
-                              isActive ? "border-[#333] bg-[#151515] text-zinc-100" : "border-[#222] text-zinc-300",
-                            )}>
-                              {initial}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-sm font-medium">{department.name}</div>
-                              <div className="truncate text-xs text-zinc-500">{department.slug}</div>
-                            </div>
-                            <div className="flex flex-col items-end gap-1">
-                              <Badge className={cn("border", pillForStatus(department.status))} variant="outline">
-                                {department.status}
-                              </Badge>
-                              <div className="text-[11px] text-zinc-500">
-                                {department.memberCount} · {department.managerCount}
-                              </div>
-                            </div>
-                          </div>
-                        )}
+                          <span>·</span>
+                          <span className="font-mono text-[9px] opacity-60">{department.slug}</span>
+                        </div>
                       </button>
                     )
-
-                    if (sidebarCollapsed) {
-                      return (
-                        <Tooltip key={department.id}>
-                          <TooltipTrigger asChild>{item}</TooltipTrigger>
-                          <TooltipContent side="right" className="bg-[#1a1a1a] text-zinc-200 border-[#333]">
-                            {department.name}
-                          </TooltipContent>
-                        </Tooltip>
-                      )
-                    }
-
-                    return item
                   })
                 )}
               </div>
             </ScrollArea>
-          </CardContent>
-        </Card>
+          </div>
 
-        <Card className="bg-[#111] border-[#1a1a1a] text-zinc-300">
-          <CardHeader className="border-b border-[#1a1a1a]">
-            <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1">
-                <CardTitle className="text-zinc-100">
-                  {detail?.department.name ?? 'Department Detail'}
-                </CardTitle>
-                <CardDescription className="text-zinc-500">
-                  Department managers can edit prompt, skills, members, roles, and tool access for their departments.
-                </CardDescription>
-              </div>
-              {detail ? (
-                <Badge className={cn("border", pillForStatus(detail.department.status))} variant="outline">
-                  {detail.department.status}
-                </Badge>
-              ) : null}
-            </div>
-            {detail ? (
-              <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-500">
-                <span>{detail.memberships.length} members</span>
-                <span>·</span>
-                <span>{detail.roles.length} roles</span>
-                <span>·</span>
-                <span>{detail.availableTools.length} tools</span>
-              </div>
-            ) : null}
-          </CardHeader>
-          <CardContent className="pt-6">
+          {/* Department Detail View */}
+          <div className="flex-1 border border-border/40 rounded-2xl bg-card/20 overflow-hidden flex flex-col shadow-2xl transition-all duration-500 backdrop-blur-sm">
             {loadingDetail ? (
-              <div className="space-y-4">
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-40 w-full" />
+              <div className="p-10 space-y-8">
+                <div className="flex items-center gap-6">
+                  <Skeleton className="h-16 w-16 rounded-2xl opacity-40" />
+                  <div className="space-y-3">
+                    <Skeleton className="h-8 w-64 opacity-40" />
+                    <Skeleton className="h-4 w-40 opacity-20" />
+                  </div>
+                </div>
+                <Skeleton className="h-[500px] w-full rounded-2xl opacity-10" />
               </div>
             ) : !detail ? (
-              <div className="flex min-h-[420px] items-center justify-center rounded-md border border-dashed border-[#222] bg-[#0a0a0a] text-zinc-500">
-                Select a department to inspect its configuration.
+              <div className="flex-1 flex flex-col items-center justify-center text-center p-12 bg-muted/5">
+                <div className="h-24 w-24 rounded-[2rem] bg-muted/20 flex items-center justify-center mb-8 border border-border/20 shadow-inner">
+                  <Building2 className="h-10 w-10 text-muted-foreground/30" />
+                </div>
+                <h3 className="text-2xl font-bold text-foreground mb-3 tracking-tight">Select a Business Unit</h3>
+                <p className="text-muted-foreground font-medium max-w-sm leading-relaxed">
+                  Choose a department from the explorer to modify agent behavior, manage rosters, and audit tool permissions.
+                </p>
               </div>
             ) : (
-              <Tabs value={selectedTab} onValueChange={(value) => {
-                if (isDepartmentTab(value)) setSelectedTab(value)
-              }} className="w-full">
-                <TabsList className="grid w-full grid-cols-5 bg-[#0a0a0a] border border-[#1a1a1a] mb-6">
-                  <TabsTrigger value="profile">Profile</TabsTrigger>
-                  <TabsTrigger value="prompt">Prompt</TabsTrigger>
-                  <TabsTrigger value="skills">Skills</TabsTrigger>
-                  <TabsTrigger value="members">Members</TabsTrigger>
-                  <TabsTrigger value="permissions">Permissions</TabsTrigger>
-                </TabsList>
+              <>
+                <div className="p-8 border-b border-border/40 bg-muted/10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                  <div className="flex items-center gap-6">
+                    <div className="h-16 w-16 rounded-2xl bg-primary/5 border border-primary/20 flex items-center justify-center shrink-0 shadow-lg">
+                      <span className="text-2xl font-bold text-primary">{detail.department.name[0].toUpperCase()}</span>
+                    </div>
+                    <div>
+                      <h2 className="text-2xl font-bold tracking-tight text-foreground">{detail.department.name}</h2>
+                      <div className="flex items-center gap-3 text-xs text-muted-foreground/80 mt-1 font-medium">
+                        <span className="font-mono bg-muted/30 px-2 py-0.5 rounded border border-border/20">{detail.department.id}</span>
+                        <span>·</span>
+                        <Badge variant="outline" className="h-5 text-[9px] font-bold uppercase tracking-widest bg-emerald-500/5 text-emerald-500 border-emerald-500/20">
+                          {detail.department.status}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Button variant="outline" size="sm" onClick={() => void archiveDepartment()} className="h-9 px-4 text-[10px] font-bold uppercase tracking-widest border-border/60 hover:bg-destructive/10 hover:text-destructive hover:border-destructive/20 transition-all">
+                      <Archive className="h-3.5 w-3.5 mr-2" />
+                      Archive Unit
+                    </Button>
+                    <Button variant="default" size="sm" onClick={() => void saveDepartment()} className="h-9 px-6 text-[10px] font-bold uppercase tracking-widest shadow-[0_0_20px_rgba(var(--primary),0.2)]">
+                      <Settings className="h-3.5 w-3.5 mr-2" />
+                      Save Configuration
+                    </Button>
+                  </div>
+                </div>
 
-                    <TabsContent value="profile" className="space-y-6">
-                      <div className="grid gap-6 md:grid-cols-2">
-                        <div className="space-y-2">
-                          <div className="text-sm font-medium text-zinc-400">Department name</div>
-                          <Input
-                            value={departmentForm.name}
-                            onChange={(event) => setDepartmentForm((prev) => ({ ...prev, name: event.target.value }))}
-                            className="bg-[#0a0a0a] border-[#222] h-10"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <div className="text-sm font-medium text-zinc-400">Status</div>
-                          <Select
-                            value={departmentForm.status}
-                            onValueChange={(value) => setDepartmentForm((prev) => ({ ...prev, status: value }))}
-                            disabled={isDepartmentManager}
-                          >
-                            <SelectTrigger className="bg-[#0a0a0a] border-[#222] h-10">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
-                              <SelectItem value="active">active</SelectItem>
-                              <SelectItem value="archived">archived</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <div className="text-sm font-medium text-zinc-400">Description</div>
-                        <Textarea
-                          value={departmentForm.description}
-                          onChange={(event) => setDepartmentForm((prev) => ({ ...prev, description: event.target.value }))}
-                          rows={4}
-                          className="bg-[#0a0a0a] border-[#222] text-zinc-200 resize-none"
-                        />
-                      </div>
-                      <div className="flex gap-3 pt-2">
-                        <Button onClick={() => void saveDepartment()} className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200">
-                          Save Department
-                        </Button>
-                        {!isDepartmentManager ? (
-                          <Button variant="outline" onClick={() => void archiveDepartment()} className="border-[#333] bg-[#0a0a0a] hover:bg-[#1a1a1a] hover:text-zinc-100">
-                            Archive
-                          </Button>
-                        ) : null}
-                      </div>
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                  <Tabs value={selectedTab} onValueChange={(value) => {
+                    if (isDepartmentTab(value)) setSelectedTab(value)
+                  }} className="flex-1 flex flex-col min-h-0">
+                    <div className="px-6 border-b border-border/50 bg-secondary/5 shrink-0">
+                      <TabsList className="bg-transparent h-12 gap-6 border-none">
+                        <TabsTrigger value="profile" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all">
+                          Profile
+                        </TabsTrigger>
+                        <TabsTrigger value="prompt" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all">
+                          Prompt
+                        </TabsTrigger>
+                        <TabsTrigger value="skills" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all">
+                          Skills
+                        </TabsTrigger>
+                        <TabsTrigger value="members" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all">
+                          Members
+                        </TabsTrigger>
+                        <TabsTrigger value="permissions" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all">
+                          Permissions
+                        </TabsTrigger>
+                      </TabsList>
+                    </div>
 
-                      <div className="space-y-4 rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] p-6 mt-8">
-                        <div className="text-base font-medium text-zinc-100">Custom roles</div>
-                        <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-                          <Input
-                            value={newRoleName}
-                            onChange={(event) => setNewRoleName(event.target.value)}
-                            placeholder="Role name"
-                            className="bg-[#050505] border-[#222]"
-                          />
-                          <Input
-                            value={newRoleSlug}
-                            onChange={(event) => setNewRoleSlug(event.target.value)}
-                            placeholder="Role slug"
-                            className="bg-[#050505] border-[#222]"
-                          />
-                          <Button onClick={() => void createRole()} variant="outline" className="border-[#333] bg-[#050505] hover:bg-[#111] hover:text-zinc-100">
-                            Add Role
-                          </Button>
-                        </div>
-                        <div className="space-y-2">
-                          {detail.roles.map((role) => (
-                            <div key={role.id} className="flex items-center justify-between rounded-lg border border-[#1a1a1a] bg-[#050505] px-4 py-3">
-                              <div>
-                                <div className="text-sm font-medium text-zinc-100">{role.name}</div>
-                                <div className="text-xs text-zinc-500">{role.slug}</div>
+                    <div className="flex-1 min-h-0">
+                      <TabsContent value="profile" className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none">
+                        <ScrollArea className="h-full">
+                          <div className="p-8 space-y-8">
+                            <div className="grid gap-8 md:grid-cols-2">
+                              <div className="space-y-2">
+                                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Department Name</label>
+                                <Input
+                                  value={departmentForm.name}
+                                  onChange={(event) => setDepartmentForm((prev) => ({ ...prev, name: event.target.value }))}
+                                  className="bg-background border-border/50 h-11 focus-visible:ring-primary/30"
+                                />
                               </div>
-                              <div className="flex items-center gap-2">
-                                {role.isSystem ? <Badge variant="secondary" className="bg-[#1a1a1a] text-zinc-400 border border-[#222]">System</Badge> : null}
-                                {role.isDefault ? <Badge variant="secondary" className="bg-[#1a1a1a] text-zinc-400 border border-[#222]">Default</Badge> : null}
-                                {!role.isSystem ? (
-                                  <Button variant="outline" size="sm" onClick={() => void deleteRole(role.id)} className="border-[#333] bg-[#111] h-7 text-xs hover:bg-[#1a1a1a] hover:text-zinc-100">
-                                    Delete
+                              <div className="space-y-2">
+                                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Status</label>
+                                <Select
+                                  value={departmentForm.status}
+                                  onValueChange={(value) => setDepartmentForm((prev) => ({ ...prev, status: value }))}
+                                >
+                                  <SelectTrigger className="bg-background border-border/50 h-11 focus:ring-primary/30">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="active">Active</SelectItem>
+                                    <SelectItem value="archived">Archived</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Description</label>
+                              <Textarea
+                                value={departmentForm.description}
+                                onChange={(event) => setDepartmentForm((prev) => ({ ...prev, description: event.target.value }))}
+                                rows={4}
+                                className="bg-background border-border/50 text-foreground resize-none focus-visible:ring-primary/30"
+                              />
+                            </div>
+
+                            <Separator className="bg-border/50" />
+
+                            <div className="space-y-6">
+                              <div className="flex items-center justify-between">
+                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Custom Roles</h3>
+                                <Badge variant="outline" className="text-[10px] font-bold uppercase">{detail.roles.length} Total</Badge>
+                              </div>
+                              
+                              <div className="grid gap-4 md:grid-cols-[1fr_1fr_auto] p-4 bg-secondary/10 border border-border/30 rounded-xl">
+                                <div className="space-y-1.5">
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Role Name</label>
+                                  <Input
+                                    value={newRoleName}
+                                    onChange={(event) => setNewRoleName(event.target.value)}
+                                    placeholder="e.g. Sales Lead"
+                                    className="bg-background border-border/50 h-9 text-sm"
+                                  />
+                                </div>
+                                <div className="space-y-1.5">
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Role Slug</label>
+                                  <Input
+                                    value={newRoleSlug}
+                                    onChange={(event) => setNewRoleSlug(event.target.value)}
+                                    placeholder="e.g. sales-lead"
+                                    className="bg-background border-border/50 h-9 text-sm font-mono"
+                                  />
+                                </div>
+                                <div className="flex items-end">
+                                  <Button onClick={() => void createRole()} variant="outline" className="h-9 px-4 text-xs font-bold uppercase tracking-wider">
+                                    <Plus className="h-3.5 w-3.5 mr-2" />
+                                    Add Role
                                   </Button>
-                                ) : null}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </TabsContent>
-
-                    <TabsContent value="prompt" className="space-y-6">
-                      <div className="space-y-2">
-                        <div className="text-sm font-medium text-zinc-400">Department system prompt</div>
-                        <Textarea
-                          value={configForm.systemPrompt}
-                          onChange={(event) => setConfigForm((prev) => ({ ...prev, systemPrompt: event.target.value }))}
-                          rows={8}
-                          className="bg-[#0a0a0a] border-[#222] text-zinc-200 font-mono resize-y"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <div className="text-sm font-medium text-zinc-400">Skills Markdown</div>
-                        <Textarea
-                          value={configForm.skillsMarkdown}
-                          onChange={(event) => setConfigForm((prev) => ({ ...prev, skillsMarkdown: event.target.value }))}
-                          rows={12}
-                          className="bg-[#0a0a0a] border-[#222] text-zinc-200 font-mono resize-y"
-                        />
-                      </div>
-                      <div className="flex items-center gap-3 pt-2">
-                        <Button onClick={() => void saveConfig()} className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200">
-                          Save Prompt Context
-                        </Button>
-                        <Button
-                          variant="outline"
-                          onClick={() => setConfigForm((prev) => ({ ...prev, isActive: !prev.isActive }))}
-                          className="border-[#333] bg-[#0a0a0a] hover:bg-[#1a1a1a] hover:text-zinc-100"
-                        >
-                          {configForm.isActive ? 'Disable config' : 'Enable config'}
-                        </Button>
-                      </div>
-                    </TabsContent>
-
-                    <TabsContent value="skills" className="space-y-6">
-                      <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] p-6 space-y-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-base font-medium text-zinc-100">Global skills</div>
-                            <div className="text-sm text-zinc-500 mt-1">
-                              Default reusable skills available across departments. These are system-managed in v1.
-                            </div>
-                          </div>
-                        </div>
-                        <div className="space-y-3">
-                          {detail.globalSkills.map((skill) => (
-                            <div key={skill.id} className="rounded-lg border border-[#1a1a1a] bg-[#050505] px-4 py-3">
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="text-sm font-medium text-zinc-100">{skill.name}</div>
-                                  <div className="text-sm text-zinc-500 mt-0.5">{skill.summary}</div>
-                                  <div className="mt-2 flex flex-wrap gap-1.5">
-                                    <Badge variant="outline" className="border-[#333] bg-[#111] text-zinc-400">{skill.scope}</Badge>
-                                    {skill.isSystem ? (
-                                      <Badge variant="outline" className="border-sky-900 bg-sky-950/30 text-sky-300">System</Badge>
-                                    ) : null}
-                                    {skill.tags.map((tag) => (
-                                      <Badge key={tag} variant="outline" className="border-[#333] bg-[#111] text-zinc-400">{tag}</Badge>
-                                    ))}
-                                  </div>
-                                </div>
-                                <Badge variant="outline" className={`border ${pillForStatus(skill.status)}`}>{skill.status}</Badge>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] p-6 space-y-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-base font-medium text-zinc-100">Department skills</div>
-                            <div className="text-sm text-zinc-500 mt-1">
-                              Create reusable department-specific playbooks like finance approvals, close checklists, or invoice flows.
-                            </div>
-                          </div>
-                          <Button onClick={openCreateSkillDialog} className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200">
-                            <Plus className="mr-2 h-4 w-4" />
-                            New Skill
-                          </Button>
-                        </div>
-
-                        <div className="space-y-3">
-                          {detail.departmentSkills.map((skill) => (
-                            <div key={skill.id} className="rounded-lg border border-[#1a1a1a] bg-[#050505] px-4 py-3">
-                              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                                <div className="min-w-0">
-                                  <div className="text-sm font-medium text-zinc-100">{skill.name}</div>
-                                  <div className="text-sm text-zinc-500 mt-0.5">{skill.summary}</div>
-                                  <div className="mt-1 text-xs font-mono text-zinc-600">{skill.slug}</div>
-                                  <div className="mt-2 flex flex-wrap gap-1.5">
-                                    <Badge variant="outline" className="border-[#333] bg-[#111] text-zinc-400">{skill.scope}</Badge>
-                                    <Badge variant="outline" className={`border ${pillForStatus(skill.status)}`}>{skill.status}</Badge>
-                                    {skill.tags.map((tag) => (
-                                      <Badge key={tag} variant="outline" className="border-[#333] bg-[#111] text-zinc-400">{tag}</Badge>
-                                    ))}
-                                  </div>
-                                </div>
-                                <div className="flex gap-2">
-                                  <Button variant="outline" size="sm" onClick={() => openEditSkillDialog(skill)} className="border-[#333] bg-[#111] hover:bg-[#1a1a1a] hover:text-zinc-100">
-                                    Edit
-                                  </Button>
-                                  {skill.status !== 'archived' ? (
-                                    <Button variant="outline" size="sm" onClick={() => void archiveSkill(skill.id)} className="border-[#333] bg-[#111] hover:bg-[#1a1a1a] hover:text-zinc-100">
-                                      Archive
-                                    </Button>
-                                  ) : null}
                                 </div>
                               </div>
-                            </div>
-                          ))}
-                          {detail.departmentSkills.length === 0 ? (
-                            <div className="rounded-lg border border-dashed border-[#222] bg-[#050505] p-4 text-sm text-zinc-500 text-center">
-                              No department-specific skills yet.
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    </TabsContent>
 
-                    <TabsContent value="members" className="space-y-6">
-                      <div className="rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] p-6 space-y-4">
-                        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                          <div>
-                            <div className="text-base font-medium text-zinc-100">Add members from synced workspace users</div>
-                            <div className="text-sm text-zinc-500 mt-1">
-                              Search by name, email, Lark display name, or Lark role.
-                            </div>
-                          </div>
-                          <div className="w-full md:w-[260px]">
-                            <Select value={membershipRoleId} onValueChange={setMembershipRoleId}>
-                              <SelectTrigger className="bg-[#050505] border-[#222]">
-                                <SelectValue placeholder="Choose department role" />
-                              </SelectTrigger>
-                              <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
+                              <div className="grid gap-3">
                                 {detail.roles.map((role) => (
-                                  <SelectItem key={role.id} value={role.id}>
-                                    {role.name}
-                                  </SelectItem>
+                                  <div key={role.id} className="group flex items-center justify-between p-4 rounded-xl border border-border/30 bg-background hover:border-border/60 transition-colors">
+                                    <div className="flex items-center gap-3">
+                                      <div className="h-8 w-8 rounded-lg bg-secondary/50 flex items-center justify-center">
+                                        <Shield className="h-4 w-4 text-muted-foreground" />
+                                      </div>
+                                      <div>
+                                        <div className="text-sm font-bold text-foreground flex items-center gap-2">
+                                          {role.name}
+                                          {role.isDefault && <Badge variant="secondary" className="text-[9px] h-4 font-bold uppercase">Default</Badge>}
+                                          {role.isSystem && <Badge variant="outline" className="text-[9px] h-4 font-bold uppercase">System</Badge>}
+                                        </div>
+                                        <div className="text-xs font-mono text-muted-foreground">{role.slug}</div>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      {!role.isDefault && (
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => void setDefaultRole(role.id, role.name)}
+                                          className="h-8 text-[10px] font-bold uppercase tracking-wider text-muted-foreground hover:text-primary"
+                                        >
+                                          Set Default
+                                        </Button>
+                                      )}
+                                      {!role.isSystem && (
+                                        <Button 
+                                          variant="ghost" 
+                                          size="sm" 
+                                          onClick={() => void deleteRole(role.id)} 
+                                          className="h-8 text-[10px] font-bold uppercase tracking-wider text-destructive hover:bg-destructive/10"
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </Button>
+                                      )}
+                                    </div>
+                                  </div>
                                 ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        </div>
-
-                        <Input
-                          value={memberSearch}
-                          onChange={(event) => setMemberSearch(event.target.value)}
-                          placeholder="Search synced Lark users from the workspace directory..."
-                          className="bg-[#050505] border-[#222]"
-                        />
-
-                        {membershipUserId ? (
-                          <div className="rounded-md border border-[#1a1a1a] bg-[#050505] px-3 py-2 text-xs text-zinc-400">
-                            Manual selection: {memberLabel(detail.availableMembers.find((member) => member.userId === membershipUserId) ?? { userId: membershipUserId })}
-                          </div>
-                        ) : null}
-
-                        <div className="space-y-2 max-h-[320px] overflow-auto custom-scrollbar">
-                          {searchingCandidates ? (
-                            <div className="rounded-md border border-[#1a1a1a] bg-[#050505] p-3 text-sm text-zinc-500">
-                              Searching synced Lark users...
+                              </div>
                             </div>
-                          ) : null}
-                          {availableDepartmentCandidates.map((member) => (
-                            <button
-                              key={member.channelIdentityId}
-                              type="button"
-                              onClick={() => void assignMemberCandidate(member)}
-                              className="w-full rounded-md border border-[#1a1a1a] bg-[#050505] px-4 py-3 text-left transition-colors hover:border-[#333] hover:bg-[#090909]"
-                            >
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="text-sm font-medium text-zinc-100">{candidateLabel(member)}</div>
-                                  <div className="text-xs text-zinc-500 mt-0.5">
-                                    {member.email ?? 'No email'} · {member.workspaceRole ? roleLabel(member.workspaceRole) : 'Not yet a workspace member'}
-                                  </div>
-                                  <div className="mt-2 flex flex-wrap gap-1.5">
-                                    <Badge variant="outline" className="border-sky-900 bg-sky-950/40 text-sky-300">Lark synced</Badge>
-                                    {member.isWorkspaceMember ? (
-                                      <Badge variant="outline" className="border-emerald-900 bg-emerald-950/30 text-emerald-300">Workspace member</Badge>
-                                    ) : (
-                                      <Badge variant="outline" className="border-amber-900 bg-amber-950/30 text-amber-300">Will be mapped on add</Badge>
-                                    )}
-                                    {member.larkDisplayName ? (
-                                      <Badge variant="outline" className="border-[#333] bg-[#111] text-zinc-400">{member.larkDisplayName}</Badge>
-                                    ) : null}
-                                    {member.larkSourceRoles.slice(0, 3).map((role) => (
-                                      <Badge key={role} variant="outline" className="border-[#333] bg-[#111] text-zinc-400">{role}</Badge>
-                                    ))}
-                                  </div>
+                          </div>
+                        </ScrollArea>
+                      </TabsContent>
+
+                      <TabsContent value="prompt" className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none">
+                        <ScrollArea className="h-full">
+                          <div className="p-8 space-y-8">
+                            <div className="space-y-4">
+                              <div className="flex items-center justify-between ml-1">
+                                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground flex items-center gap-2">
+                                  <Terminal className="h-3.5 w-3.5" />
+                                  Department System Prompt
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] font-mono text-muted-foreground uppercase">{configForm.systemPrompt.length} chars</span>
+                                  <Separator orientation="vertical" className="h-3" />
+                                  <Button 
+                                    variant="ghost" 
+                                    size="sm" 
+                                    className="h-6 px-2 text-[10px] font-bold uppercase tracking-tighter"
+                                    onClick={() => setConfigForm(prev => ({ ...prev, isActive: !prev.isActive }))}
+                                  >
+                                    {configForm.isActive ? <Lock className="h-3 w-3 mr-1 text-emerald-500" /> : <Shield className="h-3 w-3 mr-1 text-muted-foreground" />}
+                                    {configForm.isActive ? 'Active' : 'Disabled'}
+                                  </Button>
                                 </div>
-                                <div className="text-xs text-zinc-500 shrink-0">Add</div>
                               </div>
-                            </button>
-                          ))}
-                          {!searchingCandidates && debouncedMemberSearch.trim().length > 0 && availableDepartmentCandidates.length === 0 ? (
-                            <div className="rounded-md border border-dashed border-[#222] bg-[#050505] p-3 text-sm text-zinc-500 text-center">
-                              No synced Lark users matched your search.
-                            </div>
-                          ) : null}
-                          {!searchingCandidates && debouncedMemberSearch.trim().length === 0 ? (
-                            <div className="rounded-md border border-dashed border-[#222] bg-[#050505] p-3 text-sm text-zinc-500 text-center">
-                              Start typing to search the synced Lark directory from the database.
-                            </div>
-                          ) : null}
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-[1.2fr_auto] pt-2">
-                          <Select value={membershipUserId} onValueChange={setMembershipUserId}>
-                            <SelectTrigger className="bg-[#050505] border-[#222]">
-                              <SelectValue placeholder="Or choose a user manually from workspace members" />
-                            </SelectTrigger>
-                            <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
-                              {detail.availableMembers.map((member) => (
-                                <SelectItem key={member.userId} value={member.userId}>
-                                  {memberLabel(member)} · {roleLabel(member.workspaceRole)}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <Button onClick={() => void assignMember()} className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200">
-                            Save Membership
-                          </Button>
-                        </div>
-                      </div>
-
-                      <div className="space-y-3">
-                        {detail.memberships.map((membership) => (
-                          <div key={membership.id} className="flex flex-col gap-3 rounded-lg border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3 md:flex-row md:items-center md:justify-between">
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium text-zinc-100">{memberLabel(membership)}</div>
-                              <div className="text-xs text-zinc-500 mt-0.5">
-                                {membership.email ?? 'No email'} · {membership.status}
+                              <div className="relative group">
+                                <div className="absolute top-3 left-3 flex gap-1 pointer-events-none opacity-20 group-hover:opacity-100 transition-opacity">
+                                  <div className="h-2 w-2 rounded-full bg-red-500" />
+                                  <div className="h-2 w-2 rounded-full bg-amber-500" />
+                                  <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                                </div>
+                                <Textarea
+                                  value={configForm.systemPrompt}
+                                  onChange={(event) => setConfigForm((prev) => ({ ...prev, systemPrompt: event.target.value }))}
+                                  rows={12}
+                                  className="bg-[#050505] border-border/50 text-emerald-500 font-mono text-sm leading-relaxed p-6 pt-10 focus-visible:ring-emerald-500/20 resize-y rounded-xl shadow-inner"
+                                  placeholder="# You are the Finance Department Agent..."
+                                />
                               </div>
                             </div>
-                            <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                              <Select
-                                value={membership.roleId}
-                                onValueChange={(value) => void updateMemberRole(membership.userId, value)}
-                              >
-                                <SelectTrigger className="w-full min-w-[190px] bg-[#050505] border-[#222] h-9">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
-                                  {detail.roles.map((role) => (
-                                    <SelectItem key={role.id} value={role.id}>
-                                      {role.name}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                              <Button variant="outline" size="sm" onClick={() => void removeMember(membership.userId)} className="border-[#333] bg-[#050505] h-9 hover:bg-[#111] hover:text-zinc-100">
-                                Remove
+
+                            <div className="space-y-4">
+                              <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1 flex items-center gap-2">
+                                <BookOpen className="h-3.5 w-3.5" />
+                                Static Skills Knowledge Base (Markdown)
+                              </label>
+                              <Textarea
+                                value={configForm.skillsMarkdown}
+                                onChange={(event) => setConfigForm((prev) => ({ ...prev, skillsMarkdown: event.target.value }))}
+                                rows={15}
+                                className="bg-background border-border/50 text-foreground font-mono text-sm leading-relaxed p-6 focus-visible:ring-primary/30 resize-y rounded-xl"
+                                placeholder="## Skill: Invoice Processing..."
+                              />
+                            </div>
+
+                            <div className="flex justify-end pt-4">
+                              <Button onClick={() => void saveConfig()} className="bg-primary text-primary-foreground font-bold uppercase tracking-wider px-8 shadow-md">
+                                Update Context
                               </Button>
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    </TabsContent>
+                        </ScrollArea>
+                      </TabsContent>
 
-                    <TabsContent value="permissions" className="space-y-6">
-                      <div className="rounded-xl border border-[#1a1a1a] bg-[#111]">
-                        <Table>
-                          <TableHeader className="bg-[#0a0a0a]">
-                            <TableRow className="border-b border-[#1a1a1a] hover:bg-transparent">
-                              <TableHead className="w-[200px] text-zinc-500">Tool</TableHead>
-                              {detail.roles.map((role) => (
-                                <TableHead key={role.id} className="text-zinc-500">
-                                  {role.name}
-                                </TableHead>
-                              ))}
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {detail.availableTools.map((tool) => (
-                              <TableRow key={tool.toolId} className="border-b border-[#1a1a1a] hover:bg-[#151515]">
-                                <TableCell className="align-top font-medium text-zinc-100">
-                                  <div>{tool.name}</div>
-                                  <div className="text-xs font-normal text-zinc-500">{tool.toolId}</div>
-                                </TableCell>
-                                {detail.roles.map((role) => {
-                                  const key = `${role.id}:${tool.toolId}`
-                                  const allowed = rolePermissionMap.get(key) ?? (role.slug === 'MANAGER' ? true : tool.toolId === 'search-read' || tool.toolId === 'search-agent')
-                                  const isPending = pendingPermissionKey === key
-                                  return (
-                                    <TableCell key={key}>
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        disabled={isPending}
-                                        onClick={() => void toggleRolePermission(role.id, tool.toolId, !allowed)}
-                                        className={
-                                          allowed
-                                            ? 'border-emerald-900 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-950/60 disabled:opacity-70'
-                                            : 'border-[#333] bg-[#0a0a0a] text-zinc-400 hover:bg-[#111] hover:text-zinc-300 disabled:opacity-70'
-                                        }
-                                      >
-                                        {isPending ? 'Saving...' : allowed ? 'Allowed' : 'Blocked'}
-                                      </Button>
-                                    </TableCell>
-                                  )
-                                })}
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </div>
-
-                      <div className="space-y-4 rounded-xl border border-[#1a1a1a] bg-[#0a0a0a] p-6">
-                        <div className="text-base font-medium text-zinc-100">User overrides</div>
-                        <div className="grid gap-3 md:grid-cols-[1.2fr_1.2fr_0.8fr_auto]">
-                          <Select value={overrideUserId} onValueChange={setOverrideUserId}>
-                            <SelectTrigger className="bg-[#050505] border-[#222]">
-                              <SelectValue placeholder="Choose department member" />
-                            </SelectTrigger>
-                            <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
-                              {detail.memberships.map((membership) => (
-                                <SelectItem key={membership.userId} value={membership.userId}>
-                                  {memberLabel(membership)}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <Select value={overrideToolId} onValueChange={setOverrideToolId}>
-                            <SelectTrigger className="bg-[#050505] border-[#222]">
-                              <SelectValue placeholder="Choose tool" />
-                            </SelectTrigger>
-                            <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
-                              {detail.availableTools.map((tool) => (
-                                <SelectItem key={tool.toolId} value={tool.toolId}>
-                                  {tool.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <Select value={overrideAllowed} onValueChange={(value) => setOverrideAllowed(value as 'allow' | 'deny')}>
-                            <SelectTrigger className="bg-[#050505] border-[#222]">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
-                              <SelectItem value="allow">allow</SelectItem>
-                              <SelectItem value="deny">deny</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <Button onClick={() => void saveUserOverride()} variant="outline" className="border-[#333] bg-[#050505] hover:bg-[#111] hover:text-zinc-100">
-                            Save Override
-                          </Button>
-                        </div>
-
-                        <div className="space-y-2">
-                          {detail.userOverrides.map((override) => (
-                            <div key={override.id} className="flex items-center justify-between rounded-lg border border-[#1a1a1a] bg-[#050505] px-4 py-3">
-                              <div className="text-xs text-zinc-400">
-                                {memberLabel(detail.memberships.find((membership) => membership.userId === override.userId) ?? { userId: override.userId })}
-                                {' · '}
-                                {override.toolId}
+                      <TabsContent value="skills" className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none">
+                        <ScrollArea className="h-full">
+                          <div className="p-8 space-y-8">
+                            <div className="space-y-6">
+                              <div className="flex items-center justify-between">
+                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Global Playbooks</h3>
+                                <Badge variant="secondary" className="text-[10px] font-bold uppercase">System Managed</Badge>
                               </div>
-                              <Badge className={override.allowed ? 'border-emerald-900 bg-emerald-950/40 text-emerald-300' : 'border-red-900 bg-red-950/40 text-red-300'}>
-                                {override.allowed ? 'allow' : 'deny'}
-                              </Badge>
+                              <div className="grid gap-4">
+                                {detail.globalSkills.map((skill) => (
+                                  <div key={skill.id} className="p-4 rounded-xl border border-border/30 bg-background/50 hover:bg-background transition-colors flex items-start justify-between gap-4">
+                                    <div className="space-y-2">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-sm font-bold text-foreground">{skill.name}</span>
+                                        <Badge variant="outline" className="text-[9px] h-4 uppercase border-border/50">Global</Badge>
+                                      </div>
+                                      <p className="text-xs text-muted-foreground line-clamp-2 max-w-2xl">{skill.summary}</p>
+                                      <div className="flex flex-wrap gap-1.5 pt-1">
+                                        {skill.tags.map((tag) => (
+                                          <Badge key={tag} variant="secondary" className="text-[9px] h-4 px-1.5 font-medium">{tag}</Badge>
+                                        ))}
+                                      </div>
+                                    </div>
+                                    <div className="h-8 w-8 rounded-lg bg-secondary/50 flex items-center justify-center shrink-0">
+                                      <Shield className="h-4 w-4 text-muted-foreground" />
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                          ))}
-                          {detail.userOverrides.length === 0 ? (
-                            <div className="text-xs text-zinc-500">No user-specific overrides yet.</div>
-                          ) : null}
-                        </div>
-                      </div>
-                    </TabsContent>
+
+                            <Separator className="bg-border/50" />
+
+                            <div className="space-y-6">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Department Playbooks</h3>
+                                  <p className="text-xs text-muted-foreground mt-1">Reusable workflows specific to this department.</p>
+                                </div>
+                                <Button onClick={openCreateSkillDialog} size="sm" className="h-8 px-4 text-xs font-bold uppercase tracking-wider">
+                                  <Plus className="h-3.5 w-3.5 mr-2" />
+                                  New Skill
+                                </Button>
+                              </div>
+
+                              <div className="grid gap-4 md:grid-cols-2">
+                                {detail.departmentSkills.map((skill) => (
+                                  <div key={skill.id} className="group p-5 rounded-xl border border-border/30 bg-background hover:border-primary/30 transition-all">
+                                    <div className="flex items-start justify-between gap-3 mb-3">
+                                      <div className="space-y-1">
+                                        <div className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">{skill.name}</div>
+                                        <div className="text-[10px] font-mono text-muted-foreground uppercase">{skill.slug}</div>
+                                      </div>
+                                      <DropdownMenu>
+                                        <DropdownMenuTrigger asChild>
+                                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
+                                            <MoreHorizontal className="h-4 w-4" />
+                                          </Button>
+                                        </DropdownMenuTrigger>
+                                        <DropdownMenuContent align="end">
+                                          <DropdownMenuItem onClick={() => openEditSkillDialog(skill)}>
+                                            Edit skill
+                                          </DropdownMenuItem>
+                                          {skill.status !== 'archived' && (
+                                            <DropdownMenuItem onClick={() => void archiveSkill(skill.id)} className="text-destructive focus:text-destructive">
+                                              Archive skill
+                                            </DropdownMenuItem>
+                                          )}
+                                        </DropdownMenuContent>
+                                      </DropdownMenu>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground line-clamp-2 h-8 mb-4">{skill.summary}</p>
+                                    <div className="flex items-center justify-between">
+                                      <div className="flex flex-wrap gap-1">
+                                        {skill.tags.slice(0, 2).map((tag) => (
+                                          <Badge key={tag} variant="secondary" className="text-[9px] px-1.5 h-4 font-medium">{tag}</Badge>
+                                        ))}
+                                        {skill.tags.length > 2 && <span className="text-[9px] text-muted-foreground">+{skill.tags.length - 2}</span>}
+                                      </div>
+                                      <Badge variant={statusBadgeVariant(skill.status)} className="text-[9px] px-1.5 h-4 uppercase font-bold tracking-tighter">
+                                        {skill.status}
+                                      </Badge>
+                                    </div>
+                                  </div>
+                                ))}
+                                {detail.departmentSkills.length === 0 && (
+                                  <div className="col-span-full py-12 flex flex-col items-center justify-center border border-dashed border-border/50 rounded-xl bg-secondary/5">
+                                    <BookOpen className="h-8 w-8 text-muted-foreground/30 mb-3" />
+                                    <p className="text-sm text-muted-foreground">No department-specific skills yet.</p>
+                                    <Button variant="link" onClick={openCreateSkillDialog} className="text-xs font-bold uppercase tracking-widest h-8 mt-2">
+                                      Create First Skill
+                                    </Button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </ScrollArea>
+                      </TabsContent>
+
+                      <TabsContent value="members" className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none">
+                        <ScrollArea className="h-full">
+                          <div className="p-8 space-y-8">
+                            <div className="p-6 rounded-xl border border-border/30 bg-secondary/10 space-y-6">
+                              <div className="space-y-1">
+                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Onboard Sync Members</h3>
+                                <p className="text-xs text-muted-foreground">Search and add users from the workspace directory.</p>
+                              </div>
+
+                              <div className="grid gap-4 md:grid-cols-[1fr_200px]">
+                                <div className="relative group">
+                                  <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground group-focus-within:text-foreground transition-colors" />
+                                  <Input
+                                    value={memberSearch}
+                                    onChange={(event) => setMemberSearch(event.target.value)}
+                                    placeholder="Search by name, email or Lark role..."
+                                    className="bg-background border-border/50 h-10 pl-9"
+                                  />
+                                </div>
+                                <Select value={membershipRoleId} onValueChange={setMembershipRoleId}>
+                                  <SelectTrigger className="bg-background border-border/50 h-10">
+                                    <SelectValue placeholder="Add with role" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {detail.roles.map((role) => (
+                                      <SelectItem key={role.id} value={role.id}>
+                                        {role.name}{role.isDefault ? ' (Default)' : ''}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+
+                              <div className="space-y-2 max-h-[300px] overflow-auto pr-2 custom-scrollbar">
+                                {searchingCandidates ? (
+                                  <div className="space-y-3">
+                                    <Skeleton className="h-14 w-full rounded-xl" />
+                                    <Skeleton className="h-14 w-full rounded-xl" />
+                                  </div>
+                                ) : availableDepartmentCandidates.map((member) => (
+                                  <button
+                                    key={member.channelIdentityId}
+                                    type="button"
+                                    onClick={() => void assignMemberCandidate(member)}
+                                    className="w-full p-4 rounded-xl border border-border/30 bg-background hover:border-primary/30 hover:shadow-sm transition-all text-left flex items-center justify-between group"
+                                  >
+                                    <div className="flex items-center gap-4 min-w-0">
+                                      <Avatar className="h-10 w-10 rounded-lg border border-border/50 shrink-0">
+                                        <AvatarFallback className="rounded-lg bg-secondary text-secondary-foreground text-xs font-bold uppercase">
+                                          {candidateLabel(member)[0]}
+                                        </AvatarFallback>
+                                      </Avatar>
+                                      <div className="min-w-0">
+                                        <div className="text-sm font-bold text-foreground group-hover:text-primary transition-colors truncate">{candidateLabel(member)}</div>
+                                        <div className="text-[10px] text-muted-foreground truncate">{member.email || 'No email synced'}</div>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <Badge variant="outline" className="text-[9px] font-bold uppercase bg-secondary/30 h-5">
+                                        {member.workspaceRole ? roleLabel(member.workspaceRole) : 'Synced'}
+                                      </Badge>
+                                      <div className="h-8 w-8 rounded-full bg-secondary/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <Plus className="h-4 w-4 text-primary" />
+                                      </div>
+                                    </div>
+                                  </button>
+                                ))}
+                                {!searchingCandidates && debouncedMemberSearch.trim().length > 0 && availableDepartmentCandidates.length === 0 && (
+                                  <div className="text-center py-8 border border-dashed border-border/50 rounded-xl">
+                                    <p className="text-xs text-muted-foreground font-medium">No users matching your search.</p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="space-y-4">
+                              <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground ml-1">Current Department Roster</h3>
+                              <div className="grid gap-3">
+                                {detail.memberships.map((membership) => (
+                                  <div key={membership.id} className="group p-4 rounded-xl border border-border/30 bg-background hover:bg-secondary/5 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                    <div className="flex items-center gap-4 min-w-0">
+                                      <Avatar className="h-10 w-10 rounded-lg border border-border/50">
+                                        <AvatarFallback className="rounded-lg bg-primary/5 text-primary text-xs font-bold uppercase">
+                                          {memberLabel(membership)[0]}
+                                        </AvatarFallback>
+                                      </Avatar>
+                                      <div className="min-w-0">
+                                        <div className="text-sm font-bold text-foreground truncate">{memberLabel(membership)}</div>
+                                        <div className="text-xs text-muted-foreground truncate">{membership.email || 'No email'}</div>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                      <Select
+                                        value={membership.roleId}
+                                        onValueChange={(value) => void updateMemberRole(membership.userId, value)}
+                                      >
+                                        <SelectTrigger className="w-[160px] h-9 text-xs bg-background border-border/50 focus:ring-primary/20">
+                                          <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          {detail.roles.map((role) => (
+                                            <SelectItem key={role.id} value={role.id}>
+                                              {role.name}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                      <Button variant="ghost" size="icon" onClick={() => void removeMember(membership.userId)} className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10">
+                                        <Trash2 className="h-4 w-4" />
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </ScrollArea>
+                      </TabsContent>
+
+                      <TabsContent value="permissions" className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none">
+                        <ScrollArea className="h-full">
+                          <div className="p-8 space-y-8">
+                            <div className="rounded-xl border border-border/50 bg-card overflow-hidden shadow-inner shadow-black/5">
+                              <Table>
+                                <TableHeader className="bg-secondary/20">
+                                  <TableRow className="hover:bg-transparent border-border/50">
+                                    <TableHead className="w-[240px] text-[10px] font-bold uppercase tracking-widest text-muted-foreground py-4">Control Tool</TableHead>
+                                    {detail.roles.map((role) => (
+                                      <TableHead key={role.id} className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground py-4 text-center">
+                                        {role.name}
+                                      </TableHead>
+                                    ))}
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {detail.availableTools.map((tool) => (
+                                    <TableRow key={tool.toolId} className="border-border/50 hover:bg-secondary/5 transition-colors">
+                                      <TableCell className="py-5">
+                                        <div className="text-sm font-bold text-foreground">{tool.name}</div>
+                                        <div className="text-[10px] font-mono text-muted-foreground mt-0.5 uppercase tracking-tighter">{tool.toolId}</div>
+                                      </TableCell>
+                                      {detail.roles.map((role) => {
+                                        const key = `${role.id}:${tool.toolId}`
+                                        const allowed =
+                                          rolePermissionMap.get(key)
+                                          ?? (role.slug === 'MANAGER'
+                                            ? true
+                                            : tool.toolId === 'search-read' || tool.toolId === 'search-agent' || tool.toolId === 'skill-search')
+                                        const isPending = pendingPermissionKey === key
+                                        return (
+                                          <TableCell key={key} className="text-center py-5">
+                                            <Button
+                                              variant="outline"
+                                              size="sm"
+                                              disabled={isPending}
+                                              onClick={() => void toggleRolePermission(role.id, tool.toolId, !allowed)}
+                                              className={cn(
+                                                "h-8 px-4 text-[10px] font-bold uppercase tracking-widest transition-all shadow-sm",
+                                                allowed
+                                                  ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 hover:bg-emerald-500/20"
+                                                  : "bg-secondary/30 border-border/50 text-muted-foreground hover:bg-secondary/50"
+                                              )}
+                                            >
+                                              {isPending ? 'Syncing...' : allowed ? 'Allowed' : 'Blocked'}
+                                            </Button>
+                                          </TableCell>
+                                        )
+                                      })}
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+
+                            <div className="p-6 rounded-xl border border-border/30 bg-secondary/10 space-y-6">
+                              <div className="space-y-1">
+                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">User-Specific Overrides</h3>
+                                <p className="text-xs text-muted-foreground">Force allow or deny specific tools for individual members, bypassing role defaults.</p>
+                              </div>
+                              
+                              <div className="grid gap-3 md:grid-cols-[1fr_1fr_120px_auto] items-end">
+                                <div className="space-y-1.5">
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Member</label>
+                                  <Select value={overrideUserId} onValueChange={setOverrideUserId}>
+                                    <SelectTrigger className="bg-background border-border/50 h-9 text-xs">
+                                      <SelectValue placeholder="Select member" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {detail.memberships.map((membership) => (
+                                        <SelectItem key={membership.userId} value={membership.userId}>
+                                          {memberLabel(membership)}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div className="space-y-1.5">
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Tool</label>
+                                  <Select value={overrideToolId} onValueChange={setOverrideToolId}>
+                                    <SelectTrigger className="bg-background border-border/50 h-9 text-xs">
+                                      <SelectValue placeholder="Select tool" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {detail.availableTools.map((tool) => (
+                                        <SelectItem key={tool.toolId} value={tool.toolId}>
+                                          {tool.name}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div className="space-y-1.5">
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Policy</label>
+                                  <Select value={overrideAllowed} onValueChange={(value) => setOverrideAllowed(value as 'allow' | 'deny')}>
+                                    <SelectTrigger className="bg-background border-border/50 h-9 text-xs">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="allow">Allow</SelectItem>
+                                      <SelectItem value="deny">Deny</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <Button onClick={() => void saveUserOverride()} className="h-9 px-4 text-xs font-bold uppercase tracking-wider">
+                                  Apply
+                                </Button>
+                              </div>
+
+                              <div className="grid gap-2">
+                                {detail.userOverrides.map((override) => (
+                                  <div key={override.id} className="flex items-center justify-between p-3 rounded-lg border border-border/30 bg-background text-[11px]">
+                                    <div className="font-medium">
+                                      <span className="text-foreground">{memberLabel(detail.memberships.find((m) => m.userId === override.userId) || { userId: override.userId })}</span>
+                                      <span className="text-muted-foreground mx-2">on</span>
+                                      <span className="font-mono text-primary">{override.toolId}</span>
+                                    </div>
+                                    <Badge className={cn(
+                                      "text-[9px] h-4 uppercase font-bold tracking-tighter",
+                                      override.allowed ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20" : "bg-red-500/10 text-red-600 border-red-500/20"
+                                    )} variant="outline">
+                                      {override.allowed ? 'Force Allow' : 'Force Deny'}
+                                    </Badge>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </ScrollArea>
+                      </TabsContent>
+                    </div>
                   </Tabs>
-                )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-        <DialogContent className="border-[#1a1a1a] bg-[#111] text-zinc-200">
-          <DialogHeader>
-            <DialogTitle>Create Department</DialogTitle>
-            <DialogDescription className="text-zinc-500">
-              Create a new department and jump straight into configuring it.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <div className="text-sm text-zinc-400">Department name</div>
-              <Input
-                value={newDepartmentName}
-                onChange={(event) => setNewDepartmentName(event.target.value)}
-                placeholder="Support, Sales, Finance..."
-                className="bg-[#0a0a0a] border-[#222]"
-              />
-            </div>
-            <div className="space-y-2">
-              <div className="text-sm text-zinc-400">Description</div>
-              <Input
-                value={newDepartmentDescription}
-                onChange={(event) => setNewDepartmentDescription(event.target.value)}
-                placeholder="Optional description"
-                className="bg-[#0a0a0a] border-[#222]"
-              />
-            </div>
+                </div>
+              </>
+            )}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)} className="border-[#333] bg-[#0a0a0a]">
-              Cancel
-            </Button>
-            <Button onClick={() => void createDepartment()} className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200">
-              Create Department
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </div>
 
-      <Dialog open={isSkillDialogOpen} onOpenChange={setIsSkillDialogOpen}>
-        <DialogContent className="border-[#1a1a1a] bg-[#111] text-zinc-200 max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>{editingSkillId ? 'Edit Department Skill' : 'Create Department Skill'}</DialogTitle>
-            <DialogDescription className="text-zinc-500">
-              These skills are searchable by the agent inside this department and can be read on demand during complex workflows.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-2">
+        <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+          <DialogContent className="max-w-md rounded-2xl">
+            <DialogHeader>
+              <DialogTitle className="text-xl font-bold">New Department</DialogTitle>
+              <DialogDescription className="text-muted-foreground">
+                Set up a new organizational unit to manage specific AI workflows and access.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-5 py-4">
               <div className="space-y-2">
-                <div className="text-sm text-zinc-400">Skill name</div>
+                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Department Name</label>
                 <Input
-                  value={skillForm.name}
-                  onChange={(event) => setSkillForm((prev) => ({ ...prev, name: event.target.value }))}
-                  placeholder="Invoice verification flow"
-                  className="bg-[#0a0a0a] border-[#222]"
+                  value={newDepartmentName}
+                  onChange={(event) => setNewDepartmentName(event.target.value)}
+                  placeholder="e.g. Technical Support"
+                  className="h-11 bg-secondary/20 border-border/50"
                 />
               </div>
               <div className="space-y-2">
-                <div className="text-sm text-zinc-400">Slug</div>
-                <Input
-                  value={skillForm.slug}
-                  onChange={(event) => setSkillForm((prev) => ({ ...prev, slug: event.target.value }))}
-                  placeholder="invoice-verification-flow"
-                  className="bg-[#0a0a0a] border-[#222]"
+                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Description</label>
+                <Textarea
+                  value={newDepartmentDescription}
+                  onChange={(event) => setNewDepartmentDescription(event.target.value)}
+                  placeholder="What does this department do?"
+                  rows={3}
+                  className="bg-secondary/20 border-border/50 resize-none"
                 />
               </div>
             </div>
-            <div className="space-y-2">
-              <div className="text-sm text-zinc-400">Summary</div>
-              <Input
-                value={skillForm.summary}
-                onChange={(event) => setSkillForm((prev) => ({ ...prev, summary: event.target.value }))}
-                placeholder="Short explanation of what this skill helps with"
-                className="bg-[#0a0a0a] border-[#222]"
-              />
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button variant="ghost" onClick={() => setIsCreateDialogOpen(false)} className="font-bold uppercase tracking-widest text-xs h-10">
+                Cancel
+              </Button>
+              <Button onClick={() => void createDepartment()} className="bg-primary text-primary-foreground font-bold uppercase tracking-widest text-xs h-10 px-6">
+                Create Department
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={isSkillDialogOpen} onOpenChange={setIsSkillDialogOpen}>
+          <DialogContent className="max-w-4xl rounded-2xl h-[90vh] flex flex-col p-0 overflow-hidden">
+            <div className="p-6 border-b border-border/50">
+              <DialogHeader>
+                <DialogTitle className="text-xl font-bold flex items-center gap-2">
+                  <BookOpen className="h-5 w-5 text-primary" />
+                  {editingSkillId ? 'Edit Skill Playbook' : 'New Skill Playbook'}
+                </DialogTitle>
+                <DialogDescription>
+                  Define detailed procedures and knowledge for the department agent.
+                </DialogDescription>
+              </DialogHeader>
             </div>
-            <div className="grid gap-4 md:grid-cols-[1fr_180px]">
-              <div className="space-y-2">
-                <div className="text-sm text-zinc-400">Tags</div>
-                <Input
-                  value={skillForm.tags}
-                  onChange={(event) => setSkillForm((prev) => ({ ...prev, tags: event.target.value }))}
-                  placeholder="finance, invoices, approvals"
-                  className="bg-[#0a0a0a] border-[#222]"
-                />
+            
+            <ScrollArea className="flex-1 p-6">
+              <div className="space-y-6 pb-4">
+                <div className="grid gap-6 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Skill Name</label>
+                    <Input
+                      value={skillForm.name}
+                      onChange={(event) => setSkillForm((prev) => ({ ...prev, name: event.target.value }))}
+                      placeholder="e.g. Return Policy Verification"
+                      className="bg-secondary/20 border-border/50 h-10"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Slug</label>
+                    <Input
+                      value={skillForm.slug}
+                      onChange={(event) => setSkillForm((prev) => ({ ...prev, slug: event.target.value }))}
+                      placeholder="e.g. return-policy-verification"
+                      className="bg-secondary/20 border-border/50 h-10 font-mono"
+                    />
+                  </div>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Summary</label>
+                  <Input
+                    value={skillForm.summary}
+                    onChange={(event) => setSkillForm((prev) => ({ ...prev, summary: event.target.value }))}
+                    placeholder="Briefly describe what this playbook covers"
+                    className="bg-secondary/20 border-border/50 h-10"
+                  />
+                </div>
+
+                <div className="grid gap-6 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Tags (Comma Separated)</label>
+                    <Input
+                      value={skillForm.tags}
+                      onChange={(event) => setSkillForm((prev) => ({ ...prev, tags: event.target.value }))}
+                      placeholder="e.g. policy, returns, support"
+                      className="bg-secondary/20 border-border/50 h-10"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Status</label>
+                    <Select value={skillForm.status} onValueChange={(value) => setSkillForm((prev) => ({ ...prev, status: value }))}>
+                      <SelectTrigger className="bg-secondary/20 border-border/50 h-10">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="active">Active</SelectItem>
+                        <SelectItem value="archived">Archived</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Markdown Body</label>
+                  <Textarea
+                    value={skillForm.markdown}
+                    onChange={(event) => setSkillForm((prev) => ({ ...prev, markdown: event.target.value }))}
+                    className="bg-[#050505] border-border/50 text-foreground font-mono text-sm min-h-[400px] p-6 focus-visible:ring-primary/20 leading-relaxed"
+                    placeholder="# Playbook: Procedure for..."
+                  />
+                </div>
               </div>
-              <div className="space-y-2">
-                <div className="text-sm text-zinc-400">Status</div>
-                <Select value={skillForm.status} onValueChange={(value) => setSkillForm((prev) => ({ ...prev, status: value }))}>
-                  <SelectTrigger className="bg-[#0a0a0a] border-[#222]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-[#111] border-[#222] text-zinc-300">
-                    <SelectItem value="active">active</SelectItem>
-                    <SelectItem value="archived">archived</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+            </ScrollArea>
+
+            <div className="p-6 border-t border-border/50 bg-secondary/5">
+              <DialogFooter className="gap-2 sm:gap-0">
+                <Button variant="ghost" onClick={() => setIsSkillDialogOpen(false)} className="font-bold uppercase tracking-widest text-xs h-10">
+                  Cancel
+                </Button>
+                <Button onClick={() => void saveSkill()} className="bg-primary text-primary-foreground font-bold uppercase tracking-widest text-xs h-10 px-8 shadow-md">
+                  {editingSkillId ? 'Update Playbook' : 'Create Playbook'}
+                </Button>
+              </DialogFooter>
             </div>
-            <div className="space-y-2">
-              <div className="text-sm text-zinc-400">Markdown body</div>
-              <textarea
-                value={skillForm.markdown}
-                onChange={(event) => setSkillForm((prev) => ({ ...prev, markdown: event.target.value }))}
-                rows={16}
-                className="w-full rounded-md border border-[#222] bg-[#0a0a0a] px-3 py-2 text-sm text-zinc-200 outline-none"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsSkillDialogOpen(false)} className="border-[#333] bg-[#0a0a0a]">
-              Cancel
-            </Button>
-            <Button onClick={() => void saveSkill()} className="bg-zinc-100 text-zinc-900 hover:bg-zinc-200">
-              {editingSkillId ? 'Save Skill' : 'Create Skill'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </DialogContent>
+        </Dialog>
       </div>
     </TooltipProvider>
   )
