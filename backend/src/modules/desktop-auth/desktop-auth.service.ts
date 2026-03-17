@@ -9,6 +9,8 @@ import { channelIdentityRepository } from '../../company/channels/channel-identi
 import { larkOAuthService } from '../../company/channels/lark/lark-oauth.service';
 import { larkTenantBindingRepository } from '../../company/channels/lark/lark-tenant-binding.repository';
 import { larkUserAuthLinkRepository } from '../../company/channels/lark/lark-user-auth-link.repository';
+import { googleOAuthService } from '../../company/channels/google/google-oauth.service';
+import { googleUserAuthLinkRepository } from '../../company/channels/google/google-user-auth-link.repository';
 import { memberAuthRepository, MemberAuthRepository } from '../member-auth/member-auth.repository';
 import { memberAuthService, MemberLoginResult, MemberSessionDTO } from '../member-auth/member-auth.service';
 import { DesktopAuthRepository, desktopAuthRepository } from './desktop-auth.repository';
@@ -18,7 +20,15 @@ type DesktopLarkStatePayload = {
   nonce: string;
 };
 
+type DesktopGoogleStatePayload = {
+  kind: 'desktop_google_connect';
+  nonce: string;
+  userId: string;
+  companyId: string;
+};
+
 const DESKTOP_LARK_STATE_TTL_SECONDS = 10 * 60;
+const DESKTOP_GOOGLE_STATE_TTL_SECONDS = 10 * 60;
 const DESKTOP_PROTOCOL_SCHEME = 'cursorr';
 
 const normalizeEmail = (value?: string): string | undefined => {
@@ -62,6 +72,50 @@ export class DesktopAuthService extends BaseService {
     return {
       authorizeUrl: larkOAuthService.getAuthorizeUrl({ state, redirectUri }),
       redirectUri,
+    };
+  }
+
+  async createGoogleAuthorizeUrl(session: MemberSessionDTO): Promise<{ authorizeUrl: string; redirectUri: string; scopes: string[] }> {
+    if (!googleOAuthService.isConfigured()) {
+      throw new HttpException(400, 'Google OAuth is not configured for desktop connections.');
+    }
+
+    const state = jwt.sign(
+      {
+        kind: 'desktop_google_connect',
+        nonce: crypto.randomBytes(16).toString('hex'),
+        userId: session.userId,
+        companyId: session.companyId,
+      } satisfies DesktopGoogleStatePayload,
+      config.JWT_SECRET,
+      { expiresIn: `${DESKTOP_GOOGLE_STATE_TTL_SECONDS}s` },
+    );
+
+    const redirectUri = googleOAuthService.getRedirectUri();
+    return {
+      authorizeUrl: googleOAuthService.getAuthorizeUrl({ state, redirectUri }),
+      redirectUri,
+      scopes: googleOAuthService.getScopes(),
+    };
+  }
+
+  async getGoogleStatus(session: MemberSessionDTO): Promise<{
+    configured: boolean;
+    connected: boolean;
+    email?: string;
+    name?: string;
+    scopes?: string[];
+    updatedAt?: string;
+  }> {
+    const configured = googleOAuthService.isConfigured();
+    const link = await googleUserAuthLinkRepository.findActiveByUser(session.userId, session.companyId);
+    return {
+      configured,
+      connected: Boolean(link),
+      email: link?.googleEmail,
+      name: link?.googleName,
+      scopes: link?.scopes,
+      updatedAt: link?.updatedAt?.toISOString(),
     };
   }
 
@@ -144,6 +198,36 @@ export class DesktopAuthService extends BaseService {
     });
   }
 
+  async exchangeGoogleAuthorizationCode(input: { code: string; state: string }): Promise<{
+    linked: true;
+    email?: string;
+    name?: string;
+  }> {
+    const payload = this.verifyDesktopGoogleState(input.state);
+    const redirectUri = googleOAuthService.getRedirectUri();
+    const tokenBundle = await googleOAuthService.exchangeAuthorizationCode(input.code, redirectUri);
+    const userInfo = await googleOAuthService.fetchUserInfo(tokenBundle.accessToken);
+
+    await googleUserAuthLinkRepository.upsert({
+      userId: payload.userId,
+      companyId: payload.companyId,
+      googleUserId: userInfo.sub,
+      googleEmail: userInfo.email,
+      googleName: userInfo.name,
+      scope: tokenBundle.scope,
+      accessToken: tokenBundle.accessToken,
+      refreshToken: tokenBundle.refreshToken,
+      tokenType: tokenBundle.tokenType,
+      accessTokenExpiresAt: buildExpiry(tokenBundle.expiresIn),
+    });
+
+    return {
+      linked: true,
+      email: userInfo.email,
+      name: userInfo.name,
+    };
+  }
+
   renderLarkCallbackHtml(input: { code?: string; state?: string; error?: string }): string {
     const target = new URL(`${DESKTOP_PROTOCOL_SCHEME}://auth/callback`);
     if (input.code) {
@@ -174,11 +258,33 @@ export class DesktopAuthService extends BaseService {
 </html>`;
   }
 
+  renderGoogleCallbackHtml(input: { success: boolean; message: string }): string {
+    return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Google Workspace Connected</title>
+  </head>
+  <body style="font-family: sans-serif; background: #0a0a0a; color: #e4e4e7; display: flex; min-height: 100vh; align-items: center; justify-content: center;">
+    <div style="max-width: 520px; padding: 24px; border: 1px solid #27272a; border-radius: 12px; background: #111;">
+      <h1 style="margin: 0 0 12px 0; font-size: 20px;">${input.success ? 'Google connected' : 'Google connection failed'}</h1>
+      <p style="margin: 0 0 16px 0; color: #a1a1aa;">${input.message}</p>
+      <p style="margin: 0; color: #71717a;">You can return to the desktop app.</p>
+    </div>
+  </body>
+</html>`;
+  }
+
   async unlinkLark(session: MemberSessionDTO): Promise<{ unlinked: true }> {
     await larkUserAuthLinkRepository.revokeByUser(session.userId, session.companyId);
     if (session.sessionId) {
       await memberAuthService.logout(session.sessionId);
     }
+    return { unlinked: true };
+  }
+
+  async unlinkGoogle(session: MemberSessionDTO): Promise<{ unlinked: true }> {
+    await googleUserAuthLinkRepository.revokeByUser(session.userId, session.companyId);
     return { unlinked: true };
   }
 
@@ -224,6 +330,18 @@ export class DesktopAuthService extends BaseService {
       return decoded;
     } catch {
       throw new HttpException(400, 'Invalid or expired desktop Lark login state.');
+    }
+  }
+
+  private verifyDesktopGoogleState(state: string): DesktopGoogleStatePayload {
+    try {
+      const decoded = jwt.verify(state, config.JWT_SECRET) as DesktopGoogleStatePayload;
+      if (decoded.kind !== 'desktop_google_connect') {
+        throw new Error('Invalid Google OAuth state payload');
+      }
+      return decoded;
+    } catch (error) {
+      throw new HttpException(400, (error as Error).message || 'Invalid Google OAuth state');
     }
   }
 }

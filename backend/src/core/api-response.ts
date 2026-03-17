@@ -7,6 +7,8 @@ export interface ApiSuccessResponse<T> {
 export interface ApiErrorResponse {
   success: false;
   message: string;
+  details?: unknown;
+  requestId?: string;
 }
 
 export class ApiResponse {
@@ -25,5 +27,4 @@ export class ApiResponse {
     };
   }
 }
-
 

@@ -31,10 +31,25 @@ type Invite = {
   createdAt: string;
 };
 
+type ChannelIdentity = {
+  id: string;
+  companyId: string;
+  channel: string;
+  externalUserId?: string;
+  displayName?: string;
+  email?: string;
+  sourceRoles?: string[];
+  aiRole?: string;
+  syncedAiRole?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export const MembersPage = () => {
   const { token, session } = useAdminAuth();
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
+  const [larkIdentities, setLarkIdentities] = useState<ChannelIdentity[]>([]);
 
   const [companyId, setCompanyId] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
@@ -58,6 +73,7 @@ export const MembersPage = () => {
     if (isSuperAdmin && !scopedCompanyId) {
       setMembers([]);
       setInvites([]);
+      setLarkIdentities([]);
       return;
     }
 
@@ -65,12 +81,15 @@ export const MembersPage = () => {
     setError(null);
     try {
       const query = buildQuery();
-      const [membersData, invitesData] = await Promise.all([
+      const larkQuery = query ? `${query}&channel=lark` : '?channel=lark';
+      const [membersData, invitesData, larkData] = await Promise.all([
         api.get<Member[]>(`/api/admin/company/members${query}`, token),
         api.get<Invite[]>(`/api/admin/company/invites${query}`, token),
+        api.get<ChannelIdentity[]>(`/api/admin/company/channel-identities${larkQuery}`, token),
       ]);
       setMembers(membersData);
       setInvites(invitesData);
+      setLarkIdentities(larkData);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Failed to load member operations.');
     } finally {
@@ -168,6 +187,47 @@ export const MembersPage = () => {
                     </div>
                   ))}
                   {members.length === 0 ? <p className="text-sm text-zinc-500 italic p-2 rounded bg-[#0a0a0a] border border-dashed border-[#222]">No active members found for this workspace.</p> : null}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <h3 className="text-lg font-medium text-zinc-100 border-b border-[#1a1a1a] pb-2">Lark Directory</h3>
+            <div className="flex flex-col gap-2">
+              {loading ? (
+                <>
+                  {[1, 2, 3].map((i) => (
+                    <div key={`lark-${i}`} className="flex flex-col justify-center p-3 rounded-md bg-[#0a0a0a] border border-[#1a1a1a] h-[62px]">
+                      <Skeleton className="h-4 w-40 mb-2" />
+                      <Skeleton className="h-3 w-20" />
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <>
+                  {larkIdentities.map((identity) => (
+                    <div key={identity.id} className="flex items-center justify-between p-3 rounded-md bg-[#0a0a0a] border border-[#1a1a1a]">
+                      <div className="flex flex-col">
+                        <strong className="text-zinc-200 text-sm">
+                          {identity.displayName || identity.email || identity.externalUserId || identity.id}
+                        </strong>
+                        <span className="text-xs text-zinc-500 mt-1">
+                          {identity.email ?? 'No email'} · {identity.sourceRoles?.join(', ') || 'No Lark role'}
+                        </span>
+                      </div>
+                      {identity.aiRole ? (
+                        <Badge variant="secondary" className="bg-[#1a1a1a] text-zinc-400 border border-[#222] text-[10px]">
+                          {identity.aiRole}
+                        </Badge>
+                      ) : null}
+                    </div>
+                  ))}
+                  {larkIdentities.length === 0 ? (
+                    <p className="text-sm text-zinc-500 italic p-2 rounded bg-[#0a0a0a] border border-dashed border-[#222]">
+                      No Lark directory users found for this workspace.
+                    </p>
+                  ) : null}
                 </>
               )}
             </div>

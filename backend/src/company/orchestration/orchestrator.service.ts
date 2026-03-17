@@ -19,7 +19,7 @@ import {
   synthesizeFromAgentResults,
 } from './routing-heuristics';
 import { toolPermissionService } from '../tools/tool-permission.service';
-import { LANGGRAPH_AGENT_TOOL_MAP, TOOL_REGISTRY_MAP, type AiRole } from '../tools/tool-registry';
+import { LEGACY_AGENT_TOOL_MAP, TOOL_REGISTRY_MAP, type AiRole } from '../tools/tool-registry';
 
 export class OrchestratorService {
   requiresHumanConfirmation(messageText: string): boolean {
@@ -57,7 +57,7 @@ export class OrchestratorService {
     const results: AgentResultDTO[] = [];
     for (const agentKey of agentKeys) {
       // Tool-level RBAC: enforce per-tool permission for this user's resolved role
-      const toolId = LANGGRAPH_AGENT_TOOL_MAP[agentKey];
+      const toolId = LEGACY_AGENT_TOOL_MAP[agentKey];
       if (toolId && companyId) {
         const allowed = await toolPermissionService.isAllowed(companyId, toolId, userRole);
         if (!allowed) {

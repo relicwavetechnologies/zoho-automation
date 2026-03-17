@@ -20,7 +20,7 @@ export type AiModelTargetResolvedDTO = {
   targetKey: AiControlTargetKey;
   label: string;
   description: string;
-  engine: 'mastra' | 'langgraph';
+  engine: 'mastra';
   kind: 'supervisor' | 'specialist' | 'router' | 'planner' | 'synthesis' | 'ack';
   effectiveProvider: AiModelProvider;
   effectiveModelId: string;

@@ -1,6 +1,7 @@
 const ROLE_LABELS: Record<string, string> = {
   SUPER_ADMIN: 'Super Admin',
   COMPANY_ADMIN: 'Workspace Admin',
+  DEPARTMENT_MANAGER: 'Department Manager',
   MEMBER: 'Member',
   GUEST: 'Guest',
 };

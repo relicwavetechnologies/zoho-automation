@@ -35,25 +35,32 @@ function ToolIcon({ icon, status }: { icon: string; status: 'running' | 'done' |
 function ApprovalBlockCard({ block }: { block: Extract<ContentBlock, { type: 'approval' }> }): JSX.Element {
     const { approveCommand, rejectCommand } = useChat()
     const isPending = block.status === 'pending'
+    const statusLabel = block.status === 'approved' ? 'Approved' : block.status === 'rejected' ? 'Rejected' : 'Awaiting approval'
+    const statusTone = block.status === 'approved'
+        ? 'bg-[hsl(142,48%,18%)] text-[hsl(142,72%,70%)] border-[hsl(142,48%,28%)]'
+        : block.status === 'rejected'
+            ? 'bg-[hsl(0,38%,16%)] text-[hsl(0,72%,70%)] border-[hsl(0,38%,28%)]'
+            : 'bg-[hsl(44,52%,16%)] text-[hsl(44,90%,70%)] border-[hsl(44,52%,28%)]'
 
     return (
-        <div className="my-2 rounded-2xl border border-[hsl(44,52%,24%)] bg-[linear-gradient(180deg,hsl(40,22%,10%),hsl(0,0%,7%))] p-4">
+        <div className="my-2 rounded-3xl border border-[hsl(44,40%,22%)] bg-[linear-gradient(180deg,hsl(38,20%,11%),hsl(0,0%,7%))] p-4 shadow-[0_12px_32px_rgba(0,0,0,0.22)]">
             <div className="flex items-start gap-3">
                 <div className="mt-0.5 rounded-xl bg-[hsl(44,68%,18%)] p-2 text-[hsl(44,90%,66%)]">
                     <ShieldAlert size={16} />
                 </div>
                 <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium text-[hsl(0,0%,90%)]">
-                        {block.status === 'approved'
-                            ? `${block.title} approved`
-                            : block.status === 'rejected'
-                                ? `${block.title} rejected`
-                                : block.title}
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="text-sm font-medium text-[hsl(0,0%,90%)]">
+                            {block.title}
+                        </div>
+                        <span className={cn('shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]', statusTone)}>
+                            {statusLabel}
+                        </span>
                     </div>
                     <div className="mt-1 text-sm text-[hsl(0,0%,58%)]">
                         {block.description}
                     </div>
-                    <div className="mt-3 rounded-xl border border-[hsl(0,0%,14%)] bg-[hsl(0,0%,5%)] px-3 py-2 font-mono text-[13px] text-[hsl(0,0%,86%)]">
+                    <div className="mt-3 rounded-2xl border border-[hsl(0,0%,14%)] bg-[hsl(0,0%,5%)] px-4 py-3 font-mono text-[13px] leading-7 text-[hsl(0,0%,86%)]">
                         {block.subject}
                     </div>
                     <div className="mt-2 text-[11px] text-[hsl(0,0%,38%)]">
@@ -88,16 +95,34 @@ function TerminalBlockCard({ block }: { block: Extract<ContentBlock, { type: 'te
     const footerLabel = block.status === 'running'
         ? 'Running...'
         : `Exit code ${block.exitCode ?? 'unknown'}${block.durationMs ? ` in ${Math.max(1, Math.round(block.durationMs / 1000))}s` : ''}`
+    const statusTone = block.status === 'running'
+        ? 'bg-[hsl(217,55%,16%)] text-[hsl(217,88%,72%)] border-[hsl(217,55%,28%)]'
+        : block.status === 'done'
+            ? 'bg-[hsl(142,42%,16%)] text-[hsl(142,72%,72%)] border-[hsl(142,42%,28%)]'
+            : 'bg-[hsl(0,38%,16%)] text-[hsl(0,70%,72%)] border-[hsl(0,38%,28%)]'
 
     return (
         <div className="my-2 overflow-hidden rounded-3xl border border-[hsl(0,0%,14%)] bg-[linear-gradient(180deg,hsl(0,0%,18%),hsl(0,0%,12%))] shadow-[0_14px_40px_rgba(0,0,0,0.28)]">
-            <div className="border-b border-[hsl(0,0%,14%)] px-5 py-3">
-                <div className="text-[12px] font-medium text-[hsl(0,0%,72%)]">Shell</div>
+            <div className="flex items-center justify-between gap-3 border-b border-[hsl(0,0%,14%)] px-5 py-3">
+                <div className="flex items-center gap-3">
+                    <div className="text-[12px] font-medium text-[hsl(0,0%,78%)]">Shell</div>
+                    <span className={cn('rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]', statusTone)}>
+                        {block.status === 'running' ? 'Running' : block.status === 'done' ? 'Complete' : 'Failed'}
+                    </span>
+                </div>
+                {block.status === 'running' && (
+                    <button
+                        onClick={() => void killCommand(block.id)}
+                        className="shrink-0 rounded-lg border border-[hsl(0,0%,18%)] px-2.5 py-1 text-[11px] font-medium text-[hsl(0,0%,72%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,90%)]"
+                    >
+                        Stop
+                    </button>
+                )}
             </div>
             <div className="px-5 py-4 font-mono text-[14px] leading-8 text-[hsl(0,0%,92%)]">
-                <div className="mb-4 whitespace-pre-wrap break-words">$ {block.command}</div>
+                <div className="mb-4 rounded-2xl border border-[hsl(0,0%,14%)] bg-[hsl(0,0%,5%)] px-4 py-3 whitespace-pre-wrap break-words">$ {block.command}</div>
                 {output ? (
-                    <pre className="whitespace-pre-wrap break-words text-[hsl(0,0%,70%)]">{output}</pre>
+                    <pre className="max-h-[26rem] overflow-y-auto whitespace-pre-wrap break-words text-[hsl(0,0%,70%)]">{output}</pre>
                 ) : (
                     <div className="flex items-center gap-2 text-[hsl(0,0%,44%)]">
                         {block.status === 'running' ? <Loader2 size={14} className="animate-spin" /> : <TerminalSquare size={14} />}
@@ -107,17 +132,7 @@ function TerminalBlockCard({ block }: { block: Extract<ContentBlock, { type: 'te
             </div>
             <div className="flex items-center justify-between px-5 pb-3 text-[12px] text-[hsl(0,0%,46%)]">
                 <span className="truncate">{block.cwd}</span>
-                <div className="flex items-center gap-3">
-                    {block.status === 'running' && (
-                        <button
-                            onClick={() => void killCommand(block.id)}
-                            className="shrink-0 rounded-lg border border-[hsl(0,0%,18%)] px-2.5 py-1 text-[11px] font-medium text-[hsl(0,0%,72%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,90%)]"
-                        >
-                            Stop
-                        </button>
-                    )}
-                    <span className="shrink-0">{footerLabel}</span>
-                </div>
+                <span className="shrink-0">{footerLabel}</span>
             </div>
         </div>
     )

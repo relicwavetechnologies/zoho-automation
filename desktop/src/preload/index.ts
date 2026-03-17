@@ -7,6 +7,9 @@ export type DesktopAPI = {
   auth: {
     openLarkLogin: () => Promise<void>
     exchangeLark: (code: string, state: string) => Promise<{ success: boolean; data?: { token: string; session: unknown } }>
+    openGoogleConnect: (token: string) => Promise<{ success: boolean; data?: { authorizeUrl?: string } }>
+    getGoogleStatus: (token: string) => Promise<{ success: boolean; data?: unknown }>
+    unlinkGoogle: (token: string) => Promise<{ success: boolean }>
     me: (token: string) => Promise<{ success: boolean; data?: unknown }>
     getUsage: (token: string) => Promise<{ success: boolean; data?: unknown }>
     logout: (token: string) => Promise<{ success: boolean }>
@@ -45,7 +48,7 @@ export type DesktopAPI = {
       threadId: string,
       options?: { limit?: number; beforeMessageId?: string },
     ) => Promise<{ success: boolean; data?: unknown }>
-    create: (token: string) => Promise<{ success: boolean; data?: { id: string } }>
+    create: (token: string, payload?: { departmentId?: string }) => Promise<{ success: boolean; data?: { id: string } }>
     addMessage: (
       token: string,
       threadId: string,
@@ -122,6 +125,9 @@ const api: DesktopAPI = {
   auth: {
     openLarkLogin: () => ipcRenderer.invoke('desktop-auth:open-lark-login'),
     exchangeLark: (code, state) => ipcRenderer.invoke('desktop-auth:exchange-lark', code, state),
+    openGoogleConnect: (token) => ipcRenderer.invoke('desktop-auth:open-google-connect', token),
+    getGoogleStatus: (token) => ipcRenderer.invoke('desktop-auth:google-status', token),
+    unlinkGoogle: (token) => ipcRenderer.invoke('desktop-auth:unlink-google', token),
     me: (token) => ipcRenderer.invoke('desktop-auth:me', token),
     getUsage: (token) => ipcRenderer.invoke('desktop-auth:usage', token),
     logout: (token) => ipcRenderer.invoke('desktop-auth:logout', token),
@@ -165,7 +171,7 @@ const api: DesktopAPI = {
   threads: {
     list: (token) => ipcRenderer.invoke('desktop:threads', token),
     get: (token, threadId, options) => ipcRenderer.invoke('desktop:thread', token, threadId, options),
-    create: (token) => ipcRenderer.invoke('desktop:thread:create', token),
+    create: (token, payload) => ipcRenderer.invoke('desktop:thread:create', token, payload),
     addMessage: (token, threadId, payload) =>
       ipcRenderer.invoke('desktop:thread:add-message', token, threadId, payload),
     delete: (token, threadId) => ipcRenderer.invoke('desktop:thread:delete', token, threadId),
@@ -175,8 +181,10 @@ const api: DesktopAPI = {
       ipcRenderer.invoke('desktop:chat:send', token, threadId, message),
     getStreamUrl: (token, threadId) =>
       ipcRenderer.invoke('desktop:chat:stream-url', token, threadId),
-    startStream: (token, threadId, message, requestId, attachedFiles, mode) =>
-      ipcRenderer.invoke('desktop:chat:startStream', token, threadId, message, requestId, attachedFiles, mode),
+    startStream: (token, threadId, message, requestId, attachedFiles, mode, workspace) =>
+      ipcRenderer.invoke('desktop:chat:startStream', token, threadId, message, requestId, attachedFiles, mode, workspace),
+    actStream: (token, threadId, requestId, payload) =>
+      ipcRenderer.invoke('desktop:chat:actStream', token, threadId, requestId, payload),
     sendMessageStream: (payload) =>
       ipcRenderer.invoke('desktop:chat:sendMessageStream', payload),
     stopStream: (requestId) =>

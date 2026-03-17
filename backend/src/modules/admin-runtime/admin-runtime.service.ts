@@ -5,7 +5,7 @@ import type { NormalizedIncomingMessageDTO } from '../../company/contracts';
 import { getOrchestrationQueue, orchestrationRuntime } from '../../company/queue/runtime';
 import { redisConnection } from '../../company/queue/runtime/redis.connection';
 import { qdrantAdapter } from '../../company/integrations/vector';
-import { decideCheckpointRecovery } from '../../company/orchestration/langgraph/checkpoint-recovery';
+import { decideCheckpointRecovery } from '../../company/orchestration/checkpoint-recovery';
 import { checkpointRepository } from '../../company/state/checkpoint';
 import { hitlActionRepository } from '../../company/state/hitl/hitl-action.repository';
 import { prisma } from '../../utils/prisma';

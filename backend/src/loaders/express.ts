@@ -7,11 +7,11 @@ import adminExecutionsRoutes from '../modules/admin-executions/admin-executions.
 import adminAiModelsRoutes from '../modules/admin-ai-models/admin-ai-models.routes';
 import adminRuntimeRoutes from '../modules/admin-runtime/admin-runtime.routes';
 import adminAuthRoutes from '../modules/admin-auth/admin-auth.routes';
+import adminDepartmentsRoutes from '../modules/admin-departments/admin-departments.routes';
 import auditRoutes from '../modules/audit/audit.routes';
 import companyAdminRoutes from '../modules/company-admin/company-admin.routes';
 import companyOnboardingRoutes from '../modules/company-onboarding/company-onboarding.routes';
 import exampleRoutes from '../modules/example/example.routes';
-import mastraRuntimeRoutes from '../modules/mastra-runtime/mastra-runtime.routes';
 import rbacRoutes from '../modules/rbac/rbac.routes';
 import userRoutes from '../modules/user/user.routes';
 import memberAuthRoutes from '../modules/member-auth/member-auth.routes';
@@ -68,9 +68,9 @@ const expressLoader = async (app: Application): Promise<void> => {
   app.use('/api/admin/executions', adminExecutionsRoutes);
   app.use('/api/admin/ai-models', adminAiModelsRoutes);
   app.use('/api/admin/runtime', adminRuntimeRoutes);
+  app.use('/api/admin/departments', adminDepartmentsRoutes);
   app.use('/api/admin/company', companyAdminRoutes);
   app.use('/api/onboarding', companyOnboardingRoutes);
-  app.use('/api/agents', mastraRuntimeRoutes);
   app.use('/api/member/auth', memberAuthRoutes);
   app.use('/api/desktop/auth', desktopAuthRoutes);
   app.use('/api/desktop/threads', desktopThreadsRoutes);

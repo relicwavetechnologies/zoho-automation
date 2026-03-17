@@ -1,4 +1,4 @@
-import { FolderOpen, LogOut, PanelRightClose, PanelRightOpen, SquarePen } from 'lucide-react'
+import { FolderOpen, LogOut, PanelRightClose, PanelRightOpen, ShieldCheck, ShieldOff, SquarePen } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useChat } from '../context/ChatContext'
 import { useWorkspace } from '../context/WorkspaceContext'
@@ -12,8 +12,8 @@ interface HeaderProps {
 }
 
 export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }: HeaderProps): JSX.Element {
-  const { session, logout } = useAuth()
-  const { activeThread, createThread } = useChat()
+  const { session, departments, selectedDepartmentId, setSelectedDepartmentId, logout } = useAuth()
+  const { activeThread, createThread, autoApproveLocalActions, setAutoApproveLocalActions } = useChat()
   const { currentWorkspace, selectWorkspace } = useWorkspace()
 
   const title = activeThread?.title ?? (activeThread ? 'New thread' : 'Cursorr')
@@ -61,6 +61,23 @@ export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }:
             {currentWorkspace.name}
           </span>
         )}
+        {departments.length > 1 && (
+          <span className="inline-flex items-center rounded-full border border-[hsl(0,0%,14%)] bg-[hsl(0,0%,10%)] px-1.5 py-1">
+            <select
+              value={selectedDepartmentId ?? ''}
+              onChange={(event) => setSelectedDepartmentId(event.target.value || null)}
+              className="bg-transparent px-1 text-[11px] text-[hsl(0,0%,68%)] outline-none"
+              title="Department"
+            >
+              <option value="" disabled>Select department</option>
+              {departments.map((department) => (
+                <option key={department.id} value={department.id}>
+                  {department.name}
+                </option>
+              ))}
+            </select>
+          </span>
+        )}
 
       </div>
 
@@ -77,6 +94,20 @@ export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }:
         >
           <FolderOpen size={14} />
           <span className="text-xs">Folder</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setAutoApproveLocalActions(!autoApproveLocalActions)}
+          title={autoApproveLocalActions ? 'Disable auto-approve for agent local actions' : 'Enable auto-approve for agent local actions'}
+          className={cn(
+            'titlebar-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors',
+            autoApproveLocalActions
+              ? 'text-[hsl(46,90%,66%)] hover:text-[hsl(46,95%,74%)] hover:bg-[hsl(45,50%,14%)]'
+              : 'text-[hsl(0,0%,45%)] hover:text-[hsl(0,0%,78%)] hover:bg-[hsl(0,0%,12%)]',
+          )}
+        >
+          {autoApproveLocalActions ? <ShieldCheck size={14} /> : <ShieldOff size={14} />}
+          <span className="text-xs">{autoApproveLocalActions ? 'Auto-allow' : 'Ask first'}</span>
         </button>
         <button
           type="button"

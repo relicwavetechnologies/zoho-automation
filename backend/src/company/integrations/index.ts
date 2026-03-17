@@ -6,5 +6,4 @@ export const INTEGRATIONS_BOUNDARY = {
 export * from './zoho';
 export * from './vector';
 export * from './embedding';
-export * from './mastra';
 export * from './outreach';

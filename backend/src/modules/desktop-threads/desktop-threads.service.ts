@@ -64,8 +64,8 @@ export class DesktopThreadsService extends BaseService {
     };
   }
 
-  async createThread(userId: string, companyId: string) {
-    return this.repository.createThread(userId, companyId);
+  async createThread(userId: string, companyId: string, departmentId?: string | null) {
+    return this.repository.createThread(userId, companyId, departmentId);
   }
 
   async addMessage(

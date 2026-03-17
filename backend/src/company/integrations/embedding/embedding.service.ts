@@ -1,9 +1,19 @@
 import { logger } from '../../../utils/logger';
-import { EmbeddingProvider, resolveEmbeddingProvider } from './embedding-provider';
+import type {
+  EmbeddingModality,
+  EmbeddingProvider,
+  MediaAnalysisInput,
+  MediaAnalysisResult,
+} from './embedding-provider';
+import { resolveEmbeddingProvider } from './embedding-provider';
 
 type EmbeddingServiceOptions = {
   provider?: EmbeddingProvider;
   batchSize?: number;
+};
+
+export type EmbeddedMediaSummary = MediaAnalysisResult & {
+  embedding: number[];
 };
 
 const chunk = <T>(items: T[], size: number): T[][] => {
@@ -32,7 +42,7 @@ export class EmbeddingService {
     return this.provider.dimension;
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embedText(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) {
       return [];
     }
@@ -43,7 +53,7 @@ export class EmbeddingService {
 
     for (const batch of batches) {
       try {
-        const chunkVectors = await this.provider.embed(batch);
+        const chunkVectors = await this.provider.embedText(batch);
         if (chunkVectors.length !== batch.length) {
           throw new Error('embedding provider returned mismatched vector count');
         }
@@ -74,6 +84,42 @@ export class EmbeddingService {
     });
 
     return vectors;
+  }
+
+  async analyzeMedia(input: MediaAnalysisInput): Promise<MediaAnalysisResult> {
+    if (!this.provider.analyzeMedia) {
+      throw new Error(`embedding provider ${this.provider.provider} does not support media analysis`);
+    }
+
+    return this.provider.analyzeMedia(input);
+  }
+
+  async embedMediaSummary(input: MediaAnalysisInput): Promise<EmbeddedMediaSummary> {
+    const analysis = await this.analyzeMedia(input);
+    const [embedding] = await this.embedText([analysis.summary]);
+    return {
+      ...analysis,
+      embedding,
+    };
+  }
+
+  async embed(input: string[]): Promise<number[][]> {
+    return this.embedText(input);
+  }
+
+  async embedQuery(text: string): Promise<number[]> {
+    const [embedding] = await this.embedText([text]);
+    return embedding;
+  }
+
+  modalityForMimeType(mimeType: string): EmbeddingModality {
+    if (mimeType.startsWith('image/')) {
+      return 'image';
+    }
+    if (mimeType.startsWith('video/')) {
+      return 'video';
+    }
+    return 'text';
   }
 }
 

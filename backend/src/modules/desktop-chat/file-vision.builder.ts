@@ -38,6 +38,10 @@ const IMAGE_MIME_TYPES = new Set([
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
 ]);
 
+const VIDEO_MIME_TYPES = new Set([
+  'video/mp4', 'video/webm', 'video/quicktime',
+]);
+
 const fetchIndexedFileChunks = async (input: {
   fileAssetId: string;
   companyId: string;
@@ -239,6 +243,12 @@ export const buildVisionContent = async (input: {
         mimeType: file.mimeType,
       });
     } else {
+      const blockLabel = VIDEO_MIME_TYPES.has(file.mimeType)
+        ? `Attached media summary from "${file.fileName}"`
+        : `Attached document content from "${file.fileName}"`;
+      const excerptLabel = VIDEO_MIME_TYPES.has(file.mimeType)
+        ? `Relevant media excerpts from "${file.fileName}"`
+        : `Relevant document excerpts from "${file.fileName}"`;
       const fullIndexedContext = await fetchIndexedFileChunks({
         fileAssetId: file.fileAssetId,
         companyId: input.companyId,
@@ -247,7 +257,7 @@ export const buildVisionContent = async (input: {
       if (fullIndexedContext) {
         parts.push({
           type: 'text',
-          text: `\n\n--- Attached document content from "${file.fileName}" ---\n${fullIndexedContext}\n--- End attached document content ---`,
+          text: `\n\n--- ${blockLabel} ---\n${fullIndexedContext}\n--- End ${blockLabel} ---`,
         });
       } else {
         const relevantContext = await fetchRelevantDocumentChunks({
@@ -260,17 +270,19 @@ export const buildVisionContent = async (input: {
         if (relevantContext) {
           parts.push({
             type: 'text',
-            text: `\n\n--- Relevant document excerpts from "${file.fileName}" ---\n${relevantContext}\n--- End relevant document excerpts ---`,
+            text: `\n\n--- ${excerptLabel} ---\n${relevantContext}\n--- End ${excerptLabel} ---`,
           });
           continue;
         }
 
-        const directText = await fetchDirectDocumentText({
-          fileAssetId: file.fileAssetId,
-          fileName: file.fileName,
-          mimeType: file.mimeType,
-          cloudinaryUrl: file.cloudinaryUrl,
-        });
+        const directText = VIDEO_MIME_TYPES.has(file.mimeType)
+          ? ''
+          : await fetchDirectDocumentText({
+            fileAssetId: file.fileAssetId,
+            fileName: file.fileName,
+            mimeType: file.mimeType,
+            cloudinaryUrl: file.cloudinaryUrl,
+          });
 
         if (directText) {
           parts.push({

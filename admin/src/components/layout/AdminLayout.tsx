@@ -11,7 +11,12 @@ export const AdminLayout = () => {
   const { session, navItems, logout } = useAdminAuth();
   const [isCollapsed, setIsCollapsed] = useState(false);
   const isSuperAdmin = session?.role === 'SUPER_ADMIN';
-  const scopeTitle = isSuperAdmin ? 'Global Control Plane' : 'Workspace Control Plane';
+  const isDepartmentManager = session?.role === 'DEPARTMENT_MANAGER';
+  const scopeTitle = isSuperAdmin
+    ? 'Global Control Plane'
+    : isDepartmentManager
+      ? 'Department Control Plane'
+      : 'Workspace Control Plane';
   const scopeLabel = isSuperAdmin ? 'All workspaces' : session?.companyId ?? 'Workspace scope pending';
 
   return (
@@ -38,7 +43,9 @@ export const AdminLayout = () => {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-3">
               <div className="flex flex-col items-end">
-                <span className="text-xs font-medium text-zinc-200">{isSuperAdmin ? 'Super Admin Session' : 'Workspace Admin Session'}</span>
+                <span className="text-xs font-medium text-zinc-200">
+                  {isSuperAdmin ? 'Super Admin Session' : isDepartmentManager ? 'Department Manager Session' : 'Workspace Admin Session'}
+                </span>
                 <span className="text-[10px] text-zinc-500">{roleLabel(session?.role)} · {navItems.length} panels</span>
               </div>
               <Avatar className="h-8 w-8 rounded-md border border-[#222]">

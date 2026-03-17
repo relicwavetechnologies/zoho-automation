@@ -7,7 +7,7 @@ import { adminAuthService } from '../modules/admin-auth/admin-auth.service';
 import type { RbacAction } from '../modules/rbac/rbac.constants';
 import { rbacService } from '../modules/rbac/rbac.service';
 
-type AdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN';
+type AdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 
 type AdminJwtPayload = {
   userId: string;
@@ -92,7 +92,7 @@ export const requireCompanyScope = () => {
       return next();
     }
 
-    if (session.role === 'COMPANY_ADMIN' && session.companyId === requestedCompanyId) {
+    if ((session.role === 'COMPANY_ADMIN' || session.role === 'DEPARTMENT_MANAGER') && session.companyId === requestedCompanyId) {
       return next();
     }
 

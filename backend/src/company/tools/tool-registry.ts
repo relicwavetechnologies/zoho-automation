@@ -9,36 +9,76 @@ export interface ToolDefinition {
   name: string;
   description: string;
   category: ToolCategory;
-  /** Which engine(s) implement this tool. 'both' = Mastra + LangGraph. */
-  engines: ('mastra' | 'langgraph')[];
+  /** Which engine(s) implement this tool. */
+  engines: ('legacy' | 'vercel')[];
   /** Default permission for built-in roles; custom roles default to same as MEMBER. */
   defaultPermissions: Record<AiRole, boolean>;
 }
 
 export const TOOL_REGISTRY: ToolDefinition[] = [
   {
+    id: 'repo',
+    name: 'Repository Inspector',
+    description: 'Inspect remote GitHub repositories and retrieve repository files.',
+    category: 'search',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'coding',
+    name: 'Coding Workspace Tool',
+    description: 'Plan and verify local workspace coding tasks that may require approved file or terminal actions.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'skill-search',
+    name: 'Skill Search',
+    description: 'Search and read reusable global and department skills for specialized workflows.',
+    category: 'search',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'google-gmail',
+    name: 'Google Gmail',
+    description: 'List, read, draft, and send Gmail messages using the connected Google account.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'google-drive',
+    name: 'Google Drive',
+    description: 'List, read, download, and upload Google Drive files using the connected account.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
     id: 'search-zoho-context',
     name: 'Search Zoho Context',
     description: 'Search indexed Zoho CRM records (deals, contacts, tickets) from the vector database.',
     category: 'crm-read',
-    engines: ['mastra', 'langgraph'],
-    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
     id: 'read-zoho-records',
     name: 'Read Zoho Records',
     description: 'Fetch formatted Zoho CRM data with risk analysis, health reports, and pipeline summaries.',
     category: 'crm-read',
-    engines: ['mastra', 'langgraph'],
-    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
     id: 'zoho-agent',
     name: 'Zoho CRM Agent',
     description: 'Delegate to the Zoho CRM specialist agent for deep CRM data queries.',
     category: 'crm-read',
-    engines: ['mastra', 'langgraph'],
-    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
     id: 'read-outreach-publishers',
@@ -46,7 +86,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     description:
       'Fetch outreach publisher inventory using structured filters such as client URL, DA/DR, country, and pricing.',
     category: 'search',
-    engines: ['mastra', 'langgraph'],
+    engines: ['legacy', 'vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -55,7 +95,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     description:
       'Delegate to the outreach specialist agent for publisher filtering and SEO inventory queries.',
     category: 'search',
-    engines: ['mastra', 'langgraph'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -63,7 +103,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Search Agent',
     description: 'Delegate to the research agent for external web research, exact-site page context, and internal document retrieval.',
     category: 'search',
-    engines: ['mastra', 'langgraph'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -71,7 +111,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Web Search Read',
     description: 'Search the web via Serper, then fetch result pages to extract page context.',
     category: 'search',
-    engines: ['mastra', 'langgraph'],
+    engines: ['legacy', 'vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -79,7 +119,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Search Documents',
     description: 'Search uploaded company documents and private knowledge chunks that the requester is authorized to access.',
     category: 'search',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -87,7 +127,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Base Read',
     description: 'List records from Lark Base / Bitable tables.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -95,7 +135,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Base Write',
     description: 'Create or update records in Lark Base / Bitable tables.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -103,7 +143,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Base Agent',
     description: 'Delegate to the Lark Base specialist for Base record workflows.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -111,7 +151,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Task Read',
     description: 'List tasks from Lark Tasks, fetch a specific task, or resolve the current task.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -119,7 +159,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Task Write',
     description: 'Create, update, or delete tasks in Lark Tasks.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -127,7 +167,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Task Agent',
     description: 'Delegate to the Lark Tasks specialist for task workflows.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -135,7 +175,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Calendar List',
     description: 'List available Lark calendars and resolve calendar names to calendar IDs.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -143,7 +183,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Calendar Read',
     description: 'List events from a Lark Calendar.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -151,7 +191,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Calendar Write',
     description: 'Create, update, or delete events in a Lark Calendar.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -159,7 +199,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Calendar Agent',
     description: 'Delegate to the Lark Calendar specialist for scheduling and calendar workflows.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -167,7 +207,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Meeting Read',
     description: 'List meetings, fetch one meeting, or fetch a Lark minute.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -175,7 +215,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Meeting Agent',
     description: 'Delegate to the Lark Meetings specialist for meeting lookup and minute retrieval.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -183,7 +223,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Approval Read',
     description: 'List or fetch Lark approval instances.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -191,7 +231,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Approval Write',
     description: 'Create a Lark approval instance.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -199,7 +239,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Approval Agent',
     description: 'Delegate to the Lark Approvals specialist for approval workflows.',
     category: 'workspace',
-    engines: ['mastra'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -207,7 +247,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Create Lark Doc',
     description: 'Create a new Lark Doc from grounded content in the current conversation.',
     category: 'workspace',
-    engines: ['mastra', 'langgraph'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -215,7 +255,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Edit Lark Doc',
     description: 'Edit the latest or specified Lark Doc by appending, replacing, patching, or deleting sections.',
     category: 'workspace',
-    engines: ['mastra', 'langgraph'],
+    engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -223,7 +263,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Doc Agent',
     description: 'Create and edit Lark Docs from grounded content and reports.',
     category: 'workspace',
-    engines: ['mastra', 'langgraph'],
+    engines: ['legacy', 'vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -231,31 +271,23 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Zoho Read',
     description: 'Live Zoho CRM read via MCP or REST with vector augmentation.',
     category: 'crm-read',
-    engines: ['mastra', 'langgraph'],
-    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    engines: ['legacy', 'vercel'],
+    defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
     id: 'zoho-action',
     name: 'Zoho Action',
     description: 'Execute write/mutate operations on Zoho CRM. Requires human confirmation.',
     category: 'crm-action',
-    engines: ['mastra', 'langgraph'],
+    engines: ['legacy'],
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  },
-  {
-    id: 'planner-agent',
-    name: 'Planner Agent',
-    description: 'Create a structured execution plan for complex multi-step requests before specialist execution.',
-    category: 'routing',
-    engines: ['mastra'],
-    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
     id: 'response',
     name: 'Response Agent',
     description: 'Handles greetings and capability questions with low-latency direct replies.',
     category: 'routing',
-    engines: ['mastra', 'langgraph'],
+    engines: ['legacy'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -263,7 +295,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Risk Check',
     description: 'Classifies destructive intent in user messages before action execution.',
     category: 'routing',
-    engines: ['mastra', 'langgraph'],
+    engines: ['legacy'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -271,7 +303,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: 'Lark Responder',
     description: 'Sends progress update messages to Lark channel during task execution.',
     category: 'routing',
-    engines: ['mastra', 'langgraph'],
+    engines: ['legacy'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
@@ -281,7 +313,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
       'Allows a user to promote their personal conversation vectors to company-wide shared context. ' +
       'When enabled, a "Share this chat\'s knowledge" button will appear on bot responses.',
     category: 'workspace',
-    engines: ['mastra', 'langgraph'],
+    engines: ['vercel'],
     // Off for regular members by default; grant explicitly via the Permissions UI.
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
@@ -289,8 +321,8 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
 
 export const TOOL_REGISTRY_MAP = new Map(TOOL_REGISTRY.map((t) => [t.id, t]));
 
-/** Map from LangGraph agent key → toolId in the registry */
-export const LANGGRAPH_AGENT_TOOL_MAP: Record<string, string> = {
+/** Map from legacy agent key → toolId in the registry */
+export const LEGACY_AGENT_TOOL_MAP: Record<string, string> = {
   'zoho-read': 'zoho-read',
   'zoho-action': 'zoho-action',
   'outreach-read': 'read-outreach-publishers',

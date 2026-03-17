@@ -36,6 +36,9 @@ const SUPPORTED_MIME_TYPES = new Set([
   'image/png',
   'image/webp',
   'image/gif',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
 ]);
 
 export class FileUploadService {
@@ -224,7 +227,7 @@ export class FileUploadService {
     // Delete from Cloudinary
     await cloudinaryAdapter.deleteAsset(
       asset.cloudinaryPublicId,
-      asset.cloudinaryResourceType as 'image' | 'raw',
+      asset.cloudinaryResourceType as 'image' | 'video' | 'raw',
     );
 
     // Cascade deletes FileAccessPolicy and VectorDocument rows via Prisma relations

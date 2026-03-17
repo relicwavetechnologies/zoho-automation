@@ -30,11 +30,18 @@ model User {
   updatedAt        DateTime          @updatedAt
   adminMemberships AdminMembership[]
   adminSessions    AdminSession[]
+  departmentMemberships DepartmentMembership[]
+  departmentUserToolOverrides DepartmentUserToolOverride[]
+  createdDepartmentAgentConfigs DepartmentAgentConfig[] @relation("DepartmentAgentConfigCreatedBy")
+  updatedDepartmentAgentConfigs DepartmentAgentConfig[] @relation("DepartmentAgentConfigUpdatedBy")
+  departmentToolPermissionsUpdated DepartmentToolPermission[] @relation("DepartmentToolPermissionUpdatedBy")
+  departmentUserToolOverridesUpdated DepartmentUserToolOverride[] @relation("DepartmentUserToolOverrideUpdatedBy")
   memberSessions   MemberSession[]
   desktopHandoffs  DesktopAuthHandoff[]
   desktopThreads   DesktopThread[]
   executionRuns    ExecutionRun[]
   larkAuthLinks    LarkUserAuthLink[]
+  googleAuthLinks  GoogleUserAuthLink[]
 }
 
 model Company {
@@ -42,6 +49,8 @@ model Company {
   name            String
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
+  departments     Department[]
+  skills          Skill[]
   zohoConnections ZohoConnection[]
   zohoSyncJobs    ZohoSyncJob[]
   zohoOAuthConfig ZohoOAuthConfig?
@@ -64,6 +73,7 @@ model Company {
   desktopThreads   DesktopThread[]
   executionRuns    ExecutionRun[]
   larkAuthLinks    LarkUserAuthLink[]
+  googleAuthLinks  GoogleUserAuthLink[]
   fileAssets       FileAsset[]
 }
 
@@ -455,6 +465,137 @@ model CompanyInvite {
   @@index([companyId, status, createdAt])
 }
 
+model Department {
+  id          String   @id @default(uuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name        String
+  slug        String
+  description String?
+  status      String   @default("active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  agentConfig DepartmentAgentConfig?
+  skills      Skill[]
+  roles       DepartmentRole[]
+  memberships DepartmentMembership[]
+  toolPermissions DepartmentToolPermission[]
+  userToolOverrides DepartmentUserToolOverride[]
+  desktopThreads DesktopThread[]
+
+  @@unique([companyId, slug])
+  @@index([companyId, status, updatedAt])
+}
+
+model Skill {
+  id          String   @id @default(uuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  scope       String
+  name        String
+  slug        String
+  summary     String
+  markdown    String
+  tags        String[] @default([])
+  status      String   @default("active")
+  isSystem    Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdBy   String?
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([companyId, scope, status, sortOrder])
+  @@index([departmentId, status, sortOrder])
+  @@index([companyId, scope, slug])
+}
+
+model DepartmentAgentConfig {
+  id            String   @id @default(uuid())
+  departmentId   String   @unique
+  department     Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  systemPrompt  String
+  skillsMarkdown String
+  isActive      Boolean  @default(true)
+  createdBy     String
+  createdByUser User     @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  updatedBy     String
+  updatedByUser User     @relation("DepartmentAgentConfigUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([departmentId, isActive])
+}
+
+model DepartmentRole {
+  id          String   @id @default(uuid())
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  name        String
+  slug        String
+  isSystem    Boolean  @default(false)
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  memberships DepartmentMembership[]
+  toolPermissions DepartmentToolPermission[]
+
+  @@unique([departmentId, slug])
+  @@index([departmentId, isSystem, updatedAt])
+}
+
+model DepartmentMembership {
+  id          String   @id @default(uuid())
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId      String
+  role        DepartmentRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  status      String   @default("active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([departmentId, userId])
+  @@index([departmentId, status, updatedAt])
+  @@index([userId, status, updatedAt])
+  @@index([roleId, status])
+}
+
+model DepartmentToolPermission {
+  id          String   @id @default(uuid())
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  roleId      String
+  role        DepartmentRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  toolId      String
+  allowed     Boolean  @default(true)
+  updatedBy   String
+  updatedByUser User   @relation("DepartmentToolPermissionUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([departmentId, roleId, toolId])
+  @@index([departmentId, roleId])
+}
+
+model DepartmentUserToolOverride {
+  id          String   @id @default(uuid())
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  toolId      String
+  allowed     Boolean  @default(true)
+  updatedBy   String
+  updatedByUser User   @relation("DepartmentUserToolOverrideUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([departmentId, userId, toolId])
+  @@index([departmentId, userId])
+}
+
 model ToolPermission {
   id        String   @id @default(uuid())
   companyId String
@@ -566,6 +707,33 @@ model LarkUserAuthLink {
   @@index([companyId, larkEmail])
 }
 
+model GoogleUserAuthLink {
+  id                    String   @id @default(uuid())
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId             String
+  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  googleUserId          String?
+  googleEmail           String?
+  googleName            String?
+  scope                 String?
+  accessTokenEncrypted  String
+  refreshTokenEncrypted String?
+  tokenType             String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  tokenMetadata         Json?
+  linkedAt              DateTime @default(now())
+  lastUsedAt            DateTime?
+  revokedAt             DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([userId, companyId])
+  @@index([companyId, googleEmail])
+  @@index([companyId, googleUserId])
+}
+
 model DesktopAuthHandoff {
   id         String    @id @default(uuid())
   code       String    @unique
@@ -587,6 +755,9 @@ model DesktopThread {
   user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   companyId     String
   company       Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId  String?
+  department    Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  preferredEngine String?
   title         String?
   lastMessageAt DateTime?
   createdAt     DateTime         @default(now())
@@ -594,6 +765,7 @@ model DesktopThread {
   messages      DesktopMessage[]
 
   @@index([userId, companyId, updatedAt])
+  @@index([departmentId, updatedAt])
 }
 
 model DesktopMessage {

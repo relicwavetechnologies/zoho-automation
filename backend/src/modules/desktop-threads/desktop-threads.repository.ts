@@ -1,4 +1,4 @@
-import type { DesktopThread, DesktopMessage } from '../../generated/prisma';
+import type { DesktopMessage } from '../../generated/prisma';
 import { BaseRepository } from '../../core/repository';
 import { prisma } from '../../utils/prisma';
 
@@ -7,38 +7,53 @@ export type DesktopMessagePageCursor = {
   createdAt: Date;
 };
 
+const threadInclude = {
+  department: {
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+    },
+  },
+} as const;
+
 export class DesktopThreadsRepository extends BaseRepository {
-  listThreads(userId: string, companyId: string): Promise<DesktopThread[]> {
+  listThreads(userId: string, companyId: string) {
     return prisma.desktopThread.findMany({
       where: { userId, companyId },
+      include: threadInclude,
       orderBy: { updatedAt: 'desc' },
       take: 50,
     });
   }
 
-  getThread(threadId: string, userId: string): Promise<DesktopThread | null> {
+  getThread(threadId: string, userId: string) {
     return prisma.desktopThread.findFirst({
       where: { id: threadId, userId },
+      include: threadInclude,
     });
   }
 
-  createThread(userId: string, companyId: string): Promise<DesktopThread> {
+  createThread(userId: string, companyId: string, departmentId?: string | null) {
     return prisma.desktopThread.create({
-      data: { userId, companyId },
+      data: { userId, companyId, departmentId: departmentId ?? null },
+      include: threadInclude,
     });
   }
 
-  updateThreadTitle(threadId: string, title: string): Promise<DesktopThread> {
+  updateThreadTitle(threadId: string, title: string) {
     return prisma.desktopThread.update({
       where: { id: threadId },
       data: { title },
+      include: threadInclude,
     });
   }
 
-  touchThread(threadId: string): Promise<DesktopThread> {
+  touchThread(threadId: string) {
     return prisma.desktopThread.update({
       where: { id: threadId },
       data: { lastMessageAt: new Date() },
+      include: threadInclude,
     });
   }
 

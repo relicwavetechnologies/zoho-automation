@@ -12,12 +12,14 @@ export function ChatPane(): JSX.Element {
     isLoadingOlderMessages,
     hasMoreHistory,
     isStreaming,
+    isThinking,
     liveBlocks,
     activeThread,
     error,
     clearError,
     loadOlderMessages,
   } = useChat()
+  const hasLiveExecution = isStreaming || isThinking || liveBlocks.length > 0
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const restoreScrollRef = useRef<{ previousHeight: number; previousTop: number } | null>(null)
@@ -61,7 +63,7 @@ export function ChatPane(): JSX.Element {
       const lastMessageChanged = previous.lastMessageId !== currentLastMessageId
       const liveBlocksChanged = previous.liveBlocksLength !== liveBlocks.length
       const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
-      const shouldStickToBottom = threadChanged || distanceFromBottom <= 120 || isStreaming
+      const shouldStickToBottom = threadChanged || distanceFromBottom <= 120 || hasLiveExecution
 
       if ((threadChanged || lastMessageChanged || liveBlocksChanged) && shouldStickToBottom) {
         bottomRef.current?.scrollIntoView({ behavior: threadChanged ? 'auto' : 'smooth' })
@@ -73,7 +75,7 @@ export function ChatPane(): JSX.Element {
       lastMessageId: messages[messages.length - 1]?.id ?? null,
       liveBlocksLength: liveBlocks.length,
     }
-  }, [activeThread?.id, isStreaming, liveBlocks.length, messages])
+  }, [activeThread?.id, hasLiveExecution, liveBlocks.length, messages])
 
   if (!activeThread) return <EmptyThread />
 
@@ -104,7 +106,7 @@ export function ChatPane(): JSX.Element {
         )}
 
         {/* Messages */}
-        {messages.length === 0 && !isStreaming && !isThreadLoading && (
+        {messages.length === 0 && !hasLiveExecution && !isThreadLoading && (
           <div className="text-center text-[hsl(0,0%,30%)] text-sm mt-16">
             Start a conversation below.
           </div>
@@ -121,7 +123,7 @@ export function ChatPane(): JSX.Element {
         ))}
 
         {/* ── Live agentic response ─────────────────────────────────────── */}
-        {isStreaming && (
+        {hasLiveExecution && (
           <div className="mb-4">
             <div className="flex gap-3">
               {/* AI avatar */}

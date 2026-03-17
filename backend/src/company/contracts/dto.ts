@@ -160,7 +160,7 @@ export type DeltaSyncEventDTO = {
 export type AdminSessionDTO = {
   userId: string;
   companyId?: string;
-  role: 'SUPER_ADMIN' | 'COMPANY_ADMIN';
+  role: 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
   sessionId: string;
   expiresAt: string;
 };
@@ -175,7 +175,7 @@ export type AdminNavItemDTO = {
   id: string;
   label: string;
   path: string;
-  roles: Array<'SUPER_ADMIN' | 'COMPANY_ADMIN'>;
+  roles: Array<'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER'>;
 };
 
 export type ExecutionChannel = 'desktop' | 'lark';

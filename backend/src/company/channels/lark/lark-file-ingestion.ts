@@ -45,6 +45,9 @@ const resolveMimeType = (contentType: string, larkFileType?: string, broadType?:
     jpeg: 'image/jpeg',
     gif: 'image/gif',
     webp: 'image/webp',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
   };
 
   if (larkFileType && map[larkFileType.toLowerCase()]) {

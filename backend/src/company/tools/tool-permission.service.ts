@@ -7,7 +7,7 @@ export interface ToolPermissionRow {
   name: string;
   description: string;
   category: string;
-  engines: ('mastra' | 'langgraph')[];
+  engines: ('legacy' | 'vercel')[];
   /** Dynamic map: role slug → allowed boolean */
   permissions: Record<string, boolean>;
 }

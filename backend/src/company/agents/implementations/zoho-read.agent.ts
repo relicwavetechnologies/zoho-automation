@@ -1,4 +1,8 @@
+import { ChatGoogle } from '@langchain/google';
+import { ChatOpenAI } from '@langchain/openai';
+
 import type { AgentInvokeInputDTO } from '../../contracts';
+import { aiModelControlService, type AiControlTargetKey, type AiModelProvider } from '../../ai-models';
 import { CompanyContextResolutionError, companyContextResolver, zohoRetrievalService } from '../support';
 import { BaseAgent } from '../base';
 import { resolveZohoProvider } from '../../integrations/zoho/zoho-provider.resolver';
@@ -12,6 +16,71 @@ import { logger } from '../../../utils/logger';
 
 const DEFAULT_RESULT_LIMIT = 3;
 const MAX_ALL_RESULT_LIMIT = 25;
+const SYNTHESIS_MODEL_TARGET = 'mastra.synthesis' as const;
+
+const hasProviderCredentials = (provider: AiModelProvider): boolean => {
+  if (provider === 'google') {
+    return Boolean((process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim());
+  }
+  if (provider === 'groq') {
+    return Boolean((process.env.GROQ_API_KEY || '').trim());
+  }
+  return Boolean((process.env.OPENAI_API_KEY || '').trim());
+};
+
+const extractTextContent = (content: unknown): string => {
+  if (typeof content === 'string') {
+    return content.trim();
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && 'text' in item && typeof (item as { text?: unknown }).text === 'string') {
+          return (item as { text: string }).text;
+        }
+        return '';
+      })
+      .join(' ')
+      .trim();
+  }
+  return '';
+};
+
+const invokeSynthesisTarget = async (targetKey: AiControlTargetKey, prompt: string): Promise<string | null> => {
+  try {
+    const resolved = await aiModelControlService.resolveTarget(targetKey);
+    if (!hasProviderCredentials(resolved.effectiveProvider)) {
+      return null;
+    }
+
+    const model =
+      resolved.effectiveProvider === 'google'
+        ? new ChatGoogle({
+          model: resolved.effectiveModelId,
+          apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+          thinkingLevel: resolved.effectiveThinkingLevel,
+        })
+        : new ChatOpenAI({
+          model: resolved.effectiveModelId,
+          temperature: 0,
+          apiKey: resolved.effectiveProvider === 'groq' ? process.env.GROQ_API_KEY : process.env.OPENAI_API_KEY,
+          configuration: resolved.effectiveProvider === 'groq'
+            ? { baseURL: 'https://api.groq.com/openai/v1' }
+            : undefined,
+        });
+
+    const response = await model.invoke(prompt);
+    const text = extractTextContent(response.content);
+    return text.length > 0 ? text : null;
+  } catch (error) {
+    logger.warn('zoho.agent.synthesis.invoke_failed', {
+      targetKey,
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+    return null;
+  }
+};
 
 type SourceRef = {
   source: 'vector' | 'rest';
@@ -597,11 +666,6 @@ export class ZohoReadAgent extends BaseAgent {
     liveRecords: LiveRecord[];
     vectorContext: VectorMatch[];
   }): Promise<string> {
-    const [{ mastra }, { buildMastraAgentRunOptions }] = await Promise.all([
-      import('../../integrations/mastra/mastra.instance'),
-      import('../../integrations/mastra/mastra-model-control'),
-    ]);
-
     const liveSnippet = JSON.stringify(input.liveRecords.slice(0, 12), null, 2);
     const vectorSnippet =
       input.vectorContext.length > 0
@@ -638,10 +702,20 @@ export class ZohoReadAgent extends BaseAgent {
       vectorSnippet,
     ].join('\n');
 
-    const agent = mastra.getAgent('synthesisAgent');
-    const runOptions = await buildMastraAgentRunOptions('mastra.synthesis');
-    const result = await agent.generate(promptText, runOptions as any);
-    return result.text;
+    const synthesized = await invokeSynthesisTarget(SYNTHESIS_MODEL_TARGET, promptText);
+    if (synthesized) {
+      return synthesized;
+    }
+
+    if (input.liveRecords.length === 0) {
+      return 'No Zoho records matched the request.';
+    }
+
+    const preview = input.liveRecords
+      .slice(0, 5)
+      .map((record) => `${record.sourceType}:${record.sourceId}`)
+      .join(', ');
+    return `Found ${input.liveRecords.length} Zoho records. Sample IDs: ${preview}.`;
   }
 
   async invoke(input: AgentInvokeInputDTO) {

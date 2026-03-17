@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../../context/AuthContext'
 import { TokenUsageCard } from './TokenUsageCard'
 
 export function AccountSettings(): JSX.Element {
-  const { session, logout } = useAuth()
+  const { session, token, logout } = useAuth()
   
   // Parse session securely with fallbacks
   const userStr = localStorage.getItem('user_session')
@@ -12,6 +12,62 @@ export function AccountSettings(): JSX.Element {
   const email = session?.email || userContext?.email || 'user@example.com'
   const name = session?.name || userContext?.name || email.split('@')[0]
   const username = name.toLowerCase().replace(/[^a-z0-9]/g, '') + Math.floor(Math.random() * 1000)
+
+  const [googleStatus, setGoogleStatus] = useState<{ configured: boolean; connected: boolean; email?: string; scopes?: string[] } | null>(null)
+  const [googleLoading, setGoogleLoading] = useState(false)
+  const [googleConnecting, setGoogleConnecting] = useState(false)
+  const [googleError, setGoogleError] = useState<string | null>(null)
+
+  const loadGoogleStatus = useCallback(async () => {
+    if (!token) return
+    setGoogleLoading(true)
+    setGoogleError(null)
+    try {
+      const res = await window.desktopAPI.auth.getGoogleStatus(token)
+      if (res?.success && res.data) {
+        setGoogleStatus(res.data as { configured: boolean; connected: boolean; email?: string; scopes?: string[] })
+      } else {
+        setGoogleStatus(null)
+        setGoogleError('Unable to load Google connection status.')
+      }
+    } catch {
+      setGoogleStatus(null)
+      setGoogleError('Unable to load Google connection status.')
+    } finally {
+      setGoogleLoading(false)
+    }
+  }, [token])
+
+  useEffect(() => {
+    void loadGoogleStatus()
+  }, [loadGoogleStatus])
+
+  const handleGoogleConnect = useCallback(async () => {
+    if (!token) return
+    setGoogleConnecting(true)
+    setGoogleError(null)
+    try {
+      await window.desktopAPI.auth.openGoogleConnect(token)
+    } catch {
+      setGoogleError('Could not start Google OAuth. Check server configuration.')
+    } finally {
+      setGoogleConnecting(false)
+    }
+  }, [token])
+
+  const handleGoogleDisconnect = useCallback(async () => {
+    if (!token) return
+    setGoogleLoading(true)
+    setGoogleError(null)
+    try {
+      await window.desktopAPI.auth.unlinkGoogle(token)
+      await loadGoogleStatus()
+    } catch {
+      setGoogleError('Could not disconnect Google account.')
+    } finally {
+      setGoogleLoading(false)
+    }
+  }, [token, loadGoogleStatus])
 
   return (
     <div className="flex flex-col gap-10 text-[hsl(0,0%,85%)]">
@@ -63,6 +119,63 @@ export function AccountSettings(): JSX.Element {
               <div className="font-medium text-[14px]">Email</div>
               <div className="text-[13px] text-[hsl(0,0%,55%)] mt-0.5">{email}</div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h2 className="text-[22px] font-semibold text-white mb-6">Google Workspace</h2>
+        <div className="border border-[hsl(0,0%,15%)] rounded-xl bg-[hsl(0,0%,8%)] p-5 flex flex-col gap-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="font-medium text-[14px] text-white">Google Drive + Gmail</div>
+              <div className="text-[13px] text-[hsl(0,0%,55%)] mt-1">
+                Connect to enable Drive file access and Gmail send operations from the agent.
+              </div>
+            </div>
+            <div className="text-[12px] px-2 py-1 rounded-full border border-[hsl(0,0%,25%)] text-[hsl(0,0%,65%)]">
+              {googleStatus?.connected ? 'Connected' : googleStatus?.configured ? 'Not connected' : 'Not configured'}
+            </div>
+          </div>
+
+          {googleStatus?.connected && (
+            <div className="text-[12px] text-[hsl(0,0%,60%)]">
+              Linked as {googleStatus.email ?? 'Google user'}
+            </div>
+          )}
+
+          {googleError && <div className="text-[12px] text-red-400">{googleError}</div>}
+
+          <div className="flex items-center gap-3">
+            {!googleStatus?.connected && (
+              <button
+                onClick={() => void handleGoogleConnect()}
+                disabled={!googleStatus?.configured || googleConnecting}
+                className="px-4 py-2 rounded-md border border-[hsl(0,0%,25%)] text-[13px] hover:bg-[hsl(0,0%,15%)] transition-colors disabled:opacity-50"
+              >
+                {googleConnecting ? 'Opening browser…' : 'Connect Google'}
+              </button>
+            )}
+            {googleStatus?.connected && (
+              <button
+                onClick={() => void handleGoogleDisconnect()}
+                disabled={googleLoading}
+                className="px-4 py-2 rounded-md border border-red-900/50 text-[13px] text-red-300 hover:bg-red-950/40 transition-colors disabled:opacity-50"
+              >
+                Disconnect
+              </button>
+            )}
+            <button
+              onClick={() => void loadGoogleStatus()}
+              disabled={googleLoading}
+              className="px-4 py-2 rounded-md border border-[hsl(0,0%,25%)] text-[13px] hover:bg-[hsl(0,0%,15%)] transition-colors disabled:opacity-50"
+            >
+              {googleLoading ? 'Refreshing…' : 'Refresh status'}
+            </button>
+          </div>
+
+          <div className="text-[12px] text-[hsl(0,0%,55%)]">
+            Scopes requested: Gmail send, Drive readonly, profile, email.
           </div>
         </div>
       </div>

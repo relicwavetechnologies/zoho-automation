@@ -1,3 +1,13 @@
+export interface DepartmentSummary {
+  id: string
+  name: string
+  slug: string
+  roleId: string
+  roleSlug: string
+  roleName: string
+  canManage: boolean
+}
+
 export interface UserSession {
   userId: string
   companyId: string
@@ -11,6 +21,10 @@ export interface UserSession {
   larkTenantKey?: string
   larkOpenId?: string
   larkUserId?: string
+  departments?: DepartmentSummary[]
+  resolvedDepartmentId?: string
+  resolvedDepartmentName?: string
+  resolvedDepartmentRoleSlug?: string
 }
 
 export interface WorkspaceFolder {
@@ -22,6 +36,12 @@ export interface WorkspaceFolder {
 export interface Thread {
   id: string
   title: string | null
+  departmentId?: string | null
+  department?: {
+    id: string
+    name: string
+    slug: string
+  } | null
   lastMessageAt: string | null
   createdAt: string
   updatedAt: string
@@ -244,7 +264,7 @@ export interface LarkDocRef {
 }
 
 export interface StreamEvent {
-  type: 'text' | 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'step' | 'plan' | 'done' | 'error'
+  type: 'text' | 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'action' | 'step' | 'plan' | 'done' | 'error'
   data: unknown
 }
 

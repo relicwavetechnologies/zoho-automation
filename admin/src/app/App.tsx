@@ -5,6 +5,7 @@ import { AuditLogsPage } from '../pages/AuditLogsPage';
 import { AiModelsPage } from '../pages/AiModelsPage';
 import { AdminLayout } from '../components/layout/AdminLayout';
 import { ControlsPage } from '../pages/ControlsPage';
+import { DepartmentsPage } from '../pages/DepartmentsPage';
 import { ExecutionsPage } from '../pages/ExecutionsPage';
 import { IntegrationsPage } from '../pages/IntegrationsPage';
 import { LarkOauthCallbackPage } from '../pages/LarkOauthCallbackPage';
@@ -17,7 +18,6 @@ import { OverviewPage } from '../pages/OverviewPage';
 import TokenUsagePage from '../pages/TokenUsagePage';
 import { PlaceholderPage } from '../pages/PlaceholderPage';
 import { RbacPage } from '../pages/RbacPage';
-import { ToolPermissionsPage } from '../pages/ToolPermissionsPage';
 import { VectorShareRequestsPage } from '../pages/VectorShareRequestsPage';
 import { ZohoOauthCallbackPage } from '../pages/ZohoOauthCallbackPage';
 import { Toaster } from '../components/ui/toaster';
@@ -35,6 +35,12 @@ const Protected = ({ children }: { children: JSX.Element }) => {
 
   return children;
 };
+
+const DefaultProtectedRoute = () => {
+  const { navItems } = useAdminAuth()
+  const fallbackPath = navItems[0]?.path ?? '/overview'
+  return <Navigate to={fallbackPath} replace />
+}
 
 export const App = () => {
   return (
@@ -54,7 +60,7 @@ export const App = () => {
             </Protected>
           }
         >
-          <Route index element={<Navigate to="/overview" replace />} />
+          <Route index element={<DefaultProtectedRoute />} />
           <Route path="overview" element={<OverviewPage />} />
           <Route path="workspaces" element={<PlaceholderPage title="Workspaces" />} />
           <Route path="members" element={<MembersPage />} />
@@ -65,8 +71,8 @@ export const App = () => {
           <Route path="ai-models" element={<AiModelsPage />} />
           <Route path="token-usage" element={<TokenUsagePage />} />
           <Route path="integrations" element={<IntegrationsPage />} />
-          <Route path="tool-access" element={<ToolPermissionsPage />} />
           <Route path="vector-requests" element={<VectorShareRequestsPage />} />
+          <Route path="departments" element={<DepartmentsPage />} />
           <Route path="lark/callback" element={<LarkOauthCallbackPage />} />
           <Route path="zoho/callback" element={<ZohoOauthCallbackPage />} />
         </Route>

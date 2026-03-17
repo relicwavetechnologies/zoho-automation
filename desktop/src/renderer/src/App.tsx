@@ -8,8 +8,50 @@ import { ChatLayout } from './components/ChatLayout'
 import { WorkspaceGate } from './components/WorkspaceGate'
 import { WorkspaceStudio } from './components/WorkspaceStudio'
 import { ProfileLayout } from './components/profile/ProfileLayout'
+import { logFrontendDebug, logFrontendError } from './lib/frontend-debug-log'
 
-import { useState } from 'react'
+import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
+
+type RendererErrorBoundaryState = {
+  error: Error | null
+}
+
+class RendererErrorBoundary extends Component<{ children: ReactNode }, RendererErrorBoundaryState> {
+  state: RendererErrorBoundaryState = { error: null }
+
+  static getDerivedStateFromError(error: Error): RendererErrorBoundaryState {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    logFrontendError('react.error_boundary', error, {
+      componentStack: errorInfo.componentStack,
+    })
+  }
+
+  render(): ReactNode {
+    if (this.state.error) {
+      return (
+        <div className="flex h-full items-center justify-center bg-[hsl(0_0%_4%)] px-6">
+          <div className="w-full max-w-3xl rounded-2xl border border-[hsl(0_52%_28%)] bg-[hsl(0_38%_12%)] p-6 text-[hsl(0_0%_92%)] shadow-2xl">
+            <h1 className="text-lg font-semibold text-[hsl(0_85%_78%)]">Frontend exception</h1>
+            <p className="mt-2 text-sm text-[hsl(0_0%_82%)]">
+              The renderer crashed while rendering this screen. The exact error was captured in the frontend debug log and browser console.
+            </p>
+            <div className="mt-4 rounded-xl border border-[hsl(0_40%_22%)] bg-[hsl(0_30%_10%)] p-4 font-mono text-xs text-[hsl(0_0%_88%)]">
+              {this.state.error.message || 'Unknown renderer error'}
+            </div>
+            <p className="mt-4 text-xs text-[hsl(0_0%_68%)]">
+              Check DevTools console or localStorage key <code>cursorr_frontend_debug_log</code>, then reload the desktop app after the underlying issue is fixed.
+            </p>
+          </div>
+        </div>
+      )
+    }
+
+    return this.props.children
+  }
+}
 
 function AppShell(): JSX.Element {
   const { session, loading } = useAuth()
@@ -17,6 +59,32 @@ function AppShell(): JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [editorOpen, setEditorOpen] = useState(false)
   const [currentView, setCurrentView] = useState<'chat' | 'settings'>('chat')
+
+  useEffect(() => {
+    logFrontendDebug('app.shell.ready', {
+      hasSession: Boolean(session),
+      hasWorkspace,
+    })
+
+    const handleError = (event: ErrorEvent) => {
+      logFrontendError('window.error', event.error ?? event.message, {
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+      })
+    }
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      logFrontendError('window.unhandled_rejection', event.reason)
+    }
+
+    window.addEventListener('error', handleError)
+    window.addEventListener('unhandledrejection', handleUnhandledRejection)
+    return () => {
+      window.removeEventListener('error', handleError)
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection)
+    }
+  }, [hasWorkspace, session])
 
   if (loading) {
     return (
@@ -76,7 +144,9 @@ export function App(): JSX.Element {
   return (
     <AuthProvider>
       <WorkspaceProvider>
-        <AppShell />
+        <RendererErrorBoundary>
+          <AppShell />
+        </RendererErrorBoundary>
       </WorkspaceProvider>
     </AuthProvider>
   )

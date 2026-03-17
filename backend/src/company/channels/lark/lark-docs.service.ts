@@ -96,6 +96,16 @@ type RemoteDocSnapshot = {
   childBlocks: RemoteDocBlock[];
 };
 
+export type LarkDocReadResult = {
+  documentId: string;
+  url: string;
+  exists: boolean;
+  blockCount: number;
+  text: string;
+  headings: string[];
+  blocks: RemoteDocBlock[];
+};
+
 type MarkdownSection = {
   heading?: string;
   markdown: string;
@@ -724,6 +734,48 @@ class LarkDocsService {
       url: `https://docs.larksuite.com/docx/${input.documentId.trim()}`,
       exists: true,
       blockCount: snapshot.childBlocks.length,
+    };
+  }
+
+  async readDocument(input: {
+    companyId?: string;
+    larkTenantKey?: string;
+    appUserId?: string;
+    credentialMode?: 'tenant' | 'user_linked';
+    documentId: string;
+  }): Promise<LarkDocReadResult> {
+    const companyId = await companyContextResolver.resolveCompanyId({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+    });
+    const workspaceConfig = await larkWorkspaceConfigRepository.findByCompanyId(companyId);
+    const documentId = input.documentId.trim();
+    const snapshot = await this.getDocumentSnapshot({
+      companyId,
+      workspaceConfig,
+      appUserId: input.appUserId,
+      larkTenantKey: input.larkTenantKey,
+      authMode: input.credentialMode ?? 'tenant',
+      documentId,
+    });
+
+    const headings = snapshot.childBlocks
+      .filter((block) => blockTypeIsHeading(block.blockType))
+      .map((block) => block.text.trim())
+      .filter((value) => value.length > 0);
+    const text = snapshot.childBlocks
+      .map((block) => block.text.trim())
+      .filter((value) => value.length > 0)
+      .join('\n');
+
+    return {
+      documentId,
+      url: `https://docs.larksuite.com/docx/${documentId}`,
+      exists: true,
+      blockCount: snapshot.childBlocks.length,
+      text,
+      headings,
+      blocks: snapshot.childBlocks,
     };
   }
 

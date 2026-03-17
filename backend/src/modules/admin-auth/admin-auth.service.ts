@@ -97,15 +97,20 @@ export class AdminAuthService extends BaseService {
       companyId: payload.companyId,
     });
 
-    if (!membership) {
-      throw new HttpException(403, 'User is not an active company-admin for this company');
+    if (membership) {
+      if (!membership.companyId) {
+        throw new HttpException(500, 'Company-admin membership missing company scope');
+      }
+
+      return this.issueSession(user.id, 'COMPANY_ADMIN', membership.companyId);
     }
 
-    if (!membership.companyId) {
-      throw new HttpException(500, 'Company-admin membership missing company scope');
+    const managerMembership = await this.repository.findManagedDepartmentMembership(user.id, payload.companyId);
+    if (!managerMembership?.department.companyId) {
+      throw new HttpException(403, 'User is not an active workspace admin or department manager for this company');
     }
 
-    return this.issueSession(user.id, 'COMPANY_ADMIN', membership.companyId);
+    return this.issueSession(user.id, 'DEPARTMENT_MANAGER', managerMembership.department.companyId);
   }
 
   async signupCompanyAdmin(payload: SignupCompanyAdminDto): Promise<AdminLoginResult> {
@@ -288,16 +293,16 @@ export class AdminAuthService extends BaseService {
         roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
       },
       {
-        id: 'tool-access',
-        label: 'Tool Access',
-        path: '/tool-access',
-        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
-      },
-      {
         id: 'vector-requests',
         label: 'Share Requests',
         path: '/vector-requests',
         roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
+      },
+      {
+        id: 'departments',
+        label: 'Departments',
+        path: '/departments',
+        roles: ['SUPER_ADMIN', 'COMPANY_ADMIN', 'DEPARTMENT_MANAGER'],
       },
     ];
 

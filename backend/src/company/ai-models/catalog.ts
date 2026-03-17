@@ -1,23 +1,13 @@
 export type AiModelProvider = 'google' | 'openai' | 'groq';
 export type AiThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
-export type AiControlEngine = 'mastra' | 'langgraph';
+export type AiControlEngine = 'mastra';
 export type AiControlTargetKind = 'supervisor' | 'specialist' | 'router' | 'planner' | 'synthesis' | 'ack';
 
 export const AI_THINKING_LEVELS: AiThinkingLevel[] = ['minimal', 'low', 'medium', 'high'];
 
 export type AiControlTargetKey =
-  | 'mastra.ack'
-  | 'mastra.planner'
-  | 'mastra.supervisor'
-  | 'mastra.zoho-specialist'
-  | 'mastra.search'
   | 'mastra.outreach'
-  | 'mastra.lark-doc'
-  | 'mastra.synthesis'
-  | 'langgraph.supervisor'
-  | 'langgraph.router'
-  | 'langgraph.planner'
-  | 'langgraph.synthesis';
+  | 'mastra.synthesis';
 
 export type AiModelCatalogEntry = {
   provider: AiModelProvider;
@@ -156,65 +146,6 @@ export const AI_MODEL_CATALOG_MAP = new Map(
 
 export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
   {
-    key: 'mastra.ack',
-    engine: 'mastra',
-    kind: 'ack',
-    label: 'Odin Acknowledgement',
-    description: 'Low-latency AI acknowledgement used for placeholder/progress replies before the main supervisor finishes.',
-    defaultProvider: 'google',
-    defaultModelId: 'gemini-3.1-flash-lite-preview',
-    defaultThinkingLevel: 'minimal',
-    fastDefaultProvider: 'google',
-    fastDefaultModelId: 'gemini-2.5-flash-lite',
-  },
-  {
-    key: 'mastra.planner',
-    engine: 'mastra',
-    kind: 'planner',
-    label: 'Odin Planner',
-    description: 'Desktop planning specialist that turns complex user requests into ordered execution plans and success criteria.',
-    defaultProvider: 'google',
-    defaultModelId: 'gemini-3-flash-preview',
-    fastDefaultProvider: 'google',
-    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
-  },
-  {
-    key: 'mastra.supervisor',
-    engine: 'mastra',
-    kind: 'supervisor',
-    label: 'Odin Supervisor',
-    description: 'Top-level Mastra orchestrator that routes across Zoho, outreach, and web search specialists.',
-    defaultProvider: 'google',
-    defaultModelId: 'gemini-3-flash-preview',
-    defaultThinkingLevel: 'high',
-    fastDefaultProvider: 'google',
-    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
-    fastDefaultThinkingLevel: 'medium',
-  },
-  {
-    key: 'mastra.zoho-specialist',
-    engine: 'mastra',
-    kind: 'specialist',
-    label: 'Odin Zoho Specialist',
-    description: 'CRM specialist for live Zoho reads and recovery fallback synthesis.',
-    defaultProvider: 'google',
-    defaultModelId: 'gemini-3-flash-preview',
-    fastDefaultProvider: 'google',
-    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
-  },
-  {
-    key: 'mastra.search',
-    engine: 'mastra',
-    kind: 'specialist',
-    label: 'Odin Search Specialist',
-    description: 'Serper-backed web research specialist with exact-page context extraction.',
-    defaultProvider: 'google',
-    defaultModelId: 'gemini-3.1-flash-lite-preview',
-    defaultThinkingLevel: 'medium',
-    fastDefaultProvider: 'google',
-    fastDefaultModelId: 'gemini-2.5-flash-lite',
-  },
-  {
     key: 'mastra.outreach',
     engine: 'mastra',
     kind: 'specialist',
@@ -226,67 +157,11 @@ export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
     fastDefaultModelId: 'gpt-4.1-nano',
   },
   {
-    key: 'mastra.lark-doc',
-    engine: 'mastra',
-    kind: 'specialist',
-    label: 'Odin Lark Docs Specialist',
-    description: 'Document creation specialist that formats grounded markdown and creates Lark Docs through the import API.',
-    defaultProvider: 'google',
-    defaultModelId: 'gemini-3.1-flash-lite-preview',
-    fastDefaultProvider: 'google',
-    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
-  },
-  {
     key: 'mastra.synthesis',
     engine: 'mastra',
     kind: 'synthesis',
     label: 'Odin Synthesis',
     description: 'Response-polishing agent used to turn grounded records into concise business answers.',
-    defaultProvider: 'google',
-    defaultModelId: 'gemini-3.1-flash-lite-preview',
-    fastDefaultProvider: 'google',
-    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
-  },
-  {
-    key: 'langgraph.supervisor',
-    engine: 'langgraph',
-    kind: 'supervisor',
-    label: 'Odin LangGraph Supervisor',
-    description: 'Tier-2 planner/supervisor used when the LangGraph orchestration engine coordinates multiple agents.',
-    defaultProvider: 'google',
-    defaultModelId: 'gemini-3-flash-preview',
-    defaultThinkingLevel: 'high',
-    fastDefaultProvider: 'google',
-    fastDefaultModelId: 'gemini-2.5-flash-lite',
-  },
-  {
-    key: 'langgraph.router',
-    engine: 'langgraph',
-    kind: 'router',
-    label: 'Odin LangGraph Router',
-    description: 'Low-latency intent/router model for classification and fast-path orchestration decisions.',
-    defaultProvider: 'openai',
-    defaultModelId: 'gpt-4.1-nano',
-    fastDefaultProvider: 'openai',
-    fastDefaultModelId: 'gpt-4.1-nano',
-  },
-  {
-    key: 'langgraph.planner',
-    engine: 'langgraph',
-    kind: 'planner',
-    label: 'LangGraph Planner',
-    description: 'Intermediate LangGraph planner for step decomposition and multi-agent task design.',
-    defaultProvider: 'openai',
-    defaultModelId: 'gpt-4.1-mini',
-    fastDefaultProvider: 'openai',
-    fastDefaultModelId: 'gpt-4.1-nano',
-  },
-  {
-    key: 'langgraph.synthesis',
-    engine: 'langgraph',
-    kind: 'synthesis',
-    label: 'LangGraph Synthesis',
-    description: 'Final LangGraph response composition model used after agent outputs are gathered.',
     defaultProvider: 'google',
     defaultModelId: 'gemini-3.1-flash-lite-preview',
     fastDefaultProvider: 'google',

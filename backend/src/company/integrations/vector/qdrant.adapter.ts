@@ -210,7 +210,9 @@ const buildSearchFilter = (query: VectorSearchQuery): Record<string, unknown> =>
 export class QdrantAdapter implements VectorStoreAdapter {
   private readonly baseUrl = config.QDRANT_URL.replace(/\/$/, '');
 
-  private readonly collection = config.QDRANT_COLLECTION;
+  private readonly collection = config.EMBEDDING_PROVIDER === 'gemini'
+    ? `${config.QDRANT_COLLECTION}_gemini`
+    : config.QDRANT_COLLECTION;
 
   private readonly apiKey = config.QDRANT_API_KEY;
 

@@ -27,10 +27,11 @@ export type CloudinaryUploadResult = {
   originalFilename: string;
 };
 
-export type CloudinaryResourceType = 'image' | 'raw' | 'auto';
+export type CloudinaryResourceType = 'image' | 'video' | 'raw' | 'auto';
 
 const mimeToResourceType = (mimeType: string): CloudinaryResourceType => {
   if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('video/')) return 'video';
   // PDFs, DOCX, etc. — must be 'raw' on Cloudinary to preserve original binary
   return 'raw';
 };

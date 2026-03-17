@@ -7,6 +7,7 @@ import { BaseService } from '../../core/service';
 import { comparePassword } from '../../utils/bcrypt';
 import { MemberAuthRepository, memberAuthRepository } from './member-auth.repository';
 import { channelIdentityRepository } from '../../company/channels/channel-identity.repository';
+import { departmentService, type UserDepartmentSummary } from '../../company/departments/department.service';
 
 const MEMBER_SESSION_TTL_MINUTES = config.ADMIN_SESSION_TTL_MINUTES; // reuse same TTL
 const HANDOFF_CODE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -24,6 +25,10 @@ export interface MemberSessionDTO {
   larkTenantKey?: string;
   larkOpenId?: string;
   larkUserId?: string;
+  departments?: UserDepartmentSummary[];
+  resolvedDepartmentId?: string;
+  resolvedDepartmentName?: string;
+  resolvedDepartmentRoleSlug?: string;
 }
 
 export interface MemberLoginResult {
@@ -92,6 +97,8 @@ export class MemberAuthService extends BaseService {
       larkUserId: session.larkUserId ?? undefined,
       email: user?.email ?? undefined,
     });
+    const departments = await departmentService.listUserDepartments(session.userId, session.companyId);
+    const resolvedDepartment = departments.length === 1 ? departments[0] : null;
     const effectiveAiRole =
       typeof linkedIdentity?.aiRole === 'string' && linkedIdentity.aiRole.trim().length > 0
         ? linkedIdentity.aiRole.trim()
@@ -109,6 +116,10 @@ export class MemberAuthService extends BaseService {
       larkTenantKey: session.larkTenantKey ?? undefined,
       larkOpenId: session.larkOpenId ?? undefined,
       larkUserId: session.larkUserId ?? undefined,
+      departments,
+      resolvedDepartmentId: resolvedDepartment?.id,
+      resolvedDepartmentName: resolvedDepartment?.name,
+      resolvedDepartmentRoleSlug: resolvedDepartment?.roleSlug,
     };
   }
 

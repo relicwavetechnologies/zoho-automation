@@ -3,11 +3,31 @@ import { net } from 'electron'
 
 const BACKEND_URL = process.env.CURSORR_BACKEND_URL ?? 'http://localhost:8000'
 
+const parseBackendError = async (res: Awaited<ReturnType<typeof net.fetch>>): Promise<string> => {
+  const bodyText = await res.text()
+  if (!bodyText) {
+    return `Request failed (${res.status})`
+  }
+  try {
+    const parsed = JSON.parse(bodyText) as { message?: string; details?: unknown; requestId?: string }
+    if (parsed.message) {
+      const parts = [parsed.message]
+      if (parsed.details) parts.push(typeof parsed.details === 'string' ? parsed.details : JSON.stringify(parsed.details))
+      if (parsed.requestId) parts.push(`requestId=${parsed.requestId}`)
+      return `${parts.join(' · ')} (HTTP ${res.status})`
+    }
+  } catch {
+    // ignore parse failures
+  }
+  return bodyText
+}
+
 export function registerThreadHandlers(): void {
   ipcMain.handle('desktop:threads', async (_event, token: string) => {
     const res = await net.fetch(`${BACKEND_URL}/api/desktop/threads`, {
       headers: { Authorization: `Bearer ${token}` },
     })
+    if (!res.ok) return { success: false, message: await parseBackendError(res) }
     return res.json()
   })
 
@@ -30,16 +50,18 @@ export function registerThreadHandlers(): void {
       const res = await net.fetch(`${BACKEND_URL}/api/desktop/threads/${threadId}${query ? `?${query}` : ''}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
+      if (!res.ok) return { success: false, message: await parseBackendError(res) }
       return res.json()
     },
   )
 
-  ipcMain.handle('desktop:thread:create', async (_event, token: string) => {
+  ipcMain.handle('desktop:thread:create', async (_event, token: string, payload?: { departmentId?: string }) => {
     const res = await net.fetch(`${BACKEND_URL}/api/desktop/threads`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify(payload ?? {}),
     })
+    if (!res.ok) return { success: false, message: await parseBackendError(res) }
     return res.json()
   })
 
@@ -56,6 +78,7 @@ export function registerThreadHandlers(): void {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
+      if (!res.ok) return { success: false, message: await parseBackendError(res) }
       return res.json()
     },
   )
@@ -65,6 +88,9 @@ export function registerThreadHandlers(): void {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
     })
-    return { success: res.ok }
+    if (!res.ok) {
+      return { success: false, message: await parseBackendError(res) }
+    }
+    return { success: true }
   })
 }

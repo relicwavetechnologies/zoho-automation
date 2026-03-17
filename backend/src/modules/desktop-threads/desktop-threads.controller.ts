@@ -7,6 +7,7 @@ import { MemberSessionDTO } from '../member-auth/member-auth.service';
 import { desktopThreadsService } from './desktop-threads.service';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { prisma } from '../../utils/prisma';
+import { departmentService } from '../../company/departments/department.service';
 
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
 
@@ -19,6 +20,10 @@ const createMessageSchema = z.object({
 const getThreadQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional(),
   beforeMessageId: z.string().uuid().optional(),
+});
+
+const createThreadSchema = z.object({
+  departmentId: z.string().uuid().optional(),
 });
 
 class DesktopThreadsController extends BaseController {
@@ -114,7 +119,17 @@ class DesktopThreadsController extends BaseController {
 
   create = async (req: Request, res: Response) => {
     const s = this.session(req);
-    const thread = await desktopThreadsService.createThread(s.userId, s.companyId);
+    const payload = createThreadSchema.parse(req.body ?? {});
+    const resolvedDepartment = await departmentService.resolveDepartmentForThreadCreation({
+      userId: s.userId,
+      companyId: s.companyId,
+      requestedDepartmentId: payload.departmentId,
+    });
+    const thread = await desktopThreadsService.createThread(
+      s.userId,
+      s.companyId,
+      resolvedDepartment?.id ?? null,
+    );
     return res.status(201).json(ApiResponse.success(thread, 'Thread created'));
   };
 

@@ -15,7 +15,7 @@ export const LoginPage = () => {
   const [submitting, setSubmitting] = useState(false);
 
   if (session) {
-    return <Navigate to="/overview" replace />;
+    return <Navigate to={session.role === 'DEPARTMENT_MANAGER' ? '/departments' : '/overview'} replace />;
   }
 
   const onSubmit = async (event: FormEvent) => {
@@ -76,7 +76,7 @@ export const LoginPage = () => {
                 className={`flex-1 py-1.5 text-sm rounded transition-colors ${mode === 'company' ? 'bg-[#222] text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}
                 onClick={() => setMode('company')}
               >
-                Workspace Admin
+                Workspace Admin / Manager
               </button>
             </div>
 

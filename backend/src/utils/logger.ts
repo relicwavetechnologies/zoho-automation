@@ -43,6 +43,16 @@ const parseLogLevel = (value: string): LogLevel => {
 };
 
 const minimumLevel = parseLogLevel(config.LOG_LEVEL.toLowerCase());
+const AI_ONLY_LOG_MODE = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.LOG_AI_ONLY ?? '').trim().toLowerCase(),
+);
+const AI_LOG_PREFIXES = [
+  'vercel.',
+  'desktop.chat.',
+  'llm.',
+  'tool.',
+  'orchestration.engine.selection',
+];
 
 const redactSensitiveValue = (key: string, value: unknown): unknown => {
   const lowered = key.toLowerCase();
@@ -122,6 +132,18 @@ const shouldLog = (level: LogLevel, options?: LogOptions, randomFn: () => number
   return randomFn() < sampleRate;
 };
 
+const shouldLogMessage = (message: string, options?: LogOptions): boolean => {
+  if (!AI_ONLY_LOG_MODE) {
+    return true;
+  }
+
+  if (options?.always) {
+    return AI_LOG_PREFIXES.some((prefix) => message.startsWith(prefix));
+  }
+
+  return AI_LOG_PREFIXES.some((prefix) => message.startsWith(prefix));
+};
+
 // ─── Pretty dev formatter ────────────────────────────────────────────────────
 
 const IS_DEV = config.NODE_ENV !== 'production';
@@ -184,6 +206,10 @@ const prettyLine = (level: LogLevel, message: string, meta?: unknown): string =>
 // ─── Emit ────────────────────────────────────────────────────────────────────
 
 const emit = (level: LogLevel, message: string, meta?: unknown, options?: LogOptions): void => {
+  if (!shouldLogMessage(message, options)) {
+    return;
+  }
+
   if (!shouldLog(level, options)) {
     return;
   }

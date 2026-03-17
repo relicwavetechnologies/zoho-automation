@@ -154,9 +154,35 @@ export class AdminAuthRepository extends BaseRepository {
     });
   }
 
+  findManagedDepartmentMembership(userId: string, companyId?: string) {
+    return prisma.departmentMembership.findFirst({
+      where: {
+        userId,
+        status: 'active',
+        role: {
+          slug: 'MANAGER',
+        },
+        department: {
+          status: 'active',
+          ...(companyId ? { companyId } : {}),
+        },
+      },
+      include: {
+        department: {
+          select: {
+            companyId: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+  }
+
   createAdminSession(data: {
     userId: string;
-    role: 'SUPER_ADMIN' | 'COMPANY_ADMIN';
+    role: 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
     companyId?: string;
     expiresAt: Date;
   }): Promise<AdminSession> {

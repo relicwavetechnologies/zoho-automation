@@ -46,6 +46,9 @@ export type ValidatedEnv = {
   LARK_ENCRYPT_KEY: string;
   LARK_WEBHOOK_SIGNING_SECRET: string;
   LARK_WEBHOOK_MAX_SKEW_SECONDS: number;
+  GOOGLE_OAUTH_CLIENT_ID: string;
+  GOOGLE_OAUTH_CLIENT_SECRET: string;
+  GOOGLE_OAUTH_REDIRECT_URI: string;
   ZOHO_CLIENT_ID: string;
   ZOHO_CLIENT_SECRET: string;
   ZOHO_REDIRECT_URI: string;
@@ -67,14 +70,11 @@ export type ValidatedEnv = {
   QDRANT_API_KEY: string;
   QDRANT_COLLECTION: string;
   QDRANT_TIMEOUT_MS: number;
-  EMBEDDING_PROVIDER: 'openai' | 'fallback';
+  EMBEDDING_PROVIDER: 'gemini' | 'openai' | 'fallback';
   OPENAI_EMBEDDING_MODEL: string;
-  ORCHESTRATION_ENGINE: 'langgraph' | 'legacy' | 'mastra';
-  ORCHESTRATION_LEGACY_ROLLBACK_ENABLED: boolean;
-  MASTRA_BASE_URL: string;
-  MASTRA_AGENT_ID: string;
-  MASTRA_API_KEY: string;
-  MASTRA_TIMEOUT_MS: number;
+  GEMINI_EMBEDDING_MODEL: string;
+  GEMINI_MEDIA_ANALYSIS_MODEL: string;
+  ORCHESTRATION_ENGINE: 'legacy' | 'vercel';
   GROQ_API_KEY: string;
   GROQ_ROUTER_MODEL: string;
   GEMINI_API_KEY: string;
@@ -310,33 +310,33 @@ const parseLogLevel = (value: string, issues: EnvValidationIssue[]): ValidatedEn
 };
 
 const parseOrchestrationEngine = (value: string, issues: EnvValidationIssue[]): ValidatedEnv['ORCHESTRATION_ENGINE'] => {
-  if (value === 'langgraph' || value === 'legacy' || value === 'mastra') {
+  if (value === 'legacy' || value === 'vercel') {
     return value;
   }
 
   issues.push({
     key: 'ORCHESTRATION_ENGINE',
     code: 'invalid_enum',
-    message: 'ORCHESTRATION_ENGINE must be langgraph, legacy, or mastra',
+    message: 'ORCHESTRATION_ENGINE must be legacy or vercel',
     severity: 'error',
   });
 
-  return 'langgraph';
+  return 'legacy';
 };
 
 const parseEmbeddingProvider = (value: string, issues: EnvValidationIssue[]): ValidatedEnv['EMBEDDING_PROVIDER'] => {
-  if (value === 'openai' || value === 'fallback') {
+  if (value === 'gemini' || value === 'openai' || value === 'fallback') {
     return value;
   }
 
   issues.push({
     key: 'EMBEDDING_PROVIDER',
     code: 'invalid_enum',
-    message: 'EMBEDDING_PROVIDER must be openai or fallback',
+    message: 'EMBEDDING_PROVIDER must be gemini, openai, or fallback',
     severity: 'error',
   });
 
-  return 'openai';
+  return 'gemini';
 };
 
 const parseZohoProviderDefault = (
@@ -576,6 +576,9 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     LARK_ENCRYPT_KEY: readString(parsedRaw.LARK_ENCRYPT_KEY),
     LARK_WEBHOOK_SIGNING_SECRET: readString(parsedRaw.LARK_WEBHOOK_SIGNING_SECRET),
     LARK_WEBHOOK_MAX_SKEW_SECONDS: larkWebhookMaxSkewSeconds,
+    GOOGLE_OAUTH_CLIENT_ID: readString(parsedRaw.GOOGLE_OAUTH_CLIENT_ID),
+    GOOGLE_OAUTH_CLIENT_SECRET: readString(parsedRaw.GOOGLE_OAUTH_CLIENT_SECRET),
+    GOOGLE_OAUTH_REDIRECT_URI: readString(parsedRaw.GOOGLE_OAUTH_REDIRECT_URI),
     ZOHO_CLIENT_ID: readString(parsedRaw.ZOHO_CLIENT_ID),
     ZOHO_CLIENT_SECRET: readString(parsedRaw.ZOHO_CLIENT_SECRET),
     ZOHO_REDIRECT_URI: readString(parsedRaw.ZOHO_REDIRECT_URI),
@@ -643,25 +646,11 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       min: 1000,
       issues,
     }),
-    EMBEDDING_PROVIDER: parseEmbeddingProvider(readString(parsedRaw.EMBEDDING_PROVIDER, 'openai'), issues),
+    EMBEDDING_PROVIDER: parseEmbeddingProvider(readString(parsedRaw.EMBEDDING_PROVIDER, 'gemini'), issues),
     OPENAI_EMBEDDING_MODEL: readString(parsedRaw.OPENAI_EMBEDDING_MODEL, 'text-embedding-3-small'),
-    ORCHESTRATION_ENGINE: parseOrchestrationEngine(readString(parsedRaw.ORCHESTRATION_ENGINE, 'langgraph'), issues),
-    ORCHESTRATION_LEGACY_ROLLBACK_ENABLED: parseBoolean({
-      key: 'ORCHESTRATION_LEGACY_ROLLBACK_ENABLED',
-      value: readString(parsedRaw.ORCHESTRATION_LEGACY_ROLLBACK_ENABLED, 'true'),
-      defaultValue: true,
-      issues,
-    }),
-    MASTRA_BASE_URL: readString(parsedRaw.MASTRA_BASE_URL, 'http://127.0.0.1:8000'),
-    MASTRA_AGENT_ID: readString(parsedRaw.MASTRA_AGENT_ID, 'supervisorAgent'),
-    MASTRA_API_KEY: readString(parsedRaw.MASTRA_API_KEY),
-    MASTRA_TIMEOUT_MS: parseInteger({
-      key: 'MASTRA_TIMEOUT_MS',
-      value: readString(parsedRaw.MASTRA_TIMEOUT_MS, '12000'),
-      defaultValue: 12000,
-      min: 1000,
-      issues,
-    }),
+    GEMINI_EMBEDDING_MODEL: readString(parsedRaw.GEMINI_EMBEDDING_MODEL, 'gemini-embedding-001'),
+    GEMINI_MEDIA_ANALYSIS_MODEL: readString(parsedRaw.GEMINI_MEDIA_ANALYSIS_MODEL, 'gemini-2.5-flash'),
+    ORCHESTRATION_ENGINE: parseOrchestrationEngine(readString(parsedRaw.ORCHESTRATION_ENGINE, 'legacy'), issues),
     GROQ_API_KEY: readString(parsedRaw.GROQ_API_KEY),
     GROQ_ROUTER_MODEL: readString(parsedRaw.GROQ_ROUTER_MODEL, 'llama-3.1-8b-instant'),
     GEMINI_API_KEY: readString(parsedRaw.GEMINI_API_KEY, readString(parsedRaw.GOOGLE_API_KEY)),
@@ -710,6 +699,10 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
   const hasLarkSigningSecret = config.LARK_WEBHOOK_SIGNING_SECRET.length > 0;
   const hasStaticTenantToken = config.LARK_BOT_TENANT_ACCESS_TOKEN.length > 0;
   const hasAppBaseUrl = config.APP_BASE_URL.length > 0;
+  const hasGoogleClientId = config.GOOGLE_OAUTH_CLIENT_ID.length > 0;
+  const hasGoogleClientSecret = config.GOOGLE_OAUTH_CLIENT_SECRET.length > 0;
+  const hasGoogleRedirectUri = config.GOOGLE_OAUTH_REDIRECT_URI.length > 0;
+  const hasAnyGoogleOAuthConfig = hasGoogleClientId || hasGoogleClientSecret || hasGoogleRedirectUri;
 
   if ((hasLarkAppId && !hasLarkAppSecret) || (!hasLarkAppId && hasLarkAppSecret)) {
     issues.push({
@@ -727,6 +720,17 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       message: 'APP_BASE_URL should be set when Lark OAuth is configured',
       severity: 'warning',
     });
+  }
+
+  if (hasAnyGoogleOAuthConfig) {
+    if (!hasGoogleClientId || !hasGoogleClientSecret || !hasGoogleRedirectUri) {
+      warnings.push({
+        key: 'GOOGLE_OAUTH_CLIENT_ID,GOOGLE_OAUTH_CLIENT_SECRET,GOOGLE_OAUTH_REDIRECT_URI',
+        code: 'paired_required',
+        message: 'GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_OAUTH_REDIRECT_URI should be set together',
+        severity: 'warning',
+      });
+    }
   }
 
   const hasZohoClientId = config.ZOHO_CLIENT_ID.length > 0;
@@ -802,35 +806,6 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     });
   }
 
-  if (config.ORCHESTRATION_ENGINE === 'mastra') {
-    if (!config.MASTRA_AGENT_ID) {
-      issues.push({
-        key: 'MASTRA_AGENT_ID',
-        code: 'missing_value',
-        message: 'MASTRA_AGENT_ID is required when ORCHESTRATION_ENGINE=mastra',
-        severity: 'error',
-      });
-    }
-
-    try {
-      const parsedMastra = new URL(config.MASTRA_BASE_URL);
-      if (parsedMastra.protocol !== 'http:' && parsedMastra.protocol !== 'https:') {
-        issues.push({
-          key: 'MASTRA_BASE_URL',
-          code: 'invalid_protocol',
-          message: 'MASTRA_BASE_URL must be http:// or https://',
-          severity: 'error',
-        });
-      }
-    } catch {
-      issues.push({
-        key: 'MASTRA_BASE_URL',
-        code: 'invalid_url',
-        message: 'MASTRA_BASE_URL must be a valid URL',
-        severity: 'error',
-      });
-    }
-  }
 
   if (config.NODE_ENV === 'production' && !hasLarkVerificationToken && !hasLarkSigningSecret) {
     issues.push({
@@ -873,20 +848,20 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     }
   }
 
-  if (config.ORCHESTRATION_ENGINE === 'langgraph' && !hasOpenAiApiKey) {
-    warnings.push({
-      key: 'OPENAI_API_KEY',
-      code: 'fallback_mode',
-      message: 'OPENAI_API_KEY is missing; orchestration will use deterministic fallback mode',
-      severity: 'warning',
-    });
-  }
-
   if (config.EMBEDDING_PROVIDER === 'openai' && !hasOpenAiApiKey) {
     warnings.push({
       key: 'EMBEDDING_PROVIDER,OPENAI_API_KEY',
       code: 'embedding_provider_fallback',
       message: 'EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is missing; embeddings will fall back deterministically',
+      severity: 'warning',
+    });
+  }
+
+  if (config.EMBEDDING_PROVIDER === 'gemini' && !config.GEMINI_API_KEY) {
+    warnings.push({
+      key: 'EMBEDDING_PROVIDER,GEMINI_API_KEY',
+      code: 'embedding_provider_fallback',
+      message: 'EMBEDDING_PROVIDER=gemini but GEMINI_API_KEY is missing; embeddings will fall back deterministically',
       severity: 'warning',
     });
   }

@@ -230,7 +230,7 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
   });
 
   const latestCheckpoint = await checkpointRepository.getLatest(taskId);
-  const { result, configuredEngine: selectedEngine, engineUsed, rolledBackFrom, rollbackReasonCode } = await executeTaskWithConfiguredEngine({
+  const { result, configuredEngine: selectedEngine, engineUsed } = await executeTaskWithConfiguredEngine({
     task,
     message,
     latestCheckpoint,
@@ -273,8 +273,6 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     result: typeof result;
     selectedEngine: typeof selectedEngine;
     engineUsed: typeof engineUsed;
-    rolledBackFrom: typeof rolledBackFrom;
-    rollbackReasonCode: typeof rollbackReasonCode;
   }) =>
     runtimeTaskStore.update(input.taskId, {
       status: input.result.status,
@@ -288,8 +286,8 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
       configuredEngine: input.selectedEngine,
       engine: input.engineUsed,
       engineUsed: input.engineUsed,
-      rolledBackFrom: input.rolledBackFrom,
-      rollbackReasonCode: input.rollbackReasonCode,
+      rolledBackFrom: undefined,
+      rollbackReasonCode: undefined,
       graphThreadId: input.result.runtimeMeta?.threadId,
       graphNode: input.result.runtimeMeta?.node,
       graphStepHistory: input.result.runtimeMeta?.stepHistory,
@@ -309,8 +307,6 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
     result,
     selectedEngine,
     engineUsed,
-    rolledBackFrom,
-    rollbackReasonCode,
   });
 
   if (executionTrackingEnabled) {
@@ -625,9 +621,9 @@ export const __test__ = {
       runtimeMeta?: { threadId?: string; node?: string; stepHistory?: string[]; routeIntent?: string };
       agentResults?: Array<Record<string, unknown>>;
     };
-    selectedEngine: 'legacy' | 'langgraph' | 'mastra';
-    engineUsed: 'legacy' | 'langgraph' | 'mastra';
-    rolledBackFrom?: 'legacy' | 'langgraph' | 'mastra';
+    selectedEngine: 'legacy' | 'vercel';
+    engineUsed: 'legacy' | 'vercel';
+    rolledBackFrom?: 'legacy' | 'vercel';
     rollbackReasonCode?: string;
   }) =>
     runtimeTaskStore.update(input.taskId, {

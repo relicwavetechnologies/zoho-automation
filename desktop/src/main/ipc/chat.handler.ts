@@ -4,6 +4,25 @@ import { net } from 'electron'
 const BACKEND_URL = process.env.CURSORR_BACKEND_URL ?? 'http://localhost:8000'
 const activeStreamControllers = new Map<string, AbortController>()
 
+const parseBackendError = async (res: Awaited<ReturnType<typeof net.fetch>>): Promise<string> => {
+  const bodyText = await res.text()
+  if (!bodyText) {
+    return `Request failed (${res.status})`
+  }
+  try {
+    const parsed = JSON.parse(bodyText) as { message?: string; details?: unknown; requestId?: string }
+    if (parsed.message) {
+      const parts = [parsed.message]
+      if (parsed.details) parts.push(typeof parsed.details === 'string' ? parsed.details : JSON.stringify(parsed.details))
+      if (parsed.requestId) parts.push(`requestId=${parsed.requestId}`)
+      return `${parts.join(' · ')} (HTTP ${res.status})`
+    }
+  } catch {
+    // fall through
+  }
+  return bodyText
+}
+
 export function registerChatHandlers(): void {
   ipcMain.handle(
     'desktop:chat:send',
@@ -13,6 +32,9 @@ export function registerChatHandlers(): void {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ message }),
       })
+      if (!res.ok) {
+        return { success: false, message: await parseBackendError(res) }
+      }
       return res.json()
     },
   )
@@ -25,7 +47,128 @@ export function registerChatHandlers(): void {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
+      if (!res.ok) {
+        return { success: false, message: await parseBackendError(res) }
+      }
       return res.json()
+    },
+  )
+
+  ipcMain.handle(
+    'desktop:chat:actStream',
+    async (
+      event,
+      token: string,
+      threadId: string,
+      requestId: string,
+      payload: Record<string, unknown>,
+    ) => {
+      const target = event.sender
+      const controller = new AbortController()
+      activeStreamControllers.set(requestId, controller)
+
+      let res: Awaited<ReturnType<typeof net.fetch>>
+      try {
+        res = await net.fetch(`${BACKEND_URL}/api/desktop/chat/${threadId}/act/stream`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        })
+      } catch (error) {
+        activeStreamControllers.delete(requestId)
+        if (controller.signal.aborted) {
+          return { success: true, stopped: true }
+        }
+        target.send('desktop:chat:event', {
+          requestId,
+          event: {
+            type: 'error',
+            data: error instanceof Error ? error.message : 'Desktop action stream failed',
+          },
+        })
+        return { success: false }
+      }
+
+      if (!res.ok || !res.body) {
+        activeStreamControllers.delete(requestId)
+        const bodyText = res.ok ? await res.text() : await parseBackendError(res)
+        target.send('desktop:chat:event', {
+          requestId,
+          event: {
+            type: 'error',
+            data: bodyText || `Desktop action stream failed (${res.status})`,
+          },
+        })
+        return { success: false }
+      }
+
+      ;(async () => {
+        const reader = res.body!.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+
+            buffer += decoder.decode(value, { stream: true })
+            const frames = buffer.split('\n\n')
+            buffer = frames.pop() ?? ''
+
+            for (const frame of frames) {
+              const dataLines = frame
+                .split('\n')
+                .filter((line) => line.startsWith('data: '))
+                .map((line) => line.slice(6))
+
+              if (dataLines.length === 0) continue
+              const raw = dataLines.join('\n').trim()
+              if (!raw) continue
+
+              try {
+                const parsed = JSON.parse(raw) as { type: string; data: unknown }
+                target.send('desktop:chat:event', { requestId, event: parsed })
+              } catch {
+                target.send('desktop:chat:event', {
+                  requestId,
+                  event: { type: 'error', data: 'Malformed action stream event received from backend' },
+                })
+              }
+            }
+          }
+
+          const trailing = buffer.trim()
+          if (trailing.startsWith('data: ')) {
+            try {
+              const parsed = JSON.parse(trailing.slice(6).trim()) as { type: string; data: unknown }
+              target.send('desktop:chat:event', { requestId, event: parsed })
+            } catch {
+              // ignore final malformed fragment
+            }
+          }
+        } catch (error) {
+          if (controller.signal.aborted) {
+            return
+          }
+          target.send('desktop:chat:event', {
+            requestId,
+            event: {
+              type: 'error',
+              data: error instanceof Error ? error.message : 'Desktop action stream failed',
+            },
+          })
+        } finally {
+          activeStreamControllers.delete(requestId)
+        }
+      })()
+
+      return { success: true }
     },
   )
 
@@ -61,7 +204,8 @@ export function registerChatHandlers(): void {
       message: string,
       requestId: string,
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-      mode?: 'fast' | 'high' | 'xtreme'
+      mode?: 'fast' | 'high' | 'xtreme',
+      workspace?: { name: string; path: string }
     ) => {
       const target = event.sender
       const controller = new AbortController()
@@ -76,7 +220,7 @@ export function registerChatHandlers(): void {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
           },
-          body: JSON.stringify({ message, attachedFiles, mode, executionId: requestId }),
+          body: JSON.stringify({ message, attachedFiles, workspace, mode, executionId: requestId }),
           signal: controller.signal,
         })
       } catch (error) {
@@ -96,7 +240,7 @@ export function registerChatHandlers(): void {
 
       if (!res.ok || !res.body) {
         activeStreamControllers.delete(requestId)
-        const bodyText = await res.text()
+        const bodyText = res.ok ? await res.text() : await parseBackendError(res)
         target.send('desktop:chat:event', {
           requestId,
           event: {
@@ -184,9 +328,10 @@ export function registerChatHandlers(): void {
         attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>
         mode?: 'fast' | 'high' | 'xtreme'
         companyId?: string
+        workspace?: { name: string; path: string }
       }
     ) => {
-      const { token, requestId, threadId, message, attachedFiles, mode, companyId } = payload
+      const { token, requestId, threadId, message, attachedFiles, mode, companyId, workspace } = payload
       const target = event.sender
       const controller = new AbortController()
       activeStreamControllers.set(requestId, controller)
@@ -200,7 +345,7 @@ export function registerChatHandlers(): void {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
           },
-          body: JSON.stringify({ message, attachedFiles, mode, companyId, executionId: requestId }),
+          body: JSON.stringify({ message, attachedFiles, workspace, mode, companyId, executionId: requestId }),
           signal: controller.signal,
         })
       } catch (error) {
@@ -220,7 +365,7 @@ export function registerChatHandlers(): void {
 
       if (!res.ok || !res.body) {
         activeStreamControllers.delete(requestId)
-        const bodyText = await res.text()
+        const bodyText = res.ok ? await res.text() : await parseBackendError(res)
         target.send('desktop:chat:event', {
           requestId,
           event: {

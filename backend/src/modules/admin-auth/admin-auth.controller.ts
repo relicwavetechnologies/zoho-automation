@@ -24,7 +24,7 @@ class AdminAuthController extends BaseController {
       adminSession?: {
         userId: string;
         sessionId: string;
-        role: 'SUPER_ADMIN' | 'COMPANY_ADMIN';
+        role: 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
         companyId?: string;
         expiresAt: string;
       };
