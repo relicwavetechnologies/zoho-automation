@@ -12,6 +12,7 @@ type ConversationBucket = {
   larkDocs: LarkDocReference[];
   larkCalendarEvents: LarkCalendarEventReference[];
   larkTasks: LarkTaskReference[];
+  fileAssets: FileAssetReference[];
   updatedAtMs: number;
 };
 
@@ -43,6 +44,15 @@ export type LarkTaskReference = {
   summary?: string;
   status?: string;
   url?: string;
+  updatedAtMs: number;
+};
+
+export type FileAssetReference = {
+  fileAssetId: string;
+  fileName: string;
+  mimeType?: string;
+  cloudinaryUrl?: string;
+  ingestionStatus?: string;
   updatedAtMs: number;
 };
 
@@ -89,6 +99,7 @@ class ConversationMemoryStore {
       larkDocs: [],
       larkCalendarEvents: [],
       larkTasks: [],
+      fileAssets: [],
       updatedAtMs: nowMs,
     };
     this.buckets.set(conversationKey, created);
@@ -258,6 +269,50 @@ class ConversationMemoryStore {
     this.pruneExpired();
     const bucket = this.buckets.get(conversationKey);
     return bucket ? [...bucket.larkTasks] : [];
+  }
+
+  addFileAsset(conversationKey: string, input: {
+    fileAssetId: string;
+    fileName: string;
+    mimeType?: string;
+    cloudinaryUrl?: string;
+    ingestionStatus?: string;
+  }): void {
+    const nowMs = Date.now();
+    const bucket = this.getOrCreateBucket(conversationKey, nowMs);
+    const existingIndex = bucket.fileAssets.findIndex((entry) => entry.fileAssetId === input.fileAssetId);
+    const next: FileAssetReference = {
+      fileAssetId: input.fileAssetId,
+      fileName: input.fileName.trim() || 'file',
+      mimeType: input.mimeType?.trim() || undefined,
+      cloudinaryUrl: input.cloudinaryUrl?.trim() || undefined,
+      ingestionStatus: input.ingestionStatus?.trim() || undefined,
+      updatedAtMs: nowMs,
+    };
+
+    if (existingIndex >= 0) {
+      bucket.fileAssets.splice(existingIndex, 1);
+    }
+    bucket.fileAssets.push(next);
+    if (bucket.fileAssets.length > 24) {
+      bucket.fileAssets.splice(0, bucket.fileAssets.length - 24);
+    }
+    bucket.updatedAtMs = nowMs;
+  }
+
+  getLatestFileAsset(conversationKey: string): FileAssetReference | null {
+    this.pruneExpired();
+    const bucket = this.buckets.get(conversationKey);
+    if (!bucket || bucket.fileAssets.length === 0) {
+      return null;
+    }
+    return bucket.fileAssets[bucket.fileAssets.length - 1] ?? null;
+  }
+
+  listFileAssets(conversationKey: string): FileAssetReference[] {
+    this.pruneExpired();
+    const bucket = this.buckets.get(conversationKey);
+    return bucket ? [...bucket.fileAssets] : [];
   }
 
   getLatestLarkDoc(conversationKey: string): LarkDocReference | null {

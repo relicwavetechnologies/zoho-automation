@@ -43,14 +43,14 @@ const sendSchema = z.object({
 });
 
 const actionResultSchema = z.object({
-  kind: z.enum(['list_files', 'read_file', 'write_file', 'mkdir', 'delete_path', 'run_command']),
+  kind: z.enum(['list_files', 'read_file', 'write_file', 'mkdir', 'delete_path', 'run_command', 'tool_action']),
   ok: z.boolean(),
   summary: z.string().min(1).max(30000),
 });
 
 const actSchema = z.object({
   message: z.string().min(1).max(10000).optional(),
-  workspace: workspaceSchema,
+  workspace: workspaceSchema.optional(),
   actionResult: actionResultSchema.optional(),
   mode: z.enum(['fast', 'high', 'xtreme']).optional().default('xtreme'),
   executionId: z.string().uuid().optional(),
@@ -63,6 +63,17 @@ type DesktopWorkspaceAction =
   | { kind: 'mkdir'; path: string }
   | { kind: 'delete_path'; path: string }
   | { kind: 'run_command'; command: string };
+
+type RemoteApprovalAction = {
+  kind: 'tool_action';
+  toolId: string;
+  actionGroup: 'read' | 'create' | 'update' | 'delete' | 'send' | 'execute';
+  operation: string;
+  title: string;
+  summary: string;
+  subject?: string;
+  explanation?: string;
+};
 
 type PersistedContentBlock =
   | { type: 'thinking'; text?: string }
@@ -389,6 +400,10 @@ const buildSystemPrompt = (input: {
     'If a tool returns a pending approval action, treat that as the next required step instead of inventing completion.',
     'Prefer the coding tool for local workspace work and the repo tool only for remote GitHub repositories.',
     'For specialized or complex workflows, first search relevant skills with the skillSearch tool, read the chosen skill, and then proceed with the task.',
+    'When a local action result is available, use that result as the source of truth for the next step instead of repeating the same command or rereading the same file without a concrete reason.',
+    'Do not repeat a successful local command, file read, or file write unless you explicitly need a different verification step or the user asked to retry.',
+    'For coding: planCommand and runScriptPlan require an exact command. writeFilePlan requires the full target path and full file content in contentPlan.',
+    'After an approved local action finishes, prefer verifyResult or the next logically required step over restarting the whole plan.',
   ];
   if (input.workspace) {
     parts.push(
@@ -422,6 +437,9 @@ const buildSystemPrompt = (input: {
       `- kind: ${input.latestActionResult.kind}`,
       `- ok: ${String(input.latestActionResult.ok)}`,
       `- summary: ${input.latestActionResult.summary}`,
+      input.latestActionResult.ok
+        ? '- guidance: do not repeat this same action unless a new verification or different follow-up step is necessary.'
+        : '- guidance: adapt to the failure details above; do not blindly retry the identical step unless the error indicates a transient issue.',
     );
   }
   const continuationHint = buildContinuationHint(input.latestUserMessage);
@@ -441,6 +459,7 @@ const resolveDepartmentRuntime = async (
   threadDepartmentName?: string;
   threadDepartmentSlug?: string;
   allowedToolIds: string[];
+  allowedActionsByTool?: Record<string, import('../../company/tools/tool-action-groups').ToolActionGroup[]>;
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentSystemPrompt?: string;
@@ -462,6 +481,7 @@ const resolveDepartmentRuntime = async (
     threadDepartmentName: resolved.departmentName ?? pinnedDepartment?.name ?? session.resolvedDepartmentName,
     threadDepartmentSlug: pinnedDepartment?.slug ?? undefined,
     allowedToolIds: resolved.allowedToolIds,
+    allowedActionsByTool: resolved.allowedActionsByTool,
     departmentName: resolved.departmentName,
     departmentRoleSlug: resolved.departmentRoleSlug,
     departmentSystemPrompt: resolved.systemPrompt,
@@ -469,7 +489,7 @@ const resolveDepartmentRuntime = async (
   };
 };
 
-const mapPendingApprovalAction = (action: PendingApprovalAction): DesktopWorkspaceAction => {
+const mapPendingApprovalAction = (action: PendingApprovalAction): DesktopWorkspaceAction | RemoteApprovalAction => {
   switch (action.kind) {
     case 'run_command':
       return { kind: 'run_command', command: action.command };
@@ -479,6 +499,18 @@ const mapPendingApprovalAction = (action: PendingApprovalAction): DesktopWorkspa
       return { kind: 'mkdir', path: action.path };
     case 'delete_path':
       return { kind: 'delete_path', path: action.path };
+    case 'tool_action':
+      return {
+        kind: 'tool_action',
+        approvalId: action.approvalId,
+        toolId: action.toolId,
+        actionGroup: action.actionGroup,
+        operation: action.operation,
+        title: action.title,
+        summary: action.summary,
+        subject: action.subject,
+        explanation: action.explanation,
+      };
   }
 };
 
@@ -657,7 +689,9 @@ export class VercelDesktopEngine {
       let persistedBlocks: PersistedContentBlock[] = [];
 
       const runtime: VercelRuntimeRequestContext = {
+        channel: 'desktop',
         threadId,
+        chatId: threadId,
         executionId,
         companyId: session.companyId,
         userId: session.userId,
@@ -872,9 +906,7 @@ export class VercelDesktopEngine {
       const steps = await result.steps;
       const pendingApproval = findPendingApproval(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
       const pendingAction = pendingApproval ? mapPendingApprovalAction(pendingApproval) : null;
-      const finalText = pendingApproval
-        ? `Approval required before continuing: ${pendingApproval.kind === 'run_command' ? pendingApproval.command : pendingApproval.kind}.`
-        : streamedText.trim();
+      const finalText = pendingApproval ? '' : streamedText.trim();
       const citations = (steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap((step) =>
         (step.toolResults ?? []).flatMap((toolResult) => {
           const output = toolResult.output as VercelToolEnvelope | undefined;
@@ -888,20 +920,22 @@ export class VercelDesktopEngine {
         deltaCount: reasoningDeltaCount,
         totalChars: reasoningCharCount,
       });
+      const approvalSummary = pendingAction
+        ? pendingAction.kind === 'run_command'
+          ? pendingAction.command
+          : pendingAction.kind === 'tool_action'
+            ? pendingAction.summary
+            : pendingAction.kind
+        : pendingApproval?.kind ?? null;
+
       logger.info('vercel.stream.response.summary', {
         executionId,
         threadId,
         pendingApproval: pendingApproval?.kind ?? null,
         textChars: finalText.length,
         citations: citations.length,
-        responsePreview: summarizeText(finalText, 240),
+        responsePreview: summarizeText(finalText || approvalSummary || '', 240),
       });
-
-      if (pendingApproval && finalText && streamedText.trim() !== finalText) {
-        sendSseEvent(res, 'text', finalText);
-        queueUiEvent('text', finalText);
-        persistedBlocks = appendTextBlock(persistedBlocks, finalText);
-      }
 
       if (pendingAction) {
         sendSseEvent(res, 'action', { action: pendingAction, executionId });
@@ -931,7 +965,7 @@ export class VercelDesktopEngine {
         actorType: pendingApproval ? 'system' : 'agent',
         actorKey: pendingApproval ? pendingApproval.kind : 'vercel',
         title: pendingApproval ? 'Approval requested' : 'Generated assistant response',
-        summary: summarizeText(finalText, 600),
+        summary: summarizeText(finalText || approvalSummary || 'Approval requested', 600),
         status: pendingApproval ? 'pending' : 'done',
       });
 
@@ -996,7 +1030,7 @@ export class VercelDesktopEngine {
       status: 'running',
       payload: {
         threadId,
-        workspacePath: workspace.path,
+        workspacePath: workspace?.path ?? null,
         hasActionResult: Boolean(actionResult),
       },
     });
@@ -1026,13 +1060,25 @@ export class VercelDesktopEngine {
         dateScope: inferDateScope(message),
         latestActionResult: actionResult,
         allowedToolIds: departmentRuntime.allowedToolIds,
+        allowedActionsByTool: departmentRuntime.allowedActionsByTool,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
       };
 
       let persistedBlocks: PersistedContentBlock[] = [];
       const { messages: historyMessages } = await mapHistoryToMessages(threadId, session);
-      const continuationText = message ?? (actionResult ? `Continue from this local action result:\n${actionResult.summary}` : undefined);
+      const continuationText = message ?? (actionResult
+        ? [
+          'Continue from this local action result.',
+          `kind: ${actionResult.kind}`,
+          `ok: ${String(actionResult.ok)}`,
+          'summary:',
+          actionResult.summary,
+          actionResult.ok
+            ? 'Do not repeat the same successful action unless a different verification or follow-up step is required.'
+            : 'Use the failure details above to choose a different next step or a corrected retry.',
+        ].join('\n')
+        : undefined);
       const result = await runVercelLoop({
         runtime,
         system: buildSystemPrompt({
@@ -1235,7 +1281,9 @@ export class VercelDesktopEngine {
       }
 
       const runtime: VercelRuntimeRequestContext = {
+        channel: 'desktop',
         threadId,
+        chatId: threadId,
         executionId,
         companyId: session.companyId,
         userId: session.userId,
@@ -1253,13 +1301,25 @@ export class VercelDesktopEngine {
         dateScope: inferDateScope(message),
         latestActionResult: actionResult,
         allowedToolIds: departmentRuntime.allowedToolIds,
+        allowedActionsByTool: departmentRuntime.allowedActionsByTool,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
       };
 
       let persistedBlocks: PersistedContentBlock[] = [];
       const { messages: historyMessages } = await mapHistoryToMessages(threadId, session);
-      const continuationText = message ?? (actionResult ? `Continue from this local action result:\n${actionResult.summary}` : undefined);
+      const continuationText = message ?? (actionResult
+        ? [
+          'Continue from this local action result.',
+          `kind: ${actionResult.kind}`,
+          `ok: ${String(actionResult.ok)}`,
+          'summary:',
+          actionResult.summary,
+          actionResult.ok
+            ? 'Do not repeat the same successful action unless a different verification or follow-up step is required.'
+            : 'Use the failure details above to choose a different next step or a corrected retry.',
+        ].join('\n')
+        : undefined);
       const result = await runVercelStreamLoop({
         runtime,
         system: buildSystemPrompt({
@@ -1413,20 +1473,19 @@ export class VercelDesktopEngine {
       const steps = await result.steps;
       const pendingApproval = findPendingApproval(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
       const pendingAction = pendingApproval ? mapPendingApprovalAction(pendingApproval) : null;
-      const finalText = pendingApproval
-        ? `Approval required before continuing: ${pendingApproval.kind === 'run_command' ? pendingApproval.command : pendingApproval.kind}.`
-        : streamedText.trim();
+      const finalText = pendingApproval ? '' : streamedText.trim();
+      const approvalSummary = pendingAction
+        ? pendingAction.kind === 'run_command'
+          ? pendingAction.command
+          : pendingAction.kind === 'tool_action'
+            ? pendingAction.summary
+            : pendingAction.kind
+        : pendingApproval?.kind ?? null;
       const citations = (steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap((step) =>
         (step.toolResults ?? []).flatMap((toolResult) => {
           const output = toolResult.output as VercelToolEnvelope | undefined;
           return output?.citations ?? [];
         }));
-
-      if (pendingApproval && finalText && streamedText.trim() !== finalText) {
-        sendSseEvent(res, 'text', finalText);
-        queueUiEvent('text', finalText);
-        persistedBlocks = appendTextBlock(persistedBlocks, finalText);
-      }
 
       if (pendingAction) {
         sendSseEvent(res, 'action', { action: pendingAction, executionId });
@@ -1455,7 +1514,7 @@ export class VercelDesktopEngine {
         actorType: pendingApproval ? 'system' : 'agent',
         actorKey: pendingApproval ? pendingApproval.kind : 'vercel',
         title: pendingApproval ? 'Approval requested' : 'Generated assistant response',
-        summary: summarizeText(finalText, 600),
+        summary: summarizeText(finalText || approvalSummary || 'Approval requested', 600),
         status: pendingApproval ? 'pending' : 'done',
       });
 

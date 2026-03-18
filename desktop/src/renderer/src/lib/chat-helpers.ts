@@ -15,14 +15,27 @@ export type DesktopWorkspaceAction =
   | { kind: 'delete_path'; path: string }
   | { kind: 'run_command'; command: string }
 
+export type RemoteApprovalAction = {
+  kind: 'tool_action'
+  approvalId: string
+  toolId: string
+  actionGroup: 'read' | 'create' | 'update' | 'delete' | 'send' | 'execute'
+  operation: string
+  title: string
+  summary: string
+  subject?: string
+  explanation?: string
+}
+
 export type NonCommandWorkspaceAction = Exclude<DesktopWorkspaceAction, { kind: 'run_command' }>
+export type DesktopPendingAction = DesktopWorkspaceAction | RemoteApprovalAction
 
 export type PendingLocalActionState = {
   id: string
   threadId: string
   workspaceName: string
   workspacePath: string
-  action: DesktopWorkspaceAction
+  action: DesktopPendingAction
   source: 'manual' | 'agent'
 }
 
@@ -40,7 +53,7 @@ export type ActionLoopResult =
   | { kind: 'answer'; message: import('../types').Message; plan?: ExecutionPlan | null; executionId?: string }
 
 export type ActionResultPayload = {
-  kind: DesktopWorkspaceAction['kind']
+  kind: DesktopWorkspaceAction['kind'] | RemoteApprovalAction['kind']
   ok: boolean
   summary: string
 }

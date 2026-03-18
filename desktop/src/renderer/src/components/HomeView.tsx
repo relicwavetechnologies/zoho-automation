@@ -13,7 +13,7 @@ export function HomeView(): JSX.Element {
     <div className="flex-1 flex flex-col items-center justify-center p-6 h-full overflow-y-auto" style={{ background: 'hsl(var(--background))' }}>
       <div className="w-full max-w-3xl flex flex-col items-center">
         <h1 className="text-[32px] font-serif text-[hsl(0,0%,90%)] mb-8 tracking-tight text-center">
-          <span className="text-[#00ffff] drop-shadow-[0_0_8px_rgba(0,255,255,0.4)]">Odin</span> works for you.
+          <span className="text-[#00ffff] drop-shadow-[0_0_8px_rgba(0,255,255,0.4)]">Divo</span> works for you.
         </h1>
         
         <div className="w-full relative shadow-2xl rounded-2xl transition-all">
@@ -105,4 +105,3 @@ export function HomeView(): JSX.Element {
     </div>
   )
 }
-

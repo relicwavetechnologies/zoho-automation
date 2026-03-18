@@ -1,11 +1,14 @@
 import { Request, Response } from 'express';
 
+import config from '../../config';
 import { ApiResponse } from '../../core/api-response';
 import { BaseController } from '../../core/controller';
 import {
   connectLarkOnboardingSchema,
+  connectGoogleOnboardingSchema,
   connectOnboardingSchema,
   disconnectOnboardingSchema,
+  googleAuthorizeUrlQuerySchema,
   larkAuthorizeUrlQuerySchema,
   larkSyncQuerySchema,
   triggerHistoricalSyncSchema,
@@ -213,6 +216,75 @@ class CompanyAdminController extends BaseController {
     }
     const result = await this.service.getProviderStatus(session, companyId);
     return res.json(ApiResponse.success(result, 'Zoho provider status loaded'));
+  };
+
+  getGoogleWorkspaceStatus = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getGoogleWorkspaceStatus(session, companyId);
+    return res.json(ApiResponse.success(result, 'Google workspace status loaded'));
+  };
+
+  getGoogleAuthorizeUrl = async (req: Request, res: Response) => {
+    const query = googleAuthorizeUrlQuerySchema.parse(req.query);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getGoogleAuthorizeUrl(session, query);
+    return res.json(ApiResponse.success(result, 'Google authorize URL generated'));
+  };
+
+  connectGoogleWorkspace = async (req: Request, res: Response) => {
+    const payload = connectGoogleOnboardingSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.connectGoogleWorkspace(session, payload);
+    return res.status(201).json(ApiResponse.success(result, 'Google workspace connected'));
+  };
+
+  disconnectGoogleWorkspace = async (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.disconnectGoogleWorkspace(session, companyId);
+    return res.json(ApiResponse.success(result, 'Google workspace disconnected'));
+  };
+
+  googleCallbackRelay = async (req: Request, res: Response) => {
+    const code = typeof req.query.code === 'string' ? req.query.code : undefined;
+    const state = typeof req.query.state === 'string' ? req.query.state : undefined;
+    const error = typeof req.query.error === 'string' ? req.query.error : undefined;
+
+    const appBaseUrl = config.APP_BASE_URL.trim();
+    if (!appBaseUrl) {
+      return res.status(500).send('APP_BASE_URL is not configured.');
+    }
+    const target = new URL(`${appBaseUrl.replace(/\/$/, '')}/google/callback`);
+    if (code) target.searchParams.set('code', code);
+    if (state) target.searchParams.set('state', state);
+    if (error) target.searchParams.set('error', error);
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(200).send(`<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>Google Workspace Callback</title></head>
+  <body style="font-family: sans-serif; background: #0a0a0a; color: #e4e4e7; display: flex; min-height: 100vh; align-items: center; justify-content: center;">
+    <div style="max-width: 560px; padding: 24px; border: 1px solid #27272a; border-radius: 12px; background: #111;">
+      <h1 style="margin: 0 0 12px 0; font-size: 20px;">Returning to admin…</h1>
+      <p style="margin: 0 0 16px 0; color: #a1a1aa;">If the dashboard does not open automatically, use the button below.</p>
+      <a href="${target.toString().replace(/"/g, '&quot;')}" style="display: inline-block; padding: 10px 16px; border-radius: 8px; background: #f4f4f5; color: #09090b; text-decoration: none; font-weight: 600;">Open Admin Dashboard</a>
+      <script>window.location.replace(${JSON.stringify(target.toString())});</script>
+    </div>
+  </body>
+</html>`);
   };
 
   getZohoOAuthConfigStatus = async (req: Request, res: Response) => {

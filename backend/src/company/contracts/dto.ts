@@ -4,6 +4,7 @@ import type {
   HitlActionStatus,
   OrchestrationTaskStatus,
 } from './status';
+import type { ToolActionGroup } from '../tools/tool-action-groups';
 
 /** Shared file reference type — carried in normalized messages and used by buildVisionContent. */
 export type NormalizedAttachedFile = {
@@ -91,6 +92,10 @@ export type HITLActionDTO = {
   actionId: string;
   actionType: 'write' | 'update' | 'delete' | 'execute';
   summary: string;
+  toolId?: string;
+  actionGroup?: ToolActionGroup;
+  channel?: 'desktop' | 'lark';
+  subject?: string;
   requestedAt: string;
   expiresAt: string;
   status: HitlActionStatus;

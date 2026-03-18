@@ -55,6 +55,21 @@ export function registerChatHandlers(): void {
   )
 
   ipcMain.handle(
+    'desktop:chat:resolveHitlAction',
+    async (_event, token: string, threadId: string, actionId: string, decision: 'confirmed' | 'cancelled') => {
+      const res = await net.fetch(`${BACKEND_URL}/api/desktop/chat/${threadId}/hitl/${actionId}/decision`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      })
+      if (!res.ok) {
+        return { success: false, message: await parseBackendError(res) }
+      }
+      return res.json()
+    },
+  )
+
+  ipcMain.handle(
     'desktop:chat:actStream',
     async (
       event,

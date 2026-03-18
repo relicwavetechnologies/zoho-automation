@@ -1,3 +1,5 @@
+import type { ToolActionGroup } from '../../tools/tool-action-groups';
+
 export type VercelToolErrorKind =
   | 'missing_input'
   | 'permission'
@@ -19,25 +21,62 @@ export type VercelCitation = {
 export type PendingApprovalAction =
   | {
     kind: 'run_command';
+    approvalId?: string;
+    scope?: 'local_client';
+    toolId?: string;
+    actionGroup?: ToolActionGroup;
+    title?: string;
+    subject?: string;
     command: string;
     cwd?: string;
     explanation?: string;
   }
   | {
     kind: 'write_file';
+    approvalId?: string;
+    scope?: 'local_client';
+    toolId?: string;
+    actionGroup?: ToolActionGroup;
+    title?: string;
+    subject?: string;
     path: string;
     content: string;
     explanation?: string;
   }
   | {
     kind: 'create_directory';
+    approvalId?: string;
+    scope?: 'local_client';
+    toolId?: string;
+    actionGroup?: ToolActionGroup;
+    title?: string;
+    subject?: string;
     path: string;
     explanation?: string;
   }
   | {
     kind: 'delete_path';
+    approvalId?: string;
+    scope?: 'local_client';
+    toolId?: string;
+    actionGroup?: ToolActionGroup;
+    title?: string;
+    subject?: string;
     path: string;
     explanation?: string;
+  }
+  | {
+    kind: 'tool_action';
+    approvalId: string;
+    scope: 'backend_remote';
+    toolId: string;
+    actionGroup: ToolActionGroup;
+    operation: string;
+    title: string;
+    summary: string;
+    subject?: string;
+    explanation?: string;
+    payload: Record<string, unknown>;
   };
 
 export type VercelToolEnvelope = {
@@ -58,7 +97,9 @@ export type VercelRuntimeWorkspace = {
 };
 
 export type VercelRuntimeRequestContext = {
+  channel?: 'desktop' | 'lark';
   threadId: string;
+  chatId?: string;
   executionId: string;
   companyId: string;
   userId: string;
@@ -80,6 +121,7 @@ export type VercelRuntimeRequestContext = {
     summary: string;
   };
   allowedToolIds: string[];
+  allowedActionsByTool?: Record<string, ToolActionGroup[]>;
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
 };

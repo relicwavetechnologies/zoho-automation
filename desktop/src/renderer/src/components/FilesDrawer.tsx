@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Skeleton } from './ui/Skeleton'
 import { X, FileText, Image as ImageIcon, File, Clock, Shield, Trash2, Loader2, RotateCcw, Share2 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useAuth } from '../context/AuthContext'
@@ -249,11 +250,18 @@ export function FilesDrawer({ open, onClose, onReference, referencedIds }: Files
         {/* File list */}
         <div className="overflow-y-auto flex-1 px-3 pb-3 space-y-1 mt-1">
           {loading && (
-            <div className="flex items-center justify-center py-6">
-              <div className="w-3.5 h-3.5 rounded-full border-[1.5px] border-[hsl(0,0%,30%)] border-t-[hsl(216,80%,60%)] animate-spin" />
+            <div className="space-y-3 py-4 animate-in fade-in duration-500">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="flex items-center gap-3 px-2 py-1.5">
+                  <Skeleton className="h-10 w-10 rounded-lg shrink-0" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-4 w-3/4" />
+                    <Skeleton className="h-3 w-1/2" />
+                  </div>
+                </div>
+              ))}
             </div>
-          )}
-          {!loading && filtered.length === 0 && (
+          )}          {!loading && filtered.length === 0 && (
             <div className="text-center py-6 text-[12px] text-[hsl(0,0%,46%)]">
               {files.length === 0 ? 'No files uploaded yet' : 'No files match your search'}
             </div>

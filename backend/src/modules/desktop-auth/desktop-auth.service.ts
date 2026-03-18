@@ -9,6 +9,7 @@ import { channelIdentityRepository } from '../../company/channels/channel-identi
 import { larkOAuthService } from '../../company/channels/lark/lark-oauth.service';
 import { larkTenantBindingRepository } from '../../company/channels/lark/lark-tenant-binding.repository';
 import { larkUserAuthLinkRepository } from '../../company/channels/lark/lark-user-auth-link.repository';
+import { larkWorkspaceConfigRepository } from '../../company/channels/lark/lark-workspace-config.repository';
 import { googleOAuthService } from '../../company/channels/google/google-oauth.service';
 import { googleUserAuthLinkRepository } from '../../company/channels/google/google-user-auth-link.repository';
 import { memberAuthRepository, MemberAuthRepository } from '../member-auth/member-auth.repository';
@@ -119,6 +120,39 @@ export class DesktopAuthService extends BaseService {
     };
   }
 
+  private async resolveCompanyIdForLarkDesktopLogin(tenantKey: string): Promise<{
+    companyId: string | null;
+    shouldBackfillBinding: boolean;
+  }> {
+    const boundCompanyId = await larkTenantBindingRepository.resolveCompanyId(tenantKey);
+    if (boundCompanyId) {
+      return {
+        companyId: boundCompanyId,
+        shouldBackfillBinding: false,
+      };
+    }
+
+    if (config.LARK_TENANT_BINDING_ENFORCED) {
+      return {
+        companyId: null,
+        shouldBackfillBinding: false,
+      };
+    }
+
+    const configuredCompanyIds = await larkWorkspaceConfigRepository.listConfiguredCompanyIds();
+    if (configuredCompanyIds.length === 1) {
+      return {
+        companyId: configuredCompanyIds[0],
+        shouldBackfillBinding: true,
+      };
+    }
+
+    return {
+      companyId: null,
+      shouldBackfillBinding: false,
+    };
+  }
+
   async exchangeLarkAuthorizationCode(input: { code: string; state: string }): Promise<MemberLoginResult> {
     this.verifyDesktopLarkState(input.state);
 
@@ -129,7 +163,10 @@ export class DesktopAuthService extends BaseService {
       throw new HttpException(403, 'Your Lark account does not have an email address. Ask your admin to sync directory email first.');
     }
 
-    const companyId = await larkTenantBindingRepository.resolveCompanyId(userInfo.tenantKey);
+    const {
+      companyId,
+      shouldBackfillBinding,
+    } = await this.resolveCompanyIdForLarkDesktopLogin(userInfo.tenantKey);
     if (!companyId) {
       throw new HttpException(403, 'This Lark workspace is not connected to a company in the app.');
     }
@@ -157,6 +194,15 @@ export class DesktopAuthService extends BaseService {
     }
 
     const membership = await this.members.ensureActiveMembership(user.id, companyId, provisionedRole);
+
+    if (shouldBackfillBinding) {
+      await larkTenantBindingRepository.upsert({
+        companyId,
+        larkTenantKey: userInfo.tenantKey,
+        createdBy: user.id,
+        isActive: true,
+      });
+    }
 
     await larkUserAuthLinkRepository.upsert({
       userId: user.id,

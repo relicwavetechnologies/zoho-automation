@@ -41,6 +41,20 @@ export function registerTerminalHandlers(): void {
       })
 
       terminalProcesses.set(executionId, child)
+      let finalized = false
+
+      const emitExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+        if (finalized) return
+        finalized = true
+        cleanupTerminalExecution(executionId)
+        target.send('desktop:terminal:event', {
+          executionId,
+          event: {
+            type: 'exit',
+            data: { exitCode: code ?? null, signal: signal ?? null, durationMs: Date.now() - startedAt },
+          },
+        })
+      }
 
       target.send('desktop:terminal:event', {
         executionId,
@@ -62,6 +76,8 @@ export function registerTerminalHandlers(): void {
       })
 
       child.on('error', (error) => {
+        if (finalized) return
+        finalized = true
         cleanupTerminalExecution(executionId)
         target.send('desktop:terminal:event', {
           executionId,
@@ -69,15 +85,12 @@ export function registerTerminalHandlers(): void {
         })
       })
 
+      child.on('exit', (code, signal) => {
+        emitExit(code, signal)
+      })
+
       child.on('close', (code, signal) => {
-        cleanupTerminalExecution(executionId)
-        target.send('desktop:terminal:event', {
-          executionId,
-          event: {
-            type: 'exit',
-            data: { exitCode: code ?? null, signal: signal ?? null, durationMs: Date.now() - startedAt },
-          },
-        })
+        emitExit(code, signal)
       })
 
       return { success: true }

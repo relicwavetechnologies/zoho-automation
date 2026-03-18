@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import jwt from 'jsonwebtoken';
 
 import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
@@ -9,12 +10,16 @@ import { larkOAuthService } from '../../company/channels/lark/lark-oauth.service
 import { larkTenantBindingRepository } from '../../company/channels/lark/lark-tenant-binding.repository';
 import { larkWorkspaceConfigRepository } from '../../company/channels/lark/lark-workspace-config.repository';
 import { larkOperationalConfigRepository } from '../../company/channels/lark/lark-operational-config.repository';
+import { googleOAuthService } from '../../company/channels/google/google-oauth.service';
+import { companyGoogleAuthLinkRepository } from '../../company/channels/google/company-google-auth-link.repository';
 import { auditService } from '../audit/audit.service';
 import { companyOnboardingService } from '../company-onboarding/company-onboarding.service';
 import { CompanyAdminRepository, companyAdminRepository } from './company-admin.repository';
 import {
   ConnectOnboardingDto,
   ConnectLarkOnboardingDto,
+  ConnectGoogleOnboardingDto,
+  GoogleAuthorizeUrlQueryDto,
   DisconnectOnboardingDto,
   TriggerHistoricalSyncDto,
   UpsertLarkBindingDto,
@@ -93,6 +98,33 @@ const hasPlatformLarkRuntimeConfig = (): boolean =>
     && config.LARK_APP_SECRET.trim()
     && (config.LARK_VERIFICATION_TOKEN.trim() || config.LARK_WEBHOOK_SIGNING_SECRET.trim()),
   );
+
+type CompanyGoogleStatePayload = {
+  kind: 'company_google_connect';
+  nonce: string;
+  companyId: string;
+  actorUserId: string;
+};
+
+const COMPANY_GOOGLE_STATE_TTL_SECONDS = 10 * 60;
+
+const GOOGLE_ADMIN_SCOPES = [
+  'openid',
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.compose',
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/drive.readonly',
+  'https://www.googleapis.com/auth/drive.file',
+];
+
+const buildExpiry = (seconds?: number): Date | undefined => {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    return undefined;
+  }
+  return new Date(Date.now() + seconds * 1000);
+};
 
 export class CompanyAdminService extends BaseService {
   constructor(private readonly repository: CompanyAdminRepository = companyAdminRepository) {
@@ -603,6 +635,112 @@ export class CompanyAdminService extends BaseService {
   async getProviderStatus(session: SessionScope, companyId?: string) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
     return companyOnboardingService.getProviderStatus(scopedCompanyId);
+  }
+
+  async getGoogleWorkspaceStatus(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const configured = googleOAuthService.isConfigured();
+    const link = await companyGoogleAuthLinkRepository.findActiveByCompany(scopedCompanyId);
+    return {
+      configured,
+      connected: Boolean(link),
+      email: link?.googleEmail,
+      name: link?.googleName,
+      scopes: link?.scopes,
+      updatedAt: link?.updatedAt?.toISOString(),
+      source: link ? 'company_admin_oauth' : undefined,
+      redirectUri: this.getGoogleAdminRedirectUri(),
+    };
+  }
+
+  async getGoogleAuthorizeUrl(session: SessionScope, query: GoogleAuthorizeUrlQueryDto) {
+    const scopedCompanyId = resolveCompanyScope(session, query.companyId);
+    if (!googleOAuthService.isConfigured()) {
+      throw new HttpException(400, 'Google OAuth is not configured in server env.');
+    }
+
+    const state = this.signGoogleWorkspaceState({
+      kind: 'company_google_connect',
+      nonce: randomUUID(),
+      companyId: scopedCompanyId,
+      actorUserId: session.userId,
+    });
+
+    return {
+      authorizeUrl: googleOAuthService.getAuthorizeUrl({
+        state,
+        redirectUri: this.getGoogleAdminRedirectUri(),
+        scopes: GOOGLE_ADMIN_SCOPES,
+      }),
+      redirectUri: this.getGoogleAdminRedirectUri(),
+      scopes: GOOGLE_ADMIN_SCOPES,
+    };
+  }
+
+  async connectGoogleWorkspace(session: SessionScope, payload: ConnectGoogleOnboardingDto) {
+    const state = this.verifyGoogleWorkspaceState(payload.state);
+    const scopedCompanyId = resolveCompanyScope(session, payload.companyId ?? state.companyId);
+    if (state.companyId !== scopedCompanyId) {
+      throw new HttpException(403, 'Google OAuth company scope mismatch.');
+    }
+    if (state.actorUserId !== session.userId) {
+      throw new HttpException(403, 'Google OAuth actor mismatch.');
+    }
+
+    const tokenBundle = await googleOAuthService.exchangeAuthorizationCode(
+      payload.authorizationCode,
+      this.getGoogleAdminRedirectUri(),
+    );
+    const userInfo = await googleOAuthService.fetchUserInfo(tokenBundle.accessToken);
+
+    const row = await companyGoogleAuthLinkRepository.upsert({
+      companyId: scopedCompanyId,
+      googleUserId: userInfo.sub,
+      googleEmail: userInfo.email,
+      googleName: userInfo.name,
+      scope: tokenBundle.scope,
+      accessToken: tokenBundle.accessToken,
+      refreshToken: tokenBundle.refreshToken,
+      tokenType: tokenBundle.tokenType,
+      accessTokenExpiresAt: buildExpiry(tokenBundle.expiresIn),
+      linkedByUserId: session.userId,
+      tokenMetadata: {
+        source: 'company_admin_oauth',
+      },
+    });
+
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'company.onboarding.google_workspace.connect',
+      outcome: 'success',
+      metadata: {
+        googleEmail: row.googleEmail,
+        googleName: row.googleName,
+        scopes: row.scopes,
+      },
+    });
+
+    return {
+      connected: true,
+      email: row.googleEmail,
+      name: row.googleName,
+      scopes: row.scopes,
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  }
+
+  async disconnectGoogleWorkspace(session: SessionScope, companyId?: string) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    await companyGoogleAuthLinkRepository.revokeByCompany(scopedCompanyId);
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'company.onboarding.google_workspace.disconnect',
+      outcome: 'success',
+      metadata: {},
+    });
+    return { disconnected: true };
   }
 
   async upsertZohoOAuthConfig(session: SessionScope, payload: UpsertZohoOAuthConfigDto) {
@@ -1131,6 +1269,38 @@ export class CompanyAdminService extends BaseService {
       reviewerUserId: session.userId,
       decisionNote: input.decisionNote,
     });
+  }
+
+  private getGoogleAdminRedirectUri(): string {
+    const backendBaseUrl = config.BACKEND_PUBLIC_URL.trim();
+    if (!backendBaseUrl) {
+      throw new HttpException(500, 'BACKEND_PUBLIC_URL is required for Google workspace OAuth.');
+    }
+    return `${backendBaseUrl.replace(/\/$/, '')}/api/admin/company/onboarding/google/callback`;
+  }
+
+  private signGoogleWorkspaceState(payload: CompanyGoogleStatePayload): string {
+    return jwt.sign(payload, config.ADMIN_JWT_SECRET, {
+      expiresIn: `${COMPANY_GOOGLE_STATE_TTL_SECONDS}s`,
+    });
+  }
+
+  private verifyGoogleWorkspaceState(rawState: string): CompanyGoogleStatePayload {
+    try {
+      const parsed = jwt.verify(rawState, config.ADMIN_JWT_SECRET) as CompanyGoogleStatePayload;
+      if (
+        parsed.kind !== 'company_google_connect'
+        || typeof parsed.companyId !== 'string'
+        || parsed.companyId.trim().length === 0
+        || typeof parsed.actorUserId !== 'string'
+        || parsed.actorUserId.trim().length === 0
+      ) {
+        throw new Error('invalid_google_oauth_state');
+      }
+      return parsed;
+    } catch {
+      throw new HttpException(400, 'Invalid Google OAuth state.');
+    }
   }
 }
 

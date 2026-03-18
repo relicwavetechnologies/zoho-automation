@@ -44,14 +44,14 @@ export function Sidebar({ isOpen, onToggle, onSettingsClick }: { isOpen: boolean
         <button
           onClick={onToggle}
           title="Close Sidebar"
-          className="titlebar-no-drag p-1.5 rounded-md text-[hsl(0,0%,55%)] hover:text-[hsl(0,0%,85%)] hover:bg-[hsl(0,0%,14%)] transition-colors"
+          className="titlebar-no-drag p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-sidebar-hover transition-colors"
         >
           <PanelLeftClose size={16} />
         </button>
         <button
           onClick={handleNewThread}
           title="New Chat"
-          className="titlebar-no-drag p-1.5 rounded-md text-[hsl(0,0%,55%)] hover:text-[hsl(0,0%,85%)] hover:bg-[hsl(0,0%,14%)] transition-colors"
+          className="titlebar-no-drag p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-sidebar-hover transition-colors"
         >
           <SquarePen size={16} />
         </button>
@@ -59,13 +59,13 @@ export function Sidebar({ isOpen, onToggle, onSettingsClick }: { isOpen: boolean
 
       <div className="shrink-0 px-2 py-2">
         {currentWorkspace && (
-          <div className="mx-1 mb-3 rounded-2xl border border-[hsl(0,0%,12%)] bg-[hsl(0,0%,8%)] px-3 py-3">
-            <div className="text-[10px] uppercase tracking-[0.16em] text-[hsl(0,0%,42%)]">Workspace</div>
-            <div className="mt-1 truncate text-sm font-medium text-[hsl(0,0%,82%)]">{currentWorkspace.name}</div>
-            <div className="mt-1 truncate text-[11px] text-[hsl(0,0%,42%)]">{currentWorkspace.path}</div>
+          <div className="mx-1 mb-3 rounded-2xl border border-sidebar-border bg-sidebar-bg px-3 py-3">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground/60">Workspace</div>
+            <div className="mt-1 truncate text-sm font-medium text-foreground/80">{currentWorkspace.name}</div>
+            <div className="mt-1 truncate text-[11px] text-muted-foreground/60">{currentWorkspace.path}</div>
             <button
               onClick={() => void selectWorkspace()}
-              className="mt-3 text-[11px] font-medium text-[hsl(45,85%,62%)] hover:text-[hsl(45,85%,70%)]"
+              className="mt-3 text-[11px] font-medium text-primary hover:text-primary/80"
             >
               Change folder
             </button>
@@ -77,7 +77,7 @@ export function Sidebar({ isOpen, onToggle, onSettingsClick }: { isOpen: boolean
           <div className="relative">
             <Search
               size={13}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[hsl(0,0%,35%)]"
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/50"
             />
             <input
               type="text"
@@ -86,8 +86,8 @@ export function Sidebar({ isOpen, onToggle, onSettingsClick }: { isOpen: boolean
               onChange={(e) => setFilter(e.target.value)}
               className={cn(
                 'w-full pl-7 pr-2 py-1.5 rounded-md text-xs',
-                'bg-[hsl(var(--sidebar-hover))] border-transparent focus:border-[hsl(0,0%,20%)]',
-                'text-[hsl(0,0%,70%)] placeholder:text-[hsl(0,0%,30%)]',
+                'bg-sidebar-hover border-transparent focus:border-border',
+                'text-foreground/70 placeholder:text-muted-foreground/40',
                 'focus:outline-none transition-colors border',
               )}
             />
@@ -97,14 +97,14 @@ export function Sidebar({ isOpen, onToggle, onSettingsClick }: { isOpen: boolean
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-2 pb-2">
         <div className="px-2 pb-2 pt-1">
-          <span className="text-[10px] font-medium uppercase tracking-wider text-[hsl(0,0%,45%)]">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
             Threads
           </span>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           {filtered.length === 0 && (
-            <div className="mt-8 px-4 text-center text-xs text-[hsl(0,0%,30%)]">
+            <div className="mt-8 px-4 text-center text-xs text-muted-foreground/40">
               {threads.length === 0
                 ? 'No threads yet.'
                 : 'No matching threads.'}
@@ -126,7 +126,7 @@ export function Sidebar({ isOpen, onToggle, onSettingsClick }: { isOpen: boolean
       <div className="p-3 shrink-0 flex items-center">
         <button 
           onClick={onSettingsClick}
-          className="flex items-center gap-2 text-xs font-medium text-[hsl(0,0%,60%)] hover:text-[hsl(0,0%,90%)] transition-colors"
+          className="flex items-center gap-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
         >
           <Settings size={14} />
           Settings
@@ -168,8 +168,8 @@ function ThreadItem({
         className={cn(
           'w-full text-left px-2.5 py-[7px] rounded-lg transition-colors pr-8',
           isActive
-            ? 'bg-[hsl(var(--sidebar-active))] text-white'
-            : 'text-[hsl(0,0%,65%)] hover:bg-[hsl(var(--sidebar-hover))] hover:text-[hsl(0,0%,85%)]',
+            ? 'bg-sidebar-active text-white'
+            : 'text-muted-foreground/80 hover:bg-sidebar-hover hover:text-foreground',
         )}
       >
         <div className="flex items-baseline justify-between gap-3">
@@ -178,7 +178,7 @@ function ThreadItem({
               {title}
             </span>
             {workspaceName && (
-              <span className="block text-[10px] truncate text-[hsl(0,0%,42%)]">
+              <span className="block text-[10px] truncate text-muted-foreground/50">
                 {workspaceName}
               </span>
             )}
@@ -186,7 +186,7 @@ function ThreadItem({
           {time && (
             <span className={cn(
               "text-[10px] shrink-0",
-              isActive ? "text-[hsl(0,0%,55%)]" : "text-[hsl(0,0%,40%)]"
+              isActive ? "text-white/60" : "text-muted-foreground/40"
             )}>
               {time}
             </span>
@@ -202,8 +202,8 @@ function ThreadItem({
           'absolute right-1.5 top-1/2 -translate-y-1/2',
           'p-[3px] rounded opacity-0 group-hover:opacity-100 transition-opacity',
           isActive
-            ? 'text-[hsl(0,0%,50%)] hover:text-[hsl(0,55%,65%)] focus:opacity-100 hover:bg-[hsl(0,0%,20%)]'
-            : 'text-[hsl(0,0%,40%)] hover:text-[hsl(0,55%,60%)] focus:opacity-100 hover:bg-[hsl(0,0%,16%)]',
+            ? 'text-white/40 hover:text-white/80 focus:opacity-100 hover:bg-white/10'
+            : 'text-muted-foreground/40 hover:text-red-400 focus:opacity-100 hover:bg-muted',
         )}
       >
         <Trash2 size={13} />

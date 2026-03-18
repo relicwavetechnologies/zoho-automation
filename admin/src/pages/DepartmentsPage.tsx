@@ -64,6 +64,7 @@ type DepartmentToolPermission = {
   id: string
   roleId: string
   toolId: string
+  actionGroup: string
   allowed: boolean
 }
 
@@ -71,6 +72,7 @@ type DepartmentUserOverride = {
   id: string
   userId: string
   toolId: string
+  actionGroup: string
   allowed: boolean
 }
 
@@ -105,6 +107,7 @@ type DepartmentAvailableTool = {
   name: string
   description: string
   category: string
+  supportedActionGroups: string[]
 }
 
 type DepartmentSkill = {
@@ -189,6 +192,7 @@ export const DepartmentsPage = () => {
   const [pendingPermissionKey, setPendingPermissionKey] = useState<string | null>(null)
   const [overrideUserId, setOverrideUserId] = useState('')
   const [overrideToolId, setOverrideToolId] = useState('')
+  const [overrideActionGroup, setOverrideActionGroup] = useState('read')
   const [overrideAllowed, setOverrideAllowed] = useState<'allow' | 'deny'>('allow')
   const [departmentForm, setDepartmentForm] = useState({ name: '', description: '', status: 'active' })
   const [configForm, setConfigForm] = useState({ systemPrompt: '', skillsMarkdown: '', isActive: true })
@@ -276,6 +280,7 @@ export const DepartmentsPage = () => {
       setMembershipRoleId(data.roles.find((role) => role.isDefault)?.id ?? data.roles[0]?.id ?? '')
       setOverrideUserId(data.memberships[0]?.userId ?? '')
       setOverrideToolId(data.availableTools[0]?.toolId ?? '')
+      setOverrideActionGroup(data.availableTools[0]?.supportedActionGroups?.[0] ?? 'read')
     } finally {
       setLoadingDetail(false)
     }
@@ -528,13 +533,13 @@ export const DepartmentsPage = () => {
     await refreshDetail()
   }
 
-  const toggleRolePermission = async (roleId: string, toolId: string, allowed: boolean) => {
+  const toggleRolePermissionAction = async (roleId: string, toolId: string, actionGroup: string, allowed: boolean) => {
     if (!token || !selectedDepartmentId) return
-    const key = `${roleId}:${toolId}`
+    const key = `${roleId}:${toolId}:${actionGroup}`
     setPendingPermissionKey(key)
     try {
       await api.put(
-        `/api/admin/departments/${selectedDepartmentId}/role-permissions/${roleId}/${toolId}`,
+        `/api/admin/departments/${selectedDepartmentId}/role-permissions/${roleId}/${toolId}/${actionGroup}`,
         { allowed },
         token,
       )
@@ -545,9 +550,9 @@ export const DepartmentsPage = () => {
   }
 
   const saveUserOverride = async () => {
-    if (!token || !selectedDepartmentId || !overrideUserId || !overrideToolId) return
+    if (!token || !selectedDepartmentId || !overrideUserId || !overrideToolId || !overrideActionGroup) return
     await api.put(
-      `/api/admin/departments/${selectedDepartmentId}/user-overrides/${overrideUserId}/${overrideToolId}`,
+      `/api/admin/departments/${selectedDepartmentId}/user-overrides/${overrideUserId}/${overrideToolId}/${overrideActionGroup}`,
       { allowed: overrideAllowed === 'allow' },
       token,
     )
@@ -570,10 +575,27 @@ export const DepartmentsPage = () => {
   const rolePermissionMap = useMemo(() => {
     const map = new Map<string, boolean>()
     detail?.toolPermissions.forEach((p) => {
-      map.set(`${p.roleId}:${p.toolId}`, p.allowed)
+      map.set(`${p.roleId}:${p.toolId}:${p.actionGroup}`, p.allowed)
     })
     return map
   }, [detail?.toolPermissions])
+
+  const availableOverrideActionGroups = useMemo(
+    () => detail?.availableTools.find((tool) => tool.toolId === overrideToolId)?.supportedActionGroups ?? [],
+    [detail?.availableTools, overrideToolId],
+  )
+
+  useEffect(() => {
+    if (availableOverrideActionGroups.length === 0) {
+      if (overrideActionGroup !== 'read') {
+        setOverrideActionGroup('read')
+      }
+      return
+    }
+    if (!availableOverrideActionGroups.includes(overrideActionGroup)) {
+      setOverrideActionGroup(availableOverrideActionGroups[0]!)
+    }
+  }, [availableOverrideActionGroups, overrideActionGroup])
 
   const candidateLabel = (candidate: DepartmentCandidate) =>
     candidate.name?.trim() || candidate.email?.trim() || candidate.larkDisplayName?.trim() || candidate.channelIdentityId
@@ -1217,31 +1239,50 @@ export const DepartmentsPage = () => {
                                       <TableCell className="py-5">
                                         <div className="text-sm font-bold text-foreground">{tool.name}</div>
                                         <div className="text-[10px] font-mono text-muted-foreground mt-0.5 uppercase tracking-tighter">{tool.toolId}</div>
+                                        <div className="mt-2 flex flex-wrap gap-1.5">
+                                          {tool.supportedActionGroups.map((actionGroup) => (
+                                            <Badge key={actionGroup} variant="secondary" className="text-[9px] h-5 uppercase">
+                                              {actionGroup}
+                                            </Badge>
+                                          ))}
+                                        </div>
                                       </TableCell>
                                       {detail.roles.map((role) => {
-                                        const key = `${role.id}:${tool.toolId}`
-                                        const allowed =
-                                          rolePermissionMap.get(key)
-                                          ?? (role.slug === 'MANAGER'
+                                        const defaultAllowsAction = (actionGroup: string) =>
+                                          role.slug === 'MANAGER'
                                             ? true
-                                            : tool.toolId === 'search-read' || tool.toolId === 'search-agent' || tool.toolId === 'skill-search')
-                                        const isPending = pendingPermissionKey === key
+                                            : (tool.toolId === 'search-read' || tool.toolId === 'search-agent' || tool.toolId === 'skill-search')
+                                              && actionGroup === 'read'
                                         return (
-                                          <TableCell key={key} className="text-center py-5">
-                                            <Button
-                                              variant="outline"
-                                              size="sm"
-                                              disabled={isPending}
-                                              onClick={() => void toggleRolePermission(role.id, tool.toolId, !allowed)}
-                                              className={cn(
-                                                "h-8 px-4 text-[10px] font-bold uppercase tracking-widest transition-all shadow-sm",
-                                                allowed
-                                                  ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 hover:bg-emerald-500/20"
-                                                  : "bg-secondary/30 border-border/50 text-muted-foreground hover:bg-secondary/50"
-                                              )}
-                                            >
-                                              {isPending ? 'Syncing...' : allowed ? 'Allowed' : 'Blocked'}
-                                            </Button>
+                                          <TableCell key={`${role.id}:${tool.toolId}`} className="text-center py-5 align-top">
+                                            <div className="flex flex-col gap-2">
+                                              {tool.supportedActionGroups.map((actionGroup) => {
+                                                const key = `${role.id}:${tool.toolId}:${actionGroup}`
+                                                const allowed =
+                                                  rolePermissionMap.get(key)
+                                                  ?? rolePermissionMap.get(`${role.id}:${tool.toolId}:all`)
+                                                  ?? defaultAllowsAction(actionGroup)
+                                                const isPending = pendingPermissionKey === key
+                                                return (
+                                                  <Button
+                                                    key={key}
+                                                    variant="outline"
+                                                    size="sm"
+                                                    disabled={isPending}
+                                                    onClick={() => void toggleRolePermissionAction(role.id, tool.toolId, actionGroup, !allowed)}
+                                                    className={cn(
+                                                      "h-8 justify-between px-3 text-[10px] font-bold uppercase tracking-widest transition-all shadow-sm",
+                                                      allowed
+                                                        ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 hover:bg-emerald-500/20"
+                                                        : "bg-secondary/30 border-border/50 text-muted-foreground hover:bg-secondary/50"
+                                                    )}
+                                                  >
+                                                    <span>{actionGroup}</span>
+                                                    <span>{isPending ? '...' : allowed ? 'On' : 'Off'}</span>
+                                                  </Button>
+                                                )
+                                              })}
+                                            </div>
                                           </TableCell>
                                         )
                                       })}
@@ -1257,7 +1298,7 @@ export const DepartmentsPage = () => {
                                 <p className="text-xs text-muted-foreground">Force allow or deny specific tools for individual members, bypassing role defaults.</p>
                               </div>
                               
-                              <div className="grid gap-3 md:grid-cols-[1fr_1fr_120px_auto] items-end">
+                              <div className="grid gap-3 md:grid-cols-[1fr_1fr_120px_120px_auto] items-end">
                                 <div className="space-y-1.5">
                                   <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Member</label>
                                   <Select value={overrideUserId} onValueChange={setOverrideUserId}>
@@ -1289,6 +1330,21 @@ export const DepartmentsPage = () => {
                                   </Select>
                                 </div>
                                 <div className="space-y-1.5">
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Action</label>
+                                  <Select value={overrideActionGroup} onValueChange={setOverrideActionGroup}>
+                                    <SelectTrigger className="bg-background border-border/50 h-9 text-xs">
+                                      <SelectValue placeholder="Select action" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {availableOverrideActionGroups.map((actionGroup) => (
+                                        <SelectItem key={actionGroup} value={actionGroup}>
+                                          {actionGroup}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div className="space-y-1.5">
                                   <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Policy</label>
                                   <Select value={overrideAllowed} onValueChange={(value) => setOverrideAllowed(value as 'allow' | 'deny')}>
                                     <SelectTrigger className="bg-background border-border/50 h-9 text-xs">
@@ -1312,6 +1368,8 @@ export const DepartmentsPage = () => {
                                       <span className="text-foreground">{memberLabel(detail.memberships.find((m) => m.userId === override.userId) || { userId: override.userId })}</span>
                                       <span className="text-muted-foreground mx-2">on</span>
                                       <span className="font-mono text-primary">{override.toolId}</span>
+                                      <span className="text-muted-foreground mx-2">/</span>
+                                      <span className="font-mono text-foreground/80">{override.actionGroup}</span>
                                     </div>
                                     <Badge className={cn(
                                       "text-[9px] h-4 uppercase font-bold tracking-tighter",

@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useRef } from 'react'
 import { useChat } from '../context/ChatContext'
 import { MessageBubble } from './MessageBubble'
 import { EmptyThread } from './EmptyThread'
+import { Skeleton } from './ui/Skeleton'
 import { ThinkingShimmer } from './ActivityBar'
 import { BlocksRenderer } from './BlocksRenderer'
 
@@ -87,8 +88,14 @@ export function ChatPane(): JSX.Element {
     >
       <div className="max-w-3xl mx-auto px-6 py-6">
         {isLoadingOlderMessages && (
-          <div className="mb-4 text-center text-xs text-[hsl(0,0%,45%)]">
-            Loading older messages...
+          <div className="mb-8 space-y-4 animate-in fade-in duration-500">
+            <div className="flex gap-3">
+              <Skeleton className="h-6 w-6 shrink-0" />
+              <div className="flex-1 space-y-2">
+                <Skeleton className="h-4 w-3/4" />
+                <Skeleton className="h-4 w-1/2" />
+              </div>
+            </div>
           </div>
         )}
 
@@ -113,8 +120,17 @@ export function ChatPane(): JSX.Element {
         )}
 
         {isThreadLoading && messages.length === 0 && (
-          <div className="text-center text-[hsl(0,0%,30%)] text-sm mt-16">
-            Loading conversation...
+          <div className="space-y-10 mt-4 animate-in fade-in duration-700">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="flex gap-4">
+                <Skeleton className="h-7 w-7 rounded-lg shrink-0" />
+                <div className="flex-1 space-y-3 pt-1">
+                  <Skeleton className="h-4 w-[90%]" />
+                  <Skeleton className="h-4 w-[65%]" />
+                  {i === 1 && <Skeleton className="h-4 w-[45%]" />}
+                </div>
+              </div>
+            ))}
           </div>
         )}
 

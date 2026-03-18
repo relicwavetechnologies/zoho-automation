@@ -7,6 +7,8 @@ import { adminAiTokenUsageController } from '../admin-ai-models/admin-ai-token-u
 
 const router = Router();
 
+router.get('/onboarding/google/callback', asyncHandler(companyAdminController.googleCallbackRelay));
+
 router.use(requireAdminSession());
 router.get('/members', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.listMembers));
 router.get('/directory', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.getCompanyDirectory));
@@ -97,6 +99,26 @@ router.get(
   '/onboarding/provider-status',
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.getProviderStatus),
+);
+router.get(
+  '/onboarding/google-workspace-status',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.getGoogleWorkspaceStatus),
+);
+router.get(
+  '/onboarding/google-authorize-url',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.getGoogleAuthorizeUrl),
+);
+router.post(
+  '/onboarding/google-connect',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.connectGoogleWorkspace),
+);
+router.post(
+  '/onboarding/google-disconnect',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.disconnectGoogleWorkspace),
 );
 router.get(
   '/channel-identities',

@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 
 import config from '../../../config';
 import type { HITLActionDTO } from '../../contracts';
-import { hitlActionRepository } from './hitl-action.repository';
+import { hitlActionRepository, type HydratedStoredHitlAction } from './hitl-action.repository';
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
@@ -20,6 +20,14 @@ class HitlActionService {
     actionType: HITLActionDTO['actionType'];
     summary: string;
     chatId: string;
+    threadId?: string;
+    executionId?: string;
+    channel?: 'desktop' | 'lark';
+    toolId?: string;
+    actionGroup?: HITLActionDTO['actionGroup'];
+    subject?: string;
+    payload?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
   }): Promise<HITLActionDTO> {
     const now = new Date();
     const action: HITLActionDTO = {
@@ -27,16 +35,31 @@ class HitlActionService {
       actionId: randomUUID(),
       actionType: input.actionType,
       summary: input.summary,
+      toolId: input.toolId,
+      actionGroup: input.actionGroup,
+      channel: input.channel,
+      subject: input.subject,
       requestedAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + config.HITL_TIMEOUT_SECONDS * 1000).toISOString(),
       status: 'pending',
     };
-    await hitlActionRepository.createPending(action, input.chatId);
+    await hitlActionRepository.createPending(action, {
+      chatId: input.chatId,
+      threadId: input.threadId,
+      executionId: input.executionId,
+      channel: input.channel,
+      payload: input.payload,
+      metadata: input.metadata,
+    });
     return action;
   }
 
   async resolveByActionId(actionId: string, decision: 'confirmed' | 'cancelled'): Promise<boolean> {
     return hitlActionRepository.resolve(actionId, decision);
+  }
+
+  async getStoredAction(actionId: string): Promise<HydratedStoredHitlAction | null> {
+    return hitlActionRepository.getHydratedByActionId(actionId);
   }
 
   async waitForResolution(actionId: string): Promise<WaitResult> {

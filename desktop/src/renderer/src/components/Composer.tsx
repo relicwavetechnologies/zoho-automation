@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { ArrowUp, AtSign, ChevronDown, Paperclip, Square, X, FileText, Image, File, Infinity, Zap, Flame, Rocket } from 'lucide-react'
+import { ArrowUp, AtSign, ChevronDown, Paperclip, Square, X, FileText, Image, File, Infinity, Zap, Flame, Rocket, ShieldAlert, CheckCircle2, Ban } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useAuth } from '../context/AuthContext'
 import { useChat } from '../context/ChatContext'
@@ -50,7 +50,7 @@ const MODE_OPTIONS: Array<{
     description: 'Lightweight routing, lower cost',
     title: 'Fast mode - lightweight routing, lower cost',
     icon: Zap,
-    iconClassName: 'text-[hsl(43,95%,60%)]',
+    iconClassName: 'text-amber-500',
   },
   {
     value: 'high',
@@ -58,7 +58,7 @@ const MODE_OPTIONS: Array<{
     description: 'Flagship models, full capability',
     title: 'High mode - flagship models, full capability',
     icon: Flame,
-    iconClassName: 'text-[hsl(210,100%,66%)]',
+    iconClassName: 'text-primary',
   },
   {
     value: 'xtreme',
@@ -66,7 +66,7 @@ const MODE_OPTIONS: Array<{
     description: 'Groq instant routing + Gemini deep planning',
     title: 'Xtreme hybrid - Groq instant routing + Gemini deep planning',
     icon: Rocket,
-    iconClassName: 'text-[hsl(280,100%,70%)]',
+    iconClassName: 'text-purple-400',
   },
 ]
 
@@ -94,18 +94,18 @@ function FileCard({ attachment, onRemove }: { attachment: AttachedFile; onRemove
   return (
     <div
       className={cn(
-        'group relative flex items-center gap-2 rounded-[10px] border px-2.5 py-1.5 text-[12px] font-medium',
-        'bg-[hsl(0,0%,11%)] transition-all duration-150',
+        'group relative flex items-center gap-2 rounded-[10px] border px-2.5 py-1.5 text-[12px] font-medium transition-all duration-150',
+        'bg-muted/50',
         isError
-          ? 'border-red-700/60 text-red-400'
+          ? 'border-red-900/50 text-red-400'
           : isDone
-            ? 'border-[hsl(138,40%,28%)] text-[hsl(138,60%,72%)]'
-            : 'border-[hsl(0,0%,20%)] text-[hsl(0,0%,78%)]',
+            ? 'border-emerald-900/50 text-emerald-400'
+            : 'border-border text-foreground/80',
       )}
       title={attachment.errorMsg ?? attachment.name}
     >
       {/* icon */}
-      <span className={cn('shrink-0', isError ? 'text-red-400' : isDone ? 'text-[hsl(138,60%,60%)]' : 'text-[hsl(0,0%,52%)]')}>
+      <span className={cn('shrink-0', isError ? 'text-red-400' : isDone ? 'text-emerald-500' : 'text-muted-foreground')}>
         <FileIcon mimeType={attachment.mimeType} size={13} />
       </span>
 
@@ -115,13 +115,13 @@ function FileCard({ attachment, onRemove }: { attachment: AttachedFile; onRemove
         {isError ? (
           <span className="text-[10px] text-red-400/80 leading-snug">{attachment.errorMsg ?? 'Upload failed'}</span>
         ) : (
-          <span className="text-[10px] text-[hsl(0,0%,42%)] leading-snug">{sizeMb} MB</span>
+          <span className="text-[10px] text-muted-foreground/60 leading-snug">{sizeMb} MB</span>
         )}
       </div>
 
       {/* spinner or done indicator */}
       {isUploading && (
-        <span className="ml-0.5 h-3 w-3 shrink-0 animate-spin rounded-full border border-[hsl(0,0%,30%)] border-t-[hsl(216,80%,60%)]" />
+        <span className="ml-0.5 h-3 w-3 shrink-0 animate-spin rounded-full border border-muted-foreground/30 border-t-primary" />
       )}
 
       {/* remove button */}
@@ -129,7 +129,7 @@ function FileCard({ attachment, onRemove }: { attachment: AttachedFile; onRemove
         <button
           type="button"
           onClick={() => onRemove(attachment.id)}
-          className="ml-0.5 shrink-0 rounded p-0.5 text-[hsl(0,0%,46%)] opacity-0 transition-opacity group-hover:opacity-100 hover:text-[hsl(0,0%,78%)]"
+          className="ml-0.5 shrink-0 rounded p-0.5 text-muted-foreground/80 opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
           aria-label="Remove file"
         >
           <X size={11} />
@@ -143,7 +143,7 @@ function FileCard({ attachment, onRemove }: { attachment: AttachedFile; onRemove
 
 export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
   const { token } = useAuth()
-  const { sendMessage, sendInitialMessage, stopExecution, isStreaming, activeThread, activePlan } = useChat()
+  const { sendMessage, sendInitialMessage, stopExecution, isStreaming, activeThread, activePlan, pendingLocalAction, approveCommand, rejectCommand } = useChat()
   const { currentWorkspace } = useWorkspace()
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
@@ -304,6 +304,39 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
   const referencedIds = new Set(attachments.map(a => a.fileAssetId).filter(Boolean) as string[])
   const selectedMode = MODE_OPTIONS.find((option) => option.value === mode) ?? MODE_OPTIONS[1]
   const SelectedModeIcon = selectedMode.icon
+  const isApprovalMode = Boolean(pendingLocalAction) && !isHome
+
+  const approvalTitle = pendingLocalAction
+    ? pendingLocalAction.action.kind === 'tool_action'
+      ? pendingLocalAction.action.title
+      : pendingLocalAction.action.kind === 'run_command'
+      ? 'Command approval required'
+      : pendingLocalAction.action.kind === 'write_file'
+        ? 'File change approval required'
+        : pendingLocalAction.action.kind === 'mkdir'
+          ? 'Folder creation approval required'
+          : 'Delete approval required'
+    : ''
+
+  const approvalDescription = pendingLocalAction
+    ? pendingLocalAction.action.kind === 'tool_action'
+      ? (pendingLocalAction.action.explanation ?? 'Divo is waiting for approval before performing this action.')
+      : pendingLocalAction.action.kind === 'run_command'
+      ? 'Divo is waiting to run this shell command inside the selected workspace.'
+      : pendingLocalAction.action.kind === 'write_file'
+        ? 'Divo is waiting to write this file inside the selected workspace.'
+        : pendingLocalAction.action.kind === 'mkdir'
+          ? 'Divo is waiting to create this folder inside the selected workspace.'
+          : 'Divo is waiting to delete this path inside the selected workspace.'
+    : ''
+
+  const pendingActionPath = pendingLocalAction
+    ? pendingLocalAction.action.kind === 'tool_action'
+      ? (pendingLocalAction.action.subject ?? pendingLocalAction.action.summary)
+      : pendingLocalAction.action.kind === 'run_command'
+      ? `$ ${pendingLocalAction.action.command}`
+      : ('path' in pendingLocalAction.action ? pendingLocalAction.action.path : '')
+    : ''
 
   return (
     <div
@@ -328,15 +361,60 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
         <div
           className={cn(
             'rounded-[20px] border shadow-[0_12px_24px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.03)]',
-            'bg-[linear-gradient(180deg,hsl(0,0%,9%),hsl(0,0%,7%))]',
+            'bg-background',
             'transition-colors duration-150 relative z-10',
             isDragOver
-              ? 'border-[hsl(216,80%,52%)] shadow-[0_0_0_2px_hsl(216,80%,42%,0.25)] '
+              ? 'border-primary shadow-[0_0_0_2px_rgba(var(--primary),0.25)]'
               : activeThread || isHome
-                ? 'border-[hsl(0,0%,16%)] focus-within:border-[hsl(216,14%,28%)]'
-                : 'border-[hsl(0,0%,16%)] opacity-60',
+                ? 'border-border focus-within:border-primary/50'
+                : 'border-border opacity-60',
           )}
         >
+          {isApprovalMode ? (
+            <div className="px-4 py-4">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-xl bg-amber-950/20 p-2 text-amber-500">
+                  <ShieldAlert size={16} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium text-foreground">{approvalTitle}</div>
+                    <span className="rounded-full border border-amber-900/50 bg-amber-950/20 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-amber-400">
+                      Awaiting approval
+                    </span>
+                  </div>
+                  <div className="mt-1 text-sm text-muted-foreground">{approvalDescription}</div>
+                  <div className="mt-3 rounded-2xl border border-border/60 bg-black/20 px-4 py-3 font-mono text-[13px] leading-7 text-foreground/90 whitespace-pre-wrap break-words">
+                    {pendingActionPath}
+                  </div>
+                  {pendingLocalAction?.workspacePath ? (
+                    <div className="mt-2 text-[11px] text-muted-foreground/40">
+                      {pendingLocalAction.workspacePath}
+                    </div>
+                  ) : null}
+                  <div className="mt-4 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void approveCommand(pendingLocalAction!.id)}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-3.5 py-2 text-xs font-medium text-background hover:bg-emerald-600"
+                    >
+                      <CheckCircle2 size={13} />
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void rejectCommand(pendingLocalAction!.id)}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-background px-3.5 py-2 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                    >
+                      <Ban size={13} />
+                      Reject
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
           {/* ── File attachment cards row ────────────────────────────────────── */}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-3.5 pt-2.5 pb-0">
@@ -348,8 +426,8 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
 
           {/* ── Drag overlay hint ─────────────────────────────────────────────── */}
           {isDragOver && (
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-[20px] bg-[hsl(216,80%,10%,0.6)]">
-              <span className="text-[13px] font-medium text-[hsl(216,80%,70%)]">Drop file to attach</span>
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-[20px] bg-primary/10 backdrop-blur-sm">
+              <span className="text-[13px] font-medium text-primary">Drop file to attach</span>
             </div>
           )}
 
@@ -366,7 +444,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   : isHome 
                     ? `What should we work on next in ${currentWorkspace?.name ?? 'this workspace'}?`
                     : activeThread
-                      ? `Message Odin about ${currentWorkspace?.name ?? 'this workspace'}`
+                      ? `Message Divo about ${currentWorkspace?.name ?? 'this workspace'}`
                       : currentWorkspace
                         ? `Create a thread in ${currentWorkspace.name} to start`
                         : 'Open a workspace folder to start'
@@ -376,7 +454,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
               className={cn(
                 'w-full resize-none bg-transparent leading-6 tracking-[-0.01em]',
                 isHome ? 'text-[16px]' : 'text-[15px]',
-                'text-[hsl(0,0%,89%)] placeholder:text-[hsl(0,0%,46%)]',
+                'text-foreground/90 placeholder:text-muted-foreground/50',
                 'focus:outline-none disabled:cursor-not-allowed min-h-[44px]',
               )}
             />
@@ -386,11 +464,11 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                 <button
                   type="button"
                   disabled
-                  className="inline-flex h-8 items-center gap-2 rounded-xl border border-[hsl(0,0%,24%)] bg-[hsl(0,0%,22%)] px-3 text-[13px] font-medium text-[hsl(0,0%,80%)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] disabled:cursor-default"
+                  className="inline-flex h-8 items-center gap-2 rounded-xl border border-border bg-muted px-3 text-[13px] font-medium text-foreground/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] disabled:cursor-default"
                 >
                   <Infinity size={14} />
-                  <span>Odin</span>
-                  <ChevronDown size={13} className="text-[hsl(0,0%,60%)]" />
+                  <span>Divo</span>
+                  <ChevronDown size={13} className="text-muted-foreground" />
                 </button>
 
                 {/* ── Mode toggle ───────────────────────────────────────── */}
@@ -404,8 +482,8 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     className={cn(
                       'inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium transition-all select-none',
                       (!activeThread && !isHome) || isStreaming
-                        ? 'border-transparent text-[hsl(0,0%,32%)] cursor-not-allowed'
-                        : 'border-transparent bg-[hsl(0,0%,22%)] text-[hsl(0,0%,80%)] hover:bg-[hsl(0,0%,26%)]'
+                        ? 'border-transparent text-muted-foreground/40 cursor-not-allowed'
+                        : 'border-transparent bg-muted text-foreground/80 hover:bg-muted/80'
                     )}
                     title={selectedMode.title}
                   >
@@ -414,14 +492,14 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     <ChevronDown
                       size={13}
                       className={cn(
-                        !activeThread || isStreaming ? 'text-[hsl(0,0%,32%)]' : 'text-[hsl(0,0%,56%)]',
+                        !activeThread || isStreaming ? 'text-muted-foreground/40' : 'text-muted-foreground/80',
                         isModeMenuOpen && 'rotate-180'
                       )}
                     />
                   </button>
 
                   {isModeMenuOpen && (activeThread || isHome) && !isStreaming && (
-                    <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[220px] overflow-hidden rounded-2xl border border-[hsl(0,0%,18%)] bg-[linear-gradient(180deg,hsl(0,0%,16%),hsl(0,0%,12%))] p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
+                    <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[220px] overflow-hidden rounded-2xl border border-border bg-card p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
                       {MODE_OPTIONS.map((option) => {
                         const OptionIcon = option.icon
                         const isSelected = option.value === mode
@@ -436,14 +514,14 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                             className={cn(
                               'flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition-colors',
                               isSelected
-                                ? 'bg-[hsl(0,0%,24%)] text-[hsl(0,0%,96%)]'
-                                : 'text-[hsl(0,0%,78%)] hover:bg-[hsl(0,0%,20%)]'
+                                ? 'bg-muted text-foreground'
+                                : 'text-foreground/80 hover:bg-muted/40'
                             )}
                           >
                             <OptionIcon size={14} className={option.iconClassName} strokeWidth={2.4} />
                             <div className="min-w-0">
                               <div className="text-[13px] font-medium leading-5">{option.label}</div>
-                              <div className="text-[11px] leading-4 text-[hsl(0,0%,52%)]">{option.description}</div>
+                              <div className="text-[11px] leading-4 text-muted-foreground/60">{option.description}</div>
                             </div>
                           </button>
                         )
@@ -460,8 +538,8 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   className={cn(
                     "inline-flex h-7 min-w-[28px] px-1.5 items-center justify-center rounded-lg transition-colors gap-1",
                     referencedIds.size > 0
-                      ? "bg-[hsl(216,80%,15%)] text-[hsl(216,80%,70%)] border border-[hsl(216,80%,40%)]"
-                      : "text-[hsl(0,0%,48%)] hover:bg-[hsl(0,0%,21%)] hover:text-[hsl(0,0%,80%)] border border-transparent"
+                      ? "bg-primary/10 text-primary border border-primary/40"
+                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground border border-transparent"
                   )}
                   title="Reference files"
                 >
@@ -477,10 +555,10 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   className={cn(
                     'flex h-8 w-8 items-center justify-center rounded-xl transition-colors',
                     (!activeThread && !isHome) || isStreaming
-                      ? 'text-[hsl(0,0%,32%)] cursor-not-allowed'
+                      ? 'text-muted-foreground/40 cursor-not-allowed'
                       : isDrawerOpen
-                        ? 'bg-[hsl(216,80%,52%,0.15)] text-[hsl(216,80%,60%)]'
-                        : 'text-[hsl(0,0%,56%)] hover:bg-[hsl(0,0%,22%)] hover:text-[hsl(0,0%,86%)]',
+                        ? 'bg-primary/20 text-primary'
+                        : 'text-muted-foreground/80 hover:bg-muted hover:text-foreground',
                   )}
                   aria-label="Toggle files drawer"
                   title="Workspace Files"
@@ -492,7 +570,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   <button
                     type="button"
                     onClick={() => { void stopExecution() }}
-                    className="ml-1 shrink-0 flex h-8 w-8 items-center justify-center rounded-xl border border-[hsl(0,0%,76%)] bg-[hsl(0,0%,92%)] text-[hsl(0,0%,8%)] shadow-[0_10px_24px_rgba(255,255,255,0.08)] transition-all hover:bg-[hsl(0,0%,86%)]"
+                    className="ml-1 shrink-0 flex h-8 w-8 items-center justify-center rounded-xl border border-foreground/80 bg-foreground text-background shadow-[0_10px_24px_rgba(255,255,255,0.08)] transition-all hover:bg-foreground/90"
                     title="Stop generation"
                   >
                     <Square size={12} fill="currentColor" />
@@ -504,8 +582,8 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     className={cn(
                       'ml-1 shrink-0 h-8 w-8 rounded-xl flex items-center justify-center border transition-all',
                       canSend
-                        ? 'border-[hsl(138,67%,44%)] bg-[hsl(138,67%,48%)] text-[hsl(0,0%,7%)] shadow-[0_10px_24px_rgba(34,197,94,0.22)] hover:bg-[hsl(138,67%,45%)]'
-                        : 'border-[hsl(0,0%,24%)] bg-[hsl(0,0%,24%)] text-[hsl(0,0%,38%)]',
+                        ? 'border-emerald-500 bg-emerald-500 text-background shadow-[0_10px_24px_rgba(34,197,94,0.22)] hover:bg-emerald-600'
+                        : 'border-muted bg-muted text-muted-foreground/40',
                     )}
                   >
                     <ArrowUp size={14} />
@@ -514,11 +592,15 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
               </div>
             </div>
           </div>
+            </>
+          )}
         </div>
 
-        <p className="mt-1.5 text-center text-[9px] tracking-[0.02em] text-[hsl(0,0%,28%)]">
-          {currentWorkspace
-            ? `Message Odin for grounded Zoho work, research, documents, or workspace actions in ${currentWorkspace.name}. Drag & drop or attach PDFs, DOCX, or images.`
+        <p className="mt-1.5 text-center text-[9px] tracking-[0.02em] text-muted-foreground/30">
+          {isApprovalMode
+            ? 'Approve or reject the pending action to let Divo continue.'
+            : currentWorkspace
+            ? `Message Divo for grounded Zoho work, research, documents, or workspace actions in ${currentWorkspace.name}. Drag & drop or attach PDFs, DOCX, or images.`
             : 'Open a workspace folder to begin.'}
         </p>
       </div>

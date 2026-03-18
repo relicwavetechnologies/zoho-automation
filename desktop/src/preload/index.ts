@@ -91,6 +91,12 @@ export type DesktopAPI = {
       threadId: string,
       payload: Record<string, unknown>,
     ) => Promise<{ success: boolean; data?: unknown; message?: string }>
+    resolveHitlAction: (
+      token: string,
+      threadId: string,
+      actionId: string,
+      decision: 'confirmed' | 'cancelled',
+    ) => Promise<{ success: boolean; data?: unknown; message?: string }>
     share: (
       token: string,
       threadId: string,
@@ -191,6 +197,8 @@ const api: DesktopAPI = {
       ipcRenderer.invoke('desktop:chat:stopStream', requestId),
     act: (token, threadId, payload) =>
       ipcRenderer.invoke('desktop:chat:act', token, threadId, payload),
+    resolveHitlAction: (token, threadId, actionId, decision) =>
+      ipcRenderer.invoke('desktop:chat:resolveHitlAction', token, threadId, actionId, decision),
     share: (token, threadId, reason) =>
       ipcRenderer.invoke('desktop:chat:share', token, threadId, reason),
     onStreamEvent: (cb) => {

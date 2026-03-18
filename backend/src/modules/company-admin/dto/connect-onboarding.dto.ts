@@ -69,9 +69,19 @@ export const larkAuthorizeUrlQuerySchema = z.object({
   companyId: z.string().uuid().optional(),
 });
 
+export const googleAuthorizeUrlQuerySchema = z.object({
+  companyId: z.string().uuid().optional(),
+});
+
 export const connectLarkOnboardingSchema = z.object({
   companyId: z.string().uuid().optional(),
   authorizationCode: z.string().min(1),
+});
+
+export const connectGoogleOnboardingSchema = z.object({
+  companyId: z.string().uuid().optional(),
+  authorizationCode: z.string().min(1),
+  state: z.string().min(1),
 });
 
 export const disconnectOnboardingSchema = z.object({
@@ -130,4 +140,6 @@ export type ZohoAuthorizeUrlQueryDto = z.infer<typeof zohoAuthorizeUrlQuerySchem
 export type TriggerHistoricalSyncDto = z.infer<typeof triggerHistoricalSyncSchema>;
 export type LarkSyncQueryDto = z.infer<typeof larkSyncQuerySchema>;
 export type LarkAuthorizeUrlQueryDto = z.infer<typeof larkAuthorizeUrlQuerySchema>;
+export type GoogleAuthorizeUrlQueryDto = z.infer<typeof googleAuthorizeUrlQuerySchema>;
 export type ConnectLarkOnboardingDto = z.infer<typeof connectLarkOnboardingSchema>;
+export type ConnectGoogleOnboardingDto = z.infer<typeof connectGoogleOnboardingSchema>;

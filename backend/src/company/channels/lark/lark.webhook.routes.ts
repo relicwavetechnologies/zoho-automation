@@ -33,7 +33,7 @@ type UpsertChannelIdentityInput = {
 };
 
 type LarkWebhookRouteDependencies = {
-  adapter: Pick<LarkChannelAdapter, 'normalizeIncomingEvent' | 'sendMessage' | 'downloadFile'>;
+  adapter: Pick<LarkChannelAdapter, 'normalizeIncomingEvent' | 'sendMessage' | 'updateMessage' | 'downloadFile'>;
   log: Pick<typeof logger, 'debug' | 'info' | 'warn' | 'error' | 'success'>;
   verifyRequest: typeof verifyLarkWebhookRequest;
   parsePayload: typeof parseLarkIngressPayload;
@@ -42,6 +42,8 @@ type LarkWebhookRouteDependencies = {
     normalized: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>>,
   ) => Promise<{ taskId: string }>;
   resolveHitlAction: (actionId: string, decision: 'confirmed' | 'cancelled') => Promise<boolean>;
+  getStoredHitlAction: (actionId: string) => Promise<Record<string, unknown> | null>;
+  executeStoredHitlAction: (action: Record<string, unknown>) => Promise<{ ok: boolean; summary: string }>;
   resolveCompanyIdByTenantKey: (larkTenantKey: string) => Promise<string | null>;
   resolveWorkspaceVerificationConfig: (
     companyId: string,
@@ -117,6 +119,24 @@ const parseHitlDecision = (text: string): { actionId: string; decision: 'confirm
     decision: match[1] === 'confirm' ? 'confirmed' : 'cancelled',
     actionId: match[2],
   };
+};
+
+const parseHitlCardDecision = (value: unknown): { actionId: string; decision: 'confirmed' | 'cancelled' } | null => {
+  const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : null;
+  if (!record) {
+    return null;
+  }
+  if (record.kind !== 'hitl_tool_action') {
+    return null;
+  }
+  const actionId = typeof record.actionId === 'string' ? record.actionId.trim() : '';
+  const decision = record.decision === 'confirmed' || record.decision === 'cancelled'
+    ? record.decision
+    : null;
+  if (!actionId || !decision) {
+    return null;
+  }
+  return { actionId, decision };
 };
 
 const readMessageAgeMs = (timestamp: string): number | null => {
@@ -213,6 +233,16 @@ const defaultResolveHitlAction: LarkWebhookRouteDependencies['resolveHitlAction'
   return hitlActionService.resolveByActionId(actionId, decision);
 };
 
+const defaultGetStoredHitlAction: LarkWebhookRouteDependencies['getStoredHitlAction'] = async (actionId) => {
+  const { hitlActionService } = require('../../state') as typeof import('../../state');
+  return hitlActionService.getStoredAction(actionId) as unknown as Record<string, unknown> | null;
+};
+
+const defaultExecuteStoredHitlAction: LarkWebhookRouteDependencies['executeStoredHitlAction'] = async (action) => {
+  const { executeStoredRemoteToolAction } = require('../../state') as typeof import('../../state');
+  return executeStoredRemoteToolAction(action as any);
+};
+
 const defaultResolveCompanyIdByTenantKey: LarkWebhookRouteDependencies['resolveCompanyIdByTenantKey'] = async (
   larkTenantKey,
 ) => {
@@ -260,6 +290,8 @@ const createDefaultDependencies = (): LarkWebhookRouteDependencies => ({
   claimIngressKey: defaultClaimIngressKey,
   enqueueTask: defaultEnqueueTask,
   resolveHitlAction: defaultResolveHitlAction,
+  getStoredHitlAction: defaultGetStoredHitlAction,
+  executeStoredHitlAction: defaultExecuteStoredHitlAction,
   resolveCompanyIdByTenantKey: defaultResolveCompanyIdByTenantKey,
   resolveWorkspaceVerificationConfig: defaultResolveWorkspaceVerificationConfig,
   upsertChannelIdentity: defaultUpsertChannelIdentity,
@@ -822,9 +854,26 @@ export const createLarkWebhookEventHandler = (
         attachedFiles: attachedFiles.length > 0 ? attachedFiles : undefined,
       };
 
-      const hitlDecision = parseHitlDecision(tracedMessage.text);
+      const textHitlDecision = parseHitlDecision(tracedMessage.text);
+      const cardHitlDecision = parsed.kind === 'event_callback_card_action'
+        ? parseHitlCardDecision(parsed.actionValue)
+        : null;
+      const hitlDecision = cardHitlDecision ?? textHitlDecision;
       if (hitlDecision) {
+        const storedAction = await dependencies.getStoredHitlAction(hitlDecision.actionId);
         const resolved = await dependencies.resolveHitlAction(hitlDecision.actionId, hitlDecision.decision);
+        let executionSummary: string | undefined;
+        let executionOk: boolean | undefined;
+        if (resolved && hitlDecision.decision === 'confirmed' && storedAction) {
+          try {
+            const executionResult = await dependencies.executeStoredHitlAction(storedAction);
+            executionSummary = executionResult.summary;
+            executionOk = executionResult.ok;
+          } catch (error) {
+            executionSummary = error instanceof Error ? error.message : 'Stored approval action execution failed';
+            executionOk = false;
+          }
+        }
         dependencies.log.info('lark.webhook.hitl.decision', {
           ...buildIngressTraceMeta({
             requestId,
@@ -837,13 +886,28 @@ export const createLarkWebhookEventHandler = (
           actionId: hitlDecision.actionId,
           decision: hitlDecision.decision,
           resolved,
+          executionOk,
+          executionSummary,
         });
-        await dependencies.adapter.sendMessage({
-          chatId: tracedMessage.chatId,
-          text: resolved
-            ? `HITL action ${hitlDecision.actionId} marked ${hitlDecision.decision}.`
-            : `HITL action ${hitlDecision.actionId} is not pending or was not found.`,
-        });
+        const responseText = !resolved
+          ? `Approval action ${hitlDecision.actionId} is not pending or was not found.`
+          : hitlDecision.decision === 'cancelled'
+            ? `Rejected request.\n\n${storedAction && typeof storedAction.summary === 'string' ? storedAction.summary : hitlDecision.actionId}`
+            : executionOk
+              ? `Approved and executed.\n\n${executionSummary ?? storedAction?.summary ?? hitlDecision.actionId}`
+              : `Approval was recorded, but execution failed.\n\n${executionSummary ?? storedAction?.summary ?? hitlDecision.actionId}`;
+        if (parsed.kind === 'event_callback_card_action') {
+          await dependencies.adapter.updateMessage({
+            messageId: tracedMessage.messageId,
+            text: responseText,
+            actions: [],
+          });
+        } else {
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessage.chatId,
+            text: responseText,
+          });
+        }
         return res.status(202).json({
           success: true,
           message: 'HITL callback processed',
@@ -851,6 +915,8 @@ export const createLarkWebhookEventHandler = (
             actionId: hitlDecision.actionId,
             decision: hitlDecision.decision,
             resolved,
+            executionOk,
+            executionSummary,
           },
         });
       }

@@ -179,6 +179,7 @@ class AdminDepartmentsController extends BaseController {
       req.params.departmentId,
       req.params.roleId,
       req.params.toolId,
+      req.params.actionGroup,
       payload.allowed,
     );
     return res.json(ApiResponse.success(result, 'Department role permission updated'));
@@ -192,6 +193,7 @@ class AdminDepartmentsController extends BaseController {
       req.params.departmentId,
       req.params.userId,
       req.params.toolId,
+      req.params.actionGroup,
       payload.allowed,
     );
     return res.json(ApiResponse.success(result, 'Department user override updated'));

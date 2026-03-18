@@ -17,7 +17,7 @@ type ZohoHttpClientOptions = {
 type RequestInput = {
   base: 'accounts' | 'api';
   path: string;
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   headers?: Record<string, string>;
   body?: URLSearchParams | Record<string, unknown>;
   retry?: RetryOptions;

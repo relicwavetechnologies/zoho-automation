@@ -15,6 +15,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
   const [copied, setCopied] = useState(false)
   const [shareState, setShareState] = useState<'idle' | 'sharing' | 'shared' | 'failed'>('idle')
   const [shareMessage, setShareMessage] = useState<string | null>(null)
+  const [showAllCitations, setShowAllCitations] = useState(false)
   const { token } = useAuth()
 
   useEffect(() => {
@@ -60,6 +61,13 @@ export function MessageBubble({ message }: Props): JSX.Element {
       .replace(/\n*\[.*?\]\(attachment:[^)]+\)/g, '')
       .trim()
   }, [message.content, isUser])
+
+  const visibleCitations = useMemo(() => {
+    const citations = message.metadata?.citations ?? []
+    return showAllCitations ? citations : citations.slice(0, 6)
+  }, [message.metadata?.citations, showAllCitations])
+
+  const hiddenCitationCount = Math.max(0, (message.metadata?.citations?.length ?? 0) - visibleCitations.length)
 
   const shareConversation = async (): Promise<void> => {
     if (!token || !message.metadata?.shareAction || shareState === 'sharing') return
@@ -181,39 +189,51 @@ export function MessageBubble({ message }: Props): JSX.Element {
           )}
 
           {!isUser && message.metadata?.citations && message.metadata.citations.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {message.metadata.citations.map((citation) => {
-                const content = (
-                  <>
-                    <FileText size={11} className="text-[hsl(38,80%,55%)]" />
-                    <span className="max-w-[240px] truncate">{citation.title}</span>
-                    {citation.url && <ExternalLink size={10} className="text-[hsl(0,0%,45%)]" />}
-                  </>
-                )
+            <div className="mt-3">
+              <div className="flex flex-wrap gap-2">
+                {visibleCitations.map((citation) => {
+                  const content = (
+                    <>
+                      <FileText size={11} className="text-[hsl(38,80%,55%)]" />
+                      <span className="max-w-[240px] truncate">{citation.title}</span>
+                      {citation.url && <ExternalLink size={10} className="text-[hsl(0,0%,45%)]" />}
+                    </>
+                  )
 
-                if (citation.url) {
+                  if (citation.url) {
+                    return (
+                      <a
+                        key={citation.id}
+                        href={citation.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,8%)] px-3 py-1.5 text-[11px] text-[hsl(0,0%,70%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
+                      >
+                        {content}
+                      </a>
+                    )
+                  }
+
                   return (
-                    <a
+                    <div
                       key={citation.id}
-                      href={citation.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-full border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,8%)] px-3 py-1.5 text-[11px] text-[hsl(0,0%,70%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,8%)] px-3 py-1.5 text-[11px] text-[hsl(0,0%,70%)]"
                     >
                       {content}
-                    </a>
+                    </div>
                   )
-                }
-
-                return (
-                  <div
-                    key={citation.id}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,8%)] px-3 py-1.5 text-[11px] text-[hsl(0,0%,70%)]"
-                  >
-                    {content}
-                  </div>
-                )
-              })}
+                })}
+              </div>
+              {message.metadata.citations.length > 6 && (
+                <button
+                  onClick={() => setShowAllCitations((value) => !value)}
+                  className="mt-2 inline-flex items-center rounded-full border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,7%)] px-3 py-1.5 text-[11px] font-medium text-[hsl(0,0%,62%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,86%)]"
+                >
+                  {showAllCitations
+                    ? 'Show fewer sources'
+                    : `Show ${hiddenCitationCount} more source${hiddenCitationCount === 1 ? '' : 's'}`}
+                </button>
+              )}
             </div>
           )}
 

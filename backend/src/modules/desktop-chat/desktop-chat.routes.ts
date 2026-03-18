@@ -11,6 +11,7 @@ router.use(requireMemberSession());
 router.post('/:threadId/send', asyncHandler(desktopChatController.send));
 router.post('/:threadId/act/stream', asyncHandler(desktopChatController.actStream));
 router.post('/:threadId/act', asyncHandler(desktopChatController.act));
+router.post('/:threadId/hitl/:actionId/decision', asyncHandler(desktopChatController.resolveHitlAction));
 router.post('/:threadId/share', asyncHandler(desktopChatController.shareConversation));
 
 export default router;

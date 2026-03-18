@@ -1,6 +1,7 @@
 import { HttpException } from '../../core/http-exception';
 import { prisma } from '../../utils/prisma';
 import { TOOL_REGISTRY } from '../tools/tool-registry';
+import { getSupportedToolActionGroups, type ToolActionGroup } from '../tools/tool-action-groups';
 import { hashPassword } from '../../utils/bcrypt';
 import crypto from 'crypto';
 import { skillService } from '../skills/skill.service';
@@ -44,6 +45,7 @@ export type ResolvedDepartmentRuntime = {
   systemPrompt?: string;
   skillsMarkdown?: string;
   allowedToolIds: string[];
+  allowedActionsByTool?: Record<string, ToolActionGroup[]>;
 };
 
 const DEFAULT_MEMBER_TOOL_IDS = new Set(['search-read', 'search-agent', 'skill-search']);
@@ -60,6 +62,7 @@ const normalizeRoleSlug = (value: string): string =>
   value.trim().toUpperCase().replace(/\s+/g, '_').replace(/[^A-Z0-9_]/g, '').slice(0, 40);
 
 const vercelToolIds = TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel')).map((tool) => tool.id);
+const ACTION_GROUP_ALL = 'all';
 
 const uniqueByUserId = <T extends { userId: string }>(rows: T[]): T[] => {
   const seen = new Set<string>();
@@ -294,7 +297,10 @@ class DepartmentService {
     fallbackAllowedToolIds: string[];
   }): Promise<ResolvedDepartmentRuntime> {
     if (!input.departmentId) {
-      return { allowedToolIds: input.fallbackAllowedToolIds };
+      const allowedActionsByTool = Object.fromEntries(
+        input.fallbackAllowedToolIds.map((toolId) => [toolId, getSupportedToolActionGroups(toolId)]),
+      );
+      return { allowedToolIds: input.fallbackAllowedToolIds, allowedActionsByTool };
     }
 
     const membership = await prisma.departmentMembership.findFirst({
@@ -334,8 +340,18 @@ class DepartmentService {
       },
     });
 
-    const rolePermissionMap = new Map(rolePermissions.map((row) => [row.toolId, row.allowed]));
-    const overrideMap = new Map(userOverrides.map((row) => [row.toolId, row.allowed]));
+    const buildActionLookup = <T extends { toolId: string; actionGroup: string; allowed: boolean }>(rows: T[]) => {
+      const map = new Map<string, Map<string, boolean>>();
+      for (const row of rows) {
+        const existing = map.get(row.toolId) ?? new Map<string, boolean>();
+        existing.set(row.actionGroup, row.allowed);
+        map.set(row.toolId, existing);
+      }
+      return map;
+    };
+
+    const rolePermissionMap = buildActionLookup(rolePermissions);
+    const overrideMap = buildActionLookup(userOverrides);
 
     const defaultAllowed = (toolId: string): boolean => {
       if (membership.role.slug === 'MANAGER') return true;
@@ -343,12 +359,38 @@ class DepartmentService {
     };
 
     const fallbackAllowed = new Set(input.fallbackAllowedToolIds);
-    const allowedToolIds = vercelToolIds.filter((toolId) => {
+    const resolveActionAllowed = (toolId: string, actionGroup: ToolActionGroup): boolean => {
       if (!fallbackAllowed.has(toolId)) return false;
-      if (overrideMap.has(toolId)) return overrideMap.get(toolId) as boolean;
-      if (rolePermissionMap.has(toolId)) return rolePermissionMap.get(toolId) as boolean;
+
+      const overrideRows = overrideMap.get(toolId);
+      if (overrideRows?.has(actionGroup)) {
+        return overrideRows.get(actionGroup) as boolean;
+      }
+      if (overrideRows?.has(ACTION_GROUP_ALL)) {
+        return overrideRows.get(ACTION_GROUP_ALL) as boolean;
+      }
+
+      const roleRows = rolePermissionMap.get(toolId);
+      if (roleRows?.has(actionGroup)) {
+        return roleRows.get(actionGroup) as boolean;
+      }
+      if (roleRows?.has(ACTION_GROUP_ALL)) {
+        return roleRows.get(ACTION_GROUP_ALL) as boolean;
+      }
+
       return defaultAllowed(toolId);
-    });
+    };
+
+    const allowedActionsByTool = Object.fromEntries(
+      vercelToolIds
+        .map((toolId) => {
+          const actions = getSupportedToolActionGroups(toolId).filter((actionGroup) =>
+            resolveActionAllowed(toolId, actionGroup));
+          return [toolId, actions] as const;
+        })
+        .filter(([, actions]) => actions.length > 0),
+    );
+    const allowedToolIds = Object.keys(allowedActionsByTool);
 
     return {
       departmentId: membership.department.id,
@@ -357,6 +399,7 @@ class DepartmentService {
       systemPrompt: membership.department.agentConfig?.systemPrompt ?? undefined,
       skillsMarkdown: membership.department.agentConfig?.skillsMarkdown ?? undefined,
       allowedToolIds,
+      allowedActionsByTool,
     };
   }
 
@@ -570,12 +613,14 @@ class DepartmentService {
         id: row.id,
         roleId: row.roleId,
         toolId: row.toolId,
+        actionGroup: row.actionGroup,
         allowed: row.allowed,
       })),
       userOverrides: department.userToolOverrides.map((row) => ({
         id: row.id,
         userId: row.userId,
         toolId: row.toolId,
+        actionGroup: row.actionGroup,
         allowed: row.allowed,
       })),
       globalSkills: skillBundle.globalSkills,
@@ -586,6 +631,7 @@ class DepartmentService {
         name: tool.name,
         description: tool.description,
         category: tool.category,
+        supportedActionGroups: getSupportedToolActionGroups(tool.id),
       })),
     };
   }
@@ -1103,7 +1149,14 @@ class DepartmentService {
     return { deleted: true };
   }
 
-  async updateDepartmentRolePermission(session: DepartmentAdminSession, departmentId: string, roleId: string, toolId: string, allowed: boolean) {
+  async updateDepartmentRolePermission(
+    session: DepartmentAdminSession,
+    departmentId: string,
+    roleId: string,
+    toolId: string,
+    actionGroup: string,
+    allowed: boolean,
+  ) {
     await this.assertDepartmentAccess(session, departmentId);
     const role = await prisma.departmentRole.findFirst({
       where: { id: roleId, departmentId },
@@ -1114,12 +1167,17 @@ class DepartmentService {
     if (!vercelToolIds.includes(toolId)) {
       throw new HttpException(404, 'Unknown or unsupported tool.');
     }
+    const normalizedActionGroup = actionGroup.trim().toLowerCase();
+    if (normalizedActionGroup !== ACTION_GROUP_ALL && !getSupportedToolActionGroups(toolId).includes(normalizedActionGroup as ToolActionGroup)) {
+      throw new HttpException(400, 'Unsupported action group for this tool.');
+    }
     const row = await prisma.departmentToolPermission.upsert({
       where: {
-        departmentId_roleId_toolId: {
+        departmentId_roleId_toolId_actionGroup: {
           departmentId,
           roleId,
           toolId,
+          actionGroup: normalizedActionGroup,
         },
       },
       update: {
@@ -1130,6 +1188,7 @@ class DepartmentService {
         departmentId,
         roleId,
         toolId,
+        actionGroup: normalizedActionGroup,
         allowed,
         updatedBy: session.userId,
       },
@@ -1138,21 +1197,34 @@ class DepartmentService {
       id: row.id,
       roleId: row.roleId,
       toolId: row.toolId,
+      actionGroup: row.actionGroup,
       allowed: row.allowed,
     };
   }
 
-  async updateDepartmentUserOverride(session: DepartmentAdminSession, departmentId: string, userId: string, toolId: string, allowed: boolean) {
+  async updateDepartmentUserOverride(
+    session: DepartmentAdminSession,
+    departmentId: string,
+    userId: string,
+    toolId: string,
+    actionGroup: string,
+    allowed: boolean,
+  ) {
     await this.assertDepartmentAccess(session, departmentId);
     if (!vercelToolIds.includes(toolId)) {
       throw new HttpException(404, 'Unknown or unsupported tool.');
     }
+    const normalizedActionGroup = actionGroup.trim().toLowerCase();
+    if (normalizedActionGroup !== ACTION_GROUP_ALL && !getSupportedToolActionGroups(toolId).includes(normalizedActionGroup as ToolActionGroup)) {
+      throw new HttpException(400, 'Unsupported action group for this tool.');
+    }
     const row = await prisma.departmentUserToolOverride.upsert({
       where: {
-        departmentId_userId_toolId: {
+        departmentId_userId_toolId_actionGroup: {
           departmentId,
           userId,
           toolId,
+          actionGroup: normalizedActionGroup,
         },
       },
       update: {
@@ -1163,6 +1235,7 @@ class DepartmentService {
         departmentId,
         userId,
         toolId,
+        actionGroup: normalizedActionGroup,
         allowed,
         updatedBy: session.userId,
       },
@@ -1171,6 +1244,7 @@ class DepartmentService {
       id: row.id,
       userId: row.userId,
       toolId: row.toolId,
+      actionGroup: row.actionGroup,
       allowed: row.allowed,
     };
   }

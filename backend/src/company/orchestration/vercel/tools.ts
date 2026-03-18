@@ -8,6 +8,8 @@ import { z } from 'zod';
 import { conversationMemoryStore } from '../../state/conversation';
 import { logger } from '../../../utils/logger';
 import { skillService } from '../../skills/skill.service';
+import { getSupportedToolActionGroups, type ToolActionGroup } from '../../tools/tool-action-groups';
+import { companyGoogleAuthLinkRepository } from '../../channels/google/company-google-auth-link.repository';
 import { googleOAuthService } from '../../channels/google/google-oauth.service';
 import { googleUserAuthLinkRepository } from '../../channels/google/google-user-auth-link.repository';
 import type {
@@ -118,6 +120,27 @@ const loadEmbeddingService = (): {
   embed: (texts: string[]) => Promise<number[][]>;
 } => loadModuleExport('../../integrations/embedding', 'embeddingService');
 
+const loadVectorDocumentRepository = (): {
+  findByFileAsset: (input: { companyId: string; fileAssetId: string }) => Promise<Array<Record<string, unknown>>>;
+} => loadModuleExport('../../integrations/vector/vector-document.repository', 'vectorDocumentRepository');
+
+const loadFileUploadService = (): {
+  listVisibleFiles: (input: {
+    companyId: string;
+    requesterUserId: string;
+    requesterAiRole: string;
+    isAdmin?: boolean;
+  }) => Promise<Array<Record<string, unknown>>>;
+} => loadModuleExport('../../../modules/file-upload/file-upload.service', 'fileUploadService');
+
+const loadDocumentTextHelpers = (): {
+  extractTextFromBuffer: (buffer: Buffer, mimeType: string, fileName: string) => Promise<string>;
+  normalizeExtractedText: (rawText: string, maxWords?: number) => string;
+} => require('../../../modules/file-upload/document-text-extractor') as {
+  extractTextFromBuffer: (buffer: Buffer, mimeType: string, fileName: string) => Promise<string>;
+  normalizeExtractedText: (rawText: string, maxWords?: number) => string;
+};
+
 const loadQdrantAdapter = (): {
   search: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
 } => loadModuleExport('../../integrations/vector/qdrant.adapter', 'qdrantAdapter');
@@ -138,6 +161,58 @@ const loadCompanyContextResolver = (): {
 const loadZohoRetrievalService = (): {
   query: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
 } => loadModuleExport('../../agents/support/zoho-retrieval.service', 'zohoRetrievalService');
+
+const loadZohoDataClient = (): {
+  fetchRecordBySource: (input: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
+  createRecord?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  updateRecord?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  deleteRecord?: (input: Record<string, unknown>) => Promise<void>;
+} => loadModuleExport('../../integrations/zoho/zoho-data.client', 'zohoDataClient');
+
+const loadZohoBooksClient = (): {
+  listOrganizations: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+  listRecords: (input: Record<string, unknown>) => Promise<{
+    organizationId: string;
+    items: Array<Record<string, unknown>>;
+    payload: Record<string, unknown>;
+  }>;
+  getRecord: (input: Record<string, unknown>) => Promise<{
+    organizationId: string;
+    record: Record<string, unknown>;
+    payload: Record<string, unknown>;
+  }>;
+  createRecord: (input: Record<string, unknown>) => Promise<{
+    organizationId: string;
+    record: Record<string, unknown>;
+    payload: Record<string, unknown>;
+  }>;
+  updateRecord: (input: Record<string, unknown>) => Promise<{
+    organizationId: string;
+    record: Record<string, unknown>;
+    payload: Record<string, unknown>;
+  }>;
+  deleteRecord: (input: Record<string, unknown>) => Promise<{
+    organizationId: string;
+    payload: Record<string, unknown>;
+  }>;
+} => loadModuleExport('../../integrations/zoho/zoho-books.client', 'zohoBooksClient');
+
+const loadHitlActionService = (): {
+  createPending: (input: {
+    taskId: string;
+    actionType: 'write' | 'update' | 'delete' | 'execute';
+    summary: string;
+    chatId: string;
+    threadId?: string;
+    executionId?: string;
+    channel?: 'desktop' | 'lark';
+    toolId?: string;
+    actionGroup?: ToolActionGroup;
+    subject?: string;
+    payload?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  }) => Promise<{ actionId: string }>;
+} => loadModuleExport('../../state/hitl/hitl-action.service', 'hitlActionService');
 
 const loadZohoRoleAccessService = (): {
   resolveScopeMode: (companyId: string, requesterAiRole?: string) => Promise<'email_scoped' | 'company_scoped'>;
@@ -254,6 +329,122 @@ const buildEnvelope = (input: {
   ...(input.pendingApprovalAction ? { pendingApprovalAction: input.pendingApprovalAction } : {}),
 });
 
+const getAllowedActionGroups = (runtime: VercelRuntimeRequestContext, toolId: string): ToolActionGroup[] => {
+  const explicit = runtime.allowedActionsByTool?.[toolId];
+  if (explicit && explicit.length > 0) {
+    return explicit;
+  }
+  if (runtime.allowedToolIds.includes(toolId)) {
+    return getSupportedToolActionGroups(toolId);
+  }
+  return [];
+};
+
+const ensureActionPermission = (
+  runtime: VercelRuntimeRequestContext,
+  toolId: string,
+  actionGroup: ToolActionGroup,
+): VercelToolEnvelope | null => {
+  const allowed = getAllowedActionGroups(runtime, toolId);
+  if (allowed.includes(actionGroup)) {
+    return null;
+  }
+  return buildEnvelope({
+    success: false,
+    summary: `Permission denied: ${toolId} cannot perform ${actionGroup} for the current department role.`,
+    errorKind: 'permission',
+    retryable: false,
+  });
+};
+
+const ensureAnyActionPermission = (
+  runtime: VercelRuntimeRequestContext,
+  toolIds: string[],
+  actionGroup: ToolActionGroup,
+  label?: string,
+): VercelToolEnvelope | null => {
+  const normalizedToolIds = Array.from(new Set(toolIds.filter(Boolean)));
+  const allowed = normalizedToolIds.some((toolId) => getAllowedActionGroups(runtime, toolId).includes(actionGroup));
+  if (allowed) {
+    return null;
+  }
+  return buildEnvelope({
+    success: false,
+    summary: `Permission denied: ${label ?? normalizedToolIds.join(', ')} cannot perform ${actionGroup} for the current department role.`,
+    errorKind: 'permission',
+    retryable: false,
+  });
+};
+
+const createPendingRemoteApproval = async (input: {
+  runtime: VercelRuntimeRequestContext;
+  toolId: string;
+  actionGroup: ToolActionGroup;
+  operation: string;
+  summary: string;
+  subject?: string;
+  explanation?: string;
+  payload: Record<string, unknown>;
+}): Promise<VercelToolEnvelope> => {
+  const actionType =
+    input.actionGroup === 'delete'
+      ? 'delete'
+      : input.actionGroup === 'execute' || input.actionGroup === 'send'
+        ? 'execute'
+        : input.actionGroup === 'update'
+          ? 'update'
+          : 'write';
+  const pending = await loadHitlActionService().createPending({
+    taskId: input.runtime.executionId,
+    actionType,
+    summary: input.summary,
+    chatId: input.runtime.chatId ?? input.runtime.threadId,
+    threadId: input.runtime.threadId,
+    executionId: input.runtime.executionId,
+    channel: input.runtime.channel,
+    toolId: input.toolId,
+    actionGroup: input.actionGroup,
+    subject: input.subject,
+    payload: {
+      ...input.payload,
+      toolId: input.toolId,
+      actionGroup: input.actionGroup,
+      operation: input.operation,
+    },
+    metadata: {
+      companyId: input.runtime.companyId,
+      userId: input.runtime.userId,
+      requesterAiRole: input.runtime.requesterAiRole,
+      requesterEmail: input.runtime.requesterEmail,
+      departmentId: input.runtime.departmentId,
+      departmentName: input.runtime.departmentName,
+      departmentRoleSlug: input.runtime.departmentRoleSlug,
+      authProvider: input.runtime.authProvider,
+      larkTenantKey: input.runtime.larkTenantKey,
+      larkOpenId: input.runtime.larkOpenId,
+      larkUserId: input.runtime.larkUserId,
+      mode: input.runtime.mode,
+    },
+  });
+  return buildEnvelope({
+    success: true,
+    summary: input.summary,
+    pendingApprovalAction: {
+      kind: 'tool_action',
+      approvalId: pending.actionId,
+      scope: 'backend_remote',
+      toolId: input.toolId,
+      actionGroup: input.actionGroup,
+      operation: input.operation,
+      title: `${input.toolId} ${input.actionGroup} approval required`,
+      summary: input.summary,
+      subject: input.subject,
+      explanation: input.explanation,
+      payload: input.payload,
+    },
+  });
+};
+
 const buildExpiryFromSeconds = (seconds?: number): Date | undefined => {
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
     return undefined;
@@ -264,19 +455,205 @@ const buildExpiryFromSeconds = (seconds?: number): Date | undefined => {
 const normalizeGoogleScopes = (scopes?: string[]): Set<string> =>
   new Set((scopes ?? []).map((scope) => scope.trim()).filter(Boolean));
 
+type ResolvedGoogleLink = {
+  mode: 'company' | 'user';
+  accessToken: string;
+  refreshToken?: string;
+  refreshTokenExpiresAt?: Date | null;
+  accessTokenExpiresAt?: Date | null;
+  tokenType?: string;
+  scope?: string;
+  scopes: string[];
+  googleUserId: string;
+  googleEmail?: string;
+  googleName?: string;
+  tokenMetadata?: Record<string, unknown> | null;
+};
+
+type RuntimeFileReference = {
+  fileAssetId: string;
+  fileName: string;
+  mimeType?: string;
+  cloudinaryUrl?: string;
+  ingestionStatus?: string;
+  updatedAtMs: number;
+};
+
+const buildRuntimeFileRecord = (entry: Record<string, unknown>): RuntimeFileReference => ({
+  fileAssetId: asString(entry.id) ?? '',
+  fileName: asString(entry.fileName) ?? 'file',
+  mimeType: asString(entry.mimeType),
+  cloudinaryUrl: asString(entry.cloudinaryUrl),
+  ingestionStatus: asString(entry.ingestionStatus),
+  updatedAtMs: Date.parse(asString(entry.updatedAt) ?? asString(entry.createdAt) ?? '') || Date.now(),
+});
+
+const inferCurrency = (text: string): string | undefined => {
+  if (/₹|rs\.?|inr/i.test(text)) return 'INR';
+  if (/\bUSD\b|\$/i.test(text)) return 'USD';
+  if (/\bEUR\b|€/i.test(text)) return 'EUR';
+  if (/\bGBP\b|£/i.test(text)) return 'GBP';
+  return undefined;
+};
+
+const parseNumericAmount = (value: string): number | null => {
+  const cleaned = value.replace(/[^0-9().,\-]/g, '').replace(/,/g, '').trim();
+  if (!cleaned) return null;
+  const negative = cleaned.startsWith('(') && cleaned.endsWith(')');
+  const normalized = negative ? `-${cleaned.slice(1, -1)}` : cleaned;
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const detectDateStrings = (text: string): string[] => {
+  const matches = text.match(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/g) ?? [];
+  return Array.from(new Set(matches)).slice(0, 24);
+};
+
+const extractFieldByLabels = (text: string, labels: string[]): string | undefined => {
+  for (const label of labels) {
+    const match = text.match(new RegExp(`${label}\\s*[:#-]?\\s*([^\\n]+)`, 'i'));
+    const value = match?.[1]?.trim();
+    if (value) {
+      return value.replace(/\s{2,}/g, ' ');
+    }
+  }
+  return undefined;
+};
+
+const extractBestAmount = (text: string, labels: string[]): number | undefined => {
+  for (const label of labels) {
+    const match = text.match(new RegExp(`${label}\\s*[:#-]?\\s*([\\(\\)₹$A-Z\\s0-9,.-]+)`, 'i'));
+    const amount = match?.[1] ? parseNumericAmount(match[1]) : null;
+    if (amount !== null) {
+      return amount;
+    }
+  }
+  return undefined;
+};
+
+const parseInvoiceDocument = (text: string) => {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const invoiceNumber =
+    extractFieldByLabels(text, ['invoice\\s*(?:no|number)', 'bill\\s*(?:no|number)', 'ref(?:erence)?\\s*(?:no|number)'])
+    ?? lines.find((line) => /invoice/i.test(line) && /\d/.test(line));
+  const vendorName =
+    extractFieldByLabels(text, ['vendor', 'supplier', 'from', 'seller', 'billed\\s+by'])
+    ?? lines.find((line) => /^[A-Za-z][A-Za-z0-9&.,()\- ]{3,}$/.test(line) && !/invoice|tax|gst|bill to/i.test(line));
+  const dueDate = extractFieldByLabels(text, ['due\\s*date', 'payment\\s*due']);
+  const invoiceDate = extractFieldByLabels(text, ['invoice\\s*date', 'bill\\s*date', 'date']) ?? detectDateStrings(text)[0];
+  const gstin = text.match(/\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z0-9]Z[A-Z0-9]\b/i)?.[0];
+  const subtotal = extractBestAmount(text, ['subtotal', 'taxable\\s*value', 'net\\s*amount']);
+  const taxAmount = extractBestAmount(text, ['gst', 'igst', 'cgst', 'sgst', 'tax']);
+  const totalAmount =
+    extractBestAmount(text, ['grand\\s*total', 'invoice\\s*total', 'total\\s*amount', 'amount\\s*due', 'total'])
+    ?? (() => {
+      const amounts = Array.from(text.matchAll(/(?:₹|rs\.?|inr)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})|[0-9]+(?:\.[0-9]{2}))/gi))
+        .map((match) => parseNumericAmount(match[1] ?? ''))
+        .filter((value): value is number => value !== null);
+      return amounts.length > 0 ? Math.max(...amounts) : undefined;
+    })();
+
+  return {
+    vendorName,
+    invoiceNumber,
+    invoiceDate,
+    dueDate,
+    gstin,
+    currency: inferCurrency(text),
+    subtotal,
+    taxAmount,
+    totalAmount,
+    candidateDates: detectDateStrings(text),
+    lineCount: lines.length,
+  };
+};
+
+const parseStatementDocument = (text: string) => {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const rowRegex = /^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.+?)\s+([()\-0-9,]+\.\d{2}|[()\-0-9,]+)\s*$/;
+  const rows = lines.flatMap((line) => {
+    const match = line.match(rowRegex);
+    if (!match) return [];
+    const amount = parseNumericAmount(match[3] ?? '');
+    return [{
+      date: match[1],
+      description: match[2].replace(/\s{2,}/g, ' ').trim(),
+      amount,
+      direction: amount !== null && amount < 0 ? 'debit' : 'credit',
+    }];
+  });
+
+  const closingBalance = extractBestAmount(text, ['closing\\s*balance', 'balance\\s*as\\s*on', 'available\\s*balance']);
+  const openingBalance = extractBestAmount(text, ['opening\\s*balance', 'balance\\s*brought\\s*forward']);
+  const totalCredits = rows.filter((row) => typeof row.amount === 'number' && row.amount >= 0).reduce((sum, row) => sum + (row.amount ?? 0), 0);
+  const totalDebits = rows.filter((row) => typeof row.amount === 'number' && row.amount < 0).reduce((sum, row) => sum + Math.abs(row.amount ?? 0), 0);
+
+  return {
+    statementType: /bank/i.test(text) ? 'bank' : /ledger|account/i.test(text) ? 'account' : 'generic',
+    accountName: extractFieldByLabels(text, ['account\\s*name', 'statement\\s*for', 'customer\\s*name']),
+    accountNumber: extractFieldByLabels(text, ['account\\s*(?:no|number)', 'a\\/c\\s*(?:no|number)']),
+    dateRange: {
+      from: extractFieldByLabels(text, ['from', 'period\\s*from']) ?? detectDateStrings(text)[0],
+      to: extractFieldByLabels(text, ['to', 'period\\s*to']) ?? detectDateStrings(text)[1],
+    },
+    currency: inferCurrency(text),
+    openingBalance,
+    closingBalance,
+    transactionCount: rows.length,
+    totals: {
+      credits: totalCredits || undefined,
+      debits: totalDebits || undefined,
+    },
+    rows: rows.slice(0, 200),
+  };
+};
+
 const resolveGoogleAccess = async (
   runtime: VercelRuntimeRequestContext,
   requiredScopes: string[],
 ): Promise<{ accessToken: string; scopes: string[] } | { error: VercelToolEnvelope }> => {
-  const link = await googleUserAuthLinkRepository.findActiveByUser(runtime.userId, runtime.companyId);
+  const companyLink = await companyGoogleAuthLinkRepository.findActiveByCompany(runtime.companyId);
+  const userLink = companyLink ? null : await googleUserAuthLinkRepository.findActiveByUser(runtime.userId, runtime.companyId);
+  const link: ResolvedGoogleLink | null = companyLink
+    ? {
+      mode: 'company',
+      accessToken: companyLink.accessToken,
+      refreshToken: companyLink.refreshToken,
+      refreshTokenExpiresAt: companyLink.refreshTokenExpiresAt,
+      accessTokenExpiresAt: companyLink.accessTokenExpiresAt,
+      tokenType: companyLink.tokenType,
+      scope: companyLink.scope,
+      scopes: companyLink.scopes,
+      googleUserId: companyLink.googleUserId,
+      googleEmail: companyLink.googleEmail,
+      googleName: companyLink.googleName,
+      tokenMetadata: companyLink.tokenMetadata,
+    }
+    : userLink
+      ? {
+        mode: 'user',
+        accessToken: userLink.accessToken,
+        refreshToken: userLink.refreshToken,
+        refreshTokenExpiresAt: userLink.refreshTokenExpiresAt,
+        accessTokenExpiresAt: userLink.accessTokenExpiresAt,
+        tokenType: userLink.tokenType,
+        scope: userLink.scope,
+        scopes: userLink.scopes,
+        googleUserId: userLink.googleUserId,
+        googleEmail: userLink.googleEmail,
+        googleName: userLink.googleName,
+        tokenMetadata: userLink.tokenMetadata,
+      }
+      : null;
   if (!link) {
     return {
       error: buildEnvelope({
         success: false,
-        summary: 'No Google account is connected for this user.',
+        summary: 'No Google account is connected for this workspace or user.',
         errorKind: 'permission',
         retryable: false,
-        userAction: 'Connect your Google account in the desktop Settings → Google Workspace section.',
+        userAction: 'Connect Google Workspace from Admin Settings → Integrations, or connect a personal Google account in desktop settings.',
       }),
     };
   }
@@ -311,23 +688,120 @@ const resolveGoogleAccess = async (
     }
     const refreshed = await googleOAuthService.refreshAccessToken(link.refreshToken);
     accessToken = refreshed.accessToken;
-    await googleUserAuthLinkRepository.upsert({
-      userId: runtime.userId,
-      companyId: runtime.companyId,
-      googleUserId: link.googleUserId,
-      googleEmail: link.googleEmail,
-      googleName: link.googleName,
-      scope: refreshed.scope ?? link.scope,
-      accessToken: refreshed.accessToken,
-      refreshToken: link.refreshToken,
-      tokenType: refreshed.tokenType ?? link.tokenType,
-      accessTokenExpiresAt: buildExpiryFromSeconds(refreshed.expiresIn),
-      refreshTokenExpiresAt: link.refreshTokenExpiresAt,
-      tokenMetadata: link.tokenMetadata,
-    });
+    if (link.mode === 'company') {
+      await companyGoogleAuthLinkRepository.upsert({
+        companyId: runtime.companyId,
+        googleUserId: link.googleUserId,
+        googleEmail: link.googleEmail,
+        googleName: link.googleName,
+        scope: refreshed.scope ?? link.scope,
+        accessToken: refreshed.accessToken,
+        refreshToken: link.refreshToken,
+        tokenType: refreshed.tokenType ?? link.tokenType,
+        accessTokenExpiresAt: buildExpiryFromSeconds(refreshed.expiresIn),
+        refreshTokenExpiresAt: link.refreshTokenExpiresAt,
+        tokenMetadata: link.tokenMetadata ?? undefined,
+        linkedByUserId: runtime.userId,
+      });
+    } else {
+      await googleUserAuthLinkRepository.upsert({
+        userId: runtime.userId,
+        companyId: runtime.companyId,
+        googleUserId: link.googleUserId,
+        googleEmail: link.googleEmail,
+        googleName: link.googleName,
+        scope: refreshed.scope ?? link.scope,
+        accessToken: refreshed.accessToken,
+        refreshToken: link.refreshToken,
+        tokenType: refreshed.tokenType ?? link.tokenType,
+        accessTokenExpiresAt: buildExpiryFromSeconds(refreshed.expiresIn),
+        refreshTokenExpiresAt: link.refreshTokenExpiresAt,
+        tokenMetadata: link.tokenMetadata ?? undefined,
+      });
+    }
   }
 
   return { accessToken, scopes: link.scopes };
+};
+
+const listVisibleRuntimeFiles = async (runtime: VercelRuntimeRequestContext): Promise<RuntimeFileReference[]> => {
+  const files = await loadFileUploadService().listVisibleFiles({
+    companyId: runtime.companyId,
+    requesterUserId: runtime.userId,
+    requesterAiRole: runtime.requesterAiRole,
+    isAdmin: runtime.requesterAiRole === 'COMPANY_ADMIN' || runtime.requesterAiRole === 'SUPER_ADMIN',
+  });
+
+  return files
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map(buildRuntimeFileRecord)
+    .filter((entry) => Boolean(entry.fileAssetId));
+};
+
+const resolveRuntimeFile = async (
+  runtime: VercelRuntimeRequestContext,
+  input: { fileAssetId?: string; fileName?: string },
+): Promise<RuntimeFileReference | null> => {
+  const files = await listVisibleRuntimeFiles(runtime);
+  const normalizedId = input.fileAssetId?.trim();
+  if (normalizedId) {
+    return files.find((file) => file.fileAssetId === normalizedId) ?? null;
+  }
+
+  const normalizedName = input.fileName?.trim().toLowerCase();
+  if (normalizedName) {
+    return files.find((file) => file.fileName.trim().toLowerCase() === normalizedName)
+      ?? files.find((file) => file.fileName.trim().toLowerCase().includes(normalizedName))
+      ?? null;
+  }
+
+  const latest = conversationMemoryStore.getLatestFileAsset(buildConversationKey(runtime.threadId));
+  if (!latest) {
+    return null;
+  }
+  return files.find((file) => file.fileAssetId === latest.fileAssetId) ?? latest;
+};
+
+const extractIndexedFileText = async (runtime: VercelRuntimeRequestContext, fileAssetId: string): Promise<string> => {
+  const docs = await loadVectorDocumentRepository().findByFileAsset({
+    companyId: runtime.companyId,
+    fileAssetId,
+  });
+  const chunks = docs
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => asRecord(entry.payload))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((payload) => asString(payload._chunk) ?? asString(payload.text) ?? '')
+    .filter(Boolean);
+  return chunks.join('\n\n').trim();
+};
+
+const extractFileText = async (
+  runtime: VercelRuntimeRequestContext,
+  file: RuntimeFileReference,
+): Promise<{ text: string; source: 'vector' | 'ocr' }> => {
+  const indexedText = await extractIndexedFileText(runtime, file.fileAssetId);
+  if (indexedText) {
+    return { text: indexedText, source: 'vector' };
+  }
+
+  if (!file.cloudinaryUrl || !file.mimeType) {
+    return { text: '', source: 'ocr' };
+  }
+
+  const response = await fetch(file.cloudinaryUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch file content for OCR: ${response.status} ${response.statusText}`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  const { extractTextFromBuffer, normalizeExtractedText } = loadDocumentTextHelpers();
+  const rawText = await extractTextFromBuffer(Buffer.from(arrayBuffer), file.mimeType, file.fileName);
+  return {
+    text: normalizeExtractedText(rawText),
+    source: 'ocr',
+  };
 };
 
 const encodeGmailMessage = (input: {
@@ -411,6 +885,39 @@ const buildAgentInvokeInput = (
 });
 
 const buildConversationKey = (threadId: string): string => `desktop:${threadId}`;
+
+const normalizeZohoSourceType = (value?: string): ZohoSourceType | undefined => {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (['leads', 'lead', 'zoho_lead'].includes(normalized)) return 'zoho_lead';
+  if (['contacts', 'contact', 'zoho_contact'].includes(normalized)) return 'zoho_contact';
+  if (['deals', 'deal', 'zoho_deal'].includes(normalized)) return 'zoho_deal';
+  if (['cases', 'case', 'tickets', 'ticket', 'zoho_ticket'].includes(normalized)) return 'zoho_ticket';
+  return undefined;
+};
+
+const normalizeZohoBooksModule = (value?: string):
+  | 'invoices'
+  | 'estimates'
+  | 'bills'
+  | 'customerpayments'
+  | 'banktransactions'
+  | undefined => {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (['invoice', 'invoices'].includes(normalized)) return 'invoices';
+  if (['estimate', 'estimates'].includes(normalized)) return 'estimates';
+  if (['bill', 'bills'].includes(normalized)) return 'bills';
+  if (['customerpayment', 'customerpayments', 'payment', 'payments'].includes(normalized)) return 'customerpayments';
+  if (['banktransaction', 'banktransactions', 'bank-transaction', 'bank-transactions'].includes(normalized)) {
+    return 'banktransactions';
+  }
+  return undefined;
+};
 
 const getLarkDefaults = async (runtime: VercelRuntimeRequestContext) =>
   loadLarkOperationalConfigRepository().findByCompanyId(runtime.companyId);
@@ -545,12 +1052,18 @@ const summarizeActionResult = (runtime: VercelRuntimeRequestContext, expectedOut
 const VERCEL_TOOL_PERMISSION_IDS: Record<string, string[]> = {
   webSearch: ['search-read', 'search-agent'],
   docSearch: ['search-documents'],
+  documentOcrRead: ['document-ocr-read'],
+  invoiceParser: ['invoice-parser'],
+  statementParser: ['statement-parser'],
   skillSearch: ['skill-search'],
   repo: ['repo'],
   coding: ['coding'],
   googleMail: ['google-gmail'],
   googleDrive: ['google-drive'],
-  zoho: ['search-zoho-context', 'read-zoho-records', 'zoho-agent', 'zoho-read'],
+  googleCalendar: ['google-calendar'],
+  zoho: ['search-zoho-context', 'read-zoho-records', 'zoho-agent', 'zoho-read', 'zoho-write'],
+  booksRead: ['zoho-books-read', 'zoho-books-agent'],
+  booksWrite: ['zoho-books-write', 'zoho-books-agent'],
   outreach: ['read-outreach-publishers', 'outreach-agent'],
   larkTask: ['lark-task-read', 'lark-task-write', 'lark-task-agent'],
   larkCalendar: ['lark-calendar-list', 'lark-calendar-read', 'lark-calendar-write', 'lark-calendar-agent'],
@@ -681,6 +1194,215 @@ export const createVercelDesktopTools = (
             matches: normalizedMatches,
           },
           citations,
+        });
+      }),
+    }),
+
+    documentOcrRead: tool({
+      description: 'List visible uploaded files and extract machine-readable text from a selected document.',
+      inputSchema: z.object({
+        operation: z.enum(['listFiles', 'extractText']),
+        fileAssetId: z.string().optional(),
+        fileName: z.string().optional(),
+        limit: z.number().int().min(1).max(25).optional(),
+      }),
+      execute: async (input) => withLifecycle(hooks, 'documentOcrRead', 'Running document OCR', async () => {
+        const conversationKey = buildConversationKey(runtime.threadId);
+        if (input.operation === 'listFiles') {
+          const files = await listVisibleRuntimeFiles(runtime);
+          const limited = files.slice(0, input.limit ?? 10);
+          return buildEnvelope({
+            success: true,
+            summary: limited.length > 0
+              ? `Found ${limited.length} accessible uploaded file(s).`
+              : 'No accessible uploaded files were found.',
+            keyData: {
+              fileAssetIds: limited.map((file) => file.fileAssetId),
+            },
+            fullPayload: {
+              files: limited,
+            },
+          });
+        }
+
+        const file = await resolveRuntimeFile(runtime, input);
+        if (!file) {
+          return buildEnvelope({
+            success: false,
+            summary: 'No matching uploaded file was found. Provide fileAssetId or fileName, or upload a document first.',
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+
+        const extracted = await extractFileText(runtime, file);
+        if (!extracted.text.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `No extractable text was found in ${file.fileName}.`,
+            errorKind: 'validation',
+            retryable: false,
+          });
+        }
+
+        conversationMemoryStore.addFileAsset(conversationKey, file);
+        return buildEnvelope({
+          success: true,
+          summary: `Extracted text from ${file.fileName}.`,
+          keyData: {
+            fileAssetId: file.fileAssetId,
+            fileName: file.fileName,
+            extractionSource: extracted.source,
+          },
+          fullPayload: {
+            file,
+            text: extracted.text,
+            extractionSource: extracted.source,
+          },
+          citations: [{
+            id: `file-${file.fileAssetId}`,
+            title: file.fileName,
+            url: file.cloudinaryUrl,
+            kind: 'file',
+            sourceType: 'file_document',
+            sourceId: file.fileAssetId,
+            fileAssetId: file.fileAssetId,
+          }],
+        });
+      }),
+    }),
+
+    invoiceParser: tool({
+      description: 'Parse uploaded invoice or bill documents into structured finance fields.',
+      inputSchema: z.object({
+        fileAssetId: z.string().optional(),
+        fileName: z.string().optional(),
+        text: z.string().optional(),
+      }),
+      execute: async (input) => withLifecycle(hooks, 'invoiceParser', 'Parsing invoice document', async () => {
+        const conversationKey = buildConversationKey(runtime.threadId);
+        const file = input.text ? null : await resolveRuntimeFile(runtime, input);
+        if (!input.text && !file) {
+          return buildEnvelope({
+            success: false,
+            summary: 'Invoice parsing requires uploaded document text or a visible file reference.',
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+
+        const extracted = input.text
+          ? { text: input.text.trim(), source: 'provided' as const }
+          : await extractFileText(runtime, file!);
+        if (!extracted.text.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: 'The invoice document does not contain extractable text.',
+            errorKind: 'validation',
+            retryable: false,
+          });
+        }
+
+        if (file) {
+          conversationMemoryStore.addFileAsset(conversationKey, file);
+        }
+
+        const parsed = parseInvoiceDocument(extracted.text);
+        return buildEnvelope({
+          success: true,
+          summary: parsed.invoiceNumber
+            ? `Parsed invoice ${parsed.invoiceNumber}${parsed.vendorName ? ` for ${parsed.vendorName}` : ''}.`
+            : `Parsed invoice fields${parsed.vendorName ? ` for ${parsed.vendorName}` : ''}.`,
+          keyData: {
+            fileAssetId: file?.fileAssetId,
+            fileName: file?.fileName,
+            vendorName: parsed.vendorName,
+            invoiceNumber: parsed.invoiceNumber,
+            totalAmount: parsed.totalAmount,
+          },
+          fullPayload: {
+            file,
+            extractionSource: extracted.source,
+            parsed,
+            textPreview: extracted.text.slice(0, 4000),
+          },
+          ...(file ? {
+            citations: [{
+              id: `file-${file.fileAssetId}`,
+              title: file.fileName,
+              url: file.cloudinaryUrl,
+              kind: 'file',
+              sourceType: 'file_document',
+              sourceId: file.fileAssetId,
+              fileAssetId: file.fileAssetId,
+            }],
+          } : {}),
+        });
+      }),
+    }),
+
+    statementParser: tool({
+      description: 'Parse uploaded bank or account statements into transaction rows and statement totals.',
+      inputSchema: z.object({
+        fileAssetId: z.string().optional(),
+        fileName: z.string().optional(),
+        text: z.string().optional(),
+      }),
+      execute: async (input) => withLifecycle(hooks, 'statementParser', 'Parsing statement document', async () => {
+        const conversationKey = buildConversationKey(runtime.threadId);
+        const file = input.text ? null : await resolveRuntimeFile(runtime, input);
+        if (!input.text && !file) {
+          return buildEnvelope({
+            success: false,
+            summary: 'Statement parsing requires uploaded document text or a visible file reference.',
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+
+        const extracted = input.text
+          ? { text: input.text.trim(), source: 'provided' as const }
+          : await extractFileText(runtime, file!);
+        if (!extracted.text.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: 'The statement document does not contain extractable text.',
+            errorKind: 'validation',
+            retryable: false,
+          });
+        }
+
+        if (file) {
+          conversationMemoryStore.addFileAsset(conversationKey, file);
+        }
+
+        const parsed = parseStatementDocument(extracted.text);
+        return buildEnvelope({
+          success: true,
+          summary: `Parsed ${parsed.transactionCount} statement row(s).`,
+          keyData: {
+            fileAssetId: file?.fileAssetId,
+            fileName: file?.fileName,
+            transactionCount: parsed.transactionCount,
+            closingBalance: parsed.closingBalance,
+          },
+          fullPayload: {
+            file,
+            extractionSource: extracted.source,
+            parsed,
+            textPreview: extracted.text.slice(0, 4000),
+          },
+          ...(file ? {
+            citations: [{
+              id: `file-${file.fileAssetId}`,
+              title: file.fileName,
+              url: file.cloudinaryUrl,
+              kind: 'file',
+              sourceType: 'file_document',
+              sourceId: file.fileAssetId,
+              fileAssetId: file.fileAssetId,
+            }],
+          } : {}),
         });
       }),
     }),
@@ -900,16 +1622,47 @@ export const createVercelDesktopTools = (
     }),
 
     coding: tool({
-      description: 'Primary local coding tool for the open workspace. Use it to inspect files, plan commands, plan writes, and verify local action results.',
-      inputSchema: z.object({
-        operation: z.enum(['inspectWorkspace', 'planCommand', 'readFiles', 'writeFilePlan', 'runScriptPlan', 'verifyResult']),
-        objective: z.string().min(1),
-        workspaceRoot: z.string().optional(),
-        paths: z.array(z.string()).optional(),
-        command: z.string().optional(),
-        contentPlan: z.record(z.unknown()).optional(),
-        expectedOutputs: z.array(z.string()).optional(),
-      }),
+      description: 'Primary local coding tool for the open workspace. Use inspectWorkspace to list files, readFiles to read exact files, planCommand or runScriptPlan only when you already know the exact shell command, writeFilePlan only when you already have the full file path and full file content, and verifyResult after an approved local action finishes. Do not call writeFilePlan without contentPlan.path and contentPlan.content. Do not call planCommand or runScriptPlan without command.',
+      inputSchema: z.discriminatedUnion('operation', [
+        z.object({
+          operation: z.literal('inspectWorkspace'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+        }),
+        z.object({
+          operation: z.literal('readFiles'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          paths: z.array(z.string()).min(1),
+        }),
+        z.object({
+          operation: z.literal('planCommand'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          command: z.string().min(1),
+        }),
+        z.object({
+          operation: z.literal('runScriptPlan'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          command: z.string().min(1),
+        }),
+        z.object({
+          operation: z.literal('writeFilePlan'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          contentPlan: z.object({
+            path: z.string().min(1),
+            content: z.string().min(1),
+          }),
+        }),
+        z.object({
+          operation: z.literal('verifyResult'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          expectedOutputs: z.array(z.string()).optional(),
+        }),
+      ]),
       execute: async (input) => withLifecycle(hooks, 'coding', getCodingActivityTitle(input.operation), async () => {
         const workspaceRoot = input.workspaceRoot?.trim() || runtime.workspace?.path;
         if (!workspaceRoot) {
@@ -934,15 +1687,7 @@ export const createVercelDesktopTools = (
         }
 
         if (input.operation === 'readFiles') {
-          const paths = input.paths ?? [];
-          if (paths.length === 0) {
-            return buildEnvelope({
-              success: false,
-              summary: 'readFiles requires at least one path.',
-              errorKind: 'missing_input',
-            });
-          }
-          const items = await readWorkspaceFiles(runtime, paths);
+          const items = await readWorkspaceFiles(runtime, input.paths);
           return buildEnvelope({
             success: true,
             summary: `Read ${items.length} workspace file(s).`,
@@ -959,14 +1704,7 @@ export const createVercelDesktopTools = (
         }
 
         if (input.operation === 'planCommand' || input.operation === 'runScriptPlan') {
-          const command = input.command?.trim();
-          if (!command) {
-            return buildEnvelope({
-              success: false,
-              summary: `${input.operation} requires command.`,
-              errorKind: 'missing_input',
-            });
-          }
+          const command = input.command.trim();
           return buildEnvelope({
             success: true,
             summary: `Proposed shell command: ${command}`,
@@ -981,15 +1719,8 @@ export const createVercelDesktopTools = (
         }
 
         if (input.operation === 'writeFilePlan') {
-          const targetPath = typeof input.contentPlan?.path === 'string' ? input.contentPlan.path : '';
-          const content = typeof input.contentPlan?.content === 'string' ? input.contentPlan.content : '';
-          if (!targetPath.trim() || !content) {
-            return buildEnvelope({
-              success: false,
-              summary: 'writeFilePlan requires contentPlan.path and contentPlan.content.',
-              errorKind: 'missing_input',
-            });
-          }
+          const targetPath = input.contentPlan.path;
+          const content = input.contentPlan.content;
           return buildEnvelope({
             success: true,
             summary: `Proposed file write: ${targetPath}`,
@@ -1030,6 +1761,16 @@ export const createVercelDesktopTools = (
         format: z.enum(['metadata', 'full', 'minimal', 'raw']).optional(),
       }),
       execute: async (input) => withLifecycle(hooks, 'googleMail', 'Running Gmail workflow', async () => {
+        const actionGroup: ToolActionGroup =
+          input.operation === 'createDraft'
+            ? 'create'
+            : input.operation === 'sendMessage' || input.operation === 'sendDraft'
+              ? 'send'
+              : 'read';
+        const permissionError = ensureActionPermission(runtime, 'google-gmail', actionGroup);
+        if (permissionError) {
+          return permissionError;
+        }
         const requiresSend = input.operation === 'sendMessage';
         const requiresDraft = input.operation === 'createDraft' || input.operation === 'sendDraft';
         const requiredScopes = requiresSend
@@ -1143,38 +1884,23 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
             });
           }
-          const raw = encodeGmailMessage({
-            to: input.to,
+          return createPendingRemoteApproval({
+            runtime,
+            toolId: 'google-gmail',
+            actionGroup: 'create',
+            operation: 'createDraft',
+            summary: `Approval required to create Gmail draft "${input.subject}".`,
             subject: input.subject,
-            body: input.body,
-            cc: input.cc,
-            bcc: input.bcc,
-            isHtml: input.isHtml,
-          });
-          const response = await fetch(`${baseUrl}/drafts`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${access.accessToken}`,
-              'Content-Type': 'application/json',
+            explanation: `Create a draft to ${input.to}.`,
+            payload: {
+              to: input.to,
+              subject: input.subject,
+              body: input.body,
+              cc: input.cc,
+              bcc: input.bcc,
+              isHtml: input.isHtml ?? false,
+              threadId: input.threadId,
             },
-            body: JSON.stringify({ message: { raw, threadId: input.threadId } }),
-          });
-          const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-          if (!response.ok) {
-            return buildEnvelope({
-              success: false,
-              summary: `Gmail createDraft failed: ${(payload as any)?.error?.message ?? response.statusText}`,
-              errorKind: 'api_failure',
-              retryable: true,
-              fullPayload: { status: response.status, payload },
-            });
-          }
-          const draftId = asString(payload.id);
-          return buildEnvelope({
-            success: true,
-            summary: draftId ? `Created draft ${draftId}.` : 'Draft created.',
-            keyData: { draftId },
-            fullPayload: payload,
           });
         }
 
@@ -1187,29 +1913,15 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
             });
           }
-          const response = await fetch(`${baseUrl}/drafts/send`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${access.accessToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ id: draftId }),
-          });
-          const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-          if (!response.ok) {
-            return buildEnvelope({
-              success: false,
-              summary: `Gmail sendDraft failed: ${(payload as any)?.error?.message ?? response.statusText}`,
-              errorKind: 'api_failure',
-              retryable: true,
-              fullPayload: { status: response.status, payload },
-            });
-          }
-          return buildEnvelope({
-            success: true,
-            summary: `Sent draft ${draftId}.`,
-            keyData: { draftId },
-            fullPayload: payload,
+          return createPendingRemoteApproval({
+            runtime,
+            toolId: 'google-gmail',
+            actionGroup: 'send',
+            operation: 'sendDraft',
+            summary: `Approval required to send Gmail draft ${draftId}.`,
+            subject: draftId,
+            explanation: 'Send the selected Gmail draft.',
+            payload: { draftId },
           });
         }
 
@@ -1221,38 +1933,23 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
             });
           }
-          const raw = encodeGmailMessage({
-            to: input.to,
+          return createPendingRemoteApproval({
+            runtime,
+            toolId: 'google-gmail',
+            actionGroup: 'send',
+            operation: 'sendMessage',
+            summary: `Approval required to send Gmail message "${input.subject}".`,
             subject: input.subject,
-            body: input.body,
-            cc: input.cc,
-            bcc: input.bcc,
-            isHtml: input.isHtml,
-          });
-          const response = await fetch(`${baseUrl}/messages/send`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${access.accessToken}`,
-              'Content-Type': 'application/json',
+            explanation: `Send email to ${input.to}.`,
+            payload: {
+              to: input.to,
+              subject: input.subject,
+              body: input.body,
+              cc: input.cc,
+              bcc: input.bcc,
+              isHtml: input.isHtml ?? false,
+              threadId: input.threadId,
             },
-            body: JSON.stringify({ raw, threadId: input.threadId }),
-          });
-          const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-          if (!response.ok) {
-            return buildEnvelope({
-              success: false,
-              summary: `Gmail send failed: ${(payload as any)?.error?.message ?? response.statusText}`,
-              errorKind: 'api_failure',
-              retryable: true,
-              fullPayload: { status: response.status, payload },
-            });
-          }
-          const messageId = asString(payload.id);
-          return buildEnvelope({
-            success: true,
-            summary: messageId ? `Sent message ${messageId}.` : 'Message sent.',
-            keyData: { messageId },
-            fullPayload: payload,
           });
         }
 
@@ -1268,7 +1965,7 @@ export const createVercelDesktopTools = (
     googleDrive: tool({
       description: 'Use the connected Google account to list, read, download, and upload Drive files.',
       inputSchema: z.object({
-        operation: z.enum(['listFiles', 'getFile', 'downloadFile', 'createFolder', 'uploadFile']),
+        operation: z.enum(['listFiles', 'getFile', 'downloadFile', 'createFolder', 'uploadFile', 'updateFile', 'deleteFile']),
         query: z.string().optional(),
         pageSize: z.number().int().min(1).max(100).optional(),
         orderBy: z.string().optional(),
@@ -1283,7 +1980,19 @@ export const createVercelDesktopTools = (
         preferLink: z.boolean().optional(),
       }),
       execute: async (input) => withLifecycle(hooks, 'googleDrive', 'Running Google Drive workflow', async () => {
-        const writeOps = input.operation === 'uploadFile' || input.operation === 'createFolder';
+        const actionGroup: ToolActionGroup =
+          input.operation === 'createFolder' || input.operation === 'uploadFile'
+            ? 'create'
+            : input.operation === 'updateFile'
+              ? 'update'
+              : input.operation === 'deleteFile'
+                ? 'delete'
+                : 'read';
+        const permissionError = ensureActionPermission(runtime, 'google-drive', actionGroup);
+        if (permissionError) {
+          return permissionError;
+        }
+        const writeOps = actionGroup !== 'read';
         const requiredScopes = writeOps
           ? ['https://www.googleapis.com/auth/drive.file']
           : ['https://www.googleapis.com/auth/drive.readonly'];
@@ -1437,34 +2146,18 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
             });
           }
-          const payload = {
-            name,
-            mimeType: 'application/vnd.google-apps.folder',
-            parents: input.parentId ? [input.parentId] : undefined,
-          };
-          const response = await fetch(baseUrl, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${access.accessToken}`,
-              'Content-Type': 'application/json',
+          return createPendingRemoteApproval({
+            runtime,
+            toolId: 'google-drive',
+            actionGroup: 'create',
+            operation: 'createFolder',
+            summary: `Approval required to create Drive folder "${name}".`,
+            subject: name,
+            explanation: 'Create a Google Drive folder.',
+            payload: {
+              fileName: name,
+              parentId: input.parentId,
             },
-            body: JSON.stringify(payload),
-          });
-          const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-          if (!response.ok) {
-            return buildEnvelope({
-              success: false,
-              summary: `Drive createFolder failed: ${(result as any)?.error?.message ?? response.statusText}`,
-              errorKind: 'api_failure',
-              retryable: true,
-              fullPayload: { status: response.status, result },
-            });
-          }
-          return buildEnvelope({
-            success: true,
-            summary: 'Folder created.',
-            keyData: { fileId: asString(result.id) },
-            fullPayload: result,
           });
         }
 
@@ -1489,48 +2182,82 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
             });
           }
-          const boundary = `====odinv1-${randomUUID()}====`;
-          const metadata = {
-            name,
-            mimeType: input.mimeType ?? 'application/octet-stream',
-            parents: input.parentId ? [input.parentId] : undefined,
-          };
-          const body = [
-            `--${boundary}`,
-            'Content-Type: application/json; charset=UTF-8',
-            '',
-            JSON.stringify(metadata),
-            `--${boundary}`,
-            `Content-Type: ${metadata.mimeType}`,
-            'Content-Transfer-Encoding: base64',
-            '',
-            content,
-            `--${boundary}--`,
-            '',
-          ].join('\r\n');
-          const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${access.accessToken}`,
-              'Content-Type': `multipart/related; boundary=${boundary}`,
+          return createPendingRemoteApproval({
+            runtime,
+            toolId: 'google-drive',
+            actionGroup: 'create',
+            operation: 'uploadFile',
+            summary: `Approval required to upload Drive file "${name}".`,
+            subject: name,
+            explanation: 'Upload a file to Google Drive.',
+            payload: {
+              fileName: name,
+              parentId: input.parentId,
+              mimeType: input.mimeType ?? 'application/octet-stream',
+              contentBase64: content,
             },
-            body,
           });
-          const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-          if (!response.ok) {
+        }
+
+        if (input.operation === 'updateFile') {
+          const fileId = input.fileId?.trim();
+          if (!fileId) {
             return buildEnvelope({
               success: false,
-              summary: `Drive upload failed: ${(result as any)?.error?.message ?? response.statusText}`,
-              errorKind: 'api_failure',
-              retryable: true,
-              fullPayload: { status: response.status, result },
+              summary: 'updateFile requires fileId.',
+              errorKind: 'missing_input',
             });
           }
-          return buildEnvelope({
-            success: true,
-            summary: 'File uploaded.',
-            keyData: { fileId: asString(result.id) },
-            fullPayload: result,
+          const hasContent = Boolean(input.contentBase64 || input.contentText);
+          const hasName = Boolean(input.fileName?.trim());
+          if (!hasContent && !hasName) {
+            return buildEnvelope({
+              success: false,
+              summary: 'updateFile requires contentBase64/contentText or fileName.',
+              errorKind: 'missing_input',
+            });
+          }
+          const content = input.contentBase64
+            ? input.contentBase64
+            : typeof input.contentText === 'string'
+              ? Buffer.from(input.contentText, 'utf8').toString('base64')
+              : undefined;
+          return createPendingRemoteApproval({
+            runtime,
+            toolId: 'google-drive',
+            actionGroup: 'update',
+            operation: 'updateFile',
+            summary: `Approval required to update Drive file ${fileId}.`,
+            subject: input.fileName?.trim() ?? fileId,
+            explanation: 'Update a Google Drive file name or contents.',
+            payload: {
+              fileId,
+              fileName: input.fileName?.trim(),
+              mimeType: input.mimeType,
+              parentId: input.parentId,
+              ...(content ? { contentBase64: content } : {}),
+            },
+          });
+        }
+
+        if (input.operation === 'deleteFile') {
+          const fileId = input.fileId?.trim();
+          if (!fileId) {
+            return buildEnvelope({
+              success: false,
+              summary: 'deleteFile requires fileId.',
+              errorKind: 'missing_input',
+            });
+          }
+          return createPendingRemoteApproval({
+            runtime,
+            toolId: 'google-drive',
+            actionGroup: 'delete',
+            operation: 'deleteFile',
+            summary: `Approval required to delete Drive file ${fileId}.`,
+            subject: fileId,
+            explanation: 'Delete a Google Drive file.',
+            payload: { fileId },
           });
         }
 
@@ -1539,6 +2266,505 @@ export const createVercelDesktopTools = (
           summary: `Unsupported Drive operation: ${input.operation}`,
           errorKind: 'unsupported',
           retryable: false,
+        });
+      }),
+    }),
+
+    googleCalendar: tool({
+      description: 'Use the connected Google account to list, read, create, update, and delete Google Calendar events.',
+      inputSchema: z.object({
+        operation: z.enum(['listCalendars', 'listEvents', 'getEvent', 'createEvent', 'updateEvent', 'deleteEvent']),
+        calendarId: z.string().optional(),
+        eventId: z.string().optional(),
+        query: z.string().optional(),
+        timeMin: z.string().optional(),
+        timeMax: z.string().optional(),
+        summary: z.string().optional(),
+        description: z.string().optional(),
+        location: z.string().optional(),
+        startTime: z.string().optional(),
+        endTime: z.string().optional(),
+        attendees: z.array(z.string()).optional(),
+      }),
+      execute: async (input) => withLifecycle(hooks, 'googleCalendar', 'Running Google Calendar workflow', async () => {
+        const actionGroup: ToolActionGroup =
+          input.operation === 'createEvent'
+            ? 'create'
+            : input.operation === 'updateEvent'
+              ? 'update'
+              : input.operation === 'deleteEvent'
+                ? 'delete'
+                : 'read';
+        const permissionError = ensureActionPermission(runtime, 'google-calendar', actionGroup);
+        if (permissionError) {
+          return permissionError;
+        }
+
+        const access = await resolveGoogleAccess(
+          runtime,
+          actionGroup === 'read'
+            ? ['https://www.googleapis.com/auth/calendar.readonly']
+            : ['https://www.googleapis.com/auth/calendar.events'],
+        );
+        if ('error' in access) {
+          return access.error;
+        }
+
+        const calendarId = encodeURIComponent(input.calendarId?.trim() || 'primary');
+
+        if (input.operation === 'listCalendars') {
+          const response = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+            headers: { Authorization: `Bearer ${access.accessToken}` },
+          });
+          const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+          if (!response.ok) {
+            return buildEnvelope({
+              success: false,
+              summary: `Google Calendar list failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+              errorKind: 'api_failure',
+              retryable: true,
+              fullPayload: { status: response.status, payload },
+            });
+          }
+          const items = asArray(payload.items).map((entry) => asRecord(entry)).filter(Boolean);
+          return buildEnvelope({
+            success: true,
+            summary: `Found ${items.length} Google calendar(s).`,
+            keyData: { calendars: items },
+            fullPayload: payload,
+          });
+        }
+
+        if (input.operation === 'listEvents') {
+          const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`);
+          if (input.query?.trim()) url.searchParams.set('q', input.query.trim());
+          if (input.timeMin?.trim()) url.searchParams.set('timeMin', input.timeMin.trim());
+          if (input.timeMax?.trim()) url.searchParams.set('timeMax', input.timeMax.trim());
+          url.searchParams.set('singleEvents', 'true');
+          url.searchParams.set('maxResults', '50');
+          url.searchParams.set('orderBy', 'startTime');
+          const response = await fetch(url, {
+            headers: { Authorization: `Bearer ${access.accessToken}` },
+          });
+          const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+          if (!response.ok) {
+            return buildEnvelope({
+              success: false,
+              summary: `Google Calendar event list failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+              errorKind: 'api_failure',
+              retryable: true,
+              fullPayload: { status: response.status, payload },
+            });
+          }
+          const items = asArray(payload.items).map((entry) => asRecord(entry)).filter(Boolean);
+          return buildEnvelope({
+            success: true,
+            summary: `Found ${items.length} Google Calendar event(s).`,
+            keyData: { events: items },
+            fullPayload: payload,
+          });
+        }
+
+        if (input.operation === 'getEvent') {
+          const eventId = input.eventId?.trim();
+          if (!eventId) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getEvent requires eventId.',
+              errorKind: 'missing_input',
+            });
+          }
+          const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}`, {
+            headers: { Authorization: `Bearer ${access.accessToken}` },
+          });
+          const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+          if (!response.ok) {
+            return buildEnvelope({
+              success: false,
+              summary: `Google Calendar getEvent failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+              errorKind: 'api_failure',
+              retryable: true,
+              fullPayload: { status: response.status, payload },
+            });
+          }
+          return buildEnvelope({
+            success: true,
+            summary: `Fetched Google Calendar event ${eventId}.`,
+            keyData: { event: payload },
+            fullPayload: payload,
+          });
+        }
+
+        if (input.operation === 'createEvent') {
+          if (!input.summary?.trim() || !input.startTime?.trim() || !input.endTime?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'createEvent requires summary, startTime, and endTime.',
+              errorKind: 'missing_input',
+            });
+          }
+          return createPendingRemoteApproval({
+            runtime,
+            toolId: 'google-calendar',
+            actionGroup: 'create',
+            operation: 'createEvent',
+            summary: `Approval required to create Google Calendar event "${input.summary.trim()}".`,
+            subject: input.summary.trim(),
+            explanation: 'Create a Google Calendar event.',
+            payload: {
+              calendarId: input.calendarId?.trim() || 'primary',
+              body: {
+                summary: input.summary.trim(),
+                ...(input.description?.trim() ? { description: input.description.trim() } : {}),
+                ...(input.location?.trim() ? { location: input.location.trim() } : {}),
+                start: { dateTime: input.startTime.trim() },
+                end: { dateTime: input.endTime.trim() },
+                ...(input.attendees?.length ? { attendees: input.attendees.map((email) => ({ email })) } : {}),
+              },
+            },
+          });
+        }
+
+        if (input.operation === 'updateEvent') {
+          const eventId = input.eventId?.trim();
+          if (!eventId) {
+            return buildEnvelope({
+              success: false,
+              summary: 'updateEvent requires eventId.',
+              errorKind: 'missing_input',
+            });
+          }
+          const body: Record<string, unknown> = {
+            ...(input.summary?.trim() ? { summary: input.summary.trim() } : {}),
+            ...(input.description?.trim() ? { description: input.description.trim() } : {}),
+            ...(input.location?.trim() ? { location: input.location.trim() } : {}),
+            ...(input.startTime?.trim() ? { start: { dateTime: input.startTime.trim() } } : {}),
+            ...(input.endTime?.trim() ? { end: { dateTime: input.endTime.trim() } } : {}),
+            ...(input.attendees?.length ? { attendees: input.attendees.map((email) => ({ email })) } : {}),
+          };
+          if (Object.keys(body).length === 0) {
+            return buildEnvelope({
+              success: false,
+              summary: 'updateEvent requires at least one field to change.',
+              errorKind: 'missing_input',
+            });
+          }
+          return createPendingRemoteApproval({
+            runtime,
+            toolId: 'google-calendar',
+            actionGroup: 'update',
+            operation: 'updateEvent',
+            summary: `Approval required to update Google Calendar event ${eventId}.`,
+            subject: input.summary?.trim() ?? eventId,
+            explanation: 'Update a Google Calendar event.',
+            payload: {
+              calendarId: input.calendarId?.trim() || 'primary',
+              eventId,
+              body,
+            },
+          });
+        }
+
+        if (input.operation === 'deleteEvent') {
+          const eventId = input.eventId?.trim();
+          if (!eventId) {
+            return buildEnvelope({
+              success: false,
+              summary: 'deleteEvent requires eventId.',
+              errorKind: 'missing_input',
+            });
+          }
+          return createPendingRemoteApproval({
+            runtime,
+            toolId: 'google-calendar',
+            actionGroup: 'delete',
+            operation: 'deleteEvent',
+            summary: `Approval required to delete Google Calendar event ${eventId}.`,
+            subject: eventId,
+            explanation: 'Delete a Google Calendar event.',
+            payload: {
+              calendarId: input.calendarId?.trim() || 'primary',
+              eventId,
+            },
+          });
+        }
+
+        return buildEnvelope({
+          success: false,
+          summary: `Unsupported Google Calendar operation: ${input.operation}`,
+          errorKind: 'unsupported',
+          retryable: false,
+        });
+      }),
+    }),
+
+    booksRead: tool({
+      description: 'Read Zoho Books organizations and finance records such as invoices, estimates, bills, payments, and bank transactions.',
+      inputSchema: z.object({
+        operation: z.enum(['listOrganizations', 'listRecords', 'getRecord', 'summarizeModule']),
+        module: z.string().optional(),
+        recordId: z.string().optional(),
+        organizationId: z.string().optional(),
+        query: z.string().optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        filters: z.record(z.unknown()).optional(),
+      }),
+      execute: async (input) => withLifecycle(hooks, 'booksRead', 'Running Zoho Books read workflow', async () => {
+        const readPermissionError = ensureAnyActionPermission(
+          runtime,
+          ['zoho-books-read', 'zoho-books-agent'],
+          'read',
+          'booksRead',
+        );
+        if (readPermissionError) {
+          return readPermissionError;
+        }
+
+        if (input.operation === 'listOrganizations') {
+          try {
+            const organizations = await loadZohoBooksClient().listOrganizations({
+              companyId: runtime.companyId,
+            });
+            return buildEnvelope({
+              success: true,
+              summary: organizations.length > 0
+                ? `Found ${organizations.length} Zoho Books organization(s).`
+                : 'No Zoho Books organizations were returned by the current connection.',
+              keyData: {
+                organizationId: asString(organizations[0]?.organizationId),
+                organizations,
+              },
+              fullPayload: {
+                organizations,
+              },
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to list Zoho Books organizations.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        const moduleName = normalizeZohoBooksModule(input.module);
+        if (!moduleName) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires a supported Zoho Books module such as invoices, estimates, bills, customerpayments, or banktransactions.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+
+        if (input.operation === 'getRecord') {
+          if (!input.recordId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getRecord requires recordId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getRecord({
+              companyId: runtime.companyId,
+              moduleName,
+              recordId: input.recordId.trim(),
+              organizationId: input.organizationId?.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched Zoho Books ${moduleName} record ${input.recordId.trim()}.`,
+              keyData: {
+                module: moduleName,
+                recordId: input.recordId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+              citations: [{
+                id: `books-${moduleName}-${input.recordId.trim()}`,
+                title: `${moduleName}:${input.recordId.trim()}`,
+                kind: 'record',
+                sourceType: moduleName,
+                sourceId: input.recordId.trim(),
+              }],
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch Zoho Books record.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        try {
+          const result = await loadZohoBooksClient().listRecords({
+            companyId: runtime.companyId,
+            moduleName,
+            organizationId: input.organizationId?.trim(),
+            filters: input.filters,
+            limit: input.limit,
+            query: input.query?.trim(),
+          });
+
+          if (input.operation === 'summarizeModule') {
+            const statusCounts = result.items.reduce<Record<string, number>>((acc, item) => {
+              const status = asString(item.status) ?? 'unknown';
+              acc[status] = (acc[status] ?? 0) + 1;
+              return acc;
+            }, {});
+            return buildEnvelope({
+              success: true,
+              summary: result.items.length > 0
+                ? `Summarized ${result.items.length} Zoho Books ${moduleName} record(s).`
+                : `No Zoho Books ${moduleName} records matched the current filters.`,
+              keyData: {
+                module: moduleName,
+                organizationId: result.organizationId,
+                recordCount: result.items.length,
+                statusCounts,
+              },
+              fullPayload: {
+                organizationId: result.organizationId,
+                statusCounts,
+                records: result.items,
+                raw: result.payload,
+              },
+            });
+          }
+
+          return buildEnvelope({
+            success: true,
+            summary: result.items.length > 0
+              ? `Found ${result.items.length} Zoho Books ${moduleName} record(s).`
+              : `No Zoho Books ${moduleName} records matched the current filters.`,
+            keyData: {
+              module: moduleName,
+              organizationId: result.organizationId,
+              recordCount: result.items.length,
+            },
+            fullPayload: {
+              organizationId: result.organizationId,
+              records: result.items,
+              raw: result.payload,
+            },
+            citations: result.items.flatMap((record, index) => {
+              const recordId =
+                asString(record.invoice_id)
+                ?? asString(record.estimate_id)
+                ?? asString(record.bill_id)
+                ?? asString(record.payment_id)
+                ?? asString(record.bank_transaction_id)
+                ?? asString(record.transaction_id);
+              if (!recordId) {
+                return [];
+              }
+              return [{
+                id: `books-${moduleName}-${index + 1}`,
+                title: `${moduleName}:${recordId}`,
+                kind: 'record',
+                sourceType: moduleName,
+                sourceId: recordId,
+              }];
+            }),
+          });
+        } catch (error) {
+          const summary = error instanceof Error ? error.message : 'Failed to read Zoho Books records.';
+          return buildEnvelope({
+            success: false,
+            summary,
+            errorKind: inferErrorKind(summary),
+            retryable: true,
+          });
+        }
+      }),
+    }),
+
+    booksWrite: tool({
+      description: 'Create, update, and delete Zoho Books records through approval-gated actions.',
+      inputSchema: z.object({
+        operation: z.enum(['createRecord', 'updateRecord', 'deleteRecord']),
+        module: z.string(),
+        recordId: z.string().optional(),
+        organizationId: z.string().optional(),
+        body: z.record(z.unknown()).optional(),
+      }),
+      execute: async (input) => withLifecycle(hooks, 'booksWrite', 'Running Zoho Books write workflow', async () => {
+        const moduleName = normalizeZohoBooksModule(input.module);
+        if (!moduleName) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires a supported Zoho Books module such as invoices, estimates, bills, customerpayments, or banktransactions.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+
+        const actionGroup: ToolActionGroup =
+          input.operation === 'createRecord'
+            ? 'create'
+            : input.operation === 'updateRecord'
+              ? 'update'
+              : 'delete';
+        const permissionError = ensureAnyActionPermission(
+          runtime,
+          ['zoho-books-write', 'zoho-books-agent'],
+          actionGroup,
+          'booksWrite',
+        );
+        if (permissionError) {
+          return permissionError;
+        }
+
+        if (input.operation !== 'createRecord' && !input.recordId?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires recordId.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+        if ((input.operation === 'createRecord' || input.operation === 'updateRecord') && !input.body) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires body.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+
+        const subject =
+          input.operation === 'createRecord'
+            ? `Create Zoho Books ${moduleName}`
+            : `${input.operation === 'updateRecord' ? 'Update' : 'Delete'} Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}`.trim();
+        const summary =
+          input.operation === 'createRecord'
+            ? `Approval required to create a Zoho Books ${moduleName} record.`
+            : input.operation === 'updateRecord'
+              ? `Approval required to update Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}.`.trim()
+              : `Approval required to delete Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}.`.trim();
+
+        return createPendingRemoteApproval({
+          runtime,
+          toolId: 'zoho-books-write',
+          actionGroup,
+          operation: input.operation,
+          summary,
+          subject,
+          explanation: 'Zoho Books mutations are approval-gated. Review the module, organization, record target, and payload before proceeding.',
+          payload: {
+            operation: input.operation,
+            module: moduleName,
+            recordId: input.recordId?.trim(),
+            organizationId: input.organizationId?.trim(),
+            body: input.body,
+          },
         });
       }),
     }),
@@ -2583,14 +3809,35 @@ export const createVercelDesktopTools = (
     zoho: tool({
       description: 'Comprehensive Zoho CRM tool for search context and grounded record reads.',
       inputSchema: z.object({
-        operation: z.enum(['searchContext', 'readRecords', 'summarizePipeline', 'getRecord']),
-        query: z.string().min(1),
+        operation: z.enum(['searchContext', 'readRecords', 'summarizePipeline', 'getRecord', 'createRecord', 'updateRecord', 'deleteRecord']),
+        query: z.string().optional(),
         module: z.string().optional(),
         recordId: z.string().optional(),
         filters: z.record(z.unknown()).optional(),
+        fields: z.record(z.unknown()).optional(),
+        trigger: z.array(z.string()).optional(),
       }),
       execute: async (input) => withLifecycle(hooks, 'zoho', 'Running Zoho workflow', async () => {
+        const readPermissionError = ensureAnyActionPermission(
+          runtime,
+          ['search-zoho-context', 'read-zoho-records', 'zoho-agent', 'zoho-read'],
+          'read',
+          'zoho',
+        );
+        const sourceType = normalizeZohoSourceType(input.module);
+
         if (input.operation === 'searchContext') {
+          if (readPermissionError) {
+            return readPermissionError;
+          }
+          if (!input.query?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'searchContext requires query.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
           try {
             const companyId = await loadCompanyContextResolver().resolveCompanyId({
               companyId: runtime.companyId,
@@ -2611,7 +3858,7 @@ export const createVercelDesktopTools = (
               requesterEmail: runtime.requesterEmail,
               scopeMode,
               strictUserScopeEnabled,
-              text: input.query,
+              text: input.query.trim(),
               limit: 5,
             });
             const normalizedMatches = matches.map((entry) => {
@@ -2661,6 +3908,137 @@ export const createVercelDesktopTools = (
               retryable: true,
             });
           }
+        }
+
+        if (input.operation === 'getRecord') {
+          if (readPermissionError) {
+            return readPermissionError;
+          }
+          if (!sourceType || !input.recordId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getRecord requires module and recordId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const record = await loadZohoDataClient().fetchRecordBySource({
+              companyId: runtime.companyId,
+              sourceType,
+              sourceId: input.recordId.trim(),
+            });
+            if (!record) {
+              return buildEnvelope({
+                success: false,
+                summary: `No Zoho record was found for ${input.module} ${input.recordId.trim()}.`,
+                errorKind: 'validation',
+                retryable: false,
+              });
+            }
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched Zoho ${input.module?.trim() ?? 'record'} ${input.recordId.trim()}.`,
+              keyData: {
+                recordId: input.recordId.trim(),
+                recordType: sourceType,
+              },
+              fullPayload: {
+                record,
+              },
+              citations: [{
+                id: `zoho-record-${input.recordId.trim()}`,
+                title: `${sourceType}:${input.recordId.trim()}`,
+                kind: 'record',
+                sourceType,
+                sourceId: input.recordId.trim(),
+              }],
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch Zoho record.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'createRecord' || input.operation === 'updateRecord' || input.operation === 'deleteRecord') {
+          const actionGroup: ToolActionGroup =
+            input.operation === 'createRecord'
+              ? 'create'
+              : input.operation === 'updateRecord'
+                ? 'update'
+                : 'delete';
+          const permissionError = ensureAnyActionPermission(runtime, ['zoho-write', 'zoho-agent'], actionGroup, 'zoho');
+          if (permissionError) {
+            return permissionError;
+          }
+          if (!sourceType) {
+            return buildEnvelope({
+              success: false,
+              summary: `${input.operation} requires a supported Zoho module such as Leads, Contacts, Deals, or Cases.`,
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          if (input.operation !== 'createRecord' && !input.recordId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: `${input.operation} requires recordId.`,
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          if ((input.operation === 'createRecord' || input.operation === 'updateRecord') && !input.fields) {
+            return buildEnvelope({
+              success: false,
+              summary: `${input.operation} requires fields.`,
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          const subject =
+            input.operation === 'createRecord'
+              ? `Create Zoho ${input.module?.trim() ?? sourceType}`
+              : `${input.operation === 'updateRecord' ? 'Update' : 'Delete'} Zoho ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}`.trim();
+          const summary =
+            input.operation === 'createRecord'
+              ? `Approval required to create a Zoho ${input.module?.trim() ?? sourceType}.`
+              : input.operation === 'updateRecord'
+                ? `Approval required to update Zoho ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}.`.trim()
+                : `Approval required to delete Zoho ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}.`.trim();
+          return createPendingRemoteApproval({
+            runtime,
+            toolId: 'zoho-write',
+            actionGroup,
+            operation: input.operation,
+            summary,
+            subject,
+            explanation: 'Zoho CRM mutations are approval-gated. Review the module, record target, and field payload before proceeding.',
+            payload: {
+              operation: input.operation,
+              module: input.module?.trim(),
+              sourceType,
+              recordId: input.recordId?.trim(),
+              fields: input.fields,
+              trigger: input.trigger,
+            },
+          });
+        }
+
+        if (readPermissionError) {
+          return readPermissionError;
+        }
+        if (!input.query?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires query.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
         }
 
         const objectiveParts = [input.query.trim()];

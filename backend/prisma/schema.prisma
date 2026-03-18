@@ -74,6 +74,7 @@ model Company {
   executionRuns    ExecutionRun[]
   larkAuthLinks    LarkUserAuthLink[]
   googleAuthLinks  GoogleUserAuthLink[]
+  googleWorkspaceAuth CompanyGoogleAuthLink?
   fileAssets       FileAsset[]
 }
 
@@ -571,12 +572,13 @@ model DepartmentToolPermission {
   roleId      String
   role        DepartmentRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
   toolId      String
+  actionGroup String   @default("all")
   allowed     Boolean  @default(true)
   updatedBy   String
   updatedByUser User   @relation("DepartmentToolPermissionUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
   updatedAt   DateTime @updatedAt
 
-  @@unique([departmentId, roleId, toolId])
+  @@unique([departmentId, roleId, toolId, actionGroup])
   @@index([departmentId, roleId])
 }
 
@@ -587,12 +589,13 @@ model DepartmentUserToolOverride {
   userId      String
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   toolId      String
+  actionGroup String   @default("all")
   allowed     Boolean  @default(true)
   updatedBy   String
   updatedByUser User   @relation("DepartmentUserToolOverrideUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
   updatedAt   DateTime @updatedAt
 
-  @@unique([departmentId, userId, toolId])
+  @@unique([departmentId, userId, toolId, actionGroup])
   @@index([departmentId, userId])
 }
 
@@ -730,6 +733,31 @@ model GoogleUserAuthLink {
   updatedAt             DateTime @updatedAt
 
   @@unique([userId, companyId])
+  @@index([companyId, googleEmail])
+  @@index([companyId, googleUserId])
+}
+
+model CompanyGoogleAuthLink {
+  id                    String   @id @default(uuid())
+  companyId             String   @unique
+  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  googleUserId          String?
+  googleEmail           String?
+  googleName            String?
+  scope                 String?
+  accessTokenEncrypted  String
+  refreshTokenEncrypted String?
+  tokenType             String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  tokenMetadata         Json?
+  linkedByUserId        String?
+  linkedAt              DateTime @default(now())
+  lastUsedAt            DateTime?
+  revokedAt             DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
   @@index([companyId, googleEmail])
   @@index([companyId, googleUserId])
 }

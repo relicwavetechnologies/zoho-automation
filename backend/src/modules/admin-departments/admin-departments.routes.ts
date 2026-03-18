@@ -25,11 +25,11 @@ router.post('/:departmentId/skills', asyncHandler(adminDepartmentsController.cre
 router.put('/:departmentId/skills/:skillId', asyncHandler(adminDepartmentsController.updateSkill));
 router.post('/:departmentId/skills/:skillId/archive', asyncHandler(adminDepartmentsController.archiveSkill));
 router.put(
-  '/:departmentId/role-permissions/:roleId/:toolId',
+  '/:departmentId/role-permissions/:roleId/:toolId/:actionGroup',
   asyncHandler(adminDepartmentsController.updateRolePermission),
 );
 router.put(
-  '/:departmentId/user-overrides/:userId/:toolId',
+  '/:departmentId/user-overrides/:userId/:toolId/:actionGroup',
   asyncHandler(adminDepartmentsController.updateUserOverride),
 );
 

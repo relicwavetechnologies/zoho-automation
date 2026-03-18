@@ -141,6 +141,7 @@ function TerminalBlockCard({ block }: { block: Extract<ContentBlock, { type: 'te
 // ── Tool block row ────────────────────────────────────────────────────────────
 function ToolBlockRow({ block }: { block: Extract<ContentBlock, { type: 'tool' }> }): JSX.Element {
     const [open, setOpen] = useState(() => block.name === 'planner-agent' || block.status === 'failed')
+    const [showAllSources, setShowAllSources] = useState(false)
     const isRunning = block.status === 'running'
     const hasSummary = !!block.resultSummary && !isRunning
 
@@ -170,6 +171,8 @@ function ToolBlockRow({ block }: { block: Extract<ContentBlock, { type: 'tool' }
     // Custom UI for search citations matching reference image
     if (structuredData) {
         const sourcesCount = structuredData.sources?.length || 0
+        const visibleSources = showAllSources ? structuredData.sources : structuredData.sources.slice(0, 6)
+        const hiddenSourcesCount = Math.max(0, sourcesCount - visibleSources.length)
         return (
             <div className="py-1 my-0.5 flex flex-col items-start w-full">
                 <button
@@ -201,7 +204,7 @@ function ToolBlockRow({ block }: { block: Extract<ContentBlock, { type: 'tool' }
                         'mt-2 w-[90%] max-w-[600px] border border-[hsl(0,0%,12%)] rounded-xl',
                         'bg-[hsl(0,0%,6%)] overflow-hidden flex flex-col',
                     )}>
-                        {structuredData.sources.map((src: any, idx: number) => {
+                        {visibleSources.map((src: any, idx: number) => {
                             let domain = ''
                             try { domain = new URL(src.url).hostname.replace('www.', '') } catch (e) { }
 
@@ -234,6 +237,16 @@ function ToolBlockRow({ block }: { block: Extract<ContentBlock, { type: 'tool' }
                                 </a>
                             )
                         })}
+                        {sourcesCount > 6 && (
+                            <button
+                                onClick={() => setShowAllSources((value) => !value)}
+                                className="m-3 self-start rounded-full border border-[hsl(0,0%,14%)] bg-[hsl(0,0%,8%)] px-3 py-1.5 text-[11px] font-medium text-[hsl(0,0%,62%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,86%)]"
+                            >
+                                {showAllSources
+                                    ? 'Show fewer sources'
+                                    : `Show ${hiddenSourcesCount} more source${hiddenSourcesCount === 1 ? '' : 's'}`}
+                            </button>
+                        )}
                     </div>
                 )}
             </div>

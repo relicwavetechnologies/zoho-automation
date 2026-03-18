@@ -684,7 +684,7 @@ export class ZohoReadAgent extends BaseAgent {
     const promptText = [
       `User request: "${input.objective}"`,
       '',
-      'You are Odin CRM synthesis for a Zoho question.',
+      'You are Divo CRM synthesis for a Zoho question.',
       'Rules:',
       '- Treat live Zoho API records as the source of truth.',
       '- Use vector context only as supporting context; it may be stale.',

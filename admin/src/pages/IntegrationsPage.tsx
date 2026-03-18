@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link2, Unlink, RefreshCw, Users, Zap, Building2, ExternalLink, ShieldCheck, Database, CheckCircle2, AlertCircle, ArrowRight, MessageSquare, Share2, Clock } from 'lucide-react';
+import { Link2, Unlink, RefreshCw, Users, Zap, Building2, ExternalLink, ShieldCheck, Database, CheckCircle2, AlertCircle, ArrowRight, MessageSquare, Share2, Clock, Mail } from 'lucide-react';
 
 import { useAdminAuth } from '../auth/AdminAuthProvider';
 import { api } from '../lib/api';
@@ -54,6 +54,23 @@ type ZohoOAuthConfigStatus = {
   apiBaseUrl?: string;
   updatedAt?: string;
   source?: 'platform_env' | 'legacy_company_config' | 'missing';
+};
+
+type GoogleWorkspaceStatus = {
+  configured: boolean;
+  connected: boolean;
+  email?: string;
+  name?: string;
+  scopes?: string[];
+  updatedAt?: string;
+  source?: string;
+  redirectUri?: string;
+};
+
+type GoogleAuthorizeUrlResult = {
+  authorizeUrl: string;
+  redirectUri: string;
+  scopes: string[];
 };
 
 type ZohoAuthorizeUrlResult = {
@@ -171,6 +188,7 @@ export const IntegrationsPage = () => {
   const [statusLoading, setStatusLoading] = useState(true);
   const [identitiesLoading, setIdentitiesLoading] = useState(true);
   const [oauthConfigLoading, setOauthConfigLoading] = useState(true);
+  const [googleWorkspaceLoading, setGoogleWorkspaceLoading] = useState(true);
   const [larkWorkspaceConfigLoading, setLarkWorkspaceConfigLoading] = useState(true);
   const [larkOperationalConfigLoading, setLarkOperationalConfigLoading] = useState(true);
   const [larkSyncLoading, setLarkSyncLoading] = useState(true);
@@ -182,6 +200,7 @@ export const IntegrationsPage = () => {
   const [larkOperationalConfig, setLarkOperationalConfig] = useState<LarkOperationalConfigStatus | null>(null);
   const [larkSyncStatus, setLarkSyncStatus] = useState<LarkSyncStatus | null>(null);
   const [oauthConfig, setOauthConfig] = useState<ZohoOAuthConfigStatus | null>(null);
+  const [googleWorkspace, setGoogleWorkspace] = useState<GoogleWorkspaceStatus | null>(null);
   const [identities, setIdentities] = useState<ChannelIdentity[]>([]);
   const [vectorShareRequests, setVectorShareRequests] = useState<VectorShareRequest[]>([]);
   const [channelFilter, setChannelFilter] = useState<'all' | 'lark' | 'slack' | 'whatsapp'>('all');
@@ -196,6 +215,8 @@ export const IntegrationsPage = () => {
   const [restEnv, setRestEnv] = useState<'prod' | 'sandbox'>('prod');
   const [zohoDisconnecting, setZohoDisconnecting] = useState(false);
   const [oauthLaunching, setOauthLaunching] = useState(false);
+  const [googleLaunching, setGoogleLaunching] = useState(false);
+  const [googleDisconnecting, setGoogleDisconnecting] = useState(false);
   const [historicalSyncTriggering, setHistoricalSyncTriggering] = useState(false);
   const [larkDefaultsForm, setLarkDefaultsForm] = useState({
     defaultBaseAppToken: '',
@@ -251,6 +272,19 @@ export const IntegrationsPage = () => {
     } catch { setOauthConfig({ configured: false }); } finally { setOauthConfigLoading(false); }
   };
 
+  const loadGoogleWorkspaceStatus = async () => {
+    if (!token || (isSuperAdmin && !scopedCompanyId)) { setGoogleWorkspace(null); setGoogleWorkspaceLoading(false); return; }
+    setGoogleWorkspaceLoading(true);
+    try {
+      const result = await api.get<GoogleWorkspaceStatus>(`/api/admin/company/onboarding/google-workspace-status${buildQuery()}`, token);
+      setGoogleWorkspace(result);
+    } catch {
+      setGoogleWorkspace({ configured: false, connected: false });
+    } finally {
+      setGoogleWorkspaceLoading(false);
+    }
+  };
+
   const loadLarkWorkspaceConfig = async () => {
     if (!token || (isSuperAdmin && !scopedCompanyId)) { setLarkWorkspaceConfig(null); setLarkWorkspaceConfigLoading(false); return; }
     setLarkWorkspaceConfigLoading(true);
@@ -296,7 +330,7 @@ export const IntegrationsPage = () => {
   };
 
   useEffect(() => {
-    void loadStatus(); void loadIdentities(); void loadZohoOAuthConfig();
+    void loadStatus(); void loadIdentities(); void loadZohoOAuthConfig(); void loadGoogleWorkspaceStatus();
     void loadLarkWorkspaceConfig(); void loadLarkOperationalConfig();
     void loadLarkSyncStatus(); void loadVectorShareRequests();
   }, [token, scopedCompanyId, isSuperAdmin]);
@@ -364,6 +398,34 @@ export const IntegrationsPage = () => {
     } finally { setZohoDisconnecting(false); }
   };
 
+  const launchGoogleOauth = async () => {
+    if (isSuperAdmin && !scopedCompanyId) { toast({ title: 'Workspace required', variant: 'destructive' }); return; }
+    if (!googleWorkspace?.configured) { toast({ title: 'Google OAuth is not configured', variant: 'destructive' }); return; }
+    setGoogleLaunching(true);
+    try {
+      const query = new URLSearchParams();
+      if (scopedCompanyId) query.set('companyId', scopedCompanyId);
+      const result = await api.get<GoogleAuthorizeUrlResult>(`/api/admin/company/onboarding/google-authorize-url?${query.toString()}`, token || undefined);
+      window.location.assign(result.authorizeUrl);
+    } catch {
+      setGoogleLaunching(false);
+    }
+  };
+
+  const disconnectGoogleWorkspace = async () => {
+    if (!token || !window.confirm('Disconnect Google Workspace for this company?')) return;
+    setGoogleDisconnecting(true);
+    try {
+      const query = new URLSearchParams();
+      if (scopedCompanyId) query.set('companyId', scopedCompanyId);
+      await api.post(`/api/admin/company/onboarding/google-disconnect${query.toString() ? `?${query.toString()}` : ''}`, {}, token);
+      toast({ title: 'Google Workspace disconnected', variant: 'success' });
+      void loadGoogleWorkspaceStatus();
+    } finally {
+      setGoogleDisconnecting(false);
+    }
+  };
+
   const triggerHistoricalSync = async () => {
     if (!token) return; setHistoricalSyncTriggering(true);
     try {
@@ -404,6 +466,7 @@ export const IntegrationsPage = () => {
   };
 
   const zohoConnected = !!onboarding?.connection && onboarding.connection.status !== 'disconnected';
+  const googleConnected = !!googleWorkspace?.connected;
 
   if (requiresWorkspaceSelection) {
     return (
@@ -526,6 +589,78 @@ export const IntegrationsPage = () => {
                       Force Identity Sync
                     </Button>
                   </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </section>
+
+        {/* Google Workspace Section */}
+        <section className="space-y-6">
+          <div className="flex items-center gap-3 ml-1">
+            <div className="h-10 w-10 rounded-xl bg-[#4285f4]/10 border border-[#4285f4]/20 flex items-center justify-center">
+              <Mail className="h-5 w-5 text-[#4285f4]" />
+            </div>
+            <div className="space-y-0.5">
+              <h2 className="text-lg font-bold">Google Workspace</h2>
+              <p className="text-xs text-muted-foreground uppercase font-medium tracking-tighter">Company Mailbox & Drive For Finance Automation</p>
+            </div>
+          </div>
+
+          <div className="grid gap-6 md:grid-cols-[1fr_320px]">
+            <Card className={cn("bg-card border-border/50 shadow-md overflow-hidden", googleConnected ? "border-emerald-500/20" : "")}>
+              <CardHeader className="bg-secondary/5 border-b border-border/50 py-4 px-6 flex flex-row items-center justify-between">
+                <CardTitle className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Connection Status</CardTitle>
+                <Badge variant={googleConnected ? "secondary" : "outline"} className={cn(
+                  "text-[9px] h-5 font-bold uppercase",
+                  googleConnected ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" : "text-muted-foreground"
+                )}>
+                  {googleConnected ? 'Connected' : 'Disconnected'}
+                </Badge>
+              </CardHeader>
+              <CardContent className="p-6 space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold uppercase text-muted-foreground tracking-tighter leading-none">Connected Email</span>
+                    <div className="text-xs font-medium break-all">{googleWorkspace?.email || '—'}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold uppercase text-muted-foreground tracking-tighter leading-none">Updated</span>
+                    <div className="text-xs font-medium">{googleWorkspace?.updatedAt ? new Date(googleWorkspace.updatedAt).toLocaleString() : '—'}</div>
+                  </div>
+                  <div className="col-span-2 space-y-1">
+                    <span className="text-[10px] font-bold uppercase text-muted-foreground tracking-tighter leading-none">Scopes</span>
+                    <div className="text-[10px] font-mono text-muted-foreground break-all">
+                      {googleWorkspace?.scopes && googleWorkspace.scopes.length > 0 ? googleWorkspace.scopes.join(', ') : 'No scopes granted yet'}
+                    </div>
+                  </div>
+                </div>
+                {canManageWorkspaceIntegrations && (
+                  <div className="pt-2 flex flex-col gap-3">
+                    <Button onClick={() => void launchGoogleOauth()} disabled={googleLaunching || googleWorkspaceLoading} className="w-full bg-foreground text-background font-bold uppercase text-[10px] tracking-widest h-9">
+                      {googleLaunching ? 'Connecting...' : (googleConnected ? 'Reconnect Google' : 'Connect Google')}
+                    </Button>
+                    {googleConnected && (
+                      <Button variant="ghost" onClick={() => void disconnectGoogleWorkspace()} disabled={googleDisconnecting} className="text-destructive hover:bg-destructive/10 text-[10px] font-bold uppercase tracking-widest h-9">
+                        Disconnect Integration
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="bg-card border-border/50 shadow-md overflow-hidden">
+              <CardHeader className="bg-secondary/5 border-b border-border/50 py-4 px-6">
+                <CardTitle className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Usage Model</CardTitle>
+              </CardHeader>
+              <CardContent className="p-6 space-y-4">
+                <div className="space-y-2 text-xs text-muted-foreground leading-relaxed">
+                  <p>Gmail and Drive are connected once at the company level and reused by Vercel finance workflows.</p>
+                  <p>This is the preferred path for shared collections, reminders, statements, proofs, and reconciliation folders.</p>
+                </div>
+                <div className="rounded-lg border border-border/50 bg-secondary/10 p-3 text-[10px] font-mono text-muted-foreground break-all">
+                  Redirect URI: {googleWorkspace?.redirectUri || '—'}
                 </div>
               </CardContent>
             </Card>

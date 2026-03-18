@@ -9,14 +9,14 @@ const isCapabilityQuestion = (text: string): boolean =>
 
 const buildUserFacingReply = (objective: string): string => {
   if (isGreeting(objective)) {
-    return 'Hello. I am Odin. How can I help today?';
+    return 'Hello. I am Divo. How can I help today?';
   }
 
   if (isCapabilityQuestion(objective)) {
-    return 'I am Odin AI. I can help with Zoho CRM, outreach lookup, web research, and grounded Lark Doc work.';
+    return 'I am Divo AI. I can help with Zoho CRM, outreach lookup, web research, and grounded Lark Doc work.';
   }
 
-  return 'I am Odin AI. I can help with Zoho CRM, outreach, web research, and Lark Docs.';
+  return 'I am Divo AI. I can help with Zoho CRM, outreach, web research, and Lark Docs.';
 };
 
 export class ResponseAgent extends BaseAgent {

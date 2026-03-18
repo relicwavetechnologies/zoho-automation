@@ -1,6 +1,7 @@
 import { generateText, stepCountIs, type ModelMessage } from 'ai';
 
 import config from '../../../config';
+import type { ChannelAction } from '../../channels/base/channel-adapter';
 import { resolveChannelAdapter } from '../../channels';
 import { departmentService } from '../../departments/department.service';
 import type {
@@ -174,6 +175,34 @@ const buildLarkStatusText = (input: {
   return lines.join('\n');
 };
 
+const buildLarkApprovalActions = (pendingApproval: PendingApprovalAction): ChannelAction[] => {
+  if (pendingApproval.kind !== 'tool_action') {
+    return [];
+  }
+  return [
+    {
+      id: 'hitl_approve',
+      label: 'Approve',
+      style: 'primary',
+      value: {
+        kind: 'hitl_tool_action',
+        actionId: pendingApproval.approvalId,
+        decision: 'confirmed',
+      },
+    },
+    {
+      id: 'hitl_reject',
+      label: 'Reject',
+      style: 'danger',
+      value: {
+        kind: 'hitl_tool_action',
+        actionId: pendingApproval.approvalId,
+        decision: 'cancelled',
+      },
+    },
+  ];
+};
+
 const mapToolStepsToAgentResults = (
   steps: Array<{ toolResults?: Array<{ toolName?: string; output?: unknown }> }>,
 ): AgentResultDTO[] =>
@@ -223,6 +252,7 @@ const resolveRuntimeContext = async (
   let departmentSystemPrompt: string | undefined;
   let departmentSkillsMarkdown: string | undefined;
   let allowedToolIds = fallbackAllowedToolIds;
+  let allowedActionsByTool: Record<string, string[]> | undefined;
 
   if (linkedUserId) {
     const departments = await departmentService.listUserDepartments(linkedUserId, companyId);
@@ -239,10 +269,13 @@ const resolveRuntimeContext = async (
     departmentSystemPrompt = resolved.systemPrompt;
     departmentSkillsMarkdown = resolved.skillsMarkdown;
     allowedToolIds = resolved.allowedToolIds;
+    allowedActionsByTool = resolved.allowedActionsByTool;
   }
 
   return {
+    channel: 'lark',
     threadId: buildConversationKey(message),
+    chatId: message.chatId,
     executionId: task.taskId,
     companyId,
     userId: linkedUserId,
@@ -258,6 +291,11 @@ const resolveRuntimeContext = async (
     mode: LARK_VERCEL_MODE,
     dateScope: inferDateScope(message.text),
     allowedToolIds: allowedToolIds.filter((toolId) => !LARK_BLOCKED_TOOL_IDS.has(toolId)),
+    allowedActionsByTool: allowedActionsByTool
+      ? Object.fromEntries(
+        Object.entries(allowedActionsByTool).filter(([toolId]) => !LARK_BLOCKED_TOOL_IDS.has(toolId)),
+      )
+      : undefined,
     departmentSystemPrompt,
     departmentSkillsMarkdown,
   };
@@ -277,6 +315,7 @@ const executeLarkVercelTask = async (
   const updateStatus = async (
     phase: 'processing' | 'tool_running' | 'tool_done' | 'approval' | 'processed' | 'failed',
     detail?: string,
+    actions?: ChannelAction[],
   ) => {
     const text = buildLarkStatusText({
       task,
@@ -290,6 +329,7 @@ const executeLarkVercelTask = async (
         messageId: statusMessageId,
         text,
         correlationId: task.taskId,
+        ...(actions ? { actions } : {}),
       });
       if (outbound.status !== 'failed') {
         statusMessageId = outbound.messageId ?? statusMessageId;
@@ -300,6 +340,7 @@ const executeLarkVercelTask = async (
       chatId: message.chatId,
       text,
       correlationId: task.taskId,
+      ...(actions ? { actions } : {}),
     });
     if (outbound.status !== 'failed') {
       statusMessageId = outbound.messageId ?? undefined;
@@ -374,18 +415,26 @@ const executeLarkVercelTask = async (
 
     if (pendingApproval) {
       statusHistory.push(`Approval required: ${pendingApproval.kind}`);
-      await updateStatus('approval', finalText);
+      await updateStatus(
+        'approval',
+        pendingApproval.kind === 'tool_action'
+          ? summarizeText(pendingApproval.summary, 220) ?? finalText
+          : finalText,
+        buildLarkApprovalActions(pendingApproval),
+      );
     } else {
       statusHistory.push('Completed request.');
-      await updateStatus('processed', summarizeText(finalText, 180) ?? undefined);
+      await updateStatus('processed', summarizeText(finalText, 180) ?? undefined, []);
     }
 
-    await adapter.sendMessage({
-      chatId: message.chatId,
-      text: finalText,
-      correlationId: task.taskId,
-    });
-    conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, finalText);
+    if (!pendingApproval) {
+      await adapter.sendMessage({
+        chatId: message.chatId,
+        text: finalText,
+        correlationId: task.taskId,
+      });
+      conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, finalText);
+    }
 
     const agentResults = mapToolStepsToAgentResults(steps).map((entry) => ({
       ...entry,
@@ -407,7 +456,7 @@ const executeLarkVercelTask = async (
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Vercel Lark runtime failed.';
     statusHistory.push(`Failed: ${errorMessage}`);
-    await updateStatus('failed', summarizeText(errorMessage, 180) ?? errorMessage);
+    await updateStatus('failed', summarizeText(errorMessage, 180) ?? errorMessage, []);
     throw error;
   }
 };

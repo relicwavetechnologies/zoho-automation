@@ -478,6 +478,67 @@ export class ZohoDataClient {
     return records;
   }
 
+  async createRecord(input: {
+    companyId: string;
+    environment?: string;
+    sourceType: ZohoSourceType;
+    fields: Record<string, unknown>;
+    trigger?: string[];
+  }): Promise<Record<string, unknown>> {
+    const environment = input.environment ?? 'prod';
+    const moduleDef = ensureModule(input.sourceType);
+    const response = await this.requestWithRefresh<ZohoSingleResponse>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v2/${moduleDef.moduleName}`,
+      method: 'POST',
+      body: {
+        data: [input.fields],
+        ...(input.trigger && input.trigger.length > 0 ? { trigger: input.trigger } : {}),
+      },
+    });
+    return response.data?.[0] ?? {};
+  }
+
+  async updateRecord(input: {
+    companyId: string;
+    environment?: string;
+    sourceType: ZohoSourceType;
+    sourceId: string;
+    fields: Record<string, unknown>;
+    trigger?: string[];
+  }): Promise<Record<string, unknown>> {
+    const environment = input.environment ?? 'prod';
+    const moduleDef = ensureModule(input.sourceType);
+    const response = await this.requestWithRefresh<ZohoSingleResponse>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v2/${moduleDef.moduleName}/${encodeURIComponent(input.sourceId)}`,
+      method: 'PATCH',
+      body: {
+        data: [input.fields],
+        ...(input.trigger && input.trigger.length > 0 ? { trigger: input.trigger } : {}),
+      },
+    });
+    return response.data?.[0] ?? {};
+  }
+
+  async deleteRecord(input: {
+    companyId: string;
+    environment?: string;
+    sourceType: ZohoSourceType;
+    sourceId: string;
+  }): Promise<void> {
+    const environment = input.environment ?? 'prod';
+    const moduleDef = ensureModule(input.sourceType);
+    await this.requestWithRefresh<Record<string, unknown>>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v2/${moduleDef.moduleName}/${encodeURIComponent(input.sourceId)}`,
+      method: 'DELETE',
+    });
+  }
+
   private async requestZohoListWithRefresh(input: {
     companyId: string;
     environment: string;
@@ -523,7 +584,7 @@ export class ZohoDataClient {
     companyId: string;
     environment: string;
     path: string;
-    method: 'GET' | 'POST';
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
     body?: URLSearchParams | Record<string, unknown>;
   }): Promise<T> {
     const scopedClient = await this.resolveApiClient(input.companyId);

@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAdminAuth } from '../auth/AdminAuthProvider';
 import { AdminLayout } from '../components/layout/AdminLayout';
 import { DepartmentsPage } from '../pages/DepartmentsPage';
+import { GoogleOauthCallbackPage } from '../pages/GoogleOauthCallbackPage';
 import { LarkOauthCallbackPage } from '../pages/LarkOauthCallbackPage';
 import { CompanyAdminSignupPage } from '../pages/CompanyAdminSignupPage';
 import { LoginPage } from '../pages/LoginPage';
@@ -72,6 +73,7 @@ export const App = () => {
           <Route path="ai-ops" element={<AiOpsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="lark/callback" element={<LarkOauthCallbackPage />} />
+          <Route path="google/callback" element={<GoogleOauthCallbackPage />} />
           <Route path="zoho/callback" element={<ZohoOauthCallbackPage />} />
         </Route>
 

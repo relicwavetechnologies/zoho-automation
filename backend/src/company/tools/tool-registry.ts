@@ -1,3 +1,5 @@
+import type { ToolActionGroup } from './tool-action-groups';
+
 export type ToolCategory = 'crm-read' | 'crm-action' | 'search' | 'workspace' | 'routing';
 
 /** Built-in role slugs (always present for every company). */
@@ -13,6 +15,7 @@ export interface ToolDefinition {
   engines: ('legacy' | 'vercel')[];
   /** Default permission for built-in roles; custom roles default to same as MEMBER. */
   defaultPermissions: Record<AiRole, boolean>;
+  supportedActionGroups?: ToolActionGroup[];
 }
 
 export const TOOL_REGISTRY: ToolDefinition[] = [
@@ -57,6 +60,38 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
+    id: 'google-calendar',
+    name: 'Google Calendar',
+    description: 'List, read, create, update, and delete Google Calendar events using the connected account.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'document-ocr-read',
+    name: 'Document OCR Read',
+    description: 'List accessible uploaded files and extract machine-readable text from PDFs, docs, and scanned images.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'invoice-parser',
+    name: 'Invoice Parser',
+    description: 'Parse uploaded invoice and bill documents into structured finance fields.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'statement-parser',
+    name: 'Statement Parser',
+    description: 'Parse uploaded bank and account statements into structured rows and totals.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
     id: 'search-zoho-context',
     name: 'Search Zoho Context',
     description: 'Search indexed Zoho CRM records (deals, contacts, tickets) from the vector database.',
@@ -76,6 +111,38 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     id: 'zoho-agent',
     name: 'Zoho CRM Agent',
     description: 'Delegate to the Zoho CRM specialist agent for deep CRM data queries.',
+    category: 'crm-read',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'zoho-write',
+    name: 'Zoho CRM Write',
+    description: 'Create, update, and delete Zoho CRM records after human approval.',
+    category: 'crm-action',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'zoho-books-read',
+    name: 'Zoho Books Read',
+    description: 'Read finance records such as invoices, estimates, bills, and payments from Zoho Books.',
+    category: 'crm-read',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'zoho-books-write',
+    name: 'Zoho Books Write',
+    description: 'Create, update, and delete Zoho Books records after human approval.',
+    category: 'crm-action',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  },
+  {
+    id: 'zoho-books-agent',
+    name: 'Zoho Books Agent',
+    description: 'Delegate to the Zoho Books specialist workflow for finance operations.',
     category: 'crm-read',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
