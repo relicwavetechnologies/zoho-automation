@@ -103,11 +103,13 @@ export function MessageBubble({ message }: Props): JSX.Element {
         {/* Avatar */}
         <div
           className={cn(
-            'shrink-0 mt-0.5 h-6 w-6 rounded-md flex items-center justify-center',
-            isUser ? 'bg-[hsl(0,0%,20%)]' : 'bg-[hsl(0,0%,14%)]',
+            'shrink-0 mt-0.5 h-7 w-7 rounded-xl flex items-center justify-center border shadow-[0_10px_24px_rgba(0,0,0,0.18)]',
+            isUser
+              ? 'border-white/10 bg-white/[0.08]'
+              : 'border-sky-300/12 bg-sky-400/8',
           )}
         >
-          <span className="text-[10px] font-semibold text-[hsl(0,0%,50%)]">
+          <span className={cn('text-[10px] font-semibold', isUser ? 'text-white/65' : 'text-sky-100/72')}>
             {isUser ? 'U' : 'AI'}
           </span>
         </div>
@@ -122,13 +124,13 @@ export function MessageBubble({ message }: Props): JSX.Element {
                     <img 
                       src={file.cloudinaryUrl} 
                       alt={file.fileName} 
-                      className="w-16 h-16 rounded-xl object-cover border border-[hsl(0,0%,20%)] shadow-sm cursor-pointer hover:border-[hsl(0,0%,30%)] transition-colors"
+                      className="w-16 h-16 rounded-2xl object-cover border border-white/10 shadow-sm cursor-pointer hover:border-sky-300/12 transition-colors"
                       title={file.fileName}
                       onClick={() => window.open(file.cloudinaryUrl, '_blank')}
                     />
                   ) : (
                     <div 
-                      className="w-16 h-16 rounded-xl bg-[hsl(0,0%,15%)] border border-[hsl(0,0%,20%)] flex flex-col items-center justify-center gap-1 shadow-sm cursor-pointer hover:bg-[hsl(0,0%,18%)] transition-colors" 
+                      className="glass-panel w-16 h-16 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-sm cursor-pointer hover:bg-white/[0.08] transition-colors" 
                       title={file.fileName}
                       onClick={() => window.open(file.cloudinaryUrl, '_blank')}
                     >
@@ -139,7 +141,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
                     </div>
                   )}
                   {/* Tooltip */}
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-[hsl(0,0%,10%)] border border-[hsl(0,0%,20%)] rounded text-[10px] text-[hsl(0,0%,80%)] whitespace-nowrap opacity-0 group-hover/file:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 glass-panel rounded-xl text-[10px] text-[hsl(0,0%,88%)] whitespace-nowrap opacity-0 group-hover/file:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">
                     {file.fileName}
                   </div>
                 </div>
@@ -151,7 +153,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
             <div className="absolute right-0 top-0 z-10 flex gap-2 opacity-0 transition-all group-hover:opacity-100">
               <button
                 onClick={() => void copyResponse()}
-                className="rounded-xl border border-[hsl(0,0%,16%)] bg-[hsla(0,0%,6%,0.92)] px-2.5 py-1 text-[11px] font-medium text-[hsl(0,0%,64%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,90%)]"
+                className="glass-button rounded-xl px-2.5 py-1 text-[11px] font-medium text-[hsl(0,0%,72%)] hover:bg-white/[0.08] hover:text-[hsl(0,0%,94%)]"
               >
                 {copied ? <Check size={12} className="mr-1 inline-block" /> : <Copy size={12} className="mr-1 inline-block" />}
                 {copied ? 'Copied' : 'Copy'}
@@ -159,18 +161,24 @@ export function MessageBubble({ message }: Props): JSX.Element {
             </div>
           )}
           {isUser ? (
-            <p className="text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed text-[hsl(0,0%,85%)]">
-              {displayContent}
-            </p>
+            <div className="glass-panel inline-block rounded-[24px] px-4 py-3">
+              <p className="text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed text-[hsl(0,0%,92%)]">
+                {displayContent}
+              </p>
+            </div>
           ) : blocks && blocks.length > 0 ? (
             // New: render ordered content blocks (tool rows + text interleaved)
-            <BlocksRenderer blocks={blocks} isStreaming={false} />
+            <div className="glass-panel rounded-[24px] px-4 py-4">
+              <BlocksRenderer blocks={blocks} isStreaming={false} />
+            </div>
           ) : (
             // Legacy fallback: plain markdown text
-            <MarkdownContent
-              content={message.content}
-              className="desktop-markdown text-sm leading-relaxed text-[hsl(0,0%,78%)]"
-            />
+            <div className="glass-panel rounded-[24px] px-4 py-4">
+              <MarkdownContent
+                content={message.content}
+                className="desktop-markdown text-sm leading-relaxed text-[hsl(0,0%,82%)]"
+              />
+            </div>
           )}
 
           {/* Lark doc references */}
@@ -207,7 +215,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
                         href={citation.url}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-full border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,8%)] px-3 py-1.5 text-[11px] text-[hsl(0,0%,70%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)]"
+                        className="inline-flex items-center gap-1.5 rounded-full glass-chip px-3 py-1.5 text-[11px] text-[hsl(0,0%,76%)] hover:bg-white/[0.08] hover:text-[hsl(0,0%,94%)]"
                       >
                         {content}
                       </a>
@@ -217,7 +225,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
                   return (
                     <div
                       key={citation.id}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,8%)] px-3 py-1.5 text-[11px] text-[hsl(0,0%,70%)]"
+                      className="inline-flex items-center gap-1.5 rounded-full glass-chip px-3 py-1.5 text-[11px] text-[hsl(0,0%,76%)]"
                     >
                       {content}
                     </div>
@@ -227,7 +235,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
               {message.metadata.citations.length > 6 && (
                 <button
                   onClick={() => setShowAllCitations((value) => !value)}
-                  className="mt-2 inline-flex items-center rounded-full border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,7%)] px-3 py-1.5 text-[11px] font-medium text-[hsl(0,0%,62%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,86%)]"
+                  className="mt-2 inline-flex items-center rounded-full glass-chip px-3 py-1.5 text-[11px] font-medium text-[hsl(0,0%,70%)] hover:bg-white/[0.08] hover:text-[hsl(0,0%,90%)]"
                 >
                   {showAllCitations
                     ? 'Show fewer sources'
@@ -242,7 +250,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
               <button
                 onClick={() => void shareConversation()}
                 disabled={shareState === 'sharing' || shareState === 'shared'}
-                className="inline-flex items-center gap-1.5 rounded-full border border-[hsl(0,0%,16%)] bg-[hsl(0,0%,8%)] px-3 py-1.5 text-[11px] text-[hsl(0,0%,70%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,88%)] disabled:cursor-not-allowed disabled:opacity-70"
+                className="inline-flex items-center gap-1.5 rounded-full glass-chip px-3 py-1.5 text-[11px] text-[hsl(0,0%,76%)] hover:bg-white/[0.08] hover:text-[hsl(0,0%,94%)] disabled:cursor-not-allowed disabled:opacity-70"
               >
                 {shareState === 'sharing' ? <Loader2 size={11} className="animate-spin" /> : <Share2 size={11} />}
                 <span>{shareState === 'shared' ? 'Shared' : message.metadata.shareAction.label}</span>

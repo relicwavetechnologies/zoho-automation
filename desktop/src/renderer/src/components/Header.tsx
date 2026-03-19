@@ -20,7 +20,7 @@ export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }:
 
   return (
     <div
-      className="titlebar-drag flex items-center justify-between h-12 px-4 shrink-0 relative bg-header-bg border-b border-border/40"
+      className="titlebar-drag glass-panel flex items-center justify-between h-14 px-4 shrink-0 relative border-b-0"
       style={{
         zIndex: 20,
       }}
@@ -32,14 +32,14 @@ export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }:
             <button
               onClick={toggleSidebar}
               title="Open Sidebar"
-              className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              className="glass-button p-1.5 rounded-xl text-muted-foreground hover:text-foreground hover:bg-white/[0.09] transition-colors"
             >
               <PanelRightClose size={16} />
             </button>
             <button
               onClick={() => createThread()}
               title="New Chat"
-              className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              className="glass-button p-1.5 rounded-xl text-muted-foreground hover:text-foreground hover:bg-white/[0.09] transition-colors"
             >
               <SquarePen size={16} />
             </button>
@@ -49,16 +49,16 @@ export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }:
           {title}
         </h2>
         {currentWorkspace && (
-          <span className="max-w-[260px] truncate rounded-full border border-border bg-muted/30 px-2.5 py-1 text-[11px] text-muted-foreground/80">
+          <span className="glass-chip max-w-[260px] truncate rounded-full px-2.5 py-1 text-[11px] text-white/70">
             {currentWorkspace.name}
           </span>
         )}
         {departments.length > 1 && (
-          <span className="inline-flex items-center rounded-full border border-border bg-muted/30 px-1.5 py-1">
+          <span className="glass-chip inline-flex items-center rounded-full px-1.5 py-1">
             <select
               value={selectedDepartmentId ?? ''}
               onChange={(event) => setSelectedDepartmentId(event.target.value || null)}
-              className="bg-transparent px-1 text-[11px] text-muted-foreground/80 outline-none"
+              className="bg-transparent px-1 text-[11px] text-white/70 outline-none"
               title="Department"
             >
               <option value="" disabled>Select department</option>
@@ -80,8 +80,8 @@ export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }:
           onClick={() => void selectWorkspace()}
           title="Switch workspace folder"
           className={cn(
-            'titlebar-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors',
-            'text-muted-foreground/60 hover:text-foreground/80 hover:bg-muted',
+            'titlebar-no-drag glass-button inline-flex cursor-pointer items-center gap-1.5 rounded-xl px-2.5 py-2 transition-colors',
+            'text-muted-foreground/70 hover:text-foreground/90 hover:bg-white/[0.08]',
           )}
         >
           <FolderOpen size={14} />
@@ -92,10 +92,10 @@ export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }:
           onClick={() => setAutoApproveLocalActions(!autoApproveLocalActions)}
           title={autoApproveLocalActions ? 'Disable auto-approve for agent local actions' : 'Enable auto-approve for agent local actions'}
           className={cn(
-            'titlebar-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors',
+            'titlebar-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-xl px-2.5 py-2 transition-colors',
             autoApproveLocalActions
-              ? 'text-primary hover:text-primary/80 hover:bg-primary/10'
-              : 'text-muted-foreground/60 hover:text-foreground/80 hover:bg-muted',
+            ? 'border border-sky-300/12 bg-sky-400/8 text-sky-100/85 hover:bg-sky-400/12'
+            : 'glass-button text-muted-foreground/70 hover:text-foreground/90 hover:bg-white/[0.08]',
           )}
         >
           {autoApproveLocalActions ? <ShieldCheck size={14} /> : <ShieldOff size={14} />}
@@ -106,8 +106,8 @@ export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }:
           onClick={toggleEditor}
           title={editorOpen ? 'Hide editor' : 'Open editor'}
           className={cn(
-            'titlebar-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors',
-            'text-muted-foreground/60 hover:text-foreground/80 hover:bg-muted',
+            'titlebar-no-drag glass-button inline-flex cursor-pointer items-center gap-1.5 rounded-xl px-2.5 py-2 transition-colors',
+            'text-muted-foreground/70 hover:text-foreground/90 hover:bg-white/[0.08]',
           )}
         >
           {editorOpen ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
@@ -115,7 +115,7 @@ export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }:
         </button>
         {session && (
           <>
-            <span className="text-xs text-muted-foreground/50">
+            <span className="glass-chip rounded-full px-3 py-1 text-xs text-white/62">
               {session.name ?? session.email}
             </span>
             <button
@@ -123,8 +123,8 @@ export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }:
               onClick={logout}
               title="Sign out"
               className={cn(
-                'titlebar-no-drag cursor-pointer rounded-md p-1.5 transition-colors',
-                'text-muted-foreground/50 hover:text-foreground/80 hover:bg-muted',
+                'titlebar-no-drag glass-button cursor-pointer rounded-xl p-2 transition-colors',
+                'text-muted-foreground/60 hover:text-foreground/90 hover:bg-white/[0.08]',
               )}
             >
               <LogOut size={14} />

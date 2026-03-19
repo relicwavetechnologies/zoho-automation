@@ -360,14 +360,13 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
 
         <div
           className={cn(
-            'rounded-[20px] border shadow-[0_12px_24px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.03)]',
-            'bg-background',
+            'glass-panel-strong rounded-[24px]',
             'transition-colors duration-150 relative z-10',
             isDragOver
-              ? 'border-primary shadow-[0_0_0_2px_rgba(var(--primary),0.25)]'
+              ? 'border-sky-300/16 shadow-[0_0_0_1px_rgba(120,160,210,0.18),0_24px_80px_rgba(2,8,18,0.48)]'
               : activeThread || isHome
-                ? 'border-border focus-within:border-primary/50'
-                : 'border-border opacity-60',
+                ? 'focus-within:border-sky-300/12'
+                : 'opacity-70',
           )}
         >
           {isApprovalMode ? (
@@ -396,7 +395,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     <button
                       type="button"
                       onClick={() => void approveCommand(pendingLocalAction!.id)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-3.5 py-2 text-xs font-medium text-background hover:bg-emerald-600"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-sky-300/12 bg-sky-400/8 px-3.5 py-2 text-xs font-medium text-sky-50/88 hover:bg-sky-400/12"
                     >
                       <CheckCircle2 size={13} />
                       Approve
@@ -404,7 +403,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     <button
                       type="button"
                       onClick={() => void rejectCommand(pendingLocalAction!.id)}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-background px-3.5 py-2 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                      className="glass-button inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-medium text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
                     >
                       <Ban size={13} />
                       Reject
@@ -454,7 +453,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
               className={cn(
                 'w-full resize-none bg-transparent leading-6 tracking-[-0.01em]',
                 isHome ? 'text-[16px]' : 'text-[15px]',
-                'text-foreground/90 placeholder:text-muted-foreground/50',
+                'text-foreground/92 placeholder:text-muted-foreground/55',
                 'focus:outline-none disabled:cursor-not-allowed min-h-[44px]',
               )}
             />
@@ -464,7 +463,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                 <button
                   type="button"
                   disabled
-                  className="inline-flex h-8 items-center gap-2 rounded-xl border border-border bg-muted px-3 text-[13px] font-medium text-foreground/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] disabled:cursor-default"
+                  className="glass-button inline-flex h-8 items-center gap-2 rounded-xl px-3 text-[13px] font-medium text-foreground/80 disabled:cursor-default"
                 >
                   <Infinity size={14} />
                   <span>Divo</span>
@@ -483,7 +482,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                       'inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium transition-all select-none',
                       (!activeThread && !isHome) || isStreaming
                         ? 'border-transparent text-muted-foreground/40 cursor-not-allowed'
-                        : 'border-transparent bg-muted text-foreground/80 hover:bg-muted/80'
+                        : 'glass-button text-foreground/85 hover:bg-white/[0.08]'
                     )}
                     title={selectedMode.title}
                   >
@@ -499,7 +498,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   </button>
 
                   {isModeMenuOpen && (activeThread || isHome) && !isStreaming && (
-                    <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[220px] overflow-hidden rounded-2xl border border-border bg-card p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
+                    <div className="glass-panel-strong absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[220px] overflow-hidden rounded-2xl p-1.5">
                       {MODE_OPTIONS.map((option) => {
                         const OptionIcon = option.icon
                         const isSelected = option.value === mode
@@ -514,8 +513,8 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                             className={cn(
                               'flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition-colors',
                               isSelected
-                                ? 'bg-muted text-foreground'
-                                : 'text-foreground/80 hover:bg-muted/40'
+                                ? 'bg-white/[0.08] text-foreground'
+                                : 'text-foreground/80 hover:bg-white/[0.06]'
                             )}
                           >
                             <OptionIcon size={14} className={option.iconClassName} strokeWidth={2.4} />
@@ -538,8 +537,8 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   className={cn(
                     "inline-flex h-7 min-w-[28px] px-1.5 items-center justify-center rounded-lg transition-colors gap-1",
                     referencedIds.size > 0
-                      ? "bg-primary/10 text-primary border border-primary/40"
-                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground border border-transparent"
+                      ? "bg-sky-400/8 text-sky-100/82 border border-sky-300/16"
+                      : "glass-button text-muted-foreground hover:bg-white/[0.08] hover:text-foreground border border-transparent"
                   )}
                   title="Reference files"
                 >
@@ -557,8 +556,8 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     (!activeThread && !isHome) || isStreaming
                       ? 'text-muted-foreground/40 cursor-not-allowed'
                       : isDrawerOpen
-                        ? 'bg-primary/20 text-primary'
-                        : 'text-muted-foreground/80 hover:bg-muted hover:text-foreground',
+                        ? 'bg-sky-400/8 text-sky-100/82'
+                        : 'glass-button text-muted-foreground/80 hover:bg-white/[0.08] hover:text-foreground',
                   )}
                   aria-label="Toggle files drawer"
                   title="Workspace Files"
@@ -570,7 +569,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   <button
                     type="button"
                     onClick={() => { void stopExecution() }}
-                    className="ml-1 shrink-0 flex h-8 w-8 items-center justify-center rounded-xl border border-foreground/80 bg-foreground text-background shadow-[0_10px_24px_rgba(255,255,255,0.08)] transition-all hover:bg-foreground/90"
+                    className="ml-1 shrink-0 flex h-8 w-8 items-center justify-center rounded-xl border border-sky-300/18 bg-sky-50/90 text-slate-950 shadow-[0_10px_24px_rgba(120,170,220,0.10)] transition-all hover:bg-white"
                     title="Stop generation"
                   >
                     <Square size={12} fill="currentColor" />
@@ -582,8 +581,8 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     className={cn(
                       'ml-1 shrink-0 h-8 w-8 rounded-xl flex items-center justify-center border transition-all',
                       canSend
-                        ? 'border-emerald-500 bg-emerald-500 text-background shadow-[0_10px_24px_rgba(34,197,94,0.22)] hover:bg-emerald-600'
-                        : 'border-muted bg-muted text-muted-foreground/40',
+                        ? 'border-sky-200/30 bg-sky-50/92 text-slate-950 shadow-[0_10px_24px_rgba(120,170,220,0.12)] hover:bg-white'
+                        : 'border-white/6 bg-white/[0.05] text-muted-foreground/40',
                     )}
                   >
                     <ArrowUp size={14} />

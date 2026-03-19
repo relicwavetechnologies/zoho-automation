@@ -9,15 +9,15 @@ export function EmptyThread(): JSX.Element {
 
   return (
     <div className="flex-1 flex items-center justify-center">
-      <div className="flex flex-col items-center gap-5 max-w-md px-6 text-center">
-        <div className="h-14 w-14 rounded-2xl bg-[hsl(0,0%,8%)] border border-[hsl(0,0%,14%)] flex items-center justify-center">
-          <MessageSquarePlus size={22} className="text-[hsl(0,0%,35%)]" />
+      <div className="glass-panel-strong flex flex-col items-center gap-5 max-w-md rounded-[32px] px-8 py-10 text-center">
+        <div className="h-16 w-16 rounded-[22px] bg-sky-400/8 border border-sky-300/12 flex items-center justify-center">
+          <MessageSquarePlus size={24} className="text-sky-100/72" />
         </div>
         <div>
-          <h3 className="text-base font-medium text-[hsl(0,0%,70%)] mb-1">
+          <h3 className="text-lg font-medium text-white/90 mb-1">
             {currentWorkspace ? `No thread selected in ${currentWorkspace.name}` : 'No thread selected'}
           </h3>
-          <p className="text-sm text-[hsl(0,0%,38%)] leading-relaxed">
+          <p className="text-sm text-white/50 leading-7">
             {currentWorkspace
               ? 'Select an existing thread from the sidebar or start a new conversation in this workspace.'
               : 'Open a workspace and start a new conversation.'}
@@ -26,10 +26,9 @@ export function EmptyThread(): JSX.Element {
         <button
           onClick={() => createThread()}
           className={cn(
-            'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
-            'bg-[hsl(0,0%,14%)] text-[hsl(0,0%,70%)]',
-            'hover:bg-[hsl(0,0%,18%)] hover:text-[hsl(0,0%,85%)]',
-            'border border-[hsl(0,0%,20%)]',
+            'px-4 py-2 rounded-xl text-sm font-medium transition-colors',
+            'border border-sky-300/12 bg-sky-400/8 text-sky-50/88',
+            'hover:bg-sky-400/12 hover:text-white',
           )}
         >
           New thread

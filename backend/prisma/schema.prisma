@@ -21,6 +21,30 @@ enum IngestionStatus {
   failed
 }
 
+enum ScheduledWorkflowStatus {
+  draft
+  active
+  paused
+  archived
+}
+
+enum ScheduledWorkflowScheduleType {
+  one_time
+  daily
+  weekly
+  monthly
+}
+
+enum ScheduledWorkflowRunStatus {
+  queued
+  running
+  succeeded
+  failed
+  cancelled
+  skipped
+  blocked
+}
+
 model User {
   id               String            @id @default(uuid())
   email            String            @unique
@@ -39,6 +63,7 @@ model User {
   memberSessions   MemberSession[]
   desktopHandoffs  DesktopAuthHandoff[]
   desktopThreads   DesktopThread[]
+  scheduledWorkflowsCreated ScheduledWorkflow[] @relation("ScheduledWorkflowCreatedBy")
   executionRuns    ExecutionRun[]
   larkAuthLinks    LarkUserAuthLink[]
   googleAuthLinks  GoogleUserAuthLink[]
@@ -71,6 +96,7 @@ model Company {
   memberSessions   MemberSession[]
   desktopHandoffs  DesktopAuthHandoff[]
   desktopThreads   DesktopThread[]
+  scheduledWorkflows ScheduledWorkflow[]
   executionRuns    ExecutionRun[]
   larkAuthLinks    LarkUserAuthLink[]
   googleAuthLinks  GoogleUserAuthLink[]
@@ -483,6 +509,7 @@ model Department {
   toolPermissions DepartmentToolPermission[]
   userToolOverrides DepartmentUserToolOverride[]
   desktopThreads DesktopThread[]
+  scheduledWorkflows ScheduledWorkflow[]
 
   @@unique([companyId, slug])
   @@index([companyId, status, updatedAt])
@@ -806,6 +833,66 @@ model DesktopMessage {
   createdAt DateTime      @default(now())
 
   @@index([threadId, createdAt])
+}
+
+model ScheduledWorkflow {
+  id                    String                        @id @default(uuid())
+  companyId             String
+  company               Company                       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId          String?
+  department            Department?                   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  createdByUserId       String?
+  createdByUser         User?                         @relation("ScheduledWorkflowCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  name                  String
+  status                ScheduledWorkflowStatus       @default(draft)
+  userIntent            String
+  workflowSpecJson      Json
+  compiledPrompt        String
+  capabilitySummaryJson Json
+  timezone              String
+  scheduleType          ScheduledWorkflowScheduleType
+  scheduleConfigJson    Json
+  nextRunAt             DateTime?
+  lastRunAt             DateTime?
+  outputConfigJson      Json
+  approvalGrantJson     Json?
+  publishedAt           DateTime?
+  pausedAt              DateTime?
+  archivedAt            DateTime?
+  claimToken            String?
+  claimedAt             DateTime?
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @updatedAt
+  runs                  ScheduledWorkflowRun[]
+
+  @@index([companyId, status, updatedAt])
+  @@index([companyId, status, nextRunAt])
+  @@index([departmentId, status, updatedAt])
+  @@index([status, nextRunAt])
+  @@index([claimedAt])
+}
+
+model ScheduledWorkflowRun {
+  id                 String                     @id @default(uuid())
+  workflowId         String
+  workflow           ScheduledWorkflow          @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  status             ScheduledWorkflowRunStatus @default(queued)
+  scheduledFor       DateTime
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  executionRunId     String?
+  queueJobId         String?
+  attemptNumber      Int                        @default(1)
+  resultSummary      String?
+  errorSummary       String?
+  deliveryStatusJson Json?
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  @@unique([workflowId, scheduledFor])
+  @@index([workflowId, createdAt])
+  @@index([status, scheduledFor])
+  @@index([executionRunId])
 }
 
 model AiTokenUsage {

@@ -86,9 +86,9 @@ export function ChatPane(): JSX.Element {
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto titlebar-no-drag"
     >
-      <div className="max-w-3xl mx-auto px-6 py-6">
+      <div className="max-w-4xl mx-auto px-6 py-6">
         {isLoadingOlderMessages && (
-          <div className="mb-8 space-y-4 animate-in fade-in duration-500">
+          <div className="glass-panel mb-8 space-y-4 rounded-[28px] px-5 py-5 animate-in fade-in duration-500">
             <div className="flex gap-3">
               <Skeleton className="h-6 w-6 shrink-0" />
               <div className="flex-1 space-y-2">
@@ -101,11 +101,11 @@ export function ChatPane(): JSX.Element {
 
         {/* Error banner */}
         {error && (
-          <div className="mb-4 flex items-center justify-between px-3 py-2 rounded-lg bg-[hsl(0,40%,12%)] border border-[hsl(0,40%,22%)]">
-            <span className="text-sm text-[hsl(0,50%,65%)]">{error}</span>
+          <div className="mb-4 flex items-center justify-between px-4 py-3 rounded-2xl border border-red-300/15 bg-red-500/10 backdrop-blur-xl">
+            <span className="text-sm text-red-100/80">{error}</span>
             <button
               onClick={clearError}
-              className="text-xs text-[hsl(0,0%,50%)] hover:text-[hsl(0,0%,70%)] ml-3"
+              className="text-xs text-white/45 hover:text-white/72 ml-3"
             >
               dismiss
             </button>
@@ -143,11 +143,11 @@ export function ChatPane(): JSX.Element {
           <div className="mb-4">
             <div className="flex gap-3">
               {/* AI avatar */}
-              <div className="shrink-0 mt-0.5 h-6 w-6 rounded-md bg-[hsl(0,0%,14%)] flex items-center justify-center">
-                <span className="text-[10px] font-semibold text-[hsl(0,0%,50%)]">AI</span>
+              <div className="shrink-0 mt-0.5 h-7 w-7 rounded-xl border border-sky-300/12 bg-sky-400/8 flex items-center justify-center shadow-[0_10px_24px_rgba(0,0,0,0.22)]">
+                <span className="text-[10px] font-semibold text-sky-100/70">AI</span>
               </div>
 
-              <div className="min-w-0 flex-1">
+              <div className="glass-panel min-w-0 flex-1 rounded-[24px] px-4 py-4">
                 {/*
                   When no blocks have arrived yet (request in flight, before first SSE),
                   show a "Working..." shimmer so the user knows the request is being processed.
