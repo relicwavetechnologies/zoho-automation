@@ -74,7 +74,7 @@ export type ValidatedEnv = {
   OPENAI_EMBEDDING_MODEL: string;
   GEMINI_EMBEDDING_MODEL: string;
   GEMINI_MEDIA_ANALYSIS_MODEL: string;
-  ORCHESTRATION_ENGINE: 'legacy' | 'vercel';
+  ORCHESTRATION_ENGINE: 'legacy' | 'vercel' | 'langgraph';
   GROQ_API_KEY: string;
   GROQ_ROUTER_MODEL: string;
   GEMINI_API_KEY: string;
@@ -310,14 +310,14 @@ const parseLogLevel = (value: string, issues: EnvValidationIssue[]): ValidatedEn
 };
 
 const parseOrchestrationEngine = (value: string, issues: EnvValidationIssue[]): ValidatedEnv['ORCHESTRATION_ENGINE'] => {
-  if (value === 'legacy' || value === 'vercel') {
+  if (value === 'legacy' || value === 'vercel' || value === 'langgraph') {
     return value;
   }
 
   issues.push({
     key: 'ORCHESTRATION_ENGINE',
     code: 'invalid_enum',
-    message: 'ORCHESTRATION_ENGINE must be legacy or vercel',
+    message: 'ORCHESTRATION_ENGINE must be legacy, vercel, or langgraph',
     severity: 'error',
   });
 

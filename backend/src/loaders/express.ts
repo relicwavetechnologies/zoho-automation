@@ -19,6 +19,7 @@ import desktopAuthRoutes from '../modules/desktop-auth/desktop-auth.routes';
 import desktopThreadsRoutes from '../modules/desktop-threads/desktop-threads.routes';
 import desktopChatRoutes from '../modules/desktop-chat/desktop-chat.routes';
 import desktopExecutionsRoutes from '../modules/desktop-executions/desktop-executions.routes';
+import desktopWorkflowsRoutes from '../modules/desktop-workflows/desktop-workflows.routes';
 import fileUploadRoutes from '../modules/file-upload/file-upload.routes';
 import { errorMiddleware } from '../middlewares/error.middleware';
 import { requestContextMiddleware, requestLoggingMiddleware } from '../middlewares/request-logging.middleware';
@@ -76,6 +77,7 @@ const expressLoader = async (app: Application): Promise<void> => {
   app.use('/api/desktop/threads', desktopThreadsRoutes);
   app.use('/api/desktop/chat', desktopChatRoutes);
   app.use('/api/desktop/executions', desktopExecutionsRoutes);
+  app.use('/api/desktop/workflows', desktopWorkflowsRoutes);
   app.use('/api/member/files', fileUploadRoutes);
   app.use('/webhooks/lark', larkWebhookRoutes);
 

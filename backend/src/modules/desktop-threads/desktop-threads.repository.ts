@@ -34,9 +34,26 @@ export class DesktopThreadsRepository extends BaseRepository {
     });
   }
 
-  createThread(userId: string, companyId: string, departmentId?: string | null) {
+  findThreadByTitle(userId: string, companyId: string, title: string) {
+    return prisma.desktopThread.findFirst({
+      where: {
+        userId,
+        companyId,
+        title,
+      },
+      include: threadInclude,
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  createThread(userId: string, companyId: string, departmentId?: string | null, title?: string | null) {
     return prisma.desktopThread.create({
-      data: { userId, companyId, departmentId: departmentId ?? null },
+      data: {
+        userId,
+        companyId,
+        departmentId: departmentId ?? null,
+        ...(title ? { title } : {}),
+      },
       include: threadInclude,
     });
   }

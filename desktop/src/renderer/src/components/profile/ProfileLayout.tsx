@@ -27,15 +27,15 @@ export function ProfileLayout({ onClose }: { onClose: () => void }): JSX.Element
   ]
 
   return (
-    <div className="flex h-full w-full">
+    <div className="flex h-full w-full bg-[hsl(var(--background))]">
       {/* Settings Sidebar */}
       <div 
-        className="w-[260px] shrink-0 glass-panel flex flex-col pt-3"
+        className="w-[260px] shrink-0 border-r border-[hsl(0,0%,12%)] bg-[hsl(var(--sidebar-bg))] flex flex-col pt-3"
       >
         <div className="px-4 pb-4 flex items-center gap-3 text-[hsl(0,0%,60%)]">
           <button 
             onClick={onClose}
-            className="glass-button p-1.5 -ml-1.5 hover:bg-white/[0.08] hover:text-white rounded-xl transition-colors"
+            className="p-1.5 -ml-1.5 hover:bg-[hsl(0,0%,15%)] hover:text-white rounded-md transition-colors"
           >
             <PanelLeftClose size={16} />
           </button>
@@ -56,8 +56,8 @@ export function ProfileLayout({ onClose }: { onClose: () => void }): JSX.Element
                     className={cn(
                       "flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] transition-colors",
                       activeTab === item.id 
-                        ? "border border-sky-300/12 bg-sky-400/8 text-white font-medium" 
-                        : "glass-button text-[hsl(0,0%,74%)] hover:bg-white/[0.08] hover:text-[hsl(0,0%,92%)]"
+                        ? "bg-[hsl(0,0%,20%)] text-white font-medium" 
+                        : "text-[hsl(0,0%,70%)] hover:bg-[hsl(0,0%,12%)] hover:text-[hsl(0,0%,90%)]"
                     )}
                   >
                     <span className="shrink-0">{item.icon}</span>

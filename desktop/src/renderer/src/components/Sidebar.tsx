@@ -51,8 +51,7 @@ export function Sidebar({
       className="flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r-0"
       style={{
         width: 260,
-        background: 'rgba(8, 10, 15, 0.76)',
-        backdropFilter: 'blur(22px)',
+        background: 'hsl(var(--sidebar-bg))',
       }}
     >
       {/* Top action bar: Toggle & New Chat */}
@@ -75,13 +74,13 @@ export function Sidebar({
 
       <div className="shrink-0 px-2 py-2">
         {currentWorkspace && (
-          <div className="glass-panel mx-1 mb-3 rounded-[24px] px-3 py-3">
-            <div className="text-[10px] uppercase tracking-[0.16em] text-sky-100/42">Workspace</div>
-            <div className="mt-1 truncate text-sm font-medium text-foreground/90">{currentWorkspace.name}</div>
-            <div className="mt-1 truncate text-[11px] text-muted-foreground/65">{currentWorkspace.path}</div>
+          <div className="mx-1 mb-3 rounded-2xl border border-sidebar-border bg-sidebar-bg px-3 py-3">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground/60">Workspace</div>
+            <div className="mt-1 truncate text-sm font-medium text-foreground/80">{currentWorkspace.name}</div>
+            <div className="mt-1 truncate text-[11px] text-muted-foreground/60">{currentWorkspace.path}</div>
             <button
               onClick={() => void selectWorkspace()}
-              className="mt-3 text-[11px] font-medium text-sky-100/78 hover:text-white"
+              className="mt-3 text-[11px] font-medium text-primary hover:text-primary/80"
             >
               Change folder
             </button>
@@ -96,8 +95,8 @@ export function Sidebar({
               className={cn(
                 'flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition-colors',
                 currentView === 'chat'
-                  ? 'border-sky-300/12 bg-sky-400/8 text-sky-100/88'
-                  : 'glass-button text-muted-foreground hover:bg-white/[0.08] hover:text-foreground',
+                  ? 'bg-sidebar-active text-white border-border'
+                  : 'text-muted-foreground hover:bg-sidebar-hover hover:text-foreground border-transparent',
               )}
             >
               <MessageSquareText size={14} />
@@ -108,8 +107,8 @@ export function Sidebar({
               className={cn(
                 'flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition-colors',
                 currentView === 'schedule'
-                  ? 'border-sky-300/12 bg-sky-400/8 text-sky-100/88'
-                  : 'glass-button text-muted-foreground hover:bg-white/[0.08] hover:text-foreground',
+                  ? 'bg-sidebar-active text-white border-border'
+                  : 'text-muted-foreground hover:bg-sidebar-hover hover:text-foreground border-transparent',
               )}
             >
               <Workflow size={14} />
@@ -129,7 +128,7 @@ export function Sidebar({
               onChange={(e) => setFilter(e.target.value)}
               className={cn(
                 'w-full pl-7 pr-2 py-1.5 rounded-md text-xs',
-                'glass-button border-transparent focus:border-sky-300/12',
+                'bg-sidebar-hover border-transparent focus:border-border',
                 'text-foreground/70 placeholder:text-muted-foreground/40',
                 'focus:outline-none transition-colors border',
               )}
@@ -209,10 +208,10 @@ function ThreadItem({
       <button
         onClick={onClick}
         className={cn(
-          'w-full text-left px-2.5 py-[8px] rounded-xl transition-colors pr-8',
+          'w-full text-left px-2.5 py-[8px] rounded-lg transition-colors pr-8',
           isActive
-            ? 'bg-sky-400/[0.06] text-white shadow-[0_12px_30px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.03)]'
-            : 'bg-white/[0.025] text-muted-foreground/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] hover:bg-white/[0.05] hover:text-foreground',
+            ? 'bg-sidebar-active text-white'
+            : 'text-muted-foreground/80 hover:bg-sidebar-hover hover:text-foreground',
         )}
       >
         <div className="flex items-baseline justify-between gap-3">
@@ -245,8 +244,8 @@ function ThreadItem({
           'absolute right-1.5 top-1/2 -translate-y-1/2',
           'p-[3px] rounded opacity-0 group-hover:opacity-100 transition-opacity',
           isActive
-            ? 'text-white/45 hover:text-white/90 focus:opacity-100 hover:bg-white/10'
-            : 'text-muted-foreground/40 hover:text-red-300 focus:opacity-100 hover:bg-white/[0.06]',
+            ? 'text-white/40 hover:text-white/80 focus:opacity-100 hover:bg-white/10'
+            : 'text-muted-foreground/40 hover:text-red-400 focus:opacity-100 hover:bg-muted',
         )}
       >
         <Trash2 size={13} />

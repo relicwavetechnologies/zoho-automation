@@ -64,8 +64,27 @@ export class DesktopThreadsService extends BaseService {
     };
   }
 
-  async createThread(userId: string, companyId: string, departmentId?: string | null) {
-    return this.repository.createThread(userId, companyId, departmentId);
+  async createThread(userId: string, companyId: string, departmentId?: string | null, title?: string | null) {
+    return this.repository.createThread(userId, companyId, departmentId, title);
+  }
+
+  async findOrCreateNamedThread(
+    userId: string,
+    companyId: string,
+    title: string,
+    departmentId?: string | null,
+  ) {
+    const normalizedTitle = title.trim();
+    if (!normalizedTitle) {
+      throw new HttpException(400, 'Thread title is required');
+    }
+
+    const existing = await this.repository.findThreadByTitle(userId, companyId, normalizedTitle);
+    if (existing) {
+      return existing;
+    }
+
+    return this.repository.createThread(userId, companyId, departmentId, normalizedTitle);
   }
 
   async addMessage(

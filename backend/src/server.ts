@@ -3,6 +3,7 @@ import { larkDirectorySyncScheduler, larkTenantTokenService } from './company/ch
 import { initializeOrchestrationRuntime, shutdownOrchestrationRuntime } from './company/queue/runtime';
 import loaders from './loaders';
 import { runBootstrapHealthChecks } from './loaders/bootstrap-health';
+import { desktopWorkflowsService } from './modules/desktop-workflows/desktop-workflows.service';
 import { logger } from './utils/logger';
 
 let isShuttingDown = false;
@@ -13,6 +14,7 @@ const startServer = async () => {
     await initializeOrchestrationRuntime();
     const app = await loaders();
     larkDirectorySyncScheduler.start();
+    desktopWorkflowsService.startDueProcessor();
     larkTenantTokenService.getAccessToken().catch((error) => {
       logger.warn('lark.tenant_token.prewarm.failed', { reason: error instanceof Error ? error.message : 'unknown' });
     });
@@ -35,6 +37,7 @@ const gracefulShutdown = async () => {
   try {
     logger.info('server.shutdown.start', undefined, { always: true });
     larkDirectorySyncScheduler.stop();
+    desktopWorkflowsService.stopDueProcessor();
     await shutdownOrchestrationRuntime();
     logger.info('server.shutdown.complete', undefined, { always: true });
   } catch (error) {

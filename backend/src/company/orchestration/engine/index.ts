@@ -1,5 +1,6 @@
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
+import { langgraphOrchestrationEngine } from './langgraph-orchestration.engine';
 import { legacyOrchestrationEngine } from './legacy-orchestration.engine';
 import { vercelOrchestrationEngine } from './vercel-orchestration.engine';
 import type {
@@ -10,6 +11,9 @@ import type {
 } from './types';
 
 const resolveEngineId = (): OrchestrationEngineId => {
+  if (config.ORCHESTRATION_ENGINE === 'langgraph') {
+    return 'langgraph';
+  }
   if (config.ORCHESTRATION_ENGINE === 'vercel') {
     return 'vercel';
   }
@@ -23,7 +27,11 @@ export const resolveEnginePolicy = () => ({
 export const getConfiguredOrchestrationEngineId = (): OrchestrationEngineId => resolveEngineId();
 
 export const getOrchestrationEngine = (engineId: OrchestrationEngineId): OrchestrationEngine =>
-  engineId === 'vercel' ? vercelOrchestrationEngine : legacyOrchestrationEngine;
+  engineId === 'langgraph'
+    ? langgraphOrchestrationEngine
+    : engineId === 'vercel'
+      ? vercelOrchestrationEngine
+      : legacyOrchestrationEngine;
 
 export const getConfiguredOrchestrationEngine = (): OrchestrationEngine => getOrchestrationEngine(resolveEngineId());
 

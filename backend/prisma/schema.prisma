@@ -974,6 +974,159 @@ model ExecutionEvent {
   @@index([createdAt])
 }
 
+model RuntimeConversation {
+  id                     String                     @id @default(uuid())
+  companyId              String
+  departmentId           String?
+  channel                String
+  channelConversationKey String
+  rawChannelKey          String
+  createdByUserId        String?
+  createdByEmail         String?
+  title                  String?
+  status                 String                     @default("active")
+  refsJson               Json?
+  lastMessageSequence    Int                        @default(0)
+  createdAt              DateTime                   @default(now())
+  updatedAt              DateTime                   @updatedAt
+  messages               RuntimeConversationMessage[]
+  runs                   RuntimeRun[]
+  approvals              RuntimeApproval[]
+  parityReports          RuntimeShadowParityReport[]
+
+  @@unique([companyId, channel, channelConversationKey])
+  @@index([companyId, updatedAt])
+  @@index([companyId, channel, updatedAt])
+  @@index([departmentId, updatedAt])
+}
+
+model RuntimeConversationMessage {
+  id              String              @id @default(uuid())
+  conversationId  String
+  conversation    RuntimeConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  runId           String?
+  run             RuntimeRun?         @relation(fields: [runId], references: [id], onDelete: SetNull)
+  sequence        Int
+  role            String
+  messageKind     String
+  sourceChannel   String
+  sourceMessageId String?
+  dedupeKey       String?
+  contentText     String?
+  contentJson     Json?
+  attachmentsJson Json?
+  toolCallJson    Json?
+  toolResultJson  Json?
+  visibility      String              @default("internal")
+  createdAt       DateTime            @default(now())
+
+  @@unique([conversationId, sequence])
+  @@index([conversationId, createdAt])
+  @@index([runId, createdAt])
+  @@index([dedupeKey])
+}
+
+model RuntimeRun {
+  id             String                     @id @default(uuid())
+  conversationId String
+  conversation   RuntimeConversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  parentRunId    String?
+  engine         String                     @default("langgraph")
+  engineMode     String                     @default("primary")
+  channel        String
+  entrypoint     String
+  status         String                     @default("running")
+  currentNode    String?
+  stepCount      Int                        @default(0)
+  maxSteps       Int                        @default(12)
+  stopReason     String?
+  errorJson      Json?
+  traceJson      Json?
+  metadataJson   Json?
+  startedAt      DateTime                   @default(now())
+  finishedAt     DateTime?
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
+  messages       RuntimeConversationMessage[]
+  approvals      RuntimeApproval[]
+  snapshots      RuntimeSnapshot[]
+  parityReports  RuntimeShadowParityReport[]
+
+  @@index([conversationId, startedAt])
+  @@index([parentRunId])
+  @@index([channel, startedAt])
+  @@index([status, startedAt])
+}
+
+model RuntimeApproval {
+  id                  String              @id @default(uuid())
+  conversationId      String
+  conversation        RuntimeConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  runId               String
+  run                 RuntimeRun          @relation(fields: [runId], references: [id], onDelete: Cascade)
+  externalActionId    String?
+  toolId              String
+  actionGroup         String
+  kind                String
+  summary             String
+  subject             String?
+  payloadJson         Json
+  metadataJson        Json?
+  riskLevel           String?
+  status              String              @default("pending")
+  channel             String
+  requestedBy         String?
+  approvedBy          String?
+  approvedAt          DateTime?
+  rejectedAt          DateTime?
+  expiresAt           DateTime?
+  executionResultJson Json?
+  idempotencyKey      String?
+  decisionMessageId   String?
+  resolutionReason    String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  @@index([conversationId, createdAt])
+  @@index([runId, createdAt])
+  @@index([status, createdAt])
+  @@index([externalActionId])
+  @@index([idempotencyKey])
+}
+
+model RuntimeSnapshot {
+  id        String     @id @default(uuid())
+  runId     String
+  run       RuntimeRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  stepIndex Int
+  nodeName  String
+  stateJson Json
+  createdAt DateTime   @default(now())
+
+  @@index([runId, createdAt])
+  @@index([runId, stepIndex])
+}
+
+model RuntimeShadowParityReport {
+  id               String               @id @default(uuid())
+  conversationId   String?
+  conversation     RuntimeConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  runId            String?
+  run              RuntimeRun?          @relation(fields: [runId], references: [id], onDelete: SetNull)
+  channel          String
+  baselineEngine   String
+  candidateEngine  String
+  baselineSummary  String?
+  candidateSummary String?
+  diffSummary      String?
+  metricsJson      Json?
+  createdAt        DateTime             @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([runId, createdAt])
+  @@index([channel, createdAt])
+}
+
 model MemberTokenPolicy {
   id                String   @id @default(uuid())
   userId            String   @unique

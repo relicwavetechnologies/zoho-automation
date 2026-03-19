@@ -8,7 +8,7 @@ import type {
 } from '../../contracts';
 import type { OrchestrationTaskStatus } from '../../contracts/status';
 
-export type OrchestrationEngineId = 'legacy' | 'vercel';
+export type OrchestrationEngineId = 'legacy' | 'vercel' | 'langgraph';
 
 export type OrchestrationExecutionResult = {
   task: OrchestrationTaskDTO;

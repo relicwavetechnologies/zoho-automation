@@ -182,7 +182,7 @@ const startRun = async (input: {
   executionId: string;
   threadId: string;
   messageId: string;
-  entrypoint: 'desktop_send' | 'desktop_act';
+  entrypoint: 'desktop_send' | 'desktop_act' | 'desktop_scheduled_workflow';
   session: MemberSessionDTO;
   mode: 'fast' | 'high' | 'xtreme';
   message: string;
@@ -622,6 +622,275 @@ const runVercelStreamLoop = async (input: {
     },
     stopWhen: [stopOnPendingApproval, stepCountIs(20)],
   });
+};
+
+export const executeAutomatedDesktopTurn = async (input: {
+  session: MemberSessionDTO;
+  threadId: string;
+  prompt: string;
+  mode?: 'fast' | 'high' | 'xtreme';
+  executionId?: string;
+  entrypoint?: 'desktop_scheduled_workflow';
+  metadata?: Record<string, unknown>;
+}): Promise<{
+  executionId: string;
+  text: string;
+  pendingApproval: PendingApprovalAction | null;
+  hadToolFailures: boolean;
+  failedToolSummaries: string[];
+  message: Awaited<ReturnType<typeof desktopThreadsService.addMessage>>;
+}> => {
+  const mode = input.mode ?? 'high';
+  const executionId = input.executionId ?? randomUUID();
+  const messageId = randomUUID();
+  const requesterAiRole = input.session.aiRole ?? input.session.role;
+  const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(input.session.companyId, requesterAiRole);
+  const departmentRuntime = await resolveDepartmentRuntime(input.session, input.threadId, fallbackAllowedToolIds);
+
+  await startRun({
+    executionId,
+    threadId: input.threadId,
+    messageId,
+    entrypoint: input.entrypoint ?? 'desktop_scheduled_workflow',
+    session: input.session,
+    mode,
+    message: input.prompt,
+  });
+
+  await appendEventSafe({
+    executionId,
+    phase: 'request',
+    eventType: 'execution.started',
+    actorType: 'system',
+    actorKey: 'vercel',
+    title: 'Scheduled desktop workflow execution started',
+    summary: summarizeText(input.prompt),
+    status: 'running',
+    payload: { threadId: input.threadId, mode },
+  });
+  logger.info('desktop.workflow.execution.start', {
+    executionId,
+    threadId: input.threadId,
+    companyId: input.session.companyId,
+    userId: input.session.userId,
+    mode,
+    authProvider: input.session.authProvider,
+    promptPreview: summarizeText(input.prompt, 1200),
+  });
+
+  try {
+    const runtime: VercelRuntimeRequestContext = {
+      channel: 'desktop',
+      threadId: input.threadId,
+      chatId: input.threadId,
+      executionId,
+      companyId: input.session.companyId,
+      userId: input.session.userId,
+      requesterAiRole,
+      requesterEmail: input.session.email ?? undefined,
+      departmentId: departmentRuntime.threadDepartmentId,
+      departmentName: departmentRuntime.departmentName,
+      departmentRoleSlug: departmentRuntime.departmentRoleSlug,
+      larkTenantKey: input.session.larkTenantKey ?? undefined,
+      larkOpenId: input.session.larkOpenId ?? undefined,
+      larkUserId: input.session.larkUserId ?? undefined,
+      authProvider: input.session.authProvider,
+      mode,
+      dateScope: inferDateScope(input.prompt),
+      allowedToolIds: departmentRuntime.allowedToolIds,
+      allowedActionsByTool: departmentRuntime.allowedActionsByTool,
+      departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
+      departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+    };
+
+    logger.info('desktop.workflow.execution.runtime', {
+      executionId,
+      threadId: input.threadId,
+      companyId: input.session.companyId,
+      userId: input.session.userId,
+      authProvider: input.session.authProvider,
+      hasLarkTenantKey: Boolean(input.session.larkTenantKey),
+      hasLarkOpenId: Boolean(input.session.larkOpenId),
+      hasLarkUserId: Boolean(input.session.larkUserId),
+      allowedToolCount: departmentRuntime.allowedToolIds.length,
+    });
+
+    let persistedBlocks: PersistedContentBlock[] = [];
+    const { messages: historyMessages } = await mapHistoryToMessages(input.threadId, input.session);
+    const result = await runVercelLoop({
+      runtime,
+      system: buildSystemPrompt({
+        threadId: input.threadId,
+        dateScope: runtime.dateScope,
+        latestUserMessage: input.prompt,
+        departmentName: departmentRuntime.departmentName,
+        departmentRoleSlug: departmentRuntime.departmentRoleSlug,
+        departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
+        departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+      }),
+      messages: [...historyMessages, { role: 'user', content: input.prompt }],
+      onToolStart: async (toolName, activityId, title) => {
+        logger.info('desktop.workflow.execution.tool.start', {
+          executionId,
+          threadId: input.threadId,
+          toolName,
+          activityId,
+          title,
+        });
+        persistedBlocks = [
+          ...persistedBlocks,
+          { type: 'tool', id: activityId, name: toolName, label: title, icon: 'tool', status: 'running' },
+        ];
+        await appendEventSafe({
+          executionId,
+          phase: 'tool',
+          eventType: 'tool.started',
+          actorType: 'tool',
+          actorKey: toolName,
+          title,
+          status: 'running',
+        });
+      },
+      onToolFinish: async (toolName, activityId, title, output) => {
+        logger.info('desktop.workflow.execution.tool.finish', {
+          executionId,
+          threadId: input.threadId,
+          toolName,
+          activityId,
+          title,
+          success: output.success,
+          pendingApproval: output.pendingApprovalAction?.kind ?? null,
+          summary: summarizeText(output.summary, 600),
+        });
+        persistedBlocks = persistedBlocks.map((block) =>
+          block.type === 'tool' && block.id === activityId
+            ? {
+              ...block,
+              name: toolName,
+              label: title,
+              icon: output.success ? 'tool' : 'x-circle',
+              status: output.success ? 'done' : 'failed',
+              resultSummary: output.summary,
+            }
+            : block,
+        );
+        await appendEventSafe({
+          executionId,
+          phase: output.pendingApprovalAction ? 'control' : 'tool',
+          eventType: output.pendingApprovalAction ? 'control.requested' : 'tool.completed',
+          actorType: output.pendingApprovalAction ? 'system' : 'tool',
+          actorKey: toolName,
+          title,
+          summary: summarizeText(output.summary, 600),
+          status: output.pendingApprovalAction ? 'pending' : output.success ? 'done' : 'failed',
+          payload: {
+            success: output.success,
+            pendingApprovalAction: output.pendingApprovalAction ?? null,
+          },
+        });
+      },
+    });
+    logger.info('desktop.workflow.execution.model.completed', {
+      executionId,
+      threadId: input.threadId,
+      stepCount: Array.isArray(result.steps) ? result.steps.length : null,
+      textPreview: summarizeText(result.text, 1200),
+    });
+
+    const toolOutputs = (result.steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap((step) =>
+      (step.toolResults ?? [])
+        .map((toolResult) => toolResult.output as VercelToolEnvelope | undefined)
+        .filter((output): output is VercelToolEnvelope => Boolean(output)));
+    const failedToolOutputs = toolOutputs.filter((output) => output.success === false);
+    const failedToolSummaries = failedToolOutputs.map((output) => output.summary);
+    const pendingApproval = findPendingApproval(result.steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
+    const assistantText = pendingApproval
+      ? `Workflow execution blocked: ${pendingApproval.kind === 'tool_action' ? pendingApproval.summary : 'approval is required before the next step can continue.'}`
+      : result.text.trim();
+    persistedBlocks = appendTextBlock(persistedBlocks, assistantText);
+
+    const citations = (result.steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap((step) =>
+      (step.toolResults ?? []).flatMap((toolResult) => {
+        const output = toolResult.output as VercelToolEnvelope | undefined;
+        return output?.citations ?? [];
+      }));
+    const conversationRefs = buildPersistedConversationRefs(buildConversationKey(input.threadId));
+    const assistantMessage = await desktopThreadsService.addMessage(
+      input.threadId,
+      input.session.userId,
+      'assistant',
+      assistantText,
+      {
+        executionId,
+        contentBlocks: persistedBlocks,
+        ...(citations.length > 0 ? { citations } : {}),
+        ...(conversationRefs ? { conversationRefs } : {}),
+        ...(input.metadata ? { workflowExecution: input.metadata } : {}),
+        ...(pendingApproval ? { pendingApprovalAction: pendingApproval } : {}),
+      },
+    );
+    logger.info('desktop.workflow.execution.message.persisted', {
+      executionId,
+      threadId: input.threadId,
+      assistantMessageId: assistantMessage.id,
+      pendingApproval: Boolean(pendingApproval),
+      hadToolFailures: failedToolOutputs.length > 0,
+      assistantTextPreview: summarizeText(assistantText, 1200),
+    });
+    conversationMemoryStore.addAssistantMessage(buildConversationKey(input.threadId), assistantMessage.id, assistantText);
+
+    await appendEventSafe({
+      executionId,
+      phase: pendingApproval ? 'control' : 'synthesis',
+      eventType: pendingApproval ? 'control.requested' : 'synthesis.completed',
+      actorType: pendingApproval ? 'system' : 'agent',
+      actorKey: pendingApproval ? pendingApproval.kind : 'vercel',
+      title: pendingApproval ? 'Approval requested' : 'Generated assistant response',
+      summary: summarizeText(assistantText, 600),
+      status: pendingApproval ? 'pending' : 'done',
+    });
+
+    if (pendingApproval) {
+      await failRun(executionId, assistantText);
+    } else {
+      await completeRun(executionId, assistantText);
+    }
+    logger.info('desktop.workflow.execution.completed', {
+      executionId,
+      threadId: input.threadId,
+      pendingApproval: Boolean(pendingApproval),
+      hadToolFailures: failedToolOutputs.length > 0,
+      assistantMessageId: assistantMessage.id,
+    });
+
+    return {
+      executionId,
+      text: assistantText,
+      pendingApproval,
+      hadToolFailures: failedToolOutputs.length > 0,
+      failedToolSummaries,
+      message: assistantMessage,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Scheduled desktop workflow execution failed';
+    logger.error('desktop.workflow.execution.failed', {
+      executionId,
+      threadId: input.threadId,
+      error: errorMessage,
+    });
+    await appendEventSafe({
+      executionId,
+      phase: 'error',
+      eventType: 'execution.failed',
+      actorType: 'system',
+      actorKey: 'vercel',
+      title: 'Scheduled desktop workflow execution failed',
+      summary: summarizeText(errorMessage),
+      status: 'failed',
+    });
+    await failRun(executionId, errorMessage);
+    throw error;
+  }
 };
 
 export class VercelDesktopEngine {

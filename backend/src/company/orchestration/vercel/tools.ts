@@ -922,12 +922,28 @@ const normalizeZohoBooksModule = (value?: string):
 const getLarkDefaults = async (runtime: VercelRuntimeRequestContext) =>
   loadLarkOperationalConfigRepository().findByCompanyId(runtime.companyId);
 
-const getLarkAuthInput = (runtime: VercelRuntimeRequestContext) => ({
-  companyId: runtime.companyId,
-  larkTenantKey: runtime.larkTenantKey,
-  appUserId: runtime.userId,
-  credentialMode: runtime.authProvider === 'lark' ? 'user_linked' : 'tenant',
-});
+const getLarkAuthInput = (runtime: VercelRuntimeRequestContext) => {
+  const authInput = {
+    companyId: runtime.companyId,
+    larkTenantKey: runtime.larkTenantKey,
+    appUserId: runtime.userId,
+    credentialMode: runtime.authProvider === 'lark' ? 'user_linked' as const : 'tenant' as const,
+  };
+
+  logger.info('vercel.lark.auth.selected', {
+    executionId: runtime.executionId,
+    threadId: runtime.threadId,
+    companyId: runtime.companyId,
+    userId: runtime.userId,
+    authProvider: runtime.authProvider,
+    credentialMode: authInput.credentialMode,
+    hasLarkTenantKey: Boolean(runtime.larkTenantKey),
+    hasLarkOpenId: Boolean(runtime.larkOpenId),
+    hasLarkUserId: Boolean(runtime.larkUserId),
+  });
+
+  return authInput;
+};
 
 const getLarkTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
@@ -943,6 +959,13 @@ const withLarkTenantFallback = async <T>(
     if (primary.credentialMode !== 'user_linked' || !(error instanceof LarkRuntimeClientError)) {
       throw error;
     }
+    logger.warn('vercel.lark.auth.fallback_to_tenant', {
+      executionId: runtime.executionId,
+      threadId: runtime.threadId,
+      companyId: runtime.companyId,
+      userId: runtime.userId,
+      error: error.message,
+    });
     return run({
       ...primary,
       credentialMode: 'tenant',
@@ -2789,6 +2812,18 @@ export const createVercelDesktopTools = (
       }),
       execute: async (input) => withLifecycle(hooks, 'larkTask', 'Running Lark Tasks workflow', async () => {
         const larkTasksService = loadLarkTasksService();
+        logger.info('vercel.lark.task.invoke', {
+          executionId: runtime.executionId,
+          threadId: runtime.threadId,
+          companyId: runtime.companyId,
+          userId: runtime.userId,
+          operation: input.operation,
+          authProvider: runtime.authProvider,
+          credentialMode: runtime.authProvider === 'lark' ? 'user_linked' : 'tenant',
+          hasLarkTenantKey: Boolean(runtime.larkTenantKey),
+          hasLarkOpenId: Boolean(runtime.larkOpenId),
+          hasLarkUserId: Boolean(runtime.larkUserId),
+        });
         const defaults = await getLarkDefaults(runtime);
         const conversationKey = buildConversationKey(runtime.threadId);
         const latestTask = conversationMemoryStore.getLatestLarkTask(conversationKey);
@@ -3399,6 +3434,20 @@ export const createVercelDesktopTools = (
       execute: async (input) => withLifecycle(hooks, 'larkApproval', 'Running Lark Approvals workflow', async () => {
         const approvalsService = loadLarkApprovalsService();
         const defaults = await getLarkDefaults(runtime);
+        logger.info('vercel.lark.approval.invoke', {
+          executionId: runtime.executionId,
+          threadId: runtime.threadId,
+          companyId: runtime.companyId,
+          userId: runtime.userId,
+          operation: input.operation,
+          authProvider: runtime.authProvider,
+          credentialMode: runtime.authProvider === 'lark' ? 'user_linked' : 'tenant',
+          hasLarkTenantKey: Boolean(runtime.larkTenantKey),
+          hasLarkOpenId: Boolean(runtime.larkOpenId),
+          hasLarkUserId: Boolean(runtime.larkUserId),
+          hasApprovalCode: Boolean(input.approvalCode?.trim() || defaults?.defaultApprovalCode),
+          status: input.status ?? null,
+        });
         if (input.operation === 'getInstance') {
           if (!input.instanceCode?.trim()) {
             return buildEnvelope({
@@ -3408,10 +3457,10 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
-          const instance = await approvalsService.getInstance({
-            ...getLarkAuthInput(runtime),
+          const instance = await withLarkTenantFallback(runtime, (auth) => approvalsService.getInstance({
+            ...auth,
             instanceCode: input.instanceCode.trim(),
-          });
+          }));
           return buildEnvelope({
             success: true,
             summary: `Fetched Lark approval instance ${asString(instance.title) ?? asString(instance.instanceCode) ?? 'instance'}.`,
@@ -3420,18 +3469,44 @@ export const createVercelDesktopTools = (
           });
         }
         if (input.operation === 'listInstances') {
-          const result = await approvalsService.listInstances({
-            ...getLarkAuthInput(runtime),
-            approvalCode: input.approvalCode?.trim() || defaults?.defaultApprovalCode,
-            status: input.status,
-            pageSize: input.pageSize,
-          });
-          return buildEnvelope({
-            success: true,
-            summary: result.items.length > 0 ? `Found ${result.items.length} Lark approval instance(s).` : 'No Lark approval instances matched the request.',
-            keyData: { items: result.items },
-            fullPayload: result as unknown as Record<string, unknown>,
-          });
+          try {
+            const result = await withLarkTenantFallback(runtime, (auth) => approvalsService.listInstances({
+              ...auth,
+              approvalCode: input.approvalCode?.trim() || defaults?.defaultApprovalCode,
+              status: input.status,
+              pageSize: input.pageSize,
+            }));
+            return buildEnvelope({
+              success: true,
+              summary: result.items.length > 0 ? `Found ${result.items.length} Lark approval instance(s).` : 'No Lark approval instances matched the request.',
+              keyData: { items: result.items },
+              fullPayload: result as unknown as Record<string, unknown>,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Lark approval list failed';
+            if (message.toLowerCase().includes('field validation failed')) {
+              logger.warn('vercel.lark.approval.list.degraded', {
+                executionId: runtime.executionId,
+                threadId: runtime.threadId,
+                companyId: runtime.companyId,
+                userId: runtime.userId,
+                approvalCode: input.approvalCode?.trim() || defaults?.defaultApprovalCode || null,
+                status: input.status ?? null,
+                error: message,
+              });
+              return buildEnvelope({
+                success: true,
+                summary: 'Approval-instance data is unavailable for this workspace configuration. Continue with the digest using the remaining sources and mention that approval-risk context is limited.',
+                keyData: { items: [] },
+                fullPayload: {
+                  items: [],
+                  degraded: true,
+                  reason: 'approval_list_validation_failed',
+                },
+              });
+            }
+            throw error;
+          }
         }
         const body = input.body;
         if (!body) {
@@ -3442,15 +3517,15 @@ export const createVercelDesktopTools = (
             retryable: false,
           });
         }
-        const instance = await approvalsService.createInstance({
-          ...getLarkAuthInput(runtime),
+        const instance = await withLarkTenantFallback(runtime, (auth) => approvalsService.createInstance({
+          ...auth,
           body: {
             ...body,
             ...(input.approvalCode?.trim() || defaults?.defaultApprovalCode
               ? { approval_code: input.approvalCode?.trim() || defaults?.defaultApprovalCode }
               : {}),
           },
-        });
+        }));
         return buildEnvelope({
           success: true,
           summary: `Created Lark approval instance ${asString(instance.title) ?? asString(instance.instanceCode) ?? 'instance'}.`,

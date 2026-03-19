@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   AlarmClock,
+  ArrowLeft,
   CalendarClock,
   CheckCircle2,
   ChevronRight,
@@ -17,13 +18,19 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
+  PanelLeftClose,
+  PanelLeftOpen,
   Workflow,
 } from 'lucide-react'
 
+import { useAuth } from '../context/AuthContext'
+import { useChat } from '../context/ChatContext'
+import { useWorkspace } from '../context/WorkspaceContext'
 import { cn } from '../lib/utils'
 
 type ScheduleFrequency = 'daily' | 'weekly' | 'monthly' | 'one_time'
 type WorkflowDraftStatus = 'draft' | 'reviewed' | 'published'
+type ToolActionGroup = 'read' | 'create' | 'update' | 'delete' | 'send' | 'execute'
 
 type WorkflowDraft = {
   id: string
@@ -40,26 +47,118 @@ type WorkflowDraft = {
   desktopThreadLabel: string
   larkChat: boolean
   larkChatLabel: string
+  compiledPrompt?: string
+  compilerNotes?: string
+  compiledWorkflowSpec?: CompiledWorkflowSpec | null
+  compiledCapabilitySummary?: CompiledWorkflowCapabilitySummary | null
+  compiledModelId?: string | null
+  lastCompiledAt?: string | null
+  lastCompiledSourceFingerprint?: string | null
+  publishedWorkflowId?: string | null
+  publishedThreadId?: string | null
+  publishedThreadTitle?: string | null
+  lastPublishedAt?: string | null
+  nextRunAt?: string | null
+  lastPublishedSourceFingerprint?: string | null
   status: WorkflowDraftStatus
   updatedAt: string
 }
 
-type WorkflowStepPreview = {
-  id: string
-  kind: 'read' | 'analyze' | 'createDraft' | 'updateSystem' | 'send' | 'deliver'
-  title: string
-  description: string
-  capability: string
-  approvalLevel: 'none' | 'publish'
+type WorkflowCapabilityRef = {
+  toolId: string
+  actionGroup: ToolActionGroup
+  operation: string
 }
 
-type WorkflowReviewSummary = {
-  steps: WorkflowStepPreview[]
-  tools: string[]
-  actionGroups: string[]
-  destinations: string[]
-  publishApprovalRequired: boolean
+type CompiledWorkflowNode = {
+  id: string
+  kind: string
+  title: string
+  instructions?: string
+  expectedOutput?: string
+  capability?: WorkflowCapabilityRef
+  destinationIds?: string[]
+  approvalJustification?: string
+}
+
+type CompiledWorkflowSpec = {
+  version: 'v1'
+  name: string
+  description?: string
+  nodes: CompiledWorkflowNode[]
+  edges: Array<{ sourceId: string; targetId: string; condition: string; label?: string }>
+}
+
+type CompiledWorkflowCapabilitySummary = {
+  version: 'v1'
+  requiredTools: string[]
+  requiredActionGroupsByTool: Record<string, ToolActionGroup[]>
+  operationsByTool: Record<string, string[]>
+  expectedDestinationIds: string[]
+  requiresPublishApproval: boolean
+  capabilityFingerprint: string
+}
+
+type CompileWorkflowResponse = {
+  workflowSpec: CompiledWorkflowSpec
   compiledPrompt: string
+  compilerNotes: string
+  capabilitySummary: CompiledWorkflowCapabilitySummary
+  model: {
+    provider: string
+    modelId: string
+  }
+}
+
+type PublishWorkflowResponse = {
+  workflowId: string
+  status: 'active'
+  nextRunAt: string | null
+  publishedAt: string
+  primaryThreadId: string
+  primaryThreadTitle: string | null
+  capabilitySummary: CompiledWorkflowCapabilitySummary
+}
+
+type RunWorkflowResponse = {
+  workflowId: string
+  runId: string
+  executionId: string | null
+  status: 'succeeded' | 'failed' | 'blocked'
+  threadId: string
+  threadTitle: string | null
+  resultSummary: string | null
+  errorSummary: string | null
+}
+
+type PublishedWorkflowSummary = {
+  id: string
+  name: string
+  status: 'draft' | 'active' | 'paused' | 'archived'
+  userIntent: string
+  workflowSpec: CompiledWorkflowSpec
+  compiledPrompt: string
+  capabilitySummary: CompiledWorkflowCapabilitySummary
+  schedule: {
+    type: 'daily' | 'weekly' | 'monthly' | 'one_time'
+    timezone: string
+    time?: { hour: number; minute: number }
+    daysOfWeek?: string[]
+    dayOfMonth?: number
+    runAt?: string
+  }
+  outputConfig: {
+    version: 'v1'
+    destinations: Array<
+      | { id: string; kind: 'desktop_inbox'; label?: string }
+      | { id: string; kind: 'desktop_thread'; label?: string; threadId: string }
+      | { id: string; kind: 'lark_chat'; label?: string; chatId: string }
+    >
+    defaultDestinationIds: string[]
+  }
+  publishedAt: string | null
+  nextRunAt: string | null
+  updatedAt: string
 }
 
 const STORAGE_KEY = 'cursorr_schedule_work_drafts_v1'
@@ -92,6 +191,19 @@ function createBlankDraft(): WorkflowDraft {
     desktopThreadLabel: 'Leadership desk',
     larkChat: false,
     larkChatLabel: 'ops-alerts',
+    compiledPrompt: '',
+    compilerNotes: '',
+    compiledWorkflowSpec: null,
+    compiledCapabilitySummary: null,
+    compiledModelId: null,
+    lastCompiledAt: null,
+    lastCompiledSourceFingerprint: null,
+    publishedWorkflowId: null,
+    publishedThreadId: null,
+    publishedThreadTitle: null,
+    lastPublishedAt: null,
+    nextRunAt: null,
+    lastPublishedSourceFingerprint: null,
     status: 'draft',
     updatedAt: new Date().toISOString(),
   }
@@ -108,110 +220,6 @@ function readDraftsFromStorage(): WorkflowDraft[] {
     return parsed
   } catch {
     return [createBlankDraft()]
-  }
-}
-
-function inferWorkflowSummary(draft: WorkflowDraft): WorkflowReviewSummary {
-  const source = `${draft.name} ${draft.userIntent}`.toLowerCase()
-  const wantsUpdate = /\b(update|edit|change|sync|write|modify|patch)\b/.test(source)
-  const wantsCreate = /\b(create|draft|prepare|compose|build)\b/.test(source)
-  const wantsSend = /\b(send|post|notify|message|email|share|deliver)\b/.test(source)
-  const wantsExecute = /\b(run|execute|deploy|command)\b/.test(source)
-  const mentionsFinance = /\b(invoice|finance|books|zoho)\b/.test(source)
-  const mentionsCalendar = /\b(calendar|meeting|schedule)\b/.test(source)
-
-  const steps: WorkflowStepPreview[] = [
-    {
-      id: 'collect-context',
-      kind: 'read',
-      title: 'Gather source context',
-      description: 'Read the relevant systems, documents, and recent state needed for the scheduled run.',
-      capability: mentionsFinance ? 'zoho-books-read.read' : mentionsCalendar ? 'lark-calendar-read.read' : 'search-read.read',
-      approvalLevel: 'none',
-    },
-    {
-      id: 'analyze-findings',
-      kind: 'analyze',
-      title: 'Analyze and rank findings',
-      description: 'Condense the raw inputs into a structured summary with priorities, blockers, and follow-ups.',
-      capability: 'runtime.reason',
-      approvalLevel: 'none',
-    },
-  ]
-
-  if (wantsCreate) {
-    steps.push({
-      id: 'prepare-draft',
-      kind: 'createDraft',
-      title: 'Prepare draft output',
-      description: 'Create a clean draft artifact before anything is sent or updated.',
-      capability: 'workspace.createDraft',
-      approvalLevel: 'none',
-    })
-  }
-
-  if (wantsUpdate || wantsExecute) {
-    steps.push({
-      id: 'apply-changes',
-      kind: 'updateSystem',
-      title: wantsExecute ? 'Run system action' : 'Apply approved updates',
-      description: wantsExecute
-        ? 'Execute the requested operational action when the scheduled run reaches that step.'
-        : 'Write approved changes back to the target system only if they are covered by publish-time approval.',
-      capability: wantsExecute ? 'coding.execute' : mentionsFinance ? 'zoho-books-write.update' : 'coding.update',
-      approvalLevel: 'publish',
-    })
-  }
-
-  if (wantsSend || draft.larkChat || draft.desktopInbox || draft.desktopThread) {
-    steps.push({
-      id: 'send-results',
-      kind: 'send',
-      title: 'Send result to destination',
-      description: 'Deliver the final summary to the configured destination set for this workflow.',
-      capability: draft.larkChat ? 'lark-response.send' : 'response.send',
-      approvalLevel: 'publish',
-    })
-  }
-
-  steps.push({
-    id: 'persist-history',
-    kind: 'deliver',
-    title: 'Persist run history',
-    description: 'Store the execution summary, delivery state, and the latest published plan for auditing.',
-    capability: 'execution.history',
-    approvalLevel: 'none',
-  })
-
-  const tools = Array.from(new Set(steps.map((step) => step.capability.split('.')[0])))
-  const actionGroups = Array.from(new Set(
-    steps
-      .filter((step) => step.approvalLevel === 'publish')
-      .map((step) => step.capability.split('.')[1] ?? 'send'),
-  ))
-
-  const destinations = [
-    draft.desktopInbox ? 'Desktop inbox' : null,
-    draft.desktopThread ? `Desktop thread: ${draft.desktopThreadLabel || 'Selected thread'}` : null,
-    draft.larkChat ? `Lark chat: ${draft.larkChatLabel || 'Configured chat'}` : null,
-  ].filter(Boolean) as string[]
-
-  const compiledPrompt = [
-    `Workflow: ${draft.name || 'Untitled workflow'}`,
-    `Intent: ${draft.userIntent || 'No workflow intent has been written yet.'}`,
-    `Schedule: ${formatScheduleLabel(draft)}`,
-    `Destinations: ${destinations.join(', ') || 'No destinations selected'}`,
-    'Steps:',
-    ...steps.map((step, index) => `${index + 1}. ${step.title} [${step.capability}]`),
-  ].join('\n')
-
-  return {
-    steps,
-    tools,
-    actionGroups,
-    destinations,
-    publishApprovalRequired: actionGroups.length > 0,
-    compiledPrompt,
   }
 }
 
@@ -235,10 +243,210 @@ function statusLabel(status: WorkflowDraftStatus): string {
   return 'Draft'
 }
 
-export function ScheduleWorkView(): JSX.Element {
+function createDraftSourceFingerprint(draft: WorkflowDraft): string {
+  return JSON.stringify({
+    name: draft.name,
+    userIntent: draft.userIntent,
+    frequency: draft.frequency,
+    timezone: draft.timezone,
+    time: draft.time,
+    dayOfWeek: draft.dayOfWeek,
+    dayOfMonth: draft.dayOfMonth,
+    runDate: draft.runDate,
+    desktopInbox: draft.desktopInbox,
+    desktopThread: draft.desktopThread,
+    desktopThreadLabel: draft.desktopThreadLabel,
+    larkChat: draft.larkChat,
+    larkChatLabel: draft.larkChatLabel,
+  })
+}
+
+function buildCompileDestinations(draft: WorkflowDraft): Array<
+  { kind: 'desktop_inbox'; label?: string }
+  | { kind: 'desktop_thread'; label?: string; value?: string }
+  | { kind: 'lark_chat'; label?: string; value?: string }
+> {
+  const destinations = [
+    draft.desktopInbox ? { kind: 'desktop_inbox', label: 'Desktop inbox' as const } : null,
+    draft.desktopThread ? { kind: 'desktop_thread', label: draft.desktopThreadLabel || 'Desktop thread', value: draft.desktopThreadLabel || 'desktop-thread' } : null,
+    draft.larkChat ? { kind: 'lark_chat', label: draft.larkChatLabel || 'Lark chat', value: draft.larkChatLabel || 'lark-chat' } : null,
+  ].filter(Boolean) as Array<
+    { kind: 'desktop_inbox'; label?: string }
+    | { kind: 'desktop_thread'; label?: string; value?: string }
+    | { kind: 'lark_chat'; label?: string; value?: string }
+  >
+
+  return destinations.length > 0 ? destinations : [{ kind: 'desktop_inbox', label: 'Desktop inbox' }]
+}
+
+function formatDestinationLabels(draft: WorkflowDraft): string[] {
+  return [
+    draft.desktopInbox ? 'Desktop inbox' : null,
+    draft.desktopThread ? `Desktop thread: ${draft.desktopThreadLabel || 'Selected thread'}` : null,
+    draft.larkChat ? `Lark chat: ${draft.larkChatLabel || 'Configured chat'}` : null,
+  ].filter(Boolean) as string[]
+}
+
+function describeCompiledNode(node: CompiledWorkflowNode): string {
+  if (node.instructions) return node.instructions
+  if (node.expectedOutput) return `Expected output: ${node.expectedOutput}`
+  if (node.destinationIds && node.destinationIds.length > 0) return `Deliver to ${node.destinationIds.join(', ')}.`
+  if (node.approvalJustification) return node.approvalJustification
+  return 'Compiled workflow step.'
+}
+
+function isWriteActionGroup(actionGroup?: ToolActionGroup): boolean {
+  return ['create', 'update', 'delete', 'send', 'execute'].includes(actionGroup ?? '')
+}
+
+function scheduleConfigToDraftFields(schedule: PublishedWorkflowSummary['schedule']): Pick<
+  WorkflowDraft,
+  'frequency' | 'timezone' | 'time' | 'dayOfWeek' | 'dayOfMonth' | 'runDate'
+> {
+  if (schedule.type === 'daily') {
+    return {
+      frequency: 'daily',
+      timezone: schedule.timezone,
+      time: `${String(schedule.time?.hour ?? 9).padStart(2, '0')}:${String(schedule.time?.minute ?? 0).padStart(2, '0')}`,
+      dayOfWeek: 'monday',
+      dayOfMonth: 1,
+      runDate: new Date().toISOString().slice(0, 10),
+    }
+  }
+  if (schedule.type === 'weekly') {
+    const dayCode = schedule.daysOfWeek?.[0] ?? 'MO'
+    const dayOfWeek = {
+      MO: 'monday',
+      TU: 'tuesday',
+      WE: 'wednesday',
+      TH: 'thursday',
+      FR: 'friday',
+      SA: 'saturday',
+      SU: 'sunday',
+    }[dayCode] ?? 'monday'
+    return {
+      frequency: 'weekly',
+      timezone: schedule.timezone,
+      time: `${String(schedule.time?.hour ?? 9).padStart(2, '0')}:${String(schedule.time?.minute ?? 0).padStart(2, '0')}`,
+      dayOfWeek,
+      dayOfMonth: 1,
+      runDate: new Date().toISOString().slice(0, 10),
+    }
+  }
+  if (schedule.type === 'monthly') {
+    return {
+      frequency: 'monthly',
+      timezone: schedule.timezone,
+      time: `${String(schedule.time?.hour ?? 9).padStart(2, '0')}:${String(schedule.time?.minute ?? 0).padStart(2, '0')}`,
+      dayOfWeek: 'monday',
+      dayOfMonth: schedule.dayOfMonth ?? 1,
+      runDate: new Date().toISOString().slice(0, 10),
+    }
+  }
+  return {
+    frequency: 'one_time',
+    timezone: schedule.timezone,
+    time: schedule.runAt ? new Date(schedule.runAt).toISOString().slice(11, 16) : '09:00',
+    dayOfWeek: 'monday',
+    dayOfMonth: 1,
+    runDate: schedule.runAt ? schedule.runAt.slice(0, 10) : new Date().toISOString().slice(0, 10),
+  }
+}
+
+function buildDraftFromPublishedWorkflow(workflow: PublishedWorkflowSummary): WorkflowDraft {
+  const scheduleFields = scheduleConfigToDraftFields(workflow.schedule)
+  const desktopThreadDestination = workflow.outputConfig.destinations.find((destination) => destination.kind === 'desktop_thread')
+  const larkDestination = workflow.outputConfig.destinations.find((destination) => destination.kind === 'lark_chat')
+  const baseDraft: WorkflowDraft = {
+    id: `published-${workflow.id}`,
+    name: workflow.name,
+    userIntent: workflow.userIntent,
+    ...scheduleFields,
+    desktopInbox: workflow.outputConfig.destinations.some((destination) => destination.kind === 'desktop_inbox'),
+    desktopThread: Boolean(desktopThreadDestination),
+    desktopThreadLabel: desktopThreadDestination?.label || workflow.name,
+    larkChat: Boolean(larkDestination),
+    larkChatLabel: larkDestination?.label || '',
+    compiledPrompt: workflow.compiledPrompt,
+    compilerNotes: '',
+    compiledWorkflowSpec: workflow.workflowSpec,
+    compiledCapabilitySummary: workflow.capabilitySummary,
+    compiledModelId: null,
+    lastCompiledAt: workflow.updatedAt,
+    lastCompiledSourceFingerprint: null,
+    publishedWorkflowId: workflow.id,
+    publishedThreadId: desktopThreadDestination?.threadId ?? null,
+    publishedThreadTitle: desktopThreadDestination?.label ?? workflow.name,
+    lastPublishedAt: workflow.publishedAt,
+    nextRunAt: workflow.nextRunAt,
+    lastPublishedSourceFingerprint: null,
+    status: workflow.status === 'active' ? 'published' : 'draft',
+    updatedAt: workflow.updatedAt,
+  }
+
+  const fingerprint = createDraftSourceFingerprint(baseDraft)
+  return {
+    ...baseDraft,
+    lastCompiledSourceFingerprint: fingerprint,
+    lastPublishedSourceFingerprint: fingerprint,
+  }
+}
+
+function reconcileDraftsWithPublished(
+  currentDrafts: WorkflowDraft[],
+  publishedWorkflows: PublishedWorkflowSummary[],
+): WorkflowDraft[] {
+  const draftByWorkflowId = new Map(
+    currentDrafts
+      .filter((draft) => draft.publishedWorkflowId)
+      .map((draft) => [draft.publishedWorkflowId as string, draft]),
+  )
+
+  const syncedPublishedDrafts = publishedWorkflows.map((workflow) => {
+    const localDraft = draftByWorkflowId.get(workflow.id)
+    const remoteDraft = buildDraftFromPublishedWorkflow(workflow)
+    if (!localDraft) {
+      return remoteDraft
+    }
+
+    const hasLocalEdits = Boolean(
+      localDraft.lastPublishedSourceFingerprint
+      && localDraft.lastPublishedSourceFingerprint !== createDraftSourceFingerprint(localDraft),
+    )
+
+    return hasLocalEdits
+      ? {
+        ...remoteDraft,
+        ...localDraft,
+        publishedWorkflowId: workflow.id,
+        lastPublishedAt: workflow.publishedAt,
+        nextRunAt: workflow.nextRunAt,
+        publishedThreadId: remoteDraft.publishedThreadId,
+        publishedThreadTitle: remoteDraft.publishedThreadTitle,
+        lastPublishedSourceFingerprint: remoteDraft.lastPublishedSourceFingerprint,
+      }
+      : remoteDraft
+  })
+
+  const unpublishedDrafts = currentDrafts.filter((draft) => !draft.publishedWorkflowId)
+  const nextDrafts = [...syncedPublishedDrafts, ...unpublishedDrafts]
+  return nextDrafts.length > 0 ? nextDrafts : [createBlankDraft()]
+}
+
+export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Element {
+  const { token, selectedDepartmentId } = useAuth()
+  const { loadThreads, selectThread } = useChat()
+  const { bindThreadToCurrentWorkspace } = useWorkspace()
   const [drafts, setDrafts] = useState<WorkflowDraft[]>(() => readDraftsFromStorage())
   const [selectedDraftId, setSelectedDraftId] = useState<string>(() => readDraftsFromStorage()[0]?.id ?? '')
   const [activePanel, setActivePanel] = useState<'graph' | 'prompt'>('graph')
+  const [draftRailOpen, setDraftRailOpen] = useState(true)
+  const [isCompiling, setIsCompiling] = useState(false)
+  const [compileError, setCompileError] = useState<string | null>(null)
+  const [isPublishing, setIsPublishing] = useState(false)
+  const [publishError, setPublishError] = useState<string | null>(null)
+  const [isRunningNow, setIsRunningNow] = useState(false)
+  const [runError, setRunError] = useState<string | null>(null)
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(drafts))
@@ -250,8 +458,52 @@ export function ScheduleWorkView(): JSX.Element {
     }
   }, [drafts, selectedDraftId])
 
+  useEffect(() => {
+    if (!token) return
+
+    let cancelled = false
+    const loadPublishedWorkflows = async (): Promise<void> => {
+      try {
+        const response = await window.desktopAPI.fetch('/api/desktop/workflows', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+        if (response.status < 200 || response.status >= 300) {
+          return
+        }
+        const parsed = JSON.parse(response.body) as { data: PublishedWorkflowSummary[] }
+        if (cancelled) return
+        setDrafts((current) => reconcileDraftsWithPublished(current, parsed.data ?? []))
+      } catch {
+        // Keep local drafts if the backend list call fails.
+      }
+    }
+
+    void loadPublishedWorkflows()
+    return () => {
+      cancelled = true
+    }
+  }, [token])
+
   const selectedDraft = drafts.find((draft) => draft.id === selectedDraftId) ?? drafts[0]
-  const summary = selectedDraft ? inferWorkflowSummary(selectedDraft) : null
+  const sourceFingerprint = selectedDraft ? createDraftSourceFingerprint(selectedDraft) : ''
+  const compiledNodes = selectedDraft?.compiledWorkflowSpec?.nodes ?? []
+  const capabilitySummary = selectedDraft?.compiledCapabilitySummary ?? null
+  const destinationLabels = selectedDraft ? formatDestinationLabels(selectedDraft) : []
+  const hasCompiledPrompt = Boolean(selectedDraft?.compiledPrompt?.trim())
+  const hasCompiledWorkflow = compiledNodes.length > 0
+  const hasPublishedWorkflow = Boolean(selectedDraft?.publishedWorkflowId)
+  const hasUnpublishedChanges = Boolean(
+    selectedDraft?.publishedWorkflowId
+    && selectedDraft.lastPublishedSourceFingerprint
+    && selectedDraft.lastPublishedSourceFingerprint !== sourceFingerprint,
+  )
+  const compileIsStale = Boolean(
+    selectedDraft?.lastCompiledSourceFingerprint
+    && selectedDraft.lastCompiledSourceFingerprint !== sourceFingerprint,
+  )
 
   const updateSelectedDraft = (updates: Partial<WorkflowDraft>): void => {
     if (!selectedDraft) return
@@ -262,8 +514,22 @@ export function ScheduleWorkView(): JSX.Element {
           ? {
             ...draft,
             ...updates,
-            status: updates.status ?? 'draft',
+            status: updates.status ?? draft.status,
             updatedAt: new Date().toISOString(),
+          }
+          : draft,
+      ),
+    )
+  }
+
+  const updateCompiledPrompt = (compiledPrompt: string): void => {
+    if (!selectedDraft) return
+    setDrafts((current) =>
+      current.map((draft) =>
+        draft.id === selectedDraft.id
+          ? {
+            ...draft,
+            compiledPrompt,
           }
           : draft,
       ),
@@ -282,6 +548,12 @@ export function ScheduleWorkView(): JSX.Element {
       ...selectedDraft,
       id: `workflow-${Math.random().toString(36).slice(2, 10)}`,
       name: `${selectedDraft.name} copy`,
+      publishedWorkflowId: null,
+      publishedThreadId: null,
+      publishedThreadTitle: null,
+      lastPublishedAt: null,
+      nextRunAt: null,
+      lastPublishedSourceFingerprint: null,
       status: 'draft' as const,
       updatedAt: new Date().toISOString(),
     }
@@ -289,9 +561,27 @@ export function ScheduleWorkView(): JSX.Element {
     setSelectedDraftId(copy.id)
   }
 
-  const deleteDraft = (): void => {
+  const deleteDraft = async (): Promise<void> => {
     if (!selectedDraft) return
-    if (!window.confirm(`Delete workflow draft "${selectedDraft.name}"?`)) return
+    if (!window.confirm(`${selectedDraft.publishedWorkflowId ? 'Archive' : 'Delete'} workflow "${selectedDraft.name}"?`)) return
+
+    if (selectedDraft.publishedWorkflowId && token) {
+      try {
+        const response = await window.desktopAPI.fetch(`/api/desktop/workflows/${selectedDraft.publishedWorkflowId}`, {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+        if (response.status !== 204) {
+          const parsed = response.body ? JSON.parse(response.body) as { message?: string } : {}
+          throw new Error(parsed.message || 'Failed to archive deployed workflow')
+        }
+      } catch (error) {
+        setPublishError(error instanceof Error ? error.message : 'Failed to archive deployed workflow')
+        return
+      }
+    }
 
     setDrafts((current) => {
       const remaining = current.filter((draft) => draft.id !== selectedDraft.id)
@@ -303,11 +593,172 @@ export function ScheduleWorkView(): JSX.Element {
     updateSelectedDraft({ status: 'reviewed' })
   }
 
-  const publishDraft = (): void => {
-    updateSelectedDraft({ status: 'published' })
+  const openWorkflowThread = async (threadId: string): Promise<void> => {
+    bindThreadToCurrentWorkspace(threadId)
+    await loadThreads()
+    await selectThread(threadId)
+    onExit?.()
   }
 
-  if (!selectedDraft || !summary) {
+  const publishDraft = async (): Promise<void> => {
+    if (!selectedDraft || !token) {
+      setPublishError('Sign in again before publishing this workflow.')
+      return
+    }
+    if (!selectedDraft.compiledWorkflowSpec || !selectedDraft.compiledPrompt?.trim()) {
+      setPublishError('Compile the workflow before publishing it.')
+      return
+    }
+
+    setIsPublishing(true)
+    setPublishError(null)
+    setRunError(null)
+    try {
+      const response = await window.desktopAPI.fetch('/api/desktop/workflows/publish', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: selectedDraft.name,
+          userIntent: selectedDraft.userIntent,
+          workflowId: selectedDraft.publishedWorkflowId ?? undefined,
+          schedule: {
+            frequency: selectedDraft.frequency,
+            timezone: selectedDraft.timezone,
+            time: selectedDraft.time,
+            ...(selectedDraft.frequency === 'weekly' ? { dayOfWeek: selectedDraft.dayOfWeek } : {}),
+            ...(selectedDraft.frequency === 'monthly' ? { dayOfMonth: selectedDraft.dayOfMonth } : {}),
+            ...(selectedDraft.frequency === 'one_time' ? { runDate: selectedDraft.runDate } : {}),
+          },
+          destinations: buildCompileDestinations(selectedDraft),
+          compiledPrompt: selectedDraft.compiledPrompt,
+          workflowSpec: selectedDraft.compiledWorkflowSpec,
+          capabilitySummary: selectedDraft.compiledCapabilitySummary ?? undefined,
+          departmentId: selectedDepartmentId,
+        }),
+      })
+
+      if (response.status < 200 || response.status >= 300) {
+        const parsed = JSON.parse(response.body) as { message?: string }
+        throw new Error(parsed.message || 'Workflow publish failed')
+      }
+
+      const parsed = JSON.parse(response.body) as { data: PublishWorkflowResponse }
+      const published = parsed.data
+      updateSelectedDraft({
+        status: 'published',
+        publishedWorkflowId: published.workflowId,
+        publishedThreadId: published.primaryThreadId,
+        publishedThreadTitle: published.primaryThreadTitle,
+        lastPublishedAt: published.publishedAt,
+        nextRunAt: published.nextRunAt,
+        lastPublishedSourceFingerprint: sourceFingerprint,
+      })
+      bindThreadToCurrentWorkspace(published.primaryThreadId)
+      await loadThreads()
+    } catch (error) {
+      setPublishError(error instanceof Error ? error.message : 'Workflow publish failed')
+    } finally {
+      setIsPublishing(false)
+    }
+  }
+
+  const runWorkflowNow = async (): Promise<void> => {
+    if (!selectedDraft?.publishedWorkflowId || !token) {
+      setRunError('Publish the workflow before running it.')
+      return
+    }
+
+    setIsRunningNow(true)
+    setRunError(null)
+    setPublishError(null)
+    try {
+      const response = await window.desktopAPI.fetch(`/api/desktop/workflows/${selectedDraft.publishedWorkflowId}/run`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      })
+
+      if (response.status < 200 || response.status >= 300) {
+        const parsed = JSON.parse(response.body) as { message?: string }
+        throw new Error(parsed.message || 'Workflow run failed')
+      }
+
+      const parsed = JSON.parse(response.body) as { data: RunWorkflowResponse }
+      const run = parsed.data
+      updateSelectedDraft({
+        publishedThreadId: run.threadId,
+        publishedThreadTitle: run.threadTitle,
+      })
+      bindThreadToCurrentWorkspace(run.threadId)
+      await openWorkflowThread(run.threadId)
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : 'Workflow run failed')
+    } finally {
+      setIsRunningNow(false)
+    }
+  }
+
+  const compileWorkflow = async (): Promise<void> => {
+    if (!selectedDraft || !token) {
+      setCompileError('Sign in again before compiling this workflow.')
+      return
+    }
+
+    setIsCompiling(true)
+    setCompileError(null)
+    try {
+      const response = await window.desktopAPI.fetch('/api/desktop/workflows/compile', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: selectedDraft.name,
+          userIntent: selectedDraft.userIntent,
+          schedule: {
+            frequency: selectedDraft.frequency,
+            timezone: selectedDraft.timezone,
+            time: selectedDraft.time,
+            ...(selectedDraft.frequency === 'weekly' ? { dayOfWeek: selectedDraft.dayOfWeek } : {}),
+            ...(selectedDraft.frequency === 'monthly' ? { dayOfMonth: selectedDraft.dayOfMonth } : {}),
+            ...(selectedDraft.frequency === 'one_time' ? { runDate: selectedDraft.runDate } : {}),
+          },
+          destinations: buildCompileDestinations(selectedDraft),
+        }),
+      })
+
+      if (response.status < 200 || response.status >= 300) {
+        const parsed = JSON.parse(response.body) as { message?: string }
+        throw new Error(parsed.message || 'Workflow compilation failed')
+      }
+
+      const parsed = JSON.parse(response.body) as { data: CompileWorkflowResponse }
+      const compiled = parsed.data
+      updateSelectedDraft({
+        compiledPrompt: compiled.compiledPrompt,
+        compilerNotes: compiled.compilerNotes,
+        compiledWorkflowSpec: compiled.workflowSpec,
+        compiledCapabilitySummary: compiled.capabilitySummary,
+        compiledModelId: compiled.model.modelId,
+        lastCompiledAt: new Date().toISOString(),
+        lastCompiledSourceFingerprint: sourceFingerprint,
+        status: 'reviewed',
+      })
+      setActivePanel('prompt')
+    } catch (error) {
+      setCompileError(error instanceof Error ? error.message : 'Workflow compilation failed')
+    } finally {
+      setIsCompiling(false)
+    }
+  }
+
+  if (!selectedDraft) {
     return (
       <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
         No workflow draft available.
@@ -317,19 +768,29 @@ export function ScheduleWorkView(): JSX.Element {
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_top_right,_rgba(41,121,255,0.12),_transparent_28%),linear-gradient(180deg,_rgba(12,14,17,1)_0%,_rgba(10,10,12,1)_100%)]">
+      {draftRailOpen ? (
       <div className="min-h-0 w-[290px] shrink-0 border-r border-white/5 bg-[rgba(8,10,14,0.86)] px-3 py-4">
         <div className="mb-4 flex items-center justify-between px-2">
           <div>
             <div className="text-[11px] uppercase tracking-[0.22em] text-cyan-200/55">Schedule Work</div>
-            <div className="mt-1 text-sm font-semibold text-white/92">Workflow drafts</div>
+            <div className="mt-1 text-sm font-semibold text-white/92">Schedules</div>
           </div>
-          <button
-            onClick={createDraft}
-            className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-medium text-cyan-100 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15"
-          >
-            <Plus size={14} />
-            New
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={createDraft}
+              className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-medium text-cyan-100 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15"
+            >
+              <Plus size={14} />
+              New
+            </button>
+            <button
+              onClick={() => setDraftRailOpen(false)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-white/60 transition-colors hover:bg-white/[0.08] hover:text-white"
+              title="Hide workflow drafts"
+            >
+              <PanelLeftClose size={16} />
+            </button>
+          </div>
         </div>
 
         <div className="space-y-2 overflow-y-auto pr-1">
@@ -349,9 +810,16 @@ export function ScheduleWorkView(): JSX.Element {
                   <div className="truncate text-sm font-medium text-white/90">{draft.name || 'Untitled workflow'}</div>
                   <div className="mt-1 line-clamp-2 text-xs text-white/45">{draft.userIntent || 'Describe the recurring work.'}</div>
                 </div>
-                <span className="rounded-full border border-white/10 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-white/55">
-                  {statusLabel(draft.status)}
-                </span>
+                <div className="flex flex-col items-end gap-1">
+                  <span className="rounded-full border border-white/10 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-white/55">
+                    {statusLabel(draft.status)}
+                  </span>
+                  {draft.publishedWorkflowId && draft.lastPublishedSourceFingerprint && draft.lastPublishedSourceFingerprint !== createDraftSourceFingerprint(draft) ? (
+                    <span className="rounded-full border border-amber-300/20 bg-amber-400/10 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-amber-100">
+                      Unpublished
+                    </span>
+                  ) : null}
+                </div>
               </div>
               <div className="mt-3 flex items-center justify-between text-[11px] text-white/45">
                 <span>{formatScheduleLabel(draft)}</span>
@@ -361,6 +829,17 @@ export function ScheduleWorkView(): JSX.Element {
           ))}
         </div>
       </div>
+      ) : (
+        <div className="shrink-0 px-3 py-5">
+          <button
+            onClick={() => setDraftRailOpen(true)}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/65 transition-colors hover:bg-white/[0.08] hover:text-white"
+            title="Show workflow drafts"
+          >
+            <PanelLeftOpen size={17} />
+          </button>
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
@@ -378,6 +857,24 @@ export function ScheduleWorkView(): JSX.Element {
               </div>
 
               <div className="flex items-center gap-2">
+                {onExit ? (
+                  <button
+                    onClick={onExit}
+                    className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/75 transition-colors hover:bg-white/[0.08] hover:text-white"
+                  >
+                    <ArrowLeft size={15} />
+                    Chat
+                  </button>
+                ) : null}
+                {!draftRailOpen ? (
+                  <button
+                    onClick={() => setDraftRailOpen(true)}
+                    className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/75 transition-colors hover:bg-white/[0.08] hover:text-white"
+                  >
+                    <PanelLeftOpen size={15} />
+                    Drafts
+                  </button>
+                ) : null}
                 <button
                   onClick={duplicateDraft}
                   className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
@@ -386,11 +883,11 @@ export function ScheduleWorkView(): JSX.Element {
                   Duplicate
                 </button>
                 <button
-                  onClick={deleteDraft}
+                  onClick={() => void deleteDraft()}
                   className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/70 transition-colors hover:border-red-400/25 hover:bg-red-500/10 hover:text-red-100"
                 >
                   <Trash2 size={15} />
-                  Delete
+                  {selectedDraft.publishedWorkflowId ? 'Archive' : 'Delete'}
                 </button>
               </div>
             </div>
@@ -429,6 +926,32 @@ export function ScheduleWorkView(): JSX.Element {
                         className="w-full rounded-3xl border border-white/10 bg-black/25 px-4 py-4 text-sm leading-6 text-white outline-none transition-colors placeholder:text-white/25 focus:border-cyan-300/40"
                       />
                     </label>
+
+                    <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-white/8 bg-black/20 px-4 py-3">
+                      <button
+                        onClick={() => void compileWorkflow()}
+                        disabled={isCompiling}
+                        className="inline-flex items-center gap-2 rounded-xl border border-cyan-300/25 bg-cyan-400/12 px-4 py-2.5 text-sm font-medium text-cyan-50 transition-colors hover:bg-cyan-400/20"
+                      >
+                        <Sparkles size={15} />
+                        {isCompiling ? 'Compiling…' : hasCompiledWorkflow ? 'Re-compile with AI' : 'Compile with AI'}
+                      </button>
+                      <div className="text-sm text-white/45">
+                        {hasCompiledPrompt
+                          ? compileIsStale
+                            ? 'Brief changed after the last AI compile. Re-run compile to refresh the graph and prompt.'
+                            : `Compiled ${selectedDraft.lastCompiledAt ? new Date(selectedDraft.lastCompiledAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'just now'} with ${selectedDraft.compiledModelId ?? 'the backend model'}.`
+                          : 'Compile the brief to lock a graph and create an editable structured prompt.'}
+                      </div>
+                      {compileError ? (
+                        <div className="w-full text-sm text-red-300/90">{compileError}</div>
+                      ) : null}
+                      {hasPublishedWorkflow && hasUnpublishedChanges ? (
+                        <div className="w-full text-sm text-amber-100/85">
+                          You are editing a deployed workflow. Publish again to update the live schedule. `Run now` still uses the currently deployed version until you update it.
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 </section>
 
@@ -596,7 +1119,7 @@ export function ScheduleWorkView(): JSX.Element {
                         Visual workflow
                       </div>
                       <h2 className="mt-3 text-lg font-semibold text-white">Generated execution map</h2>
-                      <p className="mt-1 text-sm text-white/45">The graph updates live as you change the workflow brief.</p>
+                      <p className="mt-1 text-sm text-white/45">Compile the workflow brief into an execution map, then edit the prompt if needed.</p>
                     </div>
 
                     <div className="inline-flex rounded-full border border-white/10 bg-black/20 p-1 text-xs">
@@ -622,34 +1145,37 @@ export function ScheduleWorkView(): JSX.Element {
                   </div>
 
                   {activePanel === 'graph' ? (
+                    hasCompiledWorkflow ? (
                     <div className="mt-6 space-y-3">
-                      {summary.steps.map((step, index) => (
-                        <div key={step.id}>
+                      {compiledNodes.map((node, index) => (
+                        <div key={node.id}>
                           <div className="rounded-3xl border border-white/8 bg-black/20 p-4">
                             <div className="flex items-start justify-between gap-4">
                               <div>
-                                <div className="text-[11px] uppercase tracking-[0.2em] text-cyan-100/55">{step.kind}</div>
-                                <div className="mt-1 text-sm font-semibold text-white">{step.title}</div>
-                                <p className="mt-2 text-sm leading-6 text-white/50">{step.description}</p>
+                                <div className="text-[11px] uppercase tracking-[0.2em] text-cyan-100/55">{node.kind}</div>
+                                <div className="mt-1 text-sm font-semibold text-white">{node.title}</div>
+                                <p className="mt-2 text-sm leading-6 text-white/50">{describeCompiledNode(node)}</p>
                               </div>
                               <div className="flex flex-col items-end gap-2">
-                                <span className="rounded-full border border-white/10 px-3 py-1 text-[11px] text-white/60">
-                                  {step.capability}
-                                </span>
+                                {node.capability ? (
+                                  <span className="rounded-full border border-white/10 px-3 py-1 text-[11px] text-white/60">
+                                    {node.capability.toolId}.{node.capability.actionGroup}
+                                  </span>
+                                ) : null}
                                 <span
                                   className={cn(
                                     'rounded-full px-3 py-1 text-[11px] font-medium',
-                                    step.approvalLevel === 'publish'
+                                    isWriteActionGroup(node.capability?.actionGroup)
                                       ? 'border border-amber-300/20 bg-amber-400/10 text-amber-100'
                                       : 'border border-emerald-300/20 bg-emerald-400/10 text-emerald-100',
                                   )}
                                 >
-                                  {step.approvalLevel === 'publish' ? 'Needs publish approval' : 'Read-only'}
+                                  {isWriteActionGroup(node.capability?.actionGroup) ? 'Needs publish approval' : 'Read-only'}
                                 </span>
                               </div>
                             </div>
                           </div>
-                          {index < summary.steps.length - 1 && (
+                          {index < compiledNodes.length - 1 && (
                             <div className="flex justify-center py-2 text-white/20">
                               <ChevronRight className="rotate-90" size={16} />
                             </div>
@@ -657,10 +1183,50 @@ export function ScheduleWorkView(): JSX.Element {
                         </div>
                       ))}
                     </div>
+                    ) : (
+                      <div className="mt-6 rounded-3xl border border-dashed border-white/10 bg-black/20 p-6">
+                        <div className="text-base font-medium text-white">No compiled workflow yet</div>
+                        <p className="mt-2 max-w-md text-sm leading-6 text-white/45">
+                          Send the brief to the AI compiler to transform it into a graph and structured execution prompt.
+                        </p>
+                        <button
+                          onClick={() => void compileWorkflow()}
+                          disabled={isCompiling}
+                          className="mt-4 inline-flex items-center gap-2 rounded-xl border border-cyan-300/25 bg-cyan-400/12 px-4 py-2.5 text-sm font-medium text-cyan-50 transition-colors hover:bg-cyan-400/20"
+                        >
+                          <Sparkles size={15} />
+                          {isCompiling ? 'Compiling…' : 'Compile now'}
+                        </button>
+                      </div>
+                    )
                   ) : (
-                    <pre className="mt-6 overflow-x-auto rounded-3xl border border-white/8 bg-black/30 p-4 text-xs leading-6 text-white/70">
-                      {summary.compiledPrompt}
-                    </pre>
+                    <div className="mt-6">
+                      {hasCompiledPrompt ? (
+                        <>
+                          <textarea
+                            value={selectedDraft.compiledPrompt ?? ''}
+                            onChange={(event) => updateCompiledPrompt(event.target.value)}
+                            rows={16}
+                            className="w-full rounded-3xl border border-white/8 bg-black/30 p-4 text-xs leading-6 text-white/75 outline-none transition-colors focus:border-cyan-300/35"
+                          />
+                          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                            <div className="text-sm text-white/45">
+                              {selectedDraft.compilerNotes || 'You can edit the compiled prompt directly before publishing.'}
+                            </div>
+                            {selectedDraft.compiledModelId ? (
+                              <div className="text-sm text-white/35">{selectedDraft.compiledModelId}</div>
+                            ) : null}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="rounded-3xl border border-dashed border-white/10 bg-black/20 p-6">
+                          <div className="text-base font-medium text-white">No structured prompt yet</div>
+                          <p className="mt-2 max-w-md text-sm leading-6 text-white/45">
+                            Compile the brief first. After that, this prompt becomes editable so you can tune the AI instructions directly.
+                          </p>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </section>
 
@@ -675,29 +1241,69 @@ export function ScheduleWorkView(): JSX.Element {
                     </div>
                   </div>
 
-                  <div className="mt-5 grid gap-4">
-                    <SummaryStrip icon={<Layers3 size={15} />} label="Likely tools" values={summary.tools} />
-                    <SummaryStrip icon={<AlarmClock size={15} />} label="Action groups" values={summary.actionGroups.length > 0 ? summary.actionGroups : ['read only']} />
-                    <SummaryStrip icon={<Clock3 size={15} />} label="Destinations" values={summary.destinations.length > 0 ? summary.destinations : ['No destination selected']} />
-                  </div>
+                  {capabilitySummary ? (
+                    <>
+                      <div className="mt-5 grid gap-4">
+                        <SummaryStrip icon={<Layers3 size={15} />} label="Likely tools" values={capabilitySummary.requiredTools.length > 0 ? capabilitySummary.requiredTools : ['No tools selected']} />
+                        <SummaryStrip
+                          icon={<AlarmClock size={15} />}
+                          label="Action groups"
+                          values={Array.from(new Set(Object.values(capabilitySummary.requiredActionGroupsByTool).flat())).length > 0
+                            ? Array.from(new Set(Object.values(capabilitySummary.requiredActionGroupsByTool).flat()))
+                            : ['read']}
+                        />
+                        <SummaryStrip icon={<Clock3 size={15} />} label="Destinations" values={destinationLabels.length > 0 ? destinationLabels : ['No destination selected']} />
+                      </div>
 
-                  <div className="mt-5 rounded-3xl border border-white/8 bg-black/20 p-4">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-semibold text-white">
-                          {summary.publishApprovalRequired ? 'Publish approval required' : 'Ready to publish'}
+                      <div className="mt-5 rounded-3xl border border-white/8 bg-black/20 p-4">
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <div className="text-sm font-semibold text-white">
+                              {capabilitySummary.requiresPublishApproval ? 'Publish approval required' : 'Ready to publish'}
+                            </div>
+                            <p className="mt-1 text-sm text-white/45">
+                              {capabilitySummary.requiresPublishApproval
+                                ? 'This workflow includes send, update, or execute capabilities and should capture approval at publish time.'
+                                : 'This workflow is currently read-only and can be activated without extra write approval.'}
+                            </p>
+                          </div>
+                          <div className="rounded-full border border-white/10 px-3 py-2 text-xs uppercase tracking-[0.18em] text-white/55">
+                            {statusLabel(selectedDraft.status)}
+                          </div>
                         </div>
-                        <p className="mt-1 text-sm text-white/45">
-                          {summary.publishApprovalRequired
-                            ? 'This workflow includes send, update, or execute capabilities and should capture approval at publish time.'
-                            : 'This workflow is currently read-only and can be activated without extra write approval.'}
-                        </p>
                       </div>
-                      <div className="rounded-full border border-white/10 px-3 py-2 text-xs uppercase tracking-[0.18em] text-white/55">
-                        {statusLabel(selectedDraft.status)}
+
+                      <div className="mt-3 text-sm text-white/35">
+                        Capability fingerprint: {capabilitySummary.capabilityFingerprint.slice(0, 16)}…
                       </div>
+
+                      {selectedDraft.lastPublishedAt ? (
+                        <div className="mt-3 rounded-2xl border border-emerald-300/10 bg-emerald-400/[0.06] px-4 py-3 text-sm text-emerald-50/80">
+                          Published {new Date(selectedDraft.lastPublishedAt).toLocaleString()}
+                          {selectedDraft.nextRunAt ? ` • Next run ${new Date(selectedDraft.nextRunAt).toLocaleString()}` : ''}
+                        </div>
+                      ) : null}
+
+                      {hasPublishedWorkflow && hasUnpublishedChanges ? (
+                        <div className="mt-3 rounded-2xl border border-amber-300/10 bg-amber-400/[0.06] px-4 py-3 text-sm text-amber-50/85">
+                          This draft has unpublished changes. Updating it will replace the currently deployed schedule instead of creating a mystery duplicate.
+                        </div>
+                      ) : null}
+
+                      {selectedDraft.publishedThreadId ? (
+                        <div className="mt-3 rounded-2xl border border-white/8 bg-black/20 px-4 py-3 text-sm text-white/65">
+                          Result thread: <span className="font-medium text-white">{selectedDraft.publishedThreadTitle || selectedDraft.publishedThreadId}</span>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="mt-5 rounded-3xl border border-dashed border-white/10 bg-black/20 p-6">
+                      <div className="text-base font-medium text-white">Compile before publish review</div>
+                      <p className="mt-2 max-w-md text-sm leading-6 text-white/45">
+                        The approval scope, tool list, and destination review are generated from the compiled workflow, not from the raw brief alone.
+                      </p>
                     </div>
-                  </div>
+                  )}
 
                   <div className="mt-6 flex flex-wrap items-center gap-3">
                     <button
@@ -705,16 +1311,43 @@ export function ScheduleWorkView(): JSX.Element {
                       className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.05] px-4 py-3 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
                     >
                       <Save size={15} />
-                      Mark ready
+                      {hasPublishedWorkflow ? 'Save local edits' : 'Mark ready'}
                     </button>
                     <button
-                      onClick={publishDraft}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-cyan-300/25 bg-cyan-400/12 px-4 py-3 text-sm font-medium text-cyan-50 transition-colors hover:bg-cyan-400/20"
+                      onClick={() => void publishDraft()}
+                      disabled={isPublishing || !hasCompiledWorkflow || !hasCompiledPrompt}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-cyan-300/25 bg-cyan-400/12 px-4 py-3 text-sm font-medium text-cyan-50 transition-colors hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <CheckCircle2 size={15} />
-                      Publish workflow
+                      {isPublishing ? 'Publishing…' : hasPublishedWorkflow ? 'Update deployed workflow' : 'Publish workflow'}
                     </button>
+                    {selectedDraft.publishedWorkflowId ? (
+                      <button
+                        onClick={() => void runWorkflowNow()}
+                        disabled={isRunningNow}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-emerald-300/20 bg-emerald-400/10 px-4 py-3 text-sm font-medium text-emerald-50 transition-colors hover:bg-emerald-400/18 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <Sparkles size={15} />
+                        {isRunningNow ? 'Running…' : 'Run now in thread'}
+                      </button>
+                    ) : null}
+                    {selectedDraft.publishedThreadId ? (
+                      <button
+                        onClick={() => void openWorkflowThread(selectedDraft.publishedThreadId!)}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.05] px-4 py-3 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
+                      >
+                        <MessageSquareShare size={15} />
+                        Open thread
+                      </button>
+                    ) : null}
                   </div>
+
+                  {publishError ? (
+                    <div className="mt-3 text-sm text-red-300/90">{publishError}</div>
+                  ) : null}
+                  {runError ? (
+                    <div className="mt-3 text-sm text-red-300/90">{runError}</div>
+                  ) : null}
                 </section>
               </div>
             </div>

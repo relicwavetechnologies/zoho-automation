@@ -24,6 +24,7 @@ const getThreadQuerySchema = z.object({
 
 const createThreadSchema = z.object({
   departmentId: z.string().uuid().optional(),
+  title: z.string().trim().min(1).max(160).optional(),
 });
 
 class DesktopThreadsController extends BaseController {
@@ -129,6 +130,7 @@ class DesktopThreadsController extends BaseController {
       s.userId,
       s.companyId,
       resolvedDepartment?.id ?? null,
+      payload.title ?? null,
     );
     return res.status(201).json(ApiResponse.success(thread, 'Thread created'));
   };

@@ -360,12 +360,11 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
 
         <div
           className={cn(
-            'glass-panel-strong rounded-[24px]',
-            'transition-colors duration-150 relative z-10',
+            'relative z-10 rounded-[24px] border bg-card/95 shadow-[0_12px_36px_rgba(0,0,0,0.22)] transition-colors duration-150',
             isDragOver
-              ? 'border-sky-300/16 shadow-[0_0_0_1px_rgba(120,160,210,0.18),0_24px_80px_rgba(2,8,18,0.48)]'
+              ? 'border-primary/40 shadow-[0_0_0_1px_hsl(var(--ring)/0.18),0_24px_80px_rgba(2,8,18,0.32)]'
               : activeThread || isHome
-                ? 'focus-within:border-sky-300/12'
+                ? 'border-border focus-within:border-primary/40'
                 : 'opacity-70',
           )}
         >
@@ -403,7 +402,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     <button
                       type="button"
                       onClick={() => void rejectCommand(pendingLocalAction!.id)}
-                      className="glass-button inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-medium text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-secondary px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary/80 hover:text-foreground"
                     >
                       <Ban size={13} />
                       Reject
@@ -463,7 +462,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                 <button
                   type="button"
                   disabled
-                  className="glass-button inline-flex h-8 items-center gap-2 rounded-xl px-3 text-[13px] font-medium text-foreground/80 disabled:cursor-default"
+                  className="inline-flex h-8 items-center gap-2 rounded-xl border border-border bg-secondary px-3 text-[13px] font-medium text-foreground/80 disabled:cursor-default"
                 >
                   <Infinity size={14} />
                   <span>Divo</span>
@@ -482,7 +481,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                       'inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium transition-all select-none',
                       (!activeThread && !isHome) || isStreaming
                         ? 'border-transparent text-muted-foreground/40 cursor-not-allowed'
-                        : 'glass-button text-foreground/85 hover:bg-white/[0.08]'
+                        : 'border-border bg-secondary text-foreground/85 hover:bg-secondary/80'
                     )}
                     title={selectedMode.title}
                   >
@@ -498,7 +497,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   </button>
 
                   {isModeMenuOpen && (activeThread || isHome) && !isStreaming && (
-                    <div className="glass-panel-strong absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[220px] overflow-hidden rounded-2xl p-1.5">
+                    <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[220px] overflow-hidden rounded-2xl border border-border bg-card p-1.5 shadow-xl">
                       {MODE_OPTIONS.map((option) => {
                         const OptionIcon = option.icon
                         const isSelected = option.value === mode
@@ -513,8 +512,8 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                             className={cn(
                               'flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition-colors',
                               isSelected
-                                ? 'bg-white/[0.08] text-foreground'
-                                : 'text-foreground/80 hover:bg-white/[0.06]'
+                                ? 'bg-secondary text-foreground'
+                                : 'text-foreground/80 hover:bg-secondary/70'
                             )}
                           >
                             <OptionIcon size={14} className={option.iconClassName} strokeWidth={2.4} />
@@ -538,7 +537,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     "inline-flex h-7 min-w-[28px] px-1.5 items-center justify-center rounded-lg transition-colors gap-1",
                     referencedIds.size > 0
                       ? "bg-sky-400/8 text-sky-100/82 border border-sky-300/16"
-                      : "glass-button text-muted-foreground hover:bg-white/[0.08] hover:text-foreground border border-transparent"
+                      : "border border-transparent bg-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"
                   )}
                   title="Reference files"
                 >
@@ -557,7 +556,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                       ? 'text-muted-foreground/40 cursor-not-allowed'
                       : isDrawerOpen
                         ? 'bg-sky-400/8 text-sky-100/82'
-                        : 'glass-button text-muted-foreground/80 hover:bg-white/[0.08] hover:text-foreground',
+                        : 'border border-transparent bg-transparent text-muted-foreground/80 hover:bg-secondary hover:text-foreground',
                   )}
                   aria-label="Toggle files drawer"
                   title="Workspace Files"

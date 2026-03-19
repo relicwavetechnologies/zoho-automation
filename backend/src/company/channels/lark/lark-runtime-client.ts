@@ -108,6 +108,14 @@ export class LarkRuntimeClient {
       companyId: input.companyId,
       larkTenantKey: input.larkTenantKey,
     });
+    this.log.info('lark.runtime.request.start', {
+      companyId,
+      method: input.method,
+      path: input.path,
+      credentialMode: input.credentialMode ?? 'tenant',
+      appUserId: input.appUserId ?? null,
+      hasLarkTenantKey: Boolean(input.larkTenantKey),
+    });
     const workspaceConfig = await larkWorkspaceConfigRepository.findByCompanyId(companyId);
     const apiBaseUrl = workspaceConfig?.apiBaseUrl ?? config.LARK_API_BASE_URL;
     const accessToken = input.credentialMode === 'user_linked'
@@ -207,6 +215,12 @@ export class LarkRuntimeClient {
     }
 
     const link = await larkUserAuthLinkRepository.findActiveByUser(input.appUserId, input.companyId);
+    this.log.info('lark.runtime.user_linked.lookup', {
+      companyId: input.companyId,
+      appUserId: input.appUserId,
+      hasLarkTenantKey: Boolean(input.larkTenantKey),
+      foundLink: Boolean(link),
+    });
     if (!link) {
       throw new LarkRuntimeClientError(
         'No linked Lark desktop account was found. Sign in with Lark again.',
@@ -222,6 +236,12 @@ export class LarkRuntimeClient {
     }
 
     if (!link.accessTokenExpiresAt || link.accessTokenExpiresAt.getTime() > Date.now()) {
+      this.log.info('lark.runtime.user_linked.token_reused', {
+        companyId: input.companyId,
+        appUserId: input.appUserId,
+        linkId: link.id,
+        expiresAt: link.accessTokenExpiresAt?.toISOString() ?? null,
+      });
       await larkUserAuthLinkRepository.touchLastUsed(link.id);
       return link.accessToken;
     }
@@ -234,6 +254,13 @@ export class LarkRuntimeClient {
     }
 
     try {
+      this.log.info('lark.runtime.user_linked.refresh.start', {
+        companyId: input.companyId,
+        appUserId: input.appUserId,
+        linkId: link.id,
+        accessTokenExpiredAt: link.accessTokenExpiresAt?.toISOString() ?? null,
+        refreshTokenExpiresAt: link.refreshTokenExpiresAt?.toISOString() ?? null,
+      });
       const refreshed = await larkOAuthService.refreshAccessToken(link.refreshToken);
       const updated = await larkUserAuthLinkRepository.upsert({
         userId: link.userId,
@@ -250,9 +277,22 @@ export class LarkRuntimeClient {
         refreshTokenExpiresAt: refreshed.refreshExpiresIn ? new Date(Date.now() + refreshed.refreshExpiresIn * 1000) : link.refreshTokenExpiresAt,
         tokenMetadata: link.tokenMetadata,
       });
+      this.log.info('lark.runtime.user_linked.refresh.success', {
+        companyId: input.companyId,
+        appUserId: input.appUserId,
+        linkId: updated.id,
+        accessTokenExpiresAt: updated.accessTokenExpiresAt?.toISOString() ?? null,
+        refreshTokenExpiresAt: updated.refreshTokenExpiresAt?.toISOString() ?? null,
+      });
       await larkUserAuthLinkRepository.touchLastUsed(updated.id);
       return updated.accessToken;
     } catch (error) {
+      this.log.error('lark.runtime.user_linked.refresh.failed', {
+        companyId: input.companyId,
+        appUserId: input.appUserId,
+        linkId: link.id,
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
       throw new LarkRuntimeClientError(
         `Linked Lark desktop session could not be refreshed: ${error instanceof Error ? error.message : 'unknown_error'}`,
         'lark_runtime_unavailable',
