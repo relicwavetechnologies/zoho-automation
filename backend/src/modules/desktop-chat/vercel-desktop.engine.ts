@@ -33,6 +33,8 @@ import { toolPermissionService } from '../../company/tools/tool-permission.servi
 import { logger } from '../../utils/logger';
 import { departmentService } from '../../company/departments/department.service';
 import { prisma } from '../../utils/prisma';
+import { aiTokenUsageService } from '../../company/ai-usage/ai-token-usage.service';
+import { estimateTokens } from '../../utils/token-estimator';
 import {
   buildDesktopPlannerPrompt,
   completeExecutionPlan,
@@ -167,6 +169,62 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const flattenModelContent = (content: ModelMessage['content'] | string | undefined): string => {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  return content.map((part) => {
+    if (!part || typeof part !== 'object') {
+      return '';
+    }
+    const record = part as Record<string, unknown>;
+    return typeof record.text === 'string' ? record.text : '';
+  }).filter(Boolean).join('\n');
+};
+
+const estimateMessageTokens = (messages: ModelMessage[]): number =>
+  messages.reduce((sum, message) => sum + estimateTokens(flattenModelContent(message.content)), 0);
+
+const recordTokenUsage = async (input: {
+  userId?: string | null;
+  companyId?: string | null;
+  channel: 'desktop' | 'lark';
+  threadId?: string;
+  mode: 'fast' | 'high' | 'xtreme';
+  agentTarget: string;
+  systemPrompt: string;
+  messages: ModelMessage[];
+  outputText: string;
+}): Promise<void> => {
+  if (!input.userId || !input.companyId) {
+    return;
+  }
+
+  const resolvedModel = await resolveVercelLanguageModel(input.mode);
+  const estimatedInputTokens = estimateTokens(input.systemPrompt) + estimateMessageTokens(input.messages);
+  const estimatedOutputTokens = estimateTokens(input.outputText);
+
+  await aiTokenUsageService.record({
+    userId: input.userId,
+    companyId: input.companyId,
+    agentTarget: input.agentTarget,
+    modelId: resolvedModel.effectiveModelId,
+    provider: resolvedModel.effectiveProvider,
+    channel: input.channel,
+    threadId: input.threadId,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    actualInputTokens: estimatedInputTokens,
+    actualOutputTokens: estimatedOutputTokens,
+    wasCompacted: false,
+    mode: input.mode,
+  });
 };
 
 const buildChildRouterPrompt = (input: {
@@ -1141,6 +1199,15 @@ export const executeAutomatedDesktopTurn = async (input: {
       departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
       departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
     };
+    const systemPrompt = buildSystemPrompt({
+      threadId: input.threadId,
+      dateScope: runtime.dateScope,
+      latestUserMessage: input.prompt,
+      departmentName: departmentRuntime.departmentName,
+      departmentRoleSlug: departmentRuntime.departmentRoleSlug,
+      departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
+      departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+    });
 
     logger.info('desktop.workflow.execution.runtime', {
       executionId,
@@ -1158,15 +1225,7 @@ export const executeAutomatedDesktopTurn = async (input: {
     const { messages: historyMessages } = await mapHistoryToMessages(input.threadId, input.session);
     const result = await runVercelLoop({
       runtime,
-      system: buildSystemPrompt({
-        threadId: input.threadId,
-        dateScope: runtime.dateScope,
-        latestUserMessage: input.prompt,
-        departmentName: departmentRuntime.departmentName,
-        departmentRoleSlug: departmentRuntime.departmentRoleSlug,
-        departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
-        departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
-      }),
+      system: systemPrompt,
       messages: [...historyMessages, { role: 'user', content: input.prompt }],
       onToolStart: async (toolName, activityId, title) => {
         logger.info('desktop.workflow.execution.tool.start', {
@@ -1277,6 +1336,17 @@ export const executeAutomatedDesktopTurn = async (input: {
       assistantTextPreview: summarizeText(assistantText, 1200),
     });
     conversationMemoryStore.addAssistantMessage(buildConversationKey(input.threadId), assistantMessage.id, assistantText);
+    await recordTokenUsage({
+      userId: input.session.userId,
+      companyId: input.session.companyId,
+      channel: 'desktop',
+      threadId: input.threadId,
+      mode,
+      agentTarget: 'desktop.workflow',
+      systemPrompt,
+      messages: [...historyMessages, { role: 'user', content: input.prompt }],
+      outputText: assistantText,
+    });
 
     await appendEventSafe({
       executionId,
@@ -1438,6 +1508,14 @@ export class VercelDesktopEngine {
 
       if (childRoute.route === 'fast_reply' && childRoute.reply?.trim()) {
         const reply = childRoute.reply.trim();
+        const childRouterPrompt = buildChildRouterPrompt({
+          message: effectiveMessage,
+          workspace,
+          history: preRouterHistory.messages.slice(-6).map((entry) => ({
+            role: entry.role === 'assistant' ? 'assistant' : 'user',
+            content: entry.content,
+          })),
+        });
         logger.info('vercel.child_router.fast_reply', {
           executionId,
           threadId,
@@ -1459,6 +1537,17 @@ export class VercelDesktopEngine {
           },
         );
         conversationMemoryStore.addAssistantMessage(buildConversationKey(threadId), assistantMessage.id, reply);
+        await recordTokenUsage({
+          userId: session.userId,
+          companyId: session.companyId,
+          channel: 'desktop',
+          threadId,
+          mode: 'fast',
+          agentTarget: 'desktop.child_router',
+          systemPrompt: 'Desktop child router',
+          messages: [{ role: 'user', content: childRouterPrompt }],
+          outputText: reply,
+        });
         await appendEventSafe({
           executionId,
           phase: 'delivery',
@@ -1542,6 +1631,17 @@ export class VercelDesktopEngine {
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
       };
+      const systemPrompt = buildSystemPrompt({
+        threadId,
+        workspace,
+        dateScope: runtime.dateScope,
+        latestUserMessage: effectiveMessage,
+        routerAcknowledgement: routerAcknowledgement ?? undefined,
+        departmentName: departmentRuntime.departmentName,
+        departmentRoleSlug: departmentRuntime.departmentRoleSlug,
+        departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
+        departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+      });
 
       const historyMessages = mapHistorySnapshotToMessages(history);
       const mergedAttachments = new Map<string, AttachedFileRef>();
@@ -1572,17 +1672,7 @@ export class VercelDesktopEngine {
 
       const result = await runVercelStreamLoop({
         runtime,
-        system: buildSystemPrompt({
-          threadId,
-          workspace,
-          dateScope: runtime.dateScope,
-          latestUserMessage: effectiveMessage,
-          routerAcknowledgement: routerAcknowledgement ?? undefined,
-          departmentName: departmentRuntime.departmentName,
-          departmentRoleSlug: departmentRuntime.departmentRoleSlug,
-          departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
-          departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
-        }),
+        system: systemPrompt,
         messages: inputMessages,
         onToolStart: async (toolName, activityId, title) => {
           const ownerAgent = resolvePlanOwnerFromToolName(toolName);
@@ -1831,6 +1921,17 @@ export class VercelDesktopEngine {
         },
       );
       conversationMemoryStore.addAssistantMessage(buildConversationKey(threadId), assistantMessage.id, finalText);
+      await recordTokenUsage({
+        userId: session.userId,
+        companyId: session.companyId,
+        channel: 'desktop',
+        threadId,
+        mode,
+        agentTarget: 'desktop.vercel',
+        systemPrompt,
+        messages: inputMessages,
+        outputText: finalText || approvalSummary || '',
+      });
 
       await appendEventSafe({
         executionId,
@@ -1979,17 +2080,7 @@ export class VercelDesktopEngine {
         : undefined);
       const result = await runVercelLoop({
         runtime,
-        system: buildSystemPrompt({
-          threadId,
-          workspace,
-          dateScope: runtime.dateScope,
-          latestActionResult: actionResult,
-          latestUserMessage: message,
-          departmentName: departmentRuntime.departmentName,
-          departmentRoleSlug: departmentRuntime.departmentRoleSlug,
-          departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
-          departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
-        }),
+        system: systemPrompt,
         messages: continuationText
           ? [...historyMessages, { role: 'user', content: continuationText }]
           : historyMessages,
@@ -2113,6 +2204,19 @@ export class VercelDesktopEngine {
         },
       );
       conversationMemoryStore.addAssistantMessage(buildConversationKey(threadId), assistantMessage.id, assistantText);
+      await recordTokenUsage({
+        userId: session.userId,
+        companyId: session.companyId,
+        channel: 'desktop',
+        threadId,
+        mode,
+        agentTarget: 'desktop.vercel',
+        systemPrompt,
+        messages: continuationText
+          ? [...historyMessages, { role: 'user', content: continuationText }]
+          : historyMessages,
+        outputText: assistantText,
+      });
 
       await appendEventSafe({
         executionId,
@@ -2267,17 +2371,7 @@ export class VercelDesktopEngine {
         : undefined);
       const result = await runVercelStreamLoop({
         runtime,
-        system: buildSystemPrompt({
-          threadId,
-          workspace,
-          dateScope: runtime.dateScope,
-          latestActionResult: actionResult,
-          latestUserMessage: message,
-          departmentName: departmentRuntime.departmentName,
-          departmentRoleSlug: departmentRuntime.departmentRoleSlug,
-          departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
-          departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
-        }),
+        system: systemPrompt,
         messages: continuationText
           ? [...historyMessages, { role: 'user', content: continuationText }]
           : historyMessages,
@@ -2491,6 +2585,19 @@ export class VercelDesktopEngine {
         },
       );
       conversationMemoryStore.addAssistantMessage(buildConversationKey(threadId), assistantMessage.id, finalText);
+      await recordTokenUsage({
+        userId: session.userId,
+        companyId: session.companyId,
+        channel: 'desktop',
+        threadId,
+        mode,
+        agentTarget: 'desktop.vercel',
+        systemPrompt,
+        messages: continuationText
+          ? [...historyMessages, { role: 'user', content: continuationText }]
+          : historyMessages,
+        outputText: finalText || approvalSummary || '',
+      });
 
       await appendEventSafe({
         executionId,

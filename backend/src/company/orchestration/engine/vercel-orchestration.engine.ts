@@ -24,6 +24,8 @@ import { legacyOrchestrationEngine } from './legacy-orchestration.engine';
 import { buildVisionContent, type AttachedFileRef } from '../../../modules/desktop-chat/file-vision.builder';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
 import { LarkStatusCoordinator } from './lark-status.coordinator';
+import { aiTokenUsageService } from '../../ai-usage/ai-token-usage.service';
+import { estimateTokens } from '../../../utils/token-estimator';
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
 const LARK_BLOCKED_TOOL_IDS = new Set(['coding']);
@@ -43,6 +45,25 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
 };
+
+const flattenModelContent = (content: ModelMessage['content'] | string | undefined): string => {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content.map((part) => {
+    if (!part || typeof part !== 'object') {
+      return '';
+    }
+    const record = part as Record<string, unknown>;
+    return typeof record.text === 'string' ? record.text : '';
+  }).filter(Boolean).join('\n');
+};
+
+const estimateMessageTokens = (messages: ModelMessage[]): number =>
+  messages.reduce((sum, message) => sum + estimateTokens(flattenModelContent(message.content)), 0);
 
 const getLocalDateString = (offsetDays = 0): string => {
   const base = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
@@ -567,11 +588,12 @@ const executeLarkVercelTask = async (
     ];
   }
   const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
+  const systemPrompt = buildSystemPrompt({ conversationKey, runtime });
 
   try {
     const result = await generateText({
       model: resolvedModel.model,
-      system: buildSystemPrompt({ conversationKey, runtime }),
+      system: systemPrompt,
       messages: inputMessages.length > 0
         ? inputMessages
         : [{ role: 'user', content: message.text }],
@@ -614,6 +636,28 @@ const executeLarkVercelTask = async (
     const statusMessageId = statusCoordinator.getStatusMessageId();
     if (!pendingApproval) {
       conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, finalText);
+    }
+    if (linkedUserId) {
+      const effectiveMessages = inputMessages.length > 0
+        ? inputMessages
+        : [{ role: 'user', content: message.text }];
+      const estimatedInputTokens = estimateTokens(systemPrompt) + estimateMessageTokens(effectiveMessages);
+      const estimatedOutputTokens = estimateTokens(finalText);
+      await aiTokenUsageService.record({
+        userId: linkedUserId,
+        companyId: runtime.companyId,
+        agentTarget: 'lark.vercel',
+        modelId: resolvedModel.effectiveModelId,
+        provider: resolvedModel.effectiveProvider,
+        channel: 'lark',
+        threadId: persistentThread?.id,
+        estimatedInputTokens,
+        estimatedOutputTokens,
+        actualInputTokens: estimatedInputTokens,
+        actualOutputTokens: estimatedOutputTokens,
+        wasCompacted: false,
+        mode: runtime.mode,
+      });
     }
 
     if (persistentThread) {
