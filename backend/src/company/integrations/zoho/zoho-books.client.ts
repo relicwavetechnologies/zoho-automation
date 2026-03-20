@@ -1,7 +1,9 @@
+import { Buffer } from 'buffer';
+
 import { prisma } from '../../../utils/prisma';
 import { logger } from '../../../utils/logger';
 import { ZohoIntegrationError } from './zoho.errors';
-import { zohoHttpClient, ZohoHttpClient } from './zoho-http.client';
+import { zohoHttpClient, ZohoHttpClient, type ZohoRawResponse } from './zoho-http.client';
 import { zohoTokenService, ZohoTokenService } from './zoho-token.service';
 
 export type ZohoBooksModule =
@@ -36,7 +38,20 @@ type ZohoBooksScopedResult = {
   payload: ZohoBooksResponse;
 };
 
+type ZohoBooksRawScopedResult = {
+  organizationId: string;
+  payload: ZohoRawResponse;
+};
+
 type ZohoBooksCommentModule =
+  | 'invoices'
+  | 'estimates'
+  | 'creditnotes'
+  | 'bills'
+  | 'salesorders'
+  | 'purchaseorders';
+
+type ZohoBooksDocumentModule =
   | 'invoices'
   | 'estimates'
   | 'creditnotes'
@@ -89,6 +104,9 @@ const readOrganizationIdFromMetadata = (metadata: Record<string, unknown> | unde
 };
 
 const buildModulePath = (moduleName: ZohoBooksModule, recordId?: string): string =>
+  recordId ? `/books/v3/${moduleName}/${encodeURIComponent(recordId)}` : `/books/v3/${moduleName}`;
+
+const buildDocumentModulePath = (moduleName: ZohoBooksDocumentModule, recordId?: string): string =>
   recordId ? `/books/v3/${moduleName}/${encodeURIComponent(recordId)}` : `/books/v3/${moduleName}`;
 
 const toPrimitiveString = (value: unknown): string | undefined => {
@@ -962,6 +980,119 @@ export class ZohoBooksClient {
     });
   }
 
+  async listTemplates(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    moduleName: ZohoBooksDocumentModule;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `${buildDocumentModulePath(input.moduleName)}/templates`,
+    });
+  }
+
+  async applyTemplate(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    moduleName: ZohoBooksDocumentModule;
+    recordId: string;
+    templateId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'PUT',
+      path: `${buildDocumentModulePath(input.moduleName, input.recordId)}/templates/${encodeURIComponent(input.templateId)}`,
+    });
+  }
+
+  async getAttachment(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    moduleName: ZohoBooksDocumentModule;
+    recordId: string;
+  }): Promise<ZohoBooksRawScopedResult> {
+    return this.requestRawInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `${buildDocumentModulePath(input.moduleName, input.recordId)}/attachment`,
+    });
+  }
+
+  async uploadAttachment(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    moduleName: ZohoBooksDocumentModule;
+    recordId: string;
+    fileName: string;
+    contentBase64: string;
+    contentType?: string;
+  }): Promise<ZohoBooksScopedResult> {
+    const fileBytes = Uint8Array.from(Buffer.from(input.contentBase64, 'base64'));
+    const formData = new FormData();
+    formData.append(
+      'attachment',
+      new Blob([fileBytes], { type: input.contentType ?? 'application/octet-stream' }),
+      input.fileName,
+    );
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `${buildDocumentModulePath(input.moduleName, input.recordId)}/attachment`,
+      body: formData,
+    });
+  }
+
+  async deleteAttachment(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    moduleName: ZohoBooksDocumentModule;
+    recordId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'DELETE',
+      path: `${buildDocumentModulePath(input.moduleName, input.recordId)}/attachment`,
+    });
+  }
+
+  async getRecordDocument(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    moduleName: ZohoBooksDocumentModule;
+    recordId: string;
+    accept?: 'pdf' | 'html';
+  }): Promise<ZohoBooksRawScopedResult> {
+    const params = new URLSearchParams();
+    if (input.accept) {
+      params.set('accept', input.accept);
+    }
+    const suffix = params.toString();
+    return this.requestRawInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `${buildDocumentModulePath(input.moduleName, input.recordId)}${suffix ? `?${suffix}` : ''}`,
+    });
+  }
+
   async emailPurchaseOrder(input: {
     companyId: string;
     environment?: string;
@@ -1178,7 +1309,7 @@ export class ZohoBooksClient {
     environment: string;
     path: string;
     method: 'GET' | 'POST' | 'PUT' | 'DELETE';
-    body?: Record<string, unknown>;
+    body?: Record<string, unknown> | FormData;
   }): Promise<T> {
     const token = await this.tokenService.getValidAccessToken(input.companyId, input.environment);
     try {
@@ -1214,13 +1345,54 @@ export class ZohoBooksClient {
     }
   }
 
+  private async requestRawWithRefresh(input: {
+    companyId: string;
+    environment: string;
+    path: string;
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    body?: Record<string, unknown> | FormData;
+  }): Promise<ZohoRawResponse> {
+    const token = await this.tokenService.getValidAccessToken(input.companyId, input.environment);
+    try {
+      return await this.httpClient.requestRaw({
+        base: 'api',
+        path: input.path,
+        method: input.method,
+        body: input.body,
+        headers: {
+          Authorization: `Zoho-oauthtoken ${token}`,
+        },
+      });
+    } catch (error) {
+      const isAuthError = error instanceof ZohoIntegrationError && error.code === 'auth_failed';
+      if (!isAuthError) {
+        throw error;
+      }
+
+      const refreshedToken = await this.tokenService.forceRefresh(input.companyId, input.environment);
+      return this.httpClient.requestRaw({
+        base: 'api',
+        path: input.path,
+        method: input.method,
+        body: input.body,
+        headers: {
+          Authorization: `Zoho-oauthtoken ${refreshedToken}`,
+        },
+        retry: {
+          maxAttempts: 1,
+          baseDelayMs: 0,
+        },
+      });
+    }
+  }
+
   private async requestInOrganizationScope(input: {
     companyId: string;
     environment?: string;
     organizationId?: string;
     path: string;
     method: 'GET' | 'POST' | 'PUT' | 'DELETE';
-    body?: Record<string, unknown>;
+    body?: Record<string, unknown> | FormData;
   }): Promise<ZohoBooksScopedResult> {
     const environment = input.environment ?? 'prod';
     const organizationId = await this.resolveOrganizationId({
@@ -1230,6 +1402,35 @@ export class ZohoBooksClient {
     });
     const separator = input.path.includes('?') ? '&' : '?';
     const payload = await this.requestWithRefresh<ZohoBooksResponse>({
+      companyId: input.companyId,
+      environment,
+      path: `${input.path}${separator}organization_id=${encodeURIComponent(organizationId)}`,
+      method: input.method,
+      body: input.body,
+    });
+
+    return {
+      organizationId,
+      payload,
+    };
+  }
+
+  private async requestRawInOrganizationScope(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    path: string;
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    body?: Record<string, unknown> | FormData;
+  }): Promise<ZohoBooksRawScopedResult> {
+    const environment = input.environment ?? 'prod';
+    const organizationId = await this.resolveOrganizationId({
+      companyId: input.companyId,
+      environment,
+      preferredOrganizationId: input.organizationId,
+    });
+    const separator = input.path.includes('?') ? '&' : '?';
+    const payload = await this.requestRawWithRefresh({
       companyId: input.companyId,
       environment,
       path: `${input.path}${separator}organization_id=${encodeURIComponent(organizationId)}`,

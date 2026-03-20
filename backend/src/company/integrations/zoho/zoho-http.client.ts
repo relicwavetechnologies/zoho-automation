@@ -1,3 +1,5 @@
+import { Buffer } from 'buffer';
+
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
 import { ZohoIntegrationError, ZohoFailureCode } from './zoho.errors';
@@ -21,6 +23,14 @@ type RequestInput = {
   headers?: Record<string, string>;
   body?: URLSearchParams | FormData | Record<string, unknown>;
   retry?: RetryOptions;
+};
+
+export type ZohoRawResponse = {
+  contentType?: string;
+  contentDisposition?: string;
+  contentLength?: number;
+  contentBase64: string;
+  sizeBytes: number;
 };
 
 const readRetryAfterMs = (value: string | null): number | undefined => {
@@ -253,6 +263,174 @@ export class ZohoHttpClient {
           maxAttempts: retryPolicy.maxAttempts,
           delayMs,
           body: redactBody(input.body),
+        });
+        await sleep(delayMs);
+        attempt += 1;
+      }
+    }
+  }
+
+  async requestRaw(input: RequestInput): Promise<ZohoRawResponse> {
+    const retryPolicy = {
+      maxAttempts: Math.max(1, input.retry?.maxAttempts ?? this.retry.maxAttempts),
+      baseDelayMs: Math.max(0, input.retry?.baseDelayMs ?? this.retry.baseDelayMs),
+    };
+
+    const baseUrl = input.base === 'accounts' ? this.accountsBaseUrl : this.apiBaseUrl;
+    const method = input.method ?? 'GET';
+    const url = `${baseUrl}${input.path}`;
+    let attempt = 1;
+
+    for (;;) {
+      try {
+        const headers = new Headers(input.headers ?? {});
+        let body: string | FormData | undefined;
+
+        if (input.body instanceof URLSearchParams) {
+          headers.set('Content-Type', 'application/x-www-form-urlencoded');
+          body = input.body.toString();
+        } else if (input.body instanceof FormData) {
+          body = input.body;
+        } else if (input.body) {
+          headers.set('Content-Type', 'application/json');
+          body = JSON.stringify(input.body);
+        }
+
+        const response = await this.fetchImpl(url, {
+          method,
+          headers,
+          body,
+        });
+
+        if (!response.ok) {
+          const raw = await response.text();
+          let payload: unknown = undefined;
+          if (raw) {
+            try {
+              payload = JSON.parse(raw) as unknown;
+            } catch {
+              payload = raw;
+            }
+          }
+
+          const classified = classifyHttpFailure(response.status);
+          const retryAfterHeader = response.headers.get('retry-after');
+          const retryAfterMs = readRetryAfterMs(retryAfterHeader);
+          const payloadMessage =
+            typeof payload === 'object' && payload !== null && typeof (payload as { message?: unknown }).message === 'string'
+              ? (payload as { message: string }).message
+              : undefined;
+          const payloadCode =
+            typeof payload === 'object' && payload !== null && typeof (payload as { code?: unknown }).code === 'string'
+              ? (payload as { code: string }).code
+              : undefined;
+          const message = payloadMessage
+            ? `${payloadMessage}${payloadCode ? ` [${payloadCode}]` : ''}`
+            : `Zoho API request failed (${response.status})${payloadCode ? ` [${payloadCode}]` : ''}`;
+          const error = new ZohoIntegrationError({
+            message,
+            code: classified.code,
+            retriable: classified.retriable,
+            statusCode: response.status,
+          });
+
+          const errorMeta = {
+            url,
+            method,
+            statusCode: response.status,
+            failureCode: classified.code,
+            retriable: classified.retriable,
+            retryAfterHeader,
+            retryAfterMs,
+            code: payloadCode,
+            message: payloadMessage,
+            payload:
+              payload && typeof payload === 'object'
+                ? payload
+                : typeof payload === 'string'
+                  ? payload.slice(0, 512)
+                  : undefined,
+          };
+
+          if (response.status === 429) {
+            logger.error('zoho.http.rate_limited', errorMeta);
+          } else {
+            logger.warn('zoho.http.error_response', errorMeta);
+          }
+
+          if (!error.retriable || attempt >= retryPolicy.maxAttempts) {
+            throw error;
+          }
+
+          const delayMs = retryAfterMs ?? retryPolicy.baseDelayMs * attempt;
+          const retryMeta = {
+            url,
+            method,
+            attempt,
+            maxAttempts: retryPolicy.maxAttempts,
+            delayMs,
+            statusCode: response.status,
+            failureCode: classified.code,
+            retryAfterHeader,
+          };
+          if (response.status === 429) {
+            logger.error('zoho.http.rate_limit_retry', retryMeta);
+          } else {
+            logger.warn('zoho.http.retry', retryMeta);
+          }
+          await sleep(delayMs);
+          attempt += 1;
+          continue;
+        }
+
+        const buffer = Buffer.from(await response.arrayBuffer());
+        return {
+          contentType: response.headers.get('content-type') ?? undefined,
+          contentDisposition: response.headers.get('content-disposition') ?? undefined,
+          contentLength: response.headers.get('content-length')
+            ? Number(response.headers.get('content-length'))
+            : undefined,
+          contentBase64: buffer.toString('base64'),
+          sizeBytes: buffer.byteLength,
+        };
+      } catch (error) {
+        const retriable =
+          error instanceof ZohoIntegrationError
+            ? error.retriable
+            : error instanceof Error
+              ? ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN'].includes((error as NodeJS.ErrnoException).code ?? '')
+              : false;
+
+        if (!retriable || attempt >= retryPolicy.maxAttempts) {
+          if (error instanceof ZohoIntegrationError) {
+            throw error;
+          }
+
+          logger.warn('zoho.http.unexpected_error', {
+            url,
+            method,
+            attempt,
+            maxAttempts: retryPolicy.maxAttempts,
+            error: error instanceof Error ? error.message : String(error),
+            code: error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined,
+            body: redactBody(input.body),
+          });
+          throw new ZohoIntegrationError({
+            message: error instanceof Error ? error.message : 'Unexpected Zoho HTTP error',
+            code: 'unknown',
+            retriable,
+          });
+        }
+
+        const delayMs = retryPolicy.baseDelayMs * attempt;
+        logger.warn('zoho.http.retry', {
+          url,
+          method,
+          attempt,
+          maxAttempts: retryPolicy.maxAttempts,
+          delayMs,
+          error: error instanceof Error ? error.message : String(error),
+          code: error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined,
         });
         await sleep(delayMs);
         attempt += 1;

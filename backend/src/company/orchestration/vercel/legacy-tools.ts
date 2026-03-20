@@ -167,14 +167,27 @@ const loadZohoDataClient = (): {
   createRecord?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   updateRecord?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   deleteRecord?: (input: Record<string, unknown>) => Promise<void>;
+  listModuleRecords?: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+  getModuleRecord?: (input: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
+  createModuleRecord?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  updateModuleRecord?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  deleteModuleRecord?: (input: Record<string, unknown>) => Promise<void>;
   listNotes?: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+  listModuleNotes?: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
   getNote?: (input: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
   createNote?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  createModuleNote?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   updateNote?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   deleteNote?: (input: Record<string, unknown>) => Promise<void>;
   listAttachments?: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+  listModuleAttachments?: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+  getAttachmentContent?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  getModuleAttachmentContent?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   uploadAttachment?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  uploadModuleAttachment?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   deleteAttachment?: (input: Record<string, unknown>) => Promise<void>;
+  deleteModuleAttachment?: (input: Record<string, unknown>) => Promise<void>;
+  listModuleFields?: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
 } => loadModuleExport('../../integrations/zoho/zoho-data.client', 'zohoDataClient');
 
 const loadZohoBooksClient = (): {
@@ -209,8 +222,22 @@ const loadZohoBooksClient = (): {
   getInvoiceEmailContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
   getInvoicePaymentReminderContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
   getEstimateEmailContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getCreditNoteEmailContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getSalesOrderEmailContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getPurchaseOrderEmailContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
   getContactStatementEmailContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
   getVendorPaymentEmailContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  listTemplates?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getAttachment?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getRecordDocument?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  applyTemplate?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  uploadAttachment?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  deleteAttachment?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  listComments?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  addComment?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  updateComment?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  deleteComment?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getReport?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
 } => loadModuleExport('../../integrations/zoho/zoho-books.client', 'zohoBooksClient');
 
 const loadZohoFinanceOpsService = (): {
@@ -2582,15 +2609,18 @@ export const createVercelDesktopTools = (
     }),
 
     booksRead: tool({
-      description: 'Read Zoho Books organizations, contacts, finance records, bank accounts, bank transactions, match suggestions, and raw invoice/statement/email metadata.',
+      description: 'Read Zoho Books organizations, finance records, reports, comments, templates, attachments, record documents, bank data, and raw email/report metadata.',
       inputSchema: z.object({
         operation: z.enum([
           'listOrganizations',
           'listRecords',
           'getRecord',
+          'getRecordDocument',
           'summarizeModule',
           'getReport',
+          'listTemplates',
           'listComments',
+          'getBooksAttachment',
           'buildOverdueReport',
           'mapCustomerPayments',
           'reconcileVendorStatement',
@@ -2620,6 +2650,8 @@ export const createVercelDesktopTools = (
         vendorPaymentId: z.string().optional(),
         commentId: z.string().optional(),
         reportName: z.string().optional(),
+        templateId: z.string().optional(),
+        documentFormat: z.enum(['pdf', 'html']).optional(),
         query: z.string().optional(),
         limit: z.number().int().min(1).max(200).optional(),
         asOfDate: z.string().optional(),
@@ -3129,6 +3161,121 @@ export const createVercelDesktopTools = (
           }
         }
 
+        if (input.operation === 'listTemplates') {
+          if (!moduleName) {
+            return buildEnvelope({
+              success: false,
+              summary: 'listTemplates requires a supported Zoho Books module.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().listTemplates?.({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              moduleName,
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched Zoho Books templates for ${moduleName}.`,
+              keyData: {
+                module: moduleName,
+                organizationId: result?.organizationId,
+              },
+              fullPayload: result?.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch Zoho Books templates.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getBooksAttachment') {
+          if (!moduleName || !input.recordId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getBooksAttachment requires a supported module and recordId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getAttachment?.({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              moduleName,
+              recordId: input.recordId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched Zoho Books attachment for ${moduleName} ${input.recordId.trim()}.`,
+              keyData: {
+                module: moduleName,
+                recordId: input.recordId.trim(),
+                organizationId: result?.organizationId,
+                sizeBytes: asNumber(asRecord(result?.payload)?.sizeBytes),
+                contentType: asString(asRecord(result?.payload)?.contentType),
+              },
+              fullPayload: result?.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch Zoho Books attachment.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getRecordDocument') {
+          if (!moduleName || !input.recordId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getRecordDocument requires a supported module and recordId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getRecordDocument?.({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              moduleName,
+              recordId: input.recordId.trim(),
+              accept: input.documentFormat ?? 'pdf',
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched Zoho Books ${input.documentFormat ?? 'pdf'} document for ${moduleName} ${input.recordId.trim()}.`,
+              keyData: {
+                module: moduleName,
+                recordId: input.recordId.trim(),
+                organizationId: result?.organizationId,
+                format: input.documentFormat ?? 'pdf',
+                sizeBytes: asNumber(asRecord(result?.payload)?.sizeBytes),
+                contentType: asString(asRecord(result?.payload)?.contentType),
+              },
+              fullPayload: result?.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch Zoho Books record document.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
         if (input.operation === 'getContactStatementEmailContent') {
           if (!input.contactId?.trim()) {
             return buildEnvelope({
@@ -3406,7 +3553,7 @@ export const createVercelDesktopTools = (
     }),
 
     booksWrite: tool({
-      description: 'Create, update, delete, reconcile, categorize, email, remind, and status-change Zoho Books records through approval-gated actions.',
+      description: 'Create, update, delete, reconcile, categorize, email, attach files, apply templates, remind, and status-change Zoho Books records through approval-gated actions.',
       inputSchema: z.object({
         operation: z.enum([
           'createRecord',
@@ -3468,6 +3615,9 @@ export const createVercelDesktopTools = (
           'emailContact',
           'emailContactStatement',
           'emailVendorPayment',
+          'applyBooksTemplate',
+          'uploadBooksAttachment',
+          'deleteBooksAttachment',
           'addBooksComment',
           'updateBooksComment',
           'deleteBooksComment',
@@ -3486,6 +3636,10 @@ export const createVercelDesktopTools = (
         contactId: z.string().optional(),
         vendorPaymentId: z.string().optional(),
         commentId: z.string().optional(),
+        templateId: z.string().optional(),
+        fileName: z.string().optional(),
+        contentType: z.string().optional(),
+        contentBase64: z.string().optional(),
         body: z.record(z.unknown()).optional(),
       }),
       execute: async (input) => withLifecycle(hooks, 'booksWrite', 'Running Zoho Books write workflow', async () => {
@@ -3550,9 +3704,11 @@ export const createVercelDesktopTools = (
               || input.operation === 'openBill'
               || input.operation === 'submitBill'
               || input.operation === 'approveBill'
+              || input.operation === 'applyBooksTemplate'
               || input.operation === 'updateBooksComment'
               ? 'update'
                 : input.operation === 'deleteRecord'
+                  || input.operation === 'deleteBooksAttachment'
                   || input.operation === 'deleteBooksComment'
                   ? 'delete'
                 : 'send';
@@ -3749,6 +3905,32 @@ export const createVercelDesktopTools = (
             return buildEnvelope({
               success: false,
               summary: `${input.operation} requires commentId.`,
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+        }
+        if (['applyBooksTemplate', 'uploadBooksAttachment', 'deleteBooksAttachment'].includes(input.operation)) {
+          if (!moduleName || !input.recordId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: `${input.operation} requires a supported module and recordId.`,
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          if (input.operation === 'applyBooksTemplate' && !input.templateId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'applyBooksTemplate requires templateId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          if (input.operation === 'uploadBooksAttachment' && (!input.fileName?.trim() || !input.contentBase64?.trim())) {
+            return buildEnvelope({
+              success: false,
+              summary: 'uploadBooksAttachment requires fileName and contentBase64.',
               errorKind: 'missing_input',
               retryable: false,
             });
@@ -3984,6 +4166,15 @@ export const createVercelDesktopTools = (
         } else if (input.operation === 'deleteBooksComment') {
           subject = `Delete Zoho Books comment ${input.commentId?.trim() ?? ''}`.trim();
           summary = `Approval required to delete Zoho Books comment ${input.commentId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'applyBooksTemplate') {
+          subject = `Apply Zoho Books template ${input.templateId?.trim() ?? ''} to ${moduleName} ${input.recordId?.trim() ?? ''}`.trim();
+          summary = `Approval required to apply Zoho Books template ${input.templateId?.trim() ?? ''} to ${moduleName} ${input.recordId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'uploadBooksAttachment') {
+          subject = `Upload attachment to Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}`.trim();
+          summary = `Approval required to upload an attachment to Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'deleteBooksAttachment') {
+          subject = `Delete attachment from Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}`.trim();
+          summary = `Approval required to delete the attachment from Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}.`.trim();
         }
 
         return createPendingRemoteApproval({
@@ -4010,6 +4201,10 @@ export const createVercelDesktopTools = (
             contactId: input.contactId?.trim(),
             vendorPaymentId: input.vendorPaymentId?.trim(),
             commentId: input.commentId?.trim(),
+            templateId: input.templateId?.trim(),
+            fileName: input.fileName?.trim(),
+            contentType: input.contentType?.trim(),
+            contentBase64: input.contentBase64?.trim(),
             body: input.body,
           },
         });
@@ -5213,7 +5408,7 @@ export const createVercelDesktopTools = (
     }),
 
     zoho: tool({
-      description: 'Comprehensive Zoho CRM tool for search context and grounded record reads.',
+      description: 'Comprehensive Zoho CRM tool for context search, grounded reads, field metadata, attachment content reads, and approval-gated mutations.',
       inputSchema: z.object({
         operation: z.enum([
           'searchContext',
@@ -5223,6 +5418,8 @@ export const createVercelDesktopTools = (
           'listNotes',
           'getNote',
           'listAttachments',
+          'getAttachmentContent',
+          'listFields',
           'createRecord',
           'updateRecord',
           'deleteRecord',
@@ -5535,6 +5732,97 @@ export const createVercelDesktopTools = (
             });
           } catch (error) {
             const summary = error instanceof Error ? error.message : 'Failed to list Zoho attachments.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getAttachmentContent') {
+          if (readPermissionError) {
+            return readPermissionError;
+          }
+          if (!crmModuleName || !input.recordId?.trim() || !input.attachmentId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getAttachmentContent requires module, recordId, and attachmentId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const attachment = sourceType
+              ? await loadZohoDataClient().getAttachmentContent?.({
+                companyId: runtime.companyId,
+                sourceType,
+                sourceId: input.recordId.trim(),
+                attachmentId: input.attachmentId.trim(),
+              }) ?? {}
+              : await loadZohoDataClient().getModuleAttachmentContent?.({
+                companyId: runtime.companyId,
+                moduleName: crmModuleName,
+                recordId: input.recordId.trim(),
+                attachmentId: input.attachmentId.trim(),
+              }) ?? {};
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched Zoho attachment content ${input.attachmentId.trim()} for ${input.module?.trim() ?? sourceType} ${input.recordId.trim()}.`,
+              keyData: {
+                recordId: input.recordId.trim(),
+                attachmentId: input.attachmentId.trim(),
+                recordType: sourceType ?? crmModuleName,
+                sizeBytes: asNumber(asRecord(attachment)?.sizeBytes),
+                contentType: asString(asRecord(attachment)?.contentType),
+              },
+              fullPayload: attachment,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch Zoho attachment content.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'listFields') {
+          if (readPermissionError) {
+            return readPermissionError;
+          }
+          if (!crmModuleName) {
+            return buildEnvelope({
+              success: false,
+              summary: 'listFields requires a supported Zoho CRM module.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const fields = await loadZohoDataClient().listModuleFields?.({
+              companyId: runtime.companyId,
+              moduleName: crmModuleName,
+            }) ?? [];
+            return buildEnvelope({
+              success: true,
+              summary: fields.length > 0
+                ? `Fetched ${fields.length} Zoho field definition(s) for ${crmModuleName}.`
+                : `No Zoho field definitions were returned for ${crmModuleName}.`,
+              keyData: {
+                module: crmModuleName,
+                fieldCount: fields.length,
+              },
+              fullPayload: {
+                module: crmModuleName,
+                fields,
+              },
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch Zoho field metadata.';
             return buildEnvelope({
               success: false,
               summary,

@@ -1480,6 +1480,67 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     };
   }
 
+  if (operation === 'applyBooksTemplate') {
+    const recordId = asString(payload.recordId);
+    const templateId = asString(payload.templateId);
+    if (!booksModule || !recordId || !templateId) {
+      throw new Error('Stored Zoho Books applyBooksTemplate action is missing module, recordId, or templateId');
+    }
+    const result = await zohoBooksClient.applyTemplate({
+      companyId: metadata.companyId,
+      organizationId,
+      moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
+      recordId,
+      templateId,
+    });
+    return {
+      ok: true,
+      summary: `Applied template ${templateId} to Zoho Books ${moduleName} ${recordId}.`,
+      payload: result.payload,
+    };
+  }
+
+  if (operation === 'uploadBooksAttachment') {
+    const recordId = asString(payload.recordId);
+    const fileName = asString(payload.fileName);
+    const contentBase64 = asString(payload.contentBase64);
+    if (!booksModule || !recordId || !fileName || !contentBase64) {
+      throw new Error('Stored Zoho Books uploadBooksAttachment action is missing module, recordId, fileName, or contentBase64');
+    }
+    const result = await zohoBooksClient.uploadAttachment({
+      companyId: metadata.companyId,
+      organizationId,
+      moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
+      recordId,
+      fileName,
+      contentBase64,
+      contentType: asString(payload.contentType),
+    });
+    return {
+      ok: true,
+      summary: `Uploaded an attachment to Zoho Books ${moduleName} ${recordId}.`,
+      payload: result.payload,
+    };
+  }
+
+  if (operation === 'deleteBooksAttachment') {
+    const recordId = asString(payload.recordId);
+    if (!booksModule || !recordId) {
+      throw new Error('Stored Zoho Books deleteBooksAttachment action is missing module or recordId');
+    }
+    const result = await zohoBooksClient.deleteAttachment({
+      companyId: metadata.companyId,
+      organizationId,
+      moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
+      recordId,
+    });
+    return {
+      ok: true,
+      summary: `Deleted the attachment from Zoho Books ${moduleName} ${recordId}.`,
+      payload: result.payload,
+    };
+  }
+
   if (operation === 'voidBill' || operation === 'openBill' || operation === 'submitBill' || operation === 'approveBill') {
     const billId = asString(payload.billId);
     if (!billId) {

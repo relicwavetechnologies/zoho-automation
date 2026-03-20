@@ -3,7 +3,7 @@ import { Buffer } from 'buffer';
 import { logger } from '../../../utils/logger';
 import { ZohoIntegrationError } from './zoho.errors';
 import { normalizeEmail, payloadReferencesEmail } from './zoho-email-scope';
-import { zohoHttpClient, ZohoHttpClient } from './zoho-http.client';
+import { zohoHttpClient, ZohoHttpClient, type ZohoRawResponse } from './zoho-http.client';
 import { zohoTokenService, ZohoTokenService } from './zoho-token.service';
 
 export type ZohoSourceType = 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket';
@@ -862,6 +862,56 @@ export class ZohoDataClient {
     return response.data ?? [];
   }
 
+  async getAttachmentContent(input: {
+    companyId: string;
+    environment?: string;
+    sourceType: ZohoSourceType;
+    sourceId: string;
+    attachmentId: string;
+  }): Promise<ZohoRawResponse> {
+    const environment = input.environment ?? 'prod';
+    const moduleDef = ensureModule(input.sourceType);
+    return this.requestRawWithRefresh({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v8/${moduleDef.moduleName}/${encodeURIComponent(input.sourceId)}/Attachments/${encodeURIComponent(input.attachmentId)}`,
+      method: 'GET',
+    });
+  }
+
+  async getModuleAttachmentContent(input: {
+    companyId: string;
+    environment?: string;
+    moduleName: string;
+    recordId: string;
+    attachmentId: string;
+  }): Promise<ZohoRawResponse> {
+    const environment = input.environment ?? 'prod';
+    const moduleName = ensureModuleName(input.moduleName);
+    return this.requestRawWithRefresh({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v8/${encodeURIComponent(moduleName)}/${encodeURIComponent(input.recordId)}/Attachments/${encodeURIComponent(input.attachmentId)}`,
+      method: 'GET',
+    });
+  }
+
+  async listModuleFields(input: {
+    companyId: string;
+    environment?: string;
+    moduleName: string;
+  }): Promise<Array<Record<string, unknown>>> {
+    const environment = input.environment ?? 'prod';
+    const moduleName = ensureModuleName(input.moduleName);
+    const payload = await this.requestWithRefresh<ZohoFieldMetaResponse>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v8/settings/fields?module=${encodeURIComponent(moduleName)}`,
+      method: 'GET',
+    });
+    return readFieldRows(payload);
+  }
+
   async uploadAttachment(input: {
     companyId: string;
     environment?: string;
@@ -1052,6 +1102,54 @@ export class ZohoDataClient {
 
       const refreshedToken = await this.tokenService.forceRefresh(input.companyId, input.environment);
       return scopedClient.requestJson<T>({
+        base: 'api',
+        path: input.path,
+        method: input.method,
+        body: input.body,
+        headers: {
+          Authorization: `Zoho-oauthtoken ${refreshedToken}`,
+        },
+        retry: {
+          maxAttempts: 1,
+          baseDelayMs: 0,
+        },
+      });
+    }
+  }
+
+  private async requestRawWithRefresh(input: {
+    companyId: string;
+    environment: string;
+    path: string;
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+    body?: URLSearchParams | Record<string, unknown> | FormData;
+  }): Promise<ZohoRawResponse> {
+    const scopedClient = await this.resolveApiClient(input.companyId);
+    const token = await this.tokenService.getValidAccessToken(input.companyId, input.environment);
+    try {
+      return await scopedClient.requestRaw({
+        base: 'api',
+        path: input.path,
+        method: input.method,
+        body: input.body,
+        headers: {
+          Authorization: `Zoho-oauthtoken ${token}`,
+        },
+      });
+    } catch (error) {
+      const isAuthError = error instanceof ZohoIntegrationError && error.code === 'auth_failed';
+      if (!isAuthError) {
+        throw error;
+      }
+
+      logger.warn('zoho.api.retry_after_token_refresh', {
+        companyId: input.companyId,
+        environment: input.environment,
+        path: input.path,
+      });
+
+      const refreshedToken = await this.tokenService.forceRefresh(input.companyId, input.environment);
+      return scopedClient.requestRaw({
         base: 'api',
         path: input.path,
         method: input.method,
