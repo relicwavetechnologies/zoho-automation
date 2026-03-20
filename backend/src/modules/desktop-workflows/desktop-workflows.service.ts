@@ -647,7 +647,7 @@ class DesktopWorkflowsService {
     };
     const blankSpec = buildBlankWorkflowSpec(name);
     const { capabilitySummary } = compileScheduledWorkflowDefinition({
-      userIntent: '',
+      userIntent: 'Draft workflow pending author input.',
       workflowSpec: blankSpec,
       schedule,
       outputConfig,
@@ -911,17 +911,12 @@ class DesktopWorkflowsService {
       if (destination.kind !== 'desktop_thread') {
         return destination;
       }
-      const thread = await desktopThreadsService.findOrCreateNamedThread(
-        session.userId,
-        session.companyId,
-        destination.label ?? destination.threadId,
-        resolvedDepartment?.id ?? null,
-      );
-      return {
-        ...destination,
-        threadId: thread.id,
-        label: destination.label ?? thread.title ?? destination.threadId,
-      };
+      return this.normalizeDesktopThreadDestination({
+        destination,
+        userId: session.userId,
+        companyId: session.companyId,
+        departmentId: resolvedDepartment?.id ?? null,
+      });
     }));
     const outputConfig = scheduledWorkflowOutputConfigSchema.parse({
       ...normalizedOutputConfig,
@@ -1382,6 +1377,44 @@ class DesktopWorkflowsService {
       input.workflowName,
       input.departmentId ?? null,
     );
+  }
+
+  private async normalizeDesktopThreadDestination(input: {
+    destination: Extract<ScheduledWorkflowOutputConfig['destinations'][number], { kind: 'desktop_thread' }>;
+    userId: string;
+    companyId: string;
+    departmentId?: string | null;
+  }) {
+    const existing = await prisma.desktopThread.findFirst({
+      where: {
+        id: input.destination.threadId,
+        userId: input.userId,
+        companyId: input.companyId,
+      },
+      select: {
+        id: true,
+        title: true,
+      },
+    });
+    if (existing) {
+      return {
+        ...input.destination,
+        threadId: existing.id,
+        label: input.destination.label ?? existing.title ?? input.destination.threadId,
+      };
+    }
+
+    const thread = await desktopThreadsService.findOrCreateNamedThread(
+      input.userId,
+      input.companyId,
+      input.destination.label ?? input.destination.threadId,
+      input.departmentId ?? null,
+    );
+    return {
+      ...input.destination,
+      threadId: thread.id,
+      label: input.destination.label ?? thread.title ?? input.destination.threadId,
+    };
   }
 
   private async deliverResult(input: {

@@ -8,6 +8,7 @@ const router = Router();
 
 router.use(requireMemberSession());
 router.post('/drafts', asyncHandler(desktopWorkflowsController.createDraft));
+router.post('/new-draft', asyncHandler(desktopWorkflowsController.createDraft));
 router.get('/', asyncHandler(desktopWorkflowsController.list));
 router.post('/compile', asyncHandler(desktopWorkflowsController.compile));
 router.post('/publish', asyncHandler(desktopWorkflowsController.publish));

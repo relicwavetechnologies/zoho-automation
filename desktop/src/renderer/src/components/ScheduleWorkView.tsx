@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import ReactFlow, { Background, Controls, MarkerType, ReactFlowProvider, type Edge, type Node, type NodeProps } from 'reactflow'
+import ReactFlow, { Background, Controls, MarkerType, Position, ReactFlowProvider, type Edge, type Node, type NodeProps } from 'reactflow'
 import 'reactflow/dist/style.css'
 import {
   Archive,
@@ -14,6 +14,7 @@ import {
   Clock3,
   CopyPlus,
   FileJson2,
+  Loader2,
   PencilLine,
   Plus,
   Save,
@@ -136,6 +137,12 @@ type WorkflowAuthorResponse = WorkflowRecord & {
   model?: { provider: string; modelId: string }
 }
 
+type ThreadSummary = {
+  id: string
+  title: string | null
+  updatedAt?: string
+}
+
 type ScheduleModalDraft = {
   frequency: ScheduleFrequency
   timezone: string
@@ -200,25 +207,74 @@ function buildGraph(spec: CompiledWorkflowSpec | null): { nodes: Node[]; edges: 
     return { nodes: [], edges: [] }
   }
 
-  const nodes: Node[] = spec.nodes.map((node, index) => ({
-    id: node.id,
-    type: 'workflowNode',
-    data: { node },
-    position: { x: index % 2 === 0 ? 60 : 420, y: index * 190 },
-    draggable: false,
-    selectable: false,
-  }))
+  const effectiveEdges = spec.edges.length > 0
+    ? spec.edges
+    : spec.nodes.slice(1).map((node, index) => ({
+        sourceId: spec.nodes[index]!.id,
+        targetId: node.id,
+        condition: 'always',
+      }))
 
-  const edges: Edge[] = spec.edges.map((edge, index) => ({
+  const incoming = new Map<string, number>(spec.nodes.map((node) => [node.id, 0]))
+  const outgoing = new Map<string, string[]>(spec.nodes.map((node) => [node.id, []]))
+  for (const edge of effectiveEdges) {
+    incoming.set(edge.targetId, (incoming.get(edge.targetId) ?? 0) + 1)
+    outgoing.set(edge.sourceId, [...(outgoing.get(edge.sourceId) ?? []), edge.targetId])
+  }
+
+  const queue = spec.nodes
+    .filter((node) => (incoming.get(node.id) ?? 0) === 0)
+    .map((node) => node.id)
+
+  const levelById = new Map<string, number>()
+  while (queue.length > 0) {
+    const currentId = queue.shift()!
+    const currentLevel = levelById.get(currentId) ?? 0
+    for (const nextId of outgoing.get(currentId) ?? []) {
+      const nextLevel = currentLevel + 1
+      levelById.set(nextId, Math.max(levelById.get(nextId) ?? 0, nextLevel))
+      incoming.set(nextId, (incoming.get(nextId) ?? 0) - 1)
+      if ((incoming.get(nextId) ?? 0) === 0) {
+        queue.push(nextId)
+      }
+    }
+  }
+
+  const nodesByLevel = new Map<number, CompiledWorkflowNode[]>()
+  for (const node of spec.nodes) {
+    const level = levelById.get(node.id) ?? 0
+    const existing = nodesByLevel.get(level) ?? []
+    existing.push(node)
+    nodesByLevel.set(level, existing)
+  }
+
+  const nodes: Node[] = spec.nodes.map((node) => {
+    const level = levelById.get(node.id) ?? 0
+    const siblings = nodesByLevel.get(level) ?? [node]
+    const rowIndex = siblings.findIndex((entry) => entry.id === node.id)
+    return {
+      id: node.id,
+      type: 'workflowNode',
+      data: { node },
+      position: { x: level * 380 + 60, y: rowIndex * 280 + 60 },
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+      draggable: false,
+      selectable: false,
+    }
+  })
+
+  const edges: Edge[] = effectiveEdges.map((edge, index) => ({
     id: `${edge.sourceId}-${edge.targetId}-${index}`,
     source: edge.sourceId,
     target: edge.targetId,
     label: edge.label ?? (edge.condition !== 'always' ? edge.condition : undefined),
     type: 'smoothstep',
-    markerEnd: { type: MarkerType.ArrowClosed },
+    markerEnd: { type: MarkerType.ArrowClosed, width: 22, height: 22 },
     animated: edge.condition !== 'always',
-    style: { stroke: 'rgba(126, 231, 255, 0.42)', strokeWidth: 1.5 },
-    labelStyle: { fill: 'rgba(255,255,255,0.55)', fontSize: 11 },
+    style: { stroke: 'rgba(126, 231, 255, 0.6)', strokeWidth: 2.25 },
+    labelStyle: { fill: 'rgba(255,255,255,0.7)', fontSize: 11 },
+    pathOptions: { offset: 24, borderRadius: 24 },
   }))
 
   return { nodes, edges }
@@ -347,6 +403,8 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
   const [isLoading, setIsLoading] = useState(true)
   const [isGenerating, setIsGenerating] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [isSavingPromptDraft, setIsSavingPromptDraft] = useState(false)
+  const [isScheduling, setIsScheduling] = useState(false)
   const [isArchiving, setIsArchiving] = useState(false)
   const [isDuplicating, setIsDuplicating] = useState(false)
   const [composerMode, setComposerMode] = useState<'compose' | 'actions'>('compose')
@@ -358,12 +416,26 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
   const [promptDraft, setPromptDraft] = useState('')
   const [jsonDraft, setJsonDraft] = useState('')
   const [scheduleDraft, setScheduleDraft] = useState<ScheduleModalDraft | null>(null)
+  const [availableThreads, setAvailableThreads] = useState<ThreadSummary[]>([])
+  const [outputMode, setOutputMode] = useState<'new_thread' | 'existing_thread'>('new_thread')
+  const [threadSearch, setThreadSearch] = useState('')
+  const [selectedExistingThreadId, setSelectedExistingThreadId] = useState<string | null>(null)
+  const [statusNotice, setStatusNotice] = useState<string | null>(null)
 
   const selectedWorkflow = workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? null
   const graph = useMemo(() => buildGraph(selectedWorkflow?.workflowSpec ?? null), [selectedWorkflow?.workflowSpec])
   const hasGeneratedDraft = Boolean(
     selectedWorkflow
     && (selectedWorkflow.messages.length > 0 || selectedWorkflow.aiDraft?.trim() || selectedWorkflow.compiledPrompt.trim()),
+  )
+  const filteredThreads = useMemo(() => {
+    const needle = threadSearch.trim().toLowerCase()
+    if (!needle) return availableThreads
+    return availableThreads.filter((thread) => (thread.title ?? 'Untitled thread').toLowerCase().includes(needle))
+  }, [availableThreads, threadSearch])
+  const selectedExistingThread = useMemo(
+    () => availableThreads.find((thread) => thread.id === selectedExistingThreadId) ?? null,
+    [availableThreads, selectedExistingThreadId],
   )
 
   const upsertWorkflow = (workflow: WorkflowRecord) => {
@@ -406,18 +478,53 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
     }
   }
 
+  const loadWorkflow = async (workflowId: string): Promise<WorkflowRecord> => {
+    if (!token) {
+      throw new Error('Sign in again before loading the workflow.')
+    }
+    const response = await window.desktopAPI.fetch(`/api/desktop/workflows/${workflowId}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (response.status < 200 || response.status >= 300) {
+      const parsed = JSON.parse(response.body) as { message?: string }
+      throw new Error(parsed.message || 'Failed to load workflow')
+    }
+    const parsed = JSON.parse(response.body) as { data: WorkflowRecord }
+    upsertWorkflow(parsed.data)
+    return parsed.data
+  }
+
+  const loadThreads = async (): Promise<void> => {
+    if (!token) return
+    try {
+      const response = await window.desktopAPI.threads.list(token)
+      if (response?.success && Array.isArray(response.data)) {
+        setAvailableThreads(response.data as ThreadSummary[])
+      }
+    } catch {
+      // Non-blocking for the workflow UI.
+    }
+  }
+
   const createDraft = async (): Promise<WorkflowRecord> => {
     if (!token) {
       throw new Error('Sign in again before creating a workflow.')
     }
-    const response = await window.desktopAPI.fetch('/api/desktop/workflows/drafts', {
+    const payload = JSON.stringify({})
+    const requestOptions = {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({}),
-    })
+      body: payload,
+    }
+
+    let response = await window.desktopAPI.fetch('/api/desktop/workflows/new-draft', requestOptions)
+    if (response.status < 200 || response.status >= 300) {
+      response = await window.desktopAPI.fetch('/api/desktop/workflows/drafts', requestOptions)
+    }
     if (response.status < 200 || response.status >= 300) {
       const parsed = JSON.parse(response.body) as { message?: string }
       throw new Error(parsed.message || 'Failed to create a workflow draft')
@@ -432,18 +539,43 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
   }, [token])
 
   useEffect(() => {
+    void loadThreads()
+  }, [token])
+
+  useEffect(() => {
     if (!selectedWorkflow) return
     setPromptDraft(selectedWorkflow.aiDraft ?? '')
     setJsonDraft(JSON.stringify(selectedWorkflow.workflowSpec, null, 2))
     setScheduleDraft(toScheduleModalDraft(selectedWorkflow.schedule))
     setComposerText('')
     setComposerMode(selectedWorkflow.messages.length > 0 || Boolean(selectedWorkflow.aiDraft?.trim()) ? 'actions' : 'compose')
+    const explicitThread = selectedWorkflow.outputConfig.destinations.find((destination) => destination.kind === 'desktop_thread')
+    if (explicitThread?.kind === 'desktop_thread') {
+      setOutputMode('existing_thread')
+      setSelectedExistingThreadId(explicitThread.threadId)
+    } else {
+      setOutputMode('new_thread')
+      setSelectedExistingThreadId(null)
+    }
+    setThreadSearch('')
   }, [selectedWorkflowId])
+
+  const buildDestinationsPayload = (): Array<{ kind: 'desktop_thread'; label?: string; value?: string }> => {
+    if (outputMode === 'existing_thread' && selectedExistingThread) {
+      return [{
+        kind: 'desktop_thread',
+        label: selectedExistingThread.title ?? 'Existing thread',
+        value: selectedExistingThread.id,
+      }]
+    }
+    return []
+  }
 
   const authorWorkflow = async (): Promise<void> => {
     if (!selectedWorkflow || !token || !composerText.trim()) return
     setIsGenerating(true)
     setError(null)
+    setStatusNotice(null)
     try {
       const response = await window.desktopAPI.fetch(`/api/desktop/workflows/${selectedWorkflow.id}/author`, {
         method: 'POST',
@@ -472,6 +604,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
     if (!selectedWorkflow || !token) return
     setIsSaving(true)
     setError(null)
+    setStatusNotice(null)
     try {
       const response = await window.desktopAPI.fetch('/api/desktop/workflows/publish', {
         method: 'POST',
@@ -486,7 +619,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
           aiDraft: selectedWorkflow.aiDraft ?? undefined,
           scheduleEnabled: false,
           schedule: fromScheduleModalDraft(scheduleDraft ?? toScheduleModalDraft(selectedWorkflow.schedule)),
-          destinations: [],
+          destinations: buildDestinationsPayload(),
           compiledPrompt: selectedWorkflow.compiledPrompt,
           workflowSpec: selectedWorkflow.workflowSpec,
           capabilitySummary: selectedWorkflow.capabilitySummary,
@@ -497,7 +630,8 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
         const parsed = JSON.parse(response.body) as { message?: string }
         throw new Error(parsed.message || 'Failed to save workflow')
       }
-      await loadWorkflows(selectedWorkflow.id)
+      await loadWorkflow(selectedWorkflow.id)
+      setStatusNotice('Workflow saved to your library.')
       setSaveModalOpen(true)
     } catch (publishError) {
       setError(publishError instanceof Error ? publishError.message : 'Failed to save workflow')
@@ -526,10 +660,14 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
 
   const savePromptEdits = async (): Promise<void> => {
     if (!selectedWorkflow) return
+    if ((selectedWorkflow.aiDraft ?? '') === promptDraft) return
+    setIsSavingPromptDraft(true)
     try {
       await updateWorkflow({ aiDraft: promptDraft, name: selectedWorkflow.name })
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : 'Failed to save prompt edits')
+    } finally {
+      setIsSavingPromptDraft(false)
     }
   }
 
@@ -547,6 +685,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
     if (!selectedWorkflow) return
     setIsDuplicating(true)
     setError(null)
+    setStatusNotice(null)
     try {
       const created = await createDraft()
       await window.desktopAPI.fetch(`/api/desktop/workflows/${created.id}`, {
@@ -575,6 +714,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
     if (!selectedWorkflow || !token) return
     setIsArchiving(true)
     setError(null)
+    setStatusNotice(null)
     try {
       const response = await window.desktopAPI.fetch(`/api/desktop/workflows/${selectedWorkflow.id}`, {
         method: 'DELETE',
@@ -596,8 +736,14 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
 
   const activateSchedule = async (enabled: boolean): Promise<void> => {
     if (!selectedWorkflow || !token) return
+    setIsScheduling(true)
+    setError(null)
+    setStatusNotice(null)
     try {
-      await updateWorkflow({ schedule: fromScheduleModalDraft(scheduleDraft ?? toScheduleModalDraft(selectedWorkflow.schedule)) })
+      await updateWorkflow({
+        schedule: fromScheduleModalDraft(scheduleDraft ?? toScheduleModalDraft(selectedWorkflow.schedule)),
+        destinations: buildDestinationsPayload(),
+      })
       const response = await window.desktopAPI.fetch(`/api/desktop/workflows/${selectedWorkflow.id}/schedule`, {
         method: 'PATCH',
         headers: {
@@ -610,11 +756,14 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
         const parsed = JSON.parse(response.body) as { message?: string }
         throw new Error(parsed.message || 'Failed to update schedule')
       }
-      await loadWorkflows(selectedWorkflow.id)
+      await loadWorkflow(selectedWorkflow.id)
+      setStatusNotice(enabled ? 'Schedule activated.' : 'Workflow saved without a schedule.')
       setScheduleModalOpen(false)
       setSaveModalOpen(false)
     } catch (scheduleError) {
       setError(scheduleError instanceof Error ? scheduleError.message : 'Failed to update schedule')
+    } finally {
+      setIsScheduling(false)
     }
   }
 
@@ -733,6 +882,11 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                 {error}
               </div>
             ) : null}
+            {statusNotice ? (
+              <div className="mb-4 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+                {statusNotice}
+              </div>
+            ) : null}
 
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="min-h-0 flex-1 overflow-hidden rounded-[32px] border border-white/8 bg-[rgba(255,255,255,0.02)]">
@@ -766,15 +920,12 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                         <textarea
                           value={promptDraft}
                           onChange={(event) => setPromptDraft(event.target.value)}
+                          onBlur={() => void savePromptEdits()}
                           className="mt-3 min-h-[180px] w-full resize-none rounded-2xl border border-white/8 bg-black/20 px-4 py-3 text-sm leading-6 text-white/85 outline-none transition-colors focus:border-cyan-300/35"
                         />
-                        <button
-                          onClick={() => void savePromptEdits()}
-                          className="mt-3 inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-medium text-cyan-100 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15"
-                        >
-                          <Save size={13} />
-                          Save prompt text
-                        </button>
+                        <div className="mt-3 text-xs text-white/40">
+                          {isSavingPromptDraft ? 'Saving draft changes...' : 'Prompt changes save back to this draft when you leave the field.'}
+                        </div>
                       </div>
 
                       <div className="mt-4 rounded-3xl border border-white/8 bg-white/[0.03] p-4">
@@ -805,6 +956,83 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                             </button>
                           </div>
                         ) : null}
+                      </div>
+
+                      <div className="mt-4 rounded-3xl border border-white/8 bg-white/[0.03] p-4">
+                        <div className="text-[11px] uppercase tracking-[0.18em] text-white/45">Output</div>
+                        <div className="mt-3 space-y-3">
+                          <button
+                            onClick={() => setOutputMode('new_thread')}
+                            className={cn(
+                              'flex w-full items-start justify-between rounded-2xl border px-4 py-3 text-left transition-colors',
+                              outputMode === 'new_thread'
+                                ? 'border-cyan-300/30 bg-cyan-400/10'
+                                : 'border-white/8 bg-black/20 hover:border-white/12',
+                            )}
+                          >
+                            <div>
+                              <div className="text-sm font-medium text-white">New thread</div>
+                              <div className="mt-1 text-xs leading-5 text-white/45">
+                                Default. Workflow output will land in a new or reused thread auto-named from the workflow title.
+                              </div>
+                            </div>
+                            {outputMode === 'new_thread' ? <Check size={15} className="mt-0.5 text-cyan-100" /> : null}
+                          </button>
+
+                          <button
+                            onClick={() => setOutputMode('existing_thread')}
+                            className={cn(
+                              'flex w-full items-start justify-between rounded-2xl border px-4 py-3 text-left transition-colors',
+                              outputMode === 'existing_thread'
+                                ? 'border-cyan-300/30 bg-cyan-400/10'
+                                : 'border-white/8 bg-black/20 hover:border-white/12',
+                            )}
+                          >
+                            <div>
+                              <div className="text-sm font-medium text-white">Existing thread</div>
+                              <div className="mt-1 text-xs leading-5 text-white/45">
+                                Route workflow output into one of your existing desktop threads.
+                              </div>
+                            </div>
+                            {outputMode === 'existing_thread' ? <Check size={15} className="mt-0.5 text-cyan-100" /> : null}
+                          </button>
+
+                          {outputMode === 'existing_thread' ? (
+                            <div className="rounded-2xl border border-white/8 bg-black/20 p-3">
+                              <input
+                                value={threadSearch}
+                                onChange={(event) => setThreadSearch(event.target.value)}
+                                placeholder="Search existing threads..."
+                                className="w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-sm text-white outline-none placeholder:text-white/25"
+                              />
+                              <div className="mt-3 max-h-52 space-y-2 overflow-y-auto">
+                                {filteredThreads.map((thread) => (
+                                  <button
+                                    key={thread.id}
+                                    onClick={() => setSelectedExistingThreadId(thread.id)}
+                                    className={cn(
+                                      'flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left transition-colors',
+                                      selectedExistingThreadId === thread.id
+                                        ? 'border-cyan-300/30 bg-cyan-400/10'
+                                        : 'border-white/8 bg-white/[0.03] hover:border-white/12',
+                                    )}
+                                  >
+                                    <div className="min-w-0">
+                                      <div className="truncate text-sm text-white">{thread.title ?? 'Untitled thread'}</div>
+                                      <div className="mt-1 text-[11px] text-white/40">{thread.id}</div>
+                                    </div>
+                                    {selectedExistingThreadId === thread.id ? <Check size={14} className="text-cyan-100" /> : null}
+                                  </button>
+                                ))}
+                                {filteredThreads.length === 0 ? (
+                                  <div className="rounded-xl border border-dashed border-white/10 px-3 py-4 text-center text-xs text-white/40">
+                                    No matching thread found.
+                                  </div>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
 
                       <div className="mt-4 rounded-3xl border border-white/8 bg-white/[0.03] p-4">
@@ -991,6 +1219,15 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
 
               {scheduleDraft ? (
                 <div className="mt-6 grid gap-4">
+                  <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/45">Output thread</div>
+                    <div className="mt-3 text-sm text-white/70">
+                      {outputMode === 'existing_thread'
+                        ? `This workflow will post into ${selectedExistingThread?.title ?? 'the selected existing thread'}.`
+                        : 'This workflow will post into a new auto-named desktop thread by default.'}
+                    </div>
+                  </div>
+
                   <div className="grid gap-4 sm:grid-cols-2">
                     <label className="block">
                       <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-white/45">Frequency</span>
@@ -1107,16 +1344,19 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                   <div className="flex items-center justify-end gap-2">
                     <button
                       onClick={() => void activateSchedule(false)}
-                      className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
+                      disabled={isScheduling}
+                      className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      Save without schedule
+                      {isScheduling ? <Loader2 size={15} className="animate-spin" /> : null}
+                      {isScheduling ? 'Saving...' : 'Save without schedule'}
                     </button>
                     <button
                       onClick={() => void activateSchedule(true)}
-                      className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15"
+                      disabled={isScheduling}
+                      className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <CalendarClock size={15} />
-                      Activate schedule
+                      {isScheduling ? <Loader2 size={15} className="animate-spin" /> : <CalendarClock size={15} />}
+                      {isScheduling ? 'Activating...' : 'Activate schedule'}
                     </button>
                   </div>
                 </div>

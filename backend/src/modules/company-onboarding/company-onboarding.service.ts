@@ -12,6 +12,7 @@ import { larkWorkspaceConfigRepository } from '../../company/channels/lark/lark-
 import { zohoSyncProducer } from '../../company/queue/producer';
 import { runZohoDeltaSyncWorker, runZohoHistoricalSyncWorker } from '../../company/queue/workers';
 import { logger } from '../../utils/logger';
+import { resolveZohoOAuthScopes } from '../../company/integrations/zoho/zoho-oauth-scopes';
 import {
   CompanyOnboardingRepository,
   companyOnboardingRepository,
@@ -313,12 +314,13 @@ export class CompanyOnboardingService extends BaseService {
     companyId: string,
     payload: Extract<ZohoConnectDto, { mode: 'rest' }>,
   ): Promise<PersistedZohoConnection> {
+    const scopes = resolveZohoOAuthScopes(payload.scopes);
     let connected;
     try {
       connected = await zohoConnectionAdapter.connect(
         {
           authorizationCode: payload.authorizationCode,
-          scopes: payload.scopes,
+          scopes,
           environment: payload.environment,
         },
         companyId,

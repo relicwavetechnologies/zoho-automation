@@ -4,6 +4,7 @@ import { ZodError } from 'zod';
 
 import { ApiErrorResponse } from '../core/api-response';
 import { HttpException } from '../core/http-exception';
+import { desktopWorkflowsService } from '../modules/desktop-workflows/desktop-workflows.service';
 import { logger } from '../utils/logger';
 
 export const errorMiddleware = (
@@ -34,6 +35,50 @@ export const errorMiddleware = (
   }
 
   if (err instanceof ZodError) {
+    const isWorkflowDraftRoute =
+      req.method === 'POST'
+      && (req.originalUrl === '/api/desktop/workflows/drafts' || req.originalUrl === '/api/desktop/workflows/new-draft');
+    const isDraftMisvalidation =
+      isWorkflowDraftRoute
+      && err.issues.some((issue) => issue.path[0] === 'userIntent');
+    if (isDraftMisvalidation) {
+      const memberSession = (req as Request & {
+        memberSession?: {
+          userId: string;
+          companyId: string;
+        };
+      }).memberSession;
+      if (memberSession) {
+        logger.warn('http.error.workflow_draft_fallback', {
+          ...baseMeta,
+          issues: err.issues,
+        });
+        desktopWorkflowsService.createDraft(memberSession, {
+          name: typeof req.body?.name === 'string' ? req.body.name : null,
+          departmentId: typeof req.body?.departmentId === 'string' ? req.body.departmentId : null,
+        })
+          .then((result) => {
+            res.status(201).json({
+              success: true,
+              data: result,
+              message: 'Workflow draft created',
+              requestId,
+            });
+          })
+          .catch((fallbackError) => {
+            logger.error('http.error.workflow_draft_fallback_failed', {
+              ...baseMeta,
+              error: fallbackError,
+            });
+            res.status(500).json({
+              success: false,
+              message: 'Internal Server Error',
+              requestId,
+            });
+          });
+        return;
+      }
+    }
     logger.warn('http.error.zod_validation_failed', {
       ...baseMeta,
       issues: err.issues,

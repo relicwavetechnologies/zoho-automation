@@ -19,6 +19,16 @@ const prisma = new PrismaClient();
 const DEFAULT_TARGET = process.argv[2] || 'vabhi.verma2678@gmail.com';
 const DEFAULT_ENVIRONMENT = process.argv[3] || 'prod';
 const RUN_STAMP = new Date().toISOString().replace(/[:.]/g, '-');
+const RUN_DIGITS = RUN_STAMP.replace(/\D/g, '').slice(-12);
+const SHOULD_RUN_SYNC = !['1', 'true', 'yes'].includes(String(process.env.ZOHO_SEED_SKIP_SYNC || '').trim().toLowerCase());
+const SHOULD_SEED_BOOKS = !['1', 'true', 'yes'].includes(String(process.env.ZOHO_SEED_SKIP_BOOKS || '').trim().toLowerCase());
+const SHOULD_SEED_CRM = !['1', 'true', 'yes'].includes(String(process.env.ZOHO_SEED_SKIP_CRM || '').trim().toLowerCase());
+const SELECTED_BOOKS_MODULES = new Set(
+  String(process.env.ZOHO_SEED_BOOKS_MODULES || '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean),
+);
 
 const CRM_BATCH_SIZE = 50;
 const TODAY = new Date();
@@ -103,6 +113,18 @@ const summarizeErrors = (error) => {
   if (error instanceof Error) return error.message;
   return String(error);
 };
+
+const shouldRunBooksModule = (name) =>
+  SELECTED_BOOKS_MODULES.size === 0 || SELECTED_BOOKS_MODULES.has(name.toLowerCase());
+
+const createNumericSeed = (index, width) =>
+  `${RUN_DIGITS}${String(index + 1).padStart(width, '0')}`.slice(0, Math.max(width, RUN_DIGITS.length + width));
+
+const createBillNumber = (index) => createNumericSeed(index, 4).slice(-8);
+
+const createBankAccountNumber = (index) => createNumericSeed(index + 30, 10).slice(-11);
+
+const createRoutingNumber = (index) => createNumericSeed(index + 70, 9).slice(-9);
 
 async function resolveTargetCompany(target) {
   if (target.includes('@')) {
@@ -554,6 +576,49 @@ async function createBooksRecord(session, organizationId, moduleName, body) {
   return payload;
 }
 
+async function listBooksRecords(session, organizationId, moduleName, extraQuery = '') {
+  const separator = extraQuery ? `&${extraQuery.replace(/^\?/, '')}` : '';
+  const payload = await session.request({
+    method: 'GET',
+    path: `/books/v3/${moduleName}?organization_id=${encodeURIComponent(organizationId)}&per_page=200${separator}`,
+  });
+  const key = {
+    contacts: 'contacts',
+    invoices: 'invoices',
+    estimates: 'estimates',
+    creditnotes: 'creditnotes',
+    bills: 'bills',
+    salesorders: 'salesorders',
+    purchaseorders: 'purchaseorders',
+    customerpayments: 'customerpayments',
+    vendorpayments: 'vendorpayments',
+    bankaccounts: 'bankaccounts',
+    banktransactions: 'banktransactions',
+    items: 'items',
+  }[moduleName] || moduleName;
+  return asArray(payload && payload[key]);
+}
+
+async function listBooksChartOfAccounts(session, organizationId) {
+  const payload = await session.request({
+    method: 'GET',
+    path: `/books/v3/chartofaccounts?organization_id=${encodeURIComponent(organizationId)}&per_page=200`,
+  });
+  return asArray(payload && payload.chartofaccounts);
+}
+
+async function createBooksItem(session, organizationId, body) {
+  const payload = await session.request({
+    method: 'POST',
+    path: `/books/v3/items?organization_id=${encodeURIComponent(organizationId)}`,
+    body,
+  });
+  if (payload && typeof payload === 'object' && payload.item && typeof payload.item === 'object') {
+    return payload.item;
+  }
+  return payload;
+}
+
 async function importBooksStatement(session, organizationId, accountId, rows) {
   return session.request({
     method: 'POST',
@@ -668,237 +733,335 @@ async function seedBooks(session, context, summary) {
   summary.books.organizationId = organizationId;
   summary.books.organizations = organizations.length;
 
+  let expenseAccountId = null;
+  if (shouldRunBooksModule('bills') || shouldRunBooksModule('purchaseorders')) {
+    try {
+      const chartAccounts = await listBooksChartOfAccounts(session, organizationId);
+      const preferred = chartAccounts.find((account) => {
+        const accountType = asString(account.account_type)?.toLowerCase();
+        return ['cost_of_goods_sold', 'expense', 'other_expense'].includes(accountType || '');
+      }) || chartAccounts[0];
+      expenseAccountId = asString(preferred && (preferred.account_id || preferred.id));
+      if (expenseAccountId) {
+        summary.books.expenseAccountId = expenseAccountId;
+      }
+    } catch (error) {
+      summary.errors.push({ area: 'books.chartofaccounts', message: summarizeErrors(error) });
+    }
+  }
+
   const customerContacts = [];
   const vendorContacts = [];
-  for (let index = 0; index < DEFAULT_COUNTS.booksCustomers; index += 1) {
-    try {
-      const record = await createBooksRecord(session, organizationId, 'contacts', createBooksContactPayload('customer', index));
-      customerContacts.push(record);
-    } catch (error) {
-      summary.errors.push({ area: 'books.contacts.customer', message: summarizeErrors(error) });
+  if (shouldRunBooksModule('contacts')) {
+    for (let index = 0; index < DEFAULT_COUNTS.booksCustomers; index += 1) {
+      try {
+        const record = await createBooksRecord(session, organizationId, 'contacts', createBooksContactPayload('customer', index));
+        customerContacts.push(record);
+      } catch (error) {
+        summary.errors.push({ area: 'books.contacts.customer', message: summarizeErrors(error) });
+      }
+      await sleep(100);
     }
-    await sleep(100);
+
+    for (let index = 0; index < DEFAULT_COUNTS.booksVendors; index += 1) {
+      try {
+        const record = await createBooksRecord(session, organizationId, 'contacts', createBooksContactPayload('vendor', index));
+        vendorContacts.push(record);
+      } catch (error) {
+        summary.errors.push({ area: 'books.contacts.vendor', message: summarizeErrors(error) });
+      }
+      await sleep(100);
+    }
+  } else {
+    const existingContacts = await listBooksRecords(session, organizationId, 'contacts');
+    customerContacts.push(...existingContacts.filter((row) => asString(row.contact_type) === 'customer'));
+    vendorContacts.push(...existingContacts.filter((row) => asString(row.contact_type) === 'vendor'));
   }
 
-  for (let index = 0; index < DEFAULT_COUNTS.booksVendors; index += 1) {
-    try {
-      const record = await createBooksRecord(session, organizationId, 'contacts', createBooksContactPayload('vendor', index));
-      vendorContacts.push(record);
-    } catch (error) {
-      summary.errors.push({ area: 'books.contacts.vendor', message: summarizeErrors(error) });
-    }
-    await sleep(100);
+  if (shouldRunBooksModule('contacts')) {
+    summary.books.contacts = customerContacts.length + vendorContacts.length;
+  } else {
+    summary.books.contactsLoaded = customerContacts.length + vendorContacts.length;
   }
-
-  summary.books.contacts = customerContacts.length + vendorContacts.length;
 
   const invoices = [];
-  for (let index = 0; index < DEFAULT_COUNTS.booksInvoices; index += 1) {
-    const customer = customerContacts[index % Math.max(1, customerContacts.length)];
-    const customerId = extractBooksRecordId('contacts', customer);
-    if (!customerId) continue;
-    try {
-      const invoice = await createBooksRecord(session, organizationId, 'invoices', {
-        customer_id: customerId,
-        date: addDays(TODAY, -1 * (15 + index)),
-        due_date: addDays(TODAY, (index % 4 === 0 ? -5 : 10 + index)),
-        payment_terms: 30,
-        reference_number: `INV-SEED-${RUN_STAMP}-${index + 1}`,
-        notes: `Seed invoice ${index + 1} for overdue and reminder workflows.`,
-        line_items: createBooksLineItems(index),
-      });
-      invoices.push(invoice);
-    } catch (error) {
-      summary.errors.push({ area: 'books.invoices', message: summarizeErrors(error) });
+  if (shouldRunBooksModule('invoices')) {
+    for (let index = 0; index < DEFAULT_COUNTS.booksInvoices; index += 1) {
+      const customer = customerContacts[index % Math.max(1, customerContacts.length)];
+      const customerId = extractBooksRecordId('contacts', customer);
+      if (!customerId) continue;
+      try {
+        const invoice = await createBooksRecord(session, organizationId, 'invoices', {
+          customer_id: customerId,
+          date: addDays(TODAY, -1 * (15 + index)),
+          due_date: addDays(TODAY, (index % 4 === 0 ? -5 : 10 + index)),
+          payment_terms: 30,
+          reference_number: `INV-SEED-${RUN_STAMP}-${index + 1}`,
+          notes: `Seed invoice ${index + 1} for overdue and reminder workflows.`,
+          line_items: createBooksLineItems(index),
+        });
+        invoices.push(invoice);
+      } catch (error) {
+        summary.errors.push({ area: 'books.invoices', message: summarizeErrors(error) });
+      }
+      await sleep(100);
     }
-    await sleep(100);
+    summary.books.invoices = invoices.length;
   }
-  summary.books.invoices = invoices.length;
 
   const estimates = [];
-  for (let index = 0; index < DEFAULT_COUNTS.booksEstimates; index += 1) {
-    const customer = customerContacts[index % Math.max(1, customerContacts.length)];
-    const customerId = extractBooksRecordId('contacts', customer);
-    if (!customerId) continue;
-    try {
-      const estimate = await createBooksRecord(session, organizationId, 'estimates', {
-        customer_id: customerId,
-        date: addDays(TODAY, -1 * (10 + index)),
-        expiry_date: addDays(TODAY, 15 + index),
-        reference_number: `EST-SEED-${RUN_STAMP}-${index + 1}`,
-        notes: `Seed estimate ${index + 1} for email and status-transition workflows.`,
-        line_items: createBooksLineItems(index + 25),
-      });
-      estimates.push(estimate);
-    } catch (error) {
-      summary.errors.push({ area: 'books.estimates', message: summarizeErrors(error) });
+  if (shouldRunBooksModule('estimates')) {
+    for (let index = 0; index < DEFAULT_COUNTS.booksEstimates; index += 1) {
+      const customer = customerContacts[index % Math.max(1, customerContacts.length)];
+      const customerId = extractBooksRecordId('contacts', customer);
+      if (!customerId) continue;
+      try {
+        const estimate = await createBooksRecord(session, organizationId, 'estimates', {
+          customer_id: customerId,
+          date: addDays(TODAY, -1 * (10 + index)),
+          expiry_date: addDays(TODAY, 15 + index),
+          reference_number: `EST-SEED-${RUN_STAMP}-${index + 1}`,
+          notes: `Seed estimate ${index + 1} for email and status-transition workflows.`,
+          line_items: createBooksLineItems(index + 25),
+        });
+        estimates.push(estimate);
+      } catch (error) {
+        summary.errors.push({ area: 'books.estimates', message: summarizeErrors(error) });
+      }
+      await sleep(100);
     }
-    await sleep(100);
+    summary.books.estimates = estimates.length;
   }
-  summary.books.estimates = estimates.length;
 
   const bills = [];
-  for (let index = 0; index < DEFAULT_COUNTS.booksBills; index += 1) {
-    const vendor = vendorContacts[index % Math.max(1, vendorContacts.length)];
-    const vendorId = extractBooksRecordId('contacts', vendor);
-    if (!vendorId) continue;
-    try {
-      const bill = await createBooksRecord(session, organizationId, 'bills', {
-        vendor_id: vendorId,
-        date: addDays(TODAY, -1 * (12 + index)),
-        due_date: addDays(TODAY, (index % 3 === 0 ? -3 : 9 + index)),
-        reference_number: `BILL-SEED-${RUN_STAMP}-${index + 1}`,
-        notes: `Seed bill ${index + 1} for AP reconciliation flows.`,
-        line_items: createBooksLineItems(index + 50),
-      });
-      bills.push(bill);
-    } catch (error) {
-      summary.errors.push({ area: 'books.bills', message: summarizeErrors(error) });
+  if (shouldRunBooksModule('bills')) {
+    for (let index = 0; index < DEFAULT_COUNTS.booksBills; index += 1) {
+      const vendor = vendorContacts[index % Math.max(1, vendorContacts.length)];
+      const vendorId = extractBooksRecordId('contacts', vendor);
+      if (!vendorId) continue;
+      try {
+        const bill = await createBooksRecord(session, organizationId, 'bills', {
+          vendor_id: vendorId,
+          bill_number: createBillNumber(index),
+          date: addDays(TODAY, -1 * (12 + index)),
+          due_date: addDays(TODAY, (index % 3 === 0 ? -3 : 9 + index)),
+          reference_number: `BILLREF-${RUN_DIGITS}-${index + 1}`,
+          notes: `Seed bill ${index + 1} for AP reconciliation flows.`,
+          line_items: createBooksLineItems(index + 50).map((line) => ({
+            ...line,
+            ...(expenseAccountId ? { account_id: expenseAccountId } : {}),
+          })),
+        });
+        bills.push(bill);
+      } catch (error) {
+        summary.errors.push({ area: 'books.bills', message: summarizeErrors(error) });
+      }
+      await sleep(100);
     }
-    await sleep(100);
+    summary.books.bills = bills.length;
   }
-  summary.books.bills = bills.length;
 
   const salesOrders = [];
-  for (let index = 0; index < DEFAULT_COUNTS.booksSalesOrders; index += 1) {
-    const customer = customerContacts[index % Math.max(1, customerContacts.length)];
-    const customerId = extractBooksRecordId('contacts', customer);
-    if (!customerId) continue;
-    try {
-      const salesOrder = await createBooksRecord(session, organizationId, 'salesorders', {
-        customer_id: customerId,
-        date: addDays(TODAY, -1 * (8 + index)),
-        shipment_date: addDays(TODAY, 4 + index),
-        reference_number: `SO-SEED-${RUN_STAMP}-${index + 1}`,
-        notes: `Seed sales order ${index + 1} for downstream finance reads.`,
-        line_items: createBooksLineItems(index + 70),
-      });
-      salesOrders.push(salesOrder);
-    } catch (error) {
-      summary.errors.push({ area: 'books.salesorders', message: summarizeErrors(error) });
+  if (shouldRunBooksModule('salesorders')) {
+    for (let index = 0; index < DEFAULT_COUNTS.booksSalesOrders; index += 1) {
+      const customer = customerContacts[index % Math.max(1, customerContacts.length)];
+      const customerId = extractBooksRecordId('contacts', customer);
+      if (!customerId) continue;
+      try {
+        const salesOrder = await createBooksRecord(session, organizationId, 'salesorders', {
+          customer_id: customerId,
+          date: addDays(TODAY, -1 * (8 + index)),
+          shipment_date: addDays(TODAY, 4 + index),
+          reference_number: `SO-SEED-${RUN_STAMP}-${index + 1}`,
+          notes: `Seed sales order ${index + 1} for downstream finance reads.`,
+          line_items: createBooksLineItems(index + 70),
+        });
+        salesOrders.push(salesOrder);
+      } catch (error) {
+        summary.errors.push({ area: 'books.salesorders', message: summarizeErrors(error) });
+      }
+      await sleep(100);
     }
-    await sleep(100);
+    summary.books.salesOrders = salesOrders.length;
   }
-  summary.books.salesOrders = salesOrders.length;
 
   const purchaseOrders = [];
-  for (let index = 0; index < DEFAULT_COUNTS.booksPurchaseOrders; index += 1) {
-    const vendor = vendorContacts[index % Math.max(1, vendorContacts.length)];
-    const vendorId = extractBooksRecordId('contacts', vendor);
-    if (!vendorId) continue;
-    try {
-      const purchaseOrder = await createBooksRecord(session, organizationId, 'purchaseorders', {
-        vendor_id: vendorId,
-        date: addDays(TODAY, -1 * (6 + index)),
-        delivery_date: addDays(TODAY, 6 + index),
-        reference_number: `PO-SEED-${RUN_STAMP}-${index + 1}`,
-        notes: `Seed purchase order ${index + 1} for AP document reads.`,
-        line_items: createBooksLineItems(index + 90),
-      });
-      purchaseOrders.push(purchaseOrder);
-    } catch (error) {
-      summary.errors.push({ area: 'books.purchaseorders', message: summarizeErrors(error) });
+  if (shouldRunBooksModule('purchaseorders')) {
+    const items = await listBooksRecords(session, organizationId, 'items');
+    let purchaseCapableItems = items.filter((item) => {
+      const itemType = asString(item.item_type)?.toLowerCase();
+      return ['purchase', 'sales_and_purchase', 'sales_and_purchases', 'inventory'].includes(itemType || '');
+    });
+
+    if (purchaseCapableItems.length === 0 && expenseAccountId) {
+      try {
+        const createdItems = [];
+        for (let index = 0; index < 3; index += 1) {
+          const item = await createBooksItem(session, organizationId, {
+            name: `Seed Purchase Item ${RUN_STAMP} ${index + 1}`,
+            item_type: 'purchase',
+            rate: 1000 + (index * 250),
+            purchase_rate: String(900 + (index * 200)),
+            description: `Purchase-capable seed item ${index + 1}`,
+            purchase_description: `Purchase-capable seed item ${index + 1}`,
+            purchase_account_id: expenseAccountId,
+          });
+          createdItems.push(item);
+          await sleep(100);
+        }
+        purchaseCapableItems = createdItems.filter(Boolean);
+        summary.books.purchaseItems = purchaseCapableItems.length;
+      } catch (error) {
+        summary.errors.push({
+          area: 'books.items',
+          message: summarizeErrors(error),
+        });
+      }
     }
-    await sleep(100);
+
+    if (purchaseCapableItems.length === 0) {
+      summary.books.purchaseOrders = 0;
+      summary.errors.push({
+        area: 'books.purchaseorders',
+        message: 'No purchase-capable Zoho Books items exist in this organization, or the current token cannot create them. Purchase order seeding was skipped.',
+      });
+    } else {
+      for (let index = 0; index < DEFAULT_COUNTS.booksPurchaseOrders; index += 1) {
+        const vendor = vendorContacts[index % Math.max(1, vendorContacts.length)];
+        const vendorId = extractBooksRecordId('contacts', vendor);
+        const item = purchaseCapableItems[index % purchaseCapableItems.length];
+        if (!vendorId) continue;
+        try {
+          const purchaseOrder = await createBooksRecord(session, organizationId, 'purchaseorders', {
+            vendor_id: vendorId,
+            date: addDays(TODAY, -1 * (6 + index)),
+            delivery_date: addDays(TODAY, 6 + index),
+            reference_number: `PO-SEED-${RUN_STAMP}-${index + 1}`,
+            notes: `Seed purchase order ${index + 1} for AP document reads.`,
+            line_items: [{
+              item_id: extractBooksRecordId('items', item) || asString(item.item_id),
+              account_id: asString(item.purchase_account_id) || asString(item.account_id),
+              name: asString(item.name) || `Purchase Item ${index + 1}`,
+              description: asString(item.purchase_description) || `Purchase line item ${index + 1}`,
+              quantity: 1 + (index % 3),
+              rate: Number(item.purchase_rate || item.rate || 1000),
+            }],
+          });
+          purchaseOrders.push(purchaseOrder);
+        } catch (error) {
+          summary.errors.push({ area: 'books.purchaseorders', message: summarizeErrors(error) });
+        }
+        await sleep(100);
+      }
+      summary.books.purchaseOrders = purchaseOrders.length;
+    }
   }
-  summary.books.purchaseOrders = purchaseOrders.length;
 
   const creditNotes = [];
-  for (let index = 0; index < DEFAULT_COUNTS.booksCreditNotes; index += 1) {
-    const customer = customerContacts[index % Math.max(1, customerContacts.length)];
-    const customerId = extractBooksRecordId('contacts', customer);
-    if (!customerId) continue;
-    try {
-      const creditNote = await createBooksRecord(session, organizationId, 'creditnotes', {
-        customer_id: customerId,
-        date: addDays(TODAY, -1 * (4 + index)),
-        reference_number: `CN-SEED-${RUN_STAMP}-${index + 1}`,
-        notes: `Seed credit note ${index + 1} for refund and adjustment workflows.`,
-        line_items: createBooksLineItems(index + 110),
-      });
-      creditNotes.push(creditNote);
-    } catch (error) {
-      summary.errors.push({ area: 'books.creditnotes', message: summarizeErrors(error) });
+  if (shouldRunBooksModule('creditnotes')) {
+    for (let index = 0; index < DEFAULT_COUNTS.booksCreditNotes; index += 1) {
+      const customer = customerContacts[index % Math.max(1, customerContacts.length)];
+      const customerId = extractBooksRecordId('contacts', customer);
+      if (!customerId) continue;
+      try {
+        const creditNote = await createBooksRecord(session, organizationId, 'creditnotes', {
+          customer_id: customerId,
+          date: addDays(TODAY, -1 * (4 + index)),
+          reference_number: `CN-SEED-${RUN_STAMP}-${index + 1}`,
+          notes: `Seed credit note ${index + 1} for refund and adjustment workflows.`,
+          line_items: createBooksLineItems(index + 110),
+        });
+        creditNotes.push(creditNote);
+      } catch (error) {
+        summary.errors.push({ area: 'books.creditnotes', message: summarizeErrors(error) });
+      }
+      await sleep(100);
     }
-    await sleep(100);
+    summary.books.creditNotes = creditNotes.length;
   }
-  summary.books.creditNotes = creditNotes.length;
 
   const customerPayments = [];
-  for (let index = 0; index < Math.min(DEFAULT_COUNTS.booksCustomerPayments, invoices.length); index += 1) {
-    const invoice = invoices[index];
-    const invoiceId = extractBooksRecordId('invoices', invoice);
-    const customerId = asString(invoice && (invoice.customer_id || invoice.contact_id));
-    const total = Number(invoice && (invoice.balance || invoice.total || 0)) || (12000 + index * 500);
-    if (!invoiceId || !customerId) continue;
-    try {
-      const payment = await createBooksRecord(session, organizationId, 'customerpayments', {
-        customer_id: customerId,
-        payment_mode: 'banktransfer',
-        amount: total,
-        date: addDays(TODAY, -1 * (2 + index)),
-        reference_number: `CPAY-SEED-${RUN_STAMP}-${index + 1}`,
-        invoices: [{
-          invoice_id: invoiceId,
-          amount_applied: total,
-        }],
-      });
-      customerPayments.push(payment);
-    } catch (error) {
-      summary.errors.push({ area: 'books.customerpayments', message: summarizeErrors(error) });
+  if (shouldRunBooksModule('customerpayments')) {
+    for (let index = 0; index < Math.min(DEFAULT_COUNTS.booksCustomerPayments, invoices.length); index += 1) {
+      const invoice = invoices[index];
+      const invoiceId = extractBooksRecordId('invoices', invoice);
+      const customerId = asString(invoice && (invoice.customer_id || invoice.contact_id));
+      const total = Number(invoice && (invoice.balance || invoice.total || 0)) || (12000 + index * 500);
+      if (!invoiceId || !customerId) continue;
+      try {
+        const payment = await createBooksRecord(session, organizationId, 'customerpayments', {
+          customer_id: customerId,
+          payment_mode: 'banktransfer',
+          amount: total,
+          date: addDays(TODAY, -1 * (2 + index)),
+          reference_number: `CPAY-SEED-${RUN_STAMP}-${index + 1}`,
+          invoices: [{
+            invoice_id: invoiceId,
+            amount_applied: total,
+          }],
+        });
+        customerPayments.push(payment);
+      } catch (error) {
+        summary.errors.push({ area: 'books.customerpayments', message: summarizeErrors(error) });
+      }
+      await sleep(100);
     }
-    await sleep(100);
+    summary.books.customerPayments = customerPayments.length;
   }
-  summary.books.customerPayments = customerPayments.length;
 
   const vendorPayments = [];
-  for (let index = 0; index < Math.min(DEFAULT_COUNTS.booksVendorPayments, bills.length); index += 1) {
-    const bill = bills[index];
-    const billId = extractBooksRecordId('bills', bill);
-    const vendorId = asString(bill && (bill.vendor_id || bill.contact_id));
-    const total = Number(bill && (bill.balance || bill.total || 0)) || (10000 + index * 450);
-    if (!billId || !vendorId) continue;
-    try {
-      const payment = await createBooksRecord(session, organizationId, 'vendorpayments', {
-        vendor_id: vendorId,
-        payment_mode: 'banktransfer',
-        amount: total,
-        date: addDays(TODAY, -1 * (1 + index)),
-        reference_number: `VPAY-SEED-${RUN_STAMP}-${index + 1}`,
-        bills: [{
-          bill_id: billId,
-          amount_applied: total,
-        }],
-      });
-      vendorPayments.push(payment);
-    } catch (error) {
-      summary.errors.push({ area: 'books.vendorpayments', message: summarizeErrors(error) });
+  if (shouldRunBooksModule('vendorpayments')) {
+    for (let index = 0; index < Math.min(DEFAULT_COUNTS.booksVendorPayments, bills.length); index += 1) {
+      const bill = bills[index];
+      const billId = extractBooksRecordId('bills', bill);
+      const vendorId = asString(bill && (bill.vendor_id || bill.contact_id));
+      const total = Number(bill && (bill.balance || bill.total || 0)) || (10000 + index * 450);
+      if (!billId || !vendorId) continue;
+      try {
+        const payment = await createBooksRecord(session, organizationId, 'vendorpayments', {
+          vendor_id: vendorId,
+          payment_mode: 'banktransfer',
+          amount: total,
+          date: addDays(TODAY, -1 * (1 + index)),
+          reference_number: `VPAY-SEED-${RUN_STAMP}-${index + 1}`,
+          bills: [{
+            bill_id: billId,
+            amount_applied: total,
+          }],
+        });
+        vendorPayments.push(payment);
+      } catch (error) {
+        summary.errors.push({ area: 'books.vendorpayments', message: summarizeErrors(error) });
+      }
+      await sleep(100);
     }
-    await sleep(100);
+    summary.books.vendorPayments = vendorPayments.length;
   }
-  summary.books.vendorPayments = vendorPayments.length;
 
   const bankAccounts = [];
-  for (let index = 0; index < DEFAULT_COUNTS.booksBankAccounts; index += 1) {
-    try {
-      const account = await createBooksRecord(session, organizationId, 'bankaccounts', {
-        account_name: `Seed Bank ${RUN_STAMP} ${index + 1}`,
-        account_type: 'bank',
-        account_number: `SB-${RUN_STAMP}-${index + 1}`.slice(0, 40),
-        bank_name: 'Zoho Seed Bank',
-        currency_code: currencyCode(),
-        is_primary_account: index === 0,
-        description: `Seed bank account ${index + 1} for imported statement testing.`,
-      });
-      bankAccounts.push(account);
-    } catch (error) {
-      summary.errors.push({ area: 'books.bankaccounts', message: summarizeErrors(error) });
+  if (shouldRunBooksModule('bankaccounts')) {
+    for (let index = 0; index < DEFAULT_COUNTS.booksBankAccounts; index += 1) {
+      try {
+        const account = await createBooksRecord(session, organizationId, 'bankaccounts', {
+          account_name: `Seed Bank ${index + 1}`,
+          account_type: 'bank',
+          account_number: createBankAccountNumber(index),
+          bank_name: 'Zoho Seed Bank',
+          routing_number: createRoutingNumber(index),
+          currency_code: currencyCode(),
+          is_primary_account: index === 0,
+          description: `Seed bank account ${index + 1} for imported statement testing.`,
+        });
+        bankAccounts.push(account);
+      } catch (error) {
+        summary.errors.push({ area: 'books.bankaccounts', message: summarizeErrors(error) });
+      }
+      await sleep(100);
     }
-    await sleep(100);
+    summary.books.bankAccounts = bankAccounts.length;
   }
-  summary.books.bankAccounts = bankAccounts.length;
 
-  if (bankAccounts.length > 0) {
+  if (shouldRunBooksModule('bankaccounts') && bankAccounts.length > 0) {
     const accountId = extractBooksRecordId('bankaccounts', bankAccounts[0]);
     if (accountId) {
       try {
@@ -998,6 +1161,14 @@ async function seedCrm(session, context, summary) {
 }
 
 async function runHistoricalSync(companyId, connectionId, summary) {
+  if (!SHOULD_RUN_SYNC) {
+    summary.postSync = {
+      skipped: true,
+      reason: 'ZOHO_SEED_SKIP_SYNC is enabled for this run.',
+    };
+    return;
+  }
+
   if (!zohoSyncProducer || !runZohoHistoricalSyncWorker) {
     summary.postSync = {
       skipped: true,
@@ -1072,16 +1243,30 @@ async function main() {
     apiDomain: session.apiBaseUrl,
   }, null, 2));
 
-  try {
-    await seedBooks(session, target, summary);
-  } catch (error) {
-    summary.errors.push({ area: 'books.preflight', message: summarizeErrors(error) });
+  if (SHOULD_SEED_BOOKS) {
+    try {
+      await seedBooks(session, target, summary);
+    } catch (error) {
+      summary.errors.push({ area: 'books.preflight', message: summarizeErrors(error) });
+    }
+  } else {
+    summary.books = {
+      skipped: true,
+      reason: 'ZOHO_SEED_SKIP_BOOKS is enabled for this run.',
+    };
   }
 
-  try {
-    await seedCrm(session, target, summary);
-  } catch (error) {
-    summary.errors.push({ area: 'crm.preflight', message: summarizeErrors(error) });
+  if (SHOULD_SEED_CRM) {
+    try {
+      await seedCrm(session, target, summary);
+    } catch (error) {
+      summary.errors.push({ area: 'crm.preflight', message: summarizeErrors(error) });
+    }
+  } else {
+    summary.crm = {
+      skipped: true,
+      reason: 'ZOHO_SEED_SKIP_CRM is enabled for this run.',
+    };
   }
 
   await runHistoricalSync(target.companyId, connection.id, summary);

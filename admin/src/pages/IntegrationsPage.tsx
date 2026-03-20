@@ -211,7 +211,7 @@ export const IntegrationsPage = () => {
   const [larkSyncTriggering, setLarkSyncTriggering] = useState(false);
   const [vectorShareMutatingId, setVectorShareMutatingId] = useState<string | null>(null);
 
-  const [restScopes, setRestScopes] = useState('ZohoCRM.modules.ALL,ZohoCRM.coql.READ,ZohoCRM.settings.fields.READ');
+  const [restScopes, setRestScopes] = useState('ZohoCRM.modules.ALL,ZohoCRM.coql.READ,ZohoCRM.settings.fields.READ,ZohoCRM.settings.modules.READ,ZohoCRM.modules.notes.ALL,ZohoCRM.modules.attachments.ALL,ZohoBooks.settings.READ,ZohoBooks.settings.CREATE,ZohoBooks.accountants.READ,ZohoBooks.contacts.ALL,ZohoBooks.estimates.ALL,ZohoBooks.invoices.ALL,ZohoBooks.creditnotes.ALL,ZohoBooks.customerpayments.ALL,ZohoBooks.bills.ALL,ZohoBooks.salesorders.ALL,ZohoBooks.purchaseorders.ALL,ZohoBooks.vendorpayments.ALL,ZohoBooks.banking.ALL');
   const [restEnv, setRestEnv] = useState<'prod' | 'sandbox'>('prod');
   const [zohoDisconnecting, setZohoDisconnecting] = useState(false);
   const [oauthLaunching, setOauthLaunching] = useState(false);

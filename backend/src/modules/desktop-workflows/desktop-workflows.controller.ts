@@ -214,7 +214,7 @@ class DesktopWorkflowsController extends BaseController {
     return session;
   }
 
-  createDraft = async (req: Request, res: Response): Promise<Response> => {
+  private async createDraftResponse(req: Request, res: Response): Promise<Response> {
     const session = this.session(req);
     const parsed = createDraftRequestSchema.parse(req.body ?? {});
     const result = await desktopWorkflowsService.createDraft(session, {
@@ -222,6 +222,10 @@ class DesktopWorkflowsController extends BaseController {
       departmentId: parsed.departmentId ?? null,
     });
     return res.status(201).json(ApiResponse.success(result, 'Workflow draft created'));
+  }
+
+  createDraft = async (req: Request, res: Response): Promise<Response> => {
+    return this.createDraftResponse(req, res);
   };
 
   list = async (req: Request, res: Response): Promise<Response> => {
@@ -262,6 +266,9 @@ class DesktopWorkflowsController extends BaseController {
   };
 
   compile = async (req: Request, res: Response): Promise<Response> => {
+    if (req.path === '/drafts' || req.path === '/new-draft' || req.originalUrl.endsWith('/drafts') || req.originalUrl.endsWith('/new-draft')) {
+      return this.createDraftResponse(req, res);
+    }
     const session = this.session(req);
     const parsed = compileWorkflowRequestSchema.parse(req.body ?? {});
 

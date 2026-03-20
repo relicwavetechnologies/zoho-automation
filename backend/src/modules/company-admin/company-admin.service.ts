@@ -34,6 +34,10 @@ import { zohoRoleAccessService } from '../../company/tools/zoho-role-access.serv
 import { knowledgeShareService } from '../../company/knowledge-share/knowledge-share.service';
 import { prisma } from '../../utils/prisma';
 import { qdrantAdapter, vectorDocumentRepository } from '../../company/integrations/vector';
+import {
+  REQUIRED_ZOHO_OAUTH_SCOPES,
+  resolveZohoOAuthScopes,
+} from '../../company/integrations/zoho/zoho-oauth-scopes';
 
 export type SessionScope = {
   userId: string;
@@ -78,24 +82,6 @@ const resolveCompanyScope = (session: SessionScope, requestedCompanyId?: string)
 
   return session.companyId;
 };
-
-const DEFAULT_ZOHO_SCOPES = [
-  'ZohoCRM.modules.ALL',
-  'ZohoCRM.coql.READ',
-  'ZohoCRM.settings.fields.READ',
-  'ZohoCRM.modules.notes.ALL',
-  'ZohoCRM.modules.attachments.ALL',
-  'ZohoBooks.contacts.ALL',
-  'ZohoBooks.estimates.ALL',
-  'ZohoBooks.invoices.ALL',
-  'ZohoBooks.creditnotes.ALL',
-  'ZohoBooks.customerpayments.ALL',
-  'ZohoBooks.bills.ALL',
-  'ZohoBooks.salesorders.ALL',
-  'ZohoBooks.purchaseorders.ALL',
-  'ZohoBooks.vendorpayments.ALL',
-  'ZohoBooks.banking.ALL',
-];
 
 const hasPlatformZohoOAuthConfig = (): boolean =>
   Boolean(
@@ -795,10 +781,7 @@ export class CompanyAdminService extends BaseService {
       );
     }
 
-    const scopes = (input.scopes ?? DEFAULT_ZOHO_SCOPES.join(','))
-      .split(',')
-      .map((scope) => scope.trim())
-      .filter((scope) => scope.length > 0);
+    const scopes = resolveZohoOAuthScopes(input.scopes);
 
     if (scopes.length === 0) {
       throw new HttpException(400, 'At least one Zoho scope is required');
@@ -828,6 +811,7 @@ export class CompanyAdminService extends BaseService {
       metadata: {
         environment: input.environment,
         scopesCount: scopes.length,
+        requiredScopesCount: REQUIRED_ZOHO_OAUTH_SCOPES.length,
         oauthSource: 'platform_env',
       },
     });

@@ -322,6 +322,60 @@ const sendSseEvent = (res: Response, type: string, data: unknown) => {
   res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
 };
 
+const CHILD_TEXT_STREAM_CHUNK_SIZE = 28;
+const CHILD_TEXT_STREAM_DELAY_MS = 14;
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+const chunkTextForChildStream = (text: string): string[] => {
+  const normalized = text.replace(/\r\n/g, '\n');
+  if (normalized.length <= CHILD_TEXT_STREAM_CHUNK_SIZE) {
+    return [normalized];
+  }
+
+  const chunks: string[] = [];
+  let buffer = '';
+  const tokens = normalized.split(/(\s+)/);
+
+  for (const token of tokens) {
+    if (!token) {
+      continue;
+    }
+    if ((buffer + token).length > CHILD_TEXT_STREAM_CHUNK_SIZE && buffer.length > 0) {
+      chunks.push(buffer);
+      buffer = token;
+      continue;
+    }
+    buffer += token;
+  }
+
+  if (buffer.length > 0) {
+    chunks.push(buffer);
+  }
+
+  return chunks.length > 0 ? chunks : [normalized];
+};
+
+const streamChildText = async (
+  res: Response,
+  text: string,
+  queueUiEvent: (
+    type: Parameters<typeof persistUiEvent>[1],
+    data: Parameters<typeof persistUiEvent>[2],
+  ) => void,
+): Promise<void> => {
+  const chunks = chunkTextForChildStream(text);
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index];
+    sendSseEvent(res, 'text', chunk);
+    queueUiEvent('text', chunk);
+    if (index < chunks.length - 1) {
+      await sleep(CHILD_TEXT_STREAM_DELAY_MS);
+    }
+  }
+};
+
 const getLocalDateString = (offsetDays = 0): string => {
   const base = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -1346,8 +1400,7 @@ export class VercelDesktopEngine {
           reason: childRoute.reason ?? null,
           textPreview: summarizeText(reply, 200),
         });
-        sendSseEvent(res, 'text', reply);
-        queueUiEvent('text', reply);
+        await streamChildText(res, reply, queueUiEvent);
         const assistantMessage = await desktopThreadsService.addMessage(
           threadId,
           session.userId,
@@ -1392,8 +1445,7 @@ export class VercelDesktopEngine {
           textPreview: summarizeText(routerAcknowledgement, 200),
         });
         const ackChunk = `${routerAcknowledgement}\n\n`;
-        sendSseEvent(res, 'text', ackChunk);
-        queueUiEvent('text', ackChunk);
+        await streamChildText(res, ackChunk, queueUiEvent);
         persistedBlocks = appendTextBlock(persistedBlocks, ackChunk);
         await appendEventSafe({
           executionId,
