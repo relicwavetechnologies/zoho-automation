@@ -83,6 +83,18 @@ const DEFAULT_ZOHO_SCOPES = [
   'ZohoCRM.modules.ALL',
   'ZohoCRM.coql.READ',
   'ZohoCRM.settings.fields.READ',
+  'ZohoCRM.modules.notes.ALL',
+  'ZohoCRM.modules.attachments.ALL',
+  'ZohoBooks.contacts.ALL',
+  'ZohoBooks.estimates.ALL',
+  'ZohoBooks.invoices.ALL',
+  'ZohoBooks.creditnotes.ALL',
+  'ZohoBooks.customerpayments.ALL',
+  'ZohoBooks.bills.ALL',
+  'ZohoBooks.salesorders.ALL',
+  'ZohoBooks.purchaseorders.ALL',
+  'ZohoBooks.vendorpayments.ALL',
+  'ZohoBooks.banking.ALL',
 ];
 
 const hasPlatformZohoOAuthConfig = (): boolean =>

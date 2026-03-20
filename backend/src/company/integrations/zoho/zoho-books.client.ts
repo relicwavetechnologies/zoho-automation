@@ -4,10 +4,16 @@ import { zohoHttpClient, ZohoHttpClient } from './zoho-http.client';
 import { zohoTokenService, ZohoTokenService } from './zoho-token.service';
 
 export type ZohoBooksModule =
+  | 'contacts'
   | 'invoices'
   | 'estimates'
+  | 'creditnotes'
   | 'bills'
+  | 'salesorders'
+  | 'purchaseorders'
   | 'customerpayments'
+  | 'vendorpayments'
+  | 'bankaccounts'
   | 'banktransactions';
 
 type ZohoBooksClientOptions = {
@@ -24,11 +30,22 @@ type ZohoBooksOrganization = {
   raw: Record<string, unknown>;
 };
 
+type ZohoBooksScopedResult = {
+  organizationId: string;
+  payload: ZohoBooksResponse;
+};
+
 const BOOKS_MODULE_KEYS: Record<ZohoBooksModule, { listKey: string; singularKeys: string[]; label: string }> = {
+  contacts: { listKey: 'contacts', singularKeys: ['contact'], label: 'contact' },
   invoices: { listKey: 'invoices', singularKeys: ['invoice'], label: 'invoice' },
   estimates: { listKey: 'estimates', singularKeys: ['estimate'], label: 'estimate' },
+  creditnotes: { listKey: 'creditnotes', singularKeys: ['creditnote', 'credit_note'], label: 'credit note' },
   bills: { listKey: 'bills', singularKeys: ['bill'], label: 'bill' },
+  salesorders: { listKey: 'salesorders', singularKeys: ['salesorder', 'sales_order'], label: 'sales order' },
+  purchaseorders: { listKey: 'purchaseorders', singularKeys: ['purchaseorder', 'purchase_order'], label: 'purchase order' },
   customerpayments: { listKey: 'customerpayments', singularKeys: ['customerpayment', 'payment'], label: 'customer payment' },
+  vendorpayments: { listKey: 'vendorpayments', singularKeys: ['vendorpayment', 'payment'], label: 'vendor payment' },
+  bankaccounts: { listKey: 'bankaccounts', singularKeys: ['bankaccount', 'account'], label: 'bank account' },
   banktransactions: { listKey: 'banktransactions', singularKeys: ['banktransaction', 'transaction'], label: 'bank transaction' },
 };
 
@@ -276,24 +293,509 @@ export class ZohoBooksClient {
     moduleName: ZohoBooksModule;
     recordId: string;
     organizationId?: string;
-  }): Promise<{ organizationId: string; payload: ZohoBooksResponse }> {
-    const environment = input.environment ?? 'prod';
-    const organizationId = await this.resolveOrganizationId({
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
       companyId: input.companyId,
-      environment,
-      preferredOrganizationId: input.organizationId,
-    });
-    const payload = await this.requestWithRefresh<ZohoBooksResponse>({
-      companyId: input.companyId,
-      environment,
-      path: `${buildModulePath(input.moduleName, input.recordId)}?organization_id=${encodeURIComponent(organizationId)}`,
+      environment: input.environment,
+      organizationId: input.organizationId,
       method: 'DELETE',
+      path: `${buildModulePath(input.moduleName, input.recordId)}`,
     });
+  }
 
-    return {
-      organizationId,
-      payload,
-    };
+  async importBankStatement(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    body: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: '/books/v3/bankstatements',
+      body: input.body,
+    });
+  }
+
+  async getLastImportedBankStatement(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    accountId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `/books/v3/bankaccounts/${encodeURIComponent(input.accountId)}/statement/lastimported`,
+    });
+  }
+
+  async setBankAccountStatus(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    accountId: string;
+    active: boolean;
+  }): Promise<ZohoBooksScopedResult> {
+    const suffix = input.active ? 'active' : 'inactive';
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/bankaccounts/${encodeURIComponent(input.accountId)}/${suffix}`,
+    });
+  }
+
+  async emailContact(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    contactId: string;
+    body: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/contacts/${encodeURIComponent(input.contactId)}/email`,
+      body: input.body,
+    });
+  }
+
+  async setContactPaymentReminderEnabled(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    contactId: string;
+    enabled: boolean;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/contacts/${encodeURIComponent(input.contactId)}/paymentreminder/${input.enabled ? 'enable' : 'disable'}`,
+    });
+  }
+
+  async emailContactStatement(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    contactId: string;
+    body: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/contacts/${encodeURIComponent(input.contactId)}/statements/email`,
+      body: input.body,
+    });
+  }
+
+  async getContactStatementEmailContent(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    contactId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `/books/v3/contacts/${encodeURIComponent(input.contactId)}/statements/email`,
+    });
+  }
+
+  async emailVendorPayment(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    vendorPaymentId: string;
+    body: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/vendorpayments/${encodeURIComponent(input.vendorPaymentId)}/email`,
+      body: input.body,
+    });
+  }
+
+  async getVendorPaymentEmailContent(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    vendorPaymentId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `/books/v3/vendorpayments/${encodeURIComponent(input.vendorPaymentId)}/email`,
+    });
+  }
+
+  async getMatchingBankTransactions(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    transactionId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `/books/v3/banktransactions/uncategorized/${encodeURIComponent(input.transactionId)}/match`,
+    });
+  }
+
+  async matchBankTransaction(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    transactionId: string;
+    body: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/banktransactions/uncategorized/${encodeURIComponent(input.transactionId)}/match`,
+      body: input.body,
+    });
+  }
+
+  async unmatchBankTransaction(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    transactionId: string;
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/banktransactions/${encodeURIComponent(input.transactionId)}/unmatch`,
+      body: input.body,
+    });
+  }
+
+  async excludeBankTransaction(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    transactionId: string;
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/banktransactions/uncategorized/${encodeURIComponent(input.transactionId)}/exclude`,
+      body: input.body,
+    });
+  }
+
+  async restoreBankTransaction(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    transactionId: string;
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/banktransactions/uncategorized/${encodeURIComponent(input.transactionId)}/restore`,
+      body: input.body,
+    });
+  }
+
+  async uncategorizeBankTransaction(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    transactionId: string;
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/banktransactions/${encodeURIComponent(input.transactionId)}/uncategorize`,
+      body: input.body,
+    });
+  }
+
+  async categorizeBankTransaction(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    transactionId: string;
+    category: 'general' | 'expense' | 'vendorpayments' | 'customerpayments' | 'creditnoterefunds';
+    body: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    const suffix = input.category === 'general'
+      ? 'categorize'
+      : input.category === 'expense'
+        ? 'categorize/expenses'
+        : input.category === 'vendorpayments'
+          ? 'categorize/vendorpayments'
+          : input.category === 'customerpayments'
+            ? 'categorize/customerpayments'
+            : 'categorize/creditnoterefunds';
+
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/banktransactions/uncategorized/${encodeURIComponent(input.transactionId)}/${suffix}`,
+      body: input.body,
+    });
+  }
+
+  async getInvoiceEmailContent(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    invoiceId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `/books/v3/invoices/${encodeURIComponent(input.invoiceId)}/email`,
+    });
+  }
+
+  async writeOffInvoice(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    invoiceId: string;
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/invoices/${encodeURIComponent(input.invoiceId)}/writeoff`,
+      body: input.body,
+    });
+  }
+
+  async cancelInvoiceWriteOff(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    invoiceId: string;
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/invoices/${encodeURIComponent(input.invoiceId)}/writeoff/cancel`,
+      body: input.body,
+    });
+  }
+
+  async emailInvoice(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    invoiceId: string;
+    body: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/invoices/${encodeURIComponent(input.invoiceId)}/email`,
+      body: input.body,
+    });
+  }
+
+  async getInvoicePaymentReminderContent(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    invoiceId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `/books/v3/invoices/${encodeURIComponent(input.invoiceId)}/paymentreminder`,
+    });
+  }
+
+  async remindInvoice(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    invoiceId: string;
+    body: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/invoices/${encodeURIComponent(input.invoiceId)}/paymentreminder`,
+      body: input.body,
+    });
+  }
+
+  async setInvoicePaymentReminderEnabled(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    invoiceId: string;
+    enabled: boolean;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/invoices/${encodeURIComponent(input.invoiceId)}/paymentreminder/${input.enabled ? 'enable' : 'disable'}`,
+    });
+  }
+
+  async transitionInvoice(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    invoiceId: string;
+    action: 'markSent' | 'markVoid' | 'markDraft' | 'submit' | 'approve';
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    const suffix = input.action === 'markSent'
+      ? 'status/sent'
+      : input.action === 'markVoid'
+        ? 'status/void'
+        : input.action === 'markDraft'
+          ? 'status/draft'
+          : input.action;
+
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/invoices/${encodeURIComponent(input.invoiceId)}/${suffix}`,
+      body: input.body,
+    });
+  }
+
+  async transitionBill(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    billId: string;
+    action: 'markVoid' | 'markOpen' | 'submit' | 'approve';
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    const suffix = input.action === 'markVoid'
+      ? 'status/void'
+      : input.action === 'markOpen'
+        ? 'status/open'
+        : input.action;
+
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/bills/${encodeURIComponent(input.billId)}/${suffix}`,
+      body: input.body,
+    });
+  }
+
+  async getEstimateEmailContent(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    estimateId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `/books/v3/estimates/${encodeURIComponent(input.estimateId)}/email`,
+    });
+  }
+
+  async emailEstimate(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    estimateId: string;
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/estimates/${encodeURIComponent(input.estimateId)}/email`,
+      body: input.body,
+    });
+  }
+
+  async transitionEstimate(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    estimateId: string;
+    action: 'markSent' | 'markAccepted' | 'markDeclined' | 'submit' | 'approve';
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    const suffix = input.action === 'markSent'
+      ? 'status/sent'
+      : input.action === 'markAccepted'
+        ? 'status/accepted'
+        : input.action === 'markDeclined'
+          ? 'status/declined'
+          : input.action;
+
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/estimates/${encodeURIComponent(input.estimateId)}/${suffix}`,
+      body: input.body,
+    });
   }
 
   private async resolveOrganizationId(input: {
@@ -392,6 +894,35 @@ export class ZohoBooksClient {
         },
       });
     }
+  }
+
+  private async requestInOrganizationScope(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    path: string;
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    const environment = input.environment ?? 'prod';
+    const organizationId = await this.resolveOrganizationId({
+      companyId: input.companyId,
+      environment,
+      preferredOrganizationId: input.organizationId,
+    });
+    const separator = input.path.includes('?') ? '&' : '?';
+    const payload = await this.requestWithRefresh<ZohoBooksResponse>({
+      companyId: input.companyId,
+      environment,
+      path: `${input.path}${separator}organization_id=${encodeURIComponent(organizationId)}`,
+      method: input.method,
+      body: input.body,
+    });
+
+    return {
+      organizationId,
+      payload,
+    };
   }
 }
 

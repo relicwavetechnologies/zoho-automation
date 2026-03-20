@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const deltaSyncEventSchema = z.object({
   source: z.literal('zoho'),
-  sourceType: z.enum(['zoho_lead', 'zoho_contact', 'zoho_deal', 'zoho_ticket']),
+  sourceType: z.enum(['zoho_lead', 'zoho_contact', 'zoho_account', 'zoho_deal', 'zoho_ticket']),
   sourceId: z.string().min(1),
   changedAt: z.string().datetime(),
   companyId: z.string().uuid(),

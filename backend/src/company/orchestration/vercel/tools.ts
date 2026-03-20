@@ -167,6 +167,14 @@ const loadZohoDataClient = (): {
   createRecord?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   updateRecord?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   deleteRecord?: (input: Record<string, unknown>) => Promise<void>;
+  listNotes?: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+  getNote?: (input: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
+  createNote?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  updateNote?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  deleteNote?: (input: Record<string, unknown>) => Promise<void>;
+  listAttachments?: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+  uploadAttachment?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  deleteAttachment?: (input: Record<string, unknown>) => Promise<void>;
 } => loadModuleExport('../../integrations/zoho/zoho-data.client', 'zohoDataClient');
 
 const loadZohoBooksClient = (): {
@@ -195,7 +203,22 @@ const loadZohoBooksClient = (): {
     organizationId: string;
     payload: Record<string, unknown>;
   }>;
+  importBankStatement?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getLastImportedBankStatement?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getMatchingBankTransactions?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getInvoiceEmailContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getInvoicePaymentReminderContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getEstimateEmailContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getContactStatementEmailContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
+  getVendorPaymentEmailContent?: (input: Record<string, unknown>) => Promise<{ organizationId: string; payload: Record<string, unknown> }>;
 } => loadModuleExport('../../integrations/zoho/zoho-books.client', 'zohoBooksClient');
+
+const loadZohoFinanceOpsService = (): {
+  buildOverdueReport: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  mapCustomerPayments: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  reconcileVendorStatement: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  reconcileBankClosing: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+} => loadModuleExport('../../integrations/zoho/zoho-finance-ops.service', 'zohoFinanceOpsService');
 
 const loadHitlActionService = (): {
   createPending: (input: {
@@ -893,26 +916,41 @@ const normalizeZohoSourceType = (value?: string): ZohoSourceType | undefined => 
   }
   if (['leads', 'lead', 'zoho_lead'].includes(normalized)) return 'zoho_lead';
   if (['contacts', 'contact', 'zoho_contact'].includes(normalized)) return 'zoho_contact';
+  if (['accounts', 'account', 'companies', 'company', 'zoho_account'].includes(normalized)) return 'zoho_account';
   if (['deals', 'deal', 'zoho_deal'].includes(normalized)) return 'zoho_deal';
   if (['cases', 'case', 'tickets', 'ticket', 'zoho_ticket'].includes(normalized)) return 'zoho_ticket';
   return undefined;
 };
 
 const normalizeZohoBooksModule = (value?: string):
+  | 'contacts'
   | 'invoices'
   | 'estimates'
+  | 'creditnotes'
   | 'bills'
+  | 'salesorders'
+  | 'purchaseorders'
   | 'customerpayments'
+  | 'vendorpayments'
+  | 'bankaccounts'
   | 'banktransactions'
   | undefined => {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) {
     return undefined;
   }
+  if (['contact', 'contacts', 'customer', 'customers', 'vendor', 'vendors'].includes(normalized)) return 'contacts';
   if (['invoice', 'invoices'].includes(normalized)) return 'invoices';
   if (['estimate', 'estimates'].includes(normalized)) return 'estimates';
+  if (['creditnote', 'creditnotes', 'credit-note', 'credit-notes'].includes(normalized)) return 'creditnotes';
   if (['bill', 'bills'].includes(normalized)) return 'bills';
+  if (['salesorder', 'salesorders', 'sales-order', 'sales-orders'].includes(normalized)) return 'salesorders';
+  if (['purchaseorder', 'purchaseorders', 'purchase-order', 'purchase-orders'].includes(normalized)) return 'purchaseorders';
   if (['customerpayment', 'customerpayments', 'payment', 'payments'].includes(normalized)) return 'customerpayments';
+  if (['vendorpayment', 'vendorpayments', 'vendor-payment', 'vendor-payments'].includes(normalized)) return 'vendorpayments';
+  if (['bankaccount', 'bankaccounts', 'bank-account', 'bank-accounts', 'account', 'accounts'].includes(normalized)) {
+    return 'bankaccounts';
+  }
   if (['banktransaction', 'banktransactions', 'bank-transaction', 'bank-transactions'].includes(normalized)) {
     return 'banktransactions';
   }
@@ -2522,14 +2560,56 @@ export const createVercelDesktopTools = (
     }),
 
     booksRead: tool({
-      description: 'Read Zoho Books organizations and finance records such as invoices, estimates, bills, payments, and bank transactions.',
+      description: 'Read Zoho Books organizations, contacts, finance records, bank accounts, bank transactions, match suggestions, and raw invoice/statement/email metadata.',
       inputSchema: z.object({
-        operation: z.enum(['listOrganizations', 'listRecords', 'getRecord', 'summarizeModule']),
+        operation: z.enum([
+          'listOrganizations',
+          'listRecords',
+          'getRecord',
+          'summarizeModule',
+          'buildOverdueReport',
+          'mapCustomerPayments',
+          'reconcileVendorStatement',
+          'reconcileBankClosing',
+          'getLastImportedStatement',
+          'getMatchingBankTransactions',
+          'getInvoiceEmailContent',
+          'getInvoicePaymentReminderContent',
+          'getEstimateEmailContent',
+          'getContactStatementEmailContent',
+          'getVendorPaymentEmailContent',
+        ]),
         module: z.string().optional(),
         recordId: z.string().optional(),
         organizationId: z.string().optional(),
+        accountId: z.string().optional(),
+        transactionId: z.string().optional(),
+        invoiceId: z.string().optional(),
+        estimateId: z.string().optional(),
+        contactId: z.string().optional(),
+        vendorPaymentId: z.string().optional(),
         query: z.string().optional(),
         limit: z.number().int().min(1).max(200).optional(),
+        asOfDate: z.string().optional(),
+        minOverdueDays: z.number().int().min(0).max(3650).optional(),
+        amountTolerance: z.number().min(0).max(1_000_000).optional(),
+        dateToleranceDays: z.number().int().min(0).max(3650).optional(),
+        customerId: z.string().optional(),
+        vendorId: z.string().optional(),
+        vendorName: z.string().optional(),
+        statementRows: z.array(z.object({
+          rowId: z.string().optional(),
+          date: z.string().optional(),
+          description: z.string().optional(),
+          reference: z.string().optional(),
+          amount: z.number().optional(),
+          debit: z.number().optional(),
+          credit: z.number().optional(),
+          balance: z.number().optional(),
+          invoiceNumber: z.string().optional(),
+          vendorName: z.string().optional(),
+          customerName: z.string().optional(),
+        })).optional(),
         filters: z.record(z.unknown()).optional(),
       }),
       execute: async (input) => withLifecycle(hooks, 'booksRead', 'Running Zoho Books read workflow', async () => {
@@ -2573,13 +2653,413 @@ export const createVercelDesktopTools = (
         }
 
         const moduleName = normalizeZohoBooksModule(input.module);
-        if (!moduleName) {
+        if (
+          input.operation !== 'getLastImportedStatement'
+          && input.operation !== 'getMatchingBankTransactions'
+          && input.operation !== 'getInvoiceEmailContent'
+          && input.operation !== 'getInvoicePaymentReminderContent'
+          && input.operation !== 'getEstimateEmailContent'
+          && input.operation !== 'getContactStatementEmailContent'
+          && input.operation !== 'getVendorPaymentEmailContent'
+          && input.operation !== 'buildOverdueReport'
+          && input.operation !== 'mapCustomerPayments'
+          && input.operation !== 'reconcileVendorStatement'
+          && input.operation !== 'reconcileBankClosing'
+          && !moduleName
+        ) {
           return buildEnvelope({
             success: false,
-            summary: `${input.operation} requires a supported Zoho Books module such as invoices, estimates, bills, customerpayments, or banktransactions.`,
+            summary: `${input.operation} requires a supported Zoho Books module such as contacts, invoices, estimates, creditnotes, bills, salesorders, purchaseorders, customerpayments, vendorpayments, bankaccounts, or banktransactions.`,
             errorKind: 'missing_input',
             retryable: false,
           });
+        }
+
+        if (input.operation === 'buildOverdueReport') {
+          try {
+            const report = await loadZohoFinanceOpsService().buildOverdueReport({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              asOfDate: input.asOfDate?.trim(),
+              limit: input.limit,
+              minOverdueDays: input.minOverdueDays,
+            });
+            return buildEnvelope({
+              success: true,
+              summary: asString(report.summary) ?? 'Built Zoho overdue report.',
+              keyData: {
+                organizationId: asString(report.organizationId),
+                invoiceCount: asNumber(report.invoiceCount),
+                totalOutstanding: asNumber(report.totalOutstanding),
+              },
+              fullPayload: report,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to build overdue report.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'mapCustomerPayments') {
+          try {
+            const mapping = await loadZohoFinanceOpsService().mapCustomerPayments({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              amountTolerance: input.amountTolerance,
+              dateToleranceDays: input.dateToleranceDays,
+              limit: input.limit,
+              customerId: input.customerId?.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: asString(mapping.summary) ?? 'Mapped customer payments.',
+              keyData: {
+                organizationId: asString(mapping.organizationId),
+                exactMatchCount: Array.isArray(mapping.exactMatches) ? mapping.exactMatches.length : undefined,
+                probableMatchCount: Array.isArray(mapping.probableMatches) ? mapping.probableMatches.length : undefined,
+              },
+              fullPayload: mapping,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to map customer payments.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'reconcileVendorStatement') {
+          if (!input.statementRows || input.statementRows.length === 0) {
+            return buildEnvelope({
+              success: false,
+              summary: 'reconcileVendorStatement requires statementRows.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const reconciliation = await loadZohoFinanceOpsService().reconcileVendorStatement({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              statementRows: input.statementRows,
+              vendorId: input.vendorId?.trim(),
+              vendorName: input.vendorName?.trim(),
+              amountTolerance: input.amountTolerance,
+              dateToleranceDays: input.dateToleranceDays,
+              limit: input.limit,
+            });
+            return buildEnvelope({
+              success: true,
+              summary: asString(reconciliation.summary) ?? 'Reconciled vendor statement.',
+              keyData: {
+                organizationId: asString(reconciliation.organizationId),
+                matchedCount: Array.isArray(reconciliation.matched) ? reconciliation.matched.length : undefined,
+                probableMatchCount: Array.isArray(reconciliation.probableMatches) ? reconciliation.probableMatches.length : undefined,
+              },
+              fullPayload: reconciliation,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to reconcile vendor statement.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'reconcileBankClosing') {
+          if (!input.statementRows || input.statementRows.length === 0) {
+            return buildEnvelope({
+              success: false,
+              summary: 'reconcileBankClosing requires statementRows.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const reconciliation = await loadZohoFinanceOpsService().reconcileBankClosing({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              accountId: input.accountId?.trim(),
+              statementRows: input.statementRows,
+              amountTolerance: input.amountTolerance,
+              dateToleranceDays: input.dateToleranceDays,
+              limit: input.limit,
+            });
+            return buildEnvelope({
+              success: true,
+              summary: asString(reconciliation.summary) ?? 'Reconciled bank closing.',
+              keyData: {
+                organizationId: asString(reconciliation.organizationId),
+                matchedCount: Array.isArray(reconciliation.matched) ? reconciliation.matched.length : undefined,
+                probableMatchCount: Array.isArray(reconciliation.probableMatches) ? reconciliation.probableMatches.length : undefined,
+              },
+              fullPayload: reconciliation,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to reconcile bank closing.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getLastImportedStatement') {
+          if (!input.accountId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getLastImportedStatement requires accountId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getLastImportedBankStatement({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              accountId: input.accountId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched last imported statement for bank account ${input.accountId.trim()}.`,
+              keyData: {
+                accountId: input.accountId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch last imported bank statement.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getMatchingBankTransactions') {
+          if (!input.transactionId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getMatchingBankTransactions requires transactionId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getMatchingBankTransactions({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              transactionId: input.transactionId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched Zoho Books match suggestions for bank transaction ${input.transactionId.trim()}.`,
+              keyData: {
+                transactionId: input.transactionId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch matching bank transactions.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getInvoiceEmailContent') {
+          if (!input.invoiceId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getInvoiceEmailContent requires invoiceId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getInvoiceEmailContent({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              invoiceId: input.invoiceId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched invoice email content for ${input.invoiceId.trim()}.`,
+              keyData: {
+                invoiceId: input.invoiceId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch invoice email content.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getInvoicePaymentReminderContent') {
+          if (!input.invoiceId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getInvoicePaymentReminderContent requires invoiceId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getInvoicePaymentReminderContent({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              invoiceId: input.invoiceId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched payment reminder email content for invoice ${input.invoiceId.trim()}.`,
+              keyData: {
+                invoiceId: input.invoiceId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch invoice payment reminder content.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getEstimateEmailContent') {
+          if (!input.estimateId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getEstimateEmailContent requires estimateId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getEstimateEmailContent({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              estimateId: input.estimateId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched estimate email content for ${input.estimateId.trim()}.`,
+              keyData: {
+                estimateId: input.estimateId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch estimate email content.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getContactStatementEmailContent') {
+          if (!input.contactId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getContactStatementEmailContent requires contactId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getContactStatementEmailContent({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              contactId: input.contactId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched contact statement email content for ${input.contactId.trim()}.`,
+              keyData: {
+                contactId: input.contactId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch contact statement email content.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getVendorPaymentEmailContent') {
+          if (!input.vendorPaymentId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getVendorPaymentEmailContent requires vendorPaymentId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getVendorPaymentEmailContent({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              vendorPaymentId: input.vendorPaymentId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched vendor payment email content for ${input.vendorPaymentId.trim()}.`,
+              keyData: {
+                vendorPaymentId: input.vendorPaymentId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch vendor payment email content.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
         }
 
         if (input.operation === 'getRecord') {
@@ -2679,9 +3159,15 @@ export const createVercelDesktopTools = (
             },
             citations: result.items.flatMap((record, index) => {
               const recordId =
-                asString(record.invoice_id)
+                asString(record.contact_id)
+                ?? asString(record.vendor_payment_id)
+                ?? asString(record.account_id)
+                ?? asString(record.invoice_id)
                 ?? asString(record.estimate_id)
+                ?? asString(record.creditnote_id)
                 ?? asString(record.bill_id)
+                ?? asString(record.salesorder_id)
+                ?? asString(record.purchaseorder_id)
                 ?? asString(record.payment_id)
                 ?? asString(record.bank_transaction_id)
                 ?? asString(record.transaction_id);
@@ -2710,31 +3196,116 @@ export const createVercelDesktopTools = (
     }),
 
     booksWrite: tool({
-      description: 'Create, update, and delete Zoho Books records through approval-gated actions.',
+      description: 'Create, update, delete, reconcile, categorize, email, remind, and status-change Zoho Books records through approval-gated actions.',
       inputSchema: z.object({
-        operation: z.enum(['createRecord', 'updateRecord', 'deleteRecord']),
-        module: z.string(),
+        operation: z.enum([
+          'createRecord',
+          'updateRecord',
+          'deleteRecord',
+          'importBankStatement',
+          'activateBankAccount',
+          'deactivateBankAccount',
+          'matchBankTransaction',
+          'unmatchBankTransaction',
+          'excludeBankTransaction',
+          'restoreBankTransaction',
+          'uncategorizeBankTransaction',
+          'categorizeBankTransaction',
+          'categorizeBankTransactionAsExpense',
+          'categorizeBankTransactionAsVendorPayment',
+          'categorizeBankTransactionAsCustomerPayment',
+          'categorizeBankTransactionAsCreditNoteRefund',
+          'emailInvoice',
+          'remindInvoice',
+          'enableInvoicePaymentReminder',
+          'disableInvoicePaymentReminder',
+          'writeOffInvoice',
+          'cancelInvoiceWriteOff',
+          'markInvoiceSent',
+          'voidInvoice',
+          'markInvoiceDraft',
+          'submitInvoice',
+          'approveInvoice',
+          'emailEstimate',
+          'enableContactPaymentReminder',
+          'disableContactPaymentReminder',
+          'markEstimateSent',
+          'acceptEstimate',
+          'declineEstimate',
+          'submitEstimate',
+          'approveEstimate',
+          'voidBill',
+          'openBill',
+          'submitBill',
+          'approveBill',
+          'emailContact',
+          'emailContactStatement',
+          'emailVendorPayment',
+        ]),
+        module: z.string().optional(),
         recordId: z.string().optional(),
         organizationId: z.string().optional(),
+        accountId: z.string().optional(),
+        transactionId: z.string().optional(),
+        invoiceId: z.string().optional(),
+        billId: z.string().optional(),
+        estimateId: z.string().optional(),
+        contactId: z.string().optional(),
+        vendorPaymentId: z.string().optional(),
         body: z.record(z.unknown()).optional(),
       }),
       execute: async (input) => withLifecycle(hooks, 'booksWrite', 'Running Zoho Books write workflow', async () => {
         const moduleName = normalizeZohoBooksModule(input.module);
-        if (!moduleName) {
+        const isRecordCrudOperation = ['createRecord', 'updateRecord', 'deleteRecord'].includes(input.operation);
+        if (isRecordCrudOperation && !moduleName) {
           return buildEnvelope({
             success: false,
-            summary: `${input.operation} requires a supported Zoho Books module such as invoices, estimates, bills, customerpayments, or banktransactions.`,
+            summary: `${input.operation} requires a supported Zoho Books module such as contacts, invoices, estimates, creditnotes, bills, salesorders, purchaseorders, customerpayments, vendorpayments, bankaccounts, or banktransactions.`,
             errorKind: 'missing_input',
             retryable: false,
           });
         }
 
         const actionGroup: ToolActionGroup =
-          input.operation === 'createRecord'
+          input.operation === 'createRecord' || input.operation === 'importBankStatement'
             ? 'create'
             : input.operation === 'updateRecord'
+              || input.operation === 'activateBankAccount'
+              || input.operation === 'deactivateBankAccount'
+              || input.operation === 'matchBankTransaction'
+              || input.operation === 'unmatchBankTransaction'
+              || input.operation === 'excludeBankTransaction'
+              || input.operation === 'restoreBankTransaction'
+              || input.operation === 'uncategorizeBankTransaction'
+              || input.operation === 'categorizeBankTransaction'
+              || input.operation === 'categorizeBankTransactionAsExpense'
+              || input.operation === 'categorizeBankTransactionAsVendorPayment'
+              || input.operation === 'categorizeBankTransactionAsCustomerPayment'
+              || input.operation === 'categorizeBankTransactionAsCreditNoteRefund'
+              || input.operation === 'enableInvoicePaymentReminder'
+              || input.operation === 'disableInvoicePaymentReminder'
+              || input.operation === 'writeOffInvoice'
+              || input.operation === 'cancelInvoiceWriteOff'
+              || input.operation === 'markInvoiceSent'
+              || input.operation === 'voidInvoice'
+              || input.operation === 'markInvoiceDraft'
+              || input.operation === 'submitInvoice'
+              || input.operation === 'approveInvoice'
+              || input.operation === 'enableContactPaymentReminder'
+              || input.operation === 'disableContactPaymentReminder'
+              || input.operation === 'markEstimateSent'
+              || input.operation === 'acceptEstimate'
+              || input.operation === 'declineEstimate'
+              || input.operation === 'submitEstimate'
+              || input.operation === 'approveEstimate'
+              || input.operation === 'voidBill'
+              || input.operation === 'openBill'
+              || input.operation === 'submitBill'
+              || input.operation === 'approveBill'
               ? 'update'
-              : 'delete';
+              : input.operation === 'deleteRecord'
+                ? 'delete'
+                : 'send';
         const permissionError = ensureAnyActionPermission(
           runtime,
           ['zoho-books-write', 'zoho-books-agent'],
@@ -2745,18 +3316,126 @@ export const createVercelDesktopTools = (
           return permissionError;
         }
 
-        if (input.operation !== 'createRecord' && !input.recordId?.trim()) {
+        if (input.operation === 'updateRecord' || input.operation === 'deleteRecord') {
+          if (!input.recordId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: `${input.operation} requires recordId.`,
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+        }
+        if ((input.operation === 'createRecord' || input.operation === 'updateRecord' || input.operation === 'importBankStatement'
+          || input.operation === 'matchBankTransaction'
+          || input.operation === 'categorizeBankTransaction'
+          || input.operation === 'categorizeBankTransactionAsExpense'
+          || input.operation === 'categorizeBankTransactionAsVendorPayment'
+          || input.operation === 'categorizeBankTransactionAsCustomerPayment'
+          || input.operation === 'categorizeBankTransactionAsCreditNoteRefund'
+          || input.operation === 'emailInvoice'
+          || input.operation === 'remindInvoice'
+          || input.operation === 'emailEstimate'
+          || input.operation === 'emailContact' || input.operation === 'emailContactStatement' || input.operation === 'emailVendorPayment')
+          && !input.body) {
           return buildEnvelope({
             success: false,
-            summary: `${input.operation} requires recordId.`,
+            summary: `${input.operation} requires body.`,
             errorKind: 'missing_input',
             retryable: false,
           });
         }
-        if ((input.operation === 'createRecord' || input.operation === 'updateRecord') && !input.body) {
+        if ((input.operation === 'activateBankAccount' || input.operation === 'deactivateBankAccount' || input.operation === 'importBankStatement')
+          && !input.accountId?.trim()) {
           return buildEnvelope({
             success: false,
-            summary: `${input.operation} requires body.`,
+            summary: `${input.operation} requires accountId.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+        if ([
+          'matchBankTransaction',
+          'unmatchBankTransaction',
+          'excludeBankTransaction',
+          'restoreBankTransaction',
+          'uncategorizeBankTransaction',
+          'categorizeBankTransaction',
+          'categorizeBankTransactionAsExpense',
+          'categorizeBankTransactionAsVendorPayment',
+          'categorizeBankTransactionAsCustomerPayment',
+          'categorizeBankTransactionAsCreditNoteRefund',
+        ].includes(input.operation) && !input.transactionId?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires transactionId.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+        if ([
+          'emailInvoice',
+          'remindInvoice',
+          'enableInvoicePaymentReminder',
+          'disableInvoicePaymentReminder',
+          'writeOffInvoice',
+          'cancelInvoiceWriteOff',
+          'markInvoiceSent',
+          'voidInvoice',
+          'markInvoiceDraft',
+          'submitInvoice',
+          'approveInvoice',
+        ].includes(input.operation) && !input.invoiceId?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires invoiceId.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+        if ([
+          'emailEstimate',
+          'markEstimateSent',
+          'acceptEstimate',
+          'declineEstimate',
+          'submitEstimate',
+          'approveEstimate',
+        ].includes(input.operation) && !input.estimateId?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires estimateId.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+        if (['voidBill', 'openBill', 'submitBill', 'approveBill'].includes(input.operation) && !input.billId?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires billId.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+        if ((input.operation === 'emailContact' || input.operation === 'emailContactStatement') && !input.contactId?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires contactId.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+        if (['enableContactPaymentReminder', 'disableContactPaymentReminder'].includes(input.operation) && !input.contactId?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires contactId.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+        if (input.operation === 'emailVendorPayment' && !input.vendorPaymentId?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: 'emailVendorPayment requires vendorPaymentId.',
             errorKind: 'missing_input',
             retryable: false,
           });
@@ -2765,13 +3444,171 @@ export const createVercelDesktopTools = (
         const subject =
           input.operation === 'createRecord'
             ? `Create Zoho Books ${moduleName}`
-            : `${input.operation === 'updateRecord' ? 'Update' : 'Delete'} Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}`.trim();
+            : input.operation === 'updateRecord'
+              ? `Update Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}`.trim()
+              : input.operation === 'deleteRecord'
+                ? `Delete Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}`.trim()
+                : input.operation === 'importBankStatement'
+                  ? `Import bank statement for account ${input.accountId?.trim() ?? ''}`.trim()
+                  : input.operation === 'activateBankAccount'
+                    ? `Activate Zoho Books bank account ${input.accountId?.trim() ?? ''}`.trim()
+                    : input.operation === 'deactivateBankAccount'
+                      ? `Deactivate Zoho Books bank account ${input.accountId?.trim() ?? ''}`.trim()
+                      : input.operation === 'matchBankTransaction'
+                        ? `Match Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}`.trim()
+                        : input.operation === 'unmatchBankTransaction'
+                          ? `Unmatch Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}`.trim()
+                          : input.operation === 'excludeBankTransaction'
+                            ? `Exclude Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}`.trim()
+                            : input.operation === 'restoreBankTransaction'
+                              ? `Restore Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}`.trim()
+                              : input.operation === 'uncategorizeBankTransaction'
+                                ? `Uncategorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}`.trim()
+                                : input.operation === 'categorizeBankTransaction'
+                                  ? `Categorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}`.trim()
+                                  : input.operation === 'categorizeBankTransactionAsExpense'
+                                    ? `Categorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''} as expense`.trim()
+                                    : input.operation === 'categorizeBankTransactionAsVendorPayment'
+                                      ? `Categorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''} as vendor payment`.trim()
+                                      : input.operation === 'categorizeBankTransactionAsCustomerPayment'
+                                        ? `Categorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''} as customer payment`.trim()
+                                        : input.operation === 'categorizeBankTransactionAsCreditNoteRefund'
+                                          ? `Categorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''} as credit note refund`.trim()
+                                          : input.operation === 'emailInvoice'
+                                            ? `Email Zoho Books invoice ${input.invoiceId?.trim() ?? ''}`.trim()
+                                            : input.operation === 'remindInvoice'
+                                              ? `Send payment reminder for Zoho Books invoice ${input.invoiceId?.trim() ?? ''}`.trim()
+                                              : input.operation === 'enableInvoicePaymentReminder'
+                                                ? `Enable payment reminder for Zoho Books invoice ${input.invoiceId?.trim() ?? ''}`.trim()
+                                                : input.operation === 'disableInvoicePaymentReminder'
+                                                  ? `Disable payment reminder for Zoho Books invoice ${input.invoiceId?.trim() ?? ''}`.trim()
+                                                  : input.operation === 'writeOffInvoice'
+                                                    ? `Write off Zoho Books invoice ${input.invoiceId?.trim() ?? ''}`.trim()
+                                                    : input.operation === 'cancelInvoiceWriteOff'
+                                                      ? `Cancel write off for Zoho Books invoice ${input.invoiceId?.trim() ?? ''}`.trim()
+                                                  : input.operation === 'markInvoiceSent'
+                                                    ? `Mark Zoho Books invoice ${input.invoiceId?.trim() ?? ''} as sent`.trim()
+                                                    : input.operation === 'voidInvoice'
+                                                      ? `Void Zoho Books invoice ${input.invoiceId?.trim() ?? ''}`.trim()
+                                                      : input.operation === 'markInvoiceDraft'
+                                                        ? `Mark Zoho Books invoice ${input.invoiceId?.trim() ?? ''} as draft`.trim()
+                                                        : input.operation === 'submitInvoice'
+                                                          ? `Submit Zoho Books invoice ${input.invoiceId?.trim() ?? ''} for approval`.trim()
+                                                          : input.operation === 'approveInvoice'
+                                                            ? `Approve Zoho Books invoice ${input.invoiceId?.trim() ?? ''}`.trim()
+                                                            : input.operation === 'emailEstimate'
+                                                              ? `Email Zoho Books estimate ${input.estimateId?.trim() ?? ''}`.trim()
+                                                              : input.operation === 'enableContactPaymentReminder'
+                                                                ? `Enable payment reminders for Zoho Books contact ${input.contactId?.trim() ?? ''}`.trim()
+                                                                : input.operation === 'disableContactPaymentReminder'
+                                                                  ? `Disable payment reminders for Zoho Books contact ${input.contactId?.trim() ?? ''}`.trim()
+                                                                  : input.operation === 'markEstimateSent'
+                                                                    ? `Mark Zoho Books estimate ${input.estimateId?.trim() ?? ''} as sent`.trim()
+                                                                    : input.operation === 'acceptEstimate'
+                                                                      ? `Mark Zoho Books estimate ${input.estimateId?.trim() ?? ''} as accepted`.trim()
+                                                                      : input.operation === 'declineEstimate'
+                                                                        ? `Mark Zoho Books estimate ${input.estimateId?.trim() ?? ''} as declined`.trim()
+                                                                        : input.operation === 'submitEstimate'
+                                                                          ? `Submit Zoho Books estimate ${input.estimateId?.trim() ?? ''} for approval`.trim()
+                                                                          : input.operation === 'approveEstimate'
+                                                                            ? `Approve Zoho Books estimate ${input.estimateId?.trim() ?? ''}`.trim()
+                                                            : input.operation === 'voidBill'
+                                                              ? `Void Zoho Books bill ${input.billId?.trim() ?? ''}`.trim()
+                                                              : input.operation === 'openBill'
+                                                                ? `Mark Zoho Books bill ${input.billId?.trim() ?? ''} as open`.trim()
+                                                                : input.operation === 'submitBill'
+                                                                  ? `Submit Zoho Books bill ${input.billId?.trim() ?? ''} for approval`.trim()
+                                                                  : input.operation === 'approveBill'
+                                                                    ? `Approve Zoho Books bill ${input.billId?.trim() ?? ''}`.trim()
+                      : input.operation === 'emailContact'
+                        ? `Email Zoho Books contact ${input.contactId?.trim() ?? ''}`.trim()
+                        : input.operation === 'emailContactStatement'
+                          ? `Email Zoho Books contact statement ${input.contactId?.trim() ?? ''}`.trim()
+                          : `Email Zoho Books vendor payment ${input.vendorPaymentId?.trim() ?? ''}`.trim();
         const summary =
           input.operation === 'createRecord'
             ? `Approval required to create a Zoho Books ${moduleName} record.`
             : input.operation === 'updateRecord'
               ? `Approval required to update Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}.`.trim()
-              : `Approval required to delete Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}.`.trim();
+              : input.operation === 'deleteRecord'
+                ? `Approval required to delete Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}.`.trim()
+                : input.operation === 'importBankStatement'
+                  ? `Approval required to import a bank statement into account ${input.accountId?.trim() ?? ''}.`.trim()
+                : input.operation === 'activateBankAccount'
+                  ? `Approval required to activate Zoho Books bank account ${input.accountId?.trim() ?? ''}.`.trim()
+                  : input.operation === 'deactivateBankAccount'
+                    ? `Approval required to deactivate Zoho Books bank account ${input.accountId?.trim() ?? ''}.`.trim()
+                    : input.operation === 'matchBankTransaction'
+                      ? `Approval required to match Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}.`.trim()
+                      : input.operation === 'unmatchBankTransaction'
+                        ? `Approval required to unmatch Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}.`.trim()
+                        : input.operation === 'excludeBankTransaction'
+                          ? `Approval required to exclude Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}.`.trim()
+                          : input.operation === 'restoreBankTransaction'
+                            ? `Approval required to restore Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}.`.trim()
+                            : input.operation === 'uncategorizeBankTransaction'
+                              ? `Approval required to uncategorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}.`.trim()
+                              : input.operation === 'categorizeBankTransaction'
+                                ? `Approval required to categorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''}.`.trim()
+                                : input.operation === 'categorizeBankTransactionAsExpense'
+                                  ? `Approval required to categorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''} as an expense.`.trim()
+                                  : input.operation === 'categorizeBankTransactionAsVendorPayment'
+                                    ? `Approval required to categorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''} as a vendor payment.`.trim()
+                                    : input.operation === 'categorizeBankTransactionAsCustomerPayment'
+                                      ? `Approval required to categorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''} as a customer payment.`.trim()
+                                      : input.operation === 'categorizeBankTransactionAsCreditNoteRefund'
+                                        ? `Approval required to categorize Zoho Books bank transaction ${input.transactionId?.trim() ?? ''} as a credit note refund.`.trim()
+                                        : input.operation === 'emailInvoice'
+                                          ? `Approval required to email Zoho Books invoice ${input.invoiceId?.trim() ?? ''}.`.trim()
+                                          : input.operation === 'remindInvoice'
+                                            ? `Approval required to send a payment reminder for Zoho Books invoice ${input.invoiceId?.trim() ?? ''}.`.trim()
+                                            : input.operation === 'enableInvoicePaymentReminder'
+                                              ? `Approval required to enable payment reminders for Zoho Books invoice ${input.invoiceId?.trim() ?? ''}.`.trim()
+                                              : input.operation === 'disableInvoicePaymentReminder'
+                                                ? `Approval required to disable payment reminders for Zoho Books invoice ${input.invoiceId?.trim() ?? ''}.`.trim()
+                                                : input.operation === 'writeOffInvoice'
+                                                  ? `Approval required to write off Zoho Books invoice ${input.invoiceId?.trim() ?? ''}.`.trim()
+                                                  : input.operation === 'cancelInvoiceWriteOff'
+                                                    ? `Approval required to cancel the write off for Zoho Books invoice ${input.invoiceId?.trim() ?? ''}.`.trim()
+                                                : input.operation === 'markInvoiceSent'
+                                                  ? `Approval required to mark Zoho Books invoice ${input.invoiceId?.trim() ?? ''} as sent.`.trim()
+                                                  : input.operation === 'voidInvoice'
+                                                    ? `Approval required to void Zoho Books invoice ${input.invoiceId?.trim() ?? ''}.`.trim()
+                                                    : input.operation === 'markInvoiceDraft'
+                                                      ? `Approval required to mark Zoho Books invoice ${input.invoiceId?.trim() ?? ''} as draft.`.trim()
+                                                      : input.operation === 'submitInvoice'
+                                                        ? `Approval required to submit Zoho Books invoice ${input.invoiceId?.trim() ?? ''} for approval.`.trim()
+                                                        : input.operation === 'approveInvoice'
+                                                          ? `Approval required to approve Zoho Books invoice ${input.invoiceId?.trim() ?? ''}.`.trim()
+                                                          : input.operation === 'emailEstimate'
+                                                            ? `Approval required to email Zoho Books estimate ${input.estimateId?.trim() ?? ''}.`.trim()
+                                                            : input.operation === 'enableContactPaymentReminder'
+                                                              ? `Approval required to enable payment reminders for Zoho Books contact ${input.contactId?.trim() ?? ''}.`.trim()
+                                                              : input.operation === 'disableContactPaymentReminder'
+                                                                ? `Approval required to disable payment reminders for Zoho Books contact ${input.contactId?.trim() ?? ''}.`.trim()
+                                                                : input.operation === 'markEstimateSent'
+                                                                  ? `Approval required to mark Zoho Books estimate ${input.estimateId?.trim() ?? ''} as sent.`.trim()
+                                                                  : input.operation === 'acceptEstimate'
+                                                                    ? `Approval required to mark Zoho Books estimate ${input.estimateId?.trim() ?? ''} as accepted.`.trim()
+                                                                    : input.operation === 'declineEstimate'
+                                                                      ? `Approval required to mark Zoho Books estimate ${input.estimateId?.trim() ?? ''} as declined.`.trim()
+                                                                      : input.operation === 'submitEstimate'
+                                                                        ? `Approval required to submit Zoho Books estimate ${input.estimateId?.trim() ?? ''} for approval.`.trim()
+                                                                        : input.operation === 'approveEstimate'
+                                                                          ? `Approval required to approve Zoho Books estimate ${input.estimateId?.trim() ?? ''}.`.trim()
+                                                          : input.operation === 'voidBill'
+                                                            ? `Approval required to void Zoho Books bill ${input.billId?.trim() ?? ''}.`.trim()
+                                                            : input.operation === 'openBill'
+                                                              ? `Approval required to mark Zoho Books bill ${input.billId?.trim() ?? ''} as open.`.trim()
+                                                              : input.operation === 'submitBill'
+                                                                ? `Approval required to submit Zoho Books bill ${input.billId?.trim() ?? ''} for approval.`.trim()
+                                                                : input.operation === 'approveBill'
+                                                                  ? `Approval required to approve Zoho Books bill ${input.billId?.trim() ?? ''}.`.trim()
+                      : input.operation === 'emailContact'
+                        ? `Approval required to email Zoho Books contact ${input.contactId?.trim() ?? ''}.`.trim()
+                        : input.operation === 'emailContactStatement'
+                          ? `Approval required to email a statement to Zoho Books contact ${input.contactId?.trim() ?? ''}.`.trim()
+                          : `Approval required to email Zoho Books vendor payment ${input.vendorPaymentId?.trim() ?? ''}.`.trim();
 
         return createPendingRemoteApproval({
           runtime,
@@ -2786,6 +3623,13 @@ export const createVercelDesktopTools = (
             module: moduleName,
             recordId: input.recordId?.trim(),
             organizationId: input.organizationId?.trim(),
+            accountId: input.accountId?.trim(),
+            transactionId: input.transactionId?.trim(),
+            invoiceId: input.invoiceId?.trim(),
+            billId: input.billId?.trim(),
+            estimateId: input.estimateId?.trim(),
+            contactId: input.contactId?.trim(),
+            vendorPaymentId: input.vendorPaymentId?.trim(),
             body: input.body,
           },
         });
@@ -3884,13 +4728,35 @@ export const createVercelDesktopTools = (
     zoho: tool({
       description: 'Comprehensive Zoho CRM tool for search context and grounded record reads.',
       inputSchema: z.object({
-        operation: z.enum(['searchContext', 'readRecords', 'summarizePipeline', 'getRecord', 'createRecord', 'updateRecord', 'deleteRecord']),
+        operation: z.enum([
+          'searchContext',
+          'readRecords',
+          'summarizePipeline',
+          'getRecord',
+          'listNotes',
+          'getNote',
+          'listAttachments',
+          'createRecord',
+          'updateRecord',
+          'deleteRecord',
+          'createNote',
+          'updateNote',
+          'deleteNote',
+          'uploadAttachment',
+          'deleteAttachment',
+        ]),
         query: z.string().optional(),
         module: z.string().optional(),
         recordId: z.string().optional(),
+        noteId: z.string().optional(),
+        attachmentId: z.string().optional(),
         filters: z.record(z.unknown()).optional(),
         fields: z.record(z.unknown()).optional(),
         trigger: z.array(z.string()).optional(),
+        fileName: z.string().optional(),
+        contentType: z.string().optional(),
+        contentBase64: z.string().optional(),
+        attachmentUrl: z.string().optional(),
       }),
       execute: async (input) => withLifecycle(hooks, 'zoho', 'Running Zoho workflow', async () => {
         const readPermissionError = ensureAnyActionPermission(
@@ -4040,26 +4906,174 @@ export const createVercelDesktopTools = (
           }
         }
 
-        if (input.operation === 'createRecord' || input.operation === 'updateRecord' || input.operation === 'deleteRecord') {
+        if (input.operation === 'listNotes') {
+          if (readPermissionError) {
+            return readPermissionError;
+          }
+          if (!sourceType || !input.recordId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'listNotes requires module and recordId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const notes = await loadZohoDataClient().listNotes?.({
+              companyId: runtime.companyId,
+              sourceType,
+              sourceId: input.recordId.trim(),
+            }) ?? [];
+            return buildEnvelope({
+              success: true,
+              summary: notes.length > 0
+                ? `Found ${notes.length} Zoho note(s) for ${input.module?.trim() ?? sourceType} ${input.recordId.trim()}.`
+                : `No Zoho notes were found for ${input.module?.trim() ?? sourceType} ${input.recordId.trim()}.`,
+              keyData: {
+                recordId: input.recordId.trim(),
+                noteCount: notes.length,
+                recordType: sourceType,
+              },
+              fullPayload: {
+                notes,
+              },
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to list Zoho notes.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getNote') {
+          if (readPermissionError) {
+            return readPermissionError;
+          }
+          if (!input.noteId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getNote requires noteId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const note = await loadZohoDataClient().getNote?.({
+              companyId: runtime.companyId,
+              noteId: input.noteId.trim(),
+            });
+            if (!note) {
+              return buildEnvelope({
+                success: false,
+                summary: `No Zoho note was found for ${input.noteId.trim()}.`,
+                errorKind: 'validation',
+                retryable: false,
+              });
+            }
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched Zoho note ${input.noteId.trim()}.`,
+              keyData: {
+                noteId: input.noteId.trim(),
+              },
+              fullPayload: {
+                note,
+              },
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch Zoho note.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'listAttachments') {
+          if (readPermissionError) {
+            return readPermissionError;
+          }
+          if (!sourceType || !input.recordId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'listAttachments requires module and recordId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const attachments = await loadZohoDataClient().listAttachments?.({
+              companyId: runtime.companyId,
+              sourceType,
+              sourceId: input.recordId.trim(),
+            }) ?? [];
+            return buildEnvelope({
+              success: true,
+              summary: attachments.length > 0
+                ? `Found ${attachments.length} Zoho attachment(s) for ${input.module?.trim() ?? sourceType} ${input.recordId.trim()}.`
+                : `No Zoho attachments were found for ${input.module?.trim() ?? sourceType} ${input.recordId.trim()}.`,
+              keyData: {
+                recordId: input.recordId.trim(),
+                attachmentCount: attachments.length,
+                recordType: sourceType,
+              },
+              fullPayload: {
+                attachments,
+              },
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to list Zoho attachments.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (
+          input.operation === 'createRecord'
+          || input.operation === 'updateRecord'
+          || input.operation === 'deleteRecord'
+          || input.operation === 'createNote'
+          || input.operation === 'updateNote'
+          || input.operation === 'deleteNote'
+          || input.operation === 'uploadAttachment'
+          || input.operation === 'deleteAttachment'
+        ) {
           const actionGroup: ToolActionGroup =
-            input.operation === 'createRecord'
+            input.operation === 'createRecord' || input.operation === 'createNote' || input.operation === 'uploadAttachment'
               ? 'create'
-              : input.operation === 'updateRecord'
+              : input.operation === 'updateRecord' || input.operation === 'updateNote'
                 ? 'update'
                 : 'delete';
           const permissionError = ensureAnyActionPermission(runtime, ['zoho-write', 'zoho-agent'], actionGroup, 'zoho');
           if (permissionError) {
             return permissionError;
           }
-          if (!sourceType) {
+          if ((
+            input.operation === 'createRecord'
+            || input.operation === 'updateRecord'
+            || input.operation === 'deleteRecord'
+            || input.operation === 'createNote'
+            || input.operation === 'uploadAttachment'
+            || input.operation === 'deleteAttachment'
+          ) && !sourceType) {
             return buildEnvelope({
               success: false,
-              summary: `${input.operation} requires a supported Zoho module such as Leads, Contacts, Deals, or Cases.`,
+              summary: `${input.operation} requires a supported Zoho module such as Leads, Contacts, Accounts, Deals, or Cases.`,
               errorKind: 'missing_input',
               retryable: false,
             });
           }
-          if (input.operation !== 'createRecord' && !input.recordId?.trim()) {
+          if ((input.operation === 'updateRecord' || input.operation === 'deleteRecord' || input.operation === 'createNote' || input.operation === 'uploadAttachment' || input.operation === 'deleteAttachment') && !input.recordId?.trim()) {
             return buildEnvelope({
               success: false,
               summary: `${input.operation} requires recordId.`,
@@ -4067,7 +5081,7 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
-          if ((input.operation === 'createRecord' || input.operation === 'updateRecord') && !input.fields) {
+          if ((input.operation === 'createRecord' || input.operation === 'updateRecord' || input.operation === 'createNote' || input.operation === 'updateNote') && !input.fields) {
             return buildEnvelope({
               success: false,
               summary: `${input.operation} requires fields.`,
@@ -4075,16 +5089,62 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          if ((input.operation === 'updateNote' || input.operation === 'deleteNote') && !input.noteId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: `${input.operation} requires noteId.`,
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          if (input.operation === 'deleteAttachment' && !input.attachmentId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'deleteAttachment requires attachmentId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          if (input.operation === 'uploadAttachment' && !input.attachmentUrl?.trim() && (!input.fileName?.trim() || !input.contentBase64?.trim())) {
+            return buildEnvelope({
+              success: false,
+              summary: 'uploadAttachment requires either attachmentUrl or both fileName and contentBase64.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
           const subject =
             input.operation === 'createRecord'
               ? `Create Zoho ${input.module?.trim() ?? sourceType}`
-              : `${input.operation === 'updateRecord' ? 'Update' : 'Delete'} Zoho ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}`.trim();
+              : input.operation === 'updateRecord'
+                ? `Update Zoho ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}`.trim()
+                : input.operation === 'deleteRecord'
+                  ? `Delete Zoho ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}`.trim()
+                  : input.operation === 'createNote'
+                    ? `Create Zoho note on ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}`.trim()
+                    : input.operation === 'updateNote'
+                      ? `Update Zoho note ${input.noteId?.trim() ?? ''}`.trim()
+                      : input.operation === 'deleteNote'
+                        ? `Delete Zoho note ${input.noteId?.trim() ?? ''}`.trim()
+                        : input.operation === 'uploadAttachment'
+                          ? `Upload Zoho attachment to ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}`.trim()
+                          : `Delete Zoho attachment ${input.attachmentId?.trim() ?? ''}`.trim();
           const summary =
             input.operation === 'createRecord'
               ? `Approval required to create a Zoho ${input.module?.trim() ?? sourceType}.`
               : input.operation === 'updateRecord'
                 ? `Approval required to update Zoho ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}.`.trim()
-                : `Approval required to delete Zoho ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}.`.trim();
+                : input.operation === 'deleteRecord'
+                  ? `Approval required to delete Zoho ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}.`.trim()
+                  : input.operation === 'createNote'
+                    ? `Approval required to create a Zoho note on ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}.`.trim()
+                    : input.operation === 'updateNote'
+                      ? `Approval required to update Zoho note ${input.noteId?.trim() ?? ''}.`.trim()
+                      : input.operation === 'deleteNote'
+                        ? `Approval required to delete Zoho note ${input.noteId?.trim() ?? ''}.`.trim()
+                        : input.operation === 'uploadAttachment'
+                          ? `Approval required to upload an attachment to Zoho ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}.`.trim()
+                          : `Approval required to delete Zoho attachment ${input.attachmentId?.trim() ?? ''} from ${input.module?.trim() ?? sourceType} ${input.recordId?.trim() ?? ''}.`.trim();
           return createPendingRemoteApproval({
             runtime,
             toolId: 'zoho-write',
@@ -4098,8 +5158,14 @@ export const createVercelDesktopTools = (
               module: input.module?.trim(),
               sourceType,
               recordId: input.recordId?.trim(),
+              noteId: input.noteId?.trim(),
+              attachmentId: input.attachmentId?.trim(),
               fields: input.fields,
               trigger: input.trigger,
+              fileName: input.fileName?.trim(),
+              contentType: input.contentType?.trim(),
+              contentBase64: input.contentBase64?.trim(),
+              attachmentUrl: input.attachmentUrl?.trim(),
             },
           });
         }

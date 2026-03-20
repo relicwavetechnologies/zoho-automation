@@ -5,7 +5,7 @@ import { normalizeEmail, payloadReferencesEmail } from '../../integrations/zoho/
 import type { ZohoScopeMode } from '../../tools/zoho-role-access.service';
 
 export type ZohoRetrievalItem = {
-  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket';
   sourceId: string;
   chunkIndex: number;
   score: number;
@@ -46,7 +46,7 @@ export class ZohoRetrievalService {
         enforceEmailMatch: enforceEmailScope,
         vector: queryVector,
         limit,
-        sourceTypes: input.sourceTypes ?? ['zoho_lead', 'zoho_contact', 'zoho_deal', 'zoho_ticket'],
+        sourceTypes: input.sourceTypes ?? ['zoho_lead', 'zoho_contact', 'zoho_account', 'zoho_deal', 'zoho_ticket'],
         includePersonal: false,
         includeShared: true,
         includePublic: false,

@@ -19,7 +19,7 @@ type RequestInput = {
   path: string;
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   headers?: Record<string, string>;
-  body?: URLSearchParams | Record<string, unknown>;
+  body?: URLSearchParams | FormData | Record<string, unknown>;
   retry?: RetryOptions;
 };
 
@@ -46,7 +46,7 @@ const sleep = (ms: number) =>
     setTimeout(resolve, ms);
   });
 
-const redactBody = (body: URLSearchParams | Record<string, unknown> | undefined): unknown => {
+const redactBody = (body: URLSearchParams | FormData | Record<string, unknown> | undefined): unknown => {
   if (!body) {
     return undefined;
   }
@@ -60,6 +60,10 @@ const redactBody = (body: URLSearchParams | Record<string, unknown> | undefined)
     });
 
     return Object.fromEntries(clone.entries());
+  }
+
+  if (body instanceof FormData) {
+    return '[FORM_DATA]';
   }
 
   const next: Record<string, unknown> = { ...body };
@@ -121,11 +125,13 @@ export class ZohoHttpClient {
     for (;;) {
       try {
         const headers = new Headers(input.headers ?? {});
-        let body: string | undefined;
+        let body: string | FormData | undefined;
 
         if (input.body instanceof URLSearchParams) {
           headers.set('Content-Type', 'application/x-www-form-urlencoded');
           body = input.body.toString();
+        } else if (input.body instanceof FormData) {
+          body = input.body;
         } else if (input.body) {
           headers.set('Content-Type', 'application/json');
           body = JSON.stringify(input.body);

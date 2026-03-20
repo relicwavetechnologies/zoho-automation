@@ -1,10 +1,12 @@
+import { Buffer } from 'buffer';
+
 import { logger } from '../../../utils/logger';
 import { ZohoIntegrationError } from './zoho.errors';
 import { normalizeEmail, payloadReferencesEmail } from './zoho-email-scope';
 import { zohoHttpClient, ZohoHttpClient } from './zoho-http.client';
 import { zohoTokenService, ZohoTokenService } from './zoho-token.service';
 
-export type ZohoSourceType = 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+export type ZohoSourceType = 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket';
 
 export type ZohoHistoricalPageResult = {
   records: Array<{
@@ -51,6 +53,14 @@ type ZohoSingleResponse = {
   data?: Array<Record<string, unknown>>;
 };
 
+type ZohoAttachmentListResponse = {
+  data?: Array<Record<string, unknown>>;
+  info?: {
+    more_records?: boolean;
+    count?: number;
+  };
+};
+
 type ZohoCoqlResponse = {
   data?: Array<Record<string, unknown>>;
   info?: {
@@ -66,6 +76,7 @@ type ZohoFieldMetaResponse = {
 const MODULES: Array<{ sourceType: ZohoSourceType; moduleName: string }> = [
   { sourceType: 'zoho_lead', moduleName: 'Leads' },
   { sourceType: 'zoho_contact', moduleName: 'Contacts' },
+  { sourceType: 'zoho_account', moduleName: 'Accounts' },
   { sourceType: 'zoho_deal', moduleName: 'Deals' },
   { sourceType: 'zoho_ticket', moduleName: 'Cases' },
 ];
@@ -535,6 +546,179 @@ export class ZohoDataClient {
       companyId: input.companyId,
       environment,
       path: `/crm/v2/${moduleDef.moduleName}/${encodeURIComponent(input.sourceId)}`,
+      method: 'DELETE',
+    });
+  }
+
+  async listNotes(input: {
+    companyId: string;
+    environment?: string;
+    sourceType: ZohoSourceType;
+    sourceId: string;
+    page?: number;
+    perPage?: number;
+  }): Promise<Array<Record<string, unknown>>> {
+    const environment = input.environment ?? 'prod';
+    const moduleDef = ensureModule(input.sourceType);
+    const params = new URLSearchParams({
+      page: String(Math.max(1, input.page ?? 1)),
+      per_page: String(Math.max(1, Math.min(200, input.perPage ?? 50))),
+    });
+    const response = await this.requestWithRefresh<ZohoListResponse>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v8/${moduleDef.moduleName}/${encodeURIComponent(input.sourceId)}/Notes?${params.toString()}`,
+      method: 'GET',
+    });
+    return response.data ?? [];
+  }
+
+  async getNote(input: {
+    companyId: string;
+    environment?: string;
+    noteId: string;
+  }): Promise<Record<string, unknown> | null> {
+    const environment = input.environment ?? 'prod';
+    const response = await this.requestWithRefresh<ZohoSingleResponse>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v8/Notes/${encodeURIComponent(input.noteId)}`,
+      method: 'GET',
+    });
+    return response.data?.[0] ?? null;
+  }
+
+  async createNote(input: {
+    companyId: string;
+    environment?: string;
+    sourceType: ZohoSourceType;
+    sourceId: string;
+    fields: Record<string, unknown>;
+  }): Promise<Record<string, unknown>> {
+    const environment = input.environment ?? 'prod';
+    const moduleDef = ensureModule(input.sourceType);
+    const response = await this.requestWithRefresh<ZohoSingleResponse>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v8/${moduleDef.moduleName}/${encodeURIComponent(input.sourceId)}/Notes`,
+      method: 'POST',
+      body: {
+        data: [input.fields],
+      },
+    });
+    return response.data?.[0] ?? {};
+  }
+
+  async updateNote(input: {
+    companyId: string;
+    environment?: string;
+    noteId: string;
+    fields: Record<string, unknown>;
+  }): Promise<Record<string, unknown>> {
+    const environment = input.environment ?? 'prod';
+    const response = await this.requestWithRefresh<ZohoSingleResponse>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v8/Notes/${encodeURIComponent(input.noteId)}`,
+      method: 'PATCH',
+      body: {
+        data: [input.fields],
+      },
+    });
+    return response.data?.[0] ?? {};
+  }
+
+  async deleteNote(input: {
+    companyId: string;
+    environment?: string;
+    noteId: string;
+  }): Promise<void> {
+    const environment = input.environment ?? 'prod';
+    await this.requestWithRefresh<Record<string, unknown>>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v8/Notes/${encodeURIComponent(input.noteId)}`,
+      method: 'DELETE',
+    });
+  }
+
+  async listAttachments(input: {
+    companyId: string;
+    environment?: string;
+    sourceType: ZohoSourceType;
+    sourceId: string;
+    page?: number;
+    perPage?: number;
+  }): Promise<Array<Record<string, unknown>>> {
+    const environment = input.environment ?? 'prod';
+    const moduleDef = ensureModule(input.sourceType);
+    const params = new URLSearchParams({
+      page: String(Math.max(1, input.page ?? 1)),
+      per_page: String(Math.max(1, Math.min(200, input.perPage ?? 50))),
+    });
+    const response = await this.requestWithRefresh<ZohoAttachmentListResponse>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v8/${moduleDef.moduleName}/${encodeURIComponent(input.sourceId)}/Attachments?${params.toString()}`,
+      method: 'GET',
+    });
+    return response.data ?? [];
+  }
+
+  async uploadAttachment(input: {
+    companyId: string;
+    environment?: string;
+    sourceType: ZohoSourceType;
+    sourceId: string;
+    fileName?: string;
+    contentType?: string;
+    contentBase64?: string;
+    attachmentUrl?: string;
+  }): Promise<Record<string, unknown>> {
+    const environment = input.environment ?? 'prod';
+    const moduleDef = ensureModule(input.sourceType);
+    const formData = new FormData();
+
+    if (readString(input.attachmentUrl)) {
+      formData.append('attachmentUrl', input.attachmentUrl as string);
+    } else {
+      const contentBase64 = readString(input.contentBase64);
+      const fileName = readString(input.fileName);
+      if (!contentBase64 || !fileName) {
+        throw new ZohoIntegrationError({
+          message: 'uploadAttachment requires either attachmentUrl or both fileName and contentBase64.',
+          code: 'schema_mismatch',
+          retriable: false,
+        });
+      }
+      const mimeType = readString(input.contentType) ?? 'application/octet-stream';
+      const fileBytes = Uint8Array.from(Buffer.from(contentBase64, 'base64'));
+      formData.append('file', new Blob([fileBytes], { type: mimeType }), fileName);
+    }
+
+    const response = await this.requestWithRefresh<ZohoSingleResponse>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v8/${moduleDef.moduleName}/${encodeURIComponent(input.sourceId)}/Attachments`,
+      method: 'POST',
+      body: formData,
+    });
+    return response.data?.[0] ?? {};
+  }
+
+  async deleteAttachment(input: {
+    companyId: string;
+    environment?: string;
+    sourceType: ZohoSourceType;
+    sourceId: string;
+    attachmentId: string;
+  }): Promise<void> {
+    const environment = input.environment ?? 'prod';
+    const moduleDef = ensureModule(input.sourceType);
+    await this.requestWithRefresh<Record<string, unknown>>({
+      companyId: input.companyId,
+      environment,
+      path: `/crm/v8/${moduleDef.moduleName}/${encodeURIComponent(input.sourceId)}/Attachments/${encodeURIComponent(input.attachmentId)}`,
       method: 'DELETE',
     });
   }

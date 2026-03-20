@@ -140,7 +140,7 @@ export type IngestionJobDTO = {
 
 export type VectorUpsertDTO = {
   companyId: string;
-  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket' | 'chat_turn' | 'file_document';
+  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket' | 'chat_turn' | 'file_document';
   sourceId: string;
   chunkIndex: number;
   contentHash: string;
@@ -155,7 +155,7 @@ export type VectorUpsertDTO = {
 
 export type DeltaSyncEventDTO = {
   source: 'zoho';
-  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket';
   sourceId: string;
   changedAt: string;
   companyId: string;

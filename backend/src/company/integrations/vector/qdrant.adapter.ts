@@ -194,7 +194,7 @@ const buildSearchFilter = (query: VectorSearchQuery): Record<string, unknown> =>
         // … or the vector is not a file_document (don't restrict zoho/chat turns).
         {
           key: 'sourceType',
-          match: { any: ['zoho_lead', 'zoho_contact', 'zoho_deal', 'zoho_ticket', 'chat_turn'] },
+          match: { any: ['zoho_lead', 'zoho_contact', 'zoho_account', 'zoho_deal', 'zoho_ticket', 'chat_turn'] },
         },
       ],
     });

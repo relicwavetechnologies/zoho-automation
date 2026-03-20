@@ -62,7 +62,7 @@ export class ZohoRestAdapter implements ZohoProviderAdapter {
 
   async fetchRecordBySource(input: {
     context: ZohoProviderContext;
-    sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+    sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket';
     sourceId: string;
   }): Promise<Record<string, unknown> | null> {
     return zohoDataClient.fetchRecordBySource({

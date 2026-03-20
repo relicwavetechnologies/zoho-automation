@@ -118,7 +118,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: 'zoho-write',
     name: 'Zoho CRM Write',
-    description: 'Create, update, and delete Zoho CRM records after human approval.',
+    description: 'Create, update, and delete Zoho CRM records, notes, and attachments after human approval.',
     category: 'crm-action',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
@@ -126,7 +126,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: 'zoho-books-read',
     name: 'Zoho Books Read',
-    description: 'Read finance records such as invoices, estimates, bills, and payments from Zoho Books.',
+    description: 'Read Zoho Books finance records, contacts, vendor payments, bank accounts, credit notes, sales orders, purchase orders, bank transaction match suggestions, and related invoice/email/statement metadata.',
     category: 'crm-read',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
@@ -134,7 +134,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: 'zoho-books-write',
     name: 'Zoho Books Write',
-    description: 'Create, update, and delete Zoho Books records after human approval.',
+    description: 'Create, update, delete, reconcile, categorize, email, remind, import, and status-change Zoho Books records after human approval.',
     category: 'crm-action',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },

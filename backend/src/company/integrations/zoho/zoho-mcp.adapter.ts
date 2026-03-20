@@ -15,6 +15,7 @@ import { prisma } from '../../../utils/prisma';
 const MODULE_MAP: Record<ZohoSourceType, string> = {
   zoho_lead: 'leads',
   zoho_contact: 'contacts',
+  zoho_account: 'accounts',
   zoho_deal: 'deals',
   zoho_ticket: 'tickets',
 };
@@ -131,6 +132,9 @@ const inferSourceTypeFromModule = (moduleName: string): ZohoSourceType => {
   }
   if (moduleName === 'deals') {
     return 'zoho_deal';
+  }
+  if (moduleName === 'accounts') {
+    return 'zoho_account';
   }
   if (moduleName === 'tickets') {
     return 'zoho_ticket';

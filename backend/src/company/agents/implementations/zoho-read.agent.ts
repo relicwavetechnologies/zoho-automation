@@ -192,13 +192,14 @@ const inferSourceTypes = (objective: string): ZohoSourceType[] => {
   const preferred: ZohoSourceType[] = [];
 
   if (containsAny(text, [' lead', 'leads', ' prospect', 'prospects'])) preferred.push('zoho_lead');
+  if (containsAny(text, [' account', 'accounts', ' company', 'companies', ' organization', 'organizations'])) preferred.push('zoho_account');
   if (containsAny(text, [' deal', 'deals', ' opportunity', 'opportunities'])) preferred.push('zoho_deal');
   if (containsAny(text, [' contact', 'contacts'])) preferred.push('zoho_contact');
   if (containsAny(text, [' ticket', 'tickets', ' case', 'cases', 'support'])) preferred.push('zoho_ticket');
 
   return preferred.length > 0
     ? [...new Set(preferred)]
-    : ['zoho_lead', 'zoho_deal', 'zoho_contact', 'zoho_ticket'];
+    : ['zoho_lead', 'zoho_account', 'zoho_deal', 'zoho_contact', 'zoho_ticket'];
 };
 
 const inferCreatedAfter = (objective: string): Date | undefined => {
@@ -321,6 +322,7 @@ const isListRequest = (objective: string): boolean => {
     'list all',
     'all my',
     'all leads',
+    'all accounts',
     'all deals',
     'all contacts',
     'all tickets',
@@ -366,6 +368,22 @@ const formatRecordLine = (record: LiveRecord, index: number): string => {
     return `${index + 1}. ${parts.join(' | ')}`;
   }
 
+  if (record.sourceType === 'zoho_account') {
+    const name =
+      readField(payload, ['Account_Name', 'Name']) ??
+      `${record.sourceType}:${record.sourceId}`;
+    const website = readField(payload, ['Website']);
+    const phone = readField(payload, ['Phone']);
+    const industry = readField(payload, ['Industry']);
+    const owner = readField(payload, ['Owner', 'Account_Owner']);
+    const parts = [name];
+    if (industry) parts.push(`industry: ${industry}`);
+    if (website) parts.push(`website: ${website}`);
+    if (phone) parts.push(`phone: ${phone}`);
+    if (owner) parts.push(`owner: ${owner}`);
+    return `${index + 1}. ${parts.join(' | ')}`;
+  }
+
   if (record.sourceType === 'zoho_contact') {
     const name =
       readField(payload, ['Full_Name', 'Name']) ??
@@ -402,6 +420,7 @@ const buildDeterministicListResponse = (objective: string, liveRecords: LiveReco
 const SOURCE_MODULE_LABELS: Record<ZohoSourceType, string> = {
   zoho_lead: 'Leads',
   zoho_contact: 'Contacts',
+  zoho_account: 'Accounts',
   zoho_deal: 'Deals',
   zoho_ticket: 'Cases',
 };

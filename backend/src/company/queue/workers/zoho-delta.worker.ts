@@ -45,7 +45,7 @@ const recordEvent = async (input: {
 };
 
 const parsePayload = (value: Prisma.JsonValue | null): {
-  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+  sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket';
   sourceId: string;
   operation: 'create' | 'update' | 'delete';
   eventKey: string;
@@ -54,7 +54,7 @@ const parsePayload = (value: Prisma.JsonValue | null): {
   const obj = (value ?? {}) as Record<string, unknown>;
 
   return {
-    sourceType: (obj.sourceType as 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket') ?? 'zoho_contact',
+    sourceType: (obj.sourceType as 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket') ?? 'zoho_contact',
     sourceId: String(obj.sourceId ?? ''),
     operation: (obj.operation as 'create' | 'update' | 'delete') ?? 'update',
     eventKey: String(obj.eventKey ?? ''),

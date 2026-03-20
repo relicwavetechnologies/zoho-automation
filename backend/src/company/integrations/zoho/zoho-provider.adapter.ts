@@ -2,7 +2,7 @@ import type { ZohoFailureCode } from './zoho.errors';
 
 export type ZohoProviderMode = 'rest' | 'mcp';
 
-export type ZohoSourceType = 'zoho_lead' | 'zoho_contact' | 'zoho_deal' | 'zoho_ticket';
+export type ZohoSourceType = 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket';
 
 export type ZohoProviderHistoricalRecord = {
   sourceType: ZohoSourceType;
