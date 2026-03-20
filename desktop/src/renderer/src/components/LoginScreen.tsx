@@ -1,6 +1,7 @@
 import { useAuth } from '../context/AuthContext'
 import { cn } from '../lib/utils'
-import { ShieldCheck, Sparkles, Infinity } from 'lucide-react'
+import { ShieldCheck, Sparkles } from 'lucide-react'
+import { Logo } from './Logo'
 
 export function LoginScreen(): JSX.Element {
   const { openLarkLogin, loading, error } = useAuth()
@@ -14,7 +15,7 @@ export function LoginScreen(): JSX.Element {
           <div className="relative">
             <div className="absolute -inset-6 bg-primary/10 rounded-full blur-3xl opacity-50 group-hover:bg-primary/20 transition-all duration-700" />
             <div className="relative h-20 w-20 rounded-2xl bg-black/20 border border-border flex items-center justify-center shadow-2xl transition-all duration-500 group-hover:border-primary/30 group-hover:scale-105">
-              <Infinity size={40} className="text-primary/80" strokeWidth={2.5} />
+              <Logo size={44} />
             </div>
           </div>
           

@@ -78,7 +78,7 @@ export function ThinkingShimmer({ label = 'Reasoning...' }: { label?: string }):
     return (
         <div className="pt-0.5 pb-0.5">
             <TextShimmer
-                className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/30"
+                className="text-[11px] font-bold text-muted-foreground/30"
                 duration={1.8}
                 spread={3}
             >

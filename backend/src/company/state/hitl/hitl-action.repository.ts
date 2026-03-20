@@ -3,6 +3,7 @@ import { redisConnection } from '../../queue/runtime/redis.connection';
 
 const actionKey = (actionId: string) => `company:hitl:action:${actionId}`;
 const taskActionKey = (taskId: string) => `company:task:${taskId}:hitl:action`;
+const chatActionKey = (channel: string, chatId: string) => `company:chat:${channel}:${chatId}:hitl:latest`;
 
 type StoredHitlAction = HITLActionDTO & {
   _chatId?: string;
@@ -81,7 +82,9 @@ class HitlActionRepository {
         _metadataJson: input.metadata ? JSON.stringify(input.metadata) : '',
       })
       .set(taskActionKey(action.taskId), action.actionId)
+      .set(chatActionKey(input.channel ?? action.channel ?? 'unknown', input.chatId), action.actionId)
       .expire(key, 60 * 60 * 24)
+      .expire(chatActionKey(input.channel ?? action.channel ?? 'unknown', input.chatId), 60 * 60 * 24)
       .exec();
   }
 
@@ -125,10 +128,27 @@ class HitlActionRepository {
     return this.getByActionId(id);
   }
 
+  async getLatestPendingByChat(channel: string, chatId: string): Promise<StoredHitlAction | null> {
+    const redis = redisConnection.getClient();
+    const id = await redis.get(chatActionKey(channel, chatId));
+    if (!id) {
+      return null;
+    }
+    const action = await this.getByActionId(id);
+    if (!action || action.status !== 'pending') {
+      return null;
+    }
+    return action;
+  }
+
   async resolve(actionId: string, decision: 'confirmed' | 'cancelled' | 'expired'): Promise<boolean> {
     const redis = redisConnection.getClient();
     const key = actionKey(actionId);
     const now = new Date().toISOString();
+    const action = await this.getByActionId(actionId);
+    if (!action) {
+      return false;
+    }
 
     const result = await redis.eval(
       `
@@ -148,7 +168,12 @@ class HitlActionRepository {
       now,
     );
 
-    return Number(result) === 1;
+    const resolved = Number(result) === 1;
+    if (resolved && action._channel && action._chatId) {
+      await redis.del(chatActionKey(action._channel, action._chatId));
+    }
+
+    return resolved;
   }
 }
 

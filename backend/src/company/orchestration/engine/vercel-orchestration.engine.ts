@@ -605,7 +605,7 @@ const executeLarkVercelTask = async (
           ? summarizeText(pendingApproval.summary, 220) ?? finalText
           : finalText,
         buildLarkApprovalActions(pendingApproval),
-        { force: true },
+        { force: true, terminal: true },
       );
     } else {
       await statusCoordinator.replace(finalText, []);

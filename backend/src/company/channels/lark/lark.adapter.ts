@@ -124,8 +124,128 @@ const buildEgressTraceMeta = (input: {
  * Builds the Lark interactive card content JSON from text + optional actions.
  * If no actions are provided, only a single markdown element is rendered (identical to the old behaviour).
  */
+type ParsedMarkdownTable = {
+  header: string[];
+  rows: string[][];
+};
+
+const MAX_LARK_TABLE_ROWS = 8;
+const MAX_LARK_TABLE_COLUMNS = 4;
+const MAX_LARK_CELL_LENGTH = 48;
+
+const escapeMarkdownCell = (value: string): string =>
+  value.replace(/\|/g, '\\|').trim();
+
+const normalizeCellText = (value: string, maxLength = MAX_LARK_CELL_LENGTH): string => {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '—';
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
+};
+
+const parseMarkdownTableRow = (line: string): string[] | null => {
+  const trimmed = line.trim();
+  if (!trimmed.includes('|')) return null;
+  const core = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+  const cells = core.split('|').map((cell) => cell.trim());
+  return cells.length >= 2 ? cells : null;
+};
+
+const isMarkdownTableSeparator = (line: string): boolean => {
+  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  if (!trimmed) return false;
+  return trimmed.split('|').every((part) => /^:?-{3,}:?$/.test(part.trim()));
+};
+
+const parseFirstMarkdownTable = (text: string): {
+  before: string;
+  table: ParsedMarkdownTable | null;
+  after: string;
+} => {
+  const lines = text.split('\n');
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const header = parseMarkdownTableRow(lines[index]);
+    if (!header) continue;
+    if (!isMarkdownTableSeparator(lines[index + 1])) continue;
+
+    const rows: string[][] = [];
+    let cursor = index + 2;
+    while (cursor < lines.length) {
+      const row = parseMarkdownTableRow(lines[cursor]);
+      if (!row) break;
+      rows.push(row);
+      cursor += 1;
+    }
+
+    if (rows.length === 0) continue;
+
+    return {
+      before: lines.slice(0, index).join('\n').trim(),
+      table: { header, rows },
+      after: lines.slice(cursor).join('\n').trim(),
+    };
+  }
+
+  return {
+    before: text.trim(),
+    table: null,
+    after: '',
+  };
+};
+
+const buildMarkdownElement = (content: string): Record<string, unknown> => ({
+  tag: 'markdown',
+  content,
+});
+
+const buildLarkTableColumns = (cells: string[], bold = false): Array<Record<string, unknown>> =>
+  cells.map((cell) => ({
+    tag: 'column',
+    width: 'weighted',
+    weight: 1,
+    elements: [
+      buildMarkdownElement(bold ? `**${escapeMarkdownCell(normalizeCellText(cell))}**` : escapeMarkdownCell(normalizeCellText(cell))),
+    ],
+  }));
+
+const buildLarkTableElements = (table: ParsedMarkdownTable): Array<Record<string, unknown>> => {
+  const header = table.header.slice(0, MAX_LARK_TABLE_COLUMNS);
+  const rows = table.rows.slice(0, MAX_LARK_TABLE_ROWS).map((row) => row.slice(0, MAX_LARK_TABLE_COLUMNS));
+  const elements: Array<Record<string, unknown>> = [
+    {
+      tag: 'column_set',
+      columns: buildLarkTableColumns(header, true),
+    },
+  ];
+
+  for (const row of rows) {
+    elements.push({
+      tag: 'column_set',
+      columns: buildLarkTableColumns(row),
+    });
+  }
+
+  if (table.rows.length > MAX_LARK_TABLE_ROWS) {
+    elements.push(buildMarkdownElement(`_Showing ${MAX_LARK_TABLE_ROWS} of ${table.rows.length} rows._`));
+  }
+
+  return elements;
+};
+
 const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<string, unknown> => {
-  const elements: unknown[] = [{ tag: 'markdown', content: text }];
+  const parsed = parseFirstMarkdownTable(text);
+  const elements: unknown[] = [];
+
+  if (parsed.table) {
+    if (parsed.before) {
+      elements.push(buildMarkdownElement(parsed.before));
+    }
+    elements.push(...buildLarkTableElements(parsed.table));
+    if (parsed.after) {
+      elements.push(buildMarkdownElement(parsed.after));
+    }
+  } else {
+    elements.push(buildMarkdownElement(text));
+  }
 
   if (actions && actions.length > 0) {
     elements.push({

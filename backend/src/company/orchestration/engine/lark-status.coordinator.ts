@@ -9,6 +9,11 @@ type LarkStatusRenderable = {
   actions?: ChannelAction[];
 };
 
+type PendingUpdate = {
+  renderable: LarkStatusRenderable;
+  terminal: boolean;
+};
+
 type LarkStatusCoordinatorInput = {
   adapter: Pick<ChannelAdapter, 'sendMessage' | 'updateMessage'>;
   chatId: string;
@@ -37,9 +42,11 @@ export class LarkStatusCoordinator {
   private lastSentAt = 0;
   private lastText?: string;
   private lastActionsKey = actionsKey();
-  private pending?: LarkStatusRenderable;
+  private pending?: PendingUpdate;
   private flushTimer?: NodeJS.Timeout;
   private heartbeatTimer?: NodeJS.Timeout;
+  private inFlight = false;
+  private terminalLocked = false;
   private closed = false;
 
   public constructor(input: LarkStatusCoordinatorInput) {
@@ -55,8 +62,9 @@ export class LarkStatusCoordinator {
     return this.statusMessageId;
   }
 
-  public async update(renderable: LarkStatusRenderable, options?: { force?: boolean }): Promise<void> {
+  public async update(renderable: LarkStatusRenderable, options?: { force?: boolean; terminal?: boolean }): Promise<void> {
     if (this.closed) return;
+    if (this.terminalLocked && !options?.terminal) return;
     const next = {
       text: renderable.text.trim(),
       actions: normalizeActions(renderable.actions),
@@ -69,15 +77,19 @@ export class LarkStatusCoordinator {
       return;
     }
 
+    this.pending = {
+      renderable: next,
+      terminal: Boolean(options?.terminal),
+    };
+
     const now = Date.now();
     const elapsed = now - this.lastSentAt;
     if (!options?.force && this.lastSentAt > 0 && elapsed < this.minUpdateIntervalMs) {
-      this.pending = next;
       this.scheduleFlush(this.minUpdateIntervalMs - elapsed);
       return;
     }
 
-    await this.flush(next);
+    await this.pump();
   }
 
   public startHeartbeat(getRenderable: () => LarkStatusRenderable | null): void {
@@ -99,7 +111,7 @@ export class LarkStatusCoordinator {
   }
 
   public async replace(text: string, actions?: ChannelAction[]): Promise<void> {
-    await this.update({ text, actions }, { force: true });
+    await this.update({ text, actions }, { force: true, terminal: true });
   }
 
   public async close(): Promise<void> {
@@ -124,14 +136,27 @@ export class LarkStatusCoordinator {
   }
 
   private async flushPending(): Promise<void> {
-    if (this.closed || !this.pending) return;
-    const next = this.pending;
-    this.pending = undefined;
-    await this.flush(next);
+    if (this.closed) return;
+    await this.pump();
   }
 
-  private async flush(renderable: LarkStatusRenderable): Promise<void> {
+  private async pump(): Promise<void> {
+    if (this.closed || this.inFlight || !this.pending) return;
+    this.inFlight = true;
+    try {
+      while (!this.closed && this.pending) {
+        const next = this.pending;
+        this.pending = undefined;
+        await this.flush(next);
+      }
+    } finally {
+      this.inFlight = false;
+    }
+  }
+
+  private async flush(input: PendingUpdate): Promise<void> {
     if (this.closed) return;
+    const { renderable, terminal } = input;
     const outbound = this.statusMessageId
       ? await this.adapter.updateMessage({
         messageId: this.statusMessageId,
@@ -146,10 +171,10 @@ export class LarkStatusCoordinator {
         correlationId: this.correlationId,
       });
 
-    this.captureOutboundState(renderable, outbound);
+    this.captureOutboundState(renderable, outbound, terminal);
   }
 
-  private captureOutboundState(renderable: LarkStatusRenderable, outbound: ChannelOutboundResult): void {
+  private captureOutboundState(renderable: LarkStatusRenderable, outbound: ChannelOutboundResult, terminal: boolean): void {
     if (outbound.status === 'failed') {
       return;
     }
@@ -157,5 +182,13 @@ export class LarkStatusCoordinator {
     this.lastSentAt = Date.now();
     this.lastText = renderable.text;
     this.lastActionsKey = actionsKey(renderable.actions);
+    if (terminal) {
+      this.terminalLocked = true;
+      this.pending = undefined;
+      if (this.flushTimer) {
+        clearTimeout(this.flushTimer);
+        this.flushTimer = undefined;
+      }
+    }
   }
 }

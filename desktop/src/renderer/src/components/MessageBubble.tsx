@@ -5,12 +5,14 @@ import { Check, Copy, ExternalLink, FileText, Loader2, Share2 } from 'lucide-rea
 import { MarkdownContent } from './MarkdownContent'
 import { BlocksRenderer } from './BlocksRenderer'
 import { useAuth } from '../context/AuthContext'
+import { Logo } from './Logo'
 
 interface Props {
   message: Message
+  isLast?: boolean
 }
 
-export function MessageBubble({ message }: Props): JSX.Element {
+export function MessageBubble({ message, isLast }: Props): JSX.Element {
   const isUser = message.role === 'user'
   const [copied, setCopied] = useState(false)
   const [shareState, setShareState] = useState<'idle' | 'sharing' | 'shared' | 'failed'>('idle')
@@ -100,13 +102,12 @@ export function MessageBubble({ message }: Props): JSX.Element {
   return (
     <div className="group mb-8 last:mb-0">
       <div className={cn('flex w-full flex-col gap-2', isUser ? 'items-end' : 'items-start')}>
-        {/* Name Only (No PFP) */}
-        <span className={cn(
-          'text-[10px] font-black uppercase tracking-[0.2em] mb-1 opacity-50',
-          isUser ? 'mr-1' : 'text-primary/80 ml-1'
-        )}>
-          {isUser ? 'You' : 'Divo'}
-        </span>
+        {/* Identity Header (Logo only for AI, Nothing for User) */}
+        {!isUser && (
+          <div className="flex items-center gap-2 mb-1 ml-1 opacity-50">
+            <Logo size={14} className="opacity-80" />
+          </div>
+        )}
 
         {/* Content Container */}
         <div className={cn('relative min-w-0 max-w-[90%] flex flex-col', isUser ? 'items-end' : 'items-start')}>
@@ -151,7 +152,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
             </div>
           )}
           {isUser ? (
-            <div className="inline-block rounded-2xl bg-secondary/40 px-4 py-2.5 border border-border/50 shadow-sm">
+            <div className="inline-block rounded-2xl bg-secondary/40 px-4 py-2.5 border border-border/50 shadow-sm text-right">
               <p className="text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed text-foreground/90">
                 {displayContent}
               </p>
@@ -233,7 +234,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
             </div>
           )}
 
-          {!isUser && message.metadata?.shareAction && (
+          {!isUser && isLast && message.metadata?.shareAction && (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button
                 onClick={() => void shareConversation()}

@@ -400,10 +400,44 @@ const inferDateScope = (message?: string): string | undefined => {
   return undefined;
 };
 
+const getLocalDateContext = (): string => {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: LOCAL_TIME_ZONE,
+    weekday: 'long',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  return formatter.format(new Date());
+};
+
+const shouldRecommendSkillFirst = (message?: string): boolean => {
+  const lowered = message?.trim().toLowerCase();
+  if (!lowered) return false;
+
+  const obviousDirectReadPatterns = [
+    /\b(show|get|list|what are|what is|which)\b.*\b(tasks|task|meetings|calendar|events|emails|docs)\b/,
+    /\bsearch\b.*\b(web|internet|online)\b/,
+  ];
+  if (obviousDirectReadPatterns.some((pattern) => pattern.test(lowered))) {
+    return false;
+  }
+
+  const uncertainWorkflowSignals = [
+    /\b(schedule|book|create|set up|setup|arrange)\b.*\b(meeting|event|calendar|invite)\b/,
+    /\b(send|submit|share|follow up|follow-up|approve|approval|reconcile|prepare|draft)\b/,
+    /\bzoho\b|\blark\b|\bgoogle\b/,
+    /\bworkflow\b|\bprocess\b|\boperation\b/,
+    /\bthen\b|\band then\b|\balso\b/,
+  ];
+
+  return uncertainWorkflowSignals.some((pattern) => pattern.test(lowered));
+};
+
 const isBareContinuationMessage = (message?: string): boolean => {
   const value = message?.trim().toLowerCase();
   if (!value) return false;
-  return ['continue', 'go on', 'carry on', 'proceed', 'keep going', 'retry'].includes(value);
+  return ['continue', 'go on', 'carry on', 'proceed', 'keep going', 'retry', 'try again'].includes(value);
 };
 
 const buildContinuationHint = (message?: string): string | null => {
@@ -731,6 +765,7 @@ const buildSystemPrompt = (input: {
       'References like "this repo" or "this workspace" refer to that local root.',
     );
   }
+  parts.push(`Local date context: ${getLocalDateContext()} (${LOCAL_TIME_ZONE}).`);
   if (input.dateScope) {
     parts.push(`Inferred date scope: ${input.dateScope}.`);
   }
@@ -745,6 +780,15 @@ const buildSystemPrompt = (input: {
   }
   if (input.departmentSkillsMarkdown?.trim()) {
     parts.push('Legacy department skills fallback context (use skillSearch for the structured skill flow first):', input.departmentSkillsMarkdown.trim());
+  }
+  if (shouldRecommendSkillFirst(input.latestUserMessage)) {
+    parts.push(
+      'Skill-first routing is recommended for this request.',
+      'If the correct operational tool path is not obvious, first call skillSearch.searchSkills with a precise workflow query.',
+      'If a relevant skill appears, immediately call skillSearch.readSkill and use that skill as the guide for choosing the real tool.',
+      'Do not guess a workflow/tool route when a skill can clarify it.',
+      'Once a relevant skill is loaded in this turn, do not keep re-searching skills unless the first one is clearly irrelevant.',
+    );
   }
   const conversationRefsContext = buildConversationRefsContext(buildConversationKey(input.threadId));
   if (conversationRefsContext) {

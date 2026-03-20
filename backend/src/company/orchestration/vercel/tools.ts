@@ -922,6 +922,28 @@ const normalizeZohoSourceType = (value?: string): ZohoSourceType | undefined => 
   return undefined;
 };
 
+const normalizeZohoCrmModuleName = (value?: string): string | undefined => {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (['leads', 'lead', 'zoho_lead'].includes(normalized)) return 'Leads';
+  if (['contacts', 'contact', 'zoho_contact'].includes(normalized)) return 'Contacts';
+  if (['accounts', 'account', 'companies', 'company', 'zoho_account'].includes(normalized)) return 'Accounts';
+  if (['deals', 'deal', 'zoho_deal'].includes(normalized)) return 'Deals';
+  if (['cases', 'case', 'tickets', 'ticket', 'zoho_ticket'].includes(normalized)) return 'Cases';
+  if (['tasks', 'task'].includes(normalized)) return 'Tasks';
+  if (['events', 'event', 'meetings', 'meeting'].includes(normalized)) return 'Events';
+  if (['calls', 'call'].includes(normalized)) return 'Calls';
+  if (['products', 'product'].includes(normalized)) return 'Products';
+  if (['quotes', 'quote'].includes(normalized)) return 'Quotes';
+  if (['vendors', 'vendor'].includes(normalized)) return 'Vendors';
+  if (['invoices', 'invoice'].includes(normalized)) return 'Invoices';
+  if (['salesorders', 'salesorder', 'sales_orders', 'sales-order'].includes(normalized)) return 'Sales_Orders';
+  if (['purchaseorders', 'purchaseorder', 'purchase_orders', 'purchase-order'].includes(normalized)) return 'Purchase_Orders';
+  return value?.trim();
+};
+
 const normalizeZohoBooksModule = (value?: string):
   | 'contacts'
   | 'invoices'
@@ -1469,7 +1491,7 @@ export const createVercelDesktopTools = (
     }),
 
     skillSearch: tool({
-      description: 'Search and read reusable global and department skills for specialized workflows before continuing the task.',
+      description: 'Use this before tool execution when a request is workflow-like or the correct tool path is not obvious. searchSkills finds the right workflow guide; readSkill loads the full operating instructions so you can confidently choose the real domain tool and continue the task.',
       inputSchema: z.object({
         operation: z.enum(['searchSkills', 'readSkill']),
         query: z.string().optional(),
@@ -2567,6 +2589,8 @@ export const createVercelDesktopTools = (
           'listRecords',
           'getRecord',
           'summarizeModule',
+          'getReport',
+          'listComments',
           'buildOverdueReport',
           'mapCustomerPayments',
           'reconcileVendorStatement',
@@ -2576,6 +2600,9 @@ export const createVercelDesktopTools = (
           'getInvoiceEmailContent',
           'getInvoicePaymentReminderContent',
           'getEstimateEmailContent',
+          'getCreditNoteEmailContent',
+          'getSalesOrderEmailContent',
+          'getPurchaseOrderEmailContent',
           'getContactStatementEmailContent',
           'getVendorPaymentEmailContent',
         ]),
@@ -2585,9 +2612,14 @@ export const createVercelDesktopTools = (
         accountId: z.string().optional(),
         transactionId: z.string().optional(),
         invoiceId: z.string().optional(),
+        creditNoteId: z.string().optional(),
+        salesOrderId: z.string().optional(),
+        purchaseOrderId: z.string().optional(),
         estimateId: z.string().optional(),
         contactId: z.string().optional(),
         vendorPaymentId: z.string().optional(),
+        commentId: z.string().optional(),
+        reportName: z.string().optional(),
         query: z.string().optional(),
         limit: z.number().int().min(1).max(200).optional(),
         asOfDate: z.string().optional(),
@@ -2992,6 +3024,111 @@ export const createVercelDesktopTools = (
           }
         }
 
+        if (input.operation === 'getCreditNoteEmailContent') {
+          if (!input.creditNoteId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getCreditNoteEmailContent requires creditNoteId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getCreditNoteEmailContent({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              creditNoteId: input.creditNoteId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched credit note email content for ${input.creditNoteId.trim()}.`,
+              keyData: {
+                creditNoteId: input.creditNoteId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch credit note email content.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getSalesOrderEmailContent') {
+          if (!input.salesOrderId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getSalesOrderEmailContent requires salesOrderId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getSalesOrderEmailContent({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              salesOrderId: input.salesOrderId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched sales order email content for ${input.salesOrderId.trim()}.`,
+              keyData: {
+                salesOrderId: input.salesOrderId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch sales order email content.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getPurchaseOrderEmailContent') {
+          if (!input.purchaseOrderId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getPurchaseOrderEmailContent requires purchaseOrderId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getPurchaseOrderEmailContent({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              purchaseOrderId: input.purchaseOrderId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched purchase order email content for ${input.purchaseOrderId.trim()}.`,
+              keyData: {
+                purchaseOrderId: input.purchaseOrderId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch purchase order email content.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
         if (input.operation === 'getContactStatementEmailContent') {
           if (!input.contactId?.trim()) {
             return buildEnvelope({
@@ -3053,6 +3190,79 @@ export const createVercelDesktopTools = (
             });
           } catch (error) {
             const summary = error instanceof Error ? error.message : 'Failed to fetch vendor payment email content.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'listComments') {
+          if (!moduleName || !input.recordId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'listComments requires a supported module and recordId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().listComments({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              moduleName: moduleName as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
+              recordId: input.recordId.trim(),
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched comments for Zoho Books ${moduleName} ${input.recordId.trim()}.`,
+              keyData: {
+                module: moduleName,
+                recordId: input.recordId.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch Zoho Books comments.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (input.operation === 'getReport') {
+          if (!input.reportName?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'getReport requires reportName.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const result = await loadZohoBooksClient().getReport({
+              companyId: runtime.companyId,
+              organizationId: input.organizationId?.trim(),
+              reportName: input.reportName.trim(),
+              filters: input.filters,
+            });
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched Zoho Books report ${input.reportName.trim()}.`,
+              keyData: {
+                reportName: input.reportName.trim(),
+                organizationId: result.organizationId,
+              },
+              fullPayload: result.payload,
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'Failed to fetch Zoho Books report.';
             return buildEnvelope({
               success: false,
               summary,
@@ -3227,6 +3437,23 @@ export const createVercelDesktopTools = (
           'submitInvoice',
           'approveInvoice',
           'emailEstimate',
+          'emailCreditNote',
+          'openCreditNote',
+          'voidCreditNote',
+          'refundCreditNote',
+          'emailSalesOrder',
+          'openSalesOrder',
+          'voidSalesOrder',
+          'submitSalesOrder',
+          'approveSalesOrder',
+          'createInvoiceFromSalesOrder',
+          'emailPurchaseOrder',
+          'openPurchaseOrder',
+          'billPurchaseOrder',
+          'cancelPurchaseOrder',
+          'rejectPurchaseOrder',
+          'submitPurchaseOrder',
+          'approvePurchaseOrder',
           'enableContactPaymentReminder',
           'disableContactPaymentReminder',
           'markEstimateSent',
@@ -3241,6 +3468,9 @@ export const createVercelDesktopTools = (
           'emailContact',
           'emailContactStatement',
           'emailVendorPayment',
+          'addBooksComment',
+          'updateBooksComment',
+          'deleteBooksComment',
         ]),
         module: z.string().optional(),
         recordId: z.string().optional(),
@@ -3248,10 +3478,14 @@ export const createVercelDesktopTools = (
         accountId: z.string().optional(),
         transactionId: z.string().optional(),
         invoiceId: z.string().optional(),
+        creditNoteId: z.string().optional(),
+        salesOrderId: z.string().optional(),
+        purchaseOrderId: z.string().optional(),
         billId: z.string().optional(),
         estimateId: z.string().optional(),
         contactId: z.string().optional(),
         vendorPaymentId: z.string().optional(),
+        commentId: z.string().optional(),
         body: z.record(z.unknown()).optional(),
       }),
       execute: async (input) => withLifecycle(hooks, 'booksWrite', 'Running Zoho Books write workflow', async () => {
@@ -3291,6 +3525,20 @@ export const createVercelDesktopTools = (
               || input.operation === 'markInvoiceDraft'
               || input.operation === 'submitInvoice'
               || input.operation === 'approveInvoice'
+              || input.operation === 'openCreditNote'
+              || input.operation === 'voidCreditNote'
+              || input.operation === 'refundCreditNote'
+              || input.operation === 'openSalesOrder'
+              || input.operation === 'voidSalesOrder'
+              || input.operation === 'submitSalesOrder'
+              || input.operation === 'approveSalesOrder'
+              || input.operation === 'createInvoiceFromSalesOrder'
+              || input.operation === 'openPurchaseOrder'
+              || input.operation === 'billPurchaseOrder'
+              || input.operation === 'cancelPurchaseOrder'
+              || input.operation === 'rejectPurchaseOrder'
+              || input.operation === 'submitPurchaseOrder'
+              || input.operation === 'approvePurchaseOrder'
               || input.operation === 'enableContactPaymentReminder'
               || input.operation === 'disableContactPaymentReminder'
               || input.operation === 'markEstimateSent'
@@ -3302,9 +3550,11 @@ export const createVercelDesktopTools = (
               || input.operation === 'openBill'
               || input.operation === 'submitBill'
               || input.operation === 'approveBill'
+              || input.operation === 'updateBooksComment'
               ? 'update'
-              : input.operation === 'deleteRecord'
-                ? 'delete'
+                : input.operation === 'deleteRecord'
+                  || input.operation === 'deleteBooksComment'
+                  ? 'delete'
                 : 'send';
         const permissionError = ensureAnyActionPermission(
           runtime,
@@ -3336,6 +3586,13 @@ export const createVercelDesktopTools = (
           || input.operation === 'emailInvoice'
           || input.operation === 'remindInvoice'
           || input.operation === 'emailEstimate'
+          || input.operation === 'emailCreditNote'
+          || input.operation === 'refundCreditNote'
+          || input.operation === 'emailSalesOrder'
+          || input.operation === 'createInvoiceFromSalesOrder'
+          || input.operation === 'emailPurchaseOrder'
+          || input.operation === 'addBooksComment'
+          || input.operation === 'updateBooksComment'
           || input.operation === 'emailContact' || input.operation === 'emailContactStatement' || input.operation === 'emailVendorPayment')
           && !input.body) {
           return buildEnvelope({
@@ -3408,6 +3665,45 @@ export const createVercelDesktopTools = (
             retryable: false,
           });
         }
+        if (['emailCreditNote', 'openCreditNote', 'voidCreditNote', 'refundCreditNote'].includes(input.operation) && !input.creditNoteId?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires creditNoteId.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+        if ([
+          'emailSalesOrder',
+          'openSalesOrder',
+          'voidSalesOrder',
+          'submitSalesOrder',
+          'approveSalesOrder',
+          'createInvoiceFromSalesOrder',
+        ].includes(input.operation) && !input.salesOrderId?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires salesOrderId.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+        if ([
+          'emailPurchaseOrder',
+          'openPurchaseOrder',
+          'billPurchaseOrder',
+          'cancelPurchaseOrder',
+          'rejectPurchaseOrder',
+          'submitPurchaseOrder',
+          'approvePurchaseOrder',
+        ].includes(input.operation) && !input.purchaseOrderId?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `${input.operation} requires purchaseOrderId.`,
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
         if (['voidBill', 'openBill', 'submitBill', 'approveBill'].includes(input.operation) && !input.billId?.trim()) {
           return buildEnvelope({
             success: false,
@@ -3440,8 +3736,26 @@ export const createVercelDesktopTools = (
             retryable: false,
           });
         }
+        if (['addBooksComment', 'updateBooksComment', 'deleteBooksComment'].includes(input.operation)) {
+          if (!moduleName || !input.recordId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: `${input.operation} requires a supported module and recordId.`,
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          if ((input.operation === 'updateBooksComment' || input.operation === 'deleteBooksComment') && !input.commentId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: `${input.operation} requires commentId.`,
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+        }
 
-        const subject =
+        let subject =
           input.operation === 'createRecord'
             ? `Create Zoho Books ${moduleName}`
             : input.operation === 'updateRecord'
@@ -3525,7 +3839,7 @@ export const createVercelDesktopTools = (
                         : input.operation === 'emailContactStatement'
                           ? `Email Zoho Books contact statement ${input.contactId?.trim() ?? ''}`.trim()
                           : `Email Zoho Books vendor payment ${input.vendorPaymentId?.trim() ?? ''}`.trim();
-        const summary =
+        let summary =
           input.operation === 'createRecord'
             ? `Approval required to create a Zoho Books ${moduleName} record.`
             : input.operation === 'updateRecord'
@@ -3610,6 +3924,68 @@ export const createVercelDesktopTools = (
                           ? `Approval required to email a statement to Zoho Books contact ${input.contactId?.trim() ?? ''}.`.trim()
                           : `Approval required to email Zoho Books vendor payment ${input.vendorPaymentId?.trim() ?? ''}.`.trim();
 
+        if (input.operation === 'emailCreditNote') {
+          subject = `Email Zoho Books credit note ${input.creditNoteId?.trim() ?? ''}`.trim();
+          summary = `Approval required to email Zoho Books credit note ${input.creditNoteId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'openCreditNote') {
+          subject = `Mark Zoho Books credit note ${input.creditNoteId?.trim() ?? ''} as open`.trim();
+          summary = `Approval required to mark Zoho Books credit note ${input.creditNoteId?.trim() ?? ''} as open.`.trim();
+        } else if (input.operation === 'voidCreditNote') {
+          subject = `Void Zoho Books credit note ${input.creditNoteId?.trim() ?? ''}`.trim();
+          summary = `Approval required to void Zoho Books credit note ${input.creditNoteId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'refundCreditNote') {
+          subject = `Refund Zoho Books credit note ${input.creditNoteId?.trim() ?? ''}`.trim();
+          summary = `Approval required to refund Zoho Books credit note ${input.creditNoteId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'emailSalesOrder') {
+          subject = `Email Zoho Books sales order ${input.salesOrderId?.trim() ?? ''}`.trim();
+          summary = `Approval required to email Zoho Books sales order ${input.salesOrderId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'openSalesOrder') {
+          subject = `Mark Zoho Books sales order ${input.salesOrderId?.trim() ?? ''} as open`.trim();
+          summary = `Approval required to mark Zoho Books sales order ${input.salesOrderId?.trim() ?? ''} as open.`.trim();
+        } else if (input.operation === 'voidSalesOrder') {
+          subject = `Void Zoho Books sales order ${input.salesOrderId?.trim() ?? ''}`.trim();
+          summary = `Approval required to void Zoho Books sales order ${input.salesOrderId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'submitSalesOrder') {
+          subject = `Submit Zoho Books sales order ${input.salesOrderId?.trim() ?? ''} for approval`.trim();
+          summary = `Approval required to submit Zoho Books sales order ${input.salesOrderId?.trim() ?? ''} for approval.`.trim();
+        } else if (input.operation === 'approveSalesOrder') {
+          subject = `Approve Zoho Books sales order ${input.salesOrderId?.trim() ?? ''}`.trim();
+          summary = `Approval required to approve Zoho Books sales order ${input.salesOrderId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'createInvoiceFromSalesOrder') {
+          subject = `Create invoice from Zoho Books sales order ${input.salesOrderId?.trim() ?? ''}`.trim();
+          summary = `Approval required to create an invoice from Zoho Books sales order ${input.salesOrderId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'emailPurchaseOrder') {
+          subject = `Email Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''}`.trim();
+          summary = `Approval required to email Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'openPurchaseOrder') {
+          subject = `Mark Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''} as open`.trim();
+          summary = `Approval required to mark Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''} as open.`.trim();
+        } else if (input.operation === 'billPurchaseOrder') {
+          subject = `Mark Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''} as billed`.trim();
+          summary = `Approval required to mark Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''} as billed.`.trim();
+        } else if (input.operation === 'cancelPurchaseOrder') {
+          subject = `Cancel Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''}`.trim();
+          summary = `Approval required to cancel Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'rejectPurchaseOrder') {
+          subject = `Reject Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''}`.trim();
+          summary = `Approval required to reject Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'submitPurchaseOrder') {
+          subject = `Submit Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''} for approval`.trim();
+          summary = `Approval required to submit Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''} for approval.`.trim();
+        } else if (input.operation === 'approvePurchaseOrder') {
+          subject = `Approve Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''}`.trim();
+          summary = `Approval required to approve Zoho Books purchase order ${input.purchaseOrderId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'addBooksComment') {
+          subject = `Add Zoho Books comment on ${moduleName} ${input.recordId?.trim() ?? ''}`.trim();
+          summary = `Approval required to add a comment to Zoho Books ${moduleName} ${input.recordId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'updateBooksComment') {
+          subject = `Update Zoho Books comment ${input.commentId?.trim() ?? ''}`.trim();
+          summary = `Approval required to update Zoho Books comment ${input.commentId?.trim() ?? ''}.`.trim();
+        } else if (input.operation === 'deleteBooksComment') {
+          subject = `Delete Zoho Books comment ${input.commentId?.trim() ?? ''}`.trim();
+          summary = `Approval required to delete Zoho Books comment ${input.commentId?.trim() ?? ''}.`.trim();
+        }
+
         return createPendingRemoteApproval({
           runtime,
           toolId: 'zoho-books-write',
@@ -3628,8 +4004,12 @@ export const createVercelDesktopTools = (
             invoiceId: input.invoiceId?.trim(),
             billId: input.billId?.trim(),
             estimateId: input.estimateId?.trim(),
+            creditNoteId: input.creditNoteId?.trim(),
+            salesOrderId: input.salesOrderId?.trim(),
+            purchaseOrderId: input.purchaseOrderId?.trim(),
             contactId: input.contactId?.trim(),
             vendorPaymentId: input.vendorPaymentId?.trim(),
+            commentId: input.commentId?.trim(),
             body: input.body,
           },
         });
@@ -4873,6 +5253,7 @@ export const createVercelDesktopTools = (
           'zoho',
         );
         const sourceType = normalizeZohoSourceType(input.module);
+        const crmModuleName = normalizeZohoCrmModuleName(input.module);
 
         if (input.operation === 'searchContext') {
           if (readPermissionError) {
@@ -4962,7 +5343,7 @@ export const createVercelDesktopTools = (
           if (readPermissionError) {
             return readPermissionError;
           }
-          if (!sourceType || !input.recordId?.trim()) {
+          if (!crmModuleName || !input.recordId?.trim()) {
             return buildEnvelope({
               success: false,
               summary: 'getRecord requires module and recordId.',
@@ -4971,11 +5352,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
-            const record = await loadZohoDataClient().fetchRecordBySource({
-              companyId: runtime.companyId,
-              sourceType,
-              sourceId: input.recordId.trim(),
-            });
+            const record = sourceType
+              ? await loadZohoDataClient().fetchRecordBySource({
+                companyId: runtime.companyId,
+                sourceType,
+                sourceId: input.recordId.trim(),
+              })
+              : await loadZohoDataClient().getModuleRecord({
+                companyId: runtime.companyId,
+                moduleName: crmModuleName,
+                recordId: input.recordId.trim(),
+              });
             if (!record) {
               return buildEnvelope({
                 success: false,
@@ -4989,16 +5376,16 @@ export const createVercelDesktopTools = (
               summary: `Fetched Zoho ${input.module?.trim() ?? 'record'} ${input.recordId.trim()}.`,
               keyData: {
                 recordId: input.recordId.trim(),
-                recordType: sourceType,
+                recordType: sourceType ?? crmModuleName,
               },
               fullPayload: {
                 record,
               },
               citations: [{
                 id: `zoho-record-${input.recordId.trim()}`,
-                title: `${sourceType}:${input.recordId.trim()}`,
+                title: `${sourceType ?? crmModuleName}:${input.recordId.trim()}`,
                 kind: 'record',
-                sourceType,
+                sourceType: sourceType ?? crmModuleName,
                 sourceId: input.recordId.trim(),
               }],
             });
@@ -5017,7 +5404,7 @@ export const createVercelDesktopTools = (
           if (readPermissionError) {
             return readPermissionError;
           }
-          if (!sourceType || !input.recordId?.trim()) {
+          if (!crmModuleName || !input.recordId?.trim()) {
             return buildEnvelope({
               success: false,
               summary: 'listNotes requires module and recordId.',
@@ -5026,11 +5413,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
-            const notes = await loadZohoDataClient().listNotes?.({
-              companyId: runtime.companyId,
-              sourceType,
-              sourceId: input.recordId.trim(),
-            }) ?? [];
+            const notes = sourceType
+              ? await loadZohoDataClient().listNotes?.({
+                companyId: runtime.companyId,
+                sourceType,
+                sourceId: input.recordId.trim(),
+              }) ?? []
+              : await loadZohoDataClient().listModuleNotes({
+                companyId: runtime.companyId,
+                moduleName: crmModuleName,
+                recordId: input.recordId.trim(),
+              });
             return buildEnvelope({
               success: true,
               summary: notes.length > 0
@@ -5039,7 +5432,7 @@ export const createVercelDesktopTools = (
               keyData: {
                 recordId: input.recordId.trim(),
                 noteCount: notes.length,
-                recordType: sourceType,
+                recordType: sourceType ?? crmModuleName,
               },
               fullPayload: {
                 notes,
@@ -5106,7 +5499,7 @@ export const createVercelDesktopTools = (
           if (readPermissionError) {
             return readPermissionError;
           }
-          if (!sourceType || !input.recordId?.trim()) {
+          if (!crmModuleName || !input.recordId?.trim()) {
             return buildEnvelope({
               success: false,
               summary: 'listAttachments requires module and recordId.',
@@ -5115,11 +5508,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
-            const attachments = await loadZohoDataClient().listAttachments?.({
-              companyId: runtime.companyId,
-              sourceType,
-              sourceId: input.recordId.trim(),
-            }) ?? [];
+            const attachments = sourceType
+              ? await loadZohoDataClient().listAttachments?.({
+                companyId: runtime.companyId,
+                sourceType,
+                sourceId: input.recordId.trim(),
+              }) ?? []
+              : await loadZohoDataClient().listModuleAttachments({
+                companyId: runtime.companyId,
+                moduleName: crmModuleName,
+                recordId: input.recordId.trim(),
+              });
             return buildEnvelope({
               success: true,
               summary: attachments.length > 0
@@ -5128,7 +5527,7 @@ export const createVercelDesktopTools = (
               keyData: {
                 recordId: input.recordId.trim(),
                 attachmentCount: attachments.length,
-                recordType: sourceType,
+                recordType: sourceType ?? crmModuleName,
               },
               fullPayload: {
                 attachments,
@@ -5136,6 +5535,80 @@ export const createVercelDesktopTools = (
             });
           } catch (error) {
             const summary = error instanceof Error ? error.message : 'Failed to list Zoho attachments.';
+            return buildEnvelope({
+              success: false,
+              summary,
+              errorKind: inferErrorKind(summary),
+              retryable: true,
+            });
+          }
+        }
+
+        if (
+          input.operation === 'readRecords'
+          || input.operation === 'summarizePipeline'
+        ) {
+          if (readPermissionError) {
+            return readPermissionError;
+          }
+          if (!crmModuleName) {
+            return buildEnvelope({
+              success: false,
+              summary: 'readRecords requires a supported Zoho CRM module.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          try {
+            const records = await loadZohoDataClient().listModuleRecords({
+              companyId: runtime.companyId,
+              moduleName: crmModuleName,
+              perPage: 50,
+              filters: input.filters,
+            });
+            const query = input.query?.trim().toLowerCase();
+            const filtered = query
+              ? records.filter((record) => JSON.stringify(record).toLowerCase().includes(query))
+              : records;
+            if (input.operation === 'summarizePipeline') {
+              const statusCounts = filtered.reduce<Record<string, number>>((acc, record) => {
+                const status = asString(record.Stage) ?? asString(record.stage) ?? asString(record.Status) ?? asString(record.status) ?? 'unknown';
+                acc[status] = (acc[status] ?? 0) + 1;
+                return acc;
+              }, {});
+              return buildEnvelope({
+                success: true,
+                summary: filtered.length > 0
+                  ? `Summarized ${filtered.length} Zoho ${crmModuleName} record(s).`
+                  : `No Zoho ${crmModuleName} records matched the current filters.`,
+                keyData: {
+                  module: crmModuleName,
+                  recordCount: filtered.length,
+                  statusCounts,
+                },
+                fullPayload: {
+                  module: crmModuleName,
+                  statusCounts,
+                  records: filtered,
+                },
+              });
+            }
+            return buildEnvelope({
+              success: true,
+              summary: filtered.length > 0
+                ? `Found ${filtered.length} Zoho ${crmModuleName} record(s).`
+                : `No Zoho ${crmModuleName} records matched the current filters.`,
+              keyData: {
+                module: crmModuleName,
+                recordCount: filtered.length,
+              },
+              fullPayload: {
+                module: crmModuleName,
+                records: filtered,
+              },
+            });
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : `Failed to read Zoho ${crmModuleName} records.`;
             return buildEnvelope({
               success: false,
               summary,
@@ -5172,10 +5645,10 @@ export const createVercelDesktopTools = (
             || input.operation === 'createNote'
             || input.operation === 'uploadAttachment'
             || input.operation === 'deleteAttachment'
-          ) && !sourceType) {
+          ) && !crmModuleName) {
             return buildEnvelope({
               success: false,
-              summary: `${input.operation} requires a supported Zoho module such as Leads, Contacts, Accounts, Deals, or Cases.`,
+              summary: `${input.operation} requires a supported Zoho CRM module such as Leads, Contacts, Accounts, Deals, Cases, Tasks, Events, Calls, Products, Quotes, or Sales_Orders.`,
               errorKind: 'missing_input',
               retryable: false,
             });

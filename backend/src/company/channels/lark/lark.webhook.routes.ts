@@ -43,6 +43,7 @@ type LarkWebhookRouteDependencies = {
   ) => Promise<{ taskId: string }>;
   resolveHitlAction: (actionId: string, decision: 'confirmed' | 'cancelled') => Promise<boolean>;
   getStoredHitlAction: (actionId: string) => Promise<Record<string, unknown> | null>;
+  getLatestPendingHitlAction: (channel: 'lark', chatId: string) => Promise<Record<string, unknown> | null>;
   executeStoredHitlAction: (action: Record<string, unknown>) => Promise<{ ok: boolean; summary: string }>;
   resolveCompanyIdByTenantKey: (larkTenantKey: string) => Promise<string | null>;
   resolveWorkspaceVerificationConfig: (
@@ -124,6 +125,52 @@ const parseHitlDecision = (text: string): { actionId: string; decision: 'confirm
     decision: match[1] === 'confirm' ? 'confirmed' : 'cancelled',
     actionId: match[2],
   };
+};
+
+const parseImplicitHitlDecision = (text: string): { decision: 'confirmed' | 'cancelled' } | null => {
+  const normalized = text.trim().toLowerCase().replace(/[.!?]+$/g, '');
+  if (!normalized || normalized.length > 40) {
+    return null;
+  }
+
+  const affirmative = new Set([
+    'yes',
+    'yeah',
+    'yep',
+    'ok',
+    'okay',
+    'ok go ahead',
+    'okay go ahead',
+    'go ahead',
+    'approve',
+    'approved',
+    'confirm',
+    'confirmed',
+    'continue',
+    'do it',
+    'please do it',
+  ]);
+  if (affirmative.has(normalized)) {
+    return { decision: 'confirmed' };
+  }
+
+  const negative = new Set([
+    'no',
+    'nope',
+    'cancel',
+    'reject',
+    'rejected',
+    'stop',
+    'dont',
+    "don't",
+    'do not',
+    'not now',
+  ]);
+  if (negative.has(normalized)) {
+    return { decision: 'cancelled' };
+  }
+
+  return null;
 };
 
 const parseHitlCardDecision = (value: unknown): { actionId: string; decision: 'confirmed' | 'cancelled' } | null => {
@@ -243,6 +290,14 @@ const defaultGetStoredHitlAction: LarkWebhookRouteDependencies['getStoredHitlAct
   return hitlActionService.getStoredAction(actionId) as unknown as Record<string, unknown> | null;
 };
 
+const defaultGetLatestPendingHitlAction: LarkWebhookRouteDependencies['getLatestPendingHitlAction'] = async (
+  channel,
+  chatId,
+) => {
+  const { hitlActionService } = require('../../state') as typeof import('../../state');
+  return hitlActionService.getLatestPendingByChat(channel, chatId) as unknown as Record<string, unknown> | null;
+};
+
 const defaultExecuteStoredHitlAction: LarkWebhookRouteDependencies['executeStoredHitlAction'] = async (action) => {
   const { executeStoredRemoteToolAction } = require('../../state') as typeof import('../../state');
   return executeStoredRemoteToolAction(action as any);
@@ -296,6 +351,7 @@ const createDefaultDependencies = (): LarkWebhookRouteDependencies => ({
   enqueueTask: defaultEnqueueTask,
   resolveHitlAction: defaultResolveHitlAction,
   getStoredHitlAction: defaultGetStoredHitlAction,
+  getLatestPendingHitlAction: defaultGetLatestPendingHitlAction,
   executeStoredHitlAction: defaultExecuteStoredHitlAction,
   resolveCompanyIdByTenantKey: defaultResolveCompanyIdByTenantKey,
   resolveWorkspaceVerificationConfig: defaultResolveWorkspaceVerificationConfig,
@@ -859,7 +915,20 @@ export const createLarkWebhookEventHandler = (
         attachedFiles: attachedFiles.length > 0 ? attachedFiles : undefined,
       };
 
-      const textHitlDecision = parseHitlDecision(tracedMessage.text);
+      const explicitTextHitlDecision = parseHitlDecision(tracedMessage.text);
+      const implicitTextHitlDecision = !explicitTextHitlDecision && parsed.kind === 'event_callback_message'
+        ? parseImplicitHitlDecision(tracedMessage.text)
+        : null;
+      const latestPendingHitlAction = implicitTextHitlDecision
+        ? await dependencies.getLatestPendingHitlAction('lark', tracedMessage.chatId)
+        : null;
+      const textHitlDecision = explicitTextHitlDecision
+        ?? (implicitTextHitlDecision && typeof latestPendingHitlAction?.actionId === 'string'
+          ? {
+            actionId: latestPendingHitlAction.actionId,
+            decision: implicitTextHitlDecision.decision,
+          }
+          : null);
       const cardHitlDecision = parsed.kind === 'event_callback_card_action'
         ? parseHitlCardDecision(parsed.actionValue)
         : null;

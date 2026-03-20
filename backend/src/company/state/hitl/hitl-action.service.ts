@@ -62,6 +62,14 @@ class HitlActionService {
     return hitlActionRepository.getHydratedByActionId(actionId);
   }
 
+  async getLatestPendingByChat(channel: 'desktop' | 'lark', chatId: string): Promise<HydratedStoredHitlAction | null> {
+    const stored = await hitlActionRepository.getLatestPendingByChat(channel, chatId);
+    if (!stored) {
+      return null;
+    }
+    return hitlActionRepository.getHydratedByActionId(stored.actionId);
+  }
+
   async waitForResolution(actionId: string): Promise<WaitResult> {
     for (;;) {
       const action = await hitlActionRepository.getByActionId(actionId);

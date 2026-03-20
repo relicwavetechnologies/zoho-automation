@@ -21,10 +21,12 @@ import {
   Sparkles,
   Workflow,
   X,
+  Target,
 } from 'lucide-react'
 
 import { useAuth } from '../context/AuthContext'
 import { cn } from '../lib/utils'
+import { Logo } from './Logo'
 
 type ScheduleFrequency = 'hourly' | 'daily' | 'weekly' | 'monthly' | 'one_time'
 type WorkflowStatus = 'draft' | 'published' | 'scheduled_active' | 'paused' | 'archived'
@@ -280,21 +282,25 @@ function buildGraph(spec: CompiledWorkflowSpec | null): { nodes: Node[]; edges: 
   return { nodes, edges }
 }
 
-function formatScheduleSummary(schedule: WorkflowSchedule): string {
-  if (schedule.type === 'hourly') {
-    return `Every ${schedule.intervalHours} hour${schedule.intervalHours === 1 ? '' : 's'}`
+function fromScheduleModalDraft(draft: ScheduleModalDraft): Record<string, unknown> {
+  if (draft.frequency === 'hourly') {
+    return {
+      frequency: 'hourly',
+      timezone: draft.timezone,
+      intervalHours: draft.intervalHours,
+      minute: draft.minute,
+    }
   }
-  if (schedule.type === 'daily') {
-    return `Daily at ${String(schedule.time.hour).padStart(2, '0')}:${String(schedule.time.minute).padStart(2, '0')}`
+  if (draft.frequency === 'daily') {
+    return { frequency: 'daily', timezone: draft.timezone, time: draft.time }
   }
-  if (schedule.type === 'weekly') {
-    const day = WEEKDAY_OPTIONS.find((option) => option.value === schedule.daysOfWeek[0])?.label ?? schedule.daysOfWeek[0]
-    return `Weekly on ${day}`
+  if (draft.frequency === 'weekly') {
+    return { frequency: 'weekly', timezone: draft.timezone, time: draft.time, dayOfWeek: draft.dayOfWeek }
   }
-  if (schedule.type === 'monthly') {
-    return `Monthly on day ${schedule.dayOfMonth}`
+  if (draft.frequency === 'monthly') {
+    return { frequency: 'monthly', timezone: draft.timezone, time: draft.time, dayOfMonth: draft.dayOfMonth }
   }
-  return `One-time on ${new Date(schedule.runAt).toLocaleDateString()}`
+  return { frequency: 'one_time', timezone: draft.timezone, time: draft.time, runAt: draft.runAt }
 }
 
 function toScheduleModalDraft(schedule: WorkflowSchedule): ScheduleModalDraft {
@@ -360,35 +366,14 @@ function toScheduleModalDraft(schedule: WorkflowSchedule): ScheduleModalDraft {
   }
 }
 
-function fromScheduleModalDraft(draft: ScheduleModalDraft): Record<string, unknown> {
-  if (draft.frequency === 'hourly') {
-    return {
-      frequency: 'hourly',
-      timezone: draft.timezone,
-      intervalHours: draft.intervalHours,
-      minute: draft.minute,
-    }
-  }
-  if (draft.frequency === 'daily') {
-    return { frequency: 'daily', timezone: draft.timezone, time: draft.time }
-  }
-  if (draft.frequency === 'weekly') {
-    return { frequency: 'weekly', timezone: draft.timezone, time: draft.time, dayOfWeek: draft.dayOfWeek }
-  }
-  if (draft.frequency === 'monthly') {
-    return { frequency: 'monthly', timezone: draft.timezone, time: draft.time, dayOfMonth: draft.dayOfMonth }
-  }
-  return { frequency: 'one_time', timezone: draft.timezone, time: draft.time, runDate: draft.runDate }
-}
-
 function createSkeletonBlocks(): JSX.Element {
   return (
-    <div className="flex h-full min-h-[520px] items-center justify-center rounded-2xl border border-border bg-secondary/10">
-      <div className="flex w-full max-w-3xl flex-col items-center gap-6 px-8">
+    <div className="flex h-full items-center justify-center">
+      <div className="flex w-full max-w-lg flex-col items-center gap-6 px-8">
         {[0, 1, 2].map((index) => (
           <div key={index} className="flex w-full flex-col items-center gap-4">
-            <div className="h-24 w-full max-w-[320px] animate-pulse rounded-2xl border border-border bg-secondary/20" />
-            {index < 2 ? <ArrowRight className="text-muted-foreground/20" size={18} /> : null}
+            <div className="h-20 w-full max-w-[280px] animate-pulse rounded-2xl border border-border bg-white/[0.03]" />
+            {index < 2 ? <ArrowRight className="text-muted-foreground/10" size={18} /> : null}
           </div>
         ))}
       </div>
@@ -411,6 +396,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
   const [composerText, setComposerText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [promptOpen, setPromptOpen] = useState(false)
   const [saveModalOpen, setSaveModalOpen] = useState(false)
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false)
   const [promptDraft, setPromptDraft] = useState('')
@@ -558,6 +544,8 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
       setSelectedExistingThreadId(null)
     }
     setThreadSearch('')
+    setPromptOpen(false)
+    setAdvancedOpen(false)
   }, [selectedWorkflowId])
 
   const buildDestinationsPayload = (): Array<{ kind: 'desktop_thread'; label?: string; value?: string }> => {
@@ -777,8 +765,8 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
 
   return (
     <ReactFlowProvider>
-      <div className="flex h-full min-h-0 bg-background text-foreground">
-        <aside className="flex w-[280px] shrink-0 flex-col border-r border-border bg-background/50 backdrop-blur-md px-4 py-5">
+      <div className="flex h-full min-h-0 bg-background text-foreground relative">
+        <aside className="flex w-[280px] shrink-0 flex-col border-r border-border bg-background/50 backdrop-blur-md px-4 py-5 z-20">
           <div className="mb-6 flex items-center justify-between px-1">
             <div>
               <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40">Workflows</div>
@@ -822,8 +810,8 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
           </div>
         </aside>
 
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="border-b border-border/50 px-8 py-6">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col relative">
+          <div className="border-b border-border/50 px-8 py-6 z-20 bg-background/80 backdrop-blur-md shrink-0">
             <div className="mx-auto flex w-full max-w-[1400px] items-start justify-between gap-8">
               <div className="min-w-0 flex-1">
                 <div className="inline-flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-primary/80">
@@ -841,7 +829,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
               {onExit ? (
                 <button
                   onClick={onExit}
-                  className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-secondary/50 px-4 text-[13px] font-semibold text-muted-foreground transition-all hover:bg-secondary hover:text-foreground shadow-sm"
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border bg-secondary/50 px-3.5 text-[13px] font-semibold text-muted-foreground transition-all hover:bg-secondary hover:text-foreground shadow-sm"
                 >
                   Back to chat
                 </button>
@@ -880,65 +868,81 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
             </div>
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-8 bg-black/5">
-            {error ? (
-              <div className="mx-auto mb-6 w-full max-w-[1400px] rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-[13px] font-medium text-red-500">
-                {error}
-              </div>
-            ) : null}
-            {statusNotice ? (
-              <div className="mx-auto mb-6 w-full max-w-[1400px] rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-[13px] font-medium text-emerald-500">
-                {statusNotice}
-              </div>
-            ) : null}
+          <div className="flex-1 relative overflow-hidden bg-black/5">
+            {/* --- Background Canvas (Full size) --- */}
+            <div className="absolute inset-0 z-0">
+              <ReactFlow
+                nodes={hasGeneratedDraft ? graph.nodes : []}
+                edges={graph.edges}
+                nodeTypes={nodeTypes}
+                nodesDraggable={false}
+                nodesConnectable={false}
+                elementsSelectable={false}
+                fitView
+                fitViewOptions={{ padding: 0.2 }}
+                proOptions={{ hideAttribution: true }}
+              >
+                <Background color="hsl(var(--muted-foreground))" opacity={0.05} gap={24} />
+                <Controls 
+                  showInteractive={false} 
+                  className="bg-background border-border fill-muted-foreground"
+                />
+              </ReactFlow>
+            </div>
 
-            <div className="mx-auto flex min-h-0 w-full max-w-[1400px] flex-1 flex-col overflow-hidden">
-              <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border bg-black/20 shadow-sm">
-                {isGenerating ? (
-                  createSkeletonBlocks()
-                ) : hasGeneratedDraft ? (
-                  <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_340px] overflow-hidden">
-                    <div className="min-h-0 border-r border-border/50 relative bg-black/10">
-                      <ReactFlow
-                        nodes={graph.nodes}
-                        edges={graph.edges}
-                        nodeTypes={nodeTypes}
-                        nodesDraggable={false}
-                        nodesConnectable={false}
-                        elementsSelectable={false}
-                        fitView
-                        fitViewOptions={{ padding: 0.2 }}
-                        proOptions={{ hideAttribution: true }}
-                      >
-                        <Background color="hsl(var(--muted-foreground))" opacity={0.03} gap={24} />
-                        <Controls 
-                          showInteractive={false} 
-                          className="bg-background border-border fill-muted-foreground"
-                        />
-                      </ReactFlow>
-                    </div>
+            {/* --- Overlay Layers --- */}
+            <div className="relative h-full w-full z-10 pointer-events-none flex flex-col">
+              {error ? (
+                <div className="mx-auto mt-6 w-full max-w-[1400px] rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-[13px] font-medium text-red-500 pointer-events-auto shadow-sm">
+                  {error}
+                </div>
+              ) : null}
+              {statusNotice ? (
+                <div className="mx-auto mt-6 w-full max-w-[1400px] rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-[13px] font-medium text-emerald-500 pointer-events-auto shadow-sm">
+                  {statusNotice}
+                </div>
+              ) : null}
 
-                    <div className="min-h-0 overflow-y-auto px-5 py-6 space-y-6 bg-secondary/5">
+              {/* Main Workspace Stage */}
+              <div className="flex-1 relative flex overflow-hidden">
+                {/* Floating Meta Panel (Right) */}
+                {hasGeneratedDraft && !isGenerating && (
+                  <div className="absolute top-8 right-8 bottom-[140px] w-[340px] overflow-y-auto pointer-events-auto flex flex-col gap-4">
+                    <div className="rounded-2xl border border-border bg-background/80 backdrop-blur-xl p-5 space-y-4 shadow-2xl ring-1 ring-white/5 transition-all duration-500">
+                      
+                      {/* Section: Prompt (Collapsible) */}
                       <div className="space-y-3">
-                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">
-                          <Bot size={12} />
-                          Generated Prompt
-                        </div>
-                        <textarea
-                          value={promptDraft}
-                          onChange={(event) => setPromptDraft(event.target.value)}
-                          onBlur={() => void savePromptEdits()}
-                          className="min-h-[160px] w-full resize-none rounded-xl border border-border bg-black/40 px-4 py-3 text-[13px] leading-relaxed text-foreground/80 outline-none transition-colors focus:border-primary/30"
-                        />
-                        <div className="text-[10px] font-medium text-muted-foreground/40 text-center">
-                          {isSavingPromptDraft ? 'Saving...' : 'Auto-saves when you leave the field'}
-                        </div>
+                        <button 
+                          onClick={() => setPromptOpen(!promptOpen)}
+                          className="flex w-full items-center justify-between group"
+                        >
+                          <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 group-hover:text-muted-foreground/70 transition-colors">
+                            <Bot size={12} />
+                            Generated Prompt
+                          </div>
+                          {promptOpen ? <ChevronDown size={14} className="text-muted-foreground/40" /> : <ChevronRight size={14} className="text-muted-foreground/40" />}
+                        </button>
+                        
+                        {promptOpen && (
+                          <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+                            <textarea
+                              value={promptDraft}
+                              onChange={(event) => setPromptDraft(event.target.value)}
+                              onBlur={() => void savePromptEdits()}
+                              className="min-h-[160px] w-full resize-none rounded-xl border border-border bg-black/40 px-4 py-3 text-[13px] leading-relaxed text-foreground/80 outline-none transition-colors focus:border-primary/30 shadow-inner"
+                            />
+                            <div className="mt-2 text-[10px] font-medium text-muted-foreground/40 text-center">
+                              {isSavingPromptDraft ? 'Saving...' : 'Auto-saves on exit'}
+                            </div>
+                          </div>
+                        )}
                       </div>
 
-                      <div className="border-t border-border/50 pt-6">
+                      {/* Section: JSON (Collapsible) */}
+                      <div className="border-t border-border/50 pt-4">
                         <button
                           onClick={() => setAdvancedOpen((open) => !open)}
-                          className="flex w-full items-center justify-between text-left group"
+                          className="flex w-full items-center justify-between group"
                         >
                           <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 group-hover:text-muted-foreground/70 transition-colors">
                             <FileJson2 size={12} />
@@ -947,8 +951,8 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                           {advancedOpen ? <ChevronDown size={14} className="text-muted-foreground/40" /> : <ChevronRight size={14} className="text-muted-foreground/40" />}
                         </button>
 
-                        {advancedOpen ? (
-                          <div className="mt-4 space-y-3">
+                        {advancedOpen && (
+                          <div className="mt-4 space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
                             <textarea
                               value={jsonDraft}
                               onChange={(event) => setJsonDraft(event.target.value)}
@@ -956,30 +960,34 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                             />
                             <button
                               onClick={() => void saveJsonEdits()}
-                              className="inline-flex items-center gap-2 rounded-lg border border-border bg-secondary/20 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm"
+                              className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-secondary/20 px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm"
                             >
                               <Save size={13} />
                               Apply Changes
                             </button>
                           </div>
-                        ) : null}
+                        )}
                       </div>
 
-                      <div className="border-t border-border/50 pt-6">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-4">Destination</div>
+                      {/* Section: Destination (Always visible but streamlined) */}
+                      <div className="border-t border-border/50 pt-4">
+                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-4">
+                          <Target size={12} />
+                          Destination
+                        </div>
                         <div className="space-y-2">
                           <button
                             onClick={() => setOutputMode('new_thread')}
                             className={cn(
                               'flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition-all shadow-sm',
                               outputMode === 'new_thread'
-                                ? 'border-primary/20 bg-primary/5'
+                                ? 'border-primary/20 bg-primary/10'
                                 : 'border-border bg-black/40 hover:bg-secondary/30',
                             )}
                           >
                             <div className="min-w-0">
                               <div className="text-[13px] font-semibold text-foreground/90">New thread</div>
-                              <div className="mt-0.5 text-[11px] text-muted-foreground/60 leading-tight">Post to a new thread per run</div>
+                              <div className="mt-0.5 text-[11px] text-muted-foreground/60 leading-tight">Post to new thread</div>
                             </div>
                             {outputMode === 'new_thread' ? <Check size={14} className="text-primary" /> : null}
                           </button>
@@ -989,13 +997,13 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                             className={cn(
                               'flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition-all shadow-sm',
                               outputMode === 'existing_thread'
-                                ? 'border-primary/20 bg-primary/5'
+                                ? 'border-primary/20 bg-primary/10'
                                 : 'border-border bg-black/40 hover:bg-secondary/30',
                             )}
                           >
                             <div className="min-w-0">
                               <div className="text-[13px] font-semibold text-foreground/90">Existing thread</div>
-                              <div className="mt-0.5 text-[11px] text-muted-foreground/60 leading-tight">Post to a specific desktop thread</div>
+                              <div className="mt-0.5 text-[11px] text-muted-foreground/60 leading-tight">Fixed desktop thread</div>
                             </div>
                             {outputMode === 'existing_thread' ? <Check size={14} className="text-primary" /> : null}
                           </button>
@@ -1008,7 +1016,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                                 placeholder="Search threads..."
                                 className="w-full bg-secondary/20 rounded-lg px-3 py-2 text-[12px] text-foreground outline-none placeholder:text-muted-foreground/40 border border-transparent focus:border-border"
                               />
-                              <div className="max-h-40 overflow-y-auto space-y-1">
+                              <div className="max-h-40 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
                                 {filteredThreads.map((thread) => (
                                   <button
                                     key={thread.id}
@@ -1030,11 +1038,11 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                         </div>
                       </div>
 
-                      <div className="border-t border-border/50 pt-6 pb-2">
+                      <div className="border-t border-border/50 pt-4 pb-2">
                         <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-4">Capabilities</div>
                         <div className="flex flex-wrap gap-2">
                           {selectedWorkflow.capabilitySummary.requiredTools.map((toolId) => (
-                            <span key={toolId} className="rounded-lg border border-border bg-black/40 px-2.5 py-1 text-[11px] font-semibold text-muted-foreground/80">
+                            <span key={toolId} className="rounded-lg border border-border bg-black/40 px-2.5 py-1 text-[11px] font-semibold text-muted-foreground/80 shadow-sm">
                               {toolId}
                             </span>
                           ))}
@@ -1042,67 +1050,39 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                       </div>
                     </div>
                   </div>
-                ) : (
-                  <div className="grid h-full min-h-[560px] grid-cols-[minmax(0,1fr)_340px] overflow-hidden">
-                    <div className="flex min-h-full items-center justify-center border-r border-border/50 px-12 bg-black/[0.02]">
-                      <div className="max-w-xl text-center">
-                        <div className="inline-flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/10 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-primary/80">
-                          Getting Started
-                        </div>
-                        <h2 className="mt-6 text-[32px] font-bold tracking-tight text-foreground/90">Describe the job</h2>
-                        <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground/60 font-medium">
-                          Divo converts your description into a reusable workflow with a visual map and persistent instructions.
-                        </p>
-                        <div className="mt-10 grid gap-3 sm:grid-cols-2 text-left">
-                          {[
-                            ['Structured Prompt', 'Turns your brief into a precise operating prompt.'],
-                            ['Execution Flow', 'Visual map of steps, logic, and delivery points.'],
-                            ['Smart Delivery', 'Post results to new threads or specific targets.'],
-                            ['Automated Timing', 'Add schedules to run jobs on repeat.'],
-                          ].map(([title, body]) => (
-                            <div key={title} className="rounded-xl border border-border bg-black/40 px-4 py-4 shadow-sm">
-                              <div className="text-[13px] font-bold text-foreground/80">{title}</div>
-                              <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground/60">{body}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
+                )}
 
-                    <div className="flex flex-col justify-between px-6 py-8 bg-secondary/5">
-                      <div className="space-y-6">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Next Steps</div>
-                        <div className="space-y-2">
-                          {[
-                            'Describe your workflow goals.',
-                            'Review the generated flow.',
-                            'Choose the output destination.',
-                            'Save to library and schedule.',
-                          ].map((item, index) => (
-                            <div key={item} className="flex gap-3 rounded-xl border border-border bg-black/40 px-4 py-3 shadow-sm">
-                              <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-[10px] font-bold text-primary/80">
-                                {index + 1}
-                              </div>
-                              <div className="text-[13px] font-medium text-muted-foreground/80">{item}</div>
-                            </div>
-                          ))}
+                {/* Getting Started Centered overlay */}
+                {!hasGeneratedDraft && !isGenerating && (
+                  <div className="flex-1 flex items-center justify-center p-12">
+                    <div className="max-w-2xl text-center pointer-events-auto -mt-56 flex flex-col items-center">
+                      <div className="flex items-center gap-6 mb-6 animate-in fade-in duration-1000 slide-in-from-bottom-2">
+                        <div className="relative group">
+                          <div className="absolute -inset-3 bg-primary/10 rounded-full blur-xl opacity-0 group-hover:opacity-100 transition-opacity duration-700" />
+                          <Logo size={48} className="relative transition-transform duration-500 group-hover:scale-105" />
                         </div>
+                        <h2 className="text-[32px] sm:text-[40px] font-medium tracking-[-0.03em] text-foreground/85 leading-none">
+                          Describe your job
+                        </h2>
                       </div>
-
-                      <div className="rounded-xl border border-border bg-black/40 px-4 py-4 shadow-sm">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40 mb-2">Current Draft</div>
-                        <div className="text-[14px] font-bold text-foreground/80">{selectedWorkflow?.name || 'New workflow'}</div>
-                        <p className="mt-1 text-[12px] text-muted-foreground/50 leading-relaxed">
-                          Private draft — visible only to you until saved.
-                        </p>
-                      </div>
+                      <p className="text-[16px] leading-relaxed text-muted-foreground/50 font-medium max-w-lg mx-auto animate-in fade-in duration-1000 delay-200">
+                        Divo converts your plain-English instructions into a reusable, visual workflow map.
+                      </p>
                     </div>
+                  </div>
+                )}
+
+                {/* Skeleton Loader overlay */}
+                {isGenerating && (
+                  <div className="flex-1 flex items-center justify-center pointer-events-none">
+                    {createSkeletonBlocks()}
                   </div>
                 )}
               </div>
 
-              <div className="mt-8 shrink-0">
-                <div className="mx-auto w-full max-w-[960px] rounded-2xl border border-border bg-background/50 backdrop-blur-md px-6 py-5 shadow-sm">
+              {/* Floating Island Composer at the bottom */}
+              <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-[720px] pointer-events-auto px-6 mb-2">
+                <div className="rounded-2xl border border-border bg-background/80 backdrop-blur-xl px-6 py-5 shadow-2xl ring-1 ring-white/5">
                   {composerMode === 'compose' ? (
                     <>
                       <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40 mb-3">
@@ -1112,7 +1092,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                       <textarea
                         value={composerText}
                         onChange={(event) => setComposerText(event.target.value)}
-                        placeholder="Describe the workflow step by step... e.g., 'Every Monday, summarize recent finance docs and post a digest to Lark.'"
+                        placeholder="Describe the workflow step by step..."
                         className="min-h-[60px] w-full resize-none bg-transparent text-[14px] leading-relaxed text-foreground/90 outline-none placeholder:text-muted-foreground/30"
                       />
                       <div className="mt-4 flex items-center justify-between gap-4 border-t border-border/50 pt-4">
@@ -1189,7 +1169,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
             <Dialog.Overlay className="fixed inset-0 z-40 bg-background/60 backdrop-blur-md" />
             <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(480px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-background p-8 shadow-xl text-foreground">
               <div className="text-center">
-                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary mb-6">
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary mb-6 shadow-sm">
                   <Save size={24} />
                 </div>
                 <Dialog.Title className="text-xl font-bold text-foreground/90">Workflow saved</Dialog.Title>

@@ -8,6 +8,7 @@ import {
   ShortcutsSettings, 
   NotificationsSettings 
 } from './UnifiedSettings'
+import { Logo } from '../Logo'
 import { cn } from '../../lib/utils'
 
 export function ProfileLayout({ onClose }: { onClose: () => void }): JSX.Element {
@@ -47,7 +48,10 @@ export function ProfileLayout({ onClose }: { onClose: () => void }): JSX.Element
           >
             <PanelLeftClose size={16} />
           </button>
-          <span className="text-[10px] font-black uppercase tracking-[0.25em] text-primary/80">Divo</span>
+          <div className="flex items-center gap-2">
+            <Logo size={18} />
+            <span className="text-[10px] font-black uppercase tracking-[0.25em] text-primary/80">Divo</span>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto space-y-6">

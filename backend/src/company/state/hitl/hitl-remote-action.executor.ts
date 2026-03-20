@@ -50,6 +50,69 @@ type ActionExecutionResult = {
   payload?: Record<string, unknown>;
 };
 
+const readBooksRecordId = (record: Record<string, unknown>, moduleName: ZohoBooksModule): string | undefined => {
+  if (moduleName === 'invoices') {
+    return asString(record.invoice_id) ?? asString(record.id);
+  }
+  if (moduleName === 'estimates') {
+    return asString(record.estimate_id) ?? asString(record.id);
+  }
+  if (moduleName === 'bills') {
+    return asString(record.bill_id) ?? asString(record.id);
+  }
+  return asString(record.id);
+};
+
+const readBooksRecordNumber = (record: Record<string, unknown>, moduleName: ZohoBooksModule): string | undefined => {
+  if (moduleName === 'invoices') {
+    return asString(record.invoice_number) ?? asString(record.invoiceNumber);
+  }
+  if (moduleName === 'estimates') {
+    return asString(record.estimate_number) ?? asString(record.estimateNumber);
+  }
+  if (moduleName === 'bills') {
+    return asString(record.bill_number) ?? asString(record.billNumber);
+  }
+  return undefined;
+};
+
+const resolveZohoBooksRecordIdentifier = async (input: {
+  companyId: string;
+  organizationId?: string;
+  moduleName: ZohoBooksModule;
+  identifier: string;
+}): Promise<{ recordId: string; matchedBy: 'id' | 'number' }> => {
+  const direct = input.identifier.trim();
+  const result = await zohoBooksClient.listRecords({
+    companyId: input.companyId,
+    organizationId: input.organizationId,
+    moduleName: input.moduleName,
+    query: direct,
+    limit: 20,
+  });
+
+  const exactIdMatch = result.items.find((record) => readBooksRecordId(record, input.moduleName) === direct);
+  if (exactIdMatch) {
+    return {
+      recordId: readBooksRecordId(exactIdMatch, input.moduleName)!,
+      matchedBy: 'id',
+    };
+  }
+
+  const exactNumberMatch = result.items.find((record) => readBooksRecordNumber(record, input.moduleName) === direct);
+  if (exactNumberMatch) {
+    return {
+      recordId: readBooksRecordId(exactNumberMatch, input.moduleName)!,
+      matchedBy: 'number',
+    };
+  }
+
+  return {
+    recordId: direct,
+    matchedBy: 'id',
+  };
+};
+
 type ResolvedGoogleAccess = {
   accessToken: string;
   mode: 'company' | 'user';
@@ -553,6 +616,25 @@ const moduleNameToSourceType = (moduleName: string): ZohoSourceType => {
   throw new Error(`Unsupported Zoho module for mutation: ${moduleName}`);
 };
 
+const moduleNameToCrmModule = (moduleName: string): string => {
+  const normalized = moduleName.trim().toLowerCase();
+  if (normalized === 'leads' || normalized === 'lead') return 'Leads';
+  if (normalized === 'contacts' || normalized === 'contact') return 'Contacts';
+  if (normalized === 'accounts' || normalized === 'account' || normalized === 'companies' || normalized === 'company') return 'Accounts';
+  if (normalized === 'deals' || normalized === 'deal') return 'Deals';
+  if (normalized === 'cases' || normalized === 'case' || normalized === 'tickets' || normalized === 'ticket') return 'Cases';
+  if (normalized === 'tasks' || normalized === 'task') return 'Tasks';
+  if (normalized === 'events' || normalized === 'event' || normalized === 'meetings' || normalized === 'meeting') return 'Events';
+  if (normalized === 'calls' || normalized === 'call') return 'Calls';
+  if (normalized === 'products' || normalized === 'product') return 'Products';
+  if (normalized === 'quotes' || normalized === 'quote') return 'Quotes';
+  if (normalized === 'vendors' || normalized === 'vendor') return 'Vendors';
+  if (normalized === 'invoices' || normalized === 'invoice') return 'Invoices';
+  if (normalized === 'salesorders' || normalized === 'salesorder' || normalized === 'sales_orders' || normalized === 'sales-order') return 'Sales_Orders';
+  if (normalized === 'purchaseorders' || normalized === 'purchaseorder' || normalized === 'purchase_orders' || normalized === 'purchase-order') return 'Purchase_Orders';
+  return moduleName.trim();
+};
+
 const moduleNameToBooksModule = (moduleName: string): ZohoBooksModule => {
   const normalized = moduleName.trim().toLowerCase();
   if (normalized === 'contact' || normalized === 'contacts' || normalized === 'customer' || normalized === 'customers' || normalized === 'vendor' || normalized === 'vendors') {
@@ -599,15 +681,23 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     throw new Error('Stored Zoho action is missing module');
   }
   const sourceType = moduleName ? moduleNameToSourceType(moduleName) : undefined;
+  const crmModuleName = moduleName ? moduleNameToCrmModule(moduleName) : undefined;
   const metadata = loadRuntimeMetadata(action);
 
   if (operation === 'createRecord') {
-    const result = await zohoDataClient.createRecord({
-      companyId: metadata.companyId,
-      sourceType: sourceType!,
-      fields: asRecord(payload.fields) ?? {},
-      trigger: asStringArray(payload.trigger),
-    });
+    const result = sourceType
+      ? await zohoDataClient.createRecord({
+        companyId: metadata.companyId,
+        sourceType,
+        fields: asRecord(payload.fields) ?? {},
+        trigger: asStringArray(payload.trigger),
+      })
+      : await zohoDataClient.createModuleRecord({
+        companyId: metadata.companyId,
+        moduleName: crmModuleName!,
+        fields: asRecord(payload.fields) ?? {},
+        trigger: asStringArray(payload.trigger),
+      });
     return {
       ok: true,
       summary: `Created Zoho ${moduleName} record.`,
@@ -620,13 +710,21 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     if (!recordId) {
       throw new Error('Stored Zoho update action is missing recordId');
     }
-    const result = await zohoDataClient.updateRecord({
-      companyId: metadata.companyId,
-      sourceType: sourceType!,
-      sourceId: recordId,
-      fields: asRecord(payload.fields) ?? {},
-      trigger: asStringArray(payload.trigger),
-    });
+    const result = sourceType
+      ? await zohoDataClient.updateRecord({
+        companyId: metadata.companyId,
+        sourceType,
+        sourceId: recordId,
+        fields: asRecord(payload.fields) ?? {},
+        trigger: asStringArray(payload.trigger),
+      })
+      : await zohoDataClient.updateModuleRecord({
+        companyId: metadata.companyId,
+        moduleName: crmModuleName!,
+        recordId,
+        fields: asRecord(payload.fields) ?? {},
+        trigger: asStringArray(payload.trigger),
+      });
     return {
       ok: true,
       summary: `Updated Zoho ${moduleName} record ${recordId}.`,
@@ -639,11 +737,19 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     if (!recordId) {
       throw new Error('Stored Zoho delete action is missing recordId');
     }
-    await zohoDataClient.deleteRecord({
-      companyId: metadata.companyId,
-      sourceType: sourceType!,
-      sourceId: recordId,
-    });
+    if (sourceType) {
+      await zohoDataClient.deleteRecord({
+        companyId: metadata.companyId,
+        sourceType,
+        sourceId: recordId,
+      });
+    } else {
+      await zohoDataClient.deleteModuleRecord({
+        companyId: metadata.companyId,
+        moduleName: crmModuleName!,
+        recordId,
+      });
+    }
     return {
       ok: true,
       summary: `Deleted Zoho ${moduleName} record ${recordId}.`,
@@ -656,12 +762,19 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     if (!recordId) {
       throw new Error('Stored Zoho createNote action is missing recordId');
     }
-    const result = await zohoDataClient.createNote({
-      companyId: metadata.companyId,
-      sourceType: sourceType!,
-      sourceId: recordId,
-      fields: asRecord(payload.fields) ?? {},
-    });
+    const result = sourceType
+      ? await zohoDataClient.createNote({
+        companyId: metadata.companyId,
+        sourceType,
+        sourceId: recordId,
+        fields: asRecord(payload.fields) ?? {},
+      })
+      : await zohoDataClient.createModuleNote({
+        companyId: metadata.companyId,
+        moduleName: crmModuleName!,
+        recordId,
+        fields: asRecord(payload.fields) ?? {},
+      });
     return {
       ok: true,
       summary: `Created Zoho ${moduleName} note on record ${recordId}.`,
@@ -707,15 +820,25 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     if (!recordId) {
       throw new Error('Stored Zoho uploadAttachment action is missing recordId');
     }
-    const result = await zohoDataClient.uploadAttachment({
-      companyId: metadata.companyId,
-      sourceType: sourceType!,
-      sourceId: recordId,
-      fileName: asString(payload.fileName),
-      contentType: asString(payload.contentType),
-      contentBase64: asString(payload.contentBase64),
-      attachmentUrl: asString(payload.attachmentUrl),
-    });
+    const result = sourceType
+      ? await zohoDataClient.uploadAttachment({
+        companyId: metadata.companyId,
+        sourceType,
+        sourceId: recordId,
+        fileName: asString(payload.fileName),
+        contentType: asString(payload.contentType),
+        contentBase64: asString(payload.contentBase64),
+        attachmentUrl: asString(payload.attachmentUrl),
+      })
+      : await zohoDataClient.uploadModuleAttachment({
+        companyId: metadata.companyId,
+        moduleName: crmModuleName!,
+        recordId,
+        fileName: asString(payload.fileName),
+        contentType: asString(payload.contentType),
+        contentBase64: asString(payload.contentBase64),
+        attachmentUrl: asString(payload.attachmentUrl),
+      });
     return {
       ok: true,
       summary: `Uploaded Zoho attachment to ${moduleName} ${recordId}.`,
@@ -729,12 +852,21 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     if (!recordId || !attachmentId) {
       throw new Error('Stored Zoho deleteAttachment action is missing recordId or attachmentId');
     }
-    await zohoDataClient.deleteAttachment({
-      companyId: metadata.companyId,
-      sourceType: sourceType!,
-      sourceId: recordId,
-      attachmentId,
-    });
+    if (sourceType) {
+      await zohoDataClient.deleteAttachment({
+        companyId: metadata.companyId,
+        sourceType,
+        sourceId: recordId,
+        attachmentId,
+      });
+    } else {
+      await zohoDataClient.deleteModuleAttachment({
+        companyId: metadata.companyId,
+        moduleName: crmModuleName!,
+        recordId,
+        attachmentId,
+      });
+    }
     return {
       ok: true,
       summary: `Deleted Zoho attachment ${attachmentId} from ${moduleName} ${recordId}.`,
@@ -946,10 +1078,16 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
   }
 
   if (operation === 'emailInvoice' || operation === 'remindInvoice') {
-    const invoiceId = asString(payload.invoiceId);
-    if (!invoiceId) {
+    const invoiceIdentifier = asString(payload.invoiceId);
+    if (!invoiceIdentifier) {
       throw new Error(`Stored Zoho Books ${operation} action is missing invoiceId`);
     }
+    const { recordId: invoiceId } = await resolveZohoBooksRecordIdentifier({
+      companyId: metadata.companyId,
+      organizationId,
+      moduleName: 'invoices',
+      identifier: invoiceIdentifier,
+    });
     const result = operation === 'emailInvoice'
       ? await zohoBooksClient.emailInvoice({
         companyId: metadata.companyId,
@@ -965,16 +1103,22 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
       });
     return {
       ok: true,
-      summary: `${operation === 'emailInvoice' ? 'Emailed' : 'Sent reminder for'} Zoho Books invoice ${invoiceId}.`,
+      summary: `${operation === 'emailInvoice' ? 'Emailed' : 'Sent reminder for'} Zoho Books invoice ${invoiceIdentifier}.`,
       payload: result.payload,
     };
   }
 
   if (operation === 'enableInvoicePaymentReminder' || operation === 'disableInvoicePaymentReminder') {
-    const invoiceId = asString(payload.invoiceId);
-    if (!invoiceId) {
+    const invoiceIdentifier = asString(payload.invoiceId);
+    if (!invoiceIdentifier) {
       throw new Error(`Stored Zoho Books ${operation} action is missing invoiceId`);
     }
+    const { recordId: invoiceId } = await resolveZohoBooksRecordIdentifier({
+      companyId: metadata.companyId,
+      organizationId,
+      moduleName: 'invoices',
+      identifier: invoiceIdentifier,
+    });
     const result = await zohoBooksClient.setInvoicePaymentReminderEnabled({
       companyId: metadata.companyId,
       organizationId,
@@ -983,16 +1127,22 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     });
     return {
       ok: true,
-      summary: `${operation === 'enableInvoicePaymentReminder' ? 'Enabled' : 'Disabled'} payment reminders for Zoho Books invoice ${invoiceId}.`,
+      summary: `${operation === 'enableInvoicePaymentReminder' ? 'Enabled' : 'Disabled'} payment reminders for Zoho Books invoice ${invoiceIdentifier}.`,
       payload: result.payload,
     };
   }
 
   if (operation === 'writeOffInvoice' || operation === 'cancelInvoiceWriteOff') {
-    const invoiceId = asString(payload.invoiceId);
-    if (!invoiceId) {
+    const invoiceIdentifier = asString(payload.invoiceId);
+    if (!invoiceIdentifier) {
       throw new Error(`Stored Zoho Books ${operation} action is missing invoiceId`);
     }
+    const { recordId: invoiceId } = await resolveZohoBooksRecordIdentifier({
+      companyId: metadata.companyId,
+      organizationId,
+      moduleName: 'invoices',
+      identifier: invoiceIdentifier,
+    });
     const result = operation === 'writeOffInvoice'
       ? await zohoBooksClient.writeOffInvoice({
         companyId: metadata.companyId,
@@ -1008,16 +1158,22 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
       });
     return {
       ok: true,
-      summary: `${operation === 'writeOffInvoice' ? 'Wrote off' : 'Cancelled write off for'} Zoho Books invoice ${invoiceId}.`,
+      summary: `${operation === 'writeOffInvoice' ? 'Wrote off' : 'Cancelled write off for'} Zoho Books invoice ${invoiceIdentifier}.`,
       payload: result.payload,
     };
   }
 
   if (operation === 'markInvoiceSent' || operation === 'voidInvoice' || operation === 'markInvoiceDraft' || operation === 'submitInvoice' || operation === 'approveInvoice') {
-    const invoiceId = asString(payload.invoiceId);
-    if (!invoiceId) {
+    const invoiceIdentifier = asString(payload.invoiceId);
+    if (!invoiceIdentifier) {
       throw new Error(`Stored Zoho Books ${operation} action is missing invoiceId`);
     }
+    const { recordId: invoiceId } = await resolveZohoBooksRecordIdentifier({
+      companyId: metadata.companyId,
+      organizationId,
+      moduleName: 'invoices',
+      identifier: invoiceIdentifier,
+    });
     const result = await zohoBooksClient.transitionInvoice({
       companyId: metadata.companyId,
       organizationId,
@@ -1038,14 +1194,14 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
       ok: true,
       summary:
         operation === 'markInvoiceSent'
-          ? `Marked Zoho Books invoice ${invoiceId} as sent.`
+          ? `Marked Zoho Books invoice ${invoiceIdentifier} as sent.`
           : operation === 'voidInvoice'
-            ? `Voided Zoho Books invoice ${invoiceId}.`
+            ? `Voided Zoho Books invoice ${invoiceIdentifier}.`
             : operation === 'markInvoiceDraft'
-              ? `Marked Zoho Books invoice ${invoiceId} as draft.`
+              ? `Marked Zoho Books invoice ${invoiceIdentifier} as draft.`
               : operation === 'submitInvoice'
-                ? `Submitted Zoho Books invoice ${invoiceId} for approval.`
-                : `Approved Zoho Books invoice ${invoiceId}.`,
+                ? `Submitted Zoho Books invoice ${invoiceIdentifier} for approval.`
+                : `Approved Zoho Books invoice ${invoiceIdentifier}.`,
       payload: result.payload,
     };
   }
@@ -1119,6 +1275,207 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
               : operation === 'submitEstimate'
                 ? `Submitted Zoho Books estimate ${estimateId} for approval.`
                 : `Approved Zoho Books estimate ${estimateId}.`,
+      payload: result.payload,
+    };
+  }
+
+  if (operation === 'emailCreditNote') {
+    const creditNoteId = asString(payload.creditNoteId);
+    if (!creditNoteId) {
+      throw new Error('Stored Zoho Books emailCreditNote action is missing creditNoteId');
+    }
+    const result = await zohoBooksClient.emailCreditNote({
+      companyId: metadata.companyId,
+      organizationId,
+      creditNoteId,
+      body: asRecord(payload.body),
+    });
+    return {
+      ok: true,
+      summary: `Emailed Zoho Books credit note ${creditNoteId}.`,
+      payload: result.payload,
+    };
+  }
+
+  if (operation === 'openCreditNote' || operation === 'voidCreditNote') {
+    const creditNoteId = asString(payload.creditNoteId);
+    if (!creditNoteId) {
+      throw new Error(`Stored Zoho Books ${operation} action is missing creditNoteId`);
+    }
+    const result = await zohoBooksClient.transitionCreditNote({
+      companyId: metadata.companyId,
+      organizationId,
+      creditNoteId,
+      action: operation === 'openCreditNote' ? 'markOpen' : 'markVoid',
+      body: asRecord(payload.body),
+    });
+    return {
+      ok: true,
+      summary: `${operation === 'openCreditNote' ? 'Marked' : 'Voided'} Zoho Books credit note ${creditNoteId}${operation === 'openCreditNote' ? ' as open' : ''}.`,
+      payload: result.payload,
+    };
+  }
+
+  if (operation === 'refundCreditNote') {
+    const creditNoteId = asString(payload.creditNoteId);
+    if (!creditNoteId) {
+      throw new Error('Stored Zoho Books refundCreditNote action is missing creditNoteId');
+    }
+    const result = await zohoBooksClient.refundCreditNote({
+      companyId: metadata.companyId,
+      organizationId,
+      creditNoteId,
+      body: asRecord(payload.body) ?? {},
+    });
+    return {
+      ok: true,
+      summary: `Refunded Zoho Books credit note ${creditNoteId}.`,
+      payload: result.payload,
+    };
+  }
+
+  if (operation === 'emailSalesOrder' || operation === 'openSalesOrder' || operation === 'voidSalesOrder' || operation === 'submitSalesOrder' || operation === 'approveSalesOrder' || operation === 'createInvoiceFromSalesOrder') {
+    const salesOrderId = asString(payload.salesOrderId);
+    if (!salesOrderId) {
+      throw new Error(`Stored Zoho Books ${operation} action is missing salesOrderId`);
+    }
+    const result = operation === 'emailSalesOrder'
+      ? await zohoBooksClient.emailSalesOrder({
+        companyId: metadata.companyId,
+        organizationId,
+        salesOrderId,
+        body: asRecord(payload.body),
+      })
+      : operation === 'createInvoiceFromSalesOrder'
+        ? await zohoBooksClient.createInvoiceFromSalesOrder({
+          companyId: metadata.companyId,
+          organizationId,
+          salesOrderId,
+          body: asRecord(payload.body),
+        })
+        : await zohoBooksClient.transitionSalesOrder({
+          companyId: metadata.companyId,
+          organizationId,
+          salesOrderId,
+          action:
+            operation === 'openSalesOrder'
+              ? 'markOpen'
+              : operation === 'voidSalesOrder'
+                ? 'markVoid'
+                : operation === 'submitSalesOrder'
+                  ? 'submit'
+                  : 'approve',
+          body: asRecord(payload.body),
+        });
+    return {
+      ok: true,
+      summary:
+        operation === 'emailSalesOrder'
+          ? `Emailed Zoho Books sales order ${salesOrderId}.`
+          : operation === 'createInvoiceFromSalesOrder'
+            ? `Created invoice from Zoho Books sales order ${salesOrderId}.`
+            : operation === 'openSalesOrder'
+              ? `Marked Zoho Books sales order ${salesOrderId} as open.`
+              : operation === 'voidSalesOrder'
+                ? `Voided Zoho Books sales order ${salesOrderId}.`
+                : operation === 'submitSalesOrder'
+                  ? `Submitted Zoho Books sales order ${salesOrderId} for approval.`
+                  : `Approved Zoho Books sales order ${salesOrderId}.`,
+      payload: result.payload,
+    };
+  }
+
+  if (operation === 'emailPurchaseOrder' || operation === 'openPurchaseOrder' || operation === 'billPurchaseOrder' || operation === 'cancelPurchaseOrder' || operation === 'rejectPurchaseOrder' || operation === 'submitPurchaseOrder' || operation === 'approvePurchaseOrder') {
+    const purchaseOrderId = asString(payload.purchaseOrderId);
+    if (!purchaseOrderId) {
+      throw new Error(`Stored Zoho Books ${operation} action is missing purchaseOrderId`);
+    }
+    const result = operation === 'emailPurchaseOrder'
+      ? await zohoBooksClient.emailPurchaseOrder({
+        companyId: metadata.companyId,
+        organizationId,
+        purchaseOrderId,
+        body: asRecord(payload.body),
+      })
+      : await zohoBooksClient.transitionPurchaseOrder({
+        companyId: metadata.companyId,
+        organizationId,
+        purchaseOrderId,
+        action:
+          operation === 'openPurchaseOrder'
+            ? 'markOpen'
+            : operation === 'billPurchaseOrder'
+              ? 'markBilled'
+              : operation === 'cancelPurchaseOrder'
+                ? 'markCancelled'
+                : operation === 'rejectPurchaseOrder'
+                  ? 'reject'
+                  : operation === 'submitPurchaseOrder'
+                    ? 'submit'
+                    : 'approve',
+        body: asRecord(payload.body),
+      });
+    return {
+      ok: true,
+      summary:
+        operation === 'emailPurchaseOrder'
+          ? `Emailed Zoho Books purchase order ${purchaseOrderId}.`
+          : operation === 'openPurchaseOrder'
+            ? `Marked Zoho Books purchase order ${purchaseOrderId} as open.`
+            : operation === 'billPurchaseOrder'
+              ? `Marked Zoho Books purchase order ${purchaseOrderId} as billed.`
+              : operation === 'cancelPurchaseOrder'
+                ? `Cancelled Zoho Books purchase order ${purchaseOrderId}.`
+                : operation === 'rejectPurchaseOrder'
+                  ? `Rejected Zoho Books purchase order ${purchaseOrderId}.`
+                  : operation === 'submitPurchaseOrder'
+                    ? `Submitted Zoho Books purchase order ${purchaseOrderId} for approval.`
+                    : `Approved Zoho Books purchase order ${purchaseOrderId}.`,
+      payload: result.payload,
+    };
+  }
+
+  if (operation === 'addBooksComment' || operation === 'updateBooksComment' || operation === 'deleteBooksComment') {
+    const recordId = asString(payload.recordId);
+    const commentId = asString(payload.commentId);
+    if (!booksModule || !recordId) {
+      throw new Error(`Stored Zoho Books ${operation} action is missing module or recordId`);
+    }
+    if ((operation === 'updateBooksComment' || operation === 'deleteBooksComment') && !commentId) {
+      throw new Error(`Stored Zoho Books ${operation} action is missing commentId`);
+    }
+    const result = operation === 'addBooksComment'
+      ? await zohoBooksClient.addComment({
+        companyId: metadata.companyId,
+        organizationId,
+        moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
+        recordId,
+        body: asRecord(payload.body) ?? {},
+      })
+      : operation === 'updateBooksComment'
+        ? await zohoBooksClient.updateComment({
+          companyId: metadata.companyId,
+          organizationId,
+          moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
+          recordId,
+          commentId: commentId!,
+          body: asRecord(payload.body) ?? {},
+        })
+        : await zohoBooksClient.deleteComment({
+          companyId: metadata.companyId,
+          organizationId,
+          moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
+          recordId,
+          commentId: commentId!,
+        });
+    return {
+      ok: true,
+      summary:
+        operation === 'addBooksComment'
+          ? `Added comment to Zoho Books ${moduleName} ${recordId}.`
+          : operation === 'updateBooksComment'
+            ? `Updated comment ${commentId} on Zoho Books ${moduleName} ${recordId}.`
+            : `Deleted comment ${commentId} from Zoho Books ${moduleName} ${recordId}.`,
       payload: result.payload,
     };
   }

@@ -5,6 +5,7 @@ import { EmptyThread } from './EmptyThread'
 import { Skeleton } from './ui/Skeleton'
 import { ThinkingShimmer } from './ActivityBar'
 import { BlocksRenderer } from './BlocksRenderer'
+import { Logo } from './Logo'
 
 export function ChatPane(): JSX.Element {
   const {
@@ -133,18 +134,22 @@ export function ChatPane(): JSX.Element {
           </div>
         )}
 
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+        {messages.map((msg, index) => (
+          <MessageBubble 
+            key={msg.id} 
+            message={msg} 
+            isLast={index === messages.length - 1} 
+          />
         ))}
 
         {/* ── Live agentic response ─────────────────────────────────────── */}
         {hasLiveExecution && (
           <div className="mb-8">
             <div className="flex flex-col gap-2 items-start">
-              {/* Name Only */}
-              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-primary/80 ml-1 opacity-50">
-                Divo
-              </span>
+              {/* Mini Logo Header */}
+              <div className="ml-1 opacity-50">
+                <Logo size={14} className="opacity-80" />
+              </div>
 
               <div className="min-w-0 w-full">
                 {/*

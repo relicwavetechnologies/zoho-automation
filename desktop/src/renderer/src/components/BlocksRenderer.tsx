@@ -373,7 +373,7 @@ function ThinkingBlockRow({
                     )} />
                 </div>
                 <span className={cn(
-                    'text-[11px] font-bold uppercase tracking-widest',
+                    'text-[11px] font-bold',
                     hasContent ? 'text-muted-foreground/30 group-hover:text-muted-foreground/50' : 'text-muted-foreground/20',
                     'transition-colors',
                 )}>

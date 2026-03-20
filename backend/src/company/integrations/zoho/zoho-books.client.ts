@@ -1,4 +1,5 @@
 import { prisma } from '../../../utils/prisma';
+import { logger } from '../../../utils/logger';
 import { ZohoIntegrationError } from './zoho.errors';
 import { zohoHttpClient, ZohoHttpClient } from './zoho-http.client';
 import { zohoTokenService, ZohoTokenService } from './zoho-token.service';
@@ -34,6 +35,14 @@ type ZohoBooksScopedResult = {
   organizationId: string;
   payload: ZohoBooksResponse;
 };
+
+type ZohoBooksCommentModule =
+  | 'invoices'
+  | 'estimates'
+  | 'creditnotes'
+  | 'bills'
+  | 'salesorders'
+  | 'purchaseorders';
 
 const BOOKS_MODULE_KEYS: Record<ZohoBooksModule, { listKey: string; singularKeys: string[]; label: string }> = {
   contacts: { listKey: 'contacts', singularKeys: ['contact'], label: 'contact' },
@@ -798,16 +807,302 @@ export class ZohoBooksClient {
     });
   }
 
+  async getCreditNoteEmailContent(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    creditNoteId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `/books/v3/creditnotes/${encodeURIComponent(input.creditNoteId)}/email`,
+    });
+  }
+
+  async emailCreditNote(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    creditNoteId: string;
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/creditnotes/${encodeURIComponent(input.creditNoteId)}/email`,
+      body: input.body,
+    });
+  }
+
+  async transitionCreditNote(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    creditNoteId: string;
+    action: 'markOpen' | 'markVoid';
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    const suffix = input.action === 'markOpen' ? 'status/open' : 'status/void';
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/creditnotes/${encodeURIComponent(input.creditNoteId)}/${suffix}`,
+      body: input.body,
+    });
+  }
+
+  async refundCreditNote(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    creditNoteId: string;
+    body: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/creditnotes/${encodeURIComponent(input.creditNoteId)}/refunds`,
+      body: input.body,
+    });
+  }
+
+  async getSalesOrderEmailContent(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    salesOrderId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `/books/v3/salesorders/${encodeURIComponent(input.salesOrderId)}/email`,
+    });
+  }
+
+  async emailSalesOrder(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    salesOrderId: string;
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/salesorders/${encodeURIComponent(input.salesOrderId)}/email`,
+      body: input.body,
+    });
+  }
+
+  async transitionSalesOrder(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    salesOrderId: string;
+    action: 'markOpen' | 'markVoid' | 'submit' | 'approve';
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    const suffix = input.action === 'markOpen'
+      ? 'status/open'
+      : input.action === 'markVoid'
+        ? 'status/void'
+        : input.action;
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/salesorders/${encodeURIComponent(input.salesOrderId)}/${suffix}`,
+      body: input.body,
+    });
+  }
+
+  async createInvoiceFromSalesOrder(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    salesOrderId: string;
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/salesorders/${encodeURIComponent(input.salesOrderId)}/invoice`,
+      body: input.body,
+    });
+  }
+
+  async getPurchaseOrderEmailContent(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    purchaseOrderId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `/books/v3/purchaseorders/${encodeURIComponent(input.purchaseOrderId)}/email`,
+    });
+  }
+
+  async emailPurchaseOrder(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    purchaseOrderId: string;
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/purchaseorders/${encodeURIComponent(input.purchaseOrderId)}/email`,
+      body: input.body,
+    });
+  }
+
+  async transitionPurchaseOrder(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    purchaseOrderId: string;
+    action: 'markOpen' | 'markBilled' | 'markCancelled' | 'reject' | 'submit' | 'approve';
+    body?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    const suffix = input.action === 'markOpen'
+      ? 'status/open'
+      : input.action === 'markBilled'
+        ? 'status/billed'
+        : input.action === 'markCancelled'
+          ? 'status/cancelled'
+          : input.action;
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `/books/v3/purchaseorders/${encodeURIComponent(input.purchaseOrderId)}/${suffix}`,
+      body: input.body,
+    });
+  }
+
+  async listComments(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    moduleName: ZohoBooksCommentModule;
+    recordId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `${buildModulePath(input.moduleName, input.recordId)}/comments`,
+    });
+  }
+
+  async addComment(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    moduleName: ZohoBooksCommentModule;
+    recordId: string;
+    body: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'POST',
+      path: `${buildModulePath(input.moduleName, input.recordId)}/comments`,
+      body: input.body,
+    });
+  }
+
+  async updateComment(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    moduleName: ZohoBooksCommentModule;
+    recordId: string;
+    commentId: string;
+    body: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'PUT',
+      path: `${buildModulePath(input.moduleName, input.recordId)}/comments/${encodeURIComponent(input.commentId)}`,
+      body: input.body,
+    });
+  }
+
+  async deleteComment(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    moduleName: ZohoBooksCommentModule;
+    recordId: string;
+    commentId: string;
+  }): Promise<ZohoBooksScopedResult> {
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'DELETE',
+      path: `${buildModulePath(input.moduleName, input.recordId)}/comments/${encodeURIComponent(input.commentId)}`,
+    });
+  }
+
+  async getReport(input: {
+    companyId: string;
+    environment?: string;
+    organizationId?: string;
+    reportName: string;
+    filters?: Record<string, unknown>;
+  }): Promise<ZohoBooksScopedResult> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(input.filters ?? {})) {
+      const primitive = toPrimitiveString(value);
+      if (primitive) {
+        params.set(key, primitive);
+      }
+    }
+    const suffix = params.toString();
+    return this.requestInOrganizationScope({
+      companyId: input.companyId,
+      environment: input.environment,
+      organizationId: input.organizationId,
+      method: 'GET',
+      path: `/books/v3/reports/${encodeURIComponent(input.reportName)}${suffix ? `?${suffix}` : ''}`,
+    });
+  }
+
   private async resolveOrganizationId(input: {
     companyId: string;
     environment: string;
     preferredOrganizationId?: string;
   }): Promise<string> {
-    const preferred = asString(input.preferredOrganizationId);
-    if (preferred) {
-      return preferred;
-    }
-
     const connection = await prisma.zohoConnection.findUnique({
       where: {
         companyId_environment: {
@@ -818,15 +1113,22 @@ export class ZohoBooksClient {
     });
 
     const metadata = tokenMetadataToRecord(connection?.tokenMetadata);
+    const preferred = asString(input.preferredOrganizationId);
     const fromMetadata = readOrganizationIdFromMetadata(metadata);
-    if (fromMetadata) {
-      return fromMetadata;
-    }
 
     const organizations = await this.listOrganizations({
       companyId: input.companyId,
       environment: input.environment,
     });
+    const accessibleOrganizationIds = new Set(organizations.map((organization) => organization.organizationId));
+
+    if (preferred && accessibleOrganizationIds.has(preferred)) {
+      return preferred;
+    }
+
+    if (fromMetadata && accessibleOrganizationIds.has(fromMetadata)) {
+      return fromMetadata;
+    }
 
     const defaultOrg = organizations.find((organization) => organization.isDefault);
     const resolved = defaultOrg?.organizationId
@@ -837,6 +1139,22 @@ export class ZohoBooksClient {
         message: 'Zoho Books organization is not configured. Connect a default Books organization or store organizationId in the Zoho connection metadata.',
         code: 'schema_mismatch',
         retriable: false,
+      });
+    }
+
+    if (preferred && preferred !== resolved) {
+      logger.warn('zoho.books.organization.fallback_from_preferred', {
+        companyId: input.companyId,
+        environment: input.environment,
+        preferredOrganizationId: preferred,
+        resolvedOrganizationId: resolved,
+      });
+    } else if (fromMetadata && fromMetadata !== resolved) {
+      logger.warn('zoho.books.organization.fallback_from_metadata', {
+        companyId: input.companyId,
+        environment: input.environment,
+        metadataOrganizationId: fromMetadata,
+        resolvedOrganizationId: resolved,
       });
     }
 

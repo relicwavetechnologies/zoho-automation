@@ -69,14 +69,6 @@ const MODE_OPTIONS: Array<{
     icon: Flame,
     iconClassName: 'text-primary',
   },
-  {
-    value: 'xtreme',
-    label: 'Xtreme',
-    description: 'Groq instant routing + Gemini deep planning',
-    title: 'Xtreme hybrid - Groq instant routing + Gemini deep planning',
-    icon: Rocket,
-    iconClassName: 'text-purple-400',
-  },
 ]
 
 // ─── Helper: icon per MIME type ────────────────────────────────────────────────
