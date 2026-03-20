@@ -4,6 +4,7 @@ import { generateText, stepCountIs, streamText } from 'ai';
 import type { Request, Response } from 'express';
 
 import config from '../../config';
+import { HttpException } from '../../core/http-exception';
 import { executionService } from '../../company/observability';
 import {
   desktopRuntimeAdapter,
@@ -53,7 +54,6 @@ import { logger } from '../../utils/logger';
 import { desktopThreadsService } from '../desktop-threads/desktop-threads.service';
 import type { MemberSessionDTO } from '../member-auth/member-auth.service';
 import { actSchema, sendSchema } from './desktop-chat.schemas';
-import { vercelDesktopEngine } from './vercel-desktop.engine';
 
 type DesktopWorkspaceAction =
   | { kind: 'list_files'; path?: string }
@@ -95,6 +95,14 @@ const buildRuntimeActor = (session: MemberSessionDTO) => ({
   larkOpenId: session.larkOpenId ?? undefined,
   larkUserId: session.larkUserId ?? undefined,
 });
+
+const resolveLanggraphDesktopModel = async (mode: 'fast' | 'high' | 'xtreme') => {
+  const resolved = await resolveVercelLanguageModel(mode);
+  return {
+    ...resolved,
+    thinkingLevel: 'minimal' as const,
+  };
+};
 
 const appendEventSafe = async (input: Parameters<typeof executionService.appendEvent>[0]) => {
   try {
@@ -288,7 +296,7 @@ const persistNodeState = async (state: RuntimeState, nodeName: string) => {
   });
 };
 
-const markDelegatedToCompatibility = async (input: {
+const markCompatibilityBlocked = async (input: {
   conversationId: string;
   runId: string;
   state: RuntimeState;
@@ -296,22 +304,20 @@ const markDelegatedToCompatibility = async (input: {
   executionId: string;
 }) => {
   input.state.plan = {
-    kind: 'compatibility_delegate',
+    kind: 'compatibility_blocked',
     reason: input.reason,
-    steps: ['compat.execute_vercel'],
+    steps: ['compat.blocked'],
   };
   input.state.execution = {
-    delegatedTo: 'vercel',
     steps: [],
   };
-  await persistNodeState(input.state, 'compat.execute_vercel');
+  await persistNodeState(input.state, 'compat.blocked');
   await runtimeRunRepository.update(input.runId, {
-    status: 'cancelled',
-    stopReason: 'manual_stop',
-    currentNode: 'compat.execute_vercel',
+    status: 'failed',
+    stopReason: 'policy_blocked',
+    currentNode: 'compat.blocked',
     finishedAt: new Date(),
     metadataJson: {
-      delegatedTo: 'vercel',
       reason: input.reason,
       executionId: input.executionId,
     },
@@ -325,7 +331,7 @@ const markDelegatedToCompatibility = async (input: {
     candidateSummary: null,
     diffSummary: input.reason,
     metricsJson: {
-      delegated: true,
+      blocked: true,
       reason: input.reason,
     },
   });
@@ -342,6 +348,18 @@ export class LanggraphDesktopEngine {
       ...(typeof req.body === 'object' && req.body !== null ? req.body : {}),
       executionId,
     };
+
+    logger.info('langgraph.desktop.stream.entry', {
+      executionId,
+      threadId,
+      companyId: session.companyId,
+      userId: session.userId,
+      mode,
+      messageLength: message.trim().length,
+      attachedFileCount: attachedFiles.length,
+      workspacePath: workspace?.path ?? null,
+      configuredEngine: config.ORCHESTRATION_ENGINE,
+    });
 
     const started = await runtimeService.startRun({
       companyId: session.companyId,
@@ -367,9 +385,26 @@ export class LanggraphDesktopEngine {
 
     try {
       const state = started.state;
+      logger.info('langgraph.desktop.history.load.start', {
+        executionId,
+        threadId,
+      });
       const { messages: historyMessages, history } = await mapDesktopHistoryToMessages(threadId, session);
+      logger.info('langgraph.desktop.history.load.completed', {
+        executionId,
+        threadId,
+        historyMessageCount: historyMessages.length,
+        persistedMessageCount: history.length,
+      });
 
-      const classifierModel = await resolveVercelLanguageModel(mode);
+      const classifierModel = await resolveLanggraphDesktopModel(mode);
+      logger.info('langgraph.desktop.classifier.start', {
+        executionId,
+        threadId,
+        mode,
+        effectiveModelId: classifierModel.effectiveModelId,
+        thinkingLevel: classifierModel.thinkingLevel,
+      });
       const classifierOutput = await generateText({
         model: classifierModel.model,
         system: 'Return JSON only.',
@@ -391,10 +426,27 @@ export class LanggraphDesktopEngine {
         });
         return null;
       });
+      logger.info('langgraph.desktop.classifier.completed', {
+        executionId,
+        threadId,
+        hadStructuredOutput: Boolean(classifierOutput?.text?.trim()),
+      });
 
       const routeContract = resolveRouteContract({
         rawLlmOutput: classifierOutput?.text ?? null,
         messageText: message,
+      });
+
+      logger.info('langgraph.desktop.route.resolved', {
+        executionId,
+        threadId,
+        intent: routeContract.route.intent,
+        retrievalMode: routeContract.route.retrievalMode,
+        complexity: routeContract.route.complexity,
+        freshnessNeed: routeContract.route.freshnessNeed,
+        risk: routeContract.route.risk,
+        source: routeContract.source,
+        fallbackReasonCode: routeContract.fallbackReasonCode ?? null,
       });
 
       state.classification = {
@@ -423,6 +475,12 @@ export class LanggraphDesktopEngine {
       await persistNodeState(state, 'policy.gate');
       await persistNodeState(state, 'route.retrieval');
 
+      logger.info('langgraph.desktop.compatibility.check', {
+        executionId,
+        threadId,
+        routeIntent: routeContract.route.intent,
+        retrievalMode: routeContract.route.retrievalMode,
+      });
       const compatibilityReason = shouldDelegateToCompatibility({
         classification: state.classification,
         retrieval: state.retrieval,
@@ -430,14 +488,46 @@ export class LanggraphDesktopEngine {
       });
 
       if (compatibilityReason) {
-        await markDelegatedToCompatibility({
+        const errorMessage = `LangGraph blocked this desktop request because it would have fallen back to the Vercel compatibility path. Reason: ${compatibilityReason}`;
+        logger.warn('langgraph.desktop.path.compatibility_blocked', {
+          executionId,
+          threadId,
+          reason: compatibilityReason,
+          routeIntent: routeContract.route.intent,
+          retrievalMode: routeContract.route.retrievalMode,
+          blockedFallbackEngine: 'vercel',
+        });
+        await markCompatibilityBlocked({
           conversationId: started.conversationId,
           runId: started.runId,
           state,
           reason: compatibilityReason,
           executionId,
         });
-        return vercelDesktopEngine.stream(req, res, session);
+        await runtimeService.failRun({
+          conversationId: started.conversationId,
+          runId: started.runId,
+          code: 'langgraph_compatibility_blocked',
+          message: errorMessage,
+          retriable: false,
+          stopReason: 'policy_blocked',
+        });
+
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders?.();
+        sendDesktopSseEvent(res, 'error', {
+          message: errorMessage,
+          code: 'langgraph_compatibility_blocked',
+        });
+        sendDesktopSseEvent(res, 'done', {
+          executionId,
+          pendingApproval: null,
+          actionIssued: false,
+        });
+        res.end();
+        return;
       }
 
       await startExecutionRun({
@@ -459,6 +549,12 @@ export class LanggraphDesktopEngine {
         status: 'running',
         payload: { threadId, mode },
       });
+      logger.info('langgraph.desktop.execution.bootstrapped', {
+        executionId,
+        threadId,
+        runId: started.runId,
+        conversationId: started.conversationId,
+      });
 
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -478,6 +574,12 @@ export class LanggraphDesktopEngine {
         attachedFiles.length > 0 ? { attachedFiles } : undefined,
       );
       conversationMemoryStore.addUserMessage(conversationKey, messageId, message);
+      logger.info('langgraph.desktop.user_message.persisted', {
+        executionId,
+        threadId,
+        messageId,
+        attachedFileCount: attachedFiles.length,
+      });
 
       const mergedAttachments = new Map<string, typeof attachedFiles[number]>();
       for (const file of collectRecentAttachedFiles(history)) {
@@ -486,6 +588,11 @@ export class LanggraphDesktopEngine {
       for (const file of attachedFiles) {
         mergedAttachments.set(file.fileAssetId, file);
       }
+      logger.info('langgraph.desktop.attachments.merged', {
+        executionId,
+        threadId,
+        mergedAttachmentCount: mergedAttachments.size,
+      });
 
       let persistedBlocks: DesktopPersistedContentBlock[] = [];
       const runtime = buildReadOnlyRuntimeContext({
@@ -497,9 +604,22 @@ export class LanggraphDesktopEngine {
         mode,
         workspace,
       });
+      logger.info('langgraph.desktop.runtime.context_ready', {
+        executionId,
+        threadId,
+        workspacePath: workspace?.path ?? null,
+        mode,
+      });
       const selectedFamilies = selectToolFamilies({
         classification: state.classification,
         retrieval: state.retrieval,
+      });
+      logger.info('langgraph.desktop.path.direct', {
+        executionId,
+        threadId,
+        routeIntent: routeContract.route.intent,
+        retrievalMode: routeContract.route.retrievalMode,
+        toolFamilies: selectedFamilies,
       });
       state.retrieval.toolFamilies = selectedFamilies;
       state.plan = {
@@ -658,13 +778,22 @@ export class LanggraphDesktopEngine {
           ? [...historyMessages, { role: 'user', content: message }]
           : historyMessages,
       });
-      const researchModel = await resolveVercelLanguageModel(mode);
+      const researchModel = await resolveLanggraphDesktopModel(mode);
+      logger.info('langgraph.desktop.research.start', {
+        executionId,
+        threadId,
+        toolFamilies: selectedFamilies,
+        inputMessageCount: inputMessages.length,
+        effectiveModelId: researchModel.effectiveModelId,
+        thinkingLevel: researchModel.thinkingLevel,
+      });
       const researchResult = await generateText({
         model: researchModel.model,
         system: buildResearchSystemPrompt({
           state,
           classification: state.classification,
           retrieval: state.retrieval,
+          toolFamilies: selectedFamilies,
           additionalInstructions: buildDesktopAdditionalInstructions({
             threadId,
             workspace,
@@ -684,12 +813,24 @@ export class LanggraphDesktopEngine {
         },
         stopWhen: [stepCountIs(12)],
       });
+      logger.info('langgraph.desktop.research.completed', {
+        executionId,
+        threadId,
+        researchTextLength: researchResult.text.trim().length,
+        stepCount: researchResult.steps.length,
+        evidenceCount: evidence.length,
+      });
 
       state.evidence = evidence;
       await persistNodeState(state, 'research.execute');
 
       const researchSteps = researchResult.steps as Array<{ toolResults?: Array<{ output?: unknown }> }>;
       const pendingApproval = findPendingApproval(researchSteps);
+      logger.info('langgraph.desktop.approval.scan.completed', {
+        executionId,
+        threadId,
+        pendingApproval: Boolean(pendingApproval),
+      });
       if (pendingApproval) {
         const pendingAction = mapPendingApprovalAction(pendingApproval);
         const approvalSummary = pendingAction.kind === 'tool_action'
@@ -779,6 +920,12 @@ export class LanggraphDesktopEngine {
           pendingApproval,
           actionIssued: true,
         });
+        logger.info('langgraph.desktop.awaiting_approval', {
+          executionId,
+          threadId,
+          actionKind: pendingAction.kind,
+          actionSummary: approvalSummary,
+        });
         await uiEventQueue;
         sendDesktopSseEvent(res, 'done', {
           message: assistantMessage,
@@ -795,7 +942,14 @@ export class LanggraphDesktopEngine {
         evidence,
       });
 
-      const synthesisModel = await resolveVercelLanguageModel(mode);
+      const synthesisModel = await resolveLanggraphDesktopModel(mode);
+      logger.info('langgraph.desktop.synthesis.start', {
+        executionId,
+        threadId,
+        effectiveModelId: synthesisModel.effectiveModelId,
+        thinkingLevel: synthesisModel.thinkingLevel,
+        deterministicFallbackLength: deterministicFallback.text.trim().length,
+      });
       const synthesisResult = await streamText({
         model: synthesisModel.model,
         system: buildSynthesisTextPrompt({
@@ -854,6 +1008,12 @@ export class LanggraphDesktopEngine {
       }
 
       const finalText = streamedText.trim() || deterministicFallback.text;
+      logger.info('langgraph.desktop.synthesis.completed', {
+        executionId,
+        threadId,
+        usedDeterministicFallback: !streamedText.trim(),
+        finalTextLength: finalText.trim().length,
+      });
       if (!streamedText.trim() && finalText.trim()) {
         sendDesktopSseEvent(res, 'text', finalText);
         queueUiEvent('text', finalText);
@@ -880,6 +1040,12 @@ export class LanggraphDesktopEngine {
           return output?.citations ?? [];
         }));
       const conversationRefs = buildPersistedConversationRefs(conversationKey);
+      logger.info('langgraph.desktop.assistant_message.persist.start', {
+        executionId,
+        threadId,
+        citationCount: citations.length,
+        hasConversationRefs: Boolean(conversationRefs),
+      });
       const assistantMessage = await desktopThreadsService.addMessage(
         threadId,
         session.userId,
@@ -896,6 +1062,11 @@ export class LanggraphDesktopEngine {
       if (conversationRefs) {
         await runtimeConversationRepository.updateRefs(state.conversation.id, conversationRefs);
       }
+      logger.info('langgraph.desktop.assistant_message.persist.completed', {
+        executionId,
+        threadId,
+        assistantMessageId: assistantMessage.id,
+      });
 
       await appendEventSafe({
         executionId,
@@ -914,6 +1085,12 @@ export class LanggraphDesktopEngine {
         state.delivery.sentDedupeKeys.push(finalDedupeKey);
         state.delivery.outbox.push(buildFinalEnvelope({ state, text: finalText }));
       }
+      logger.info('langgraph.desktop.delivery.prepared', {
+        executionId,
+        threadId,
+        blocked: deliveryCheck.blocked,
+        dedupeKey: finalDedupeKey,
+      });
 
       await persistNodeState(state, 'deliver.response');
       await runtimeService.createShadowParityReport({
@@ -934,6 +1111,12 @@ export class LanggraphDesktopEngine {
       });
       await completeExecutionRun(executionId, finalText);
       await persistNodeState(state, 'persist_and_finish');
+      logger.info('langgraph.desktop.execution.completed', {
+        executionId,
+        threadId,
+        runId: started.runId,
+        assistantMessageId: assistantMessage.id,
+      });
 
       queueUiEvent('done', { executionId, pendingApproval: null, actionIssued: false });
       await uiEventQueue;
@@ -972,7 +1155,23 @@ export class LanggraphDesktopEngine {
       await failExecutionRun(executionId, errorMessage).catch(() => undefined);
 
       if (!res.headersSent) {
-        return vercelDesktopEngine.stream(req, res, session);
+        logger.error('langgraph.desktop.stream.failure_blocked', {
+          executionId,
+          threadId,
+          companyId: session.companyId,
+          userId: session.userId,
+          blockedFallbackEngine: 'vercel',
+          reason: 'langgraph_stream_failed_without_vercel_fallback',
+        });
+        res.status(500).json({
+          success: false,
+          message: errorMessage,
+          error: {
+            code: 'langgraph_stream_failed',
+            blockedFallbackEngine: 'vercel',
+          },
+        });
+        return;
       }
 
       await persistUiEvent(executionId, 'error', { message: errorMessage });
@@ -987,7 +1186,14 @@ export class LanggraphDesktopEngine {
       ...(typeof req.body === 'object' && req.body !== null ? req.body : {}),
       executionId: parsed.executionId ?? randomUUID(),
     };
-    return vercelDesktopEngine.act(req, res, session);
+    logger.info('langgraph.desktop.act.fallback', {
+      executionId: req.body.executionId,
+      threadId: req.params.threadId,
+      companyId: session.companyId,
+      userId: session.userId,
+      reason: 'langgraph_act_not_enabled_without_vercel_fallback',
+    });
+    throw new HttpException(409, 'LangGraph desktop act is not enabled while Vercel fallback is blocked.');
   }
 
   async streamAct(req: Request, res: Response, session: MemberSessionDTO): Promise<void> {
@@ -996,7 +1202,14 @@ export class LanggraphDesktopEngine {
       ...(typeof req.body === 'object' && req.body !== null ? req.body : {}),
       executionId: parsed.executionId ?? randomUUID(),
     };
-    return vercelDesktopEngine.streamAct(req, res, session);
+    logger.info('langgraph.desktop.act_stream.fallback', {
+      executionId: req.body.executionId,
+      threadId: req.params.threadId,
+      companyId: session.companyId,
+      userId: session.userId,
+      reason: 'langgraph_act_stream_not_enabled_without_vercel_fallback',
+    });
+    throw new HttpException(409, 'LangGraph desktop action streaming is not enabled while Vercel fallback is blocked.');
   }
 }
 

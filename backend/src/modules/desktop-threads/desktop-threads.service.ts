@@ -1,5 +1,7 @@
 import { HttpException } from '../../core/http-exception';
 import { BaseService } from '../../core/service';
+import { desktopThreadContextCache } from '../desktop-chat/desktop-thread-context.cache';
+import { desktopThreadMetaCache } from '../desktop-chat/desktop-thread-meta.cache';
 import { DesktopThreadsRepository, desktopThreadsRepository } from './desktop-threads.repository';
 
 export type DesktopThreadMessagesPage = {
@@ -26,6 +28,20 @@ export class DesktopThreadsService extends BaseService {
     if (!thread) throw new HttpException(404, 'Thread not found');
 
     const messages = await this.repository.listMessages(threadId);
+    return { thread, messages };
+  }
+
+  async getThreadMeta(threadId: string, userId: string) {
+    const thread = await this.repository.getThread(threadId, userId);
+    if (!thread) throw new HttpException(404, 'Thread not found');
+    return thread;
+  }
+
+  async getThreadContext(threadId: string, userId: string, limit = 40) {
+    const thread = await this.repository.getThread(threadId, userId);
+    if (!thread) throw new HttpException(404, 'Thread not found');
+
+    const messages = await this.repository.listMessages(threadId, limit);
     return { thread, messages };
   }
 
@@ -65,7 +81,24 @@ export class DesktopThreadsService extends BaseService {
   }
 
   async createThread(userId: string, companyId: string, departmentId?: string | null, title?: string | null) {
-    return this.repository.createThread(userId, companyId, departmentId, title);
+    const thread = await this.repository.createThread(userId, companyId, departmentId, title);
+    await desktopThreadMetaCache.set({
+      id: thread.id,
+      userId: thread.userId,
+      companyId: thread.companyId,
+      title: thread.title ?? null,
+      departmentId: thread.departmentId ?? null,
+      department: thread.department
+        ? {
+          id: thread.department.id,
+          name: thread.department.name,
+          slug: thread.department.slug,
+        }
+        : null,
+      lastMessageAt: thread.lastMessageAt?.toISOString?.() ?? null,
+      cachedAt: new Date().toISOString(),
+    });
+    return thread;
   }
 
   async findOrCreateNamedThread(
@@ -81,6 +114,22 @@ export class DesktopThreadsService extends BaseService {
 
     const existing = await this.repository.findThreadByTitle(userId, companyId, normalizedTitle);
     if (existing) {
+      await desktopThreadMetaCache.set({
+        id: existing.id,
+        userId: existing.userId,
+        companyId: existing.companyId,
+        title: existing.title ?? null,
+        departmentId: existing.departmentId ?? null,
+        department: existing.department
+          ? {
+            id: existing.department.id,
+            name: existing.department.name,
+            slug: existing.department.slug,
+          }
+          : null,
+        lastMessageAt: existing.lastMessageAt?.toISOString?.() ?? null,
+        cachedAt: new Date().toISOString(),
+      });
       return existing;
     }
 
@@ -104,14 +153,60 @@ export class DesktopThreadsService extends BaseService {
     // Auto-title from first user message
     if (!thread.title && role === 'user') {
       const title = content.length > 60 ? content.slice(0, 57) + '...' : content;
-      await this.repository.updateThreadTitle(threadId, title);
+      const updatedThread = await this.repository.updateThreadTitle(threadId, title);
+      await desktopThreadMetaCache.set({
+        id: updatedThread.id,
+        userId: updatedThread.userId,
+        companyId: updatedThread.companyId,
+        title: updatedThread.title ?? null,
+        departmentId: updatedThread.departmentId ?? null,
+        department: updatedThread.department
+          ? {
+            id: updatedThread.department.id,
+            name: updatedThread.department.name,
+            slug: updatedThread.department.slug,
+          }
+          : null,
+        lastMessageAt: updatedThread.lastMessageAt?.toISOString?.() ?? null,
+        cachedAt: new Date().toISOString(),
+      });
     }
+
+    await desktopThreadContextCache.appendMessage({
+      threadId,
+      userId,
+      message: {
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        metadata: message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+          ? message.metadata as Record<string, unknown>
+          : undefined,
+      },
+      loader: async () => {
+        const context = await this.getThreadContext(threadId, userId, 40);
+        return {
+          threadId,
+          userId,
+          messages: context.messages.map((entry) => ({
+            id: entry.id,
+            role: entry.role,
+            content: entry.content,
+            metadata: entry.metadata && typeof entry.metadata === 'object' && !Array.isArray(entry.metadata)
+              ? entry.metadata as Record<string, unknown>
+              : undefined,
+          })),
+          cachedAt: new Date().toISOString(),
+        };
+      },
+    });
 
     return message;
   }
 
   async deleteThread(threadId: string, userId: string): Promise<void> {
     await this.repository.deleteThread(threadId, userId);
+    await desktopThreadMetaCache.invalidate(threadId, userId);
   }
 }
 

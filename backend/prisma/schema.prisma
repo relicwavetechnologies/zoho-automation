@@ -23,13 +23,16 @@ enum IngestionStatus {
 
 enum ScheduledWorkflowStatus {
   draft
+  published
   active
+  scheduled_active
   paused
   archived
 }
 
 enum ScheduledWorkflowScheduleType {
   one_time
+  hourly
   daily
   weekly
   monthly
@@ -846,12 +849,14 @@ model ScheduledWorkflow {
   name                  String
   status                ScheduledWorkflowStatus       @default(draft)
   userIntent            String
+  aiDraft               String?
   workflowSpecJson      Json
   compiledPrompt        String
   capabilitySummaryJson Json
   timezone              String
   scheduleType          ScheduledWorkflowScheduleType
   scheduleConfigJson    Json
+  scheduleEnabled       Boolean                       @default(false)
   nextRunAt             DateTime?
   lastRunAt             DateTime?
   outputConfigJson      Json
@@ -864,12 +869,25 @@ model ScheduledWorkflow {
   createdAt             DateTime                      @default(now())
   updatedAt             DateTime                      @updatedAt
   runs                  ScheduledWorkflowRun[]
+  messages              ScheduledWorkflowMessage[]
 
   @@index([companyId, status, updatedAt])
   @@index([companyId, status, nextRunAt])
   @@index([departmentId, status, updatedAt])
   @@index([status, nextRunAt])
   @@index([claimedAt])
+}
+
+model ScheduledWorkflowMessage {
+  id         String            @id @default(uuid())
+  workflowId String
+  workflow   ScheduledWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  role       String
+  content    String
+  metadata   Json?
+  createdAt  DateTime          @default(now())
+
+  @@index([workflowId, createdAt])
 }
 
 model ScheduledWorkflowRun {

@@ -396,6 +396,7 @@ export class RuntimeGraphExecutor {
         state,
         classification,
         retrieval,
+        toolFamilies: selectedFamilies,
       }),
       messages: inputMessages,
       tools: researchTools,

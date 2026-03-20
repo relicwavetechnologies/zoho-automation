@@ -253,6 +253,12 @@ export const scheduledWorkflowScheduleConfigSchema = z.discriminatedUnion('type'
     runAt: z.string().datetime(),
   }).strict(),
   z.object({
+    type: z.literal('hourly'),
+    timezone: timezoneSchema,
+    intervalHours: z.number().int().min(1).max(24),
+    minute: z.number().int().min(0).max(59).default(0),
+  }).strict(),
+  z.object({
     type: z.literal('daily'),
     timezone: timezoneSchema,
     time: timeWindowSchema,

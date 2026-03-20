@@ -23,6 +23,12 @@ const uiScheduleSchema = z.discriminatedUnion('frequency', [
     time: timeSchema,
   }).strict(),
   z.object({
+    frequency: z.literal('hourly'),
+    timezone: z.string().trim().min(1).max(100),
+    intervalHours: z.number().int().min(1).max(24),
+    minute: z.number().int().min(0).max(59).optional(),
+  }).strict(),
+  z.object({
     frequency: z.literal('weekly'),
     timezone: z.string().trim().min(1).max(100),
     time: timeSchema,
@@ -68,10 +74,39 @@ const compileWorkflowRequestSchema = z.object({
 
 const publishWorkflowRequestSchema = compileWorkflowRequestSchema.extend({
   workflowId: z.string().uuid().nullable().optional(),
+  aiDraft: z.string().trim().min(1).max(12000).optional(),
+  scheduleEnabled: z.boolean().optional().default(false),
   compiledPrompt: z.string().trim().min(1).max(50000),
   workflowSpec: scheduledWorkflowSpecSchema,
   capabilitySummary: scheduledWorkflowCapabilitySummarySchema.optional(),
   departmentId: z.string().uuid().nullable().optional(),
+}).strict();
+
+const createDraftRequestSchema = z.object({
+  name: z.string().trim().max(160).optional(),
+  departmentId: z.string().uuid().nullable().optional(),
+}).strict();
+
+const workflowAuthorMessageSchema = z.object({
+  message: z.string().trim().min(1).max(12000),
+}).strict();
+
+const updateWorkflowRequestSchema = z.object({
+  name: z.string().trim().min(1).max(160).optional(),
+  userIntent: z.string().trim().max(10000).optional(),
+  aiDraft: z.string().trim().max(12000).nullable().optional(),
+  workflowSpec: scheduledWorkflowSpecSchema.optional(),
+  schedule: uiScheduleSchema.optional(),
+  destinations: z.array(destinationInputSchema).max(10).optional(),
+  departmentId: z.string().uuid().nullable().optional(),
+}).strict();
+
+const runWorkflowRequestSchema = z.object({
+  overrideText: z.string().trim().max(4000).optional(),
+}).strict();
+
+const updateWorkflowScheduleSchema = z.object({
+  scheduleEnabled: z.boolean(),
 }).strict();
 
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
@@ -92,6 +127,14 @@ const parseTime = (value: string): { hour: number; minute: number } => {
 };
 
 const toScheduleConfig = (input: z.infer<typeof uiScheduleSchema>) => {
+  if (input.frequency === 'hourly') {
+    return {
+      type: 'hourly' as const,
+      timezone: input.timezone,
+      intervalHours: input.intervalHours,
+      minute: input.minute ?? 0,
+    };
+  }
   if (input.frequency === 'daily') {
     return { type: 'daily' as const, timezone: input.timezone, time: parseTime(input.time) };
   }
@@ -171,10 +214,51 @@ class DesktopWorkflowsController extends BaseController {
     return session;
   }
 
+  createDraft = async (req: Request, res: Response): Promise<Response> => {
+    const session = this.session(req);
+    const parsed = createDraftRequestSchema.parse(req.body ?? {});
+    const result = await desktopWorkflowsService.createDraft(session, {
+      name: parsed.name?.trim() || null,
+      departmentId: parsed.departmentId ?? null,
+    });
+    return res.status(201).json(ApiResponse.success(result, 'Workflow draft created'));
+  };
+
   list = async (req: Request, res: Response): Promise<Response> => {
     const session = this.session(req);
     const result = await desktopWorkflowsService.list(session);
     return res.json(ApiResponse.success(result, 'Workflows listed'));
+  };
+
+  get = async (req: Request, res: Response): Promise<Response> => {
+    const session = this.session(req);
+    const workflowId = z.string().uuid().parse(req.params.workflowId);
+    const result = await desktopWorkflowsService.get(session, workflowId);
+    return res.json(ApiResponse.success(result, 'Workflow loaded'));
+  };
+
+  author = async (req: Request, res: Response): Promise<Response> => {
+    const session = this.session(req);
+    const workflowId = z.string().uuid().parse(req.params.workflowId);
+    const parsed = workflowAuthorMessageSchema.parse(req.body ?? {});
+    const result = await desktopWorkflowsService.author(session, workflowId, parsed.message);
+    return res.json(ApiResponse.success(result, 'Workflow updated'));
+  };
+
+  update = async (req: Request, res: Response): Promise<Response> => {
+    const session = this.session(req);
+    const workflowId = z.string().uuid().parse(req.params.workflowId);
+    const parsed = updateWorkflowRequestSchema.parse(req.body ?? {});
+    const result = await desktopWorkflowsService.update(session, workflowId, {
+      ...(parsed.name !== undefined ? { name: parsed.name } : {}),
+      ...(parsed.userIntent !== undefined ? { userIntent: parsed.userIntent } : {}),
+      ...(parsed.aiDraft !== undefined ? { aiDraft: parsed.aiDraft } : {}),
+      ...(parsed.workflowSpec !== undefined ? { workflowSpec: parsed.workflowSpec } : {}),
+      ...(parsed.schedule !== undefined ? { schedule: toScheduleConfig(parsed.schedule) } : {}),
+      ...(parsed.destinations !== undefined ? { outputConfig: toOutputConfig(parsed.destinations) } : {}),
+      ...(parsed.departmentId !== undefined ? { departmentId: parsed.departmentId } : {}),
+    });
+    return res.json(ApiResponse.success(result, 'Workflow updated'));
   };
 
   compile = async (req: Request, res: Response): Promise<Response> => {
@@ -199,7 +283,9 @@ class DesktopWorkflowsController extends BaseController {
       workflowId: parsed.workflowId ?? null,
       name: parsed.name,
       userIntent: parsed.userIntent,
+      aiDraft: parsed.aiDraft ?? null,
       schedule: toScheduleConfig(parsed.schedule),
+      scheduleEnabled: parsed.scheduleEnabled,
       outputConfig: toOutputConfig(parsed.destinations),
       workflowSpec: parsed.workflowSpec,
       compiledPrompt: parsed.compiledPrompt,
@@ -213,8 +299,17 @@ class DesktopWorkflowsController extends BaseController {
   runNow = async (req: Request, res: Response): Promise<Response> => {
     const session = this.session(req);
     const workflowId = z.string().uuid().parse(req.params.workflowId);
-    const result = await desktopWorkflowsService.runNow(session, workflowId);
+    const { overrideText } = runWorkflowRequestSchema.parse(req.body ?? {});
+    const result = await desktopWorkflowsService.runNow(session, workflowId, overrideText);
     return res.json(ApiResponse.success(result, 'Workflow run started'));
+  };
+
+  setScheduleState = async (req: Request, res: Response): Promise<Response> => {
+    const session = this.session(req);
+    const workflowId = z.string().uuid().parse(req.params.workflowId);
+    const { scheduleEnabled } = updateWorkflowScheduleSchema.parse(req.body ?? {});
+    const result = await desktopWorkflowsService.setScheduleState(session, workflowId, scheduleEnabled);
+    return res.json(ApiResponse.success(result, 'Workflow schedule updated'));
   };
 
   archive = async (req: Request, res: Response): Promise<Response> => {

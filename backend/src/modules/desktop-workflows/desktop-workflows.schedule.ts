@@ -95,6 +95,26 @@ export const getNextScheduledRunAt = (
     return runAt.getTime() > after.getTime() ? runAt : null;
   }
 
+  if (schedule.type === 'hourly') {
+    const base = new Date(after.getTime());
+    base.setUTCSeconds(0, 0);
+    for (let step = 0; step < 24 * 31; step += 1) {
+      const candidate = new Date(base.getTime() + step * 60 * 60 * 1000);
+      const zoned = getZonedParts(candidate, schedule.timezone);
+      if (zoned.minute !== schedule.minute) {
+        candidate.setUTCMinutes(candidate.getUTCMinutes() + (schedule.minute - zoned.minute));
+      }
+      if (candidate.getTime() <= after.getTime()) {
+        continue;
+      }
+      const hoursFromBase = Math.abs(step);
+      if (hoursFromBase % schedule.intervalHours === 0) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
   const base = getZonedParts(after, schedule.timezone);
 
   if (schedule.type === 'daily') {

@@ -7,8 +7,10 @@ import { HttpException } from '../../core/http-exception';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { knowledgeShareService } from '../../company/knowledge-share/knowledge-share.service';
 import { hitlActionService, executeStoredRemoteToolAction } from '../../company/state';
+import config from '../../config';
+import { logger } from '../../utils/logger';
 import type { MemberSessionDTO } from '../member-auth/member-auth.service';
-import { langgraphDesktopEngine } from './langgraph-desktop.engine';
+import { vercelDesktopEngine } from './vercel-desktop.engine';
 
 const shareConversationSchema = z.object({
   reason: z.string().max(1000).optional(),
@@ -30,13 +32,46 @@ class DesktopChatController extends BaseController {
   }
 
   send = async (req: Request, res: Response): Promise<void> =>
-    langgraphDesktopEngine.stream(req, res, this.session(req));
+    {
+      const session = this.session(req);
+      logger.info('desktop.chat.engine_route', {
+        route: 'send',
+        configuredEngine: config.ORCHESTRATION_ENGINE,
+        effectiveDesktopEntry: 'vercel',
+        threadId: req.params.threadId,
+        userId: session.userId,
+        companyId: session.companyId,
+      });
+      return vercelDesktopEngine.stream(req, res, session);
+    };
 
   actStream = async (req: Request, res: Response): Promise<void> =>
-    langgraphDesktopEngine.streamAct(req, res, this.session(req));
+    {
+      const session = this.session(req);
+      logger.info('desktop.chat.engine_route', {
+        route: 'act_stream',
+        configuredEngine: config.ORCHESTRATION_ENGINE,
+        effectiveDesktopEntry: 'vercel',
+        threadId: req.params.threadId,
+        userId: session.userId,
+        companyId: session.companyId,
+      });
+      return vercelDesktopEngine.streamAct(req, res, session);
+    };
 
   act = async (req: Request, res: Response): Promise<Response> =>
-    langgraphDesktopEngine.act(req, res, this.session(req));
+    {
+      const session = this.session(req);
+      logger.info('desktop.chat.engine_route', {
+        route: 'act',
+        configuredEngine: config.ORCHESTRATION_ENGINE,
+        effectiveDesktopEntry: 'vercel',
+        threadId: req.params.threadId,
+        userId: session.userId,
+        companyId: session.companyId,
+      });
+      return vercelDesktopEngine.act(req, res, session);
+    };
 
   shareConversation = async (req: Request, res: Response): Promise<Response> => {
     const session = this.session(req);

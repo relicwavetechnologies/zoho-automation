@@ -61,6 +61,7 @@ export type DesktopAPI = {
       token: string,
       threadId: string,
       message: string,
+      workflowInvocation?: { workflowId: string; workflowName?: string; overrideText?: string },
     ) => Promise<{ success: boolean; data?: unknown }>
     getStreamUrl: (
       token: string,
@@ -72,7 +73,15 @@ export type DesktopAPI = {
       message: string,
       requestId: string,
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-      mode?: 'fast' | 'high' | 'xtreme'
+      mode?: 'fast' | 'high' | 'xtreme',
+      workspace?: { name: string; path: string },
+      workflowInvocation?: { workflowId: string; workflowName?: string; overrideText?: string },
+    ) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    actStream: (
+      token: string,
+      threadId: string,
+      requestId: string,
+      payload: Record<string, unknown>,
     ) => Promise<{ success: boolean; data?: unknown; error?: string }>
     sendMessageStream: (payload: {
       token: string
@@ -82,6 +91,8 @@ export type DesktopAPI = {
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>
       mode?: 'fast' | 'high' | 'xtreme'
       companyId?: string
+      workspace?: { name: string; path: string }
+      workflowInvocation?: { workflowId: string; workflowName?: string; overrideText?: string }
     }) => Promise<{ success: boolean; data?: unknown; error?: string }>
     stopStream: (
       requestId: string,
@@ -183,12 +194,12 @@ const api: DesktopAPI = {
     delete: (token, threadId) => ipcRenderer.invoke('desktop:thread:delete', token, threadId),
   },
   chat: {
-    send: (token, threadId, message) =>
-      ipcRenderer.invoke('desktop:chat:send', token, threadId, message),
+    send: (token, threadId, message, workflowInvocation) =>
+      ipcRenderer.invoke('desktop:chat:send', token, threadId, message, workflowInvocation),
     getStreamUrl: (token, threadId) =>
       ipcRenderer.invoke('desktop:chat:stream-url', token, threadId),
-    startStream: (token, threadId, message, requestId, attachedFiles, mode, workspace) =>
-      ipcRenderer.invoke('desktop:chat:startStream', token, threadId, message, requestId, attachedFiles, mode, workspace),
+    startStream: (token, threadId, message, requestId, attachedFiles, mode, workspace, workflowInvocation) =>
+      ipcRenderer.invoke('desktop:chat:startStream', token, threadId, message, requestId, attachedFiles, mode, workspace, workflowInvocation),
     actStream: (token, threadId, requestId, payload) =>
       ipcRenderer.invoke('desktop:chat:actStream', token, threadId, requestId, payload),
     sendMessageStream: (payload) =>

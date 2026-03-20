@@ -26,11 +26,17 @@ const parseBackendError = async (res: Awaited<ReturnType<typeof net.fetch>>): Pr
 export function registerChatHandlers(): void {
   ipcMain.handle(
     'desktop:chat:send',
-    async (_event, token: string, threadId: string, message: string) => {
+    async (
+      _event,
+      token: string,
+      threadId: string,
+      message: string,
+      workflowInvocation?: { workflowId: string; workflowName?: string; overrideText?: string },
+    ) => {
       const res = await net.fetch(`${BACKEND_URL}/api/desktop/chat/${threadId}/send`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, workflowInvocation }),
       })
       if (!res.ok) {
         return { success: false, message: await parseBackendError(res) }
@@ -220,7 +226,8 @@ export function registerChatHandlers(): void {
       requestId: string,
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
       mode?: 'fast' | 'high' | 'xtreme',
-      workspace?: { name: string; path: string }
+      workspace?: { name: string; path: string },
+      workflowInvocation?: { workflowId: string; workflowName?: string; overrideText?: string },
     ) => {
       const target = event.sender
       const controller = new AbortController()
@@ -235,7 +242,7 @@ export function registerChatHandlers(): void {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
           },
-          body: JSON.stringify({ message, attachedFiles, workspace, mode, executionId: requestId }),
+          body: JSON.stringify({ message, attachedFiles, workspace, mode, executionId: requestId, workflowInvocation }),
           signal: controller.signal,
         })
       } catch (error) {
@@ -344,9 +351,10 @@ export function registerChatHandlers(): void {
         mode?: 'fast' | 'high' | 'xtreme'
         companyId?: string
         workspace?: { name: string; path: string }
+        workflowInvocation?: { workflowId: string; workflowName?: string; overrideText?: string }
       }
     ) => {
-      const { token, requestId, threadId, message, attachedFiles, mode, companyId, workspace } = payload
+      const { token, requestId, threadId, message, attachedFiles, mode, companyId, workspace, workflowInvocation } = payload
       const target = event.sender
       const controller = new AbortController()
       activeStreamControllers.set(requestId, controller)
@@ -360,7 +368,7 @@ export function registerChatHandlers(): void {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
           },
-          body: JSON.stringify({ message, attachedFiles, workspace, mode, companyId, executionId: requestId }),
+          body: JSON.stringify({ message, attachedFiles, workspace, mode, companyId, executionId: requestId, workflowInvocation }),
           signal: controller.signal,
         })
       } catch (error) {

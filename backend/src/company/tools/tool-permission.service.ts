@@ -1,6 +1,7 @@
 import { TOOL_REGISTRY, TOOL_REGISTRY_MAP } from './tool-registry';
 import { ToolPermissionRepository, toolPermissionRepository } from './tool-permission.repository';
 import { aiRoleService, type AiRoleDTO } from './ai-role.service';
+import { toolAccessCache } from './tool-access.cache';
 
 export interface ToolPermissionRow {
   toolId: string;
@@ -74,12 +75,18 @@ export class ToolPermissionService {
     if (!TOOL_REGISTRY_MAP.has(toolId)) {
       throw new Error(`Unknown toolId: ${toolId}`);
     }
-    return this.repo.upsert(companyId, toolId, role, enabled, actorId);
+    const result = await this.repo.upsert(companyId, toolId, role, enabled, actorId);
+    await toolAccessCache.invalidateCompany(companyId);
+    return result;
   }
 
   /** Returns the set of toolIds allowed for the given role slug in this company. */
   async getAllowedTools(companyId: string, role: string): Promise<string[]> {
     const normalizedRole = role.trim().toUpperCase();
+    const cached = await toolAccessCache.getAllowedTools(companyId, normalizedRole);
+    if (cached) {
+      return cached;
+    }
     const [stored, validRoleSlugs] = await Promise.all([
       this.repo.getForCompany(companyId),
       aiRoleService.getRoleSlugs(companyId),
@@ -89,7 +96,7 @@ export class ToolPermissionService {
     }
     const overrideMap = new Map(stored.map((r) => [`${r.toolId}:${r.role}`, r.enabled]));
 
-    return TOOL_REGISTRY.filter((tool) => {
+    const allowedToolIds = TOOL_REGISTRY.filter((tool) => {
       const key = `${tool.id}:${normalizedRole}`;
       if (overrideMap.has(key)) {
         return overrideMap.get(key) as boolean;
@@ -100,6 +107,9 @@ export class ToolPermissionService {
       }
       return memberDefault(tool.id);
     }).map((t) => t.id);
+
+    await toolAccessCache.set(companyId, normalizedRole, allowedToolIds);
+    return allowedToolIds;
   }
 
   /** Quick single-tool permission check. */

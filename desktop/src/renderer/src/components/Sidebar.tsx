@@ -20,7 +20,7 @@ export function Sidebar({
   onScheduleClick?: () => void
   currentView?: 'chat' | 'schedule' | 'settings'
 }): JSX.Element | null {
-  const { threads, activeThread, loadThreads, selectThread, createThread } = useChat()
+  const { threads, activeThread, loadThreads, selectThread, createThread, isStreaming } = useChat()
   const { currentWorkspace, selectWorkspace, getThreadWorkspace } = useWorkspace()
   const [filter, setFilter] = useState('')
   const loadedRef = useRef(false)
@@ -66,7 +66,8 @@ export function Sidebar({
         <button
           onClick={handleNewThread}
           title="New Chat"
-          className="titlebar-no-drag p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-sidebar-hover transition-colors"
+          disabled={isStreaming}
+          className="titlebar-no-drag p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-sidebar-hover transition-colors disabled:cursor-not-allowed disabled:opacity-40"
         >
           <SquarePen size={16} />
         </button>
@@ -112,7 +113,7 @@ export function Sidebar({
               )}
             >
               <Workflow size={14} />
-              Schedule Work
+              Workflows
             </button>
           </div>
 
@@ -126,11 +127,12 @@ export function Sidebar({
               placeholder="Search..."
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
+              disabled={isStreaming}
               className={cn(
                 'w-full pl-7 pr-2 py-1.5 rounded-md text-xs',
                 'bg-sidebar-hover border-transparent focus:border-border',
                 'text-foreground/70 placeholder:text-muted-foreground/40',
-                'focus:outline-none transition-colors border',
+                'focus:outline-none transition-colors border disabled:cursor-not-allowed disabled:opacity-50',
               )}
             />
           </div>
@@ -157,6 +159,7 @@ export function Sidebar({
               key={thread.id}
               thread={thread}
               isActive={activeThread?.id === thread.id}
+              disabled={isStreaming}
               onClick={() => selectThread(thread.id)}
               workspaceName={getThreadWorkspace(thread.id)?.name ?? null}
             />
@@ -182,11 +185,13 @@ export function Sidebar({
 function ThreadItem({
   thread,
   isActive,
+  disabled,
   onClick,
   workspaceName,
 }: {
   thread: Thread
   isActive: boolean
+  disabled?: boolean
   onClick: () => void
   workspaceName: string | null
 }): JSX.Element {
@@ -207,8 +212,10 @@ function ThreadItem({
     <div className="relative group mx-1">
       <button
         onClick={onClick}
+        disabled={disabled}
         className={cn(
           'w-full text-left px-2.5 py-[8px] rounded-lg transition-colors pr-8',
+          disabled && 'cursor-not-allowed opacity-50',
           isActive
             ? 'bg-sidebar-active text-white'
             : 'text-muted-foreground/80 hover:bg-sidebar-hover hover:text-foreground',
@@ -240,9 +247,11 @@ function ThreadItem({
       <button
         onClick={handleDelete}
         title="Delete thread"
+        disabled={disabled}
         className={cn(
           'absolute right-1.5 top-1/2 -translate-y-1/2',
           'p-[3px] rounded opacity-0 group-hover:opacity-100 transition-opacity',
+          disabled && 'cursor-not-allowed opacity-0',
           isActive
             ? 'text-white/40 hover:text-white/80 focus:opacity-100 hover:bg-white/10'
             : 'text-muted-foreground/40 hover:text-red-400 focus:opacity-100 hover:bg-muted',

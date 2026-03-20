@@ -48,6 +48,7 @@ const AI_ONLY_LOG_MODE = ['1', 'true', 'yes', 'on'].includes(
 );
 const AI_LOG_PREFIXES = [
   'vercel.',
+  'langgraph.',
   'desktop.chat.',
   'llm.',
   'tool.',

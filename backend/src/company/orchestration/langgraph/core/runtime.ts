@@ -67,7 +67,11 @@ export const buildReadOnlyRuntimeContext = (input: {
     larkTenantKey: input.state.actor.larkTenantKey,
     larkOpenId: input.state.actor.larkOpenId,
     larkUserId: input.state.actor.larkUserId,
-    authProvider: input.state.run.channel === 'lark' ? 'lark' : 'desktop',
+    authProvider:
+      input.state.run.channel === 'lark'
+      || Boolean(input.state.actor.larkTenantKey || input.state.actor.larkOpenId || input.state.actor.larkUserId)
+        ? 'lark'
+        : 'desktop',
     mode: input.mode,
     workspace: input.workspace,
     dateScope: input.state.prompt.dateScope,
@@ -99,12 +103,19 @@ export const buildResearchSystemPrompt = (input: {
   state: RuntimeState;
   classification: RuntimeClassificationResult;
   retrieval: RuntimeRetrievalDecision;
+  toolFamilies?: GraphToolFamily[];
   additionalInstructions?: string;
 }): string => [
   input.state.prompt.baseSystemPrompt,
   input.state.prompt.channelInstructions,
   'You are executing the graph-native LangGraph read path.',
   'Use only read-only tools and do not request or imply mutating actions.',
+  input.toolFamilies?.length
+    ? `Available tool families for this run: ${input.toolFamilies.join(', ')}.`
+    : '',
+  input.toolFamilies?.includes('larkTask')
+    ? 'Lark task guidance: use larkTask for task reads. Prefer listMine for "my tasks", listOpenMine for "my open tasks", list for broader tasklist reads, and current only for the latest referenced or single current task.'
+    : '',
   `Intent: ${input.classification.intent}.`,
   `Freshness: ${input.classification.freshnessNeed}.`,
   `Retrieval mode: ${input.retrieval.mode}.`,

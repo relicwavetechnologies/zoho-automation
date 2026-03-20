@@ -34,6 +34,12 @@ import { logFrontendDebug, logFrontendError } from '../lib/frontend-debug-log'
 
 export type { DesktopWorkspaceAction, ActionResultPayload }
 
+type WorkflowInvocation = {
+  workflowId: string
+  workflowName: string
+  overrideText?: string
+}
+
 const isActivityFailure = (input: { label?: string; resultSummary?: string }): boolean => {
   const label = (input.label ?? '').toLowerCase()
   const summary = (input.resultSummary ?? '').toLowerCase()
@@ -71,12 +77,14 @@ interface ChatState {
   sendMessage: (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-    mode?: 'fast' | 'high' | 'xtreme'
+    mode?: 'fast' | 'high' | 'xtreme',
+    workflowInvocation?: WorkflowInvocation,
   ) => Promise<void>
   sendInitialMessage: (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-    mode?: 'fast' | 'high' | 'xtreme'
+    mode?: 'fast' | 'high' | 'xtreme',
+    workflowInvocation?: WorkflowInvocation,
   ) => Promise<void>
   stopExecution: () => Promise<void>
   approveCommand: (executionId: string) => Promise<void>
@@ -927,7 +935,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   useEffect(() => { loadThreadsRef.current = loadThreads }, [loadThreads])
 
   const selectThread = useCallback(async (threadId: string) => {
-    if (!token || !currentWorkspace || !isThreadInCurrentWorkspace(threadId)) return
+    if (!token || !currentWorkspace || !isThreadInCurrentWorkspace(threadId) || isStreaming) return
     const requestVersion = activeThreadLoadVersionRef.current + 1
     activeThreadLoadVersionRef.current = requestVersion
     const threadPreview = allThreads.find((thread) => thread.id === threadId) ?? null
@@ -961,7 +969,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         setIsThreadLoading(false)
       }
     }
-  }, [allThreads, token, currentWorkspace, isThreadInCurrentWorkspace, replaceActivePlan, setSelectedDepartmentId])
+  }, [allThreads, token, currentWorkspace, isThreadInCurrentWorkspace, isStreaming, replaceActivePlan, setSelectedDepartmentId])
 
   const loadOlderMessages = useCallback(async () => {
     const threadId = activeThreadRef.current?.id
@@ -1000,7 +1008,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   }, [isLoadingOlderMessages, messages, threadPagination.hasMoreOlder, threadPagination.nextBeforeMessageId, token])
 
   const createThread = useCallback(async (): Promise<string | null> => {
-    if (!token || !currentWorkspace) return null
+    if (!token || !currentWorkspace || isStreaming) return null
     if ((session?.departments?.length ?? 0) > 1 && !selectedDepartmentId) {
       setError('Select a department before starting a new chat.')
       return null
@@ -1028,25 +1036,32 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       setError('Failed to create thread')
       return null
     }
-  }, [token, currentWorkspace, bindThreadToCurrentWorkspace, replaceActivePlan, selectedDepartmentId, session?.departments?.length])
+  }, [token, currentWorkspace, isStreaming, bindThreadToCurrentWorkspace, replaceActivePlan, selectedDepartmentId, session?.departments?.length])
 
   const sendMessage = useCallback(async (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-    mode: 'fast' | 'high' | 'xtreme' = 'xtreme'
+    mode: 'fast' | 'high' | 'xtreme' = 'xtreme',
+    workflowInvocation?: WorkflowInvocation,
   ) => {
     if (!token || !currentWorkspace || !activeThread || isStreaming) return
     const trimmedText = text.trim()
     cancelRequestedRef.current = false
     activeModeRef.current = mode
 
-    if (!trimmedText && (!attachedFiles || attachedFiles.length === 0)) return
+    if (!trimmedText && (!attachedFiles || attachedFiles.length === 0) && !workflowInvocation) return
+
+    const visibleUserText = trimmedText || (workflowInvocation
+      ? workflowInvocation.overrideText?.trim()
+        ? `Run workflow "${workflowInvocation.workflowName}" with a one-time override.`
+        : `Run saved workflow "${workflowInvocation.workflowName}".`
+      : '')
 
     const userMsg: Message = { 
       id: `temp-${Date.now()}`, 
       threadId: activeThread.id, 
       role: 'user', 
-      content: trimmedText, 
+      content: visibleUserText, 
       metadata: attachedFiles && attachedFiles.length > 0 ? { attachedFiles } : undefined,
       createdAt: new Date().toISOString() 
     }
@@ -1084,6 +1099,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         attachedFiles,
         mode,
         { name: currentWorkspace.name, path: currentWorkspace.path },
+        workflowInvocation,
       )
       if (!sendRes.success) {
         setError('Failed to send message')
@@ -1104,7 +1120,8 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const sendInitialMessage = useCallback(async (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-    mode: 'fast' | 'high' | 'xtreme' = 'xtreme'
+    mode: 'fast' | 'high' | 'xtreme' = 'xtreme',
+    workflowInvocation?: WorkflowInvocation,
   ) => {
     if (!token || !currentWorkspace || isStreaming) return
     if ((session?.departments?.length ?? 0) > 1 && !selectedDepartmentId) {
@@ -1115,7 +1132,13 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     cancelRequestedRef.current = false
     activeModeRef.current = mode
 
-    if (!trimmedText && (!attachedFiles || attachedFiles.length === 0)) return
+    if (!trimmedText && (!attachedFiles || attachedFiles.length === 0) && !workflowInvocation) return
+
+    const visibleUserText = trimmedText || (workflowInvocation
+      ? workflowInvocation.overrideText?.trim()
+        ? `Run workflow "${workflowInvocation.workflowName}" with a one-time override.`
+        : `Run saved workflow "${workflowInvocation.workflowName}".`
+      : '')
 
     try {
       const res = await window.desktopAPI.threads.create(token, selectedDepartmentId ? { departmentId: selectedDepartmentId } : undefined)
@@ -1138,7 +1161,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           id: `temp-${Date.now()}`, 
           threadId: newThread.id, 
           role: 'user', 
-          content: trimmedText, 
+          content: visibleUserText, 
           metadata: attachedFiles && attachedFiles.length > 0 ? { attachedFiles } : undefined,
           createdAt: new Date().toISOString() 
         }
@@ -1168,6 +1191,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           mode,
           companyId: currentWorkspace.id,
           workspace: { name: currentWorkspace.name, path: currentWorkspace.path },
+          workflowInvocation,
         })
 
         if (!streamResult.success) {
@@ -1203,6 +1227,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const clearError = useCallback(() => setError(null), [])
 
   const deleteThread = useCallback(async (threadId: string) => {
+    if (isStreaming) return
     if (!token) return
     try {
       const result = await window.desktopAPI.threads.delete(token, threadId)
@@ -1224,7 +1249,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     } catch {
       setError('Failed to delete thread — please restart the app and try again')
     }
-  }, [token, replaceActivePlan, unbindThread])
+  }, [token, isStreaming, replaceActivePlan, unbindThread])
 
   return (
     <ChatContext.Provider value={{

@@ -1,12 +1,17 @@
 import { randomUUID } from 'crypto';
 
-import { generateText, stepCountIs, streamText, type ModelMessage } from 'ai';
+import { generateObject, generateText, stepCountIs, streamText, type ModelMessage } from 'ai';
 import { Request, Response } from 'express';
+import { z } from 'zod';
 
 import { ApiResponse } from '../../core/api-response';
 import config from '../../config';
 import { resolveVercelLanguageModel } from '../../company/orchestration/vercel/model-factory';
 import { createVercelDesktopTools } from '../../company/orchestration/vercel/tools';
+import {
+  scheduledWorkflowCapabilitySummarySchema,
+  scheduledWorkflowScheduleConfigSchema,
+} from '../../company/scheduled-workflows/contracts';
 import type {
   PendingApprovalAction,
   VercelRuntimeRequestContext,
@@ -16,11 +21,32 @@ import { desktopThreadsService } from '../desktop-threads/desktop-threads.servic
 import type { MemberSessionDTO } from '../member-auth/member-auth.service';
 import { buildVisionContent, type AttachedFileRef } from './file-vision.builder';
 import { actSchema, attachedFileSchema, sendSchema } from './desktop-chat.schemas';
+import {
+  desktopThreadContextCache,
+  DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT,
+  type CachedDesktopThreadContext,
+  type CachedDesktopThreadMessage,
+} from './desktop-thread-context.cache';
 import { executionService } from '../../company/observability';
 import { conversationMemoryStore } from '../../company/state/conversation/conversation-memory.store';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { logger } from '../../utils/logger';
 import { departmentService } from '../../company/departments/department.service';
+import { prisma } from '../../utils/prisma';
+import {
+  buildDesktopPlannerPrompt,
+  completeExecutionPlan,
+  executionPlanSchema,
+  failExecutionPlan,
+  formatExecutionPlanForLog,
+  initializeExecutionPlan,
+  plannerDraftSchema,
+  resolvePlanOwnerFromActionKind,
+  resolvePlanOwnerFromToolName,
+  updateExecutionPlanTask,
+  type ExecutionPlan,
+  type ExecutionPlanOwner,
+} from './desktop-plan';
 
 type DesktopWorkspaceAction =
   | { kind: 'list_files'; path?: string }
@@ -52,15 +78,244 @@ type PersistedConversationRefs = {
   latestLarkTask?: Record<string, unknown>;
 };
 
-type ThreadHistorySnapshot = Awaited<ReturnType<typeof desktopThreadsService.getThread>>;
+type PersistedPlanMetadata = {
+  plan?: ExecutionPlan;
+};
+
+type ThreadHistorySnapshot = CachedDesktopThreadContext;
+
+const resolveWorkflowInvocationMessage = async (input: {
+  companyId: string;
+  userId: string;
+  workflowId: string;
+  workflowName?: string;
+  overrideText?: string;
+}): Promise<{
+  requestMessage: string;
+  storedUserMessage: string;
+}> => {
+  const workflow = await prisma.scheduledWorkflow.findFirst({
+    where: {
+      id: input.workflowId,
+      companyId: input.companyId,
+      createdByUserId: input.userId,
+      status: { notIn: ['draft', 'archived'] },
+    },
+    select: {
+      id: true,
+      name: true,
+      status: true,
+      compiledPrompt: true,
+      capabilitySummaryJson: true,
+      scheduleConfigJson: true,
+    },
+  });
+  if (!workflow) {
+    throw new Error('Saved workflow not found or is no longer available.');
+  }
+
+  const capabilitySummary = scheduledWorkflowCapabilitySummarySchema.parse(workflow.capabilitySummaryJson);
+  const schedule = scheduledWorkflowScheduleConfigSchema.parse(workflow.scheduleConfigJson);
+  const overrideText = input.overrideText?.trim() ?? '';
+  if (overrideText && capabilitySummary.requiresPublishApproval) {
+    throw new Error('Temporary overrides are blocked for workflows that can write, send, delete, or execute.');
+  }
+
+  const workflowName = input.workflowName?.trim() || workflow.name;
+  const requestMessage = [
+    workflow.compiledPrompt.trim(),
+    '',
+    'Manual workflow invocation request:',
+    `- Workflow: ${workflowName}`,
+    `- Schedule type: ${schedule.type} (${schedule.timezone})`,
+    '- Run this workflow now inside the current desktop thread.',
+    '- Keep the saved workflow definition as the source of truth.',
+    ...(overrideText
+      ? [
+        '- Apply this one-time override without mutating the saved workflow definition.',
+        '',
+        'Run-specific override:',
+        overrideText,
+      ]
+      : []),
+  ].join('\n');
+
+  const storedUserMessage = overrideText
+    ? `Run workflow "${workflowName}" with a one-time override.`
+    : `Run saved workflow "${workflowName}".`;
+
+  return {
+    requestMessage,
+    storedUserMessage,
+  };
+};
+
+const desktopChildRouteSchema = z.object({
+  route: z.enum(['fast_reply', 'direct_execute', 'handoff']),
+  reply: z.string().min(1).max(600).optional(),
+  acknowledgement: z.string().min(1).max(400).optional(),
+  reason: z.string().min(1).max(200).optional(),
+});
+
+type DesktopChildRoute = z.infer<typeof desktopChildRouteSchema>;
 
 const buildConversationKey = (threadId: string): string => `desktop:${threadId}`;
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
+const MODEL_HISTORY_MESSAGE_LIMIT = 12;
 
 const summarizeText = (value: string | null | undefined, limit = 280): string | null => {
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const buildChildRouterPrompt = (input: {
+  message: string;
+  history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  workspace?: { name: string; path: string };
+}): string => {
+  const historyBlock = input.history.length > 0
+    ? input.history
+      .slice(-6)
+      .map((entry, index) => `${index + 1}. ${entry.role.toUpperCase()}: ${entry.content}`)
+      .join('\n')
+    : 'No useful prior conversation history.';
+
+  const workspaceBlock = input.workspace
+    ? `Workspace is open at ${input.workspace.path} (${input.workspace.name}).`
+    : 'No workspace context is active.';
+
+  return [
+    'Classify this desktop chat turn for a two-tier assistant runtime.',
+    'Return structured JSON only.',
+    'Routes:',
+    '- fast_reply: greetings, thanks, chit-chat, identity/capability questions, or short conversational replies that need no tools.',
+    '- direct_execute: straightforward work that should go directly to the main executor without a pre-ack.',
+    '- handoff: multi-step or heavier work likely to require more than 2-3 tool calls, iteration, or planning. Provide a short acknowledgement the user should see immediately.',
+    'Rules:',
+    '- Do not use tools.',
+    '- For fast_reply, fill reply and keep it short.',
+    '- For handoff, fill acknowledgement and keep it short, concrete, and action-oriented.',
+    '- Do not overuse handoff for tiny requests.',
+    workspaceBlock,
+    'Recent conversation:',
+    historyBlock,
+    'Latest user message:',
+    input.message,
+  ].join('\n\n');
+};
+
+const runDesktopChildRouter = async (input: {
+  executionId: string;
+  threadId: string;
+  message: string;
+  workspace?: { name: string; path: string };
+  history: Array<{ role: 'user' | 'assistant'; content: string }>;
+}): Promise<DesktopChildRoute> => {
+  logger.info('vercel.child_router.start', {
+    executionId: input.executionId,
+    threadId: input.threadId,
+    messagePreview: summarizeText(input.message, 200),
+    historyCount: input.history.length,
+    hasWorkspace: Boolean(input.workspace),
+  });
+
+  try {
+    const model = await resolveVercelLanguageModel('fast');
+    const result = await generateObject({
+      model: model.model,
+      schema: desktopChildRouteSchema,
+      schemaName: 'desktop_child_route',
+      schemaDescription: 'Routing decision for a fast desktop child assistant that either replies quickly or hands off to the main executor.',
+      prompt: buildChildRouterPrompt(input),
+      temperature: 0,
+      providerOptions: {
+        google: {
+          thinkingConfig: {
+            includeThoughts: false,
+            thinkingLevel: 'minimal',
+          },
+        },
+      },
+    });
+    logger.info('vercel.child_router.completed', {
+      executionId: input.executionId,
+      threadId: input.threadId,
+      route: result.object.route,
+      reason: result.object.reason ?? null,
+    });
+    return result.object;
+  } catch (error) {
+    const fallbackRoute: DesktopChildRoute = shouldPlanDesktopTask(input.message)
+      ? {
+        route: 'handoff',
+        acknowledgement: 'I’ll handle this in steps and start gathering the required context now.',
+        reason: 'router_fallback_complex',
+      }
+      : {
+        route: 'direct_execute',
+        reason: 'router_fallback_direct',
+      };
+    logger.warn('vercel.child_router.failed', {
+      executionId: input.executionId,
+      threadId: input.threadId,
+      error: error instanceof Error ? error.message : 'unknown_error',
+      fallbackRoute: fallbackRoute.route,
+    });
+    return fallbackRoute;
+  }
+};
+
+const shouldPlanDesktopTask = (message?: string): boolean => {
+  const input = message?.trim();
+  if (!input) return false;
+  const lowered = input.toLowerCase();
+  if (isBareContinuationMessage(input)) return false;
+  if (input.length >= 120) return true;
+  if (/\b(and|then|after that|also|compare|audit|investigate|analyze|review|summarize|implement|debug|refactor|prepare)\b/i.test(input)) {
+    return true;
+  }
+  if (/\b(create|update|send|draft|write|read|search)\b/i.test(input) && /\b(zoho|lark|google|repo|workspace|file|document|calendar|task|invoice|payment)\b/i.test(input)) {
+    return true;
+  }
+  return false;
+};
+
+const extractLatestExecutionPlan = (history: ThreadHistorySnapshot): ExecutionPlan | null => {
+  for (const message of [...history.messages].reverse()) {
+    const metadata = message.metadata;
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) continue;
+    const parsed = executionPlanSchema.safeParse((metadata as PersistedPlanMetadata).plan);
+    if (parsed.success) {
+      return parsed.data;
+    }
+  }
+  return null;
+};
+
+const ensurePlanTaskRunning = (
+  plan: ExecutionPlan,
+  ownerAgent: ExecutionPlanOwner,
+): ExecutionPlan => {
+  if (plan.status !== 'running') return plan;
+  const tasks = plan.tasks.map((task) => ({ ...task }));
+  const runningIndex = tasks.findIndex((task) => task.status === 'running');
+  if (runningIndex >= 0 && tasks[runningIndex]?.ownerAgent === ownerAgent) {
+    return plan;
+  }
+  const targetIndex = tasks.findIndex((task) => task.status === 'pending' && task.ownerAgent === ownerAgent);
+  if (targetIndex === -1) {
+    return plan;
+  }
+  if (runningIndex >= 0) {
+    tasks[runningIndex].status = 'blocked';
+  }
+  tasks[targetIndex].status = 'running';
+  return {
+    ...plan,
+    updatedAt: new Date().toISOString(),
+    tasks,
+  };
 };
 
 const sendSseEvent = (res: Response, type: string, data: unknown) => {
@@ -116,11 +371,13 @@ const appendEventSafe = async (input: Parameters<typeof executionService.appendE
 
 const persistUiEvent = async (
   executionId: string,
-  type: 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'action' | 'text' | 'done' | 'error',
+  type: 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'action' | 'text' | 'done' | 'error' | 'plan',
   data: unknown,
 ) => {
   const phase = type === 'thinking' || type === 'thinking_token'
     ? 'planning'
+    : type === 'plan'
+      ? 'planning'
     : type === 'action'
       ? 'control'
     : type === 'text' || type === 'done'
@@ -133,11 +390,19 @@ const persistUiEvent = async (
     executionId,
     phase,
     eventType: `ui.${type}`,
-    actorType: type === 'text' || type === 'done' ? 'delivery' : type === 'thinking' || type === 'thinking_token' ? 'model' : type === 'error' || type === 'action' ? 'system' : 'tool',
-    actorKey: 'vercel',
+    actorType: type === 'text' || type === 'done'
+      ? 'delivery'
+      : type === 'thinking' || type === 'thinking_token'
+        ? 'model'
+        : type === 'plan'
+          ? 'planner'
+          : type === 'error' || type === 'action'
+            ? 'system'
+            : 'tool',
+    actorKey: type === 'plan' ? 'planner' : 'vercel',
     title: `UI event: ${type}`,
     summary: summarizeText(typeof data === 'string' ? data : JSON.stringify(data), 600),
-    status: type === 'error' ? 'failed' : type === 'activity' ? 'running' : type === 'action' ? 'pending' : 'done',
+    status: type === 'error' ? 'failed' : type === 'activity' ? 'running' : type === 'action' ? 'pending' : type === 'plan' ? 'running' : 'done',
     payload: typeof data === 'object' && data !== null && !Array.isArray(data)
       ? data as Record<string, unknown>
       : { value: data as unknown },
@@ -292,7 +557,26 @@ const hydrateConversationState = async (
   threadId: string,
   session: MemberSessionDTO,
 ): Promise<ThreadHistorySnapshot> => {
-  const history = await desktopThreadsService.getThread(threadId, session.userId);
+  const history = await desktopThreadContextCache.getOrLoad({
+    threadId,
+    userId: session.userId,
+    loader: async () => {
+      const loaded = await desktopThreadsService.getThreadContext(threadId, session.userId);
+      return {
+        threadId,
+        userId: session.userId,
+        messages: loaded.messages.map((message) => ({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          metadata: message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+            ? message.metadata as Record<string, unknown>
+            : undefined,
+        })),
+        cachedAt: new Date().toISOString(),
+      };
+    },
+  });
   const conversationKey = buildConversationKey(threadId);
 
   for (const message of history.messages.slice(-20)) {
@@ -308,6 +592,15 @@ const hydrateConversationState = async (
 
   return history;
 };
+
+const appendMessageToHistory = (
+  history: ThreadHistorySnapshot,
+  message: CachedDesktopThreadMessage,
+): ThreadHistorySnapshot => ({
+  ...history,
+  cachedAt: new Date().toISOString(),
+  messages: [...history.messages.filter((entry) => entry.id !== message.id), message].slice(-DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT),
+});
 
 const readAttachedFilesFromMetadata = (metadata: unknown): AttachedFileRef[] => {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return [];
@@ -337,14 +630,19 @@ const mapHistoryToMessages = async (
   session: MemberSessionDTO,
 ): Promise<{ messages: ModelMessage[]; history: ThreadHistorySnapshot }> => {
   const history = await hydrateConversationState(threadId, session);
+  const messages = mapHistorySnapshotToMessages(history);
+  return { messages, history };
+};
+
+const mapHistorySnapshotToMessages = (history: ThreadHistorySnapshot): ModelMessage[] => {
   const messages: ModelMessage[] = [];
-  for (const message of history.messages.slice(-12)) {
+  for (const message of history.messages.slice(-MODEL_HISTORY_MESSAGE_LIMIT)) {
     messages.push({
       role: message.role === 'assistant' ? 'assistant' : 'user',
       content: message.content,
     });
   }
-  return { messages, history };
+  return messages;
 };
 
 const buildSystemPrompt = (input: {
@@ -353,6 +651,7 @@ const buildSystemPrompt = (input: {
   dateScope?: string;
   latestActionResult?: { kind: string; ok: boolean; summary: string };
   latestUserMessage?: string;
+  routerAcknowledgement?: string;
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentSystemPrompt?: string;
@@ -411,6 +710,12 @@ const buildSystemPrompt = (input: {
   const continuationHint = buildContinuationHint(input.latestUserMessage);
   if (continuationHint) {
     parts.push(continuationHint);
+  }
+  if (input.routerAcknowledgement?.trim()) {
+    parts.push(
+      `The user has already seen this short intake acknowledgement: "${input.routerAcknowledgement.trim()}"`,
+      'Do not repeat that acknowledgement verbatim. Continue from it and focus on execution.',
+    );
   }
   parts.push(`Conversation key: ${buildConversationKey(input.threadId)}.`);
   return parts.join('\n');
@@ -527,6 +832,76 @@ const stopOnPendingApproval = ({
 }): boolean => Boolean(findPendingApproval(steps));
 
 const resolveTargetKey = async (mode: 'fast' | 'high' | 'xtreme') => resolveVercelLanguageModel(mode);
+
+const generateExecutionPlan = async (input: {
+  message: string;
+  workspace?: { name: string; path: string };
+}): Promise<ExecutionPlan | null> => {
+  if (!shouldPlanDesktopTask(input.message)) {
+    return null;
+  }
+
+  const plannerModel = await resolveVercelLanguageModel('fast');
+  const result = await generateText({
+    model: plannerModel.model,
+    system: 'Return JSON only.',
+    prompt: buildDesktopPlannerPrompt(input),
+    temperature: 0,
+    providerOptions: {
+      google: {
+        thinkingConfig: {
+          includeThoughts: false,
+          thinkingLevel: 'minimal',
+        },
+      },
+    },
+  }).catch(() => null);
+
+  const raw = result?.text?.trim();
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = plannerDraftSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) {
+      return null;
+    }
+    return initializeExecutionPlan(parsed.data);
+  } catch {
+    return null;
+  }
+};
+
+const logAndPersistPlan = async (input: {
+  executionId: string;
+  threadId: string;
+  plan: ExecutionPlan;
+  eventType: 'plan.created' | 'plan.updated' | 'plan.completed' | 'plan.failed';
+  emitSse?: (plan: ExecutionPlan) => void;
+  queueUiPlan?: (plan: ExecutionPlan) => void;
+}) => {
+  logger.info('vercel.plan.state', {
+    executionId: input.executionId,
+    threadId: input.threadId,
+    eventType: input.eventType,
+    status: input.plan.status,
+    plan: formatExecutionPlanForLog(input.plan),
+  });
+  await appendEventSafe({
+    executionId: input.executionId,
+    phase: 'planning',
+    eventType: input.eventType,
+    actorType: 'planner',
+    actorKey: 'planner',
+    title: input.eventType.replace('.', ' '),
+    summary: summarizeText(formatExecutionPlanForLog(input.plan), 1200),
+    status: input.plan.status === 'failed' ? 'failed' : input.plan.status === 'completed' ? 'done' : 'running',
+    payload: input.plan as unknown as Record<string, unknown>,
+  });
+  input.emitSse?.(input.plan);
+  input.queueUiPlan?.(input.plan);
+};
 
 const runVercelLoop = async (input: {
   runtime: VercelRuntimeRequestContext;
@@ -862,7 +1237,25 @@ export const executeAutomatedDesktopTurn = async (input: {
 export class VercelDesktopEngine {
   async stream(req: Request, res: Response, session: MemberSessionDTO): Promise<void> {
     const threadId = req.params.threadId;
-    const { message, attachedFiles, workspace, mode, executionId: requestedExecutionId } = sendSchema.parse(req.body);
+    const {
+      message,
+      attachedFiles,
+      workspace,
+      mode,
+      executionId: requestedExecutionId,
+      workflowInvocation,
+    } = sendSchema.parse(req.body);
+    const resolvedInvocation = workflowInvocation
+      ? await resolveWorkflowInvocationMessage({
+        companyId: session.companyId,
+        userId: session.userId,
+        workflowId: workflowInvocation.workflowId,
+        workflowName: workflowInvocation.workflowName,
+        overrideText: workflowInvocation.overrideText,
+      })
+      : null;
+    const effectiveMessage = resolvedInvocation?.requestMessage ?? message;
+    const storedUserMessage = resolvedInvocation?.storedUserMessage ?? message;
     const executionId = requestedExecutionId ?? randomUUID();
     const messageId = randomUUID();
     const requesterAiRole = session.aiRole ?? session.role;
@@ -876,7 +1269,7 @@ export class VercelDesktopEngine {
       entrypoint: 'desktop_send',
       session,
       mode,
-      message,
+      message: effectiveMessage,
     });
     await appendEventSafe({
       executionId,
@@ -885,7 +1278,7 @@ export class VercelDesktopEngine {
       actorType: 'system',
       actorKey: 'vercel',
       title: 'Vercel desktop execution started',
-      summary: summarizeText(message),
+      summary: summarizeText(storedUserMessage || effectiveMessage),
       status: 'running',
       payload: { threadId, mode },
     });
@@ -893,7 +1286,7 @@ export class VercelDesktopEngine {
       executionId,
       threadId,
       mode,
-      messagePreview: summarizeText(message, 200),
+      messagePreview: summarizeText(storedUserMessage || effectiveMessage, 200),
       attachedFileCount: attachedFiles.length,
     });
 
@@ -913,15 +1306,121 @@ export class VercelDesktopEngine {
           .catch(() => undefined);
       };
 
-      await desktopThreadsService.addMessage(
+      const preRouterHistory = await hydrateConversationState(threadId, session);
+      const childRoute = await runDesktopChildRouter({
+        executionId,
+        threadId,
+        message: effectiveMessage,
+        workspace,
+        history: preRouterHistory.messages.slice(-6).map((entry) => ({
+          role: entry.role === 'assistant' ? 'assistant' : 'user',
+          content: entry.content,
+        })),
+      });
+
+      const userMessage = await desktopThreadsService.addMessage(
         threadId,
         session.userId,
         'user',
-        message,
-        attachedFiles.length > 0 ? { attachedFiles } : undefined,
+        storedUserMessage,
+        {
+          ...(attachedFiles.length > 0 ? { attachedFiles } : {}),
+          ...(workflowInvocation ? { workflowInvocation } : {}),
+        },
       );
-      conversationMemoryStore.addUserMessage(buildConversationKey(threadId), messageId, message);
+      conversationMemoryStore.addUserMessage(buildConversationKey(threadId), messageId, storedUserMessage);
+      const history = appendMessageToHistory(preRouterHistory, {
+        id: userMessage.id,
+        role: userMessage.role,
+        content: userMessage.content,
+        metadata: userMessage.metadata && typeof userMessage.metadata === 'object' && !Array.isArray(userMessage.metadata)
+          ? userMessage.metadata as Record<string, unknown>
+          : undefined,
+      });
+
+      if (childRoute.route === 'fast_reply' && childRoute.reply?.trim()) {
+        const reply = childRoute.reply.trim();
+        logger.info('vercel.child_router.fast_reply', {
+          executionId,
+          threadId,
+          reason: childRoute.reason ?? null,
+          textPreview: summarizeText(reply, 200),
+        });
+        sendSseEvent(res, 'text', reply);
+        queueUiEvent('text', reply);
+        const assistantMessage = await desktopThreadsService.addMessage(
+          threadId,
+          session.userId,
+          'assistant',
+          reply,
+          {
+            executionId,
+            childRoute: {
+              route: childRoute.route,
+              reason: childRoute.reason ?? null,
+            },
+          },
+        );
+        conversationMemoryStore.addAssistantMessage(buildConversationKey(threadId), assistantMessage.id, reply);
+        await appendEventSafe({
+          executionId,
+          phase: 'delivery',
+          eventType: 'child_router.fast_reply',
+          actorType: 'agent',
+          actorKey: 'child_router',
+          title: 'Fast child reply delivered',
+          summary: summarizeText(reply, 600),
+          status: 'done',
+        });
+        await completeRun(executionId, reply);
+        queueUiEvent('done', { executionId, pendingApproval: null, actionIssued: false });
+        await uiEventQueue;
+        sendSseEvent(res, 'done', { message: assistantMessage, executionId, pendingApproval: null, actionIssued: false });
+        res.end();
+        return;
+      }
+
       let persistedBlocks: PersistedContentBlock[] = [];
+      const routerAcknowledgement = childRoute.route === 'handoff'
+        ? childRoute.acknowledgement?.trim() || 'I’ll take this in steps and start working through it now.'
+        : null;
+      if (routerAcknowledgement) {
+        logger.info('vercel.child_router.handoff', {
+          executionId,
+          threadId,
+          reason: childRoute.reason ?? null,
+          textPreview: summarizeText(routerAcknowledgement, 200),
+        });
+        const ackChunk = `${routerAcknowledgement}\n\n`;
+        sendSseEvent(res, 'text', ackChunk);
+        queueUiEvent('text', ackChunk);
+        persistedBlocks = appendTextBlock(persistedBlocks, ackChunk);
+        await appendEventSafe({
+          executionId,
+          phase: 'planning',
+          eventType: 'child_router.handoff',
+          actorType: 'agent',
+          actorKey: 'child_router',
+          title: 'Child router handed off to main executor',
+          summary: summarizeText(routerAcknowledgement, 600),
+          status: 'done',
+        });
+      }
+      let activePlan = await generateExecutionPlan({ message: effectiveMessage, workspace });
+      const emitPlan = (plan: ExecutionPlan) => {
+        sendSseEvent(res, 'plan', plan);
+        queueUiEvent('plan', plan);
+      };
+      if (activePlan) {
+        await logAndPersistPlan({
+          executionId,
+          threadId,
+          plan: activePlan,
+          eventType: 'plan.created',
+          emitSse: emitPlan,
+          queueUiPlan: undefined,
+        });
+      }
 
       const runtime: VercelRuntimeRequestContext = {
         channel: 'desktop',
@@ -941,13 +1440,14 @@ export class VercelDesktopEngine {
         authProvider: session.authProvider,
         mode,
         workspace,
-        dateScope: inferDateScope(message),
+        dateScope: inferDateScope(effectiveMessage),
+        allowedActionsByTool: departmentRuntime.allowedActionsByTool,
         allowedToolIds: departmentRuntime.allowedToolIds,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
       };
 
-      const { messages: historyMessages, history } = await mapHistoryToMessages(threadId, session);
+      const historyMessages = mapHistorySnapshotToMessages(history);
       const mergedAttachments = new Map<string, AttachedFileRef>();
       for (const file of collectRecentAttachedFiles(history)) {
         mergedAttachments.set(file.fileAssetId, file);
@@ -960,7 +1460,7 @@ export class VercelDesktopEngine {
       const activeAttachments = Array.from(mergedAttachments.values());
       if (activeAttachments.length > 0) {
         const visionParts = await buildVisionContent({
-          userMessage: message,
+          userMessage: effectiveMessage,
           attachedFiles: activeAttachments,
           companyId: session.companyId,
           requesterUserId: session.userId,
@@ -970,8 +1470,8 @@ export class VercelDesktopEngine {
           ...historyMessages,
           { role: 'user', content: visionParts as ModelMessage['content'] },
         ];
-      } else if (message.trim()) {
-        inputMessages = [...historyMessages, { role: 'user', content: message }];
+      } else if (effectiveMessage.trim()) {
+        inputMessages = [...historyMessages, { role: 'user', content: effectiveMessage }];
       }
 
       const result = await runVercelStreamLoop({
@@ -980,7 +1480,8 @@ export class VercelDesktopEngine {
           threadId,
           workspace,
           dateScope: runtime.dateScope,
-          latestUserMessage: message,
+          latestUserMessage: effectiveMessage,
+          routerAcknowledgement: routerAcknowledgement ?? undefined,
           departmentName: departmentRuntime.departmentName,
           departmentRoleSlug: departmentRuntime.departmentRoleSlug,
           departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
@@ -988,6 +1489,20 @@ export class VercelDesktopEngine {
         }),
         messages: inputMessages,
         onToolStart: async (toolName, activityId, title) => {
+          const ownerAgent = resolvePlanOwnerFromToolName(toolName);
+          if (activePlan && ownerAgent) {
+            const nextPlan = ensurePlanTaskRunning(activePlan, ownerAgent);
+            if (nextPlan !== activePlan) {
+              activePlan = nextPlan;
+              await logAndPersistPlan({
+                executionId,
+                threadId,
+                plan: activePlan,
+                eventType: 'plan.updated',
+                emitSse: emitPlan,
+              });
+            }
+          }
           logger.info('vercel.stream.tool.start', {
             executionId,
             threadId,
@@ -1022,6 +1537,21 @@ export class VercelDesktopEngine {
           });
         },
         onToolFinish: async (toolName, activityId, title, output) => {
+          const ownerAgent = resolvePlanOwnerFromToolName(toolName);
+          if (activePlan && ownerAgent) {
+            activePlan = updateExecutionPlanTask(activePlan, {
+              ownerAgent,
+              ok: output.success && !output.pendingApprovalAction,
+              resultSummary: output.summary,
+            });
+            await logAndPersistPlan({
+              executionId,
+              threadId,
+              plan: activePlan,
+              eventType: activePlan.status === 'failed' ? 'plan.failed' : activePlan.status === 'completed' ? 'plan.completed' : 'plan.updated',
+              emitSse: emitPlan,
+            });
+          }
           logger.info('vercel.stream.tool.finish', {
             executionId,
             threadId,
@@ -1141,7 +1671,8 @@ export class VercelDesktopEngine {
       const steps = await result.steps;
       const pendingApproval = findPendingApproval(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
       const pendingAction = pendingApproval ? mapPendingApprovalAction(pendingApproval) : null;
-      const finalText = pendingApproval ? '' : streamedText.trim();
+      const combinedText = `${routerAcknowledgement ? `${routerAcknowledgement}\n\n` : ''}${streamedText.trim()}`.trim();
+      const finalText = pendingApproval ? (routerAcknowledgement ?? '') : combinedText;
       const citations = (steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap((step) =>
         (step.toolResults ?? []).flatMap((toolResult) => {
           const output = toolResult.output as VercelToolEnvelope | undefined;
@@ -1173,6 +1704,17 @@ export class VercelDesktopEngine {
       });
 
       if (pendingAction) {
+        if (activePlan) {
+          const completedPlan = completeExecutionPlan(activePlan, approvalSummary ?? 'Approval required to continue.');
+          activePlan = completedPlan;
+          await logAndPersistPlan({
+            executionId,
+            threadId,
+            plan: activePlan,
+            eventType: activePlan.status === 'completed' ? 'plan.completed' : 'plan.updated',
+            emitSse: emitPlan,
+          });
+        }
         sendSseEvent(res, 'action', { action: pendingAction, executionId });
         queueUiEvent('action', { action: pendingAction, executionId });
       }
@@ -1187,6 +1729,7 @@ export class VercelDesktopEngine {
         {
           executionId,
           contentBlocks: persistedBlocks,
+          ...(activePlan ? { plan: activePlan } : {}),
           ...(citations.length > 0 ? { citations } : {}),
           ...(conversationRefs ? { conversationRefs } : {}),
         },
@@ -1205,6 +1748,16 @@ export class VercelDesktopEngine {
       });
 
       if (!pendingApproval) {
+        if (activePlan) {
+          activePlan = completeExecutionPlan(activePlan, finalText);
+          await logAndPersistPlan({
+            executionId,
+            threadId,
+            plan: activePlan,
+            eventType: activePlan.status === 'completed' ? 'plan.completed' : activePlan.status === 'failed' ? 'plan.failed' : 'plan.updated',
+            emitSse: emitPlan,
+          });
+        }
         await completeRun(executionId, finalText);
       }
       queueUiEvent('done', { executionId, pendingApproval: pendingApproval ?? null, actionIssued: Boolean(pendingAction) });
@@ -1301,7 +1854,21 @@ export class VercelDesktopEngine {
       };
 
       let persistedBlocks: PersistedContentBlock[] = [];
-      const { messages: historyMessages } = await mapHistoryToMessages(threadId, session);
+      const { messages: historyMessages, history } = await mapHistoryToMessages(threadId, session);
+      let activePlan = extractLatestExecutionPlan(history);
+      if (activePlan && actionResult) {
+        activePlan = updateExecutionPlanTask(activePlan, {
+          ownerAgent: resolvePlanOwnerFromActionKind(actionResult.kind === 'tool_action' ? 'run_command' : actionResult.kind),
+          ok: actionResult.ok,
+          resultSummary: actionResult.summary,
+        });
+        await logAndPersistPlan({
+          executionId,
+          threadId,
+          plan: activePlan,
+          eventType: activePlan.status === 'failed' ? 'plan.failed' : activePlan.status === 'completed' ? 'plan.completed' : 'plan.updated',
+        });
+      }
       const continuationText = message ?? (actionResult
         ? [
           'Continue from this local action result.',
@@ -1331,6 +1898,10 @@ export class VercelDesktopEngine {
           ? [...historyMessages, { role: 'user', content: continuationText }]
           : historyMessages,
         onToolStart: async (toolName, activityId, title) => {
+          const ownerAgent = resolvePlanOwnerFromToolName(toolName);
+          if (activePlan && ownerAgent) {
+            activePlan = ensurePlanTaskRunning(activePlan, ownerAgent);
+          }
           await persistUiEvent(executionId, 'activity', {
             id: activityId,
             name: toolName,
@@ -1352,6 +1923,20 @@ export class VercelDesktopEngine {
           });
         },
         onToolFinish: async (toolName, activityId, title, output) => {
+          const ownerAgent = resolvePlanOwnerFromToolName(toolName);
+          if (activePlan && ownerAgent) {
+            activePlan = updateExecutionPlanTask(activePlan, {
+              ownerAgent,
+              ok: output.success && !output.pendingApprovalAction,
+              resultSummary: output.summary,
+            });
+            await logAndPersistPlan({
+              executionId,
+              threadId,
+              plan: activePlan,
+              eventType: activePlan.status === 'failed' ? 'plan.failed' : activePlan.status === 'completed' ? 'plan.completed' : 'plan.updated',
+            });
+          }
           await persistUiEvent(executionId, 'activity_done', {
             id: activityId,
             name: toolName,
@@ -1395,12 +1980,21 @@ export class VercelDesktopEngine {
         return res.json(ApiResponse.success({
           kind: 'action',
           action,
-          plan: null,
+          plan: activePlan,
           executionId,
         }, 'Local action requested'));
       }
 
       const assistantText = result.text.trim();
+      if (activePlan) {
+        activePlan = completeExecutionPlan(activePlan, assistantText);
+        await logAndPersistPlan({
+          executionId,
+          threadId,
+          plan: activePlan,
+          eventType: activePlan.status === 'completed' ? 'plan.completed' : activePlan.status === 'failed' ? 'plan.failed' : 'plan.updated',
+        });
+      }
       persistedBlocks = appendTextBlock(persistedBlocks, assistantText);
       await persistUiEvent(executionId, 'text', assistantText);
       const citations = (result.steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap((step) =>
@@ -1417,6 +2011,7 @@ export class VercelDesktopEngine {
         {
           executionId,
           contentBlocks: persistedBlocks,
+          ...(activePlan ? { plan: activePlan } : {}),
           ...(citations.length > 0 ? { citations } : {}),
           ...(conversationRefs ? { conversationRefs } : {}),
         },
@@ -1439,7 +2034,7 @@ export class VercelDesktopEngine {
       return res.json(ApiResponse.success({
         kind: 'answer',
         message: assistantMessage,
-        plan: null,
+        plan: activePlan,
         executionId,
       }, 'Assistant reply created'));
     } catch (error) {
@@ -1542,7 +2137,26 @@ export class VercelDesktopEngine {
       };
 
       let persistedBlocks: PersistedContentBlock[] = [];
-      const { messages: historyMessages } = await mapHistoryToMessages(threadId, session);
+      const { messages: historyMessages, history } = await mapHistoryToMessages(threadId, session);
+      let activePlan = extractLatestExecutionPlan(history);
+      const emitPlan = (plan: ExecutionPlan) => {
+        sendSseEvent(res, 'plan', plan);
+        queueUiEvent('plan', plan);
+      };
+      if (activePlan && actionResult) {
+        activePlan = updateExecutionPlanTask(activePlan, {
+          ownerAgent: resolvePlanOwnerFromActionKind(actionResult.kind === 'tool_action' ? 'run_command' : actionResult.kind),
+          ok: actionResult.ok,
+          resultSummary: actionResult.summary,
+        });
+        await logAndPersistPlan({
+          executionId,
+          threadId,
+          plan: activePlan,
+          eventType: activePlan.status === 'failed' ? 'plan.failed' : activePlan.status === 'completed' ? 'plan.completed' : 'plan.updated',
+          emitSse: emitPlan,
+        });
+      }
       const continuationText = message ?? (actionResult
         ? [
           'Continue from this local action result.',
@@ -1572,6 +2186,20 @@ export class VercelDesktopEngine {
           ? [...historyMessages, { role: 'user', content: continuationText }]
           : historyMessages,
         onToolStart: async (toolName, activityId, title) => {
+          const ownerAgent = resolvePlanOwnerFromToolName(toolName);
+          if (activePlan && ownerAgent) {
+            const nextPlan = ensurePlanTaskRunning(activePlan, ownerAgent);
+            if (nextPlan !== activePlan) {
+              activePlan = nextPlan;
+              await logAndPersistPlan({
+                executionId,
+                threadId,
+                plan: activePlan,
+                eventType: 'plan.updated',
+                emitSse: emitPlan,
+              });
+            }
+          }
           logger.info('vercel.stream.tool.start', {
             executionId,
             threadId,
@@ -1606,6 +2234,21 @@ export class VercelDesktopEngine {
           });
         },
         onToolFinish: async (toolName, activityId, title, output) => {
+          const ownerAgent = resolvePlanOwnerFromToolName(toolName);
+          if (activePlan && ownerAgent) {
+            activePlan = updateExecutionPlanTask(activePlan, {
+              ownerAgent,
+              ok: output.success && !output.pendingApprovalAction,
+              resultSummary: output.summary,
+            });
+            await logAndPersistPlan({
+              executionId,
+              threadId,
+              plan: activePlan,
+              eventType: activePlan.status === 'failed' ? 'plan.failed' : activePlan.status === 'completed' ? 'plan.completed' : 'plan.updated',
+              emitSse: emitPlan,
+            });
+          }
           logger.info('vercel.stream.tool.finish', {
             executionId,
             threadId,
@@ -1723,6 +2366,16 @@ export class VercelDesktopEngine {
         }));
 
       if (pendingAction) {
+        if (activePlan) {
+          activePlan = completeExecutionPlan(activePlan, approvalSummary ?? 'Approval required to continue.');
+          await logAndPersistPlan({
+            executionId,
+            threadId,
+            plan: activePlan,
+            eventType: activePlan.status === 'completed' ? 'plan.completed' : 'plan.updated',
+            emitSse: emitPlan,
+          });
+        }
         sendSseEvent(res, 'action', { action: pendingAction, executionId });
         queueUiEvent('action', { action: pendingAction, executionId });
       }
@@ -1736,6 +2389,7 @@ export class VercelDesktopEngine {
         {
           executionId,
           contentBlocks: persistedBlocks,
+          ...(activePlan ? { plan: activePlan } : {}),
           ...(citations.length > 0 ? { citations } : {}),
           ...(conversationRefs ? { conversationRefs } : {}),
         },
@@ -1754,6 +2408,16 @@ export class VercelDesktopEngine {
       });
 
       if (!pendingApproval) {
+        if (activePlan) {
+          activePlan = completeExecutionPlan(activePlan, finalText);
+          await logAndPersistPlan({
+            executionId,
+            threadId,
+            plan: activePlan,
+            eventType: activePlan.status === 'completed' ? 'plan.completed' : activePlan.status === 'failed' ? 'plan.failed' : 'plan.updated',
+            emitSse: emitPlan,
+          });
+        }
         await completeRun(executionId, finalText);
       }
 

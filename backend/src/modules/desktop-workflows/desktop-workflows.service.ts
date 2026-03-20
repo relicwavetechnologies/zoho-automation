@@ -32,6 +32,7 @@ import { formatScheduledSlot, getNextScheduledRunAt } from './desktop-workflows.
 
 const generatedWorkflowCompilerOutputSchema = z.object({
   compilerNotes: z.string().trim().min(1).max(600),
+  aiDraft: z.string().trim().min(1).max(12000),
   workflowSpec: scheduledWorkflowSpecSchema,
 }).strict();
 
@@ -46,7 +47,9 @@ export type DesktopWorkflowPublishInput = {
   workflowId?: string | null;
   name: string;
   userIntent: string;
+  aiDraft?: string | null;
   schedule: ScheduledWorkflowScheduleConfig;
+  scheduleEnabled?: boolean;
   outputConfig: ScheduledWorkflowOutputConfig;
   workflowSpec: z.infer<typeof scheduledWorkflowSpecSchema>;
   compiledPrompt: string;
@@ -54,7 +57,22 @@ export type DesktopWorkflowPublishInput = {
   departmentId?: string | null;
 };
 
+type StoredWorkflowStatus = 'draft' | 'published' | 'active' | 'scheduled_active' | 'paused' | 'archived';
+type WorkflowPresentationStatus = 'draft' | 'published' | 'scheduled_active' | 'paused' | 'archived';
+type WorkflowAuthorMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+};
+
+const WORKFLOW_HISTORY_WINDOW = 8;
+const DEFAULT_WORKFLOW_NAME = 'Untitled workflow';
+
 const buildScheduleSummary = (schedule: ScheduledWorkflowScheduleConfig): string => {
+  if (schedule.type === 'hourly') {
+    return `Every ${schedule.intervalHours} hour${schedule.intervalHours === 1 ? '' : 's'} at minute ${String(schedule.minute).padStart(2, '0')} (${schedule.timezone})`;
+  }
   if (schedule.type === 'daily') {
     return `Daily at ${String(schedule.time.hour).padStart(2, '0')}:${String(schedule.time.minute).padStart(2, '0')} (${schedule.timezone})`;
   }
@@ -65,6 +83,13 @@ const buildScheduleSummary = (schedule: ScheduledWorkflowScheduleConfig): string
     return `Monthly on day ${schedule.dayOfMonth} at ${String(schedule.time.hour).padStart(2, '0')}:${String(schedule.time.minute).padStart(2, '0')} (${schedule.timezone})`;
   }
   return `One time at ${schedule.runAt} (${schedule.timezone})`;
+};
+
+const deriveWorkflowName = (seed: string | null | undefined): string => {
+  const trimmed = seed?.trim();
+  if (!trimmed) return DEFAULT_WORKFLOW_NAME;
+  const compact = trimmed.replace(/\s+/g, ' ').trim();
+  return compact.length <= 56 ? compact : `${compact.slice(0, 53).trimEnd()}...`;
 };
 
 const buildDestinationSummary = (outputConfig: ScheduledWorkflowOutputConfig): string =>
@@ -102,6 +127,7 @@ const buildCompilerPrompt = (input: {
 
   return [
     'Compile the user brief into a scheduled workflow graph.',
+    'Also write an aiDraft: a detailed reusable operating brief that can be edited and reused later.',
     'Return a workflowSpec that matches the schema exactly.',
     'Use only the listed tool ids and supported action groups.',
     'Prefer explicit, concrete workflow steps over vague generic summaries.',
@@ -131,6 +157,48 @@ const buildCompilerPrompt = (input: {
     '- deliver: finalize to approved destinations',
     '- requireApproval: insert when write/execution steps need an approval boundary',
   ].join('\n');
+};
+
+const buildAuthoringPrompt = (input: {
+  workflowName: string;
+  latestIntent: string;
+  schedule: ScheduledWorkflowScheduleConfig;
+  outputConfig: ScheduledWorkflowOutputConfig;
+  allowedToolIds: string[];
+  history: WorkflowAuthorMessage[];
+  currentAiDraft?: string | null;
+  currentWorkflowSpec?: z.infer<typeof scheduledWorkflowSpecSchema> | null;
+}): string => {
+  const transcript = input.history
+    .slice(-WORKFLOW_HISTORY_WINDOW)
+    .map((message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${message.content}`)
+    .join('\n');
+
+  return [
+    'You are refining a reusable workflow from an iterative authoring conversation.',
+    'Use the recent authoring history plus the current workflow artifacts to produce the next full workflow draft.',
+    'Return a full aiDraft and a full workflowSpec, not a patch.',
+    'Preserve the underlying job unless the latest user instruction clearly changes it.',
+    'Make the workflow concrete, operational, and structured around the available tools and action groups.',
+    '',
+    `Workflow name: ${input.workflowName}`,
+    `Latest user brief: ${input.latestIntent}`,
+    `Schedule: ${buildScheduleSummary(input.schedule)}`,
+    'Allowed destinations:',
+    buildDestinationSummary(input.outputConfig),
+    '',
+    'Allowed tools:',
+    buildToolCatalog(input.allowedToolIds),
+    '',
+    input.currentAiDraft?.trim()
+      ? ['Current reusable prompt:', input.currentAiDraft.trim(), ''].join('\n')
+      : '',
+    input.currentWorkflowSpec
+      ? ['Current workflow JSON:', JSON.stringify(input.currentWorkflowSpec, null, 2), ''].join('\n')
+      : '',
+    'Recent authoring conversation:',
+    transcript || 'User: Create a new workflow draft.',
+  ].filter(Boolean).join('\n');
 };
 
 const includesAny = (value: string, needles: string[]): boolean => {
@@ -242,6 +310,22 @@ const buildFallbackWorkflowSpec = (input: {
 const summarizeResult = (text: string, limit = 600): string =>
   text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
 
+const buildBlankWorkflowSpec = (name: string): z.infer<typeof scheduledWorkflowSpecSchema> => ({
+  version: 'v1',
+  name,
+  description: 'Draft workflow. Describe the job in the workflow builder to generate a real execution map.',
+  nodes: [
+    {
+      id: 'draft_intake',
+      kind: 'analyze',
+      title: 'Draft intake',
+      instructions: 'Waiting for the workflow author to describe the job.',
+      expectedOutput: 'A generated workflow map after the next AI compile.',
+    },
+  ],
+  edges: [],
+});
+
 const readPrismaErrorCode = (error: unknown): string | null =>
   error && typeof error === 'object' && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
     ? (error as { code: string }).code
@@ -253,6 +337,16 @@ const isScheduledWorkflowTableMissing = (error: unknown): boolean =>
   && error.message.includes('ScheduledWorkflow');
 
 const isDatabaseUnavailable = (error: unknown): boolean => readPrismaErrorCode(error) === 'P1001';
+
+const toWorkflowMessages = (
+  rows: Array<{ id: string; role: string; content: string; createdAt: Date }>,
+): WorkflowAuthorMessage[] =>
+  rows.map((row) => ({
+    id: row.id,
+    role: row.role === 'assistant' ? 'assistant' : 'user',
+    content: row.content,
+    createdAt: row.createdAt.toISOString(),
+  }));
 
 const buildApprovalGrant = (
   session: MemberSessionDTO,
@@ -282,14 +376,31 @@ const parseWorkflowRow = (row: {
   capabilitySummary: scheduledWorkflowCapabilitySummarySchema.parse(row.capabilitySummaryJson),
 });
 
+const normalizeWorkflowStatus = (row: {
+  status: StoredWorkflowStatus;
+  scheduleEnabled?: boolean | null;
+}): WorkflowPresentationStatus => {
+  if (row.status === 'active') return 'scheduled_active';
+  if (row.status === 'scheduled_active') return 'scheduled_active';
+  if (row.status === 'published') return 'published';
+  if (row.status === 'paused') return 'paused';
+  if (row.status === 'archived') return 'archived';
+  if (row.scheduleEnabled) return 'scheduled_active';
+  return 'draft';
+};
+
 const buildExecutionPrompt = (input: {
   workflowName: string;
   compiledPrompt: string;
   scheduledFor: Date;
   schedule: ScheduledWorkflowScheduleConfig;
   outputConfig: ScheduledWorkflowOutputConfig;
+  overrideText?: string | null;
 }): string => [
   input.compiledPrompt.trim(),
+  ...(input.overrideText?.trim()
+    ? ['', 'Run-specific override from the workflow owner:', input.overrideText.trim()]
+    : []),
   '',
   'Execution request:',
   `- Run this workflow now for the scheduled slot ${formatScheduledSlot(input.scheduledFor, input.schedule.timezone)}.`,
@@ -333,10 +444,26 @@ class DesktopWorkflowsService {
 
   private dueProcessorSuspendedReason: string | null = null;
 
-  async compile(
-    session: MemberSessionDTO,
-    input: DesktopWorkflowCompilerInput,
-  ): Promise<{
+  private async getAllowedWorkflowTools(session: MemberSessionDTO): Promise<string[]> {
+    const requesterAiRole = session.aiRole ?? session.role;
+    const allowedToolIds = await toolPermissionService.getAllowedTools(session.companyId, requesterAiRole);
+    if (allowedToolIds.length === 0) {
+      throw new HttpException(403, 'No tools are available for workflow compilation');
+    }
+    return allowedToolIds;
+  }
+
+  private async compileArtifacts(input: {
+    session: MemberSessionDTO;
+    name: string;
+    latestIntent: string;
+    schedule: ScheduledWorkflowScheduleConfig;
+    outputConfig: ScheduledWorkflowOutputConfig;
+    history?: WorkflowAuthorMessage[];
+    currentAiDraft?: string | null;
+    currentWorkflowSpec?: z.infer<typeof scheduledWorkflowSpecSchema> | null;
+  }): Promise<{
+    aiDraft: string;
     workflowSpec: z.infer<typeof scheduledWorkflowSpecSchema>;
     compiledPrompt: string;
     compilerNotes: string;
@@ -347,20 +474,26 @@ class DesktopWorkflowsService {
       throw new HttpException(503, 'Gemini is not configured on the backend');
     }
 
-    const requesterAiRole = session.aiRole ?? session.role;
-    const allowedToolIds = await toolPermissionService.getAllowedTools(session.companyId, requesterAiRole);
-    if (allowedToolIds.length === 0) {
-      throw new HttpException(403, 'No tools are available for workflow compilation');
-    }
-
+    const allowedToolIds = await this.getAllowedWorkflowTools(input.session);
     const resolvedModel = await resolveVercelLanguageModel('high');
-    const prompt = buildCompilerPrompt({
-      workflowName: input.name,
-      userIntent: input.userIntent,
-      schedule: input.schedule,
-      outputConfig: input.outputConfig,
-      allowedToolIds,
-    });
+    const prompt = input.history && input.history.length > 0
+      ? buildAuthoringPrompt({
+        workflowName: input.name,
+        latestIntent: input.latestIntent,
+        schedule: input.schedule,
+        outputConfig: input.outputConfig,
+        allowedToolIds,
+        history: input.history,
+        currentAiDraft: input.currentAiDraft,
+        currentWorkflowSpec: input.currentWorkflowSpec,
+      })
+      : buildCompilerPrompt({
+        workflowName: input.name,
+        userIntent: input.latestIntent,
+        schedule: input.schedule,
+        outputConfig: input.outputConfig,
+        allowedToolIds,
+      });
 
     let generated: z.infer<typeof generatedWorkflowCompilerOutputSchema>;
     let usedFallback = false;
@@ -390,9 +523,17 @@ class DesktopWorkflowsService {
       usedFallback = true;
       generated = {
         compilerNotes: 'Compiled with deterministic fallback because the model response did not satisfy the strict workflow schema on the first pass.',
+        aiDraft: [
+          `Workflow objective: ${input.latestIntent}`,
+          '',
+          'Execution guidance:',
+          '- Follow the structured workflow definition exactly.',
+          '- Use only the approved tools and destinations.',
+          '- Produce a concrete, concise final deliverable for the configured outputs.',
+        ].join('\n'),
         workflowSpec: buildFallbackWorkflowSpec({
           workflowName: input.name,
-          userIntent: input.userIntent,
+          userIntent: input.latestIntent,
           outputConfig: input.outputConfig,
           allowedToolIds,
         }),
@@ -405,13 +546,14 @@ class DesktopWorkflowsService {
     });
 
     const { compiledPrompt, capabilitySummary } = compileScheduledWorkflowDefinition({
-      userIntent: input.userIntent,
+      userIntent: input.latestIntent,
       workflowSpec,
       schedule: input.schedule,
       outputConfig: input.outputConfig,
     });
 
     return {
+      aiDraft: generated.aiDraft,
       workflowSpec,
       compiledPrompt,
       compilerNotes: usedFallback
@@ -425,12 +567,300 @@ class DesktopWorkflowsService {
     };
   }
 
+  private serializeWorkflow(row: {
+    id: string;
+    name: string;
+    status: StoredWorkflowStatus;
+    userIntent: string;
+    aiDraft: string | null;
+    workflowSpecJson: unknown;
+    compiledPrompt: string;
+    capabilitySummaryJson: unknown;
+    scheduleConfigJson: unknown;
+    scheduleEnabled: boolean;
+    outputConfigJson: unknown;
+    publishedAt: Date | null;
+    nextRunAt: Date | null;
+    lastRunAt: Date | null;
+    departmentId: string | null;
+    updatedAt: Date;
+    messages?: Array<{ id: string; role: string; content: string; createdAt: Date }>;
+  }) {
+    const parsed = parseWorkflowRow(row);
+    return {
+      id: row.id,
+      name: row.name,
+      status: normalizeWorkflowStatus(row),
+      userIntent: row.userIntent,
+      aiDraft: row.aiDraft ?? null,
+      workflowSpec: parsed.workflowSpec,
+      compiledPrompt: row.compiledPrompt,
+      capabilitySummary: parsed.capabilitySummary,
+      schedule: parsed.schedule,
+      scheduleEnabled: row.scheduleEnabled,
+      outputConfig: parsed.outputConfig,
+      publishedAt: row.publishedAt?.toISOString() ?? null,
+      nextRunAt: row.nextRunAt?.toISOString() ?? null,
+      lastRunAt: row.lastRunAt?.toISOString() ?? null,
+      departmentId: row.departmentId ?? null,
+      ownershipScope: 'personal' as const,
+      updatedAt: row.updatedAt.toISOString(),
+      messages: toWorkflowMessages(row.messages ?? []),
+    };
+  }
+
+  async compile(
+    session: MemberSessionDTO,
+    input: DesktopWorkflowCompilerInput,
+  ): Promise<{
+    aiDraft: string;
+    workflowSpec: z.infer<typeof scheduledWorkflowSpecSchema>;
+    compiledPrompt: string;
+    compilerNotes: string;
+    capabilitySummary: ReturnType<typeof compileScheduledWorkflowDefinition>['capabilitySummary'];
+    model: { provider: string; modelId: string };
+  }> {
+    return this.compileArtifacts({
+      session,
+      name: input.name,
+      latestIntent: input.userIntent,
+      schedule: input.schedule,
+      outputConfig: input.outputConfig,
+    });
+  }
+
+  async createDraft(
+    session: MemberSessionDTO,
+    input?: { name?: string | null; departmentId?: string | null },
+  ) {
+    const name = deriveWorkflowName(input?.name);
+    const schedule: ScheduledWorkflowScheduleConfig = {
+      type: 'weekly',
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata',
+      daysOfWeek: ['MO'],
+      time: { hour: 9, minute: 0 },
+    };
+    const outputConfig: ScheduledWorkflowOutputConfig = {
+      version: 'v1',
+      destinations: [{ id: 'desktop_inbox', kind: 'desktop_inbox', label: 'Desktop inbox' }],
+      defaultDestinationIds: ['desktop_inbox'],
+    };
+    const blankSpec = buildBlankWorkflowSpec(name);
+    const { capabilitySummary } = compileScheduledWorkflowDefinition({
+      userIntent: '',
+      workflowSpec: blankSpec,
+      schedule,
+      outputConfig,
+    });
+    const workflow = await prisma.scheduledWorkflow.create({
+      data: {
+        companyId: session.companyId,
+        departmentId: input?.departmentId ?? null,
+        createdByUserId: session.userId,
+        name,
+        status: 'draft',
+        userIntent: '',
+        aiDraft: null,
+        workflowSpecJson: blankSpec,
+        compiledPrompt: '',
+        capabilitySummaryJson: capabilitySummary,
+        timezone: schedule.timezone,
+        scheduleType: schedule.type,
+        scheduleConfigJson: schedule,
+        scheduleEnabled: false,
+        outputConfigJson: outputConfig,
+      },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+    return this.serializeWorkflow(workflow);
+  }
+
+  async get(session: MemberSessionDTO, workflowId: string) {
+    const workflow = await prisma.scheduledWorkflow.findFirst({
+      where: {
+        id: workflowId,
+        companyId: session.companyId,
+        createdByUserId: session.userId,
+        status: { not: 'archived' },
+      },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+    if (!workflow) {
+      throw new HttpException(404, 'Workflow not found');
+    }
+    return this.serializeWorkflow(workflow);
+  }
+
+  async author(session: MemberSessionDTO, workflowId: string, message: string) {
+    const workflow = await prisma.scheduledWorkflow.findFirst({
+      where: {
+        id: workflowId,
+        companyId: session.companyId,
+        createdByUserId: session.userId,
+        status: { not: 'archived' },
+      },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+    if (!workflow) {
+      throw new HttpException(404, 'Workflow not found');
+    }
+
+    const parsed = parseWorkflowRow(workflow);
+    const createdUserMessage = await prisma.scheduledWorkflowMessage.create({
+      data: {
+        workflowId,
+        role: 'user',
+        content: message.trim(),
+      },
+    });
+
+    const history = toWorkflowMessages([
+      ...workflow.messages,
+      createdUserMessage,
+    ]);
+
+    const compiled = await this.compileArtifacts({
+      session,
+      name: workflow.name === DEFAULT_WORKFLOW_NAME ? deriveWorkflowName(message) : workflow.name,
+      latestIntent: message.trim(),
+      schedule: parsed.schedule,
+      outputConfig: parsed.outputConfig,
+      history,
+      currentAiDraft: workflow.aiDraft,
+      currentWorkflowSpec: parsed.workflowSpec,
+    });
+
+    const assistantSummary = summarizeResult(compiled.compilerNotes || compiled.aiDraft, 1200);
+    const updatedWorkflow = await prisma.$transaction(async (tx) => {
+      await tx.scheduledWorkflowMessage.create({
+        data: {
+          workflowId,
+          role: 'assistant',
+          content: assistantSummary,
+          metadata: {
+            model: compiled.model,
+          },
+        },
+      });
+
+      return tx.scheduledWorkflow.update({
+        where: { id: workflowId },
+        data: {
+          name: workflow.name === DEFAULT_WORKFLOW_NAME ? deriveWorkflowName(message) : workflow.name,
+          userIntent: message.trim(),
+          aiDraft: compiled.aiDraft,
+          workflowSpecJson: compiled.workflowSpec,
+          compiledPrompt: compiled.compiledPrompt,
+          capabilitySummaryJson: compiled.capabilitySummary,
+          updatedAt: new Date(),
+        },
+        include: {
+          messages: {
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      });
+    });
+
+    return {
+      ...this.serializeWorkflow(updatedWorkflow),
+      compilerNotes: compiled.compilerNotes,
+      model: compiled.model,
+    };
+  }
+
+  async update(
+    session: MemberSessionDTO,
+    workflowId: string,
+    input: {
+      name?: string;
+      userIntent?: string;
+      aiDraft?: string | null;
+      workflowSpec?: z.infer<typeof scheduledWorkflowSpecSchema>;
+      schedule?: ScheduledWorkflowScheduleConfig;
+      outputConfig?: ScheduledWorkflowOutputConfig;
+      departmentId?: string | null;
+    },
+  ) {
+    const workflow = await prisma.scheduledWorkflow.findFirst({
+      where: {
+        id: workflowId,
+        companyId: session.companyId,
+        createdByUserId: session.userId,
+        status: { not: 'archived' },
+      },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+    if (!workflow) {
+      throw new HttpException(404, 'Workflow not found');
+    }
+
+    const parsed = parseWorkflowRow(workflow);
+    const nextName = input.name ? deriveWorkflowName(input.name) : workflow.name;
+    const nextIntent = input.userIntent ?? workflow.userIntent;
+    const nextSchedule = input.schedule ?? parsed.schedule;
+    const nextOutputConfig = input.outputConfig ?? parsed.outputConfig;
+    const nextWorkflowSpec = input.workflowSpec
+      ? reconcileWorkflowSpecDestinations(
+        scheduledWorkflowSpecSchema.parse({ ...input.workflowSpec, name: nextName }),
+        nextOutputConfig,
+      )
+      : parsed.workflowSpec;
+    const nextCompiled = compileScheduledWorkflowDefinition({
+      userIntent: nextIntent,
+      workflowSpec: nextWorkflowSpec,
+      schedule: nextSchedule,
+      outputConfig: nextOutputConfig,
+    });
+
+    const updated = await prisma.scheduledWorkflow.update({
+      where: { id: workflowId },
+      data: {
+        ...(input.departmentId !== undefined ? { departmentId: input.departmentId } : {}),
+        name: nextName,
+        userIntent: nextIntent,
+        aiDraft: input.aiDraft !== undefined ? input.aiDraft : workflow.aiDraft,
+        workflowSpecJson: nextWorkflowSpec,
+        compiledPrompt: nextCompiled.compiledPrompt,
+        capabilitySummaryJson: nextCompiled.capabilitySummary,
+        timezone: nextSchedule.timezone,
+        scheduleType: nextSchedule.type,
+        scheduleConfigJson: nextSchedule,
+        outputConfigJson: nextOutputConfig,
+      },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+
+    return this.serializeWorkflow(updated);
+  }
+
   async publish(
     session: MemberSessionDTO,
     input: DesktopWorkflowPublishInput,
   ): Promise<{
     workflowId: string;
-    status: 'active';
+    status: 'published' | 'scheduled_active';
+    scheduleEnabled: boolean;
     nextRunAt: string | null;
     publishedAt: string;
     primaryThreadId: string;
@@ -462,10 +892,12 @@ class DesktopWorkflowsService {
       schedule: input.schedule,
       outputConfig: normalizedOutputConfig,
     });
-    const nextRunAt = getNextScheduledRunAt(input.schedule, new Date());
-    if (!nextRunAt) {
+    const scheduleEnabled = input.scheduleEnabled ?? false;
+    const nextRunAt = scheduleEnabled ? getNextScheduledRunAt(input.schedule, new Date()) : null;
+    if (scheduleEnabled && !nextRunAt) {
       throw new HttpException(400, 'This workflow has no future run time to publish.');
     }
+    const nextStatus: StoredWorkflowStatus = scheduleEnabled ? 'scheduled_active' : 'published';
 
     const departments = await departmentService.listUserDepartments(session.userId, session.companyId);
     const resolvedDepartment = input.departmentId
@@ -510,14 +942,16 @@ class DesktopWorkflowsService {
         data: {
           departmentId: resolvedDepartment?.id ?? null,
           name: input.name,
-          status: 'active',
+          status: nextStatus,
           userIntent: input.userIntent,
+          aiDraft: input.aiDraft?.trim() || null,
           workflowSpecJson: workflowSpec,
           compiledPrompt: input.compiledPrompt.trim(),
           capabilitySummaryJson: capabilitySummary,
           timezone: input.schedule.timezone,
           scheduleType: input.schedule.type,
           scheduleConfigJson: input.schedule,
+          scheduleEnabled,
           nextRunAt,
           outputConfigJson: outputConfig,
           approvalGrantJson: buildApprovalGrant(session, capabilitySummary),
@@ -539,14 +973,16 @@ class DesktopWorkflowsService {
           departmentId: resolvedDepartment?.id ?? null,
           createdByUserId: session.userId,
           name: input.name,
-          status: 'active',
+          status: nextStatus,
           userIntent: input.userIntent,
+          aiDraft: input.aiDraft?.trim() || null,
           workflowSpecJson: workflowSpec,
           compiledPrompt: input.compiledPrompt.trim(),
           capabilitySummaryJson: capabilitySummary,
           timezone: input.schedule.timezone,
           scheduleType: input.schedule.type,
           scheduleConfigJson: input.schedule,
+          scheduleEnabled,
           nextRunAt,
           outputConfigJson: outputConfig,
           approvalGrantJson: buildApprovalGrant(session, capabilitySummary),
@@ -561,7 +997,8 @@ class DesktopWorkflowsService {
 
     return {
       workflowId: workflow.id,
-      status: 'active',
+      status: scheduleEnabled ? 'scheduled_active' : 'published',
+      scheduleEnabled,
       nextRunAt: workflow.nextRunAt ? workflow.nextRunAt.toISOString() : null,
       publishedAt: workflow.publishedAt?.toISOString() ?? new Date().toISOString(),
       primaryThreadId: primaryThread.id,
@@ -570,7 +1007,7 @@ class DesktopWorkflowsService {
     };
   }
 
-  async runNow(session: MemberSessionDTO, workflowId: string): Promise<{
+  async runNow(session: MemberSessionDTO, workflowId: string, overrideText?: string | null): Promise<{
     workflowId: string;
     runId: string;
     executionId: string | null;
@@ -584,13 +1021,19 @@ class DesktopWorkflowsService {
       where: {
         id: workflowId,
         companyId: session.companyId,
+        status: { not: 'archived' },
       },
     });
     if (!workflow) {
       throw new HttpException(404, 'Workflow not found');
     }
 
-    const result = await this.executeWorkflow(workflow.id, new Date(), 'manual');
+    const parsed = parseWorkflowRow(workflow);
+    if (overrideText?.trim() && parsed.capabilitySummary.requiresPublishApproval) {
+      throw new HttpException(403, 'Temporary overrides are blocked for workflows that can write, send, delete, or execute.');
+    }
+
+    const result = await this.executeWorkflow(workflow.id, new Date(), 'manual', overrideText?.trim() || null);
     return {
       workflowId: workflow.id,
       runId: result.runId,
@@ -606,16 +1049,22 @@ class DesktopWorkflowsService {
   async list(session: MemberSessionDTO): Promise<Array<{
     id: string;
     name: string;
-    status: 'draft' | 'active' | 'paused' | 'archived';
+    status: WorkflowPresentationStatus;
     userIntent: string;
+    aiDraft: string | null;
     workflowSpec: z.infer<typeof scheduledWorkflowSpecSchema>;
     compiledPrompt: string;
     capabilitySummary: ScheduledWorkflowCapabilitySummary;
     schedule: ScheduledWorkflowScheduleConfig;
+    scheduleEnabled: boolean;
     outputConfig: ScheduledWorkflowOutputConfig;
     publishedAt: string | null;
     nextRunAt: string | null;
+    lastRunAt: string | null;
+    departmentId: string | null;
+    ownershipScope: 'personal';
     updatedAt: string;
+    messages: WorkflowAuthorMessage[];
   }>> {
     const rows = await prisma.scheduledWorkflow.findMany({
       where: {
@@ -627,25 +1076,14 @@ class DesktopWorkflowsService {
         { updatedAt: 'desc' },
         { createdAt: 'desc' },
       ],
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
     });
 
-    return rows.map((row) => {
-      const parsed = parseWorkflowRow(row);
-      return {
-        id: row.id,
-        name: row.name,
-        status: row.status,
-        userIntent: row.userIntent,
-        workflowSpec: parsed.workflowSpec,
-        compiledPrompt: row.compiledPrompt,
-        capabilitySummary: parsed.capabilitySummary,
-        schedule: parsed.schedule,
-        outputConfig: parsed.outputConfig,
-        publishedAt: row.publishedAt?.toISOString() ?? null,
-        nextRunAt: row.nextRunAt?.toISOString() ?? null,
-        updatedAt: row.updatedAt.toISOString(),
-      };
-    });
+    return rows.map((row) => this.serializeWorkflow(row));
   }
 
   async archive(session: MemberSessionDTO, workflowId: string): Promise<void> {
@@ -657,6 +1095,7 @@ class DesktopWorkflowsService {
       },
       data: {
         status: 'archived',
+        scheduleEnabled: false,
         archivedAt: new Date(),
         nextRunAt: null,
         claimToken: null,
@@ -666,6 +1105,80 @@ class DesktopWorkflowsService {
     if (updated.count === 0) {
       throw new HttpException(404, 'Published workflow not found');
     }
+  }
+
+  async setScheduleState(
+    session: MemberSessionDTO,
+    workflowId: string,
+    scheduleEnabled: boolean,
+  ): Promise<{
+    workflowId: string;
+    status: 'published' | 'scheduled_active' | 'paused';
+    scheduleEnabled: boolean;
+    nextRunAt: string | null;
+  }> {
+    const workflow = await prisma.scheduledWorkflow.findFirst({
+      where: {
+        id: workflowId,
+        companyId: session.companyId,
+        createdByUserId: session.userId,
+        status: { not: 'archived' },
+      },
+      select: {
+        id: true,
+        status: true,
+        scheduleConfigJson: true,
+      },
+    });
+    if (!workflow) {
+      throw new HttpException(404, 'Workflow not found');
+    }
+
+    const schedule = scheduledWorkflowScheduleConfigSchema.parse(workflow.scheduleConfigJson);
+    if (scheduleEnabled) {
+      const nextRunAt = getNextScheduledRunAt(schedule, new Date());
+      if (!nextRunAt) {
+        throw new HttpException(400, 'This workflow has no future run time to activate.');
+      }
+      const updated = await prisma.scheduledWorkflow.update({
+        where: { id: workflowId },
+        data: {
+          status: 'scheduled_active',
+          scheduleEnabled: true,
+          nextRunAt,
+          pausedAt: null,
+          archivedAt: null,
+          claimToken: null,
+          claimedAt: null,
+        },
+        select: { id: true, nextRunAt: true },
+      });
+      return {
+        workflowId: updated.id,
+        status: 'scheduled_active',
+        scheduleEnabled: true,
+        nextRunAt: updated.nextRunAt?.toISOString() ?? null,
+      };
+    }
+
+    const updated = await prisma.scheduledWorkflow.update({
+      where: { id: workflowId },
+      data: {
+        status: workflow.status === 'published' ? 'published' : 'paused',
+        scheduleEnabled: false,
+        nextRunAt: null,
+        pausedAt: workflow.status === 'published' ? null : new Date(),
+        claimToken: null,
+        claimedAt: null,
+      },
+      select: { id: true, status: true },
+    });
+    return {
+      workflowId: updated.id,
+      status: normalizeWorkflowStatus({ status: updated.status as StoredWorkflowStatus, scheduleEnabled: false }) as 'published' | 'scheduled_active' | 'paused',
+      scheduleEnabled: false,
+      nextRunAt: null,
+    };
   }
 
   startDueProcessor(): void {
@@ -698,7 +1211,8 @@ class DesktopWorkflowsService {
       const staleBefore = new Date(now.getTime() - 10 * 60 * 1000);
       const due = await prisma.scheduledWorkflow.findMany({
         where: {
-          status: 'active',
+          status: { in: ['active', 'scheduled_active'] },
+          scheduleEnabled: true,
           nextRunAt: { lte: now },
           OR: [
             { claimedAt: null },
@@ -715,7 +1229,8 @@ class DesktopWorkflowsService {
         const claimed = await prisma.scheduledWorkflow.updateMany({
           where: {
             id: candidate.id,
-            status: 'active',
+            status: { in: ['active', 'scheduled_active'] },
+            scheduleEnabled: true,
             nextRunAt: candidate.nextRunAt,
             OR: [
               { claimedAt: null },
@@ -969,6 +1484,7 @@ class DesktopWorkflowsService {
     workflowId: string,
     scheduledFor: Date,
     trigger: 'manual' | 'scheduled',
+    overrideText?: string | null,
   ): Promise<{
     runId: string;
     executionId: string | null;
@@ -1062,6 +1578,7 @@ class DesktopWorkflowsService {
       scheduledFor,
       schedule,
       outputConfig,
+      overrideText,
     });
     logger.info('desktop.workflow.execute.prompt', {
       workflowId: workflow.id,
@@ -1139,6 +1656,7 @@ class DesktopWorkflowsService {
           ...(trigger === 'scheduled' && schedule.type === 'one_time' && !nextRunAt
             ? {
               status: 'archived',
+              scheduleEnabled: false,
               archivedAt: new Date(),
             }
             : {}),
@@ -1198,6 +1716,7 @@ class DesktopWorkflowsService {
           ...(trigger === 'scheduled' && schedule.type === 'one_time' && !nextRunAt
             ? {
               status: 'archived',
+              scheduleEnabled: false,
               archivedAt: new Date(),
             }
             : {}),

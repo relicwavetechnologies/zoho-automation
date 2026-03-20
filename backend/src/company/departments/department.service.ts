@@ -5,6 +5,7 @@ import { getSupportedToolActionGroups, type ToolActionGroup } from '../tools/too
 import { hashPassword } from '../../utils/bcrypt';
 import crypto from 'crypto';
 import { skillService } from '../skills/skill.service';
+import { departmentRuntimeCache } from './department-runtime.cache';
 
 type DepartmentAdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 
@@ -140,6 +141,18 @@ const buildCaseInsensitiveEmailClauses = (emails: string[]) =>
     }));
 
 class DepartmentService {
+  private async resolveDepartmentCompanyId(departmentId: string, fallbackCompanyId?: string): Promise<string> {
+    if (fallbackCompanyId) return fallbackCompanyId;
+    const department = await prisma.department.findUnique({
+      where: { id: departmentId },
+      select: { companyId: true },
+    });
+    if (!department) {
+      throw new HttpException(404, 'Department not found.');
+    }
+    return department.companyId;
+  }
+
   private async ensureWorkspaceMemberFromChannelIdentity(input: {
     companyId: string;
     channelIdentityId: string;
@@ -303,6 +316,16 @@ class DepartmentService {
       return { allowedToolIds: input.fallbackAllowedToolIds, allowedActionsByTool };
     }
 
+    const cached = await departmentRuntimeCache.get({
+      companyId: input.companyId,
+      userId: input.userId,
+      departmentId: input.departmentId,
+      fallbackAllowedToolIds: input.fallbackAllowedToolIds,
+    });
+    if (cached) {
+      return cached;
+    }
+
     const membership = await prisma.departmentMembership.findFirst({
       where: {
         userId: input.userId,
@@ -392,7 +415,7 @@ class DepartmentService {
     );
     const allowedToolIds = Object.keys(allowedActionsByTool);
 
-    return {
+    const resolved: ResolvedDepartmentRuntime = {
       departmentId: membership.department.id,
       departmentName: membership.department.name,
       departmentRoleSlug: membership.role.slug,
@@ -401,6 +424,14 @@ class DepartmentService {
       allowedToolIds,
       allowedActionsByTool,
     };
+    await departmentRuntimeCache.set({
+      companyId: input.companyId,
+      userId: input.userId,
+      departmentId: input.departmentId,
+      fallbackAllowedToolIds: input.fallbackAllowedToolIds,
+      runtime: resolved,
+    });
+    return resolved;
   }
 
   private async resolveAdminCompanyId(session: DepartmentAdminSession, requestedCompanyId?: string): Promise<string> {
@@ -1193,6 +1224,10 @@ class DepartmentService {
         updatedBy: session.userId,
       },
     });
+    await departmentRuntimeCache.invalidateDepartment(
+      await this.resolveDepartmentCompanyId(departmentId, session.companyId),
+      departmentId,
+    );
     return {
       id: row.id,
       roleId: row.roleId,
@@ -1240,6 +1275,10 @@ class DepartmentService {
         updatedBy: session.userId,
       },
     });
+    await departmentRuntimeCache.invalidateDepartment(
+      await this.resolveDepartmentCompanyId(departmentId, session.companyId),
+      departmentId,
+    );
     return {
       id: row.id,
       userId: row.userId,

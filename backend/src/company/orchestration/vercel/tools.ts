@@ -3637,15 +3637,17 @@ export const createVercelDesktopTools = (
     }),
 
     larkTask: tool({
-      description: 'Comprehensive Lark Tasks tool for task reads and writes.',
+      description: 'Lark Tasks tool for personal task lookup, tasklist reads, single-task lookup, and task mutations. For personal reads, prefer listMine for "my tasks", listOpenMine for "my open tasks", list for broader tasklist reads, and current only for the latest referenced or single current task.',
       inputSchema: z.object({
-        operation: z.enum(['list', 'get', 'current', 'listTasklists', 'listAssignableUsers', 'create', 'update', 'delete', 'complete', 'reassign']),
+        operation: z.enum(['list', 'listMine', 'listOpenMine', 'get', 'current', 'listTasklists', 'listAssignableUsers', 'create', 'update', 'delete', 'complete', 'reassign']),
         taskId: z.string().optional(),
         tasklistId: z.string().optional(),
         query: z.string().optional(),
         summary: z.string().optional(),
         description: z.string().optional(),
         completed: z.boolean().optional(),
+        onlyMine: z.boolean().optional(),
+        onlyOpen: z.boolean().optional(),
         dueTs: z.string().optional(),
         assigneeIds: z.array(z.string()).optional(),
         assigneeNames: z.array(z.string()).optional(),
@@ -3672,6 +3674,103 @@ export const createVercelDesktopTools = (
         const conversationKey = buildConversationKey(runtime.threadId);
         const latestTask = conversationMemoryStore.getLatestLarkTask(conversationKey);
         const normalizeLarkTimestamp = loadNormalizeLarkTimestamp();
+        const currentIdentityTokens = uniqueDefinedStrings([runtime.larkOpenId, runtime.larkUserId]).map((value) => value.toLowerCase());
+        const readObjectStrings = (value: unknown, depth = 0): string[] => {
+          if (depth > 4) return [];
+          if (typeof value === 'string' && value.trim()) return [value.trim()];
+          if (Array.isArray(value)) {
+            return value.flatMap((entry) => readObjectStrings(entry, depth + 1));
+          }
+          const record = asRecord(value);
+          if (!record) return [];
+          return Object.entries(record).flatMap(([key, entry]) => {
+            const lowered = key.toLowerCase();
+            if (
+              lowered.includes('member')
+              || lowered.includes('assignee')
+              || lowered.includes('owner')
+              || lowered === 'id'
+              || lowered.endsWith('_id')
+              || lowered.endsWith('id')
+              || lowered.includes('open_id')
+              || lowered.includes('user_id')
+            ) {
+              return readObjectStrings(entry, depth + 1);
+            }
+            return [];
+          });
+        };
+        const taskMatchesCurrentUser = (task: Record<string, unknown>): boolean => {
+          if (currentIdentityTokens.length === 0) return false;
+          const candidateValues = uniqueDefinedStrings(
+            readObjectStrings(task).map((value) => value.toLowerCase()),
+          );
+          return currentIdentityTokens.some((token) => candidateValues.includes(token));
+        };
+        const taskIsOpen = (task: Record<string, unknown>): boolean => {
+          const completed = task.completed;
+          if (typeof completed === 'boolean') {
+            return !completed;
+          }
+          const status = asString(task.status)?.toLowerCase();
+          if (!status) {
+            return true;
+          }
+          return !['completed', 'done', 'closed'].includes(status);
+        };
+        const listVisibleTasks = async (preferredTasklistId?: string): Promise<Array<Record<string, unknown>>> => {
+          const explicitTasklistId = preferredTasklistId?.trim() || defaults?.defaultTasklistId;
+          const seen = new Map<string, Record<string, unknown>>();
+          const collectFromTasklist = async (tasklistId?: string) => {
+            const result = await withLarkTenantFallback(runtime, (auth) => larkTasksService.listTasks({
+              ...auth,
+              tasklistId,
+              pageSize: 100,
+            }));
+            for (const item of result.items) {
+              const key = asString(item.taskGuid) ?? asString(item.taskId);
+              if (!key) continue;
+              seen.set(key, item as unknown as Record<string, unknown>);
+            }
+          };
+
+          if (explicitTasklistId) {
+            await collectFromTasklist(explicitTasklistId);
+            return Array.from(seen.values());
+          }
+
+          const tasklistsResult = await withLarkTenantFallback(runtime, (auth) => larkTasksService.listTasklists({
+            ...auth,
+            pageSize: 50,
+          }));
+          const tasklistIds = uniqueDefinedStrings(tasklistsResult.items.map((item) => asString(item.tasklistId)));
+          if (tasklistIds.length === 0) {
+            await collectFromTasklist(undefined);
+            return Array.from(seen.values());
+          }
+          for (const tasklistId of tasklistIds) {
+            await collectFromTasklist(tasklistId);
+          }
+          return Array.from(seen.values());
+        };
+        const filterVisibleTasks = (items: Array<Record<string, unknown>>, inputQuery?: string, options?: {
+          onlyMine?: boolean;
+          onlyOpen?: boolean;
+        }): Array<Record<string, unknown>> => {
+          const normalizedQuery = inputQuery?.trim().toLowerCase();
+          return items.filter((item) => {
+            if (options?.onlyMine && !taskMatchesCurrentUser(item)) {
+              return false;
+            }
+            if (options?.onlyOpen && !taskIsOpen(item)) {
+              return false;
+            }
+            if (!normalizedQuery) {
+              return true;
+            }
+            return `${asString(item.taskId) ?? ''} ${asString(item.summary) ?? ''}`.toLowerCase().includes(normalizedQuery);
+          });
+        };
         const rememberTask = (task: Record<string, unknown>) => {
           const taskId = asString(task.taskId) ?? asString(task.task_id);
           if (!taskId) return;
@@ -3827,27 +3926,35 @@ export const createVercelDesktopTools = (
           });
         }
 
-        if (input.operation === 'list') {
-          const defaults = await getLarkDefaults(runtime);
-          const result = await withLarkTenantFallback(runtime, (auth) => larkTasksService.listTasks({
-            ...auth,
-            tasklistId: input.tasklistId?.trim() || defaults?.defaultTasklistId,
-            pageSize: 50,
-          }));
-          const normalizedQuery = input.query?.trim().toLowerCase();
-          const items = normalizedQuery
-            ? result.items.filter((item) =>
-              `${asString(item.taskId) ?? ''} ${asString(item.summary) ?? ''}`.toLowerCase().includes(normalizedQuery))
-            : result.items;
+        if (input.operation === 'list' || input.operation === 'listMine' || input.operation === 'listOpenMine') {
+          const visibleTasks = await listVisibleTasks(input.tasklistId);
+          const items = filterVisibleTasks(
+            visibleTasks,
+            input.query,
+            {
+              onlyMine: input.operation === 'listMine' || input.operation === 'listOpenMine' || input.onlyMine,
+              onlyOpen: input.operation === 'listOpenMine' || input.onlyOpen,
+            },
+          );
           items.forEach(rememberTask);
           return buildEnvelope({
             success: true,
-            summary: items.length > 0 ? `Found ${items.length} Lark task(s).` : 'No Lark tasks matched the request.',
+            summary: items.length > 0
+              ? input.operation === 'listOpenMine' || input.onlyOpen
+                ? `Found ${items.length} open Lark task(s) for the current user.`
+                : input.operation === 'listMine' || input.onlyMine
+                  ? `Found ${items.length} Lark task(s) for the current user.`
+                  : `Found ${items.length} Lark task(s).`
+              : input.operation === 'listOpenMine' || input.onlyOpen
+                ? 'No open Lark tasks matched the request for the current user.'
+                : input.operation === 'listMine' || input.onlyMine
+                  ? 'No Lark tasks matched the request for the current user.'
+                  : 'No Lark tasks matched the request.',
             keyData: { items },
             fullPayload: {
               items,
-              pageToken: result.pageToken,
-              hasMore: result.hasMore,
+              filteredForCurrentUser: input.operation === 'listMine' || input.operation === 'listOpenMine' || input.onlyMine || false,
+              filteredForOpen: input.operation === 'listOpenMine' || input.onlyOpen || false,
             },
           });
         }

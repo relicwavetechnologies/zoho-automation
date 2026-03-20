@@ -12,12 +12,19 @@ export const workspaceSchema = z.object({
   path: z.string().min(1).max(4096),
 });
 
+export const workflowInvocationSchema = z.object({
+  workflowId: z.string().uuid(),
+  workflowName: z.string().min(1).max(160).optional(),
+  overrideText: z.string().trim().max(4000).optional(),
+}).strict();
+
 export const sendSchema = z.object({
   message: z.string().max(10000).optional().default(''),
   attachedFiles: z.array(attachedFileSchema).optional().default([]),
   workspace: workspaceSchema.optional(),
   mode: z.enum(['fast', 'high', 'xtreme']).optional().default('xtreme'),
   executionId: z.string().uuid().optional(),
+  workflowInvocation: workflowInvocationSchema.optional(),
 });
 
 export const actionResultSchema = z.object({

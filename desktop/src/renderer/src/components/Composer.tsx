@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { ArrowUp, AtSign, ChevronDown, Paperclip, Square, X, FileText, Image, File, Infinity, Zap, Flame, Rocket, ShieldAlert, CheckCircle2, Ban } from 'lucide-react'
+import { ArrowUp, AtSign, ChevronDown, Paperclip, Square, X, FileText, Image, File, Infinity, Zap, Flame, Rocket, ShieldAlert, CheckCircle2, Ban, Workflow } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useAuth } from '../context/AuthContext'
 import { useChat } from '../context/ChatContext'
@@ -8,6 +8,15 @@ import { PlanDrawer } from './PlanDrawer'
 import { FilesDrawer, type FileAssetRecord } from './FilesDrawer'
 
 type ComposerMode = 'fast' | 'high' | 'xtreme'
+
+type SavedWorkflowSummary = {
+  id: string
+  name: string
+  status: 'draft' | 'published' | 'scheduled_active' | 'paused' | 'archived'
+  compiledPrompt: string
+  aiDraft?: string | null
+  capabilitySummary?: { requiresPublishApproval?: boolean } | null
+}
 
 // ─── File attachment types ─────────────────────────────────────────────────────
 
@@ -151,11 +160,19 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [mode, setMode] = useState<ComposerMode>('high')
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false)
+  const [isReferenceMenuOpen, setIsReferenceMenuOpen] = useState(false)
+  const [workflowOptions, setWorkflowOptions] = useState<SavedWorkflowSummary[]>([])
+  const [referenceFileOptions, setReferenceFileOptions] = useState<FileAssetRecord[]>([])
+  const [isLoadingReferences, setIsLoadingReferences] = useState(false)
+  const [selectedWorkflow, setSelectedWorkflow] = useState<SavedWorkflowSummary | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const modeMenuRef = useRef<HTMLDivElement>(null)
+  const workflowMenuRef = useRef<HTMLDivElement>(null)
 
   const canSend = (text.trim().length > 0 || attachments.some(a => a.status === 'done'))
+    || Boolean(selectedWorkflow)
+  const canSubmit = canSend
     && !isStreaming
     && (isHome || !!activeThread)
     && attachments.every(a => a.status !== 'uploading')
@@ -188,6 +205,60 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
       window.removeEventListener('keydown', handleEscape)
     }
   }, [isModeMenuOpen])
+
+  useEffect(() => {
+    if (!isReferenceMenuOpen) return
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (workflowMenuRef.current && !workflowMenuRef.current.contains(event.target as Node)) {
+        setIsReferenceMenuOpen(false)
+      }
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown)
+    }
+  }, [isReferenceMenuOpen])
+
+  const loadReferenceOptions = useCallback(async () => {
+    if (!token) return
+    setIsLoadingReferences(true)
+    try {
+      const [workflowResponse, filesResponse] = await Promise.all([
+        window.desktopAPI.fetch('/api/desktop/workflows', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }),
+        window.desktopAPI.files.list(token),
+      ])
+      if (workflowResponse.status >= 200 && workflowResponse.status < 300) {
+        const parsed = JSON.parse(workflowResponse.body) as { data?: SavedWorkflowSummary[] }
+        setWorkflowOptions((parsed.data ?? []).filter((workflow) => workflow.status !== 'archived'))
+      }
+      if (filesResponse.success) {
+        const payload = filesResponse.data as { data?: { files?: FileAssetRecord[] } }
+        setReferenceFileOptions(payload?.data?.files ?? [])
+      }
+    } catch {
+      // ignore picker load failures in composer
+    } finally {
+      setIsLoadingReferences(false)
+    }
+  }, [token])
+
+  useEffect(() => {
+    const match = text.match(/(?:^|\s)@([^\s@]*)$/)
+    if (!match || (!activeThread && !isHome) || isStreaming) {
+      return
+    }
+    setIsReferenceMenuOpen(true)
+    if (workflowOptions.length === 0 && referenceFileOptions.length === 0) {
+      void loadReferenceOptions()
+    }
+  }, [text, activeThread, isHome, isStreaming, workflowOptions.length, referenceFileOptions.length, loadReferenceOptions])
 
   // ── Upload logic ──────────────────────────────────────────────────────────────
   const uploadFile = useCallback(async (attachment: AttachedFile) => {
@@ -255,7 +326,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
 
   // ── Send ──────────────────────────────────────────────────────────────────────
   const handleSend = (): void => {
-    if (!canSend) return
+    if (!canSubmit) return
     const doneDocs = attachments.filter(a => a.status === 'done')
     const payloadAttachments = doneDocs
       .filter((a): a is AttachedFile & { fileAssetId: string; cloudinaryUrl: string } => !!a.fileAssetId && !!a.cloudinaryUrl)
@@ -267,13 +338,36 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
       }))
 
     if (isHome && !activeThread) {
-      sendInitialMessage(text.trim(), payloadAttachments.length > 0 ? payloadAttachments : undefined, mode)
+      sendInitialMessage(
+        text.trim(),
+        payloadAttachments.length > 0 ? payloadAttachments : undefined,
+        mode,
+        selectedWorkflow
+          ? {
+            workflowId: selectedWorkflow.id,
+            workflowName: selectedWorkflow.name,
+            overrideText: text.trim() || undefined,
+          }
+          : undefined,
+      )
     } else {
-      sendMessage(text.trim(), payloadAttachments.length > 0 ? payloadAttachments : undefined, mode)
+      sendMessage(
+        text.trim(),
+        payloadAttachments.length > 0 ? payloadAttachments : undefined,
+        mode,
+        selectedWorkflow
+          ? {
+            workflowId: selectedWorkflow.id,
+            workflowName: selectedWorkflow.name,
+            overrideText: text.trim() || undefined,
+          }
+          : undefined,
+      )
     }
     
     setText('')
     setAttachments([])
+    setSelectedWorkflow(null)
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
   }
 
@@ -301,10 +395,21 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
     })
   }, [])
 
+  const clearReferenceToken = useCallback(() => {
+    setText((current) => current.replace(/(?:^|\s)@[^\s@]*$/, ' ').replace(/\s+$/, ''))
+  }, [])
+
   const referencedIds = new Set(attachments.map(a => a.fileAssetId).filter(Boolean) as string[])
   const selectedMode = MODE_OPTIONS.find((option) => option.value === mode) ?? MODE_OPTIONS[1]
   const SelectedModeIcon = selectedMode.icon
   const isApprovalMode = Boolean(pendingLocalAction) && !isHome
+  const referenceQuery = text.match(/(?:^|\s)@([^\s@]*)$/)?.[1]?.toLowerCase() ?? ''
+  const filteredWorkflowOptions = workflowOptions.filter((workflow) =>
+    !referenceQuery || workflow.name.toLowerCase().includes(referenceQuery),
+  )
+  const filteredFileOptions = referenceFileOptions.filter((file) =>
+    !referenceQuery || file.fileName.toLowerCase().includes(referenceQuery),
+  )
 
   const approvalTitle = pendingLocalAction
     ? pendingLocalAction.action.kind === 'tool_action'
@@ -473,8 +578,8 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                 <div className="relative" ref={modeMenuRef}>
                   <button
                     type="button"
-                    disabled={(!activeThread && !isHome) || isStreaming}
-                    onClick={() => setIsModeMenuOpen(open => !open)}
+                  disabled={(!activeThread && !isHome) || isStreaming}
+                  onClick={() => setIsModeMenuOpen(open => !open)}
                     aria-haspopup="menu"
                     aria-expanded={isModeMenuOpen}
                     className={cn(
@@ -530,20 +635,108 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
               </div>
 
               <div className="flex items-center gap-1.5 ml-auto">
-                <button
-                  type="button"
-                  onClick={() => setIsDrawerOpen(true)}
-                  className={cn(
-                    "inline-flex h-7 min-w-[28px] px-1.5 items-center justify-center rounded-lg transition-colors gap-1",
-                    referencedIds.size > 0
-                      ? "bg-sky-400/8 text-sky-100/82 border border-sky-300/16"
-                      : "border border-transparent bg-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"
-                  )}
-                  title="Reference files"
-                >
-                  <AtSign size={15} />
-                  {referencedIds.size > 0 && <span className="text-[11px] font-semibold pr-0.5">{referencedIds.size}</span>}
-                </button>
+                <div className="relative" ref={workflowMenuRef}>
+                  <button
+                    type="button"
+                    disabled={(!activeThread && !isHome) || isStreaming}
+                    onClick={() => {
+                      const next = !isReferenceMenuOpen
+                      setIsReferenceMenuOpen(next)
+                      if (next && workflowOptions.length === 0 && referenceFileOptions.length === 0) {
+                        void loadReferenceOptions()
+                      }
+                    }}
+                    className={cn(
+                      'flex h-8 min-w-[32px] items-center justify-center rounded-xl transition-colors px-2 gap-1',
+                      selectedWorkflow || referencedIds.size > 0
+                        ? 'border border-emerald-300/16 bg-emerald-400/8 text-emerald-50/88'
+                        : (!activeThread && !isHome) || isStreaming
+                          ? 'text-muted-foreground/40 cursor-not-allowed'
+                          : 'border border-transparent bg-transparent text-muted-foreground/80 hover:bg-secondary hover:text-foreground',
+                    )}
+                    title="Reference files or workflows"
+                  >
+                    <AtSign size={15} />
+                    {selectedWorkflow ? <span className="max-w-[96px] truncate text-[11px]">{selectedWorkflow.name}</span> : null}
+                    {!selectedWorkflow && referencedIds.size > 0 ? <span className="text-[11px] font-semibold">{referencedIds.size}</span> : null}
+                  </button>
+
+                  {isReferenceMenuOpen && (activeThread || isHome) && !isStreaming ? (
+                    <div className="absolute bottom-[calc(100%+8px)] right-0 z-30 max-h-[320px] w-[320px] overflow-y-auto rounded-2xl border border-border bg-card p-1.5 shadow-xl">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedWorkflow(null)
+                          clearReferenceToken()
+                          setIsReferenceMenuOpen(false)
+                        }}
+                        className="flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground"
+                      >
+                        Run normal chat
+                      </button>
+                      {isLoadingReferences ? (
+                        <div className="px-3 py-3 text-sm text-muted-foreground">Loading references…</div>
+                      ) : (
+                        <>
+                          <div className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-[0.12em] text-muted-foreground/60">
+                            Workflows
+                          </div>
+                          {filteredWorkflowOptions.length === 0 ? (
+                            <div className="px-3 py-2 text-sm text-muted-foreground">No workflow matches.</div>
+                          ) : filteredWorkflowOptions.map((workflow) => (
+                            <button
+                              key={workflow.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedWorkflow(workflow)
+                                clearReferenceToken()
+                                setIsReferenceMenuOpen(false)
+                              }}
+                              className={cn(
+                                'flex w-full flex-col rounded-xl px-3 py-2 text-left transition-colors',
+                                selectedWorkflow?.id === workflow.id
+                                  ? 'bg-secondary text-foreground'
+                                  : 'text-foreground/85 hover:bg-secondary/70',
+                              )}
+                            >
+                              <div className="flex items-center gap-2">
+                                <Workflow size={13} />
+                                <span className="text-[13px] font-medium">{workflow.name}</span>
+                              </div>
+                              <span className="mt-1 text-[11px] text-muted-foreground/70">
+                                {workflow.status === 'scheduled_active' ? 'Scheduled and reusable' : workflow.status === 'paused' ? 'Paused schedule' : 'Reusable workflow'}
+                              </span>
+                            </button>
+                          ))}
+
+                          <div className="px-3 pt-3 pb-1 text-[11px] uppercase tracking-[0.12em] text-muted-foreground/60">
+                            Files
+                          </div>
+                          {filteredFileOptions.length === 0 ? (
+                            <div className="px-3 py-2 text-sm text-muted-foreground">No file matches.</div>
+                          ) : filteredFileOptions.slice(0, 8).map((file) => (
+                            <button
+                              key={file.id}
+                              type="button"
+                              onClick={() => {
+                                handleReferenceDrawerFile(file)
+                                clearReferenceToken()
+                                setIsReferenceMenuOpen(false)
+                              }}
+                              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-foreground/85 transition-colors hover:bg-secondary/70"
+                            >
+                              <FileText size={13} className="text-muted-foreground/70" />
+                              <div className="min-w-0">
+                                <div className="truncate text-[13px] font-medium">{file.fileName}</div>
+                                <div className="text-[11px] text-muted-foreground/70">{file.mimeType}</div>
+                              </div>
+                            </button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
 
                 {/* ── File attach button (enabled) ─────────────────────────── */}
                 <button
@@ -576,10 +769,10 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                 ) : (
                   <button
                     onClick={handleSend}
-                    disabled={!canSend}
+                    disabled={!canSubmit}
                     className={cn(
                       'ml-1 shrink-0 h-8 w-8 rounded-xl flex items-center justify-center border transition-all',
-                      canSend
+                      canSubmit
                         ? 'border-sky-200/30 bg-sky-50/92 text-slate-950 shadow-[0_10px_24px_rgba(120,170,220,0.12)] hover:bg-white'
                         : 'border-white/6 bg-white/[0.05] text-muted-foreground/40',
                     )}
