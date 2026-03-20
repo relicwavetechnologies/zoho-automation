@@ -1,7 +1,7 @@
 import { logger } from '../../../utils/logger';
 import { hitlActionRepository } from '../../state/hitl';
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
-import { runtimeRunRepository, runtimeService } from '../langgraph';
+import { runtimeGraphExecutor, runtimeRunRepository, runtimeService } from '../langgraph';
 import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
 import { legacyOrchestrationEngine } from './legacy-orchestration.engine';
 import { vercelOrchestrationEngine } from './vercel-orchestration.engine';
@@ -51,6 +51,7 @@ const wrapCompatibilityResult = async (input: {
   conversationId: string;
   runId: string;
   compatibilityResult: OrchestrationExecutionResult;
+  routeIntent?: string;
 }): Promise<OrchestrationExecutionResult> => {
   const mirroredApproval = await maybeMirrorPendingApproval({
     execution: input.execution,
@@ -79,7 +80,7 @@ const wrapCompatibilityResult = async (input: {
         threadId: input.conversationId,
         node: 'await_approval',
         stepHistory: ['load_run_context', 'compat.execute_vercel', 'await_approval'],
-        routeIntent: input.compatibilityResult.runtimeMeta?.routeIntent,
+        routeIntent: input.routeIntent ?? input.compatibilityResult.runtimeMeta?.routeIntent,
       },
       hitlAction: {
         taskId: input.execution.task.taskId,
@@ -115,7 +116,7 @@ const wrapCompatibilityResult = async (input: {
       threadId: input.conversationId,
       node: input.compatibilityResult.currentStep ?? 'persist_and_finish',
       stepHistory: ['load_run_context', 'compat.execute_vercel', input.compatibilityResult.currentStep ?? 'persist_and_finish'],
-      routeIntent: input.compatibilityResult.runtimeMeta?.routeIntent,
+      routeIntent: input.routeIntent ?? input.compatibilityResult.runtimeMeta?.routeIntent,
     },
   };
 };
@@ -168,37 +169,90 @@ export const langgraphOrchestrationEngine: OrchestrationEngine = {
     });
 
     try {
-      const compatibilityResult = await vercelOrchestrationEngine.executeTask(input);
-      const wrapped = await wrapCompatibilityResult({
-        execution: input,
-        conversationId: started.conversationId,
-        runId: started.runId,
-        compatibilityResult,
+      const graphExecution = await runtimeGraphExecutor.execute({
+        task: input.task,
+        message: input.message,
+        state: started.state,
       });
 
-      if (wrapped.status === 'hitl') {
+      if (graphExecution.kind === 'compatibility') {
+        const compatibilityResult = await vercelOrchestrationEngine.executeTask(input);
+        const wrapped = await wrapCompatibilityResult({
+          execution: input,
+          conversationId: started.conversationId,
+          runId: started.runId,
+          compatibilityResult,
+          routeIntent: graphExecution.routeIntent,
+        });
+
+        await runtimeService.createShadowParityReport({
+          conversationId: started.conversationId,
+          runId: started.runId,
+          channel: 'lark',
+          baselineSummary: compatibilityResult.latestSynthesis ?? null,
+          candidateSummary: null,
+          diffSummary: graphExecution.reason,
+          metricsJson: {
+            delegated: true,
+            routeIntent: graphExecution.routeIntent,
+            reason: graphExecution.reason,
+          },
+        });
+
+        if (wrapped.status === 'hitl') {
+          return wrapped;
+        }
+
+        if (wrapped.status === 'failed' || wrapped.status === 'cancelled') {
+          await runtimeService.failRun({
+            conversationId: started.conversationId,
+            runId: started.runId,
+            code: wrapped.status === 'cancelled' ? 'langgraph_cancelled' : 'langgraph_failed',
+            message: wrapped.latestSynthesis ?? wrapped.currentStep ?? 'LangGraph compatibility execution failed.',
+            retriable: wrapped.status !== 'cancelled',
+            stopReason: wrapped.status === 'cancelled' ? 'manual_stop' : 'tool_execution_failure',
+          });
+        } else {
+          await runtimeService.completeRun({
+            conversationId: started.conversationId,
+            runId: started.runId,
+            channel: 'lark',
+            summary: wrapped.latestSynthesis,
+          });
+        }
+
         return wrapped;
       }
 
-      if (wrapped.status === 'failed' || wrapped.status === 'cancelled') {
+      await runtimeService.createShadowParityReport({
+        conversationId: started.conversationId,
+        runId: started.runId,
+        channel: 'lark',
+        baselineSummary: null,
+        candidateSummary: graphExecution.result.latestSynthesis ?? null,
+        diffSummary: graphExecution.state.parity?.diffSummary ?? null,
+        metricsJson: graphExecution.state.parity?.metrics ?? null,
+      });
+
+      if (graphExecution.result.status === 'failed' || graphExecution.result.status === 'cancelled') {
         await runtimeService.failRun({
           conversationId: started.conversationId,
           runId: started.runId,
-          code: wrapped.status === 'cancelled' ? 'langgraph_cancelled' : 'langgraph_failed',
-          message: wrapped.latestSynthesis ?? wrapped.currentStep ?? 'LangGraph compatibility execution failed.',
-          retriable: wrapped.status !== 'cancelled',
-          stopReason: wrapped.status === 'cancelled' ? 'manual_stop' : 'tool_execution_failure',
+          code: graphExecution.result.status === 'cancelled' ? 'langgraph_cancelled' : 'langgraph_failed',
+          message: graphExecution.result.latestSynthesis ?? graphExecution.result.currentStep ?? 'LangGraph execution failed.',
+          retriable: graphExecution.result.status !== 'cancelled',
+          stopReason: graphExecution.result.status === 'cancelled' ? 'manual_stop' : 'tool_execution_failure',
         });
       } else {
         await runtimeService.completeRun({
           conversationId: started.conversationId,
           runId: started.runId,
           channel: 'lark',
-          summary: wrapped.latestSynthesis,
+          summary: graphExecution.result.latestSynthesis,
         });
       }
 
-      return wrapped;
+      return graphExecution.result;
     } catch (error) {
       await runtimeService.failRun({
         conversationId: started.conversationId,
@@ -212,3 +266,5 @@ export const langgraphOrchestrationEngine: OrchestrationEngine = {
     }
   },
 };
+
+export const langGraphOrchestrationEngine = langgraphOrchestrationEngine;

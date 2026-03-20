@@ -8,7 +8,7 @@ import { toolPermissionService } from '../../company/tools/tool-permission.servi
 import { knowledgeShareService } from '../../company/knowledge-share/knowledge-share.service';
 import { hitlActionService, executeStoredRemoteToolAction } from '../../company/state';
 import type { MemberSessionDTO } from '../member-auth/member-auth.service';
-import { vercelDesktopEngine } from './vercel-desktop.engine';
+import { langgraphDesktopEngine } from './langgraph-desktop.engine';
 
 const shareConversationSchema = z.object({
   reason: z.string().max(1000).optional(),
@@ -30,13 +30,13 @@ class DesktopChatController extends BaseController {
   }
 
   send = async (req: Request, res: Response): Promise<void> =>
-    vercelDesktopEngine.stream(req, res, this.session(req));
+    langgraphDesktopEngine.stream(req, res, this.session(req));
 
   actStream = async (req: Request, res: Response): Promise<void> =>
-    vercelDesktopEngine.streamAct(req, res, this.session(req));
+    langgraphDesktopEngine.streamAct(req, res, this.session(req));
 
   act = async (req: Request, res: Response): Promise<Response> =>
-    vercelDesktopEngine.act(req, res, this.session(req));
+    langgraphDesktopEngine.act(req, res, this.session(req));
 
   shareConversation = async (req: Request, res: Response): Promise<Response> => {
     const session = this.session(req);

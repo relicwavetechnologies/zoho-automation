@@ -22,6 +22,8 @@ export const createEmptyRuntimeDiagnostics = (): RuntimeDiagnostics => ({
   repeatedValidationFailureCount: {},
   repeatedPlanHashCount: {},
   repeatedDeliveryKeyCount: {},
+  nodeTransitionCount: {},
+  retrievalRouteCount: {},
 });
 
 const incrementCounter = (bucket: Record<string, number>, key: string): number => {
@@ -91,4 +93,3 @@ export class RuntimeLoopGuards {
 }
 
 export const runtimeLoopGuards = new RuntimeLoopGuards();
-

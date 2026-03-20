@@ -2,7 +2,6 @@ import { randomUUID } from 'crypto';
 
 import { generateText, stepCountIs, streamText, type ModelMessage } from 'ai';
 import { Request, Response } from 'express';
-import { z } from 'zod';
 
 import { ApiResponse } from '../../core/api-response';
 import config from '../../config';
@@ -16,45 +15,12 @@ import type {
 import { desktopThreadsService } from '../desktop-threads/desktop-threads.service';
 import type { MemberSessionDTO } from '../member-auth/member-auth.service';
 import { buildVisionContent, type AttachedFileRef } from './file-vision.builder';
+import { actSchema, attachedFileSchema, sendSchema } from './desktop-chat.schemas';
 import { executionService } from '../../company/observability';
 import { conversationMemoryStore } from '../../company/state/conversation/conversation-memory.store';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { logger } from '../../utils/logger';
 import { departmentService } from '../../company/departments/department.service';
-
-const attachedFileSchema = z.object({
-  fileAssetId: z.string(),
-  cloudinaryUrl: z.string().url(),
-  mimeType: z.string(),
-  fileName: z.string(),
-});
-
-const workspaceSchema = z.object({
-  name: z.string().min(1).max(255),
-  path: z.string().min(1).max(4096),
-});
-
-const sendSchema = z.object({
-  message: z.string().max(10000).optional().default(''),
-  attachedFiles: z.array(attachedFileSchema).optional().default([]),
-  workspace: workspaceSchema.optional(),
-  mode: z.enum(['fast', 'high', 'xtreme']).optional().default('xtreme'),
-  executionId: z.string().uuid().optional(),
-});
-
-const actionResultSchema = z.object({
-  kind: z.enum(['list_files', 'read_file', 'write_file', 'mkdir', 'delete_path', 'run_command', 'tool_action']),
-  ok: z.boolean(),
-  summary: z.string().min(1).max(30000),
-});
-
-const actSchema = z.object({
-  message: z.string().min(1).max(10000).optional(),
-  workspace: workspaceSchema.optional(),
-  actionResult: actionResultSchema.optional(),
-  mode: z.enum(['fast', 'high', 'xtreme']).optional().default('xtreme'),
-  executionId: z.string().uuid().optional(),
-});
 
 type DesktopWorkspaceAction =
   | { kind: 'list_files'; path?: string }

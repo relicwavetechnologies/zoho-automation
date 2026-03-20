@@ -321,7 +321,7 @@ const parseOrchestrationEngine = (value: string, issues: EnvValidationIssue[]): 
     severity: 'error',
   });
 
-  return 'legacy';
+  return 'langgraph';
 };
 
 const parseEmbeddingProvider = (value: string, issues: EnvValidationIssue[]): ValidatedEnv['EMBEDDING_PROVIDER'] => {
@@ -650,7 +650,7 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     OPENAI_EMBEDDING_MODEL: readString(parsedRaw.OPENAI_EMBEDDING_MODEL, 'text-embedding-3-small'),
     GEMINI_EMBEDDING_MODEL: readString(parsedRaw.GEMINI_EMBEDDING_MODEL, 'gemini-embedding-001'),
     GEMINI_MEDIA_ANALYSIS_MODEL: readString(parsedRaw.GEMINI_MEDIA_ANALYSIS_MODEL, 'gemini-2.5-flash'),
-    ORCHESTRATION_ENGINE: parseOrchestrationEngine(readString(parsedRaw.ORCHESTRATION_ENGINE, 'legacy'), issues),
+    ORCHESTRATION_ENGINE: parseOrchestrationEngine(readString(parsedRaw.ORCHESTRATION_ENGINE, 'langgraph'), issues),
     GROQ_API_KEY: readString(parsedRaw.GROQ_API_KEY),
     GROQ_ROUTER_MODEL: readString(parsedRaw.GROQ_ROUTER_MODEL, 'llama-3.1-8b-instant'),
     GEMINI_API_KEY: readString(parsedRaw.GEMINI_API_KEY, readString(parsedRaw.GOOGLE_API_KEY)),

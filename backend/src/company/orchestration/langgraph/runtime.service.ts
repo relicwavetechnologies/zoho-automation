@@ -130,6 +130,8 @@ export class RuntimeService {
       permissions: context.permissions,
       prompt: {
         baseSystemPrompt: context.systemPrompt,
+        departmentName: context.department.departmentName,
+        departmentRoleSlug: context.department.departmentRoleSlug,
         departmentPrompt: context.department.departmentPrompt,
         skillsMarkdown: context.department.skillsMarkdown,
         channelInstructions: input.channel === 'desktop'

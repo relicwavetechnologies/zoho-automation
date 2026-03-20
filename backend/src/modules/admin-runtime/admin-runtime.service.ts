@@ -136,7 +136,7 @@ export class AdminRuntimeService extends BaseService {
         ? task.configuredEngine
         : typeof task.engine === 'string'
           ? task.engine
-          : 'legacy';
+          : 'langgraph';
     const engineUsed =
       typeof task.engineUsed === 'string'
         ? task.engineUsed

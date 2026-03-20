@@ -2,11 +2,17 @@ import type { ToolActionGroup } from '../../tools/tool-action-groups';
 import type {
   RuntimeActor,
   RuntimeChannel,
+  RuntimeClassificationResult,
   RuntimeConversationRefs,
   RuntimeConversationStatus,
   RuntimeDiagnostics,
+  RuntimeDeliveryEnvelope,
+  RuntimeEvidenceItem,
+  RuntimeExecutionStepState,
   RuntimeMessageRecord,
   RuntimePermissions,
+  RuntimeParityReport,
+  RuntimeRetrievalDecision,
   RuntimeRunEntrypoint,
 } from './runtime.types';
 import { createEmptyRuntimeDiagnostics } from './runtime.loop-guards';
@@ -35,6 +41,8 @@ export type RuntimeState = {
   permissions: RuntimePermissions;
   prompt: {
     baseSystemPrompt: string;
+    departmentName?: string;
+    departmentRoleSlug?: string;
     departmentPrompt?: string;
     skillsMarkdown?: string;
     channelInstructions: string;
@@ -54,7 +62,24 @@ export type RuntimeState = {
     statusMessageId?: string;
     finalMessageId?: string;
     sentDedupeKeys: string[];
+    outbox: RuntimeDeliveryEnvelope[];
   };
+  classification?: RuntimeClassificationResult;
+  retrieval?: RuntimeRetrievalDecision & {
+    query?: string;
+    toolFamilies?: string[];
+  };
+  plan?: {
+    kind: 'answer' | 'tool_loop' | 'compatibility_delegate';
+    reason?: string;
+    steps: string[];
+  };
+  execution?: {
+    delegatedTo?: 'vercel' | 'legacy';
+    steps: RuntimeExecutionStepState[];
+  };
+  evidence?: RuntimeEvidenceItem[];
+  parity?: RuntimeParityReport;
   diagnostics: RuntimeDiagnostics;
   failure?: {
     code: string;
@@ -86,7 +111,7 @@ export const createInitialRuntimeState = (input: {
     statusMessageId: input.delivery?.statusMessageId,
     finalMessageId: input.delivery?.finalMessageId,
     sentDedupeKeys: input.delivery?.sentDedupeKeys ?? [],
+    outbox: input.delivery?.outbox ?? [],
   },
   diagnostics: createEmptyRuntimeDiagnostics(),
 });
-

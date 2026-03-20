@@ -623,9 +623,9 @@ export const __test__ = {
       runtimeMeta?: { threadId?: string; node?: string; stepHistory?: string[]; routeIntent?: string };
       agentResults?: Array<Record<string, unknown>>;
     };
-    selectedEngine: 'legacy' | 'vercel';
-    engineUsed: 'legacy' | 'vercel';
-    rolledBackFrom?: 'legacy' | 'vercel';
+    selectedEngine: 'legacy' | 'vercel' | 'langgraph';
+    engineUsed: 'legacy' | 'vercel' | 'langgraph';
+    rolledBackFrom?: 'legacy' | 'vercel' | 'langgraph';
     rollbackReasonCode?: string;
   }) =>
     runtimeTaskStore.update(input.taskId, {
