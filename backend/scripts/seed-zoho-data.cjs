@@ -899,7 +899,8 @@ async function seedBooks(session, context, summary) {
         for (let index = 0; index < 3; index += 1) {
           const item = await createBooksItem(session, organizationId, {
             name: `Seed Purchase Item ${RUN_STAMP} ${index + 1}`,
-            item_type: 'purchase',
+            item_type: 'purchases',
+            product_type: 'service',
             rate: 1000 + (index * 250),
             purchase_rate: String(900 + (index * 200)),
             description: `Purchase-capable seed item ${index + 1}`,

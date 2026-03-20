@@ -777,8 +777,8 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
 
   return (
     <ReactFlowProvider>
-      <div className="flex h-full min-h-0 bg-[radial-gradient(circle_at_top_right,_rgba(41,121,255,0.12),_transparent_28%),linear-gradient(180deg,_rgba(12,14,17,1)_0%,_rgba(10,10,12,1)_100%)]">
-        <aside className="flex w-[320px] shrink-0 flex-col border-r border-white/6 bg-[rgba(8,10,14,0.88)] px-4 py-4">
+      <div className="flex h-full min-h-0 bg-[radial-gradient(circle_at_top_right,_rgba(41,121,255,0.1),_transparent_26%),linear-gradient(180deg,_rgba(12,14,17,1)_0%,_rgba(10,10,12,1)_100%)]">
+        <aside className="flex w-[300px] shrink-0 flex-col border-r border-white/6 bg-[rgba(7,9,13,0.94)] px-4 py-5">
           <div className="mb-4 flex items-center justify-between">
             <div>
               <div className="text-[11px] uppercase tracking-[0.22em] text-cyan-200/55">Workflows</div>
@@ -799,9 +799,9 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                 key={workflow.id}
                 onClick={() => setSelectedWorkflowId(workflow.id)}
                 className={cn(
-                  'w-full rounded-3xl border px-4 py-4 text-left transition-all',
+                  'w-full rounded-[26px] border px-4 py-4 text-left transition-all',
                   selectedWorkflowId === workflow.id
-                    ? 'border-cyan-300/30 bg-cyan-400/10 shadow-[0_20px_40px_rgba(0,0,0,0.18)]'
+                    ? 'border-cyan-300/28 bg-cyan-400/[0.08] shadow-[0_18px_34px_rgba(0,0,0,0.16)]'
                     : 'border-white/6 bg-white/[0.03] hover:border-white/12 hover:bg-white/[0.05]',
                 )}
               >
@@ -826,21 +826,22 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
         </aside>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="flex items-center justify-between border-b border-white/6 px-6 py-5">
-            <div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-100/80">
-                <Workflow size={12} />
-                Workflow builder
+          <div className="border-b border-white/6 px-8 py-6">
+            <div className="mx-auto flex w-full max-w-[1480px] items-start justify-between gap-8">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-100/80">
+                  <Workflow size={12} />
+                  Workflow builder
+                </div>
+                <h1 className="mt-4 text-[44px] font-semibold tracking-[-0.03em] text-white">
+                  {selectedWorkflow?.name || 'Workflow builder'}
+                </h1>
+                <p className="mt-3 max-w-3xl text-[15px] leading-7 text-white/55">
+                  Describe a reusable job once, let AI turn it into a clean execution map, then save it for reuse with <span className="font-medium text-white/75">@</span> or attach a schedule when you are ready.
+                </p>
               </div>
-              <h1 className="mt-4 text-3xl font-semibold tracking-tight text-white">
-                {selectedWorkflow?.name || 'Workflow builder'}
-              </h1>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-white/55">
-                Describe a reusable job once, let AI turn it into a clean execution map, then save it for reuse with <span className="font-medium text-white/75">@</span> or attach a schedule when you are ready.
-              </p>
-            </div>
 
-            <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2 pt-2">
               {onExit ? (
                 <button
                   onClick={onExit}
@@ -873,27 +874,28 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                 <Archive size={15} />
                 Archive
               </button>
+              </div>
             </div>
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-6">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-8">
             {error ? (
-              <div className="mb-4 rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+              <div className="mx-auto mb-4 w-full max-w-[1480px] rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-100">
                 {error}
               </div>
             ) : null}
             {statusNotice ? (
-              <div className="mb-4 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+              <div className="mx-auto mb-4 w-full max-w-[1480px] rounded-2xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
                 {statusNotice}
               </div>
             ) : null}
 
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="min-h-0 flex-1 overflow-hidden rounded-[32px] border border-white/8 bg-[rgba(255,255,255,0.02)]">
+            <div className="mx-auto flex min-h-0 w-full max-w-[1480px] flex-1 flex-col overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-hidden rounded-[28px] border border-white/8 bg-[rgba(255,255,255,0.02)] shadow-[0_24px_90px_rgba(0,0,0,0.18)]">
                 {isGenerating ? (
                   createSkeletonBlocks()
                 ) : hasGeneratedDraft ? (
-                  <div className="grid h-full min-h-0 grid-cols-[minmax(0,1.5fr)_360px] overflow-hidden">
+                  <div className="grid h-full min-h-0 grid-cols-[minmax(0,1.45fr)_360px] overflow-hidden">
                     <div className="min-h-0 border-r border-white/8">
                       <ReactFlow
                         nodes={graph.nodes}
@@ -1053,23 +1055,67 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                     </div>
                   </div>
                 ) : (
-                  <div className="flex h-full min-h-[520px] items-center justify-center px-8">
-                    <div className="max-w-2xl text-center">
-                      <div className="mx-auto inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-100/80">
-                        <Sparkles size={12} />
-                        Start with the composer
+                  <div className="grid h-full min-h-[560px] grid-cols-[minmax(0,1fr)_340px] overflow-hidden">
+                    <div className="flex min-h-full items-center justify-center border-r border-white/8 px-12">
+                      <div className="max-w-2xl">
+                        <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-100/80">
+                          <Sparkles size={12} />
+                          Start with the composer
+                        </div>
+                        <h2 className="mt-5 text-4xl font-semibold tracking-[-0.03em] text-white">Describe the job in plain English</h2>
+                        <p className="mt-4 max-w-xl text-[15px] leading-8 text-white/55">
+                          Divo will turn it into a reusable prompt, a clean execution map, and a saved workflow you can run again from <span className="font-medium text-white/75">@</span> or attach to a schedule.
+                        </p>
+                        <div className="mt-8 grid gap-3 sm:grid-cols-2">
+                          {[
+                            ['Reusable prompt', 'AI turns your brief into a reusable operating prompt.'],
+                            ['Visual flow', 'The workflow map shows what happens first, next, and where it delivers.'],
+                            ['Thread output', 'Runs land in a new thread by default or an existing one you choose.'],
+                            ['Schedule later', 'Attach hourly, daily, weekly, monthly, or one-time timing when ready.'],
+                          ].map(([title, body]) => (
+                            <div key={title} className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4">
+                              <div className="text-sm font-medium text-white">{title}</div>
+                              <div className="mt-2 text-sm leading-6 text-white/45">{body}</div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                      <h2 className="mt-5 text-3xl font-semibold tracking-tight text-white">Describe the job in plain English</h2>
-                      <p className="mt-3 text-sm leading-7 text-white/55">
-                        Divo will turn it into a reusable prompt and a visual workflow map. Once the draft looks right, save it and reuse it later with <span className="font-medium text-white/75">@</span>.
-                      </p>
+                    </div>
+
+                    <div className="flex flex-col justify-between px-6 py-6">
+                      <div>
+                        <div className="text-[11px] uppercase tracking-[0.18em] text-white/45">Studio checklist</div>
+                        <div className="mt-4 space-y-3">
+                          {[
+                            'Describe the workflow in natural language.',
+                            'Review the generated prompt and flow.',
+                            'Pick where the result should be delivered.',
+                            'Save it to the library, then schedule if needed.',
+                          ].map((item, index) => (
+                            <div key={item} className="flex gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4">
+                              <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-cyan-300/20 bg-cyan-400/10 text-[11px] font-semibold text-cyan-100">
+                                {index + 1}
+                              </div>
+                              <div className="text-sm leading-6 text-white/65">{item}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/8 bg-black/20 px-4 py-4">
+                        <div className="text-[11px] uppercase tracking-[0.18em] text-white/45">Current draft</div>
+                        <div className="mt-2 text-base font-medium text-white">{selectedWorkflow?.name || 'Untitled workflow'}</div>
+                        <div className="mt-2 text-sm leading-6 text-white/45">
+                          This draft is private to you until you save it to the workflow library.
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
               </div>
 
               <div className="mt-5 shrink-0">
-                <div className="mx-auto max-w-5xl rounded-[28px] border border-white/8 bg-[rgba(18,20,26,0.95)] px-5 py-4 shadow-[0_20px_60px_rgba(0,0,0,0.25)]">
+                <div className="mx-auto w-full max-w-[1040px] rounded-[22px] border border-white/8 bg-[rgba(18,20,26,0.98)] px-5 py-4 shadow-[0_18px_44px_rgba(0,0,0,0.22)]">
                   {composerMode === 'compose' ? (
                     <>
                       <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-white/45">
@@ -1080,10 +1126,10 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                         value={composerText}
                         onChange={(event) => setComposerText(event.target.value)}
                         placeholder="Describe what this workflow should do, step by step if you want. For example: every Monday gather open finance blockers, summarize risks, update the weekly Lark note, and send me a digest."
-                        className="mt-3 min-h-[112px] w-full resize-none bg-transparent text-[15px] leading-7 text-white/90 outline-none placeholder:text-white/25"
+                        className="mt-2 min-h-[82px] w-full resize-none bg-transparent text-[14px] leading-6 text-white/90 outline-none placeholder:text-white/25"
                       />
-                      <div className="mt-3 flex items-center justify-between gap-3">
-                        <div className="text-xs text-white/40">
+                      <div className="mt-2 flex items-center justify-between gap-3">
+                        <div className="max-w-[60%] text-[11px] text-white/38">
                           {hasGeneratedDraft
                             ? 'Keep editing in natural language. You can refine again, or save this version right away.'
                             : 'Use plain language. Divo will compile it into a reusable prompt plus a visual execution map.'}
@@ -1092,7 +1138,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                           {hasGeneratedDraft ? (
                             <button
                               onClick={() => setComposerMode('actions')}
-                              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
+                              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
                             >
                               Back to actions
                             </button>
@@ -1100,7 +1146,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                           <button
                             onClick={() => void authorWorkflow()}
                             disabled={!composerText.trim() || isGenerating}
-                            className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             <Sparkles size={15} />
                             {hasGeneratedDraft ? 'Refine with AI' : 'Generate workflow'}
@@ -1109,7 +1155,7 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                             <button
                               onClick={() => void publishWorkflow()}
                               disabled={isSaving}
-                              className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+                              className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               <Save size={15} />
                               Save
@@ -1125,21 +1171,21 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                           <Check size={12} />
                           Draft ready
                         </div>
-                        <div className="mt-2 text-sm text-white/70">
+                        <div className="mt-1 text-sm text-white/70">
                           Edit further to keep iterating in natural language, or save this workflow to the reusable library.
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => setComposerMode('compose')}
-                          className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
+                          className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
                         >
                           Edit further
                         </button>
                         <button
                           onClick={() => void publishWorkflow()}
                           disabled={isSaving}
-                          className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <Save size={15} />
                           Save

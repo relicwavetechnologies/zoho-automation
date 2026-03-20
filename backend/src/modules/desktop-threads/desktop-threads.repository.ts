@@ -17,10 +17,12 @@ const threadInclude = {
   },
 } as const;
 
+const LARK_LIFETIME_THREAD_KEY = 'lifetime';
+
 export class DesktopThreadsRepository extends BaseRepository {
   listThreads(userId: string, companyId: string) {
     return prisma.desktopThread.findMany({
-      where: { userId, companyId },
+      where: { userId, companyId, channel: 'desktop' },
       include: threadInclude,
       orderBy: { updatedAt: 'desc' },
       take: 50,
@@ -28,6 +30,13 @@ export class DesktopThreadsRepository extends BaseRepository {
   }
 
   getThread(threadId: string, userId: string) {
+    return prisma.desktopThread.findFirst({
+      where: { id: threadId, userId, channel: 'desktop' },
+      include: threadInclude,
+    });
+  }
+
+  getOwnedThread(threadId: string, userId: string) {
     return prisma.desktopThread.findFirst({
       where: { id: threadId, userId },
       include: threadInclude,
@@ -39,10 +48,23 @@ export class DesktopThreadsRepository extends BaseRepository {
       where: {
         userId,
         companyId,
+        channel: 'desktop',
         title,
       },
       include: threadInclude,
       orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  findCanonicalLarkThread(userId: string, companyId: string) {
+    return prisma.desktopThread.findFirst({
+      where: {
+        userId,
+        companyId,
+        channel: 'lark',
+        canonicalThreadKey: LARK_LIFETIME_THREAD_KEY,
+      },
+      include: threadInclude,
     });
   }
 
@@ -51,6 +73,21 @@ export class DesktopThreadsRepository extends BaseRepository {
       data: {
         userId,
         companyId,
+        channel: 'desktop',
+        departmentId: departmentId ?? null,
+        ...(title ? { title } : {}),
+      },
+      include: threadInclude,
+    });
+  }
+
+  createLarkLifetimeThread(userId: string, companyId: string, departmentId?: string | null, title?: string | null) {
+    return prisma.desktopThread.create({
+      data: {
+        userId,
+        companyId,
+        channel: 'lark',
+        canonicalThreadKey: LARK_LIFETIME_THREAD_KEY,
         departmentId: departmentId ?? null,
         ...(title ? { title } : {}),
       },
@@ -76,7 +113,7 @@ export class DesktopThreadsRepository extends BaseRepository {
 
   async deleteThread(threadId: string, userId: string): Promise<void> {
     // Verify ownership before deleting
-    const thread = await prisma.desktopThread.findFirst({ where: { id: threadId, userId } });
+    const thread = await prisma.desktopThread.findFirst({ where: { id: threadId, userId, channel: 'desktop' } });
     if (!thread) return;
     await prisma.desktopMessage.deleteMany({ where: { threadId } });
     await prisma.desktopThread.delete({ where: { id: threadId } });

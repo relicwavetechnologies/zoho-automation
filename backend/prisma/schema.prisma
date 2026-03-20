@@ -813,6 +813,8 @@ model DesktopThread {
   user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   companyId     String
   company       Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  channel       String           @default("desktop")
+  canonicalThreadKey String?
   departmentId  String?
   department    Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   preferredEngine String?
@@ -822,8 +824,9 @@ model DesktopThread {
   updatedAt     DateTime         @updatedAt
   messages      DesktopMessage[]
 
-  @@index([userId, companyId, updatedAt])
-  @@index([departmentId, updatedAt])
+  @@index([userId, companyId, channel, updatedAt])
+  @@index([departmentId, channel, updatedAt])
+  @@unique([companyId, userId, channel, canonicalThreadKey])
 }
 
 model DesktopMessage {

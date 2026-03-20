@@ -21,10 +21,13 @@ export const DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT = 40;
 const contextKey = (threadId: string, userId: string) =>
   `desktop:thread:${threadId}:user:${userId}:context`;
 
-const trimMessages = (messages: CachedDesktopThreadMessage[]): CachedDesktopThreadMessage[] =>
-  messages.slice(-DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT);
+const trimMessages = (
+  messages: CachedDesktopThreadMessage[],
+  maxMessages = DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT,
+): CachedDesktopThreadMessage[] =>
+  messages.slice(-Math.max(1, Math.min(DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT, maxMessages)));
 
-const parseContext = (serialized: string | null): CachedDesktopThreadContext | null => {
+const parseContext = (serialized: string | null, maxMessages = DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT): CachedDesktopThreadContext | null => {
   if (!serialized) return null;
   try {
     const parsed = JSON.parse(serialized) as unknown;
@@ -51,7 +54,7 @@ const parseContext = (serialized: string | null): CachedDesktopThreadContext | n
     return {
       threadId: record.threadId,
       userId: record.userId,
-      messages: trimMessages(messages),
+      messages: trimMessages(messages, maxMessages),
       cachedAt: typeof record.cachedAt === 'string' ? record.cachedAt : new Date().toISOString(),
     };
   } catch {
@@ -60,11 +63,11 @@ const parseContext = (serialized: string | null): CachedDesktopThreadContext | n
 };
 
 class DesktopThreadContextCache {
-  private async save(context: CachedDesktopThreadContext): Promise<void> {
+  private async save(context: CachedDesktopThreadContext, maxMessages = DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT): Promise<void> {
     const redis = redisConnection.getClient();
     const payload: CachedDesktopThreadContext = {
       ...context,
-      messages: trimMessages(context.messages),
+      messages: trimMessages(context.messages, maxMessages),
       cachedAt: new Date().toISOString(),
     };
     await redis.set(
@@ -78,11 +81,13 @@ class DesktopThreadContextCache {
   async getOrLoad(input: {
     threadId: string;
     userId: string;
+    maxMessages?: number;
     loader: () => Promise<CachedDesktopThreadContext>;
   }): Promise<CachedDesktopThreadContext> {
     const redis = redisConnection.getClient();
     const key = contextKey(input.threadId, input.userId);
-    const cached = parseContext(await redis.get(key));
+    const maxMessages = input.maxMessages ?? DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT;
+    const cached = parseContext(await redis.get(key), maxMessages);
     if (cached) {
       logger.info('desktop.thread_context.cache.hit', {
         threadId: input.threadId,
@@ -99,7 +104,7 @@ class DesktopThreadContextCache {
     });
     const loaded = input.loader();
     const context = await loaded;
-    await this.save(context);
+    await this.save(context, maxMessages);
     return context;
   }
 
@@ -107,18 +112,20 @@ class DesktopThreadContextCache {
     threadId: string;
     userId: string;
     message: CachedDesktopThreadMessage;
+    maxMessages?: number;
     loader?: () => Promise<CachedDesktopThreadContext>;
   }): Promise<void> {
     const redis = redisConnection.getClient();
     const key = contextKey(input.threadId, input.userId);
-    const existing = parseContext(await redis.get(key));
+    const maxMessages = input.maxMessages ?? DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT;
+    const existing = parseContext(await redis.get(key), maxMessages);
 
     if (!existing) {
       if (!input.loader) {
         return;
       }
       const loaded = await input.loader();
-      await this.save(loaded);
+      await this.save(loaded, maxMessages);
       logger.info('desktop.thread_context.cache.rebuilt', {
         threadId: input.threadId,
         userId: input.userId,
@@ -130,15 +137,24 @@ class DesktopThreadContextCache {
     const deduped = existing.messages.filter((message) => message.id !== input.message.id);
     const next: CachedDesktopThreadContext = {
       ...existing,
-      messages: trimMessages([...deduped, input.message]),
+      messages: trimMessages([...deduped, input.message], maxMessages),
       cachedAt: new Date().toISOString(),
     };
-    await this.save(next);
+    await this.save(next, maxMessages);
     logger.info('desktop.thread_context.cache.updated', {
       threadId: input.threadId,
       userId: input.userId,
       messageCount: next.messages.length,
       role: input.message.role,
+    });
+  }
+
+  async invalidate(threadId: string, userId: string): Promise<void> {
+    const redis = redisConnection.getClient();
+    await redis.del(contextKey(threadId, userId));
+    logger.info('desktop.thread_context.cache.invalidated', {
+      threadId,
+      userId,
     });
   }
 }
