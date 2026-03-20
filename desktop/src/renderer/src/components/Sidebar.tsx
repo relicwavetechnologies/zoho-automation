@@ -73,66 +73,66 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="shrink-0 px-2 py-2">
+      <div className="shrink-0 px-3 py-2">
         {currentWorkspace && (
-          <div className="mx-1 mb-3 rounded-2xl border border-sidebar-border bg-sidebar-bg px-3 py-3">
-            <div className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground/60">Workspace</div>
-            <div className="mt-1 truncate text-sm font-medium text-foreground/80">{currentWorkspace.name}</div>
-            <div className="mt-1 truncate text-[11px] text-muted-foreground/60">{currentWorkspace.path}</div>
+          <div className="mb-4 rounded-xl border border-border bg-secondary/20 px-3.5 py-3 shadow-sm">
+            <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Workspace</div>
+            <div className="mt-1 truncate text-[13px] font-semibold text-foreground/90">{currentWorkspace.name}</div>
+            <div className="mt-0.5 truncate text-[10px] text-muted-foreground/40 font-medium">{currentWorkspace.path}</div>
             <button
               onClick={() => void selectWorkspace()}
-              className="mt-3 text-[11px] font-medium text-primary hover:text-primary/80"
+              className="mt-3 text-[10px] font-bold uppercase tracking-wider text-primary/70 hover:text-primary transition-colors"
             >
-              Change folder
+              Switch Folder
             </button>
           </div>
         )}
 
-        {/* Top pinned items (from reference: Automations, Skills etc if needed, here just basic search for now) */}
-        <div className="px-1 pb-4">
+        {/* Top pinned items */}
+        <div className="pb-4">
           <div className="mb-3 grid grid-cols-2 gap-2">
             <button
               onClick={onChatClick}
               className={cn(
-                'flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition-colors',
+                'flex items-center justify-center gap-2 rounded-lg border h-8 text-[11px] font-bold uppercase tracking-wider transition-all',
                 currentView === 'chat'
-                  ? 'bg-sidebar-active text-white border-border'
-                  : 'text-muted-foreground hover:bg-sidebar-hover hover:text-foreground border-transparent',
+                  ? 'bg-secondary text-foreground border-border shadow-sm'
+                  : 'text-muted-foreground/60 hover:bg-secondary/50 hover:text-foreground border-transparent',
               )}
             >
-              <MessageSquareText size={14} />
+              <MessageSquareText size={13} />
               Chat
             </button>
             <button
               onClick={onScheduleClick}
               className={cn(
-                'flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition-colors',
+                'flex items-center justify-center gap-2 rounded-lg border h-8 text-[11px] font-bold uppercase tracking-wider transition-all',
                 currentView === 'schedule'
-                  ? 'bg-sidebar-active text-white border-border'
-                  : 'text-muted-foreground hover:bg-sidebar-hover hover:text-foreground border-transparent',
+                  ? 'bg-secondary text-foreground border-border shadow-sm'
+                  : 'text-muted-foreground/60 hover:bg-secondary/50 hover:text-foreground border-transparent',
               )}
             >
-              <Workflow size={14} />
+              <Workflow size={13} />
               Workflows
             </button>
           </div>
 
           <div className="relative">
             <Search
-              size={13}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/50"
+              size={12}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/40"
             />
             <input
               type="text"
-              placeholder="Search..."
+              placeholder="Search history..."
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               disabled={isStreaming}
               className={cn(
-                'w-full pl-7 pr-2 py-1.5 rounded-md text-xs',
-                'bg-sidebar-hover border-transparent focus:border-border',
-                'text-foreground/70 placeholder:text-muted-foreground/40',
-                'focus:outline-none transition-colors border disabled:cursor-not-allowed disabled:opacity-50',
+                'w-full pl-8 pr-2 h-8 rounded-lg text-[12px]',
+                'bg-secondary/30 border-transparent focus:border-border',
+                'text-foreground/80 placeholder:text-muted-foreground/30',
+                'focus:outline-none transition-all border disabled:cursor-not-allowed disabled:opacity-50',
               )}
             />
           </div>

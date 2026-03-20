@@ -104,7 +104,7 @@ function FileCard({ attachment, onRemove }: { attachment: AttachedFile; onRemove
     <div
       className={cn(
         'group relative flex items-center gap-2 rounded-[10px] border px-2.5 py-1.5 text-[12px] font-medium transition-all duration-150',
-        'bg-muted/50',
+        'bg-black/20',
         isError
           ? 'border-red-900/50 text-red-400'
           : isDone
@@ -465,33 +465,33 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
 
         <div
           className={cn(
-            'relative z-10 rounded-[24px] border bg-card/95 shadow-[0_12px_36px_rgba(0,0,0,0.22)] transition-colors duration-150',
+            'relative z-10 rounded-2xl border bg-black/20 backdrop-blur-md shadow-sm transition-all duration-200',
             isDragOver
-              ? 'border-primary/40 shadow-[0_0_0_1px_hsl(var(--ring)/0.18),0_24px_80px_rgba(2,8,18,0.32)]'
+              ? 'border-primary/40 ring-1 ring-primary/20'
               : activeThread || isHome
-                ? 'border-border focus-within:border-primary/40'
+                ? 'border-border focus-within:border-primary/30'
                 : 'opacity-70',
           )}
         >
           {isApprovalMode ? (
             <div className="px-4 py-4">
               <div className="flex items-start gap-3">
-                <div className="mt-0.5 rounded-xl bg-amber-950/20 p-2 text-amber-500">
+                <div className="mt-0.5 rounded-lg bg-amber-500/10 p-2 text-amber-500/80">
                   <ShieldAlert size={16} />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="text-sm font-medium text-foreground">{approvalTitle}</div>
-                    <span className="rounded-full border border-amber-900/50 bg-amber-950/20 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-amber-400">
+                    <div className="text-sm font-medium text-foreground/90">{approvalTitle}</div>
+                    <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-500/80">
                       Awaiting approval
                     </span>
                   </div>
                   <div className="mt-1 text-sm text-muted-foreground">{approvalDescription}</div>
-                  <div className="mt-3 rounded-2xl border border-border/60 bg-black/20 px-4 py-3 font-mono text-[13px] leading-7 text-foreground/90 whitespace-pre-wrap break-words">
+                  <div className="mt-3 rounded-xl border border-border bg-black/40 px-4 py-3 font-mono text-[13px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-words">
                     {pendingActionPath}
                   </div>
                   {pendingLocalAction?.workspacePath ? (
-                    <div className="mt-2 text-[11px] text-muted-foreground/40">
+                    <div className="mt-2 text-[10px] text-muted-foreground/50">
                       {pendingLocalAction.workspacePath}
                     </div>
                   ) : null}
@@ -499,7 +499,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     <button
                       type="button"
                       onClick={() => void approveCommand(pendingLocalAction!.id)}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-sky-300/12 bg-sky-400/8 px-3.5 py-2 text-xs font-medium text-sky-50/88 hover:bg-sky-400/12"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary/10 border border-primary/20 px-3.5 py-1.5 text-xs font-semibold text-primary/90 hover:bg-primary/20 transition-colors"
                     >
                       <CheckCircle2 size={13} />
                       Approve
@@ -507,7 +507,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     <button
                       type="button"
                       onClick={() => void rejectCommand(pendingLocalAction!.id)}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-secondary px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary/80 hover:text-foreground"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/50 px-3.5 py-1.5 text-xs font-semibold text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
                     >
                       <Ban size={13} />
                       Reject
@@ -529,8 +529,8 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
 
           {/* ── Drag overlay hint ─────────────────────────────────────────────── */}
           {isDragOver && (
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-[20px] bg-primary/10 backdrop-blur-sm">
-              <span className="text-[13px] font-medium text-primary">Drop file to attach</span>
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-2xl bg-primary/5 backdrop-blur-[2px]">
+              <span className="text-[13px] font-medium text-primary">Drop to attach</span>
             </div>
           )}
 
@@ -545,35 +545,25 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                 isDragOver
                   ? 'Drop to attach…'
                   : isHome 
-                    ? `What should we work on next in ${currentWorkspace?.name ?? 'this workspace'}?`
+                    ? `What should we work on next?`
                     : activeThread
-                      ? `Message Divo about ${currentWorkspace?.name ?? 'this workspace'}`
+                      ? `Message Divo...`
                       : currentWorkspace
-                        ? `Create a thread in ${currentWorkspace.name} to start`
-                        : 'Open a workspace folder to start'
+                        ? `Create a thread to start`
+                        : 'Open a workspace to start'
               }
               disabled={!isHome && !activeThread}
               rows={1}
               className={cn(
-                'w-full resize-none bg-transparent leading-6 tracking-[-0.01em]',
-                isHome ? 'text-[16px]' : 'text-[15px]',
-                'text-foreground/92 placeholder:text-muted-foreground/55',
-                'focus:outline-none disabled:cursor-not-allowed min-h-[44px]',
+                'w-full resize-none bg-transparent leading-relaxed tracking-tight',
+                isHome ? 'text-[15px]' : 'text-[14px]',
+                'text-foreground/90 placeholder:text-muted-foreground/50',
+                'focus:outline-none disabled:cursor-not-allowed min-h-[40px]',
               )}
             />
 
-            <div className="mt-2.5 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <button
-                  type="button"
-                  disabled
-                  className="inline-flex h-8 items-center gap-2 rounded-xl border border-border bg-secondary px-3 text-[13px] font-medium text-foreground/80 disabled:cursor-default"
-                >
-                  <Infinity size={14} />
-                  <span>Divo</span>
-                  <ChevronDown size={13} className="text-muted-foreground" />
-                </button>
-
+            <div className="mt-2 flex items-center justify-between gap-3 border-t border-border/30 pt-2">
+              <div className="flex items-center gap-2">
                 {/* ── Mode toggle ───────────────────────────────────────── */}
                 <div className="relative" ref={modeMenuRef}>
                   <button
@@ -583,26 +573,26 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                     aria-haspopup="menu"
                     aria-expanded={isModeMenuOpen}
                     className={cn(
-                      'inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium transition-all select-none',
+                      'inline-flex h-7 items-center gap-1.5 rounded-lg border px-2 text-[11px] font-medium transition-all select-none',
                       (!activeThread && !isHome) || isStreaming
-                        ? 'border-transparent text-muted-foreground/40 cursor-not-allowed'
-                        : 'border-border bg-secondary text-foreground/85 hover:bg-secondary/80'
+                        ? 'border-transparent text-muted-foreground/30 cursor-not-allowed'
+                        : 'border-border bg-secondary/30 text-muted-foreground hover:bg-secondary/50 hover:text-foreground shadow-sm'
                     )}
                     title={selectedMode.title}
                   >
-                    <SelectedModeIcon size={13} className={selectedMode.iconClassName} strokeWidth={2.5} />
-                    <span className="tracking-wide text-[13px]">{selectedMode.label}</span>
+                    <SelectedModeIcon size={12} className={cn('opacity-80', selectedMode.iconClassName)} strokeWidth={2} />
+                    <span>{selectedMode.label}</span>
                     <ChevronDown
-                      size={13}
+                      size={11}
                       className={cn(
-                        !activeThread || isStreaming ? 'text-muted-foreground/40' : 'text-muted-foreground/80',
-                        isModeMenuOpen && 'rotate-180'
+                        'opacity-50',
+                        isModeMenuOpen && 'rotate-180 transition-transform'
                       )}
                     />
                   </button>
 
                   {isModeMenuOpen && (activeThread || isHome) && !isStreaming && (
-                    <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[220px] overflow-hidden rounded-2xl border border-border bg-card p-1.5 shadow-xl">
+                    <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[200px] overflow-hidden rounded-xl border border-border bg-popover p-1 shadow-lg backdrop-blur-xl">
                       {MODE_OPTIONS.map((option) => {
                         const OptionIcon = option.icon
                         const isSelected = option.value === mode
@@ -615,16 +605,16 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                               setIsModeMenuOpen(false)
                             }}
                             className={cn(
-                              'flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition-colors',
+                              'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors',
                               isSelected
                                 ? 'bg-secondary text-foreground'
-                                : 'text-foreground/80 hover:bg-secondary/70'
+                                : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground'
                             )}
                           >
-                            <OptionIcon size={14} className={option.iconClassName} strokeWidth={2.4} />
+                            <OptionIcon size={13} className={option.iconClassName} strokeWidth={2} />
                             <div className="min-w-0">
-                              <div className="text-[13px] font-medium leading-5">{option.label}</div>
-                              <div className="text-[11px] leading-4 text-muted-foreground/60">{option.description}</div>
+                              <div className="text-[12px] font-medium leading-tight">{option.label}</div>
+                              <div className="text-[10px] text-muted-foreground/60">{option.description}</div>
                             </div>
                           </button>
                         )
@@ -634,7 +624,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                 </div>
               </div>
 
-              <div className="flex items-center gap-1.5 ml-auto">
+              <div className="flex items-center gap-1 ml-auto">
                 <div className="relative" ref={workflowMenuRef}>
                   <button
                     type="button"
@@ -647,22 +637,22 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                       }
                     }}
                     className={cn(
-                      'flex h-8 min-w-[32px] items-center justify-center rounded-xl transition-colors px-2 gap-1',
+                      'flex h-7 min-w-[28px] items-center justify-center rounded-lg transition-colors px-1.5 gap-1',
                       selectedWorkflow || referencedIds.size > 0
-                        ? 'border border-emerald-300/16 bg-emerald-400/8 text-emerald-50/88'
+                        ? 'bg-primary/10 text-primary border border-primary/20'
                         : (!activeThread && !isHome) || isStreaming
-                          ? 'text-muted-foreground/40 cursor-not-allowed'
-                          : 'border border-transparent bg-transparent text-muted-foreground/80 hover:bg-secondary hover:text-foreground',
+                          ? 'text-muted-foreground/30 cursor-not-allowed'
+                          : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground',
                     )}
                     title="Reference files or workflows"
                   >
-                    <AtSign size={15} />
-                    {selectedWorkflow ? <span className="max-w-[96px] truncate text-[11px]">{selectedWorkflow.name}</span> : null}
-                    {!selectedWorkflow && referencedIds.size > 0 ? <span className="text-[11px] font-semibold">{referencedIds.size}</span> : null}
+                    <AtSign size={14} />
+                    {selectedWorkflow ? <span className="max-w-[80px] truncate text-[10px] font-medium">{selectedWorkflow.name}</span> : null}
+                    {!selectedWorkflow && referencedIds.size > 0 ? <span className="text-[10px] font-bold">{referencedIds.size}</span> : null}
                   </button>
 
                   {isReferenceMenuOpen && (activeThread || isHome) && !isStreaming ? (
-                    <div className="absolute bottom-[calc(100%+8px)] right-0 z-30 max-h-[320px] w-[320px] overflow-y-auto rounded-2xl border border-border bg-card p-1.5 shadow-xl">
+                    <div className="absolute bottom-[calc(100%+8px)] right-0 z-30 max-h-[280px] w-[280px] overflow-y-auto rounded-xl border border-border bg-popover p-1 shadow-lg backdrop-blur-xl">
                       <button
                         type="button"
                         onClick={() => {
@@ -670,19 +660,19 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                           clearReferenceToken()
                           setIsReferenceMenuOpen(false)
                         }}
-                        className="flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground"
+                        className="flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
                       >
-                        Run normal chat
+                        Normal chat
                       </button>
                       {isLoadingReferences ? (
-                        <div className="px-3 py-3 text-sm text-muted-foreground">Loading references…</div>
+                        <div className="px-2.5 py-2 text-xs text-muted-foreground">Loading...</div>
                       ) : (
                         <>
-                          <div className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-[0.12em] text-muted-foreground/60">
+                          <div className="px-2.5 pt-2 pb-1 text-[9px] font-bold uppercase tracking-widest text-muted-foreground/40">
                             Workflows
                           </div>
                           {filteredWorkflowOptions.length === 0 ? (
-                            <div className="px-3 py-2 text-sm text-muted-foreground">No workflow matches.</div>
+                            <div className="px-2.5 py-1.5 text-xs text-muted-foreground">None</div>
                           ) : filteredWorkflowOptions.map((workflow) => (
                             <button
                               key={workflow.id}
@@ -693,27 +683,24 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                                 setIsReferenceMenuOpen(false)
                               }}
                               className={cn(
-                                'flex w-full flex-col rounded-xl px-3 py-2 text-left transition-colors',
+                                'flex w-full flex-col rounded-lg px-2.5 py-1.5 text-left transition-colors',
                                 selectedWorkflow?.id === workflow.id
                                   ? 'bg-secondary text-foreground'
-                                  : 'text-foreground/85 hover:bg-secondary/70',
+                                  : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground',
                               )}
                             >
                               <div className="flex items-center gap-2">
-                                <Workflow size={13} />
-                                <span className="text-[13px] font-medium">{workflow.name}</span>
+                                <Workflow size={12} className="opacity-70" />
+                                <span className="text-[12px] font-medium">{workflow.name}</span>
                               </div>
-                              <span className="mt-1 text-[11px] text-muted-foreground/70">
-                                {workflow.status === 'scheduled_active' ? 'Scheduled and reusable' : workflow.status === 'paused' ? 'Paused schedule' : 'Reusable workflow'}
-                              </span>
                             </button>
                           ))}
 
-                          <div className="px-3 pt-3 pb-1 text-[11px] uppercase tracking-[0.12em] text-muted-foreground/60">
+                          <div className="px-2.5 pt-2 pb-1 text-[9px] font-bold uppercase tracking-widest text-muted-foreground/40">
                             Files
                           </div>
                           {filteredFileOptions.length === 0 ? (
-                            <div className="px-3 py-2 text-sm text-muted-foreground">No file matches.</div>
+                            <div className="px-2.5 py-1.5 text-xs text-muted-foreground">None</div>
                           ) : filteredFileOptions.slice(0, 8).map((file) => (
                             <button
                               key={file.id}
@@ -723,13 +710,10 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                                 clearReferenceToken()
                                 setIsReferenceMenuOpen(false)
                               }}
-                              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-foreground/85 transition-colors hover:bg-secondary/70"
+                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
                             >
-                              <FileText size={13} className="text-muted-foreground/70" />
-                              <div className="min-w-0">
-                                <div className="truncate text-[13px] font-medium">{file.fileName}</div>
-                                <div className="text-[11px] text-muted-foreground/70">{file.mimeType}</div>
-                              </div>
+                              <FileText size={12} className="opacity-60" />
+                              <div className="truncate text-[12px] font-medium">{file.fileName}</div>
                             </button>
                           ))}
                         </>
@@ -738,22 +722,21 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   ) : null}
                 </div>
 
-                {/* ── File attach button (enabled) ─────────────────────────── */}
+                {/* ── File attach button ─────────────────────────── */}
                 <button
                   type="button"
                   disabled={(!activeThread && !isHome) || isStreaming}
                   onClick={() => setIsDrawerOpen(prev => !prev)}
                   className={cn(
-                    'flex h-8 w-8 items-center justify-center rounded-xl transition-colors',
+                    'flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
                     (!activeThread && !isHome) || isStreaming
-                      ? 'text-muted-foreground/40 cursor-not-allowed'
+                      ? 'text-muted-foreground/30 cursor-not-allowed'
                       : isDrawerOpen
-                        ? 'bg-sky-400/8 text-sky-100/82'
-                        : 'border border-transparent bg-transparent text-muted-foreground/80 hover:bg-secondary hover:text-foreground',
+                        ? 'bg-primary/10 text-primary'
+                        : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground',
                   )}
-                  aria-label="Toggle files drawer"
-                  title="Workspace Files"
-                >  <Paperclip size={15} />
+                  aria-label="Toggle files"
+                >  <Paperclip size={14} />
                 </button>
 
                 {/* ── Send button ──────────────────────────────────────────── */}
@@ -761,20 +744,20 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   <button
                     type="button"
                     onClick={() => { void stopExecution() }}
-                    className="ml-1 shrink-0 flex h-8 w-8 items-center justify-center rounded-xl border border-sky-300/18 bg-sky-50/90 text-slate-950 shadow-[0_10px_24px_rgba(120,170,220,0.10)] transition-all hover:bg-white"
-                    title="Stop generation"
+                    className="ml-1 shrink-0 flex h-7 w-7 items-center justify-center rounded-lg bg-foreground text-background transition-all hover:opacity-90"
+                    title="Stop"
                   >
-                    <Square size={12} fill="currentColor" />
+                    <Square size={10} fill="currentColor" />
                   </button>
                 ) : (
                   <button
                     onClick={handleSend}
                     disabled={!canSubmit}
                     className={cn(
-                      'ml-1 shrink-0 h-8 w-8 rounded-xl flex items-center justify-center border transition-all',
+                      'ml-1 shrink-0 h-7 w-7 rounded-lg flex items-center justify-center transition-all shadow-sm',
                       canSubmit
-                        ? 'border-sky-200/30 bg-sky-50/92 text-slate-950 shadow-[0_10px_24px_rgba(120,170,220,0.12)] hover:bg-white'
-                        : 'border-white/6 bg-white/[0.05] text-muted-foreground/40',
+                        ? 'bg-primary text-primary-foreground hover:opacity-90 shadow-sm'
+                        : 'bg-secondary/50 text-muted-foreground/30',
                     )}
                   >
                     <ArrowUp size={14} />
@@ -787,12 +770,12 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
           )}
         </div>
 
-        <p className="mt-1.5 text-center text-[9px] tracking-[0.02em] text-muted-foreground/30">
+        <p className="mt-2 text-center text-[10px] text-muted-foreground/40 font-medium tracking-tight">
           {isApprovalMode
-            ? 'Approve or reject the pending action to let Divo continue.'
+            ? 'Action approval required'
             : currentWorkspace
-            ? `Message Divo for grounded Zoho work, research, documents, or workspace actions in ${currentWorkspace.name}. Drag & drop or attach PDFs, DOCX, or images.`
-            : 'Open a workspace folder to begin.'}
+            ? `AI powered by ${selectedMode.label} mode`
+            : 'Open a workspace to begin'}
         </p>
       </div>
 

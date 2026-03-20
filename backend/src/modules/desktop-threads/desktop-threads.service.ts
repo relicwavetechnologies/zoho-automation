@@ -19,6 +19,46 @@ export class DesktopThreadsService extends BaseService {
     super();
   }
 
+  private async cacheThreadMeta(thread: Awaited<ReturnType<DesktopThreadsRepository['getOwnedThread']>>) {
+    if (!thread) return;
+    await desktopThreadMetaCache.set({
+      id: thread.id,
+      userId: thread.userId,
+      companyId: thread.companyId,
+      title: thread.title ?? null,
+      departmentId: thread.departmentId ?? null,
+      department: thread.department
+        ? {
+          id: thread.department.id,
+          name: thread.department.name,
+          slug: thread.department.slug,
+        }
+        : null,
+      lastMessageAt: thread.lastMessageAt?.toISOString?.() ?? null,
+      cachedAt: new Date().toISOString(),
+    });
+  }
+
+  private toCachedContext(
+    threadId: string,
+    userId: string,
+    messages: Awaited<ReturnType<DesktopThreadsRepository['listMessages']>>,
+  ) {
+    return {
+      threadId,
+      userId,
+      messages: messages.map((entry) => ({
+        id: entry.id,
+        role: entry.role,
+        content: entry.content,
+        metadata: entry.metadata && typeof entry.metadata === 'object' && !Array.isArray(entry.metadata)
+          ? entry.metadata as Record<string, unknown>
+          : undefined,
+      })),
+      cachedAt: new Date().toISOString(),
+    };
+  }
+
   async listThreads(userId: string, companyId: string) {
     return this.repository.listThreads(userId, companyId);
   }
@@ -82,22 +122,7 @@ export class DesktopThreadsService extends BaseService {
 
   async createThread(userId: string, companyId: string, departmentId?: string | null, title?: string | null) {
     const thread = await this.repository.createThread(userId, companyId, departmentId, title);
-    await desktopThreadMetaCache.set({
-      id: thread.id,
-      userId: thread.userId,
-      companyId: thread.companyId,
-      title: thread.title ?? null,
-      departmentId: thread.departmentId ?? null,
-      department: thread.department
-        ? {
-          id: thread.department.id,
-          name: thread.department.name,
-          slug: thread.department.slug,
-        }
-        : null,
-      lastMessageAt: thread.lastMessageAt?.toISOString?.() ?? null,
-      cachedAt: new Date().toISOString(),
-    });
+    await this.cacheThreadMeta(thread);
     return thread;
   }
 
@@ -114,67 +139,88 @@ export class DesktopThreadsService extends BaseService {
 
     const existing = await this.repository.findThreadByTitle(userId, companyId, normalizedTitle);
     if (existing) {
-      await desktopThreadMetaCache.set({
-        id: existing.id,
-        userId: existing.userId,
-        companyId: existing.companyId,
-        title: existing.title ?? null,
-        departmentId: existing.departmentId ?? null,
-        department: existing.department
-          ? {
-            id: existing.department.id,
-            name: existing.department.name,
-            slug: existing.department.slug,
-          }
-          : null,
-        lastMessageAt: existing.lastMessageAt?.toISOString?.() ?? null,
-        cachedAt: new Date().toISOString(),
-      });
+      await this.cacheThreadMeta(existing);
       return existing;
     }
 
-    return this.repository.createThread(userId, companyId, departmentId, normalizedTitle);
+    const created = await this.repository.createThread(userId, companyId, departmentId, normalizedTitle);
+    await this.cacheThreadMeta(created);
+    return created;
   }
 
-  async addMessage(
+  async findOrCreateLarkLifetimeThread(
+    userId: string,
+    companyId: string,
+    departmentId?: string | null,
+  ) {
+    const existing = await this.repository.findCanonicalLarkThread(userId, companyId);
+    if (existing) {
+      await this.cacheThreadMeta(existing);
+      return existing;
+    }
+
+    const created = await this.repository.createLarkLifetimeThread(
+      userId,
+      companyId,
+      departmentId,
+      'Lark history',
+    );
+    await this.cacheThreadMeta(created);
+    return created;
+  }
+
+  async getOwnedThreadContext(threadId: string, userId: string, limit = 40) {
+    const thread = await this.repository.getOwnedThread(threadId, userId);
+    if (!thread) throw new HttpException(404, 'Thread not found');
+
+    const messages = await this.repository.listMessages(threadId, limit);
+    return { thread, messages };
+  }
+
+  async getCachedOwnedThreadContext(threadId: string, userId: string, limit = 40) {
+    return desktopThreadContextCache.getOrLoad({
+      threadId,
+      userId,
+      maxMessages: limit,
+      loader: async () => {
+        const context = await this.getOwnedThreadContext(threadId, userId, limit);
+        return this.toCachedContext(threadId, userId, context.messages);
+      },
+    });
+  }
+
+  async addOwnedThreadMessage(
     threadId: string,
     userId: string,
     role: string,
     content: string,
     metadata?: Record<string, unknown>,
+    options?: {
+      requiredChannel?: 'desktop' | 'lark';
+      contextLimit?: number;
+    },
   ) {
-    // Verify ownership
-    const thread = await this.repository.getThread(threadId, userId);
+    const thread = await this.repository.getOwnedThread(threadId, userId);
     if (!thread) throw new HttpException(404, 'Thread not found');
-
-    const message = await this.repository.createMessage({ threadId, role, content, metadata });
-    await this.repository.touchThread(threadId);
-
-    // Auto-title from first user message
-    if (!thread.title && role === 'user') {
-      const title = content.length > 60 ? content.slice(0, 57) + '...' : content;
-      const updatedThread = await this.repository.updateThreadTitle(threadId, title);
-      await desktopThreadMetaCache.set({
-        id: updatedThread.id,
-        userId: updatedThread.userId,
-        companyId: updatedThread.companyId,
-        title: updatedThread.title ?? null,
-        departmentId: updatedThread.departmentId ?? null,
-        department: updatedThread.department
-          ? {
-            id: updatedThread.department.id,
-            name: updatedThread.department.name,
-            slug: updatedThread.department.slug,
-          }
-          : null,
-        lastMessageAt: updatedThread.lastMessageAt?.toISOString?.() ?? null,
-        cachedAt: new Date().toISOString(),
-      });
+    if (options?.requiredChannel && thread.channel !== options.requiredChannel) {
+      throw new HttpException(404, 'Thread not found');
     }
 
+    const message = await this.repository.createMessage({ threadId, role, content, metadata });
+    const touchedThread = await this.repository.touchThread(threadId);
+    await this.cacheThreadMeta(touchedThread);
+
+    if (!thread.title && role === 'user' && thread.channel === 'desktop') {
+      const title = content.length > 60 ? content.slice(0, 57) + '...' : content;
+      const updatedThread = await this.repository.updateThreadTitle(threadId, title);
+      await this.cacheThreadMeta(updatedThread);
+    }
+
+    const contextLimit = options?.contextLimit ?? 40;
     await desktopThreadContextCache.appendMessage({
       threadId,
       userId,
+      maxMessages: contextLimit,
       message: {
         id: message.id,
         role: message.role,
@@ -184,29 +230,31 @@ export class DesktopThreadsService extends BaseService {
           : undefined,
       },
       loader: async () => {
-        const context = await this.getThreadContext(threadId, userId, 40);
-        return {
-          threadId,
-          userId,
-          messages: context.messages.map((entry) => ({
-            id: entry.id,
-            role: entry.role,
-            content: entry.content,
-            metadata: entry.metadata && typeof entry.metadata === 'object' && !Array.isArray(entry.metadata)
-              ? entry.metadata as Record<string, unknown>
-              : undefined,
-          })),
-          cachedAt: new Date().toISOString(),
-        };
+        const context = await this.getOwnedThreadContext(threadId, userId, contextLimit);
+        return this.toCachedContext(threadId, userId, context.messages);
       },
     });
 
     return message;
   }
 
+  async addMessage(
+    threadId: string,
+    userId: string,
+    role: string,
+    content: string,
+    metadata?: Record<string, unknown>,
+  ) {
+    return this.addOwnedThreadMessage(threadId, userId, role, content, metadata, {
+      requiredChannel: 'desktop',
+      contextLimit: 40,
+    });
+  }
+
   async deleteThread(threadId: string, userId: string): Promise<void> {
     await this.repository.deleteThread(threadId, userId);
     await desktopThreadMetaCache.invalidate(threadId, userId);
+    await desktopThreadContextCache.invalidate(threadId, userId);
   }
 }
 

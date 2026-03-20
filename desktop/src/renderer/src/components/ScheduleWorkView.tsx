@@ -169,28 +169,28 @@ const WorkflowNodeCard = ({ data }: NodeProps<{ node: CompiledWorkflowNode }>): 
   const actionLabel = node.capability ? `${node.capability.toolId}.${node.capability.actionGroup}` : 'logic'
 
   return (
-    <div className="w-[280px] rounded-3xl border border-white/10 bg-[rgba(16,18,24,0.95)] p-5 shadow-[0_20px_60px_rgba(0,0,0,0.25)]">
+    <div className="w-[280px] rounded-2xl border border-border bg-background/95 p-5 shadow-sm text-foreground/90">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-100/45">{node.kind}</div>
-          <div className="mt-2 text-base font-semibold text-white">{node.title}</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40">{node.kind}</div>
+          <div className="mt-1 text-[15px] font-semibold text-foreground/90">{node.title}</div>
         </div>
         <span
           className={cn(
-            'rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em]',
+            'rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider',
             node.capability?.actionGroup && ['create', 'update', 'delete', 'send', 'execute'].includes(node.capability.actionGroup)
-              ? 'border-amber-300/20 bg-amber-400/10 text-amber-100'
-              : 'border-emerald-300/20 bg-emerald-400/10 text-emerald-100',
+              ? 'border-amber-500/20 bg-amber-500/10 text-amber-500/80'
+              : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-500/80',
           )}
         >
           {actionLabel}
         </span>
       </div>
       {node.instructions ? (
-        <p className="mt-3 text-sm leading-6 text-white/65">{node.instructions}</p>
+        <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground/80">{node.instructions}</p>
       ) : null}
       {node.expectedOutput ? (
-        <div className="mt-4 rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2 text-xs leading-5 text-white/50">
+        <div className="mt-4 rounded-xl border border-border bg-secondary/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground/60 font-medium">
           {node.expectedOutput}
         </div>
       ) : null}
@@ -270,11 +270,11 @@ function buildGraph(spec: CompiledWorkflowSpec | null): { nodes: Node[]; edges: 
     target: edge.targetId,
     label: edge.label ?? (edge.condition !== 'always' ? edge.condition : undefined),
     type: 'smoothstep',
-    markerEnd: { type: MarkerType.ArrowClosed, width: 22, height: 22 },
+    markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20 },
     animated: edge.condition !== 'always',
-    style: { stroke: 'rgba(126, 231, 255, 0.6)', strokeWidth: 2.25 },
-    labelStyle: { fill: 'rgba(255,255,255,0.7)', fontSize: 11 },
-    pathOptions: { offset: 24, borderRadius: 24 },
+    style: { stroke: 'hsl(var(--primary) / 0.3)', strokeWidth: 2 },
+    labelStyle: { fill: 'hsl(var(--muted-foreground))', fontSize: 10, fontWeight: 500 },
+    pathOptions: { offset: 20, borderRadius: 16 },
   }))
 
   return { nodes, edges }
@@ -383,12 +383,12 @@ function fromScheduleModalDraft(draft: ScheduleModalDraft): Record<string, unkno
 
 function createSkeletonBlocks(): JSX.Element {
   return (
-    <div className="flex h-full min-h-[520px] items-center justify-center rounded-[32px] border border-white/8 bg-[rgba(255,255,255,0.02)]">
+    <div className="flex h-full min-h-[520px] items-center justify-center rounded-2xl border border-border bg-secondary/10">
       <div className="flex w-full max-w-3xl flex-col items-center gap-6 px-8">
         {[0, 1, 2].map((index) => (
           <div key={index} className="flex w-full flex-col items-center gap-4">
-            <div className="h-28 w-full max-w-[320px] animate-pulse rounded-3xl border border-white/8 bg-white/[0.04]" />
-            {index < 2 ? <ArrowRight className="text-white/15" size={18} /> : null}
+            <div className="h-24 w-full max-w-[320px] animate-pulse rounded-2xl border border-border bg-secondary/20" />
+            {index < 2 ? <ArrowRight className="text-muted-foreground/20" size={18} /> : null}
           </div>
         ))}
       </div>
@@ -777,19 +777,19 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
 
   return (
     <ReactFlowProvider>
-      <div className="flex h-full min-h-0 bg-[radial-gradient(circle_at_top_right,_rgba(41,121,255,0.1),_transparent_26%),linear-gradient(180deg,_rgba(12,14,17,1)_0%,_rgba(10,10,12,1)_100%)]">
-        <aside className="flex w-[300px] shrink-0 flex-col border-r border-white/6 bg-[rgba(7,9,13,0.94)] px-4 py-5">
-          <div className="mb-4 flex items-center justify-between">
+      <div className="flex h-full min-h-0 bg-background text-foreground">
+        <aside className="flex w-[280px] shrink-0 flex-col border-r border-border bg-background/50 backdrop-blur-md px-4 py-5">
+          <div className="mb-6 flex items-center justify-between px-1">
             <div>
-              <div className="text-[11px] uppercase tracking-[0.22em] text-cyan-200/55">Workflows</div>
-              <div className="mt-1 text-sm font-semibold text-white/92">Prompt library</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40">Workflows</div>
+              <div className="mt-0.5 text-sm font-bold text-foreground/90">Library</div>
             </div>
             <button
               onClick={() => void createDraft()}
-              className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-medium text-cyan-100 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm"
+              title="New workflow"
             >
-              <Plus size={14} />
-              New
+              <Plus size={16} />
             </button>
           </div>
 
@@ -799,26 +799,23 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                 key={workflow.id}
                 onClick={() => setSelectedWorkflowId(workflow.id)}
                 className={cn(
-                  'w-full rounded-[26px] border px-4 py-4 text-left transition-all',
+                  'w-full rounded-xl border px-4 py-3 text-left transition-all',
                   selectedWorkflowId === workflow.id
-                    ? 'border-cyan-300/28 bg-cyan-400/[0.08] shadow-[0_18px_34px_rgba(0,0,0,0.16)]'
-                    : 'border-white/6 bg-white/[0.03] hover:border-white/12 hover:bg-white/[0.05]',
+                    ? 'border-primary/20 bg-primary/5 shadow-sm'
+                    : 'border-transparent hover:bg-secondary/30 text-muted-foreground/70 hover:text-muted-foreground',
                 )}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold text-white">{workflow.name}</div>
-                    <div className="mt-1 line-clamp-2 text-xs leading-5 text-white/45">
-                      {workflow.userIntent || workflow.aiDraft || 'Describe what this workflow should do.'}
+                    <div className={cn('truncate text-[13px] font-semibold', selectedWorkflowId === workflow.id ? 'text-foreground' : '')}>{workflow.name}</div>
+                    <div className="mt-1 line-clamp-2 text-[11px] leading-relaxed opacity-60">
+                      {workflow.userIntent || workflow.aiDraft || 'Empty workflow draft'}
                     </div>
                   </div>
-                  <span className="rounded-full border border-white/10 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-white/55">
-                    {workflow.status.replace('_', ' ')}
-                  </span>
                 </div>
-                <div className="mt-4 flex items-center justify-between text-[11px] text-white/45">
-                  <span>{formatScheduleSummary(workflow.schedule)}</span>
-                  <span>{workflow.nextRunAt ? new Date(workflow.nextRunAt).toLocaleDateString() : 'draft'}</span>
+                <div className="mt-3 flex items-center justify-between text-[10px] font-bold uppercase tracking-wider opacity-40">
+                  <span>{workflow.schedule.type}</span>
+                  <span>{workflow.status.replace('_', ' ')}</span>
                 </div>
               </button>
             ))}
@@ -826,77 +823,82 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
         </aside>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="border-b border-white/6 px-8 py-6">
-            <div className="mx-auto flex w-full max-w-[1480px] items-start justify-between gap-8">
-              <div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-100/80">
-                  <Workflow size={12} />
+          <div className="border-b border-border/50 px-8 py-6">
+            <div className="mx-auto flex w-full max-w-[1400px] items-start justify-between gap-8">
+              <div className="min-w-0 flex-1">
+                <div className="inline-flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-primary/80">
                   Workflow builder
                 </div>
-                <h1 className="mt-4 text-[44px] font-semibold tracking-[-0.03em] text-white">
+                <h1 className="mt-4 text-[36px] font-bold tracking-tight text-foreground/90 truncate">
                   {selectedWorkflow?.name || 'Workflow builder'}
                 </h1>
-                <p className="mt-3 max-w-3xl text-[15px] leading-7 text-white/55">
-                  Describe a reusable job once, let AI turn it into a clean execution map, then save it for reuse with <span className="font-medium text-white/75">@</span> or attach a schedule when you are ready.
+                <p className="mt-2 max-w-2xl text-[14px] leading-relaxed text-muted-foreground/60 font-medium">
+                  Define reusable jobs in natural language. Divo will compile them into execution maps that you can trigger manually or on a schedule.
                 </p>
               </div>
 
-              <div className="flex shrink-0 items-center gap-2 pt-2">
+              <div className="flex shrink-0 items-center gap-2 pt-4">
               {onExit ? (
                 <button
                   onClick={onExit}
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/75 transition-colors hover:bg-white/[0.08] hover:text-white"
+                  className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-secondary/50 px-4 text-[13px] font-semibold text-muted-foreground transition-all hover:bg-secondary hover:text-foreground shadow-sm"
                 >
-                  Chat
+                  Back to chat
                 </button>
               ) : null}
               <button
                 onClick={() => void duplicateWorkflow()}
                 disabled={!selectedWorkflow || isDuplicating}
-                className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                className="group relative inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-secondary/50 text-muted-foreground transition-all hover:bg-secondary hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed shadow-sm"
               >
                 <CopyPlus size={15} />
-                Duplicate
+                <span className="absolute -bottom-10 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-popover px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-popover-foreground opacity-0 shadow-lg group-hover:opacity-100 transition-opacity pointer-events-none border border-border">
+                  Duplicate
+                </span>
               </button>
               <button
                 onClick={() => setScheduleModalOpen(true)}
                 disabled={!selectedWorkflow}
-                className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                className="group relative inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-secondary/50 text-muted-foreground transition-all hover:bg-secondary hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed shadow-sm"
               >
                 <CalendarClock size={15} />
-                Schedule
+                <span className="absolute -bottom-10 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-popover px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-popover-foreground opacity-0 shadow-lg group-hover:opacity-100 transition-opacity pointer-events-none border border-border">
+                  Schedule
+                </span>
               </button>
               <button
                 onClick={() => void archiveWorkflow()}
                 disabled={!selectedWorkflow || isArchiving}
-                className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/70 transition-colors hover:border-red-400/25 hover:bg-red-500/10 hover:text-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                className="group relative inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-secondary/50 text-muted-foreground transition-all hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm"
               >
                 <Archive size={15} />
-                Archive
+                <span className="absolute -bottom-10 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-popover px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-popover-foreground opacity-0 shadow-lg group-hover:opacity-100 transition-opacity pointer-events-none border border-border">
+                  Archive
+                </span>
               </button>
               </div>
             </div>
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-8">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-8 bg-black/5">
             {error ? (
-              <div className="mx-auto mb-4 w-full max-w-[1480px] rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+              <div className="mx-auto mb-6 w-full max-w-[1400px] rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-[13px] font-medium text-red-500">
                 {error}
               </div>
             ) : null}
             {statusNotice ? (
-              <div className="mx-auto mb-4 w-full max-w-[1480px] rounded-2xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+              <div className="mx-auto mb-6 w-full max-w-[1400px] rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-[13px] font-medium text-emerald-500">
                 {statusNotice}
               </div>
             ) : null}
 
-            <div className="mx-auto flex min-h-0 w-full max-w-[1480px] flex-1 flex-col overflow-hidden">
-              <div className="min-h-0 flex-1 overflow-hidden rounded-[28px] border border-white/8 bg-[rgba(255,255,255,0.02)] shadow-[0_24px_90px_rgba(0,0,0,0.18)]">
+            <div className="mx-auto flex min-h-0 w-full max-w-[1400px] flex-1 flex-col overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border bg-black/20 shadow-sm">
                 {isGenerating ? (
                   createSkeletonBlocks()
                 ) : hasGeneratedDraft ? (
-                  <div className="grid h-full min-h-0 grid-cols-[minmax(0,1.45fr)_360px] overflow-hidden">
-                    <div className="min-h-0 border-r border-white/8">
+                  <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_340px] overflow-hidden">
+                    <div className="min-h-0 border-r border-border/50 relative bg-black/10">
                       <ReactFlow
                         nodes={graph.nodes}
                         edges={graph.edges}
@@ -905,290 +907,273 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
                         nodesConnectable={false}
                         elementsSelectable={false}
                         fitView
-                        fitViewOptions={{ padding: 0.16 }}
+                        fitViewOptions={{ padding: 0.2 }}
                         proOptions={{ hideAttribution: true }}
                       >
-                        <Background color="rgba(255,255,255,0.06)" gap={28} />
-                        <Controls showInteractive={false} />
+                        <Background color="hsl(var(--muted-foreground))" opacity={0.03} gap={24} />
+                        <Controls 
+                          showInteractive={false} 
+                          className="bg-background border-border fill-muted-foreground"
+                        />
                       </ReactFlow>
                     </div>
 
-                    <div className="min-h-0 overflow-y-auto px-5 py-5">
-                      <div className="rounded-3xl border border-white/8 bg-white/[0.03] p-4">
-                        <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-cyan-100/45">
+                    <div className="min-h-0 overflow-y-auto px-5 py-6 space-y-6 bg-secondary/5">
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">
                           <Bot size={12} />
-                          Reusable prompt
+                          Generated Prompt
                         </div>
                         <textarea
                           value={promptDraft}
                           onChange={(event) => setPromptDraft(event.target.value)}
                           onBlur={() => void savePromptEdits()}
-                          className="mt-3 min-h-[180px] w-full resize-none rounded-2xl border border-white/8 bg-black/20 px-4 py-3 text-sm leading-6 text-white/85 outline-none transition-colors focus:border-cyan-300/35"
+                          className="min-h-[160px] w-full resize-none rounded-xl border border-border bg-black/40 px-4 py-3 text-[13px] leading-relaxed text-foreground/80 outline-none transition-colors focus:border-primary/30"
                         />
-                        <div className="mt-3 text-xs text-white/40">
-                          {isSavingPromptDraft ? 'Saving draft changes...' : 'Prompt changes save back to this draft when you leave the field.'}
+                        <div className="text-[10px] font-medium text-muted-foreground/40 text-center">
+                          {isSavingPromptDraft ? 'Saving...' : 'Auto-saves when you leave the field'}
                         </div>
                       </div>
 
-                      <div className="mt-4 rounded-3xl border border-white/8 bg-white/[0.03] p-4">
+                      <div className="border-t border-border/50 pt-6">
                         <button
                           onClick={() => setAdvancedOpen((open) => !open)}
-                          className="flex w-full items-center justify-between text-left"
+                          className="flex w-full items-center justify-between text-left group"
                         >
-                          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-white/45">
+                          <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 group-hover:text-muted-foreground/70 transition-colors">
                             <FileJson2 size={12} />
                             Advanced JSON
                           </div>
-                          {advancedOpen ? <ChevronDown size={16} className="text-white/40" /> : <ChevronRight size={16} className="text-white/40" />}
+                          {advancedOpen ? <ChevronDown size={14} className="text-muted-foreground/40" /> : <ChevronRight size={14} className="text-muted-foreground/40" />}
                         </button>
 
                         {advancedOpen ? (
-                          <div className="mt-3">
+                          <div className="mt-4 space-y-3">
                             <textarea
                               value={jsonDraft}
                               onChange={(event) => setJsonDraft(event.target.value)}
-                              className="min-h-[240px] w-full resize-y rounded-2xl border border-white/8 bg-black/20 px-4 py-3 font-mono text-[12px] leading-6 text-white/80 outline-none transition-colors focus:border-cyan-300/35"
+                              className="min-h-[200px] w-full resize-y rounded-xl border border-border bg-black/60 px-4 py-3 font-mono text-[11px] leading-relaxed text-foreground/70 outline-none focus:border-primary/30"
                             />
                             <button
                               onClick={() => void saveJsonEdits()}
-                              className="mt-3 inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
+                              className="inline-flex items-center gap-2 rounded-lg border border-border bg-secondary/20 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm"
                             >
                               <Save size={13} />
-                              Save JSON changes
+                              Apply Changes
                             </button>
                           </div>
                         ) : null}
                       </div>
 
-                      <div className="mt-4 rounded-3xl border border-white/8 bg-white/[0.03] p-4">
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-white/45">Output</div>
-                        <div className="mt-3 space-y-3">
+                      <div className="border-t border-border/50 pt-6">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-4">Destination</div>
+                        <div className="space-y-2">
                           <button
                             onClick={() => setOutputMode('new_thread')}
                             className={cn(
-                              'flex w-full items-start justify-between rounded-2xl border px-4 py-3 text-left transition-colors',
+                              'flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition-all shadow-sm',
                               outputMode === 'new_thread'
-                                ? 'border-cyan-300/30 bg-cyan-400/10'
-                                : 'border-white/8 bg-black/20 hover:border-white/12',
+                                ? 'border-primary/20 bg-primary/5'
+                                : 'border-border bg-black/40 hover:bg-secondary/30',
                             )}
                           >
-                            <div>
-                              <div className="text-sm font-medium text-white">New thread</div>
-                              <div className="mt-1 text-xs leading-5 text-white/45">
-                                Default. Workflow output will land in a new or reused thread auto-named from the workflow title.
-                              </div>
+                            <div className="min-w-0">
+                              <div className="text-[13px] font-semibold text-foreground/90">New thread</div>
+                              <div className="mt-0.5 text-[11px] text-muted-foreground/60 leading-tight">Post to a new thread per run</div>
                             </div>
-                            {outputMode === 'new_thread' ? <Check size={15} className="mt-0.5 text-cyan-100" /> : null}
+                            {outputMode === 'new_thread' ? <Check size={14} className="text-primary" /> : null}
                           </button>
 
                           <button
                             onClick={() => setOutputMode('existing_thread')}
                             className={cn(
-                              'flex w-full items-start justify-between rounded-2xl border px-4 py-3 text-left transition-colors',
+                              'flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition-all shadow-sm',
                               outputMode === 'existing_thread'
-                                ? 'border-cyan-300/30 bg-cyan-400/10'
-                                : 'border-white/8 bg-black/20 hover:border-white/12',
+                                ? 'border-primary/20 bg-primary/5'
+                                : 'border-border bg-black/40 hover:bg-secondary/30',
                             )}
                           >
-                            <div>
-                              <div className="text-sm font-medium text-white">Existing thread</div>
-                              <div className="mt-1 text-xs leading-5 text-white/45">
-                                Route workflow output into one of your existing desktop threads.
-                              </div>
+                            <div className="min-w-0">
+                              <div className="text-[13px] font-semibold text-foreground/90">Existing thread</div>
+                              <div className="mt-0.5 text-[11px] text-muted-foreground/60 leading-tight">Post to a specific desktop thread</div>
                             </div>
-                            {outputMode === 'existing_thread' ? <Check size={15} className="mt-0.5 text-cyan-100" /> : null}
+                            {outputMode === 'existing_thread' ? <Check size={14} className="text-primary" /> : null}
                           </button>
 
                           {outputMode === 'existing_thread' ? (
-                            <div className="rounded-2xl border border-white/8 bg-black/20 p-3">
+                            <div className="mt-3 rounded-xl border border-border bg-black/40 p-2 space-y-2">
                               <input
                                 value={threadSearch}
                                 onChange={(event) => setThreadSearch(event.target.value)}
-                                placeholder="Search existing threads..."
-                                className="w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-sm text-white outline-none placeholder:text-white/25"
+                                placeholder="Search threads..."
+                                className="w-full bg-secondary/20 rounded-lg px-3 py-2 text-[12px] text-foreground outline-none placeholder:text-muted-foreground/40 border border-transparent focus:border-border"
                               />
-                              <div className="mt-3 max-h-52 space-y-2 overflow-y-auto">
+                              <div className="max-h-40 overflow-y-auto space-y-1">
                                 {filteredThreads.map((thread) => (
                                   <button
                                     key={thread.id}
                                     onClick={() => setSelectedExistingThreadId(thread.id)}
                                     className={cn(
-                                      'flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left transition-colors',
+                                      'flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-all',
                                       selectedExistingThreadId === thread.id
-                                        ? 'border-cyan-300/30 bg-cyan-400/10'
-                                        : 'border-white/8 bg-white/[0.03] hover:border-white/12',
+                                        ? 'bg-primary/10 text-primary'
+                                        : 'hover:bg-secondary/50 text-muted-foreground',
                                     )}
                                   >
-                                    <div className="min-w-0">
-                                      <div className="truncate text-sm text-white">{thread.title ?? 'Untitled thread'}</div>
-                                      <div className="mt-1 text-[11px] text-white/40">{thread.id}</div>
-                                    </div>
-                                    {selectedExistingThreadId === thread.id ? <Check size={14} className="text-cyan-100" /> : null}
+                                    <div className="truncate text-[12px] font-medium">{thread.title ?? 'Untitled thread'}</div>
+                                    {selectedExistingThreadId === thread.id ? <Check size={12} /> : null}
                                   </button>
                                 ))}
-                                {filteredThreads.length === 0 ? (
-                                  <div className="rounded-xl border border-dashed border-white/10 px-3 py-4 text-center text-xs text-white/40">
-                                    No matching thread found.
-                                  </div>
-                                ) : null}
                               </div>
                             </div>
                           ) : null}
                         </div>
                       </div>
 
-                      <div className="mt-4 rounded-3xl border border-white/8 bg-white/[0.03] p-4">
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-white/45">Capabilities</div>
-                        <div className="mt-3 flex flex-wrap gap-2">
+                      <div className="border-t border-border/50 pt-6 pb-2">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-4">Capabilities</div>
+                        <div className="flex flex-wrap gap-2">
                           {selectedWorkflow.capabilitySummary.requiredTools.map((toolId) => (
-                            <span key={toolId} className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/70">
+                            <span key={toolId} className="rounded-lg border border-border bg-black/40 px-2.5 py-1 text-[11px] font-semibold text-muted-foreground/80">
                               {toolId}
                             </span>
                           ))}
-                        </div>
-                        <div className="mt-3 text-xs text-white/45">
-                          {selectedWorkflow.capabilitySummary.requiresPublishApproval
-                            ? 'This workflow includes write-capable actions and keeps strict approval behavior.'
-                            : 'This workflow is currently read-only safe for reuse.'}
                         </div>
                       </div>
                     </div>
                   </div>
                 ) : (
                   <div className="grid h-full min-h-[560px] grid-cols-[minmax(0,1fr)_340px] overflow-hidden">
-                    <div className="flex min-h-full items-center justify-center border-r border-white/8 px-12">
-                      <div className="max-w-2xl">
-                        <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-100/80">
-                          <Sparkles size={12} />
-                          Start with the composer
+                    <div className="flex min-h-full items-center justify-center border-r border-border/50 px-12 bg-black/[0.02]">
+                      <div className="max-w-xl text-center">
+                        <div className="inline-flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/10 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-primary/80">
+                          Getting Started
                         </div>
-                        <h2 className="mt-5 text-4xl font-semibold tracking-[-0.03em] text-white">Describe the job in plain English</h2>
-                        <p className="mt-4 max-w-xl text-[15px] leading-8 text-white/55">
-                          Divo will turn it into a reusable prompt, a clean execution map, and a saved workflow you can run again from <span className="font-medium text-white/75">@</span> or attach to a schedule.
+                        <h2 className="mt-6 text-[32px] font-bold tracking-tight text-foreground/90">Describe the job</h2>
+                        <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground/60 font-medium">
+                          Divo converts your description into a reusable workflow with a visual map and persistent instructions.
                         </p>
-                        <div className="mt-8 grid gap-3 sm:grid-cols-2">
+                        <div className="mt-10 grid gap-3 sm:grid-cols-2 text-left">
                           {[
-                            ['Reusable prompt', 'AI turns your brief into a reusable operating prompt.'],
-                            ['Visual flow', 'The workflow map shows what happens first, next, and where it delivers.'],
-                            ['Thread output', 'Runs land in a new thread by default or an existing one you choose.'],
-                            ['Schedule later', 'Attach hourly, daily, weekly, monthly, or one-time timing when ready.'],
+                            ['Structured Prompt', 'Turns your brief into a precise operating prompt.'],
+                            ['Execution Flow', 'Visual map of steps, logic, and delivery points.'],
+                            ['Smart Delivery', 'Post results to new threads or specific targets.'],
+                            ['Automated Timing', 'Add schedules to run jobs on repeat.'],
                           ].map(([title, body]) => (
-                            <div key={title} className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4">
-                              <div className="text-sm font-medium text-white">{title}</div>
-                              <div className="mt-2 text-sm leading-6 text-white/45">{body}</div>
+                            <div key={title} className="rounded-xl border border-border bg-black/40 px-4 py-4 shadow-sm">
+                              <div className="text-[13px] font-bold text-foreground/80">{title}</div>
+                              <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground/60">{body}</div>
                             </div>
                           ))}
                         </div>
                       </div>
                     </div>
 
-                    <div className="flex flex-col justify-between px-6 py-6">
-                      <div>
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-white/45">Studio checklist</div>
-                        <div className="mt-4 space-y-3">
+                    <div className="flex flex-col justify-between px-6 py-8 bg-secondary/5">
+                      <div className="space-y-6">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Next Steps</div>
+                        <div className="space-y-2">
                           {[
-                            'Describe the workflow in natural language.',
-                            'Review the generated prompt and flow.',
-                            'Pick where the result should be delivered.',
-                            'Save it to the library, then schedule if needed.',
+                            'Describe your workflow goals.',
+                            'Review the generated flow.',
+                            'Choose the output destination.',
+                            'Save to library and schedule.',
                           ].map((item, index) => (
-                            <div key={item} className="flex gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4">
-                              <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-cyan-300/20 bg-cyan-400/10 text-[11px] font-semibold text-cyan-100">
+                            <div key={item} className="flex gap-3 rounded-xl border border-border bg-black/40 px-4 py-3 shadow-sm">
+                              <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-[10px] font-bold text-primary/80">
                                 {index + 1}
                               </div>
-                              <div className="text-sm leading-6 text-white/65">{item}</div>
+                              <div className="text-[13px] font-medium text-muted-foreground/80">{item}</div>
                             </div>
                           ))}
                         </div>
                       </div>
 
-                      <div className="rounded-2xl border border-white/8 bg-black/20 px-4 py-4">
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-white/45">Current draft</div>
-                        <div className="mt-2 text-base font-medium text-white">{selectedWorkflow?.name || 'Untitled workflow'}</div>
-                        <div className="mt-2 text-sm leading-6 text-white/45">
-                          This draft is private to you until you save it to the workflow library.
-                        </div>
+                      <div className="rounded-xl border border-border bg-black/40 px-4 py-4 shadow-sm">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40 mb-2">Current Draft</div>
+                        <div className="text-[14px] font-bold text-foreground/80">{selectedWorkflow?.name || 'New workflow'}</div>
+                        <p className="mt-1 text-[12px] text-muted-foreground/50 leading-relaxed">
+                          Private draft — visible only to you until saved.
+                        </p>
                       </div>
                     </div>
                   </div>
                 )}
               </div>
 
-              <div className="mt-5 shrink-0">
-                <div className="mx-auto w-full max-w-[1040px] rounded-[22px] border border-white/8 bg-[rgba(18,20,26,0.98)] px-5 py-4 shadow-[0_18px_44px_rgba(0,0,0,0.22)]">
+              <div className="mt-8 shrink-0">
+                <div className="mx-auto w-full max-w-[960px] rounded-2xl border border-border bg-background/50 backdrop-blur-md px-6 py-5 shadow-sm">
                   {composerMode === 'compose' ? (
                     <>
-                      <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-white/45">
+                      <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40 mb-3">
                         <PencilLine size={12} />
                         Workflow composer
                       </div>
                       <textarea
                         value={composerText}
                         onChange={(event) => setComposerText(event.target.value)}
-                        placeholder="Describe what this workflow should do, step by step if you want. For example: every Monday gather open finance blockers, summarize risks, update the weekly Lark note, and send me a digest."
-                        className="mt-2 min-h-[82px] w-full resize-none bg-transparent text-[14px] leading-6 text-white/90 outline-none placeholder:text-white/25"
+                        placeholder="Describe the workflow step by step... e.g., 'Every Monday, summarize recent finance docs and post a digest to Lark.'"
+                        className="min-h-[60px] w-full resize-none bg-transparent text-[14px] leading-relaxed text-foreground/90 outline-none placeholder:text-muted-foreground/30"
                       />
-                      <div className="mt-2 flex items-center justify-between gap-3">
-                        <div className="max-w-[60%] text-[11px] text-white/38">
+                      <div className="mt-4 flex items-center justify-between gap-4 border-t border-border/50 pt-4">
+                        <div className="text-[11px] font-medium text-muted-foreground/40 max-w-[50%]">
                           {hasGeneratedDraft
-                            ? 'Keep editing in natural language. You can refine again, or save this version right away.'
-                            : 'Use plain language. Divo will compile it into a reusable prompt plus a visual execution map.'}
+                            ? 'Iterate with natural language or save the current version.'
+                            : 'AI will generate a reusable prompt and a visual execution map.'}
                         </div>
                         <div className="flex items-center gap-2">
                           {hasGeneratedDraft ? (
                             <button
                               onClick={() => setComposerMode('actions')}
-                              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
+                              className="h-9 px-4 rounded-lg border border-border bg-secondary/50 text-[13px] font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm"
                             >
-                              Back to actions
+                              Back
                             </button>
                           ) : null}
                           <button
                             onClick={() => void authorWorkflow()}
                             disabled={!composerText.trim() || isGenerating}
-                            className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="h-9 px-4 rounded-lg bg-primary text-primary-foreground text-[13px] font-semibold hover:opacity-90 transition-all disabled:opacity-30 flex items-center gap-2 shadow-sm"
                           >
-                            <Sparkles size={15} />
-                            {hasGeneratedDraft ? 'Refine with AI' : 'Generate workflow'}
+                            {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                            {hasGeneratedDraft ? 'Refine Flow' : 'Generate Flow'}
                           </button>
                           {hasGeneratedDraft ? (
                             <button
                               onClick={() => void publishWorkflow()}
                               disabled={isSaving}
-                              className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+                              className="h-9 px-4 rounded-lg border border-primary/20 bg-primary/10 text-primary text-[13px] font-semibold hover:bg-primary/20 transition-all disabled:opacity-30 shadow-sm"
                             >
-                              <Save size={15} />
-                              Save
+                              {isSaving ? <Loader2 size={14} className="animate-spin" /> : 'Save Workflow'}
                             </button>
                           ) : null}
                         </div>
                       </div>
                     </>
                   ) : (
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-white/45">
-                          <Check size={12} />
-                          Draft ready
+                    <div className="flex items-center justify-between gap-6">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40 mb-1">
+                          <Check size={12} className="text-emerald-500" />
+                          Flow Draft Prepared
                         </div>
-                        <div className="mt-1 text-sm text-white/70">
-                          Edit further to keep iterating in natural language, or save this workflow to the reusable library.
+                        <div className="text-[13px] font-medium text-muted-foreground/60 truncate">
+                          Review the map above. You can keep editing in plain English or save it to your library.
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 shrink-0">
                         <button
                           onClick={() => setComposerMode('compose')}
-                          className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
+                          className="h-9 px-4 rounded-lg border border-border bg-secondary/50 text-[13px] font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm"
                         >
-                          Edit further
+                          Refine Logic
                         </button>
                         <button
                           onClick={() => void publishWorkflow()}
                           disabled={isSaving}
-                          className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="h-9 px-4 rounded-lg bg-primary text-primary-foreground text-[13px] font-semibold hover:opacity-90 transition-all disabled:opacity-30 shadow-sm"
                         >
-                          <Save size={15} />
-                          Save
+                          {isSaving ? <Loader2 size={14} className="animate-spin" /> : 'Save Workflow'}
                         </button>
                       </div>
                     </div>
@@ -1201,46 +1186,44 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
 
         <Dialog.Root open={saveModalOpen} onOpenChange={setSaveModalOpen}>
           <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm" />
-            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(560px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-[28px] border border-white/10 bg-[rgba(12,14,18,0.98)] p-6 shadow-[0_30px_90px_rgba(0,0,0,0.45)]">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <Dialog.Title className="text-2xl font-semibold text-white">Workflow saved</Dialog.Title>
-                  <Dialog.Description className="mt-2 text-sm leading-6 text-white/60">
-                    This workflow now lives in your personal library. You can reference it from chat using <span className="font-medium text-white/80">@</span>, or attach a schedule right now.
-                  </Dialog.Description>
+            <Dialog.Overlay className="fixed inset-0 z-40 bg-background/60 backdrop-blur-md" />
+            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(480px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-background p-8 shadow-xl text-foreground">
+              <div className="text-center">
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary mb-6">
+                  <Save size={24} />
                 </div>
-                <Dialog.Close className="rounded-xl border border-white/10 bg-white/[0.04] p-2 text-white/55 transition-colors hover:bg-white/[0.08] hover:text-white">
-                  <X size={16} />
-                </Dialog.Close>
+                <Dialog.Title className="text-xl font-bold text-foreground/90">Workflow saved</Dialog.Title>
+                <Dialog.Description className="mt-3 text-[14px] leading-relaxed text-muted-foreground/60 font-medium">
+                  Your workflow is now in the library. Reference it in chat using <span className="text-primary/80 font-bold">@</span> or activate a schedule to run it automatically.
+                </Dialog.Description>
               </div>
 
-              <div className="mt-6 grid gap-3 sm:grid-cols-3">
+              <div className="mt-8 grid gap-2">
                 <button
                   onClick={() => {
                     setSaveModalOpen(false)
                     onExit?.()
                   }}
-                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
+                  className="flex h-11 items-center justify-center gap-2 rounded-lg bg-primary text-primary-foreground text-[14px] font-bold hover:opacity-90 transition-all shadow-sm"
                 >
-                  <AtSign size={15} />
-                  Use in chat
+                  <AtSign size={16} />
+                  Open in Chat
                 </button>
                 <button
                   onClick={() => {
                     setSaveModalOpen(false)
                     setScheduleModalOpen(true)
                   }}
-                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15"
+                  className="flex h-11 items-center justify-center gap-2 rounded-lg border border-primary/20 bg-primary/10 text-primary text-[14px] font-bold hover:bg-primary/20 transition-all shadow-sm"
                 >
-                  <CalendarClock size={15} />
-                  Schedule now
+                  <CalendarClock size={16} />
+                  Set Schedule
                 </button>
                 <button
                   onClick={() => setSaveModalOpen(false)}
-                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08]"
+                  className="h-11 rounded-lg border border-border bg-secondary/50 text-[14px] font-bold text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm"
                 >
-                  Close
+                  Done
                 </button>
               </div>
             </Dialog.Content>
@@ -1249,160 +1232,150 @@ export function ScheduleWorkView({ onExit }: { onExit?: () => void }): JSX.Eleme
 
         <Dialog.Root open={scheduleModalOpen} onOpenChange={setScheduleModalOpen}>
           <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm" />
-            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(620px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-[28px] border border-white/10 bg-[rgba(12,14,18,0.98)] p-6 shadow-[0_30px_90px_rgba(0,0,0,0.45)]">
-              <div className="flex items-start justify-between gap-4">
+            <Dialog.Overlay className="fixed inset-0 z-40 bg-background/60 backdrop-blur-md" />
+            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(560px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-background p-8 shadow-xl overflow-hidden text-foreground">
+              <div className="flex items-start justify-between gap-6 mb-8">
                 <div>
-                  <Dialog.Title className="text-2xl font-semibold text-white">Schedule workflow</Dialog.Title>
-                  <Dialog.Description className="mt-2 text-sm leading-6 text-white/60">
-                    Choose when this saved workflow should run. Scheduled runs still use the same desktop runtime and tool permissions.
+                  <Dialog.Title className="text-xl font-bold text-foreground/90">Schedule workflow</Dialog.Title>
+                  <Dialog.Description className="mt-2 text-[14px] leading-relaxed text-muted-foreground/60 font-medium">
+                    Automate this job. Scheduled runs use your saved permissions.
                   </Dialog.Description>
                 </div>
-                <Dialog.Close className="rounded-xl border border-white/10 bg-white/[0.04] p-2 text-white/55 transition-colors hover:bg-white/[0.08] hover:text-white">
+                <Dialog.Close className="h-8 w-8 flex items-center justify-center rounded-lg border border-border bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm">
                   <X size={16} />
                 </Dialog.Close>
               </div>
 
               {scheduleDraft ? (
-                <div className="mt-6 grid gap-4">
-                  <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/45">Output thread</div>
-                    <div className="mt-3 text-sm text-white/70">
+                <div className="grid gap-6">
+                  <div className="rounded-xl border border-border bg-secondary/10 px-4 py-3">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40 mb-1">Destination</div>
+                    <div className="text-[13px] font-medium text-muted-foreground/80">
                       {outputMode === 'existing_thread'
-                        ? `This workflow will post into ${selectedExistingThread?.title ?? 'the selected existing thread'}.`
-                        : 'This workflow will post into a new auto-named desktop thread by default.'}
+                        ? `Target: ${selectedExistingThread?.title ?? 'selected thread'}`
+                        : 'Target: New auto-named thread'}
                     </div>
                   </div>
 
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <label className="block">
-                      <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-white/45">Frequency</span>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Frequency</label>
                       <select
                         value={scheduleDraft.frequency}
                         onChange={(event) => setScheduleDraft((current) => current ? { ...current, frequency: event.target.value as ScheduleFrequency } : current)}
-                        className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none"
+                        className="w-full rounded-xl border border-border bg-black/40 px-4 py-2.5 text-[14px] text-foreground outline-none focus:border-primary/30"
                       >
-                        <option value="hourly">Every X hours</option>
+                        <option value="hourly">Hourly</option>
                         <option value="daily">Daily</option>
                         <option value="weekly">Weekly</option>
                         <option value="monthly">Monthly</option>
                         <option value="one_time">One-time</option>
                       </select>
-                    </label>
+                    </div>
 
-                    <label className="block">
-                      <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-white/45">Timezone</span>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Timezone</label>
                       <input
                         value={scheduleDraft.timezone}
                         onChange={(event) => setScheduleDraft((current) => current ? { ...current, timezone: event.target.value } : current)}
-                        className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none"
+                        className="w-full rounded-xl border border-border bg-black/40 px-4 py-2.5 text-[14px] text-foreground outline-none focus:border-primary/30"
                       />
-                    </label>
+                    </div>
                   </div>
 
                   {scheduleDraft.frequency === 'hourly' ? (
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <label className="block">
-                        <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-white/45">Every how many hours?</span>
+                    <div className="grid gap-4 sm:grid-cols-2 animate-in fade-in slide-in-from-top-2">
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Interval (Hours)</label>
                         <input
                           type="number"
                           min={1}
                           max={24}
                           value={scheduleDraft.intervalHours}
                           onChange={(event) => setScheduleDraft((current) => current ? { ...current, intervalHours: Number(event.target.value) || 1 } : current)}
-                          className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none"
+                          className="w-full rounded-xl border border-border bg-black/40 px-4 py-2.5 text-[14px] text-foreground outline-none focus:border-primary/30"
                         />
-                      </label>
-                      <label className="block">
-                        <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-white/45">Minute of the hour</span>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Minute</label>
                         <input
                           type="number"
                           min={0}
                           max={59}
                           value={scheduleDraft.minute}
                           onChange={(event) => setScheduleDraft((current) => current ? { ...current, minute: Number(event.target.value) || 0 } : current)}
-                          className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none"
+                          className="w-full rounded-xl border border-border bg-black/40 px-4 py-2.5 text-[14px] text-foreground outline-none focus:border-primary/30"
                         />
-                      </label>
+                      </div>
                     </div>
                   ) : null}
 
                   {scheduleDraft.frequency === 'daily' || scheduleDraft.frequency === 'weekly' || scheduleDraft.frequency === 'monthly' || scheduleDraft.frequency === 'one_time' ? (
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <label className="block">
-                        <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-white/45">Time</span>
+                    <div className="grid gap-4 sm:grid-cols-2 animate-in fade-in slide-in-from-top-2">
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Time</label>
                         <input
                           type="time"
                           value={scheduleDraft.time}
                           onChange={(event) => setScheduleDraft((current) => current ? { ...current, time: event.target.value } : current)}
-                          className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none"
+                          className="w-full rounded-xl border border-border bg-black/40 px-4 py-2.5 text-[14px] text-foreground outline-none focus:border-primary/30"
                         />
-                      </label>
+                      </div>
 
                       {scheduleDraft.frequency === 'weekly' ? (
-                        <label className="block">
-                          <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-white/45">Day of week</span>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Day of Week</label>
                           <select
                             value={scheduleDraft.dayOfWeek}
                             onChange={(event) => setScheduleDraft((current) => current ? { ...current, dayOfWeek: event.target.value } : current)}
-                            className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none"
+                            className="w-full rounded-xl border border-border bg-black/40 px-4 py-2.5 text-[14px] text-foreground outline-none focus:border-primary/30"
                           >
                             {WEEKDAY_OPTIONS.map((option) => (
                               <option key={option.value} value={option.value}>{option.label}</option>
                             ))}
                           </select>
-                        </label>
+                        </div>
                       ) : scheduleDraft.frequency === 'monthly' ? (
-                        <label className="block">
-                          <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-white/45">Day of month</span>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Day of Month</label>
                           <input
                             type="number"
                             min={1}
                             max={31}
                             value={scheduleDraft.dayOfMonth}
                             onChange={(event) => setScheduleDraft((current) => current ? { ...current, dayOfMonth: Number(event.target.value) || 1 } : current)}
-                            className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none"
+                            className="w-full rounded-xl border border-border bg-black/40 px-4 py-2.5 text-[14px] text-foreground outline-none focus:border-primary/30"
                           />
-                        </label>
+                        </div>
                       ) : scheduleDraft.frequency === 'one_time' ? (
-                        <label className="block">
-                          <span className="mb-2 block text-[11px] uppercase tracking-[0.18em] text-white/45">Run date</span>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">Run Date</label>
                           <input
                             type="date"
                             value={scheduleDraft.runDate}
                             onChange={(event) => setScheduleDraft((current) => current ? { ...current, runDate: event.target.value } : current)}
-                            className="w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none"
+                            className="w-full rounded-xl border border-border bg-black/40 px-4 py-2.5 text-[14px] text-foreground outline-none focus:border-primary/30"
                           />
-                        </label>
+                        </div>
                       ) : null}
                     </div>
                   ) : null}
 
-                  <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-white/65">
-                    <div className="flex items-center gap-2">
-                      <Clock3 size={15} className="text-cyan-200/70" />
-                      {scheduleDraft.frequency === 'hourly'
-                        ? `This workflow will run every ${scheduleDraft.intervalHours} hour${scheduleDraft.intervalHours === 1 ? '' : 's'}.`
-                        : 'This schedule will be saved on the workflow and can be paused or resumed later.'}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-end gap-2">
+                  <div className="mt-4 flex items-center justify-end gap-2 pt-4 border-t border-border/50">
                     <button
                       onClick={() => void activateSchedule(false)}
                       disabled={isScheduling}
-                      className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                      className="h-10 px-4 rounded-lg border border-border bg-secondary/50 text-[13px] font-bold text-muted-foreground hover:bg-secondary hover:text-foreground transition-all disabled:opacity-30 shadow-sm"
                     >
-                      {isScheduling ? <Loader2 size={15} className="animate-spin" /> : null}
-                      {isScheduling ? 'Saving...' : 'Save without schedule'}
+                      {isScheduling ? 'Saving...' : 'Save Draft Schedule'}
                     </button>
                     <button
                       onClick={() => void activateSchedule(true)}
                       disabled={isScheduling}
-                      className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm font-medium text-cyan-50 transition-colors hover:border-cyan-300/35 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="h-10 px-4 rounded-lg bg-primary text-primary-foreground text-[13px] font-bold hover:opacity-90 transition-all disabled:opacity-30 flex items-center gap-2 shadow-sm"
                     >
-                      {isScheduling ? <Loader2 size={15} className="animate-spin" /> : <CalendarClock size={15} />}
-                      {isScheduling ? 'Activating...' : 'Activate schedule'}
+                      {isScheduling ? <Loader2 size={14} className="animate-spin" /> : <CalendarClock size={15} />}
+                      {isScheduling ? 'Activating...' : 'Activate Schedule'}
                     </button>
                   </div>
                 </div>

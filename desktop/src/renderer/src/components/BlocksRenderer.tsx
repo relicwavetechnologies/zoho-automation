@@ -26,10 +26,10 @@ const ICON_MAP: Record<string, React.ReactNode> = {
 }
 
 function ToolIcon({ icon, status }: { icon: string; status: 'running' | 'done' | 'failed' }): JSX.Element {
-    if (status === 'running') return <Loader2 size={11} className="text-[hsl(217,70%,55%)] animate-spin shrink-0" />
-    if (status === 'done') return <CheckCircle2 size={11} className="text-[hsl(142,55%,40%)] shrink-0" />
-    if (status === 'failed') return <XCircle size={11} className="text-[hsl(0,55%,48%)] shrink-0" />
-    return <span className="text-[hsl(0,0%,35%)]">{ICON_MAP[icon] ?? <Zap size={11} className="shrink-0" />}</span>
+    if (status === 'running') return <Loader2 size={11} className="text-primary/60 animate-spin shrink-0" />
+    if (status === 'done') return <CheckCircle2 size={11} className="text-emerald-500/60 shrink-0" />
+    if (status === 'failed') return <XCircle size={11} className="text-red-500/60 shrink-0" />
+    return <span className="text-muted-foreground/50">{ICON_MAP[icon] ?? <Zap size={11} className="shrink-0" />}</span>
 }
 
 function ApprovalBlockCard({ block }: { block: Extract<ContentBlock, { type: 'approval' }> }): JSX.Element {
@@ -37,33 +37,33 @@ function ApprovalBlockCard({ block }: { block: Extract<ContentBlock, { type: 'ap
     const isPending = block.status === 'pending'
     const statusLabel = block.status === 'approved' ? 'Approved' : block.status === 'rejected' ? 'Rejected' : 'Awaiting approval'
     const statusTone = block.status === 'approved'
-        ? 'bg-[hsl(142,48%,18%)] text-[hsl(142,72%,70%)] border-[hsl(142,48%,28%)]'
+        ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
         : block.status === 'rejected'
-            ? 'bg-[hsl(0,38%,16%)] text-[hsl(0,72%,70%)] border-[hsl(0,38%,28%)]'
-            : 'bg-[hsl(44,52%,16%)] text-[hsl(44,90%,70%)] border-[hsl(44,52%,28%)]'
+            ? 'bg-red-500/10 text-red-500 border-red-500/20'
+            : 'bg-amber-500/10 text-amber-500 border-amber-500/20'
 
     return (
-        <div className="my-2 rounded-3xl border border-[hsl(44,40%,22%)] bg-[linear-gradient(180deg,hsl(38,20%,11%),hsl(0,0%,7%))] p-4 shadow-[0_12px_32px_rgba(0,0,0,0.22)]">
+        <div className="my-3 rounded-2xl border border-border bg-secondary/20 p-4 shadow-sm">
             <div className="flex items-start gap-3">
-                <div className="mt-0.5 rounded-xl bg-[hsl(44,68%,18%)] p-2 text-[hsl(44,90%,66%)]">
+                <div className="mt-0.5 rounded-lg bg-amber-500/10 p-2 text-amber-500/80">
                     <ShieldAlert size={16} />
                 </div>
                 <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-3">
-                        <div className="text-sm font-medium text-[hsl(0,0%,90%)]">
+                        <div className="text-sm font-medium text-foreground/90">
                             {block.title}
                         </div>
-                        <span className={cn('shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]', statusTone)}>
+                        <span className={cn('shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider', statusTone)}>
                             {statusLabel}
                         </span>
                     </div>
-                    <div className="mt-1 text-sm text-[hsl(0,0%,58%)]">
+                    <div className="mt-1 text-sm text-muted-foreground">
                         {block.description}
                     </div>
-                    <div className="mt-3 rounded-2xl border border-[hsl(0,0%,14%)] bg-[hsl(0,0%,5%)] px-4 py-3 font-mono text-[13px] leading-7 text-[hsl(0,0%,86%)]">
+                    <div className="mt-3 rounded-xl border border-border bg-black/20 px-4 py-3 font-mono text-[13px] leading-relaxed text-foreground/80">
                         {block.subject}
                     </div>
-                    <div className="mt-2 text-[11px] text-[hsl(0,0%,38%)]">
+                    <div className="mt-2 text-[10px] text-muted-foreground/50">
                         {block.footer}
                     </div>
 
@@ -71,13 +71,13 @@ function ApprovalBlockCard({ block }: { block: Extract<ContentBlock, { type: 'ap
                         <div className="mt-4 flex items-center gap-2">
                             <button
                                 onClick={() => void approveCommand(block.id)}
-                                className="rounded-xl bg-[hsl(138,67%,48%)] px-3 py-2 text-xs font-medium text-[hsl(0,0%,8%)] hover:bg-[hsl(138,67%,44%)]"
+                                className="rounded-lg bg-primary/10 border border-primary/20 px-3 py-1.5 text-xs font-semibold text-primary/90 hover:bg-primary/20 transition-colors"
                             >
                                 Approve
                             </button>
                             <button
                                 onClick={() => rejectCommand(block.id)}
-                                className="rounded-xl border border-[hsl(0,0%,18%)] bg-[hsl(0,0%,8%)] px-3 py-2 text-xs font-medium text-[hsl(0,0%,68%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,86%)]"
+                                className="rounded-lg border border-border bg-secondary/50 px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
                             >
                                 Cancel
                             </button>
@@ -96,42 +96,42 @@ function TerminalBlockCard({ block }: { block: Extract<ContentBlock, { type: 'te
         ? 'Running...'
         : `Exit code ${block.exitCode ?? 'unknown'}${block.durationMs ? ` in ${Math.max(1, Math.round(block.durationMs / 1000))}s` : ''}`
     const statusTone = block.status === 'running'
-        ? 'bg-[hsl(217,55%,16%)] text-[hsl(217,88%,72%)] border-[hsl(217,55%,28%)]'
+        ? 'bg-primary/10 text-primary border-primary/20'
         : block.status === 'done'
-            ? 'bg-[hsl(142,42%,16%)] text-[hsl(142,72%,72%)] border-[hsl(142,42%,28%)]'
-            : 'bg-[hsl(0,38%,16%)] text-[hsl(0,70%,72%)] border-[hsl(0,38%,28%)]'
+            ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+            : 'bg-red-500/10 text-red-500 border-red-500/20'
 
     return (
-        <div className="my-2 overflow-hidden rounded-3xl border border-[hsl(0,0%,14%)] bg-[linear-gradient(180deg,hsl(0,0%,18%),hsl(0,0%,12%))] shadow-[0_14px_40px_rgba(0,0,0,0.28)]">
-            <div className="flex items-center justify-between gap-3 border-b border-[hsl(0,0%,14%)] px-5 py-3">
-                <div className="flex items-center gap-3">
-                    <div className="text-[12px] font-medium text-[hsl(0,0%,78%)]">Shell</div>
-                    <span className={cn('rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]', statusTone)}>
-                        {block.status === 'running' ? 'Running' : block.status === 'done' ? 'Complete' : 'Failed'}
+        <div className="my-3 overflow-hidden rounded-2xl border border-border bg-black/20 shadow-sm">
+            <div className="flex items-center justify-between gap-3 border-b border-border/50 px-4 py-2.5">
+                <div className="flex items-center gap-2.5">
+                    <div className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest">Terminal</div>
+                    <span className={cn('rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider', statusTone)}>
+                        {block.status === 'running' ? 'Running' : block.status === 'done' ? 'Success' : 'Failed'}
                     </span>
                 </div>
                 {block.status === 'running' && (
                     <button
                         onClick={() => void killCommand(block.id)}
-                        className="shrink-0 rounded-lg border border-[hsl(0,0%,18%)] px-2.5 py-1 text-[11px] font-medium text-[hsl(0,0%,72%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,90%)]"
+                        className="shrink-0 rounded-lg border border-border bg-secondary/50 px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
                     >
                         Stop
                     </button>
                 )}
             </div>
-            <div className="px-5 py-4 font-mono text-[14px] leading-8 text-[hsl(0,0%,92%)]">
-                <div className="mb-4 rounded-2xl border border-[hsl(0,0%,14%)] bg-[hsl(0,0%,5%)] px-4 py-3 whitespace-pre-wrap break-words">$ {block.command}</div>
+            <div className="px-4 py-3 font-mono text-[13px] leading-relaxed text-foreground/90">
+                <div className="mb-3 rounded-lg border border-border bg-black/40 px-3 py-2 whitespace-pre-wrap break-words text-primary/80">$ {block.command}</div>
                 {output ? (
-                    <pre className="max-h-[26rem] overflow-y-auto whitespace-pre-wrap break-words text-[hsl(0,0%,70%)]">{output}</pre>
+                    <pre className="max-h-[20rem] overflow-y-auto whitespace-pre-wrap break-words text-muted-foreground/80 text-[12px]">{output}</pre>
                 ) : (
-                    <div className="flex items-center gap-2 text-[hsl(0,0%,44%)]">
-                        {block.status === 'running' ? <Loader2 size={14} className="animate-spin" /> : <TerminalSquare size={14} />}
-                        <span>{block.status === 'running' ? 'Waiting for output...' : 'No output'}</span>
+                    <div className="flex items-center gap-2 text-muted-foreground/40">
+                        {block.status === 'running' ? <Loader2 size={13} className="animate-spin" /> : <TerminalSquare size={13} />}
+                        <span className="text-[12px]">{block.status === 'running' ? 'Executing...' : 'No output'}</span>
                     </div>
                 )}
             </div>
-            <div className="flex items-center justify-between px-5 pb-3 text-[12px] text-[hsl(0,0%,46%)]">
-                <span className="truncate">{block.cwd}</span>
+            <div className="flex items-center justify-between px-4 pb-2 text-[10px] text-muted-foreground/30 font-medium">
+                <span className="truncate max-w-[70%]">{block.cwd}</span>
                 <span className="shrink-0">{footerLabel}</span>
             </div>
         </div>
@@ -182,69 +182,60 @@ function ToolBlockRow({ block }: { block: Extract<ContentBlock, { type: 'tool' }
                         'transition-colors cursor-pointer'
                     )}
                 >
-                    <div className="flex items-center justify-start shrink-0 w-[28px] gap-1.5 text-[hsl(0,0%,35%)]">
+                    <div className="flex items-center justify-start shrink-0 w-[24px] gap-1 text-muted-foreground/40">
                         {open
-                            ? <ChevronDown size={11} className="text-[hsl(0,0%,35%)] shrink-0 transition-transform" />
-                            : <ChevronRight size={11} className="text-[hsl(0,0%,35%)] shrink-0 transition-transform" />
+                            ? <ChevronDown size={10} className="shrink-0" />
+                            : <ChevronRight size={10} className="shrink-0" />
                         }
                         <ToolIcon icon={block.icon} status={block.status} />
                     </div>
 
-                    <span className="text-xs font-mono text-[hsl(0,0%,35%)] group-hover:text-[hsl(0,0%,45%)] transition-colors mr-2">
+                    <span className="text-xs font-medium text-muted-foreground/60 group-hover:text-muted-foreground transition-colors mr-2">
                         {displayLabel}
                     </span>
 
-                    <span className="text-xs font-medium text-[hsl(0,0%,25%)] group-hover:text-[hsl(0,0%,35%)] transition-colors">
-                        — Reviewed {sourcesCount} sources
+                    <span className="text-[11px] font-medium text-muted-foreground/30 group-hover:text-muted-foreground/40 transition-colors">
+                        — {sourcesCount} sources reviewed
                     </span>
                 </button>
 
                 {open && sourcesCount > 0 && (
                     <div className={cn(
-                        'mt-2 w-[90%] max-w-[600px] border border-[hsl(0,0%,12%)] rounded-xl',
-                        'bg-[hsl(0,0%,6%)] overflow-hidden flex flex-col',
+                        'mt-2 w-full max-w-[600px] border border-border rounded-xl',
+                        'bg-secondary/20 overflow-hidden flex flex-col',
                     )}>
                         {visibleSources.map((src: any, idx: number) => {
                             let domain = ''
                             try { domain = new URL(src.url).hostname.replace('www.', '') } catch (e) { }
-
-                            // A simple deterministic color for the fallback icon based on domain length
-                            const hue = (domain.length * 25) % 360;
-
                             return (
                                 <a
                                     key={idx}
                                     href={src.url}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="flex items-center gap-3 px-3 py-2.5 hover:bg-[hsl(0,0%,10%)] border-b border-[hsl(0,0%,10%)] last:border-b-0 transition-colors"
+                                    className="flex items-center gap-3 px-3 py-2 hover:bg-secondary/40 border-b border-border/50 last:border-b-0 transition-colors"
                                 >
-                                    {/* Simulated Google Favicon proxy or generic initial dot */}
-                                    <div
-                                        className="w-5 h-5 rounded-full shrink-0 flex items-center justify-center text-[10px] font-bold text-white overflow-hidden"
-                                        style={{ backgroundColor: `hsl(${hue}, 60%, 40%)` }}
-                                    >
+                                    <div className="w-4 h-4 rounded-full shrink-0 flex items-center justify-center bg-secondary border border-border overflow-hidden">
                                         <img
-                                            src={`https://www.google.com/s2/favicons?domain=${domain}&sz=64`}
+                                            src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`}
                                             className="w-full h-full object-cover"
                                             onError={(e) => { e.currentTarget.style.display = 'none'; }}
                                             alt=""
                                         />
-                                        <span className="absolute mix-blend-difference">{domain[0]?.toUpperCase() || 'S'}</span>
                                     </div>
-                                    <span className="text-[13px] text-[hsl(0,0%,70%)] truncate flex-1 font-medium">{src.title || src.url}</span>
-                                    <span className="text-[11px] text-[hsl(0,0%,40%)] shrink-0">{domain}</span>
+                                    <span className="text-[12px] text-foreground/70 truncate flex-1 font-medium">{src.title || src.url}</span>
+                                    <span className="text-[10px] text-muted-foreground/40 shrink-0 font-mono">{domain}</span>
                                 </a>
                             )
                         })}
                         {sourcesCount > 6 && (
                             <button
                                 onClick={() => setShowAllSources((value) => !value)}
-                                className="m-3 self-start rounded-full border border-[hsl(0,0%,14%)] bg-[hsl(0,0%,8%)] px-3 py-1.5 text-[11px] font-medium text-[hsl(0,0%,62%)] hover:bg-[hsl(0,0%,10%)] hover:text-[hsl(0,0%,86%)]"
+                                className="m-2 self-start rounded-lg border border-border bg-secondary/30 px-3 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
                             >
                                 {showAllSources
-                                    ? 'Show fewer sources'
-                                    : `Show ${hiddenSourcesCount} more source${hiddenSourcesCount === 1 ? '' : 's'}`}
+                                    ? 'Fewer sources'
+                                    : `+${hiddenSourcesCount} more sources`}
                             </button>
                         )}
                     </div>
@@ -264,27 +255,27 @@ function ToolBlockRow({ block }: { block: Extract<ContentBlock, { type: 'tool' }
                     hasSummary ? 'cursor-pointer' : 'cursor-default',
                 )}
             >
-                <div className="flex items-center justify-start shrink-0 w-[28px] gap-1.5">
+                <div className="flex items-center justify-start shrink-0 w-[24px] gap-1 text-muted-foreground/40">
                     {hasSummary ? (
                         open
-                            ? <ChevronDown size={11} className="text-[hsl(0,0%,35%)] shrink-0 transition-transform" />
-                            : <ChevronRight size={11} className="text-[hsl(0,0%,35%)] shrink-0 transition-transform" />
+                            ? <ChevronDown size={10} className="shrink-0" />
+                            : <ChevronRight size={10} className="shrink-0" />
                     ) : (
-                        <div className="w-[11px] shrink-0" />
+                        <div className="w-[10px] shrink-0" />
                     )}
                     <ToolIcon icon={block.icon} status={block.status} />
                 </div>
 
                 {isRunning ? (
-                    <TextShimmer className="text-xs font-mono font-medium" duration={1.5} spread={2}>
+                    <TextShimmer className="text-xs font-medium text-primary/60" duration={1.5} spread={2}>
                         {displayLabel}
                     </TextShimmer>
                 ) : (
                     <span className={cn(
-                        'text-xs font-mono truncate transition-colors',
+                        'text-xs font-medium transition-colors',
                         block.status === 'done'
-                            ? (hasSummary ? 'text-[hsl(0,0%,35%)] group-hover:text-[hsl(0,0%,45%)]' : 'text-[hsl(0,0%,35%)]')
-                            : 'text-[hsl(0,50%,45%)]',
+                            ? (hasSummary ? 'text-muted-foreground/60 group-hover:text-muted-foreground' : 'text-muted-foreground/50')
+                            : 'text-red-500/60',
                     )}>
                         {displayLabel}
                     </span>
@@ -293,8 +284,8 @@ function ToolBlockRow({ block }: { block: Extract<ContentBlock, { type: 'tool' }
 
             {open && hasSummary && (
                 <div className={cn(
-                    'mt-1.5 ml-[32px] pl-3 border-l border-[hsl(0,0%,12%)]',
-                    'desktop-markdown break-words [overflow-wrap:anywhere] text-[12px] text-[hsl(0,0%,60%)] leading-relaxed',
+                    'mt-2 ml-6 pl-3 border-l border-border',
+                    'desktop-markdown break-words [overflow-wrap:anywhere] text-[12px] text-muted-foreground/70 leading-relaxed',
                 )}>
                     <MarkdownContent content={block.resultSummary!} />
                 </div>
@@ -318,12 +309,9 @@ function ThinkingBlockRow({
     block: Extract<ContentBlock, { type: 'thinking' }>
     isLive?: boolean
 }): JSX.Element {
-    // While live: auto-open to show streaming reasoning
-    // When finalized: auto-collapse (user can re-open to read)
     const [open, setOpen] = useState(!!isLive)
     const hasContent = !!block.text
 
-    // Auto-collapse when thinking finishes (live → finalized transition)
     useEffect(() => {
         if (!isLive) setOpen(false)
     }, [isLive])
@@ -335,12 +323,11 @@ function ThinkingBlockRow({
                     onClick={() => setOpen((o) => !o)}
                     className="flex items-center gap-1.5 group select-none cursor-pointer text-left w-full"
                 >
-                    <div className="flex items-center justify-start shrink-0 w-[28px] gap-1.5">
+                    <div className="flex items-center justify-start shrink-0 w-[24px] gap-1 text-muted-foreground/40">
                         {open
-                            ? <ChevronDown size={11} className="text-[hsl(0,0%,22%)] shrink-0" />
-                            : <ChevronRight size={11} className="text-[hsl(0,0%,22%)] shrink-0" />
+                            ? <ChevronDown size={10} className="shrink-0" />
+                            : <ChevronRight size={10} className="shrink-0" />
                         }
-                        {/* Spacing placeholder to match ToolIcon width (w-3.5) */}
                         <div className="w-3.5 h-3.5 shrink-0" />
                     </div>
                     <ThinkingShimmer />
@@ -348,18 +335,20 @@ function ThinkingBlockRow({
 
                 {open && hasContent && (
                     <div className={cn(
-                        'mt-1.5 ml-4 pl-3 border-l border-[hsl(0,0%,12%)]',
-                        'text-[11px] text-[hsl(0,0%,28%)] font-mono leading-relaxed',
-                        'whitespace-pre-wrap max-h-48 overflow-y-auto',
+                        'mt-2 ml-6 pl-3 border-l border-border',
+                        'text-[13px] text-muted-foreground/60 leading-relaxed',
+                        'max-h-64 overflow-y-auto',
                     )}>
-                        {block.text}
+                        <MarkdownContent 
+                            content={block.text!} 
+                            className="desktop-markdown-thinking opacity-80"
+                        />
                     </div>
                 )}
             </div>
         )
     }
 
-    // Finalized — show collapsible "Thought for Xs"
     return (
         <div className="py-1 my-0.5">
             <button
@@ -370,36 +359,37 @@ function ThinkingBlockRow({
                     hasContent ? 'cursor-pointer' : 'cursor-default',
                 )}
             >
-                <div className="flex items-center justify-start shrink-0 w-[28px] gap-1.5">
+                <div className="flex items-center justify-start shrink-0 w-[24px] gap-1 text-muted-foreground/40">
                     {hasContent ? (
                         open
-                            ? <ChevronDown size={11} className="text-[hsl(0,0%,28%)] shrink-0 transition-transform" />
-                            : <ChevronRight size={11} className="text-[hsl(0,0%,28%)] shrink-0 transition-transform" />
+                            ? <ChevronDown size={10} className="shrink-0" />
+                            : <ChevronRight size={10} className="shrink-0" />
                     ) : (
-                        <div className="w-[11px] shrink-0" />
+                        <div className="w-[10px] shrink-0" />
                     )}
-                    {/* Brain icon instead of placeholder space */}
-                    <Brain size={13} strokeWidth={2.5} className={cn(
+                    <Brain size={12} strokeWidth={2} className={cn(
                         "shrink-0 transition-colors",
-                        hasContent ? 'text-[hsl(0,0%,32%)] group-hover:text-[hsl(0,0%,42%)]' : 'text-[hsl(0,0%,22%)]'
+                        hasContent ? 'text-muted-foreground/40 group-hover:text-muted-foreground/60' : 'text-muted-foreground/20'
                     )} />
                 </div>
                 <span className={cn(
-                    'text-xs font-mono',
-                    hasContent ? 'text-[hsl(0,0%,28%)] group-hover:text-[hsl(0,0%,38%)]' : 'text-[hsl(0,0%,20%)]',
+                    'text-[11px] font-bold uppercase tracking-widest',
+                    hasContent ? 'text-muted-foreground/30 group-hover:text-muted-foreground/50' : 'text-muted-foreground/20',
                     'transition-colors',
                 )}>
-                    Thought for {formatDuration(block.durationMs)}
+                    Reasoning · {formatDuration(block.durationMs)}
                 </span>
             </button>
 
             {open && hasContent && (
                 <div className={cn(
-                    'mt-1.5 ml-4 pl-3 border-l border-[hsl(0,0%,12%)]',
-                    'text-[11px] text-[hsl(0,0%,30%)] font-mono leading-relaxed',
-                    'whitespace-pre-wrap',
+                    'mt-2 ml-6 pl-3 border-l border-border',
+                    'text-[13px] text-muted-foreground/60 leading-relaxed',
                 )}>
-                    {block.text}
+                    <MarkdownContent 
+                        content={block.text!} 
+                        className="desktop-markdown-thinking opacity-80"
+                    />
                 </div>
             )}
         </div>
@@ -418,7 +408,7 @@ function TextBlockRow({
         <div className={cn(isLast && isStreaming ? 'streaming-cursor' : '', 'mt-1 mb-1')}>
             <MarkdownContent
                 content={block.content}
-                className="desktop-markdown break-words [overflow-wrap:anywhere] text-sm leading-relaxed text-[hsl(0,0%,85%)]"
+                className="desktop-markdown break-words [overflow-wrap:anywhere] text-[14px] leading-relaxed text-foreground/85"
             />
         </div>
     )

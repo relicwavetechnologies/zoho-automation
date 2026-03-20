@@ -21,46 +21,46 @@ interface Props {
 
 function StepIcon({ icon, status }: { icon: string; status: 'running' | 'done' | 'error' }) {
     if (status === 'running') {
-        return <Loader2 size={11} className="text-[hsl(217,70%,55%)] animate-spin shrink-0" />
+        return <Loader2 size={11} className="text-primary/60 animate-spin shrink-0" />
     }
     if (status === 'done') {
-        return <CheckCircle2 size={11} className="text-[hsl(142,55%,42%)] shrink-0" />
+        return <CheckCircle2 size={11} className="text-emerald-500/50 shrink-0" />
     }
     if (status === 'error') {
-        return <XCircle size={11} className="text-[hsl(0,55%,48%)] shrink-0" />
+        return <XCircle size={11} className="text-red-500/50 shrink-0" />
     }
-    return <span className="shrink-0 text-[hsl(0,0%,35%)]">{ICON_MAP[icon] ?? <Zap size={11} />}</span>
+    return <span className="shrink-0 text-muted-foreground/30">{ICON_MAP[icon] ?? <Zap size={11} />}</span>
 }
 
 /**
  * ActivityBar — renders the live agentic step feed during streaming.
- * Tool steps are deliberately dim (zinc-500) so the bright AI text stands out.
+ * Tool steps are deliberately dim so the bright AI text stands out.
  */
 export function ActivityBar({ steps }: Props): JSX.Element | null {
     if (steps.length === 0) return null
 
     return (
-        <div className="mb-2 flex flex-col gap-1.5 ml-1">
+        <div className="mb-2 flex flex-col gap-1 ml-1">
             {steps.map((step) => {
                 const isRunning = step.status === 'running'
                 return (
                     <div
                         key={step.id}
-                        className="flex items-center gap-2 py-0.5 text-xs font-mono"
+                        className="flex items-center gap-2 py-0.5"
                     >
                         <StepIcon icon={step.icon} status={step.status} />
 
                         {isRunning ? (
-                            <TextShimmer className="text-xs font-mono font-medium" duration={1.5} spread={2}>
+                            <TextShimmer className="text-[11px] font-medium text-primary/60" duration={1.5} spread={2}>
                                 {step.label}
                             </TextShimmer>
                         ) : (
                             <span
                                 className={cn(
-                                    'truncate transition-colors duration-300',
+                                    'text-[11px] font-medium truncate transition-colors duration-300',
                                     step.status === 'done'
-                                        ? 'text-[hsl(0,0%,35%)]'
-                                        : 'text-[hsl(0,50%,45%)]',
+                                        ? 'text-muted-foreground/40'
+                                        : 'text-red-500/40',
                                 )}
                             >
                                 {step.label}
@@ -74,11 +74,11 @@ export function ActivityBar({ steps }: Props): JSX.Element | null {
 }
 
 /** ThinkingShimmer — shimmer text shown before the AI produces any output */
-export function ThinkingShimmer({ label = 'Thinking...' }: { label?: string }): JSX.Element {
+export function ThinkingShimmer({ label = 'Reasoning...' }: { label?: string }): JSX.Element {
     return (
-        <div className="pt-1 pb-1">
+        <div className="pt-0.5 pb-0.5">
             <TextShimmer
-                className="text-sm font-medium"
+                className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/30"
                 duration={1.8}
                 spread={3}
             >

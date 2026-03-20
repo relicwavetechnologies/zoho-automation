@@ -98,113 +98,101 @@ export function MessageBubble({ message }: Props): JSX.Element {
   }
 
   return (
-    <div className="group mb-4">
-      <div className="flex gap-3">
-        {/* Avatar */}
-        <div
-          className={cn(
-            'shrink-0 mt-0.5 h-7 w-7 rounded-xl flex items-center justify-center border shadow-[0_10px_24px_rgba(0,0,0,0.18)]',
-            isUser
-              ? 'border-white/10 bg-white/[0.08]'
-              : 'border-sky-300/12 bg-sky-400/8',
-          )}
-        >
-          <span className={cn('text-[10px] font-semibold', isUser ? 'text-white/65' : 'text-sky-100/72')}>
-            {isUser ? 'U' : 'AI'}
-          </span>
-        </div>
+    <div className="group mb-8 last:mb-0">
+      <div className={cn('flex w-full flex-col gap-2', isUser ? 'items-end' : 'items-start')}>
+        {/* Name Only (No PFP) */}
+        <span className={cn(
+          'text-[10px] font-black uppercase tracking-[0.2em] mb-1 opacity-50',
+          isUser ? 'mr-1' : 'text-primary/80 ml-1'
+        )}>
+          {isUser ? 'You' : 'Divo'}
+        </span>
 
-        {/* Content */}
-        <div className="relative min-w-0 flex-1">
+        {/* Content Container */}
+        <div className={cn('relative min-w-0 max-w-[90%] flex flex-col', isUser ? 'items-end' : 'items-start')}>
           {message.metadata?.attachedFiles && message.metadata.attachedFiles.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-2">
+            <div className={cn('flex flex-wrap gap-2 mb-2', isUser ? 'flex-row-reverse' : 'flex-row')}>
               {message.metadata.attachedFiles.map(file => (
                 <div key={file.fileAssetId} className="relative group/file">
                   {file.mimeType.startsWith('image/') ? (
                     <img 
                       src={file.cloudinaryUrl} 
                       alt={file.fileName} 
-                      className="w-16 h-16 rounded-2xl object-cover border border-white/10 shadow-sm cursor-pointer hover:border-sky-300/12 transition-colors"
+                      className="w-16 h-16 rounded-xl object-cover border border-border hover:border-primary/30 transition-colors cursor-pointer shadow-sm"
                       title={file.fileName}
                       onClick={() => window.open(file.cloudinaryUrl, '_blank')}
                     />
                   ) : (
                     <div 
-                      className="glass-panel w-16 h-16 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-sm cursor-pointer hover:bg-white/[0.08] transition-colors" 
+                      className="w-16 h-16 rounded-xl flex flex-col items-center justify-center gap-1 border border-border bg-secondary/30 hover:bg-secondary/50 transition-colors cursor-pointer shadow-sm" 
                       title={file.fileName}
                       onClick={() => window.open(file.cloudinaryUrl, '_blank')}
                     >
-                      {file.mimeType === 'application/pdf' ? <FileText size={18} className="text-red-400" /> : <FileText size={18} className="text-slate-400" />}
-                      <span className="text-[9px] font-medium text-[hsl(0,0%,50%)] truncate w-full px-1 text-center">
+                      {file.mimeType === 'application/pdf' ? <FileText size={18} className="text-red-400/70" /> : <FileText size={18} className="text-muted-foreground" />}
+                      <span className="text-[9px] font-medium text-muted-foreground truncate w-full px-1 text-center">
                         {file.fileName.includes('.') ? file.fileName.slice(file.fileName.lastIndexOf('.') + 1).toUpperCase() : 'FILE'}
                       </span>
                     </div>
                   )}
-                  {/* Tooltip */}
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 glass-panel rounded-xl text-[10px] text-[hsl(0,0%,88%)] whitespace-nowrap opacity-0 group-hover/file:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">
-                    {file.fileName}
-                  </div>
                 </div>
               ))}
             </div>
           )}
 
           {!isUser && copyableResponse && (
-            <div className="absolute right-0 top-0 z-10 flex gap-2 opacity-0 transition-all group-hover:opacity-100">
+            <div className="absolute right-0 -top-6 z-10 flex gap-2 opacity-0 transition-all group-hover:opacity-100">
               <button
                 onClick={() => void copyResponse()}
-                className="glass-button rounded-xl px-2.5 py-1 text-[11px] font-medium text-[hsl(0,0%,72%)] hover:bg-white/[0.08] hover:text-[hsl(0,0%,94%)]"
+                className="rounded-lg border border-border bg-background px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm"
               >
-                {copied ? <Check size={12} className="mr-1 inline-block" /> : <Copy size={12} className="mr-1 inline-block" />}
+                {copied ? <Check size={10} className="mr-1 inline-block" /> : <Copy size={10} className="mr-1 inline-block" />}
                 {copied ? 'Copied' : 'Copy'}
               </button>
             </div>
           )}
           {isUser ? (
-            <div className="glass-panel inline-block rounded-[24px] px-4 py-3">
-              <p className="text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed text-[hsl(0,0%,92%)]">
+            <div className="inline-block rounded-2xl bg-secondary/40 px-4 py-2.5 border border-border/50 shadow-sm">
+              <p className="text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed text-foreground/90">
                 {displayContent}
               </p>
             </div>
           ) : blocks && blocks.length > 0 ? (
-            // New: render ordered content blocks (tool rows + text interleaved)
-            <div className="glass-panel rounded-[24px] px-4 py-4">
+            <div className="w-full">
               <BlocksRenderer blocks={blocks} isStreaming={false} />
             </div>
           ) : (
-            // Legacy fallback: plain markdown text
-            <div className="glass-panel rounded-[24px] px-4 py-4">
+            <div className="w-full">
               <MarkdownContent
                 content={message.content}
-                className="desktop-markdown text-sm leading-relaxed text-[hsl(0,0%,82%)]"
+                className="desktop-markdown text-sm leading-relaxed text-foreground/85"
               />
             </div>
           )}
 
           {/* Lark doc references */}
           {message.metadata?.larkDocs && message.metadata.larkDocs.length > 0 && (
-            <div className="mt-2 flex flex-col gap-1">
+            <div className="mt-2 flex flex-col gap-1 w-full">
               {message.metadata.larkDocs.map((doc) => (
                 <div
                   key={doc.documentId}
-                  className="flex items-center gap-2 px-2 py-1 rounded bg-[hsl(0,0%,8%)] border border-[hsl(0,0%,14%)]"
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-secondary/30 border border-border/50"
                 >
-                  <FileText size={12} className="text-[hsl(38,80%,55%)]" />
-                  <span className="text-xs text-[hsl(0,0%,60%)]">{doc.title}</span>
+                  <FileText size={12} className="text-amber-500/70" />
+                  <span className="text-xs text-muted-foreground">{doc.title}</span>
                 </div>
               ))}
             </div>
           )}
 
           {!isUser && message.metadata?.citations && message.metadata.citations.length > 0 && (
-            <div className="mt-3">
+            <div className="mt-3 w-full">
               <div className="flex flex-wrap gap-2">
                 {visibleCitations.map((citation) => {
                   const content = (
                     <>
-                      <FileText size={11} className="text-[hsl(38,80%,55%)]" />
+                      <FileText size={11} className="text-amber-500/70" />
                       <span className="max-w-[240px] truncate">{citation.title}</span>
-                      {citation.url && <ExternalLink size={10} className="text-[hsl(0,0%,45%)]" />}
+                      {citation.url && <ExternalLink size={10} className="text-muted-foreground/60" />}
                     </>
                   )
 
@@ -215,7 +203,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
                         href={citation.url}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-full glass-chip px-3 py-1.5 text-[11px] text-[hsl(0,0%,76%)] hover:bg-white/[0.08] hover:text-[hsl(0,0%,94%)]"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/30 px-3 py-1.5 text-[11px] text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors"
                       >
                         {content}
                       </a>
@@ -225,7 +213,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
                   return (
                     <div
                       key={citation.id}
-                      className="inline-flex items-center gap-1.5 rounded-full glass-chip px-3 py-1.5 text-[11px] text-[hsl(0,0%,76%)]"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/30 px-3 py-1.5 text-[11px] text-muted-foreground"
                     >
                       {content}
                     </div>
@@ -235,7 +223,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
               {message.metadata.citations.length > 6 && (
                 <button
                   onClick={() => setShowAllCitations((value) => !value)}
-                  className="mt-2 inline-flex items-center rounded-full glass-chip px-3 py-1.5 text-[11px] font-medium text-[hsl(0,0%,70%)] hover:bg-white/[0.08] hover:text-[hsl(0,0%,90%)]"
+                  className="mt-2 inline-flex items-center rounded-lg border border-border bg-secondary/30 px-3 py-1.5 text-[11px] font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors"
                 >
                   {showAllCitations
                     ? 'Show fewer sources'
@@ -250,7 +238,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
               <button
                 onClick={() => void shareConversation()}
                 disabled={shareState === 'sharing' || shareState === 'shared'}
-                className="inline-flex items-center gap-1.5 rounded-full glass-chip px-3 py-1.5 text-[11px] text-[hsl(0,0%,76%)] hover:bg-white/[0.08] hover:text-[hsl(0,0%,94%)] disabled:cursor-not-allowed disabled:opacity-70"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/30 px-3 py-1.5 text-[11px] text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {shareState === 'sharing' ? <Loader2 size={11} className="animate-spin" /> : <Share2 size={11} />}
                 <span>{shareState === 'shared' ? 'Shared' : message.metadata.shareAction.label}</span>
@@ -271,7 +259,7 @@ export function MessageBubble({ message }: Props): JSX.Element {
 
           {/* Error */}
           {message.metadata?.error && (
-            <div className="mt-2 px-2 py-1 rounded bg-[hsl(0,40%,10%)] border border-[hsl(0,40%,20%)]">
+            <div className="mt-2 px-2 py-1 rounded bg-[hsl(0,40%,10%)] border border-[hsl(0,40%,20%)] w-full">
               <span className="text-xs text-[hsl(0,50%,60%)]">{message.metadata.error}</span>
             </div>
           )}
