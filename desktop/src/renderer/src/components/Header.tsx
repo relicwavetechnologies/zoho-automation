@@ -1,4 +1,4 @@
-import { FolderOpen, LogOut, PanelRightClose, PanelRightOpen, ShieldCheck, ShieldOff, SquarePen } from 'lucide-react'
+import { FolderOpen, LogOut, PanelRightClose, PanelRightOpen, ShieldCheck, ShieldOff, SquarePen, Inbox } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useChat } from '../context/ChatContext'
 import { useWorkspace } from '../context/WorkspaceContext'
@@ -16,122 +16,122 @@ export function Header({ sidebarOpen, toggleSidebar, editorOpen, toggleEditor }:
   const { activeThread, createThread, autoApproveLocalActions, setAutoApproveLocalActions } = useChat()
   const { currentWorkspace, selectWorkspace } = useWorkspace()
 
-  const title = activeThread?.title ?? (activeThread ? 'New thread' : 'Cursorr')
+  const title = activeThread?.title ?? (activeThread ? 'New thread' : 'Divo')
 
   return (
-    <div
-      className="titlebar-drag flex items-center justify-between h-12 px-4 shrink-0 relative bg-header-bg border-b border-border/40"
-      style={{
-        zIndex: 20,
-      }}
+    <header
+      className="titlebar-drag flex items-center justify-between h-12 px-4 shrink-0 relative bg-background/80 backdrop-blur-md border-b border-border/50"
+      style={{ zIndex: 20 }}
     >
-      {/* Left: Optional toggles (when sidebar closed) + thread title */}
-      <div className="flex items-center gap-3 titlebar-no-drag min-w-0">
+      {/* Left: Toggles + Title */}
+      <div className="flex items-center gap-4 titlebar-no-drag min-w-0">
         {!sidebarOpen && (
-          <div className="flex items-center gap-1 mr-1">
+          <div className="flex items-center gap-1">
             <button
               onClick={toggleSidebar}
               title="Open Sidebar"
-              className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-all"
             >
               <PanelRightClose size={16} />
             </button>
             <button
-              onClick={() => createThread()}
+              onClick={() => void createThread()}
               title="New Chat"
-              className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-all"
             >
               <SquarePen size={16} />
             </button>
           </div>
         )}
-        <h2 className="text-sm font-medium text-foreground/90 truncate">
-          {title}
-        </h2>
-        {currentWorkspace && (
-          <span className="max-w-[260px] truncate rounded-full border border-border bg-muted/30 px-2.5 py-1 text-[11px] text-muted-foreground/80">
-            {currentWorkspace.name}
-          </span>
-        )}
+        
+        <div className="flex items-center gap-2 min-w-0">
+          <h2 className="text-[13px] font-bold text-foreground/90 truncate tracking-tight">
+            {title}
+          </h2>
+          {currentWorkspace && (
+            <span className="max-w-[180px] truncate rounded-lg border border-border bg-secondary/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60 shadow-sm">
+              {currentWorkspace.name}
+            </span>
+          )}
+        </div>
+
         {departments.length > 1 && (
-          <span className="inline-flex items-center rounded-full border border-border bg-muted/30 px-1.5 py-1">
+          <div className="flex items-center rounded-lg border border-border bg-secondary/30 px-1 py-0.5 shadow-sm">
             <select
               value={selectedDepartmentId ?? ''}
               onChange={(event) => setSelectedDepartmentId(event.target.value || null)}
-              className="bg-transparent px-1 text-[11px] text-muted-foreground/80 outline-none"
+              className="bg-transparent px-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60 outline-none"
               title="Department"
             >
-              <option value="" disabled>Select department</option>
+              <option value="" disabled>Dept</option>
               {departments.map((department) => (
                 <option key={department.id} value={department.id}>
                   {department.name}
                 </option>
               ))}
             </select>
-          </span>
+          </div>
         )}
-
       </div>
 
-      {/* Right: user + actions */}
-      <div className="flex items-center gap-2 titlebar-no-drag">
+      {/* Right: Actions + User */}
+      <div className="flex items-center gap-1 titlebar-no-drag">
         <button
           type="button"
           onClick={() => void selectWorkspace()}
-          title="Switch workspace folder"
-          className={cn(
-            'titlebar-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors',
-            'text-muted-foreground/60 hover:text-foreground/80 hover:bg-muted',
-          )}
+          title="Switch Workspace"
+          className="flex h-8 items-center gap-2 rounded-lg px-2 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-all"
         >
           <FolderOpen size={14} />
-          <span className="text-xs">Folder</span>
+          <span className="text-[11px] font-bold uppercase tracking-wider">Folder</span>
         </button>
+
         <button
           type="button"
           onClick={() => setAutoApproveLocalActions(!autoApproveLocalActions)}
-          title={autoApproveLocalActions ? 'Disable auto-approve for agent local actions' : 'Enable auto-approve for agent local actions'}
           className={cn(
-            'titlebar-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors',
+            'flex h-8 items-center gap-2 rounded-lg px-2 transition-all',
             autoApproveLocalActions
-              ? 'text-primary hover:text-primary/80 hover:bg-primary/10'
-              : 'text-muted-foreground/60 hover:text-foreground/80 hover:bg-muted',
+              ? 'bg-primary/10 text-primary hover:bg-primary/20'
+              : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50',
           )}
+          title={autoApproveLocalActions ? 'Auto-approve active' : 'Manual approval mode'}
         >
           {autoApproveLocalActions ? <ShieldCheck size={14} /> : <ShieldOff size={14} />}
-          <span className="text-xs">{autoApproveLocalActions ? 'Auto-allow' : 'Ask first'}</span>
+          <span className="text-[11px] font-bold uppercase tracking-wider">{autoApproveLocalActions ? 'Auto' : 'Ask'}</span>
         </button>
+
+        <div className="w-px h-4 bg-border/50 mx-1" />
+
         <button
           type="button"
           onClick={toggleEditor}
-          title={editorOpen ? 'Hide editor' : 'Open editor'}
           className={cn(
-            'titlebar-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors',
-            'text-muted-foreground/60 hover:text-foreground/80 hover:bg-muted',
+            'flex h-8 items-center gap-2 rounded-lg px-2 transition-all',
+            editorOpen ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50',
           )}
+          title={editorOpen ? 'Close Editor' : 'Open Editor'}
         >
           {editorOpen ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
-          <span className="text-xs">{editorOpen ? 'Hide editor' : 'Editor'}</span>
+          <span className="text-[11px] font-bold uppercase tracking-wider">Editor</span>
         </button>
+
         {session && (
-          <>
-            <span className="text-xs text-muted-foreground/50">
+          <div className="flex items-center gap-2 ml-2 pl-2 border-l border-border/50">
+            <span className="text-[11px] font-medium text-muted-foreground/50 max-w-[120px] truncate">
               {session.name ?? session.email}
             </span>
             <button
               type="button"
               onClick={logout}
               title="Sign out"
-              className={cn(
-                'titlebar-no-drag cursor-pointer rounded-md p-1.5 transition-colors',
-                'text-muted-foreground/50 hover:text-foreground/80 hover:bg-muted',
-              )}
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-all"
             >
               <LogOut size={14} />
             </button>
-          </>
+          </div>
         )}
       </div>
-    </div>
+    </header>
   )
 }

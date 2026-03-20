@@ -8,28 +8,26 @@ export function EmptyThread(): JSX.Element {
   const { currentWorkspace } = useWorkspace()
 
   return (
-    <div className="flex-1 flex items-center justify-center">
-      <div className="flex flex-col items-center gap-5 max-w-md px-6 text-center">
-        <div className="h-14 w-14 rounded-2xl bg-[hsl(0,0%,8%)] border border-[hsl(0,0%,14%)] flex items-center justify-center">
-          <MessageSquarePlus size={22} className="text-[hsl(0,0%,35%)]" />
+    <div className="flex-1 flex items-center justify-center animate-in fade-in duration-1000">
+      <div className="flex flex-col items-center gap-6 max-w-sm px-6 text-center">
+        <div className="h-16 w-16 rounded-2xl bg-secondary/20 border border-border/50 flex items-center justify-center shadow-sm">
+          <MessageSquarePlus size={28} className="text-muted-foreground/30" />
         </div>
         <div>
-          <h3 className="text-base font-medium text-[hsl(0,0%,70%)] mb-1">
+          <h3 className="text-lg font-bold text-foreground/90 tracking-tight mb-2">
             {currentWorkspace ? `No thread selected in ${currentWorkspace.name}` : 'No thread selected'}
           </h3>
-          <p className="text-sm text-[hsl(0,0%,38%)] leading-relaxed">
+          <p className="text-[13px] text-muted-foreground/50 leading-relaxed font-medium">
             {currentWorkspace
-              ? 'Select an existing thread from the sidebar or start a new conversation in this workspace.'
-              : 'Open a workspace and start a new conversation.'}
+              ? 'Select an existing conversation from the sidebar or start a new one to begin.'
+              : 'Open a workspace and start a new conversation with Divo.'}
           </p>
         </div>
         <button
-          onClick={() => createThread()}
+          onClick={() => void createThread()}
           className={cn(
-            'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
-            'bg-[hsl(0,0%,14%)] text-[hsl(0,0%,70%)]',
-            'hover:bg-[hsl(0,0%,18%)] hover:text-[hsl(0,0%,85%)]',
-            'border border-[hsl(0,0%,20%)]',
+            'px-6 py-2 rounded-lg text-[12px] font-bold uppercase tracking-wider transition-all',
+            'bg-primary text-primary-foreground hover:opacity-90 shadow-sm',
           )}
         >
           New thread

@@ -23,11 +23,17 @@ import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExe
 import { legacyOrchestrationEngine } from './legacy-orchestration.engine';
 import { buildVisionContent, type AttachedFileRef } from '../../../modules/desktop-chat/file-vision.builder';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
+import { LarkStatusCoordinator } from './lark-status.coordinator';
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
 const LARK_BLOCKED_TOOL_IDS = new Set(['coding']);
 const LARK_VERCEL_MODE: VercelRuntimeRequestContext['mode'] = 'fast';
 const LARK_THREAD_CONTEXT_MESSAGE_LIMIT = 20;
+const LARK_STATUS_HEARTBEAT_MESSAGES = [
+  'Still working on this.',
+  'Still gathering the right details.',
+  'Still working through the next step.',
+] as const;
 
 const buildConversationKey = (message: NormalizedIncomingMessageDTO): string => `${message.channel}:${message.chatId}`;
 const buildPersistentLarkConversationKey = (threadId: string): string => `lark-thread:${threadId}`;
@@ -236,36 +242,40 @@ const stopOnPendingApproval = ({
 const buildLarkStatusText = (input: {
   task: OrchestrationTaskDTO;
   message: NormalizedIncomingMessageDTO;
-  phase: 'processing' | 'tool_running' | 'tool_done' | 'approval' | 'processed' | 'failed';
+  phase: 'received' | 'preparing' | 'planning' | 'tool_running' | 'tool_done' | 'analyzing' | 'approval' | 'failed';
   detail?: string;
   history: string[];
+  heartbeatNote?: string;
 }) => {
-  if (input.phase === 'processed') {
-    return 'Completed request.';
-  }
+  void input.task;
+  void input.message;
+  void input.history;
 
-  const lines: string[] = [];
-  const mode = input.task.executionMode ?? 'sequential';
-  if (input.phase === 'processing') {
-    lines.push(`Processing request (${input.task.taskId.slice(0, 8)})...`);
-  } else if (input.phase === 'tool_running') {
-    lines.push(`Running (${mode}) for message ${input.message.messageId}.`);
-  } else if (input.phase === 'tool_done') {
-    lines.push(`Updated (${mode}) for message ${input.message.messageId}.`);
-  } else if (input.phase === 'approval') {
-    lines.push(`Approval required (${input.task.taskId.slice(0, 8)})...`);
-  } else {
-    lines.push(`Failed (${mode}) for message ${input.message.messageId}.`);
+  const detail = input.detail?.trim();
+  const withDetail = (prefix: string): string => (detail ? `${prefix}: ${detail}` : prefix);
+
+  if (input.phase === 'received') {
+    return 'Working on it.';
   }
-  lines.push(`Plan: ${input.task.plan.join(' -> ')}`);
-  if (input.detail) {
-    lines.push(input.detail);
+  if (input.phase === 'preparing') {
+    return 'Getting things ready.';
   }
-  if (input.history.length > 0) {
-    lines.push('Logs:');
-    lines.push(...input.history.slice(-6));
+  if (input.phase === 'planning') {
+    return 'Working on it.';
   }
-  return lines.join('\n');
+  if (input.phase === 'tool_running') {
+    return withDetail('Fetching results');
+  }
+  if (input.phase === 'tool_done') {
+    return 'Still working on it.';
+  }
+  if (input.phase === 'analyzing') {
+    return 'Putting the answer together.';
+  }
+  if (input.phase === 'approval') {
+    return detail ? `Approval needed: ${detail}` : 'Approval needed.';
+  }
+  return input.heartbeatNote?.trim() || detail || 'Something went wrong.';
 };
 
 const buildLarkApprovalActions = (pendingApproval: PendingApprovalAction): ChannelAction[] => {
@@ -408,6 +418,44 @@ const executeLarkVercelTask = async (
   const conversationKey = persistentThread
     ? buildPersistentLarkConversationKey(persistentThread.id)
     : buildConversationKey(message);
+  const statusHistory: string[] = [];
+  let currentStatusPhase: 'received' | 'preparing' | 'planning' | 'tool_running' | 'tool_done' | 'analyzing' | 'approval' | 'failed' = 'received';
+  let currentStatusDetail: string | undefined;
+  let currentStatusActions: ChannelAction[] | undefined;
+  let heartbeatIndex = 0;
+  const statusCoordinator = new LarkStatusCoordinator({
+    adapter,
+    chatId: message.chatId,
+    correlationId: task.taskId,
+    initialStatusMessageId: message.trace?.statusMessageId,
+  });
+  const renderCurrentStatus = (heartbeat = false): { text: string; actions?: ChannelAction[] } => ({
+    text: buildLarkStatusText({
+      task,
+      message,
+      phase: currentStatusPhase,
+      detail: currentStatusDetail,
+      history: statusHistory,
+      heartbeatNote: heartbeat
+        ? LARK_STATUS_HEARTBEAT_MESSAGES[heartbeatIndex++ % LARK_STATUS_HEARTBEAT_MESSAGES.length]
+        : undefined,
+    }),
+    actions: currentStatusActions,
+  });
+  const updateStatus = async (
+    phase: typeof currentStatusPhase,
+    detail?: string,
+    actions?: ChannelAction[],
+    options?: { force?: boolean },
+  ) => {
+    currentStatusPhase = phase;
+    currentStatusDetail = detail;
+    currentStatusActions = actions;
+    await statusCoordinator.update(renderCurrentStatus(false), options);
+  };
+
+  await updateStatus('preparing');
+  statusCoordinator.startHeartbeat(() => renderCurrentStatus(true));
 
   let persistedUserMessageId: string | undefined;
   if (persistentThread) {
@@ -441,54 +489,17 @@ const executeLarkVercelTask = async (
   }
 
   const runtime = await resolveRuntimeContext(task, message, persistentThread?.id);
-
-  const statusHistory: string[] = [];
-  let statusMessageId: string | undefined;
-  const updateStatus = async (
-    phase: 'processing' | 'tool_running' | 'tool_done' | 'approval' | 'processed' | 'failed',
-    detail?: string,
-    actions?: ChannelAction[],
-  ) => {
-    const text = buildLarkStatusText({
-      task,
-      message,
-      phase,
-      detail,
-      history: statusHistory,
-    });
-    if (statusMessageId) {
-      const outbound = await adapter.updateMessage({
-        messageId: statusMessageId,
-        text,
-        correlationId: task.taskId,
-        ...(actions ? { actions } : {}),
-      });
-      if (outbound.status !== 'failed') {
-        statusMessageId = outbound.messageId ?? statusMessageId;
-      }
-      return;
-    }
-    const outbound = await adapter.sendMessage({
-      chatId: message.chatId,
-      text,
-      correlationId: task.taskId,
-      ...(actions ? { actions } : {}),
-    });
-    if (outbound.status !== 'failed') {
-      statusMessageId = outbound.messageId ?? undefined;
-    }
-  };
-
-  await updateStatus('processing');
+  statusHistory.push('Context ready.');
+  await updateStatus('planning', 'Choosing the right tools and approach for this request.');
 
   const tools = createVercelDesktopTools(runtime, {
     onToolStart: async (_toolName, _activityId, title) => {
-      statusHistory.push(`Running: ${title}`);
-      await updateStatus('tool_running', title);
+      statusHistory.push(`Started ${title}`);
+      await updateStatus('tool_running', `Using ${title}.`);
     },
     onToolFinish: async (toolName, _activityId, title, output) => {
       const summary = summarizeText(output.summary, 180) ?? output.summary;
-      statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${toolName}: ${summary}`);
+      statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${title}: ${summary}`);
       await updateStatus('tool_done', `${title}: ${summary}`);
     },
   });
@@ -581,7 +592,10 @@ const executeLarkVercelTask = async (
     const pendingApproval = findPendingApproval(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
     const finalText = pendingApproval
       ? `Approval required before continuing: ${pendingApproval.kind === 'run_command' ? pendingApproval.command : pendingApproval.kind}.`
-      : result.text.trim();
+      : result.text.trim() || 'Done.';
+
+    statusHistory.push('Execution complete. Preparing the final response.');
+    await updateStatus('analyzing', 'Finalizing the response for you.');
 
     if (pendingApproval) {
       statusHistory.push(`Approval required: ${pendingApproval.kind}`);
@@ -591,22 +605,14 @@ const executeLarkVercelTask = async (
           ? summarizeText(pendingApproval.summary, 220) ?? finalText
           : finalText,
         buildLarkApprovalActions(pendingApproval),
+        { force: true },
       );
     } else {
-      statusHistory.push('Completed request.');
-      await updateStatus('processed', summarizeText(finalText, 180) ?? undefined, []);
+      await statusCoordinator.replace(finalText, []);
     }
 
-    let finalOutboundMessageId: string | undefined;
+    const statusMessageId = statusCoordinator.getStatusMessageId();
     if (!pendingApproval) {
-      const outbound = await adapter.sendMessage({
-        chatId: message.chatId,
-        text: finalText,
-        correlationId: task.taskId,
-      });
-      if (outbound.status !== 'failed') {
-        finalOutboundMessageId = outbound.messageId ?? undefined;
-      }
       conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, finalText);
     }
 
@@ -621,7 +627,7 @@ const executeLarkVercelTask = async (
           channel: 'lark',
           lark: {
             chatId: message.chatId,
-            outboundMessageId: pendingApproval ? statusMessageId ?? null : finalOutboundMessageId ?? null,
+            outboundMessageId: statusMessageId ?? null,
             statusMessageId: statusMessageId ?? null,
             correlationId: task.taskId,
           },
@@ -656,8 +662,19 @@ const executeLarkVercelTask = async (
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Vercel Lark runtime failed.';
     statusHistory.push(`Failed: ${errorMessage}`);
-    await updateStatus('failed', summarizeText(errorMessage, 180) ?? errorMessage, []);
+    await statusCoordinator.replace(
+      [
+        'I ran into a problem while working on this.',
+        '',
+        summarizeText(errorMessage, 280) ?? errorMessage,
+        '',
+        'Please try again or rephrase the request.',
+      ].join('\n'),
+      [],
+    );
     throw error;
+  } finally {
+    await statusCoordinator.close();
   }
 };
 

@@ -90,8 +90,8 @@ export function ChatPane(): JSX.Element {
         {isLoadingOlderMessages && (
           <div className="mb-8 space-y-4 animate-in fade-in duration-500">
             <div className="flex flex-col gap-2 items-start">
-              <Skeleton className="h-3 w-12 rounded opacity-20 ml-1" />
-              <div className="w-full space-y-2 opacity-20">
+              <Skeleton className="h-3 w-12 rounded ml-1" />
+              <div className="w-full space-y-2">
                 <Skeleton className="h-4 w-3/4 rounded-xl" />
                 <Skeleton className="h-4 w-1/2 rounded-xl" />
               </div>
@@ -122,7 +122,7 @@ export function ChatPane(): JSX.Element {
         {isThreadLoading && messages.length === 0 && (
           <div className="space-y-10 mt-4 animate-in fade-in duration-700">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="flex flex-col gap-2 items-start opacity-20">
+              <div key={i} className="flex flex-col gap-2 items-start">
                 <Skeleton className="h-3 w-12 rounded ml-1" />
                 <div className="w-full space-y-3">
                   <Skeleton className="h-4 w-[90%] rounded-xl" />

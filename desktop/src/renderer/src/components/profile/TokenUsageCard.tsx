@@ -35,24 +35,25 @@ export function TokenUsageCard(): JSX.Element {
 
   return (
     <div className="flex flex-col w-full">
-      <div className="flex justify-between items-end mb-2">
-        <div className="text-[14px] font-medium text-white">Monthly AI Token Usage</div>
+      <div className="flex justify-between items-end mb-3">
+        <div className="text-[13px] font-bold uppercase tracking-widest text-muted-foreground/50">Usage</div>
         <div className="text-[13px]">
-          <span className="text-white font-medium">{usage.used.toLocaleString()}</span>
-          <span className="text-[hsl(0,0%,50%)]"> / {usage.limit.toLocaleString()}</span>
+          <span className="text-foreground/90 font-bold">{usage.used.toLocaleString()}</span>
+          <span className="text-muted-foreground/40 font-medium"> / {usage.limit.toLocaleString()} tokens</span>
         </div>
       </div>
       
-      <div className="h-2.5 w-full bg-[hsl(0,0%,20%)] rounded-full overflow-hidden mt-1">
+      <div className="h-2 w-full bg-secondary rounded-full overflow-hidden border border-border/30">
         <div 
-          className="h-full bg-gradient-to-r from-[hsl(200,80%,50%)] to-[hsl(260,80%,60%)] transition-all duration-1000 ease-out"
+          className="h-full bg-primary transition-all duration-1000 ease-out shadow-[0_0_12px_rgba(var(--primary),0.3)]"
           style={{ width: `${percent}%` }}
         />
       </div>
       
       {percent > 90 && (
-        <div className="text-[12px] text-orange-400 mt-2">
-          You are nearing your monthly token limit.
+        <div className="text-[11px] font-bold uppercase tracking-wider text-amber-500/80 mt-3 flex items-center gap-1.5">
+          <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+          Nearing monthly limit
         </div>
       )}
     </div>

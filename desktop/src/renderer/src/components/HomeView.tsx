@@ -1,105 +1,78 @@
+import { useMemo } from 'react'
 import { useWorkspace } from '../context/WorkspaceContext'
 import { Composer } from './Composer'
-import { LayoutGrid, Briefcase, Code, ListTodo, LineChart, Terminal, Map, FileText, Shuffle } from 'lucide-react'
-import dashboardImg from '../assets/dashboard.png'
-import analyticsImg from '../assets/analytics.png'
-import creativeImg from '../assets/creative.png'
-import documentImg from '../assets/document.png'
+import { Plus, Sparkles, Terminal } from 'lucide-react'
+
+const GREETINGS = [
+  "How can I help you work today?",
+  "Ready to automate the boring stuff?",
+  "What's the plan, boss?",
+  "Let's build something impressive.",
+  "At your service. What's on your mind?",
+  "Ready for some high-signal output?",
+  "Shall we streamline your workflow?",
+  "Your AI coworker is online. What's next?",
+  "Let's make some magic happen.",
+  "System ready. Awaiting your instructions.",
+  "How about we crush some tasks today?",
+  "Ready to coordinate. What's the mission?"
+]
+
 export function HomeView(): JSX.Element {
   const { currentWorkspace } = useWorkspace()
+  
+  // Select a random greeting on mount
+  const greeting = useMemo(() => {
+    return GREETINGS[Math.floor(Math.random() * GREETINGS.length)]
+  }, [])
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-start py-20 px-6 h-full overflow-y-auto" style={{ background: 'hsl(var(--background))' }}>
-      <div className="w-full max-w-[760px] flex flex-col items-center">
-        <h1 className="text-[32px] font-bold text-foreground/90 mb-10 tracking-tight text-center">
-          <span className="text-primary/80">Divo</span> works for you.
-        </h1>
-
-        <div className="w-full relative rounded-2xl transition-all">
+    <div className="flex-1 flex flex-col items-center justify-center px-6 h-full bg-background selection:bg-primary/30">
+      <div className="w-full max-w-[760px] flex flex-col items-center -mt-20">
+        
+        {/* Stylish Minimal Branding */}
+        <div className="flex flex-col items-center gap-4 mb-12">
+          <div className="relative group">
+            <div className="absolute -inset-4 bg-primary/10 rounded-full blur-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-700" />
+            <div className="relative text-[11px] font-black uppercase tracking-[0.5em] text-primary/80 border border-primary/20 bg-primary/5 px-4 py-1.5 rounded-lg shadow-sm">
+              Divo
+            </div>
+          </div>
+          <h1 className="mt-3 text-[32px] sm:text-[42px] font-medium tracking-[-0.02em] text-foreground/80 text-center animate-in fade-in duration-1000 slide-in-from-bottom-1 max-w-[640px] leading-[1.15]">
+            {greeting}
+          </h1>
+        </div>
+        
+        {/* Main Action */}
+        <div className="w-full relative animate-in fade-in duration-1000 zoom-in-[0.98]">
           <Composer isHome={true} />
         </div>
 
-        {/* Gallery Section */}
-        <div className="mt-16 w-full animate-in fade-in duration-1000 slide-in-from-bottom-4">
-          {/* Tabs */}
-          <div className="flex items-center justify-center gap-8 mb-6 text-[12px] text-muted-foreground/60 font-bold uppercase tracking-widest">
-            <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary text-foreground transition-all">
-              <LayoutGrid size={14} />
-              Gallery
-            </button>
-            <button className="flex items-center gap-2 hover:text-foreground transition-all">
-              <Briefcase size={14} />
-              Business
-            </button>
-            <button className="flex items-center gap-2 hover:text-foreground transition-all">
-              <Code size={14} />
-              Prototype
-            </button>
-            <button className="flex items-center gap-2 hover:text-foreground transition-all">
-              <ListTodo size={14} />
-              Organize
-            </button>
+        {/* Minimal Suggested Starts */}
+        <div className="mt-14 flex flex-wrap justify-center gap-3 animate-in fade-in duration-1000 slide-in-from-bottom-2">
+          <button className="group flex items-center gap-2.5 px-4 py-2 rounded-xl bg-secondary/10 border border-border/30 hover:border-primary/30 hover:bg-secondary/20 transition-all shadow-sm">
+            <Plus size={14} className="text-muted-foreground/40 group-hover:text-primary/60" />
+            <span className="text-[12px] font-bold text-muted-foreground/60 group-hover:text-foreground/80 tracking-tight">New Workflow</span>
+          </button>
+          
+          <button className="group flex items-center gap-2.5 px-4 py-2 rounded-xl bg-secondary/10 border border-border/30 hover:border-primary/30 hover:bg-secondary/20 transition-all shadow-sm">
+            <Sparkles size={14} className="text-muted-foreground/40 group-hover:text-primary/60" />
+            <span className="text-[12px] font-bold text-muted-foreground/60 group-hover:text-foreground/80 tracking-tight">Search Assets</span>
+          </button>
+
+          <button className="group flex items-center gap-2.5 px-4 py-2 rounded-xl bg-secondary/10 border border-border/30 hover:border-primary/30 hover:bg-secondary/20 transition-all shadow-sm">
+            <Terminal size={14} className="text-muted-foreground/40 group-hover:text-primary/60" />
+            <span className="text-[12px] font-bold text-muted-foreground/60 group-hover:text-foreground/80 tracking-tight">Run Command</span>
+          </button>
+        </div>
+
+        {/* Subtle Branding Footer */}
+        <div className="mt-24 flex items-center gap-3 opacity-10 grayscale hover:opacity-20 transition-opacity duration-500 cursor-default select-none">
+          <div className="h-px w-8 bg-current" />
+          <div className="text-[9px] font-black uppercase tracking-[0.4em] text-muted-foreground">
+            Professional Intelligence
           </div>
-
-          {/* Cards Grid */}
-          <div className="grid grid-cols-4 gap-4 w-full">
-...
-            {/* Card 1 */}
-            <div className="group relative rounded-xl overflow-hidden bg-secondary/30 border border-border hover:border-primary/20 transition-all cursor-pointer flex flex-col aspect-[4/3]">
-              <div className="flex-1 relative overflow-hidden bg-black/40">
-                <img src={analyticsImg} alt="S&P 500" className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity duration-500 group-hover:scale-105" />
-              </div>
-              <div className="p-3 flex items-center gap-2 text-[12px] font-medium text-muted-foreground group-hover:text-foreground bg-secondary/20">
-                <LineChart size={14} />
-                <span className="truncate">S&P 500 Analytics</span>
-              </div>
-            </div>
-
-            {/* Card 2 */}
-            <div className="group relative rounded-xl overflow-hidden bg-secondary/30 border border-border hover:border-primary/20 transition-all cursor-pointer flex flex-col aspect-[4/3]">
-              <div className="flex-1 relative overflow-hidden bg-black/40">
-                <img src={dashboardImg} alt="ASCII Canvas" className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity duration-500 group-hover:scale-105" />
-              </div>
-              <div className="p-3 flex items-center gap-2 text-[12px] font-medium text-muted-foreground group-hover:text-foreground bg-secondary/20">
-                <Terminal size={14} />
-                <span className="truncate">ASCII Canvas</span>
-              </div>
-            </div>
-
-            {/* Card 3 */}
-            <div className="group relative rounded-xl overflow-hidden bg-secondary/30 border border-border hover:border-primary/20 transition-all cursor-pointer flex flex-col aspect-[4/3]">
-              <div className="flex-1 relative overflow-hidden bg-black/40">
-                <img src={creativeImg} alt="US Presidential" className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity duration-500 group-hover:scale-105" />
-              </div>
-              <div className="p-3 flex items-center gap-2 text-[12px] font-medium text-muted-foreground group-hover:text-foreground bg-secondary/20">
-                <Map size={14} />
-                <span className="truncate">Global Map View</span>
-              </div>
-            </div>
-
-            {/* Card 4 */}
-            <div className="group relative rounded-xl overflow-hidden bg-secondary/30 border border-border hover:border-primary/20 transition-all cursor-pointer flex flex-col aspect-[4/3]">
-              <div className="flex-1 relative overflow-hidden bg-black/40">
-                <img src={documentImg} alt="Document" className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity duration-500 group-hover:scale-105" />
-              </div>
-              <div className="p-3 flex items-center gap-2 text-[12px] font-medium text-muted-foreground group-hover:text-foreground bg-secondary/20">
-                <FileText size={14} />
-                <span className="truncate">Document Builder</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Footer Links */}
-          <div className="flex items-center justify-between mt-6 px-1 text-[12px] text-muted-foreground/50 font-medium">
-            <button className="flex items-center gap-2 hover:text-foreground transition-colors">
-              <LayoutGrid size={14} />
-              View all
-            </button>
-            <button className="flex items-center gap-2 hover:text-foreground transition-colors">
-              <Shuffle size={14} />
-              Shuffle
-            </button>
-          </div>
+          <div className="h-px w-8 bg-current" />
         </div>
       </div>
     </div>

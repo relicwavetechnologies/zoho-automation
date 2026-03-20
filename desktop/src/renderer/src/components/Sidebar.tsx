@@ -130,9 +130,9 @@ export function Sidebar({
               disabled={isStreaming}
               className={cn(
                 'w-full pl-8 pr-2 h-8 rounded-lg text-[12px]',
-                'bg-secondary/30 border-transparent focus:border-border',
+                'bg-black/40 border-border/50 focus:border-primary/30',
                 'text-foreground/80 placeholder:text-muted-foreground/30',
-                'focus:outline-none transition-all border disabled:cursor-not-allowed disabled:opacity-50',
+                'focus:outline-none transition-all border disabled:cursor-not-allowed disabled:opacity-50 shadow-sm',
               )}
             />
           </div>

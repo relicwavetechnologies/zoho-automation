@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../../context/AuthContext'
+import { cn } from '../../lib/utils'
+import { Check } from 'lucide-react'
 import { TokenUsageCard } from './TokenUsageCard'
 
 export function AccountSettings(): JSX.Element {
@@ -70,97 +72,108 @@ export function AccountSettings(): JSX.Element {
   }, [token, loadGoogleStatus])
 
   return (
-    <div className="flex flex-col gap-10 text-[hsl(0,0%,85%)]">
-      <div>
-        <h2 className="text-[22px] font-semibold text-white mb-6">Account</h2>
+    <div className="flex flex-col gap-12 text-foreground/80">
+      <section>
+        <h2 className="text-[24px] font-bold text-foreground/90 mb-6 tracking-tight">Account</h2>
         
-        <div className="flex flex-col gap-0 border-t border-b border-[hsl(0,0%,15%)] divide-y divide-[hsl(0,0%,15%)]">
+        <div className="flex flex-col gap-0 border-t border-b border-border/50 divide-y divide-border/50">
           {/* Avatar / Identity Row */}
-          <div className="py-5 flex items-center justify-between">
+          <div className="py-6 flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-white font-bold text-lg">
+              <div className="w-12 h-12 rounded-2xl bg-secondary/40 flex items-center justify-center text-muted-foreground/60 font-bold text-xl border border-border/50 shadow-sm">
                 {name.charAt(0).toUpperCase()}
               </div>
               <div>
-                <div className="font-medium text-[14px] text-white">{name}</div>
-                <div className="text-[12px] text-[hsl(0,0%,55%)]">v{username}</div>
+                <div className="font-semibold text-[15px] text-foreground/90">{name}</div>
+                <div className="text-[12px] text-muted-foreground/50 font-medium">@{username}</div>
               </div>
             </div>
-            <button className="px-4 py-1.5 rounded-md border border-[hsl(0,0%,25%)] text-[13px] hover:bg-[hsl(0,0%,15%)] transition-colors">
+            <button className="px-4 py-1.5 rounded-lg border border-border bg-secondary/50 text-[12px] font-bold uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm">
               Change avatar
             </button>
           </div>
 
           {/* Full Name */}
-          <div className="py-4 flex items-center justify-between">
+          <div className="py-5 flex items-center justify-between">
             <div>
-              <div className="font-medium text-[14px]">Full Name</div>
-              <div className="text-[13px] text-[hsl(0,0%,55%)] mt-0.5">{name}</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40 mb-1">Full Name</div>
+              <div className="text-[14px] font-medium text-foreground/80">{name}</div>
             </div>
-            <button className="px-4 py-1.5 rounded-md border border-[hsl(0,0%,25%)] text-[13px] hover:bg-[hsl(0,0%,15%)] transition-colors">
-              Change full name
+            <button className="px-4 py-1.5 rounded-lg border border-border bg-secondary/50 text-[12px] font-bold uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm">
+              Edit
             </button>
           </div>
 
           {/* Username */}
-          <div className="py-4 flex items-center justify-between">
+          <div className="py-5 flex items-center justify-between">
             <div>
-              <div className="font-medium text-[14px]">Username</div>
-              <div className="text-[13px] text-[hsl(0,0%,55%)] mt-0.5">v{username}</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40 mb-1">Username</div>
+              <div className="text-[14px] font-medium text-foreground/80">@{username}</div>
             </div>
-            <button className="px-4 py-1.5 rounded-md border border-[hsl(0,0%,25%)] text-[13px] hover:bg-[hsl(0,0%,15%)] transition-colors">
-              Change username
+            <button className="px-4 py-1.5 rounded-lg border border-border bg-secondary/50 text-[12px] font-bold uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm">
+              Edit
             </button>
           </div>
 
           {/* Email */}
-          <div className="py-4 flex items-center justify-between">
+          <div className="py-5 flex items-center justify-between">
             <div>
-              <div className="font-medium text-[14px]">Email</div>
-              <div className="text-[13px] text-[hsl(0,0%,55%)] mt-0.5">{email}</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40 mb-1">Email Address</div>
+              <div className="text-[14px] font-medium text-foreground/80">{email}</div>
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div>
-        <h2 className="text-[22px] font-semibold text-white mb-6">Google Workspace</h2>
-        <div className="border border-[hsl(0,0%,15%)] rounded-xl bg-[hsl(0,0%,8%)] p-5 flex flex-col gap-4">
-          <div className="flex items-center justify-between">
+      <section>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-[20px] font-bold text-foreground/90 tracking-tight">Connected Services</h2>
+        </div>
+        <div className="border border-border bg-secondary/20 rounded-2xl p-6 flex flex-col gap-6 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="font-medium text-[14px] text-white">Google Drive + Gmail</div>
-              <div className="text-[13px] text-[hsl(0,0%,55%)] mt-1">
-                Connect to enable Drive file access and Gmail send operations from the agent.
-              </div>
+              <div className="font-bold text-[15px] text-foreground/90">Google Workspace</div>
+              <p className="text-[13px] text-muted-foreground/60 mt-1 leading-relaxed max-w-md">
+                Connect your Drive and Gmail to let Divo research documents and coordinate communications.
+              </p>
             </div>
-            <div className="text-[12px] px-2 py-1 rounded-full border border-[hsl(0,0%,25%)] text-[hsl(0,0%,65%)]">
-              {googleStatus?.connected ? 'Connected' : googleStatus?.configured ? 'Not connected' : 'Not configured'}
-            </div>
+            <span className={cn(
+              "text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-lg border shadow-sm",
+              googleStatus?.connected 
+                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-500/80" 
+                : "bg-secondary/50 border-border text-muted-foreground/50"
+            )}>
+              {googleStatus?.connected ? 'Connected' : 'Disconnected'}
+            </span>
           </div>
 
           {googleStatus?.connected && (
-            <div className="text-[12px] text-[hsl(0,0%,60%)]">
-              Linked as {googleStatus.email ?? 'Google user'}
+            <div className="flex items-center gap-2 text-[12px] text-muted-foreground/50 bg-black/20 px-3 py-2 rounded-xl border border-border/30 w-fit">
+              <Check size={14} className="text-emerald-500/60" />
+              Linked as <span className="font-bold text-foreground/70">{googleStatus.email}</span>
             </div>
           )}
 
-          {googleError && <div className="text-[12px] text-red-400">{googleError}</div>}
+          {googleError && (
+            <div className="text-[12px] font-medium text-red-500/80 bg-red-500/5 border border-red-500/10 px-3 py-2 rounded-xl">
+              {googleError}
+            </div>
+          )}
 
-          <div className="flex items-center gap-3">
-            {!googleStatus?.connected && (
+          <div className="flex items-center gap-3 pt-2 border-t border-border/30">
+            {!googleStatus?.connected ? (
               <button
                 onClick={() => void handleGoogleConnect()}
                 disabled={!googleStatus?.configured || googleConnecting}
-                className="px-4 py-2 rounded-md border border-[hsl(0,0%,25%)] text-[13px] hover:bg-[hsl(0,0%,15%)] transition-colors disabled:opacity-50"
+                className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-[12px] font-bold uppercase tracking-wider hover:opacity-90 transition-all disabled:opacity-50 shadow-sm"
               >
-                {googleConnecting ? 'Opening browser…' : 'Connect Google'}
+                {googleConnecting ? 'Connecting...' : 'Connect Google'}
               </button>
-            )}
-            {googleStatus?.connected && (
+            ) : (
               <button
                 onClick={() => void handleGoogleDisconnect()}
                 disabled={googleLoading}
-                className="px-4 py-2 rounded-md border border-red-900/50 text-[13px] text-red-300 hover:bg-red-950/40 transition-colors disabled:opacity-50"
+                className="px-4 py-2 rounded-lg border border-red-500/20 bg-red-500/5 text-[12px] font-bold uppercase tracking-wider text-red-500/70 hover:bg-red-500/10 transition-all disabled:opacity-50"
               >
                 Disconnect
               </button>
@@ -168,78 +181,74 @@ export function AccountSettings(): JSX.Element {
             <button
               onClick={() => void loadGoogleStatus()}
               disabled={googleLoading}
-              className="px-4 py-2 rounded-md border border-[hsl(0,0%,25%)] text-[13px] hover:bg-[hsl(0,0%,15%)] transition-colors disabled:opacity-50"
+              className="px-4 py-2 rounded-lg border border-border bg-secondary/50 text-[12px] font-bold uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-all disabled:opacity-50"
             >
-              {googleLoading ? 'Refreshing…' : 'Refresh status'}
+              {googleLoading ? 'Refreshing...' : 'Refresh'}
             </button>
-          </div>
-
-          <div className="text-[12px] text-[hsl(0,0%,55%)]">
-            Scopes requested: Gmail send, Drive readonly, profile, email.
           </div>
         </div>
-      </div>
+      </section>
 
-      <div>
-        <h2 className="text-[22px] font-semibold text-white mb-6">Your Subscription & Usage</h2>
-        <div className="border border-[hsl(0,0%,15%)] divide-y divide-[hsl(0,0%,15%)] rounded-xl overflow-hidden bg-[hsl(0,0%,8%)]">
-          <div className="p-5 flex items-center justify-between">
+      <section>
+        <h2 className="text-[20px] font-bold text-foreground/90 mb-6 tracking-tight">Subscription</h2>
+        <div className="border border-border divide-y divide-border/50 rounded-2xl overflow-hidden bg-secondary/20 shadow-sm">
+          <div className="p-6 flex items-center justify-between gap-6">
             <div>
-              <div className="font-medium text-[14px] flex items-center gap-2">
-                Unlock the most powerful features <span className="text-[10px] bg-white text-black px-1.5 py-0.5 rounded font-bold">Pro</span>
+              <div className="font-bold text-[15px] flex items-center gap-2 text-foreground/90">
+                Cursorr Professional <span className="text-[10px] bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded-lg font-black uppercase tracking-widest">Active</span>
               </div>
-              <div className="text-[13px] text-[hsl(0,0%,55%)] mt-1">
-                Get the most out of your workspace with Pro. <span className="text-[hsl(200,80%,60%)] hover:underline cursor-pointer">Learn more</span>
-              </div>
+              <p className="text-[13px] text-muted-foreground/60 mt-1.5 leading-relaxed max-w-md">
+                You're on the Pro plan. Manage your billing or upgrade to Enterprise for team-wide controls.
+              </p>
             </div>
-            <button className="px-4 py-2 rounded-lg bg-white text-black font-medium text-[13px] hover:bg-[hsl(0,0%,90%)] transition-colors">
-              Upgrade plan
+            <button className="px-5 py-2.5 rounded-lg bg-primary text-primary-foreground font-bold text-[12px] uppercase tracking-wider hover:opacity-90 transition-all shadow-sm shrink-0">
+              Manage Plan
             </button>
           </div>
-          <div className="p-5">
+          <div className="p-6 bg-black/10">
             <TokenUsageCard />
           </div>
         </div>
-      </div>
+      </section>
 
-      <div>
-        <h2 className="text-[22px] font-semibold text-white mb-6">System</h2>
-        <div className="flex flex-col gap-0 border-t border-b border-[hsl(0,0%,15%)] divide-y divide-[hsl(0,0%,15%)]">
-          <div className="py-4 flex items-center justify-between">
-            <div className="text-[14px]">Support</div>
-            <button className="px-4 py-1.5 rounded-md border border-[hsl(0,0%,25%)] text-[13px] hover:bg-[hsl(0,0%,15%)] transition-colors">
+      <section className="mb-12">
+        <h2 className="text-[20px] font-bold text-foreground/90 mb-6 tracking-tight">System</h2>
+        <div className="flex flex-col gap-0 border-t border-b border-border/50 divide-y divide-border/50">
+          <div className="py-5 flex items-center justify-between">
+            <div className="text-[14px] font-medium text-foreground/80">Help & Support</div>
+            <button className="px-4 py-1.5 rounded-lg border border-border bg-secondary/50 text-[12px] font-bold uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm">
               Contact
             </button>
           </div>
           
-          <div className="py-4 flex items-center justify-between">
-            <div className="text-[14px] text-[hsl(0,0%,60%)]">You are signed in as v{username}</div>
-            <button onClick={() => void logout()} className="px-4 py-1.5 rounded-md border border-[hsl(0,0%,25%)] text-[13px] hover:bg-[hsl(0,0%,15%)] transition-colors">
+          <div className="py-5 flex items-center justify-between">
+            <div className="text-[14px] text-muted-foreground/60">Signed in as <span className="font-bold text-foreground/70">@{username}</span></div>
+            <button onClick={() => void logout()} className="px-4 py-1.5 rounded-lg border border-border bg-secondary/50 text-[12px] font-bold uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm">
               Sign out
             </button>
           </div>
 
-          <div className="py-4 flex items-center justify-between">
+          <div className="py-5 flex items-center justify-between">
             <div>
-              <div className="font-medium text-[14px]">Sign out of all sessions</div>
-              <div className="text-[13px] text-[hsl(0,0%,55%)] mt-0.5">Devices or browsers where you are signed in</div>
+              <div className="font-bold text-[14px] text-foreground/90">Security</div>
+              <p className="text-[13px] text-muted-foreground/50 mt-0.5 font-medium">Sign out of all other active sessions</p>
             </div>
-            <button className="px-4 py-1.5 rounded-md border border-[hsl(0,0%,25%)] text-[13px] hover:bg-[hsl(0,0%,15%)] transition-colors">
-              Sign out of all sessions
+            <button className="px-4 py-1.5 rounded-lg border border-border bg-secondary/50 text-[12px] font-bold uppercase tracking-wider text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm">
+              Reset Sessions
             </button>
           </div>
 
-          <div className="py-4 flex items-center justify-between">
+          <div className="py-5 flex items-center justify-between">
             <div>
-              <div className="font-medium text-[14px]">Delete account</div>
-              <div className="text-[13px] text-[hsl(0,0%,55%)] mt-0.5">Permanently delete your account and data</div>
+              <div className="font-bold text-[14px] text-red-500/80">Account Deletion</div>
+              <p className="text-[13px] text-muted-foreground/50 mt-0.5 font-medium">Permanently remove your account and all workspace data</p>
             </div>
-            <button className="px-4 py-1.5 rounded-md border border-[hsl(0,0%,25%)] text-[13px] hover:bg-[hsl(0,0%,15%)] transition-colors">
-              Learn more
+            <button className="px-4 py-1.5 rounded-lg border border-red-500/20 bg-red-500/5 text-[12px] font-bold uppercase tracking-wider text-red-500/70 hover:bg-red-500/10 transition-all shadow-sm">
+              Delete Account
             </button>
           </div>
         </div>
-      </div>
+      </section>
     </div>
   )
 }

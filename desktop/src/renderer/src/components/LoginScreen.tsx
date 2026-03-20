@@ -1,32 +1,32 @@
 import { useAuth } from '../context/AuthContext'
 import { cn } from '../lib/utils'
-import { ShieldCheck, Sparkles } from 'lucide-react'
+import { ShieldCheck, Sparkles, Infinity } from 'lucide-react'
 
 export function LoginScreen(): JSX.Element {
   const { openLarkLogin, loading, error } = useAuth()
 
   return (
     <div className="flex h-full items-center justify-center bg-background antialiased selection:bg-primary/30">
-      <div className="flex flex-col items-center gap-10 max-w-sm w-full px-8 py-12">
+      <div className="flex flex-col items-center gap-12 max-w-sm w-full px-8 py-16">
         
         {/* Divo Branding */}
-        <div className="flex flex-col items-center gap-6 group">
+        <div className="flex flex-col items-center gap-8 group">
           <div className="relative">
-            <div className="absolute -inset-4 bg-primary/20 rounded-full blur-2xl group-hover:bg-primary/30 transition-all duration-500 opacity-50" />
-            <div className="relative h-20 w-20 rounded-[24px] bg-card border border-border flex items-center justify-center shadow-2xl shadow-black/50 group-hover:scale-105 group-hover:border-primary/50 transition-all duration-300">
-              <span className="text-4xl font-bold bg-gradient-to-br from-white to-white/60 bg-clip-text text-transparent">D</span>
-              <div className="absolute -top-1 -right-1">
-                 <Sparkles className="text-primary animate-pulse" size={20} fill="currentColor" />
-              </div>
+            <div className="absolute -inset-6 bg-primary/10 rounded-full blur-3xl opacity-50 group-hover:bg-primary/20 transition-all duration-700" />
+            <div className="relative h-20 w-20 rounded-2xl bg-black/20 border border-border flex items-center justify-center shadow-2xl transition-all duration-500 group-hover:border-primary/30 group-hover:scale-105">
+              <Infinity size={40} className="text-primary/80" strokeWidth={2.5} />
             </div>
           </div>
           
-          <div className="flex flex-col items-center gap-2">
-            <h1 className="text-3xl font-bold text-foreground tracking-tight text-center">
-              Meet <span className="text-primary">Divo</span>
+          <div className="flex flex-col items-center gap-3">
+            <h1 className="text-[10px] font-black uppercase tracking-[0.4em] text-primary/60">
+              Introducing
             </h1>
-            <p className="text-[13px] text-muted-foreground text-center leading-relaxed font-medium">
-              Your professional AI coworker for Zoho, Outreach, and Lark automation.
+            <div className="text-4xl font-bold text-foreground/90 tracking-tighter text-center">
+              Divo
+            </div>
+            <p className="text-[13px] text-muted-foreground/50 text-center leading-relaxed font-medium max-w-[240px]">
+              Your professional AI coworker for enterprise-scale automation.
             </p>
           </div>
         </div>
@@ -36,44 +36,50 @@ export function LoginScreen(): JSX.Element {
             onClick={() => void openLarkLogin()}
             disabled={loading}
             className={cn(
-              'w-full h-12 flex items-center justify-center gap-2 rounded-xl text-sm font-semibold transition-all duration-200 shadow-lg shadow-primary/10',
-              'bg-primary text-primary-foreground hover:bg-primary/90 hover:scale-[1.02] active:scale-[0.98]',
+              'w-full h-12 flex items-center justify-center gap-3 rounded-xl text-[12px] font-black uppercase tracking-widest transition-all duration-300 shadow-lg',
+              'bg-primary text-primary-foreground hover:opacity-90 hover:scale-[1.01] active:scale-[0.99]',
               'disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100',
             )}
           >
             {loading ? (
-              <div className="h-4 w-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+              <Loader2 size={18} className="animate-spin" />
             ) : (
               <>
                 <ShieldCheck size={18} />
-                <span>Continue with Lark</span>
+                <span>Sign in with Lark</span>
               </>
             )}
           </button>
 
           {/* Error display */}
           {error && (
-            <div className="w-full px-4 py-3 rounded-xl bg-destructive/10 border border-destructive/20 text-[13px] text-destructive flex items-center gap-2 animate-in fade-in slide-in-from-top-1">
-              <div className="h-1.5 w-1.5 rounded-full bg-destructive animate-pulse" />
+            <div className="w-full px-4 py-3 rounded-xl bg-red-500/5 border border-red-500/10 text-[12px] text-red-500/70 font-medium flex items-center gap-3 animate-in fade-in slide-in-from-top-2">
+              <div className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
               {error}
             </div>
           )}
 
-          <div className="flex flex-col gap-4 pt-2">
-            <p className="text-[11px] text-muted-foreground/40 text-center leading-normal px-4">
-              Requires a connected Lark workspace account. 
-              Your email must match an existing company member.
-            </p>
-          </div>
+          <p className="text-[11px] text-muted-foreground/30 text-center leading-relaxed px-6 pt-4 font-medium uppercase tracking-wider">
+            Enterprise authentication via Lark Workspace required.
+          </p>
         </div>
 
         {/* Footer branding */}
-        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/20">
-          <div className="h-px w-8 bg-current" />
-          <span>Intelligent Automation</span>
-          <div className="h-px w-8 bg-current" />
+        <div className="flex items-center gap-3 opacity-20 group">
+          <div className="h-px w-12 bg-border transition-all duration-500 group-hover:w-16 group-hover:bg-primary/50" />
+          <Sparkles size={12} className="text-primary transition-all duration-500 group-hover:scale-125" />
+          <div className="h-px w-12 bg-border transition-all duration-500 group-hover:w-16 group-hover:bg-primary/50" />
         </div>
       </div>
     </div>
+  )
+}
+
+function Loader2({ size, className }: { size?: number; className?: string }) {
+  return (
+    <div 
+      style={{ width: size, height: size }} 
+      className={cn("border-2 border-current/30 border-t-current rounded-full", className)} 
+    />
   )
 }

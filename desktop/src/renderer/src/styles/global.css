@@ -112,6 +112,16 @@ body,
   margin-left: 1px;
 }
 
+/* Shimmer effect for skeletons */
+@keyframes skeleton-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
 /* Shimmer effect for AI thinking state */
 @keyframes shimmer {
   0% {

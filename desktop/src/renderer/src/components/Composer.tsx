@@ -774,7 +774,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
           {isApprovalMode
             ? 'Action approval required'
             : currentWorkspace
-            ? `AI powered by ${selectedMode.label} mode`
+            ? 'Divo can make mistakes. Check important info.'
             : 'Open a workspace to begin'}
         </p>
       </div>

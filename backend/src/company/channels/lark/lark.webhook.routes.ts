@@ -109,6 +109,11 @@ const toCompactJson = (value: unknown, maxLength = 1200): string | undefined => 
   }
 };
 
+const buildIngressAckText = (text: string): string => {
+  void text;
+  return 'Working on it.';
+};
+
 const parseHitlDecision = (text: string): { actionId: string; decision: 'confirmed' | 'cancelled' } | null => {
   const normalized = text.trim().toLowerCase();
   const match = normalized.match(/^(confirm|cancel)\s+([0-9a-f-]{36})$/i);
@@ -921,19 +926,71 @@ export const createLarkWebhookEventHandler = (
         });
       }
 
+      const shouldSendImmediateAck =
+        parsed.kind === 'event_callback_message'
+        && !textHitlDecision
+        && msgType !== 'image'
+        && msgType !== 'file'
+        && msgType !== 'media';
+
+      let statusMessageId: string | undefined;
+      if (shouldSendImmediateAck) {
+        try {
+          const ack = await dependencies.adapter.sendMessage({
+            chatId: tracedMessage.chatId,
+            text: buildIngressAckText(tracedMessage.text),
+            correlationId: requestId,
+          });
+          if (ack.status !== 'failed') {
+            statusMessageId = ack.messageId ?? undefined;
+            dependencies.log.info('lark.ingress.ack.sent', {
+              ...buildIngressTraceMeta({
+                requestId,
+                message: tracedMessage,
+                eventId: parsed.eventId,
+                textHash,
+                larkTenantKey,
+                companyId: scopedCompanyId ?? undefined,
+              }),
+              statusMessageId,
+            });
+          }
+        } catch (error) {
+          dependencies.log.warn('lark.ingress.ack.failed', {
+            ...buildIngressTraceMeta({
+              requestId,
+              message: tracedMessage,
+              eventId: parsed.eventId,
+              textHash,
+              larkTenantKey,
+              companyId: scopedCompanyId ?? undefined,
+            }),
+            error: error instanceof Error ? error.message : 'unknown_error',
+          });
+        }
+      }
+
+      const tracedMessageWithStatus: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>> = {
+        ...tracedMessage,
+        trace: {
+          ...(tracedMessage.trace ?? {}),
+          ...(statusMessageId ? { statusMessageId } : {}),
+        },
+      };
+
       if (parsed.kind === 'event_callback_card_action') {
         orangeDebug('lark.ingress.enqueue.card_action', {
           requestId,
           eventId: parsed.eventId,
-          messageId: tracedMessage.messageId,
-          chatId: tracedMessage.chatId,
+          messageId: tracedMessageWithStatus.messageId,
+          chatId: tracedMessageWithStatus.chatId,
         });
-        void dependencies.enqueueTask(tracedMessage)
+        void dependencies.enqueueTask(tracedMessageWithStatus)
           .then((task) => {
             dependencies.log.info('lark.ingress.queued', {
               ...buildIngressTraceMeta({
                 requestId,
-                message: tracedMessage,
+                message: tracedMessageWithStatus,
                 eventId: parsed.eventId,
                 taskId: task.taskId,
                 textHash,
@@ -946,12 +1003,12 @@ export const createLarkWebhookEventHandler = (
               level: 'info',
               requestId,
               taskId: task.taskId,
-              messageId: tracedMessage.messageId,
+              messageId: tracedMessageWithStatus.messageId,
               metadata: {
-                channel: tracedMessage.channel,
+                channel: tracedMessageWithStatus.channel,
                 eventId: parsed.eventId,
-                chatId: tracedMessage.chatId,
-                userId: tracedMessage.userId,
+                chatId: tracedMessageWithStatus.chatId,
+                userId: tracedMessageWithStatus.userId,
                 textHash,
                 larkTenantKey,
                 companyId: scopedCompanyId ?? undefined,
@@ -962,7 +1019,7 @@ export const createLarkWebhookEventHandler = (
             dependencies.log.error('lark.ingress.queue_failed', {
               ...buildIngressTraceMeta({
                 requestId,
-                message: tracedMessage,
+                message: tracedMessageWithStatus,
                 eventId: parsed.eventId,
                 textHash,
                 larkTenantKey,
@@ -976,9 +1033,9 @@ export const createLarkWebhookEventHandler = (
           success: true,
           message: 'Lark card action accepted',
           data: {
-            channel: tracedMessage.channel,
-            messageId: tracedMessage.messageId,
-            chatId: tracedMessage.chatId,
+            channel: tracedMessageWithStatus.channel,
+            messageId: tracedMessageWithStatus.messageId,
+            chatId: tracedMessageWithStatus.chatId,
             eventId: parsed.eventId,
           },
         });
@@ -1022,57 +1079,77 @@ export const createLarkWebhookEventHandler = (
       orangeDebug('lark.ingress.enqueue.message', {
         requestId,
         eventId: parsed.eventId,
-        messageId: tracedMessage.messageId,
-        chatId: tracedMessage.chatId,
+        messageId: tracedMessageWithStatus.messageId,
+        chatId: tracedMessageWithStatus.chatId,
         msgType: msgType ?? 'text',
         attachedFileCount: attachedFiles.length,
         fileAssetIds: attachedFiles.map((file) => file.fileAssetId),
       });
-      const task = await dependencies.enqueueTask(tracedMessage);
-      orangeDebug('lark.ingress.enqueued', {
-        requestId,
-        eventId: parsed.eventId,
-        messageId: tracedMessage.messageId,
-        chatId: tracedMessage.chatId,
-        taskId: task.taskId,
-      });
-      dependencies.log.info('lark.ingress.queued', {
-        ...buildIngressTraceMeta({
+      try {
+        const task = await dependencies.enqueueTask(tracedMessageWithStatus);
+        orangeDebug('lark.ingress.enqueued', {
           requestId,
-          message: tracedMessage,
           eventId: parsed.eventId,
+          messageId: tracedMessageWithStatus.messageId,
+          chatId: tracedMessageWithStatus.chatId,
           taskId: task.taskId,
-          textHash,
-          larkTenantKey,
-          companyId: scopedCompanyId ?? undefined,
-        }),
-      });
-      emitRuntimeTrace({
-        event: 'lark.ingress.queued',
-        level: 'info',
-        requestId,
-        taskId: task.taskId,
-        messageId: tracedMessage.messageId,
-        metadata: {
-          channel: tracedMessage.channel,
-          eventId: parsed.eventId,
-          chatId: tracedMessage.chatId,
-          userId: tracedMessage.userId,
-          textHash,
-          larkTenantKey,
-          companyId: scopedCompanyId ?? undefined,
-        },
-      });
-      return res.status(202).json({
-        success: true,
-        message: 'Lark event normalized and queued',
-        data: {
-          channel: tracedMessage.channel,
-          messageId: tracedMessage.messageId,
-          chatId: tracedMessage.chatId,
+        });
+        dependencies.log.info('lark.ingress.queued', {
+          ...buildIngressTraceMeta({
+            requestId,
+            message: tracedMessageWithStatus,
+            eventId: parsed.eventId,
+            taskId: task.taskId,
+            textHash,
+            larkTenantKey,
+            companyId: scopedCompanyId ?? undefined,
+          }),
+        });
+        emitRuntimeTrace({
+          event: 'lark.ingress.queued',
+          level: 'info',
+          requestId,
           taskId: task.taskId,
-        },
-      });
+          messageId: tracedMessageWithStatus.messageId,
+          metadata: {
+            channel: tracedMessageWithStatus.channel,
+            eventId: parsed.eventId,
+            chatId: tracedMessageWithStatus.chatId,
+            userId: tracedMessageWithStatus.userId,
+            textHash,
+            larkTenantKey,
+            companyId: scopedCompanyId ?? undefined,
+          },
+        });
+        return res.status(202).json({
+          success: true,
+          message: 'Lark event normalized and queued',
+          data: {
+            channel: tracedMessageWithStatus.channel,
+            messageId: tracedMessageWithStatus.messageId,
+            chatId: tracedMessageWithStatus.chatId,
+            taskId: task.taskId,
+          },
+        });
+      } catch (error) {
+        if (statusMessageId) {
+          try {
+            await dependencies.adapter.updateMessage({
+              messageId: statusMessageId,
+              text: [
+                'I could not start working on this request.',
+                '',
+                'Something went wrong before execution began. Please try again.',
+              ].join('\n'),
+              actions: [],
+              correlationId: requestId,
+            });
+          } catch {
+            // Best-effort only.
+          }
+        }
+        throw error;
+      }
     } catch (error) {
       return next(error);
     }
