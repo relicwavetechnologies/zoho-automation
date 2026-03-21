@@ -113,6 +113,12 @@ const fetchRelevantDocumentChunks = async (input: {
       queryMode: 'text',
     });
     const results = groups.flatMap((group) => group.hits);
+    logger.info('file.vision.retrieval.query', {
+      fileAssetId: input.fileAssetId,
+      companyId: input.companyId,
+      hitCount: results.length,
+      queryPreview: input.queryText.slice(0, 160),
+    });
 
     const fileChunks = results;
     if (fileChunks.length === 0) return '';
@@ -299,6 +305,11 @@ export const buildVisionContent = async (input: {
       });
 
       if (relevantContext) {
+        logger.info('file.vision.retrieval.selected', {
+          fileAssetId: file.fileAssetId,
+          fileName: file.fileName,
+          mode: 'semantic_chunks',
+        });
         parts.push({
           type: 'text',
           text: `\n\n--- ${excerptLabel} ---\n${relevantContext}\n--- End ${excerptLabel} ---`,
@@ -311,6 +322,11 @@ export const buildVisionContent = async (input: {
         });
 
         if (fullIndexedContext) {
+          logger.info('file.vision.retrieval.selected', {
+            fileAssetId: file.fileAssetId,
+            fileName: file.fileName,
+            mode: 'indexed_fallback',
+          });
           parts.push({
             type: 'text',
             text: `\n\n--- ${blockLabel} ---\n${fullIndexedContext}\n--- End ${blockLabel} ---`,
@@ -328,6 +344,11 @@ export const buildVisionContent = async (input: {
             });
 
         if (directText) {
+          logger.info('file.vision.retrieval.selected', {
+            fileAssetId: file.fileAssetId,
+            fileName: file.fileName,
+            mode: 'direct_text_fallback',
+          });
           parts.push({
             type: 'text',
             text: `\n\n--- Direct document content from "${file.fileName}" ---\n${directText}\n--- End direct document content ---`,
@@ -335,6 +356,11 @@ export const buildVisionContent = async (input: {
           continue;
         }
 
+        logger.warn('file.vision.retrieval.no_hit', {
+          fileAssetId: file.fileAssetId,
+          fileName: file.fileName,
+          queryPreview: input.userMessage.slice(0, 160),
+        });
         parts.push({
           type: 'text',
           text: `[Document "${file.fileName}" is being processed or has no accessible content.]`,

@@ -310,11 +310,19 @@ function ThinkingBlockRow({
     isLive?: boolean
 }): JSX.Element {
     const [open, setOpen] = useState(!!isLive)
+    const scrollRef = useRef<HTMLDivElement>(null)
     const hasContent = !!block.text
 
     useEffect(() => {
         if (!isLive) setOpen(false)
     }, [isLive])
+
+    // Auto-scroll to bottom as new tokens arrive
+    useEffect(() => {
+        if (isLive && open && scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+        }
+    }, [block.text, isLive, open])
 
     if (isLive) {
         return (
@@ -334,11 +342,14 @@ function ThinkingBlockRow({
                 </button>
 
                 {open && hasContent && (
-                    <div className={cn(
-                        'mt-2 ml-6 pl-3 border-l border-border',
-                        'text-[13px] text-muted-foreground/60 leading-relaxed',
-                        'max-h-64 overflow-y-auto',
-                    )}>
+                    <div 
+                        ref={scrollRef}
+                        className={cn(
+                            'mt-2 ml-6 pl-3 border-l border-border',
+                            'text-[13px] text-muted-foreground/60 leading-relaxed',
+                            'max-h-48 overflow-y-auto scroll-smooth custom-scrollbar',
+                        )}
+                    >
                         <MarkdownContent 
                             content={block.text!} 
                             className="desktop-markdown-thinking opacity-80"

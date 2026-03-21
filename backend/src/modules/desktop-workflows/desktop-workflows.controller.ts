@@ -9,6 +9,7 @@ import { ApiResponse } from '../../core/api-response';
 import { BaseController } from '../../core/controller';
 import { HttpException } from '../../core/http-exception';
 import type { MemberSessionDTO } from '../member-auth/member-auth.service';
+import { attachedFileSchema } from '../desktop-chat/desktop-chat.schemas';
 import { desktopWorkflowsService } from './desktop-workflows.service';
 import { zonedDateTimeToUtc } from './desktop-workflows.schedule';
 
@@ -70,6 +71,7 @@ const compileWorkflowRequestSchema = z.object({
   userIntent: z.string().trim().min(1).max(10000),
   schedule: uiScheduleSchema,
   destinations: z.array(destinationInputSchema).max(10).default([]),
+  attachedFiles: z.array(attachedFileSchema).optional().default([]),
 }).strict();
 
 const publishWorkflowRequestSchema = compileWorkflowRequestSchema.extend({
@@ -89,6 +91,7 @@ const createDraftRequestSchema = z.object({
 
 const workflowAuthorMessageSchema = z.object({
   message: z.string().trim().min(1).max(12000),
+  attachedFiles: z.array(attachedFileSchema).optional().default([]),
 }).strict();
 
 const updateWorkflowRequestSchema = z.object({
@@ -245,7 +248,7 @@ class DesktopWorkflowsController extends BaseController {
     const session = this.session(req);
     const workflowId = z.string().uuid().parse(req.params.workflowId);
     const parsed = workflowAuthorMessageSchema.parse(req.body ?? {});
-    const result = await desktopWorkflowsService.author(session, workflowId, parsed.message);
+    const result = await desktopWorkflowsService.author(session, workflowId, parsed.message, parsed.attachedFiles);
     return res.json(ApiResponse.success(result, 'Workflow updated'));
   };
 
@@ -277,6 +280,7 @@ class DesktopWorkflowsController extends BaseController {
       userIntent: parsed.userIntent,
       schedule: toScheduleConfig(parsed.schedule),
       outputConfig: toOutputConfig(parsed.destinations),
+      attachedFiles: parsed.attachedFiles,
     });
 
     return res.json(ApiResponse.success(result, 'Workflow compiled'));

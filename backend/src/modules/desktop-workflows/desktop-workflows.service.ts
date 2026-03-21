@@ -21,19 +21,152 @@ import { getSupportedToolActionGroups } from '../../company/tools/tool-action-gr
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { TOOL_REGISTRY } from '../../company/tools/tool-registry';
 import { resolveVercelLanguageModel } from '../../company/orchestration/vercel/model-factory';
+import { vectorDocumentRepository } from '../../company/integrations/vector';
+import { skillService } from '../../company/skills/skill.service';
 import { prisma } from '../../utils/prisma';
 import { logger } from '../../utils/logger';
 import { departmentService } from '../../company/departments/department.service';
 import { desktopThreadsService } from '../desktop-threads/desktop-threads.service';
 import { memberAuthRepository } from '../member-auth/member-auth.repository';
+import type { AttachedFileRef } from '../desktop-chat/file-vision.builder';
 import type { MemberSessionDTO } from '../member-auth/member-auth.service';
 import { executeAutomatedDesktopTurn } from '../desktop-chat/vercel-desktop.engine';
+import { attachedFileSchema } from '../desktop-chat/desktop-chat.schemas';
 import { formatScheduledSlot, getNextScheduledRunAt } from './desktop-workflows.schedule';
+
+const WORKFLOW_NODE_KIND_VALUES = [
+  'read',
+  'search',
+  'analyze',
+  'transform',
+  'createDraft',
+  'updateSystem',
+  'send',
+  'notify',
+  'requireApproval',
+  'branch',
+  'deliver',
+] as const;
+const WORKFLOW_ACTION_GROUP_VALUES = ['read', 'create', 'update', 'delete', 'send', 'execute'] as const;
+const WORKFLOW_REQUIRED_INSTRUCTION_KINDS = new Set([
+  'read',
+  'search',
+  'analyze',
+  'transform',
+  'createDraft',
+  'updateSystem',
+  'send',
+  'notify',
+  'requireApproval',
+] as const);
+
+const WORKFLOW_MODE_VALUES = [
+  'file_backed_task_list',
+  'research_digest',
+  'system_update',
+  'general',
+] as const;
+const WORKFLOW_SOURCE_KIND_VALUES = ['referenced_file', 'indexed_document', 'web', 'thread_context', 'none'] as const;
+const WORKFLOW_UNIT_KIND_VALUES = ['rows', 'tasks', 'records', 'documents', 'single'] as const;
+const WORKFLOW_ORDERING_VALUES = ['sequential', 'parallel'] as const;
+
+const workflowIntentBlueprintSchema = z.object({
+  primaryObjective: z.string().trim().min(1).max(500),
+  workflowMode: z.enum(WORKFLOW_MODE_VALUES).optional(),
+  sources: z.array(z.object({
+    label: z.string().trim().min(1).max(160),
+    kind: z.enum(WORKFLOW_SOURCE_KIND_VALUES).optional(),
+    unitOfWork: z.enum(WORKFLOW_UNIT_KIND_VALUES).optional(),
+    retrievalPreference: z.enum(['indexed_first', 'ocr_fallback', 'direct', 'none']).optional(),
+    notes: z.string().trim().max(400).optional(),
+  }).strict()).max(6).optional(),
+  executionPolicy: z.object({
+    ordering: z.enum(WORKFLOW_ORDERING_VALUES).optional(),
+    routeEachItemByContent: z.boolean().optional(),
+    includeApprovalBoundaries: z.boolean().optional(),
+    produceCompletionReport: z.boolean().optional(),
+  }).strict().optional(),
+  outputPlan: z.object({
+    finalDeliverable: z.string().trim().max(400).optional(),
+    successCriteria: z.string().trim().max(600).optional(),
+  }).strict().optional(),
+  stepInstructions: z.object({
+    retrieval: z.string().trim().max(1600).optional(),
+    extraction: z.string().trim().max(1600).optional(),
+    execution: z.string().trim().max(2400).optional(),
+    summary: z.string().trim().max(1600).optional(),
+    delivery: z.string().trim().max(800).optional(),
+  }).strict().optional(),
+}).strict();
 
 const generatedWorkflowCompilerOutputSchema = z.object({
   compilerNotes: z.string().trim().min(1).max(600),
-  aiDraft: z.string().trim().min(1).max(12000),
-  workflowSpec: scheduledWorkflowSpecSchema,
+  blueprint: workflowIntentBlueprintSchema,
+}).strict();
+
+const WORKFLOW_PLANNING_FIELD_VALUES = [
+  'source',
+  'schedule',
+  'destination',
+  'approval',
+  'execution_order',
+  'delivery',
+  'other',
+] as const;
+const WORKFLOW_PLANNING_PHASE_VALUES = ['planning', 'ready', 'built'] as const;
+
+const workflowPlanningQuestionOptionSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  value: z.string().trim().min(1).max(160),
+  description: z.string().trim().max(180).optional(),
+}).strict();
+
+const workflowPlanningQuestionSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  field: z.enum(WORKFLOW_PLANNING_FIELD_VALUES),
+  label: z.string().trim().min(1).max(80),
+  question: z.string().trim().min(1).max(400),
+  options: z.array(workflowPlanningQuestionOptionSchema).max(4).optional(),
+}).strict();
+
+const workflowPlanningStateSchema = z.object({
+  version: z.literal('v1'),
+  phase: z.enum(WORKFLOW_PLANNING_PHASE_VALUES),
+  readyToBuild: z.boolean(),
+  objective: z.string().trim().min(1).max(600),
+  intentSummary: z.string().trim().min(1).max(1000),
+  executionOrder: z.enum(WORKFLOW_ORDERING_VALUES).optional(),
+  unitOfWork: z.enum([...WORKFLOW_UNIT_KIND_VALUES, 'general'] as const).optional(),
+  sourceSummary: z.string().trim().max(2000).optional(),
+  outputSummary: z.string().trim().max(600).optional(),
+  approvalSummary: z.string().trim().max(400).optional(),
+  planningFindings: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
+  suggestedToolFamilies: z.array(z.string().trim().min(1).max(80)).max(10).optional(),
+  openQuestions: z.array(workflowPlanningQuestionSchema).max(4).default([]),
+}).strict();
+
+const workflowPlanningDraftUpdateSchema = z.object({
+  schedule: scheduledWorkflowScheduleConfigSchema.optional(),
+  scheduleEnabled: z.boolean().optional(),
+}).strict();
+
+const generatedWorkflowPlanningTurnSchema = z.object({
+  assistantResponse: z.string().trim().min(1).max(4000),
+  planningState: workflowPlanningStateSchema,
+  draftUpdate: workflowPlanningDraftUpdateSchema.optional(),
+}).strict();
+
+const workflowAuthorMessageMetadataSchema = z.object({
+  attachedFileContext: z.string().trim().max(2000).optional(),
+  attachedFiles: z.array(attachedFileSchema).max(12).optional(),
+  planningState: workflowPlanningStateSchema.optional(),
+  clarificationQuestions: z.array(workflowPlanningQuestionSchema).max(4).optional(),
+  draftUpdate: workflowPlanningDraftUpdateSchema.optional(),
+  model: z.object({
+    provider: z.string().trim().min(1).max(80),
+    modelId: z.string().trim().min(1).max(160),
+  }).strict().optional(),
+  compilerNotes: z.string().trim().max(1200).optional(),
 }).strict();
 
 export type DesktopWorkflowCompilerInput = {
@@ -41,6 +174,7 @@ export type DesktopWorkflowCompilerInput = {
   userIntent: string;
   schedule: ScheduledWorkflowScheduleConfig;
   outputConfig: ScheduledWorkflowOutputConfig;
+  attachedFiles?: AttachedFileRef[];
 };
 
 export type DesktopWorkflowPublishInput = {
@@ -64,10 +198,66 @@ type WorkflowAuthorMessage = {
   role: 'user' | 'assistant';
   content: string;
   createdAt: string;
+  referenceContext?: string | null;
+  planningState?: z.infer<typeof workflowPlanningStateSchema> | null;
+  clarificationQuestions?: z.infer<typeof workflowPlanningQuestionSchema>[];
 };
 
-const WORKFLOW_HISTORY_WINDOW = 8;
+const WORKFLOW_HISTORY_WINDOW = 3;
+const WORKFLOW_PLANNING_HISTORY_WINDOW = 6;
 const DEFAULT_WORKFLOW_NAME = 'Untitled workflow';
+const WORKFLOW_REFERENCE_PREVIEW_MAX_CHARS = 400;
+const WORKFLOW_REFERENCE_PREVIEW_CHUNKS = 2;
+const WORKFLOW_REFERENCE_CONTEXT_TOTAL_MAX_CHARS = 1600;
+const WORKFLOW_AI_DRAFT_CONTEXT_MAX_CHARS = 1600;
+const WORKFLOW_COMPILE_TIMEOUT_MS = 30000;
+const WORKFLOW_PLANNING_TIMEOUT_MS = 15000;
+
+const readString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+
+const readRecord = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+
+const truncateText = (value: string, maxChars: number): string =>
+  value.length > maxChars ? `${value.slice(0, maxChars - 3)}...` : value;
+
+const sanitizeIdentifier = (value: string, fallback: string): string => {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80);
+  return normalized || fallback;
+};
+
+const titleFromIdentifier = (value: string): string =>
+  value
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase()) || 'Workflow step';
+
+const normalizeWorkflowNodeKind = (value: string | undefined): (typeof WORKFLOW_NODE_KIND_VALUES)[number] =>
+  WORKFLOW_NODE_KIND_VALUES.includes((value ?? '') as (typeof WORKFLOW_NODE_KIND_VALUES)[number])
+    ? (value as (typeof WORKFLOW_NODE_KIND_VALUES)[number])
+    : 'analyze';
+
+const looksLikeReferenceRetrieval = (value: string | undefined): boolean => {
+  const text = (value ?? '').toLowerCase();
+  if (!text) return false;
+  return ['csv', 'file', 'document', 'sheet', 'spreadsheet', 'assignment', 'read ', 'load ', 'fetch ']
+    .some((needle) => text.includes(needle));
+};
+
+const buildReferenceRetrievalInstructions = (referenceContext: string): string => [
+  'Retrieve and read the referenced files or images before downstream work.',
+  'First try indexed company documents using search-documents when available.',
+  'If indexed retrieval is unavailable or insufficient, fall back to document-ocr-read.',
+  'Use the retrieved file contents as grounding context for all later steps.',
+  '',
+  'Referenced context:',
+  referenceContext.trim(),
+].join('\n');
 
 const buildScheduleSummary = (schedule: ScheduledWorkflowScheduleConfig): string => {
   if (schedule.type === 'hourly') {
@@ -101,20 +291,165 @@ const buildDestinationSummary = (outputConfig: ScheduledWorkflowOutputConfig): s
     })
     .join('\n');
 
-const buildToolCatalog = (allowedToolIds: string[]): string =>
-  TOOL_REGISTRY
-    .filter((tool) => allowedToolIds.includes(tool.id))
-    .map((tool) => {
-      const actionGroups = getSupportedToolActionGroups(tool.id).join(', ');
-      return [
-        `- ${tool.id}`,
-        `  Name: ${tool.name}`,
-        `  Category: ${tool.category}`,
-        `  Action groups: ${actionGroups}`,
-        `  Description: ${tool.description}`,
-      ].join('\n');
+const buildToolFamilyGuide = (allowedToolIds: string[]): string =>
+  Object.entries(
+    TOOL_REGISTRY
+      .filter((tool) => allowedToolIds.includes(tool.id))
+      .reduce<Record<string, string[]>>((acc, tool) => {
+        const actionGroups = getSupportedToolActionGroups(tool.id).join('/');
+        const entry = `${tool.id}(${actionGroups})`;
+        acc[tool.category] = [...(acc[tool.category] ?? []), entry];
+        return acc;
+      }, {}),
+  )
+    .map(([category, entries]) => `- ${category}: ${entries.join(', ')}`)
+    .join('\n');
+
+const buildPlanningToolGuide = (allowedToolIds: string[]): string => {
+  const lines: string[] = [];
+  if (allowedToolIds.includes('search-documents')) {
+    lines.push('- search-documents: search indexed company docs and uploaded file chunks first.');
+  }
+  if (allowedToolIds.includes('document-ocr-read')) {
+    lines.push('- document-ocr-read: read the actual uploaded file directly when indexed retrieval is weak or insufficient.');
+  }
+  if (allowedToolIds.includes('skill-search')) {
+    lines.push('- skill-search: discover and read internal operating skills for ambiguous operational workflows.');
+  }
+  return lines.join('\n');
+};
+
+const buildPlanningStateSummary = (
+  state: z.infer<typeof workflowPlanningStateSchema> | null | undefined,
+): string => {
+  if (!state) return '';
+
+  const lines = [
+    `Objective: ${state.objective}`,
+    `Intent summary: ${state.intentSummary}`,
+  ];
+  if (state.executionOrder) lines.push(`Execution order: ${state.executionOrder}`);
+  if (state.unitOfWork) lines.push(`Unit of work: ${state.unitOfWork}`);
+  if (state.sourceSummary) lines.push(`Source plan: ${state.sourceSummary}`);
+  if (state.outputSummary) lines.push(`Output plan: ${state.outputSummary}`);
+  if (state.approvalSummary) lines.push(`Approval handling: ${state.approvalSummary}`);
+  if (state.planningFindings?.length) {
+    lines.push('Planning findings:');
+    state.planningFindings.forEach((finding) => lines.push(`- ${finding}`));
+  }
+  if (state.openQuestions.length > 0) {
+    lines.push('Open questions:');
+    state.openQuestions.forEach((question) => lines.push(`- ${question.label}: ${question.question}`));
+  }
+  return lines.join('\n');
+};
+
+const summarizeWorkflowSpec = (spec: z.infer<typeof scheduledWorkflowSpecSchema> | null | undefined): string => {
+  if (!spec) return '';
+  return spec.nodes
+    .slice(0, 12)
+    .map((node, index) => {
+      const parts = [`${index + 1}. [${node.kind}] ${node.title}`];
+      if (node.capability) {
+        parts.push(`capability=${node.capability.toolId}.${node.capability.actionGroup}`);
+      }
+      if (node.destinationIds?.length) {
+        parts.push(`destinations=${node.destinationIds.join(',')}`);
+      }
+      return parts.join(' ');
     })
     .join('\n');
+};
+
+const summarizeAiDraft = (draft: string | null | undefined): string =>
+  draft?.trim() ? truncateText(draft.trim(), WORKFLOW_AI_DRAFT_CONTEXT_MAX_CHARS) : '';
+
+const looksLikeTaskListIntent = (userIntent: string, referenceContext?: string | null): boolean => {
+  const joined = `${userIntent}\n${referenceContext ?? ''}`.toLowerCase();
+  return [
+    'csv',
+    'spreadsheet',
+    'assignment',
+    'task',
+    'tasks',
+    'row',
+    'rows',
+    'one by one',
+    'sequential',
+    'sequentially',
+    'data rows',
+  ].some((needle) => joined.includes(needle));
+};
+
+const likelyNeedsWriteExecution = (value: string): boolean =>
+  includesAny(value, [
+    'create',
+    'update',
+    'send',
+    'submit',
+    'schedule',
+    'book',
+    'draft',
+    'write',
+    'post',
+    'assign',
+    'execute',
+    'complete',
+    'do all these tasks',
+  ]);
+
+const userDisallowsClarifyingQuestions = (value: string): boolean =>
+  includesAny(value, [
+    'no questions',
+    'dont ask questions',
+    "don't ask questions",
+    'without questions',
+    'no follow up questions',
+    'no clarifying questions',
+    'just build it',
+    'build it directly',
+  ]);
+
+const userExplicitlyRequestsWorkflowBuild = (value: string): boolean =>
+  includesAny(value, [
+    'build the workflow',
+    'build workflow',
+    'build it',
+    'proceed building',
+    'proceed with build',
+    'proceed',
+    'go ahead and build',
+    'go ahead',
+    'now build',
+    'okay build',
+    'ok build',
+    'yes build',
+    'yes build it',
+    'yes go ahead',
+    'yes proceed',
+    'looks good build',
+    'you can proceed updating',
+    'you can proceed building',
+    'you can proceed updating or building',
+    'proceed updating the workflow',
+    'proceed with the workflow',
+    'finalize the workflow',
+    'compile the workflow',
+  ]);
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
 
 const buildCompilerPrompt = (input: {
   workflowName: string;
@@ -122,40 +457,43 @@ const buildCompilerPrompt = (input: {
   schedule: ScheduledWorkflowScheduleConfig;
   outputConfig: ScheduledWorkflowOutputConfig;
   allowedToolIds: string[];
+  referenceContext?: string | null;
+  planningStateSummary?: string | null;
 }): string => {
   const allowedDestinationIds = input.outputConfig.destinations.map((destination) => destination.id).join(', ');
 
   return [
-    'Compile the user brief into a scheduled workflow graph.',
-    'Also write an aiDraft: a detailed reusable operating brief that can be edited and reused later.',
-    'Return a workflowSpec that matches the schema exactly.',
-    'Use only the listed tool ids and supported action groups.',
-    'Prefer explicit, concrete workflow steps over vague generic summaries.',
-    'If the brief asks for latest news, current updates, research, or web lookup, include a web search/read capability.',
-    'If the brief asks to create or update a Lark doc, use the Lark doc tools when available.',
-    'If the workflow creates, updates, deletes, sends, or executes anything, represent that as a write-capable node with the correct capability.',
-    'End the workflow with a deliver node whenever destinations are available.',
+    'You are a workflow intent compiler.',
+    'Do not return workflow JSON directly. Return a compact execution blueprint that another deterministic compiler will turn into the final workflow graph.',
+    'Your job is to infer the real operating recipe behind the user brief.',
+    'Focus on: source retrieval, unit of work, execution policy, reporting, and delivery.',
+    'Prefer explicit operational instructions over paraphrases.',
+    'If referenced files exist, explain how runtime should retrieve them first.',
+    'For referenced files, prefer indexed company documents using search-documents first.',
+    'Use document-ocr-read only as fallback when indexed retrieval is unavailable or insufficient.',
+    'For CSV or task-table jobs, describe the units of work as rows/tasks and the execution policy as sequential unless the user clearly asks for parallelism.',
+    'If work items imply writes or sends, tell runtime to route each item to the appropriate approved tool family based on item content and to honor approvals when required.',
     'Only deliver to these destination ids: ' + allowedDestinationIds,
-    'Operation names must be short, machine-readable, and dot-delimited.',
-    'Use node instructions to capture the real user intent, not generic filler.',
+    'Keep compilerNotes short and practical.',
     '',
     `Workflow name: ${input.workflowName}`,
     `User intent: ${input.userIntent}`,
+    input.planningStateSummary?.trim() ? ['Resolved planning state:', input.planningStateSummary.trim(), ''].join('\n') : '',
+    input.referenceContext?.trim() ? ['Referenced files:', input.referenceContext.trim(), ''].join('\n') : '',
     `Schedule: ${buildScheduleSummary(input.schedule)}`,
     'Allowed destinations:',
     buildDestinationSummary(input.outputConfig),
     '',
-    'Allowed tools:',
-    buildToolCatalog(input.allowedToolIds),
+    'Allowed tool families:',
+    buildToolFamilyGuide(input.allowedToolIds),
     '',
-    'Node kind guidance:',
-    '- read/search: gather source data',
-    '- analyze/transform: reason over gathered data',
-    '- createDraft: prepare an internal artifact before delivery',
-    '- updateSystem: create or modify external systems or documents',
-    '- send/notify: message or post results',
-    '- deliver: finalize to approved destinations',
-    '- requireApproval: insert when write/execution steps need an approval boundary',
+    'Blueprint requirements:',
+    '- primaryObjective: the actual job to complete',
+    '- workflowMode: choose the closest mode',
+    '- sources: list the main source artifacts and the unit of work',
+    '- executionPolicy: state ordering, per-item routing, approval sensitivity, and completion reporting',
+    '- outputPlan: describe the final deliverable and success criteria',
+    '- stepInstructions: write concrete instructions for retrieval, extraction, execution, summary, and delivery',
   ].join('\n');
 };
 
@@ -168,42 +506,245 @@ const buildAuthoringPrompt = (input: {
   history: WorkflowAuthorMessage[];
   currentAiDraft?: string | null;
   currentWorkflowSpec?: z.infer<typeof scheduledWorkflowSpecSchema> | null;
+  latestReferenceContext?: string | null;
 }): string => {
   const transcript = input.history
     .slice(-WORKFLOW_HISTORY_WINDOW)
-    .map((message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${message.content}`)
+    .map((message) => {
+      const lines = [`${message.role === 'user' ? 'User' : 'Assistant'}: ${message.content}`];
+      if (message.referenceContext?.trim()) {
+        lines.push('Referenced files:');
+        lines.push(message.referenceContext.trim());
+      }
+      return lines.join('\n');
+    })
     .join('\n');
 
   return [
     'You are refining a reusable workflow from an iterative authoring conversation.',
-    'Use the recent authoring history plus the current workflow artifacts to produce the next full workflow draft.',
-    'Return a full aiDraft and a full workflowSpec, not a patch.',
+    'Return a refreshed execution blueprint, not direct workflow JSON.',
     'Preserve the underlying job unless the latest user instruction clearly changes it.',
-    'Make the workflow concrete, operational, and structured around the available tools and action groups.',
+    'Carry forward source context, units of work, execution policy, and delivery expectations from the current workflow unless the user changes them.',
+    'For referenced files, the blueprint must explicitly explain retrieval and extraction before downstream execution.',
+    'Prefer indexed company document retrieval with search-documents first, then OCR/document-read as fallback.',
+    'For CSV or task-table workflows, keep the unit of work as rows/tasks and keep execution sequential unless the user says otherwise.',
+    'Do not regress a file-backed operational workflow into generic analyze-only instructions.',
     '',
     `Workflow name: ${input.workflowName}`,
     `Latest user brief: ${input.latestIntent}`,
+    input.latestReferenceContext?.trim() ? ['Latest referenced files:', input.latestReferenceContext.trim(), ''].join('\n') : '',
     `Schedule: ${buildScheduleSummary(input.schedule)}`,
     'Allowed destinations:',
     buildDestinationSummary(input.outputConfig),
     '',
-    'Allowed tools:',
-    buildToolCatalog(input.allowedToolIds),
+    'Allowed tool families:',
+    buildToolFamilyGuide(input.allowedToolIds),
     '',
     input.currentAiDraft?.trim()
-      ? ['Current reusable prompt:', input.currentAiDraft.trim(), ''].join('\n')
+      ? ['Current reusable prompt summary:', summarizeAiDraft(input.currentAiDraft), ''].join('\n')
       : '',
     input.currentWorkflowSpec
-      ? ['Current workflow JSON:', JSON.stringify(input.currentWorkflowSpec, null, 2), ''].join('\n')
+      ? ['Current workflow summary:', summarizeWorkflowSpec(input.currentWorkflowSpec), ''].join('\n')
       : '',
     'Recent authoring conversation:',
     transcript || 'User: Create a new workflow draft.',
   ].filter(Boolean).join('\n');
 };
 
+const buildPlanningPrompt = (input: {
+  workflowName: string;
+  latestIntent: string;
+  schedule: ScheduledWorkflowScheduleConfig;
+  outputConfig: ScheduledWorkflowOutputConfig;
+  history: WorkflowAuthorMessage[];
+  currentPlanningState?: z.infer<typeof workflowPlanningStateSchema> | null;
+  currentAiDraft?: string | null;
+  currentWorkflowSpec?: z.infer<typeof scheduledWorkflowSpecSchema> | null;
+  latestReferenceContext?: string | null;
+  allowedPlanningToolIds: string[];
+  planningSkillContext?: string | null;
+}): string => {
+  const transcript = input.history
+    .slice(-WORKFLOW_PLANNING_HISTORY_WINDOW)
+    .map((message) => {
+      const lines = [`${message.role === 'user' ? 'User' : 'Assistant'}: ${message.content}`];
+      if (message.referenceContext?.trim()) {
+        lines.push('Referenced files:');
+        lines.push(message.referenceContext.trim());
+      }
+      if (message.clarificationQuestions?.length) {
+        lines.push('Clarifications asked:');
+        message.clarificationQuestions.forEach((question) => {
+          lines.push(`- ${question.label}: ${question.question}`);
+        });
+      }
+      return lines.join('\n');
+    })
+    .join('\n\n');
+
+  return [
+    'You are the planning assistant for a workflow builder.',
+    'Stay in planning mode. Decide whether you should ask concise clarifying questions or whether the workflow is ready to build.',
+    'Do not return workflow JSON.',
+    'Ask clarifying questions only when missing information would materially change the workflow graph or execution behavior.',
+    input.latestIntent && userDisallowsClarifyingQuestions(input.latestIntent)
+      ? 'The user explicitly does not want clarifying questions. Default missing details when reasonable and build if it is safe to do so.'
+      : '',
+    'Even when the plan is ready, do not assume you should build immediately unless the user explicitly asks you to proceed/build/finalize.',
+    'Use defaults for schedule and destination when the existing workflow already has them.',
+    'For referenced files or company docs, internal company document retrieval comes first: use indexed docs first, then OCR/direct uploaded-file read if needed.',
+    'Do not suggest Google Drive, workspace inspection, repo access, or local filesystem discovery as the first path for uploaded/company files.',
+    'When the request is complete enough, mark readyToBuild=true and summarize the final execution plan clearly, then wait for explicit user approval to build.',
+    'Keep assistantResponse concise but useful.',
+    '',
+    `Workflow name: ${input.workflowName}`,
+    `Latest user message: ${input.latestIntent}`,
+    `Current schedule: ${buildScheduleSummary(input.schedule)}`,
+    'Current destinations:',
+    buildDestinationSummary(input.outputConfig),
+    '',
+    'Planning tools you may assume exist:',
+    buildPlanningToolGuide(input.allowedPlanningToolIds) || '- No planning tools available.',
+    '',
+    input.latestReferenceContext?.trim() ? ['Referenced file context:', input.latestReferenceContext.trim(), ''].join('\n') : '',
+    input.planningSkillContext?.trim() ? ['Relevant skills:', input.planningSkillContext.trim(), ''].join('\n') : '',
+    input.currentPlanningState
+      ? ['Current planning state:', buildPlanningStateSummary(input.currentPlanningState), ''].join('\n')
+      : '',
+    input.currentAiDraft?.trim()
+      ? ['Current reusable prompt summary:', summarizeAiDraft(input.currentAiDraft), ''].join('\n')
+      : '',
+    input.currentWorkflowSpec
+      ? ['Current workflow summary:', summarizeWorkflowSpec(input.currentWorkflowSpec), ''].join('\n')
+      : '',
+    'Recent planning transcript:',
+    transcript || 'User: Create a new workflow draft.',
+    '',
+    'Return:',
+    '- assistantResponse: the next assistant message to show in the planning chat',
+    '- planningState: objective, intent summary, source plan, output plan, ordering, findings, open questions, and readyToBuild',
+    '- draftUpdate.schedule only when the user explicitly changed scheduling or timing for this draft.',
+    '- For weekly schedules use weekday codes: MO, TU, WE, TH, FR, SA, SU.',
+    '- If you ask questions, keep them to at most 3 and prefer structured options for execution order, approvals, destination, or source confirmation.',
+  ].filter(Boolean).join('\n');
+};
+
 const includesAny = (value: string, needles: string[]): boolean => {
   const lowered = value.toLowerCase();
   return needles.some((needle) => lowered.includes(needle));
+};
+
+const buildClarificationQuestion = (
+  question: z.infer<typeof workflowPlanningQuestionSchema>,
+): z.infer<typeof workflowPlanningQuestionSchema> => question;
+
+const normalizePlanningState = (
+  state: z.infer<typeof workflowPlanningStateSchema>,
+  phaseOverride?: (typeof WORKFLOW_PLANNING_PHASE_VALUES)[number],
+): z.infer<typeof workflowPlanningStateSchema> => {
+  const readyToBuild = state.readyToBuild && state.openQuestions.length === 0;
+  return workflowPlanningStateSchema.parse({
+    ...state,
+    objective: truncateText(state.objective, 600),
+    intentSummary: truncateText(state.intentSummary, 1000),
+    sourceSummary: state.sourceSummary ? truncateText(state.sourceSummary, 2000) : undefined,
+    outputSummary: state.outputSummary ? truncateText(state.outputSummary, 600) : undefined,
+    approvalSummary: state.approvalSummary ? truncateText(state.approvalSummary, 400) : undefined,
+    planningFindings: state.planningFindings?.map((finding) => truncateText(finding, 500)).slice(0, 8),
+    suggestedToolFamilies: state.suggestedToolFamilies?.map((tool) => truncateText(tool, 80)).slice(0, 10),
+    openQuestions: state.openQuestions.slice(0, 4).map((question) => ({
+      ...question,
+      label: truncateText(question.label, 80),
+      question: truncateText(question.question, 400),
+      options: question.options?.slice(0, 4).map((option) => ({
+        ...option,
+        label: truncateText(option.label, 80),
+        value: truncateText(option.value, 160),
+        description: option.description ? truncateText(option.description, 180) : undefined,
+      })),
+    })),
+    phase: phaseOverride ?? (readyToBuild ? 'ready' : 'planning'),
+    readyToBuild,
+  });
+};
+
+const buildHeuristicPlanningTurn = (input: {
+  latestIntent: string;
+  schedule: ScheduledWorkflowScheduleConfig;
+  outputConfig: ScheduledWorkflowOutputConfig;
+  referenceContext?: string | null;
+  previousPlanningState?: z.infer<typeof workflowPlanningStateSchema> | null;
+  planningFindings?: string[];
+  suggestedToolFamilies?: string[];
+}): z.infer<typeof generatedWorkflowPlanningTurnSchema> => {
+  const latestIntent = input.latestIntent.trim();
+  const previousState = input.previousPlanningState ?? null;
+  const asksForRefineOnly = /^(try again|refine|refine this|improve this|update this)$/i.test(latestIntent);
+  const objective = asksForRefineOnly && previousState?.objective
+    ? previousState.objective
+    : latestIntent;
+  const fileBackedTaskList = looksLikeTaskListIntent(objective, input.referenceContext);
+  const needsWriteExecution = likelyNeedsWriteExecution(objective);
+  const mentionsFileButNoContext = !input.referenceContext?.trim()
+    && includesAny(objective, ['file', 'csv', 'sheet', 'spreadsheet', 'assignment', 'document', 'upload']);
+  const disallowQuestions = userDisallowsClarifyingQuestions(latestIntent);
+
+  const openQuestions: z.infer<typeof workflowPlanningQuestionSchema>[] = [];
+  if (mentionsFileButNoContext && !disallowQuestions) {
+    openQuestions.push(buildClarificationQuestion({
+      id: 'source_confirmation',
+      field: 'source',
+      label: 'Source file',
+      question: 'Which uploaded or company document should this workflow use as the source of truth?',
+    }));
+  }
+  if (asksForRefineOnly && !previousState && !disallowQuestions) {
+    openQuestions.push(buildClarificationQuestion({
+      id: 'refinement_goal',
+      field: 'other',
+      label: 'Refinement goal',
+      question: 'What should change in the workflow logic or output?',
+    }));
+  }
+
+  const readyToBuild = openQuestions.length === 0;
+  const planningState = normalizePlanningState({
+    version: 'v1',
+    phase: readyToBuild ? 'ready' : 'planning',
+    readyToBuild,
+    objective,
+    intentSummary: fileBackedTaskList
+      ? 'Use the referenced file as the source of truth, extract rows/tasks, execute them in order, and deliver a completion summary.'
+      : objective,
+    executionOrder: 'sequential',
+    unitOfWork: fileBackedTaskList ? 'rows' : 'general',
+    sourceSummary: input.referenceContext?.trim()
+      ? 'Use referenced uploaded/company files. Retrieve from indexed company docs first, then OCR/direct file read if needed.'
+      : undefined,
+    outputSummary: input.outputConfig.destinations.length > 0
+      ? `Deliver to ${input.outputConfig.destinations.map((destination) => destination.label ?? destination.id).join(', ')}.`
+      : 'Deliver to the default desktop destination.',
+    approvalSummary: needsWriteExecution
+      ? 'Respect approval boundaries for any write, send, or execute actions.'
+      : 'Proceed read-first and respect approvals if runtime requires them.',
+    planningFindings: input.planningFindings?.slice(0, 8),
+    suggestedToolFamilies: input.suggestedToolFamilies?.slice(0, 10),
+    openQuestions,
+  });
+
+  const assistantResponse = readyToBuild
+    ? fileBackedTaskList
+      ? 'I have enough context to build this workflow. It will retrieve the referenced file first, extract the task rows, execute them sequentially, and produce a completion report. Tell me to proceed when you want me to build it.'
+      : 'I have enough context to build the workflow. Tell me to proceed when you want me to build it.'
+    : [
+      'I need one more detail before I build the workflow:',
+      ...openQuestions.map((question) => `- ${question.question}`),
+    ].join('\n');
+
+  return {
+    assistantResponse,
+    planningState,
+  };
 };
 
 const pickSearchCapability = (allowedToolIds: string[]) => {
@@ -231,25 +772,95 @@ const pickSearchCapability = (allowedToolIds: string[]) => {
   return undefined;
 };
 
+const pickReferenceRetrievalCapability = (allowedToolIds: string[]) => {
+  if (allowedToolIds.includes('search-documents')) {
+    return {
+      toolId: 'search-documents',
+      actionGroup: 'read' as const,
+      operation: 'search.documents.reference_context',
+    };
+  }
+  if (allowedToolIds.includes('document-ocr-read')) {
+    return {
+      toolId: 'document-ocr-read',
+      actionGroup: 'read' as const,
+      operation: 'document.ocr.reference_context',
+    };
+  }
+  if (allowedToolIds.includes('share_chat_vectors')) {
+    return {
+      toolId: 'share_chat_vectors',
+      actionGroup: 'execute' as const,
+      operation: 'share_chat_vectors.reference_context',
+    };
+  }
+  return undefined;
+};
+
 const buildFallbackWorkflowSpec = (input: {
   workflowName: string;
   userIntent: string;
   outputConfig: ScheduledWorkflowOutputConfig;
   allowedToolIds: string[];
+  referenceContext?: string | null;
 }): z.infer<typeof scheduledWorkflowSpecSchema> => {
   const wantsWebResearch = includesAny(input.userIntent, ['latest', 'news', 'updates', 'search', 'research', 'web']);
   const wantsDraftArtifact = includesAny(input.userIntent, ['summary', 'digest', 'report', 'brief', 'draft', 'document', 'doc']);
+  const fileBackedTaskList = looksLikeTaskListIntent(input.userIntent, input.referenceContext);
 
   const readCapability = wantsWebResearch ? pickSearchCapability(input.allowedToolIds) : undefined;
+  const referenceCapability = input.referenceContext?.trim() ? pickReferenceRetrievalCapability(input.allowedToolIds) : undefined;
   const nodes: z.infer<typeof scheduledWorkflowSpecSchema>['nodes'] = [];
   const edges: z.infer<typeof scheduledWorkflowSpecSchema>['edges'] = [];
 
+  if (referenceCapability) {
+    nodes.push({
+      id: 'load_referenced_inputs',
+      kind: 'read',
+      title: 'Load referenced files and inputs',
+      instructions: buildReferenceRetrievalInstructions(input.referenceContext!.trim()),
+      outputKey: 'referenced_inputs',
+      expectedOutput: 'The extracted contents or grounded context from the referenced files and images.',
+      capability: referenceCapability,
+    });
+  }
+
+  if (fileBackedTaskList) {
+    nodes.push({
+      id: 'extract_and_structure_work_items',
+      kind: 'transform',
+      title: 'Extract and structure work items',
+      instructions: 'Parse the referenced source into structured work items. Treat each row/task as a distinct unit of work and preserve the original order.',
+      inputs: referenceCapability ? ['load_referenced_inputs'] : [],
+      outputKey: 'work_items',
+      expectedOutput: 'A structured ordered list of work items ready for execution.',
+    });
+    nodes.push({
+      id: 'execute_work_items_sequentially',
+      kind: 'updateSystem',
+      title: 'Execute work items sequentially',
+      instructions: 'Process the structured work items one by one. For each item, determine the appropriate approved tool family from the item content, perform the required action, and record the outcome before proceeding to the next item.',
+      inputs: ['extract_and_structure_work_items'],
+      outputKey: 'execution_results',
+      expectedOutput: 'Per-item execution results with completed, blocked, failed, or skipped status.',
+    });
+    nodes.push({
+      id: 'summarize_results',
+      kind: 'createDraft',
+      title: 'Summarize execution results',
+      instructions: 'Produce a completion report that summarizes completed work items, blockers, failures, and follow-up actions.',
+      inputs: ['execute_work_items_sequentially'],
+      outputKey: 'completion_report',
+      expectedOutput: 'A concise completion report ready for final delivery.',
+    });
+  } else
   if (readCapability) {
     nodes.push({
       id: 'gather_context',
       kind: 'read',
       title: 'Gather source context',
       instructions: input.userIntent,
+      inputs: referenceCapability ? ['load_referenced_inputs'] : [],
       outputKey: 'source_context',
       expectedOutput: 'Relevant source material and extracted facts for the scheduled task.',
       capability: readCapability,
@@ -261,7 +872,7 @@ const buildFallbackWorkflowSpec = (input: {
     kind: 'analyze',
     title: 'Analyze and structure findings',
     instructions: `Analyze the gathered inputs for this workflow intent and extract the most relevant output.\n\nIntent: ${input.userIntent}`,
-    inputs: readCapability ? ['gather_context'] : [],
+    inputs: readCapability ? ['gather_context'] : referenceCapability ? ['load_referenced_inputs'] : [],
     outputKey: 'analysis',
     expectedOutput: 'A concise, structured result that directly satisfies the workflow intent.',
   });
@@ -283,7 +894,7 @@ const buildFallbackWorkflowSpec = (input: {
     kind: 'deliver',
     title: 'Deliver result to destination',
     instructions: 'Deliver the final result to the configured destinations.',
-    inputs: [wantsDraftArtifact ? 'prepare_output' : 'analyze_findings'],
+    inputs: [fileBackedTaskList ? 'summarize_results' : wantsDraftArtifact ? 'prepare_output' : 'analyze_findings'],
     destinationIds: input.outputConfig.defaultDestinationIds.length > 0
       ? input.outputConfig.defaultDestinationIds
       : input.outputConfig.destinations.map((destination) => destination.id),
@@ -339,14 +950,502 @@ const isScheduledWorkflowTableMissing = (error: unknown): boolean =>
 const isDatabaseUnavailable = (error: unknown): boolean => readPrismaErrorCode(error) === 'P1001';
 
 const toWorkflowMessages = (
-  rows: Array<{ id: string; role: string; content: string; createdAt: Date }>,
+  rows: Array<{ id: string; role: string; content: string; createdAt: Date; metadata?: unknown }>,
 ): WorkflowAuthorMessage[] =>
   rows.map((row) => ({
+    ...(workflowAuthorMessageMetadataSchema.safeParse(readRecord(row.metadata) ?? {}).success
+      ? (() => {
+        const metadata = workflowAuthorMessageMetadataSchema.parse(readRecord(row.metadata) ?? {});
+        return {
+          planningState: metadata.planningState ?? null,
+          clarificationQuestions: metadata.clarificationQuestions ?? [],
+        };
+      })()
+      : {
+        planningState: null,
+        clarificationQuestions: [],
+      }),
     id: row.id,
     role: row.role === 'assistant' ? 'assistant' : 'user',
     content: row.content,
     createdAt: row.createdAt.toISOString(),
+    referenceContext: readString(readRecord(row.metadata)?.attachedFileContext) ?? null,
   }));
+
+const findLatestReferenceContext = (
+  rows: Array<{ metadata?: unknown }>,
+): string | null => {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const value = readString(readRecord(rows[index]?.metadata)?.attachedFileContext);
+    if (value) return value;
+  }
+  return null;
+};
+
+const findLatestPlanningState = (
+  rows: Array<{ metadata?: unknown }>,
+): z.infer<typeof workflowPlanningStateSchema> | null => {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const metadata = workflowAuthorMessageMetadataSchema.safeParse(readRecord(rows[index]?.metadata) ?? {});
+    if (metadata.success && metadata.data.planningState) {
+      return metadata.data.planningState;
+    }
+  }
+  return null;
+};
+
+const findLatestAttachedFiles = (
+  rows: Array<{ metadata?: unknown }>,
+): AttachedFileRef[] => {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const metadata = readRecord(rows[index]?.metadata);
+    const attachedFiles = metadata?.attachedFiles;
+    if (!Array.isArray(attachedFiles)) continue;
+    const parsed = attachedFiles.flatMap((entry) => {
+      const result = attachedFileSchema.safeParse(entry);
+      return result.success ? [result.data] : [];
+    });
+    if (parsed.length > 0) {
+      return parsed;
+    }
+  }
+  return [];
+};
+
+const buildWorkflowReferenceContext = async (input: {
+  companyId: string;
+  requesterUserId: string;
+  requesterAiRole?: string | null;
+  attachedFiles: AttachedFileRef[];
+}): Promise<string | null> => {
+  const seen = new Set<string>();
+  const uniqueFiles = input.attachedFiles.filter((file) => {
+    if (!file.fileAssetId || seen.has(file.fileAssetId)) return false;
+    seen.add(file.fileAssetId);
+    return true;
+  });
+  if (uniqueFiles.length === 0) return null;
+
+  const isSuperRole = ['SUPER_ADMIN', 'COMPANY_ADMIN'].includes(input.requesterAiRole ?? '');
+
+  const summaries = await Promise.all(uniqueFiles.map(async (file) => {
+    const asset = await prisma.fileAsset.findFirst({
+      where: {
+        id: file.fileAssetId,
+        companyId: input.companyId,
+      },
+      select: {
+        fileName: true,
+        mimeType: true,
+        ingestionStatus: true,
+        ingestionError: true,
+        uploaderUserId: true,
+      },
+    });
+
+    if (!asset) {
+      return `- ${file.fileName} [${file.mimeType}]: selected reference could not be found.`;
+    }
+
+    const policy = await prisma.fileAccessPolicy.findFirst({
+      where: {
+        fileAssetId: file.fileAssetId,
+        companyId: input.companyId,
+        aiRole: input.requesterAiRole ?? 'MEMBER',
+        canRead: true,
+      },
+      select: { id: true },
+    });
+
+    const isOwner = asset.uploaderUserId === input.requesterUserId;
+    if (!policy && !isSuperRole && !isOwner) {
+      return `- ${asset.fileName} [${asset.mimeType}]: selected, but not readable in the current role context.`;
+    }
+
+    if (asset.ingestionStatus !== 'done') {
+      return `- ${asset.fileName} [${asset.mimeType}]: selected, but indexing is ${asset.ingestionStatus}${asset.ingestionError ? ` (${asset.ingestionError})` : ''}.`;
+    }
+
+    const documents = await vectorDocumentRepository.findByFileAsset({
+      companyId: input.companyId,
+      fileAssetId: file.fileAssetId,
+    });
+
+    const preview = documents
+      .slice(0, WORKFLOW_REFERENCE_PREVIEW_CHUNKS)
+      .map((doc) => {
+        const payload = (doc.payload ?? {}) as Record<string, unknown>;
+        return readString(payload._chunk) ?? readString(payload.text) ?? readString(payload.summary) ?? '';
+      })
+      .filter(Boolean)
+      .join('\n');
+
+    if (preview) {
+      const compactPreview = preview.length > WORKFLOW_REFERENCE_PREVIEW_MAX_CHARS
+        ? `${preview.slice(0, WORKFLOW_REFERENCE_PREVIEW_MAX_CHARS - 3)}...`
+        : preview;
+      return `- ${asset.fileName} [${asset.mimeType}]:\n${compactPreview}`;
+    }
+
+    if (asset.mimeType.startsWith('image/')) {
+      return `- ${asset.fileName} [${asset.mimeType}]: image reference selected. No extracted preview was available, so use the user's instruction plus the image filename/type as context.`;
+    }
+
+    return `- ${asset.fileName} [${asset.mimeType}]: selected, but no indexed preview text was available.`;
+  }));
+
+  const combined = summaries.filter(Boolean).join('\n');
+  return combined.length > WORKFLOW_REFERENCE_CONTEXT_TOTAL_MAX_CHARS
+    ? `${combined.slice(0, WORKFLOW_REFERENCE_CONTEXT_TOTAL_MAX_CHARS - 3)}...`
+    : combined;
+};
+
+const buildPlanningSkillContext = async (input: {
+  companyId: string;
+  departmentId?: string | null;
+  latestIntent: string;
+  referenceContext?: string | null;
+}): Promise<{ text: string | null; suggestedToolFamilies: string[] }> => {
+  const query = [input.latestIntent, input.referenceContext ?? '']
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  if (!query || !includesAny(query, ['workflow', 'task', 'invoice', 'estimate', 'meeting', 'lark', 'zoho', 'google', 'approval', 'send', 'create', 'update'])) {
+    return { text: null, suggestedToolFamilies: [] };
+  }
+
+  const skills = await skillService.searchVisibleSkills({
+    companyId: input.companyId,
+    departmentId: input.departmentId ?? undefined,
+    query,
+    limit: 3,
+  });
+
+  if (skills.length === 0) {
+    return { text: null, suggestedToolFamilies: [] };
+  }
+
+  const text = skills
+    .slice(0, 2)
+    .map((skill) => `- ${skill.name}: ${truncateText(skill.summary, 180)}`)
+    .join('\n');
+
+  const suggestedToolFamilies = skills.flatMap((skill) => {
+    const joined = `${skill.name} ${skill.summary} ${skill.tags.join(' ')}`.toLowerCase();
+    const families: string[] = [];
+    if (joined.includes('zoho')) families.push('zoho');
+    if (joined.includes('books')) families.push('booksRead', 'booksWrite');
+    if (joined.includes('lark')) families.push('larkTask', 'larkCalendar', 'larkDoc', 'larkApproval');
+    if (joined.includes('google')) families.push('googleDrive', 'googleCalendar', 'googleMail');
+    if (joined.includes('search')) families.push('docSearch');
+    return families;
+  }).filter((value, index, array) => array.indexOf(value) === index);
+
+  return { text, suggestedToolFamilies };
+};
+
+const buildHeuristicBlueprint = (input: {
+  userIntent: string;
+  referenceContext?: string | null;
+}): z.infer<typeof workflowIntentBlueprintSchema> => {
+  const fileBackedTaskList = looksLikeTaskListIntent(input.userIntent, input.referenceContext);
+  const needsWriteExecution = likelyNeedsWriteExecution(input.userIntent);
+
+  return {
+    primaryObjective: input.userIntent,
+    workflowMode: fileBackedTaskList ? 'file_backed_task_list' : needsWriteExecution ? 'system_update' : 'general',
+    ...(input.referenceContext?.trim()
+      ? {
+        sources: [{
+          label: 'Referenced files and uploaded inputs',
+          kind: 'referenced_file',
+          unitOfWork: fileBackedTaskList ? 'rows' : 'documents',
+          retrievalPreference: 'indexed_first',
+          notes: 'Use referenced files as the source of truth for downstream execution.',
+        }],
+      }
+      : {}),
+    executionPolicy: {
+      ordering: fileBackedTaskList ? 'sequential' : 'sequential',
+      routeEachItemByContent: fileBackedTaskList || needsWriteExecution,
+      includeApprovalBoundaries: needsWriteExecution,
+      produceCompletionReport: true,
+    },
+    outputPlan: {
+      finalDeliverable: fileBackedTaskList
+        ? 'A completion report with per-task outcomes, blockers, and follow-up notes.'
+        : 'A concrete final result that satisfies the workflow objective.',
+      successCriteria: fileBackedTaskList
+        ? 'All work items are processed in order and the final report reflects completed, blocked, and failed items.'
+        : 'The workflow completes its intended task and delivers a concise result.',
+    },
+    stepInstructions: {
+      retrieval: input.referenceContext?.trim()
+        ? buildReferenceRetrievalInstructions(input.referenceContext.trim())
+        : undefined,
+      extraction: fileBackedTaskList
+        ? 'Parse the referenced file into structured work items. Treat each row/task as an individual unit of work and preserve the original ordering.'
+        : 'Extract the most relevant structured source facts needed for downstream execution.',
+      execution: fileBackedTaskList
+        ? 'Process the structured work items sequentially, one by one. For each item, determine the appropriate approved tool family from the item content, gather any additional required context, execute the task, and record the outcome before moving to the next item.'
+        : 'Carry out the required workflow steps using approved tool families only. If the task requires write or send actions, honor approval requirements before proceeding.',
+      summary: fileBackedTaskList
+        ? 'Summarize completed, blocked, failed, and skipped items with brief reasons and any next actions.'
+        : 'Summarize the completed work and any limitations or follow-up items.',
+      delivery: 'Deliver the final result to the configured destination without changing the workflow objective.',
+    },
+  };
+};
+
+const buildReusableWorkflowBrief = (input: {
+  userIntent: string;
+  blueprint: z.infer<typeof workflowIntentBlueprintSchema>;
+  referenceContext?: string | null;
+}): string => {
+  const sections: string[] = [
+    `Workflow objective: ${input.blueprint.primaryObjective || input.userIntent}`,
+  ];
+
+  const sourceNotes = input.blueprint.sources?.map((source) => {
+    const pieces = [source.label];
+    if (source.kind) pieces.push(`kind=${source.kind}`);
+    if (source.unitOfWork) pieces.push(`unit=${source.unitOfWork}`);
+    if (source.retrievalPreference) pieces.push(`retrieval=${source.retrievalPreference}`);
+    return `- ${pieces.join(' | ')}`;
+  }) ?? [];
+  if (input.referenceContext?.trim()) {
+    sections.push(
+      '',
+      'Source handling:',
+      '- Retrieve referenced files from indexed company documents first using search-documents.',
+      '- If indexed retrieval is missing or weak, use document-ocr-read as the fallback retrieval path.',
+      '- Treat the extracted file contents as the source of truth for downstream execution.',
+      ...sourceNotes,
+      '',
+      'Referenced context summary:',
+      input.referenceContext.trim(),
+    );
+  } else if (sourceNotes.length > 0) {
+    sections.push('', 'Source handling:', ...sourceNotes);
+  }
+
+  const ordering = input.blueprint.executionPolicy?.ordering ?? 'sequential';
+  const routeEachItem = input.blueprint.executionPolicy?.routeEachItemByContent ?? false;
+  const produceReport = input.blueprint.executionPolicy?.produceCompletionReport ?? true;
+  sections.push(
+    '',
+    'Execution policy:',
+    `- Work through the workflow ${ordering === 'parallel' ? 'in parallel where safe' : 'sequentially, one step at a time'}.`,
+    routeEachItem
+      ? '- Route each work item to the most appropriate approved tool family based on the item content instead of guessing a single static tool path.'
+      : '- Use the approved workflow steps directly without inventing additional phases.',
+    input.blueprint.executionPolicy?.includeApprovalBoundaries
+      ? '- If a step requires create/update/send/execute behavior, stop for approval whenever the runtime requires it.'
+      : '- Respect approval requirements if the runtime requests them.',
+  );
+
+  const stepInstructions = input.blueprint.stepInstructions;
+  if (stepInstructions?.extraction || stepInstructions?.execution || stepInstructions?.summary) {
+    sections.push('', 'Step guidance:');
+    if (stepInstructions.extraction) sections.push(`- Extract/structure: ${stepInstructions.extraction}`);
+    if (stepInstructions.execution) sections.push(`- Execute: ${stepInstructions.execution}`);
+    if (stepInstructions.summary) sections.push(`- Summarize: ${stepInstructions.summary}`);
+    if (stepInstructions.delivery) sections.push(`- Deliver: ${stepInstructions.delivery}`);
+  }
+
+  if (produceReport || input.blueprint.outputPlan?.finalDeliverable) {
+    sections.push(
+      '',
+      'Final output:',
+      `- ${input.blueprint.outputPlan?.finalDeliverable ?? 'Produce a concise completion report with outcomes and blockers.'}`,
+      ...(input.blueprint.outputPlan?.successCriteria ? [`- Success criteria: ${input.blueprint.outputPlan.successCriteria}`] : []),
+    );
+  }
+
+  return sections.join('\n');
+};
+
+const assembleWorkflowSpecFromBlueprint = (input: {
+  blueprint: z.infer<typeof workflowIntentBlueprintSchema>;
+  workflowName: string;
+  userIntent: string;
+  outputConfig: ScheduledWorkflowOutputConfig;
+  allowedToolIds: string[];
+  referenceContext?: string | null;
+}): z.infer<typeof scheduledWorkflowSpecSchema> => {
+  const allowedDestinationIds = input.outputConfig.defaultDestinationIds.length > 0
+    ? input.outputConfig.defaultDestinationIds
+    : input.outputConfig.destinations.map((destination) => destination.id);
+  const nodes: z.infer<typeof scheduledWorkflowSpecSchema>['nodes'] = [];
+  const edges: z.infer<typeof scheduledWorkflowSpecSchema>['edges'] = [];
+  const fileBackedTaskList =
+    Boolean(input.referenceContext?.trim())
+    && (
+      input.blueprint.workflowMode === 'file_backed_task_list'
+      || looksLikeTaskListIntent(input.userIntent, input.referenceContext)
+      || input.blueprint.sources?.some((source) => source.unitOfWork === 'rows' || source.unitOfWork === 'tasks')
+    );
+  const referenceCapability = input.referenceContext?.trim()
+    ? pickReferenceRetrievalCapability(input.allowedToolIds)
+    : undefined;
+  const executionNeedsWrites =
+    likelyNeedsWriteExecution(input.userIntent)
+    || input.blueprint.workflowMode === 'system_update'
+    || Boolean(input.blueprint.executionPolicy?.routeEachItemByContent);
+
+  const addNode = (node: z.infer<typeof scheduledWorkflowSpecSchema>['nodes'][number]) => {
+    nodes.push(node);
+    if (nodes.length > 1) {
+      edges.push({
+        sourceId: nodes[nodes.length - 2]!.id,
+        targetId: node.id,
+        condition: 'always',
+      });
+    }
+  };
+
+  if (input.referenceContext?.trim() && referenceCapability) {
+    addNode({
+      id: 'load_referenced_inputs',
+      kind: 'read',
+      title: 'Load referenced files and inputs',
+      instructions: input.blueprint.stepInstructions?.retrieval?.trim()
+        ? truncateText(input.blueprint.stepInstructions.retrieval.trim(), 4000)
+        : buildReferenceRetrievalInstructions(input.referenceContext.trim()),
+      outputKey: 'referenced_inputs',
+      expectedOutput: 'Grounded source content from the referenced files and images.',
+      capability: referenceCapability,
+    });
+  }
+
+  if (fileBackedTaskList) {
+    addNode({
+      id: 'extract_and_structure_work_items',
+      kind: 'transform',
+      title: 'Extract and structure work items',
+      instructions: truncateText(
+        input.blueprint.stepInstructions?.extraction?.trim()
+          || 'Parse the referenced source into structured work items. Treat rows/tasks as the units of work, preserve the original ordering, and keep the extracted structure available for execution.',
+        4000,
+      ),
+      inputs: nodes.length > 0 ? [nodes[nodes.length - 1]!.id] : [],
+      outputKey: 'work_items',
+      expectedOutput: 'A structured ordered list of work items with the information needed to execute each item.',
+    });
+    addNode({
+      id: 'execute_work_items_sequentially',
+      kind: executionNeedsWrites ? 'updateSystem' : 'analyze',
+      title: 'Execute work items sequentially',
+      instructions: truncateText(
+        input.blueprint.stepInstructions?.execution?.trim()
+          || 'Process the structured work items one by one in order. For each item, infer the correct approved tool family from the item content, gather any missing required context, execute the task, and record the outcome before moving to the next item.',
+        4000,
+      ),
+      inputs: [nodes[nodes.length - 1]!.id],
+      outputKey: 'execution_results',
+      expectedOutput: 'Per-item execution results including completed, blocked, failed, and skipped statuses.',
+    });
+    if (input.blueprint.executionPolicy?.includeApprovalBoundaries && executionNeedsWrites) {
+      addNode({
+        id: 'summarize_results',
+        kind: 'createDraft',
+        title: 'Summarize execution results',
+        instructions: truncateText(
+          input.blueprint.stepInstructions?.summary?.trim()
+            || 'Summarize the per-item execution results, highlight blockers, and prepare a concise completion report.',
+          4000,
+        ),
+        inputs: [nodes[nodes.length - 1]!.id],
+        outputKey: 'completion_report',
+        expectedOutput: 'A concise completion report with per-item outcomes and follow-up notes.',
+      });
+    } else {
+      addNode({
+        id: 'summarize_results',
+        kind: 'createDraft',
+        title: 'Summarize execution results',
+        instructions: truncateText(
+          input.blueprint.stepInstructions?.summary?.trim()
+            || 'Summarize the per-item execution results, highlight blockers, and prepare a concise completion report.',
+          4000,
+        ),
+        inputs: [nodes[nodes.length - 1]!.id],
+        outputKey: 'completion_report',
+        expectedOutput: 'A concise completion report with per-item outcomes and follow-up notes.',
+      });
+    }
+  } else {
+    addNode({
+      id: 'analyze_goal',
+      kind: 'analyze',
+      title: 'Analyze workflow goal',
+      instructions: truncateText(
+        input.blueprint.stepInstructions?.extraction?.trim()
+          || `Analyze the workflow objective and derive the concrete work plan needed to satisfy: ${input.userIntent}`,
+        4000,
+      ),
+      inputs: nodes.length > 0 ? [nodes[nodes.length - 1]!.id] : [],
+      outputKey: 'analysis',
+      expectedOutput: 'A structured understanding of the work required to complete the workflow objective.',
+    });
+    addNode({
+      id: executionNeedsWrites ? 'execute_workflow' : 'prepare_result',
+      kind: executionNeedsWrites ? 'updateSystem' : 'createDraft',
+      title: executionNeedsWrites ? 'Execute workflow actions' : 'Prepare workflow result',
+      instructions: truncateText(
+        input.blueprint.stepInstructions?.execution?.trim()
+          || (executionNeedsWrites
+            ? 'Carry out the required workflow actions using approved tools only. Respect approval requirements before any write-capable action.'
+            : 'Prepare the workflow result using the gathered context and the approved workflow steps.'),
+        4000,
+      ),
+      inputs: [nodes[nodes.length - 1]!.id],
+      outputKey: executionNeedsWrites ? 'execution_results' : 'final_result',
+      expectedOutput: executionNeedsWrites
+        ? 'Concrete results from the required workflow actions.'
+        : 'A concrete final result that satisfies the workflow objective.',
+    });
+    addNode({
+      id: 'summarize_results',
+      kind: 'createDraft',
+      title: 'Summarize results',
+      instructions: truncateText(
+        input.blueprint.stepInstructions?.summary?.trim()
+          || 'Summarize the completed work, key outputs, and any limitations or follow-up actions.',
+        4000,
+      ),
+      inputs: [nodes[nodes.length - 1]!.id],
+      outputKey: 'completion_report',
+      expectedOutput: 'A concise summary suitable for final delivery.',
+    });
+  }
+
+  addNode({
+    id: 'deliver_result',
+    kind: 'deliver',
+    title: 'Deliver result',
+    instructions: truncateText(
+      input.blueprint.stepInstructions?.delivery?.trim()
+        || 'Deliver the final result to the configured destination.',
+      4000,
+    ),
+    inputs: [nodes[nodes.length - 1]!.id],
+    destinationIds: allowedDestinationIds,
+  });
+
+  return scheduledWorkflowSpecSchema.parse({
+    version: 'v1',
+    name: input.workflowName,
+    description: truncateText(
+      input.blueprint.outputPlan?.successCriteria
+        || input.blueprint.primaryObjective
+        || `Workflow for: ${input.userIntent}`,
+      1000,
+    ),
+    nodes,
+    edges,
+  });
+};
 
 const buildApprovalGrant = (
   session: MemberSessionDTO,
@@ -396,6 +1495,7 @@ const buildExecutionPrompt = (input: {
   schedule: ScheduledWorkflowScheduleConfig;
   outputConfig: ScheduledWorkflowOutputConfig;
   overrideText?: string | null;
+  hasAttachedSourceArtifacts?: boolean;
 }): string => [
   input.compiledPrompt.trim(),
   ...(input.overrideText?.trim()
@@ -406,6 +1506,12 @@ const buildExecutionPrompt = (input: {
   `- Run this workflow now for the scheduled slot ${formatScheduledSlot(input.scheduledFor, input.schedule.timezone)}.`,
   '- Produce the final deliverable directly in the assistant response.',
   '- Do not ask follow-up questions.',
+  ...(input.hasAttachedSourceArtifacts
+    ? [
+      '- This workflow has referenced uploaded/company source files. Use internal company document retrieval first.',
+      '- Do not inspect Google Drive, the local workspace, local filesystem, or repo sources for those uploaded/company files unless internal document retrieval and OCR both fail or the user explicitly asked for those other sources.',
+    ]
+    : []),
   '- If a read-only tool succeeds but returns partial, degraded, empty, or unavailable context, continue with the best possible digest and include a short limitations note.',
   '- Only treat the workflow as blocked when there is a true hard stop: a pending approval action, a required write action that cannot proceed, or a primary required source fails with no usable substitute.',
   '- Missing secondary enrichment context is not a block by itself.',
@@ -453,6 +1559,138 @@ class DesktopWorkflowsService {
     return allowedToolIds;
   }
 
+  private async advancePlanningSession(input: {
+    session: MemberSessionDTO;
+    workflowName: string;
+    latestIntent: string;
+    schedule: ScheduledWorkflowScheduleConfig;
+    outputConfig: ScheduledWorkflowOutputConfig;
+    history: WorkflowAuthorMessage[];
+    currentPlanningState?: z.infer<typeof workflowPlanningStateSchema> | null;
+    currentAiDraft?: string | null;
+    currentWorkflowSpec?: z.infer<typeof scheduledWorkflowSpecSchema> | null;
+    latestReferenceContext?: string | null;
+  }): Promise<{
+    assistantResponse: string;
+    planningState: z.infer<typeof workflowPlanningStateSchema>;
+    draftUpdate?: z.infer<typeof workflowPlanningDraftUpdateSchema>;
+    model: { provider: string; modelId: string } | null;
+  }> {
+    if (!(config.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)) {
+      const heuristic = buildHeuristicPlanningTurn({
+        latestIntent: input.latestIntent,
+        schedule: input.schedule,
+        outputConfig: input.outputConfig,
+        referenceContext: input.latestReferenceContext,
+        previousPlanningState: input.currentPlanningState,
+      });
+      return {
+        assistantResponse: heuristic.assistantResponse,
+        planningState: heuristic.planningState,
+        draftUpdate: undefined,
+        model: null,
+      };
+    }
+
+    const allowedToolIds = await this.getAllowedWorkflowTools(input.session);
+    const allowedPlanningToolIds = allowedToolIds.filter((toolId) => [
+      'search-documents',
+      'document-ocr-read',
+      'skill-search',
+      'share_chat_vectors',
+    ].includes(toolId));
+    const planningSkillContext = await buildPlanningSkillContext({
+      companyId: input.session.companyId,
+      departmentId: input.session.resolvedDepartmentId ?? undefined,
+      latestIntent: input.latestIntent,
+      referenceContext: input.latestReferenceContext,
+    });
+
+    const resolvedModel = await resolveVercelLanguageModel('fast');
+    const prompt = buildPlanningPrompt({
+      workflowName: input.workflowName,
+      latestIntent: input.latestIntent,
+      schedule: input.schedule,
+      outputConfig: input.outputConfig,
+      history: input.history,
+      currentPlanningState: input.currentPlanningState,
+      currentAiDraft: input.currentAiDraft,
+      currentWorkflowSpec: input.currentWorkflowSpec,
+      latestReferenceContext: input.latestReferenceContext,
+      allowedPlanningToolIds,
+      planningSkillContext: planningSkillContext.text,
+    });
+
+    try {
+      const result = await withTimeout(
+        generateObject({
+          model: resolvedModel.model,
+          schema: generatedWorkflowPlanningTurnSchema,
+          schemaName: 'workflow_planning_turn',
+          schemaDescription: 'A planning assistant response for workflow authoring with readiness and clarifications.',
+          prompt,
+          temperature: 0,
+          maxRetries: 0,
+          providerOptions: {
+            google: {
+              thinkingConfig: {
+                includeThoughts: false,
+                thinkingLevel: 'minimal',
+              },
+            },
+          },
+        }),
+        WORKFLOW_PLANNING_TIMEOUT_MS,
+        `workflow planning timed out after ${WORKFLOW_PLANNING_TIMEOUT_MS}ms`,
+      );
+
+      return {
+        assistantResponse: result.object.assistantResponse,
+        planningState: normalizePlanningState({
+          ...result.object.planningState,
+          planningFindings: [
+            ...(result.object.planningState.planningFindings ?? []),
+            ...(planningSkillContext.text ? planningSkillContext.text.split('\n').map((line) => line.replace(/^- /, '').trim()).filter(Boolean) : []),
+          ].slice(0, 8),
+          suggestedToolFamilies: [
+            ...(result.object.planningState.suggestedToolFamilies ?? []),
+            ...planningSkillContext.suggestedToolFamilies,
+          ].filter((value, index, array) => array.indexOf(value) === index).slice(0, 10),
+        }),
+        draftUpdate: result.object.draftUpdate,
+        model: {
+          provider: resolvedModel.effectiveProvider,
+          modelId: resolvedModel.effectiveModelId,
+        },
+      };
+    } catch (error) {
+      logger.warn('desktop.workflow.plan.fallback', {
+        error: error instanceof Error ? error.message : 'unknown_error',
+        workflowName: input.workflowName,
+      });
+      const heuristic = buildHeuristicPlanningTurn({
+        latestIntent: input.latestIntent,
+        schedule: input.schedule,
+        outputConfig: input.outputConfig,
+        referenceContext: input.latestReferenceContext,
+        previousPlanningState: input.currentPlanningState,
+        planningFindings: planningSkillContext.text
+          ? planningSkillContext.text.split('\n').map((line) => line.replace(/^- /, '').trim()).filter(Boolean)
+          : [],
+        suggestedToolFamilies: planningSkillContext.suggestedToolFamilies,
+      });
+      return {
+        assistantResponse: heuristic.assistantResponse,
+        planningState: heuristic.planningState,
+        draftUpdate: undefined,
+        model: {
+          provider: resolvedModel.effectiveProvider,
+          modelId: resolvedModel.effectiveModelId,
+        },
+      };
+    }
+  }
+
   private async compileArtifacts(input: {
     session: MemberSessionDTO;
     name: string;
@@ -462,6 +1700,8 @@ class DesktopWorkflowsService {
     history?: WorkflowAuthorMessage[];
     currentAiDraft?: string | null;
     currentWorkflowSpec?: z.infer<typeof scheduledWorkflowSpecSchema> | null;
+    latestReferenceContext?: string | null;
+    planningState?: z.infer<typeof workflowPlanningStateSchema> | null;
   }): Promise<{
     aiDraft: string;
     workflowSpec: z.infer<typeof scheduledWorkflowSpecSchema>;
@@ -474,9 +1714,11 @@ class DesktopWorkflowsService {
       throw new HttpException(503, 'Gemini is not configured on the backend');
     }
 
+    const compileStartedAt = Date.now();
     const allowedToolIds = await this.getAllowedWorkflowTools(input.session);
-    const resolvedModel = await resolveVercelLanguageModel('high');
+    const resolvedModel = await resolveVercelLanguageModel('fast');
     const prompt = input.history && input.history.length > 0
+      && !input.planningState
       ? buildAuthoringPrompt({
         workflowName: input.name,
         latestIntent: input.latestIntent,
@@ -486,6 +1728,7 @@ class DesktopWorkflowsService {
         history: input.history,
         currentAiDraft: input.currentAiDraft,
         currentWorkflowSpec: input.currentWorkflowSpec,
+        latestReferenceContext: input.latestReferenceContext,
       })
       : buildCompilerPrompt({
         workflowName: input.name,
@@ -493,27 +1736,44 @@ class DesktopWorkflowsService {
         schedule: input.schedule,
         outputConfig: input.outputConfig,
         allowedToolIds,
+        referenceContext: input.latestReferenceContext,
+        planningStateSummary: buildPlanningStateSummary(input.planningState),
       });
+    logger.info('desktop.workflow.compile.start', {
+      workflowName: input.name,
+      effectiveModelId: resolvedModel.effectiveModelId,
+      provider: resolvedModel.effectiveProvider,
+      historyCount: input.history?.length ?? 0,
+      allowedToolCount: allowedToolIds.length,
+      promptLength: prompt.length,
+      hasReferenceContext: Boolean(input.latestReferenceContext?.trim()),
+      referenceContextLength: input.latestReferenceContext?.length ?? 0,
+    });
 
     let generated: z.infer<typeof generatedWorkflowCompilerOutputSchema>;
     let usedFallback = false;
     try {
-      const result = await generateObject({
-        model: resolvedModel.model,
-        schema: generatedWorkflowCompilerOutputSchema,
-        schemaName: 'scheduled_workflow_compile_result',
-        schemaDescription: 'A valid scheduled workflow graph and brief compiler note.',
-        prompt,
-        temperature: 0,
-        providerOptions: {
-          google: {
-            thinkingConfig: {
-              includeThoughts: true,
-              thinkingLevel: resolvedModel.thinkingLevel,
+      const result = await withTimeout(
+        generateObject({
+          model: resolvedModel.model,
+          schema: generatedWorkflowCompilerOutputSchema,
+          schemaName: 'scheduled_workflow_execution_blueprint',
+          schemaDescription: 'A compact execution blueprint for building a scheduled workflow.',
+          prompt,
+          temperature: 0,
+          maxRetries: 0,
+          providerOptions: {
+            google: {
+              thinkingConfig: {
+                includeThoughts: false,
+                thinkingLevel: 'minimal',
+              },
             },
           },
-        },
-      });
+        }),
+        WORKFLOW_COMPILE_TIMEOUT_MS,
+        `workflow compile timed out after ${WORKFLOW_COMPILE_TIMEOUT_MS}ms`,
+      );
       generated = result.object;
     } catch (error) {
       logger.warn('desktop.workflow.compile.fallback', {
@@ -521,28 +1781,50 @@ class DesktopWorkflowsService {
         workflowName: input.name,
       });
       usedFallback = true;
+      const fallbackBlueprint = buildHeuristicBlueprint({
+        userIntent: input.latestIntent,
+        referenceContext: input.latestReferenceContext,
+      });
       generated = {
-        compilerNotes: 'Compiled with deterministic fallback because the model response did not satisfy the strict workflow schema on the first pass.',
-        aiDraft: [
-          `Workflow objective: ${input.latestIntent}`,
-          '',
-          'Execution guidance:',
-          '- Follow the structured workflow definition exactly.',
-          '- Use only the approved tools and destinations.',
-          '- Produce a concrete, concise final deliverable for the configured outputs.',
-        ].join('\n'),
-        workflowSpec: buildFallbackWorkflowSpec({
-          workflowName: input.name,
-          userIntent: input.latestIntent,
-          outputConfig: input.outputConfig,
-          allowedToolIds,
-        }),
+        compilerNotes: 'Compiled with deterministic fallback because the execution blueprint response was incomplete or invalid.',
+        blueprint: fallbackBlueprint,
       };
     }
 
-    const workflowSpec = scheduledWorkflowSpecSchema.parse({
-      ...generated.workflowSpec,
-      name: input.name,
+    let workflowSpec: z.infer<typeof scheduledWorkflowSpecSchema>;
+    let blueprint = generated.blueprint;
+    try {
+      workflowSpec = assembleWorkflowSpecFromBlueprint({
+        blueprint,
+        workflowName: input.name,
+        userIntent: input.latestIntent,
+        outputConfig: input.outputConfig,
+        allowedToolIds,
+        referenceContext: input.latestReferenceContext,
+      });
+    } catch (error) {
+      logger.warn('desktop.workflow.compile.normalize_fallback', {
+        error: error instanceof Error ? error.message : 'unknown_error',
+        workflowName: input.name,
+      });
+      usedFallback = true;
+      blueprint = buildHeuristicBlueprint({
+        userIntent: input.latestIntent,
+        referenceContext: input.latestReferenceContext,
+      });
+      workflowSpec = buildFallbackWorkflowSpec({
+        workflowName: input.name,
+        userIntent: input.latestIntent,
+        outputConfig: input.outputConfig,
+        allowedToolIds,
+        referenceContext: input.latestReferenceContext,
+      });
+    }
+
+    const aiDraft = buildReusableWorkflowBrief({
+      userIntent: input.latestIntent,
+      blueprint,
+      referenceContext: input.latestReferenceContext,
     });
 
     const { compiledPrompt, capabilitySummary } = compileScheduledWorkflowDefinition({
@@ -552,8 +1834,16 @@ class DesktopWorkflowsService {
       outputConfig: input.outputConfig,
     });
 
+    const durationMs = Date.now() - compileStartedAt;
+    logger.info('desktop.workflow.compile.completed', {
+      workflowName: input.name,
+      effectiveModelId: resolvedModel.effectiveModelId,
+      usedFallback,
+      durationMs,
+    });
+
     return {
-      aiDraft: generated.aiDraft,
+      aiDraft,
       workflowSpec,
       compiledPrompt,
       compilerNotes: usedFallback
@@ -584,9 +1874,21 @@ class DesktopWorkflowsService {
     lastRunAt: Date | null;
     departmentId: string | null;
     updatedAt: Date;
-    messages?: Array<{ id: string; role: string; content: string; createdAt: Date }>;
+    messages?: Array<{ id: string; role: string; content: string; createdAt: Date; metadata?: unknown }>;
   }) {
     const parsed = parseWorkflowRow(row);
+    const planningState = findLatestPlanningState(row.messages ?? []) ?? normalizePlanningState({
+      version: 'v1',
+      phase: row.compiledPrompt.trim() ? 'built' : 'planning',
+      readyToBuild: Boolean(row.compiledPrompt.trim()),
+      objective: row.userIntent?.trim() || row.name,
+      intentSummary: row.aiDraft?.trim()
+        ? summarizeAiDraft(row.aiDraft)
+        : row.userIntent?.trim() || 'Describe the job to start planning this workflow.',
+      executionOrder: 'sequential',
+      outputSummary: 'Deliver to the workflow destination after execution.',
+      openQuestions: [],
+    }, row.compiledPrompt.trim() ? 'built' : 'planning');
     return {
       id: row.id,
       name: row.name,
@@ -605,6 +1907,7 @@ class DesktopWorkflowsService {
       departmentId: row.departmentId ?? null,
       ownershipScope: 'personal' as const,
       updatedAt: row.updatedAt.toISOString(),
+      planningState,
       messages: toWorkflowMessages(row.messages ?? []),
     };
   }
@@ -626,6 +1929,12 @@ class DesktopWorkflowsService {
       latestIntent: input.userIntent,
       schedule: input.schedule,
       outputConfig: input.outputConfig,
+      latestReferenceContext: await buildWorkflowReferenceContext({
+        companyId: session.companyId,
+        requesterUserId: session.userId,
+        requesterAiRole: session.aiRole ?? session.role,
+        attachedFiles: input.attachedFiles ?? [],
+      }),
     });
   }
 
@@ -699,7 +2008,7 @@ class DesktopWorkflowsService {
     return this.serializeWorkflow(workflow);
   }
 
-  async author(session: MemberSessionDTO, workflowId: string, message: string) {
+  async author(session: MemberSessionDTO, workflowId: string, message: string, attachedFiles: AttachedFileRef[] = []) {
     const workflow = await prisma.scheduledWorkflow.findFirst({
       where: {
         id: workflowId,
@@ -717,12 +2026,29 @@ class DesktopWorkflowsService {
       throw new HttpException(404, 'Workflow not found');
     }
 
+    const attachedFileContext = await buildWorkflowReferenceContext({
+      companyId: session.companyId,
+      requesterUserId: session.userId,
+      requesterAiRole: session.aiRole ?? session.role,
+      attachedFiles,
+    });
+    const effectiveReferenceContext = attachedFileContext ?? findLatestReferenceContext(workflow.messages);
+
     const parsed = parseWorkflowRow(workflow);
+    const currentPlanningState = findLatestPlanningState(workflow.messages);
     const createdUserMessage = await prisma.scheduledWorkflowMessage.create({
       data: {
         workflowId,
         role: 'user',
         content: message.trim(),
+        ...(attachedFiles.length > 0 || attachedFileContext
+          ? {
+            metadata: {
+              attachedFiles,
+              ...(attachedFileContext ? { attachedFileContext } : {}),
+            },
+          }
+          : {}),
       },
     });
 
@@ -731,18 +2057,92 @@ class DesktopWorkflowsService {
       createdUserMessage,
     ]);
 
-    const compiled = await this.compileArtifacts({
+    const planningTurn = await this.advancePlanningSession({
       session,
-      name: workflow.name === DEFAULT_WORKFLOW_NAME ? deriveWorkflowName(message) : workflow.name,
+      workflowName: workflow.name === DEFAULT_WORKFLOW_NAME ? deriveWorkflowName(message) : workflow.name,
       latestIntent: message.trim(),
       schedule: parsed.schedule,
       outputConfig: parsed.outputConfig,
       history,
+      currentPlanningState,
       currentAiDraft: workflow.aiDraft,
       currentWorkflowSpec: parsed.workflowSpec,
+      latestReferenceContext: effectiveReferenceContext,
     });
 
-    const assistantSummary = summarizeResult(compiled.compilerNotes || compiled.aiDraft, 1200);
+    const nextWorkflowName = workflow.name === DEFAULT_WORKFLOW_NAME
+      ? deriveWorkflowName(planningTurn.planningState.objective || message)
+      : workflow.name;
+    const nextSchedule = planningTurn.draftUpdate?.schedule ?? parsed.schedule;
+    const shouldBuildWorkflow = planningTurn.planningState.readyToBuild
+      && userExplicitlyRequestsWorkflowBuild(message.trim());
+
+    if (!shouldBuildWorkflow) {
+      const updatedWorkflow = await prisma.$transaction(async (tx) => {
+        await tx.scheduledWorkflowMessage.create({
+          data: {
+            workflowId,
+            role: 'assistant',
+            content: planningTurn.assistantResponse,
+            metadata: {
+              planningState: planningTurn.planningState,
+              clarificationQuestions: planningTurn.planningState.openQuestions,
+              ...(planningTurn.draftUpdate ? { draftUpdate: planningTurn.draftUpdate } : {}),
+              ...(planningTurn.model ? { model: planningTurn.model } : {}),
+            },
+          },
+        });
+
+        return tx.scheduledWorkflow.update({
+          where: { id: workflowId },
+          data: {
+            name: nextWorkflowName,
+            userIntent: planningTurn.planningState.objective,
+            timezone: nextSchedule.timezone,
+            scheduleType: nextSchedule.type,
+            scheduleConfigJson: nextSchedule,
+            ...(typeof planningTurn.draftUpdate?.scheduleEnabled === 'boolean'
+              ? { scheduleEnabled: planningTurn.draftUpdate.scheduleEnabled }
+              : {}),
+            updatedAt: new Date(),
+          },
+          include: {
+            messages: {
+              orderBy: { createdAt: 'asc' },
+            },
+          },
+        });
+      });
+
+      return {
+        ...this.serializeWorkflow(updatedWorkflow),
+        model: planningTurn.model ?? undefined,
+      };
+    }
+
+    const compiled = await this.compileArtifacts({
+      session,
+      name: nextWorkflowName,
+      latestIntent: planningTurn.planningState.objective,
+      schedule: nextSchedule,
+      outputConfig: parsed.outputConfig,
+      currentAiDraft: workflow.aiDraft,
+      currentWorkflowSpec: parsed.workflowSpec,
+      latestReferenceContext: effectiveReferenceContext,
+      planningState: planningTurn.planningState,
+    });
+
+    const builtPlanningState = normalizePlanningState({
+      ...planningTurn.planningState,
+      phase: 'built',
+      readyToBuild: true,
+      intentSummary: compiled.aiDraft.trim() || planningTurn.planningState.intentSummary,
+      openQuestions: [],
+    }, 'built');
+    const assistantSummary = summarizeResult(
+      `${planningTurn.assistantResponse}\n\n${compiled.compilerNotes || compiled.aiDraft}`,
+      1200,
+    );
     const updatedWorkflow = await prisma.$transaction(async (tx) => {
       await tx.scheduledWorkflowMessage.create({
         data: {
@@ -750,7 +2150,11 @@ class DesktopWorkflowsService {
           role: 'assistant',
           content: assistantSummary,
           metadata: {
+            planningState: builtPlanningState,
+            clarificationQuestions: [],
+            ...(planningTurn.draftUpdate ? { draftUpdate: planningTurn.draftUpdate } : {}),
             model: compiled.model,
+            compilerNotes: compiled.compilerNotes,
           },
         },
       });
@@ -758,12 +2162,18 @@ class DesktopWorkflowsService {
       return tx.scheduledWorkflow.update({
         where: { id: workflowId },
         data: {
-          name: workflow.name === DEFAULT_WORKFLOW_NAME ? deriveWorkflowName(message) : workflow.name,
-          userIntent: message.trim(),
+          name: nextWorkflowName,
+          userIntent: builtPlanningState.objective,
           aiDraft: compiled.aiDraft,
           workflowSpecJson: compiled.workflowSpec,
           compiledPrompt: compiled.compiledPrompt,
           capabilitySummaryJson: compiled.capabilitySummary,
+          timezone: nextSchedule.timezone,
+          scheduleType: nextSchedule.type,
+          scheduleConfigJson: nextSchedule,
+          ...(typeof planningTurn.draftUpdate?.scheduleEnabled === 'boolean'
+            ? { scheduleEnabled: planningTurn.draftUpdate.scheduleEnabled }
+            : {}),
           updatedAt: new Date(),
         },
         include: {
@@ -1059,6 +2469,7 @@ class DesktopWorkflowsService {
     departmentId: string | null;
     ownershipScope: 'personal';
     updatedAt: string;
+    planningState: z.infer<typeof workflowPlanningStateSchema>;
     messages: WorkflowAuthorMessage[];
   }>> {
     const rows = await prisma.scheduledWorkflow.findMany({
@@ -1527,7 +2938,14 @@ class DesktopWorkflowsService {
     resultSummary: string | null;
     errorSummary: string | null;
   }> {
-    const workflow = await prisma.scheduledWorkflow.findUnique({ where: { id: workflowId } });
+    const workflow = await prisma.scheduledWorkflow.findUnique({
+      where: { id: workflowId },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
     if (!workflow) {
       throw new HttpException(404, 'Workflow not found');
     }
@@ -1612,6 +3030,7 @@ class DesktopWorkflowsService {
       schedule,
       outputConfig,
       overrideText,
+      hasAttachedSourceArtifacts: findLatestAttachedFiles(workflow.messages).length > 0,
     });
     logger.info('desktop.workflow.execute.prompt', {
       workflowId: workflow.id,
@@ -1620,11 +3039,13 @@ class DesktopWorkflowsService {
     });
 
     try {
+      const workflowAttachedFiles = findLatestAttachedFiles(workflow.messages);
       const execution = await executeAutomatedDesktopTurn({
         session,
         threadId: primaryThread.id,
         prompt: executionPrompt,
         mode: 'high',
+        attachedFiles: workflowAttachedFiles,
         metadata: {
           workflowId: workflow.id,
           workflowRunId: run.id,

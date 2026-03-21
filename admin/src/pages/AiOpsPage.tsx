@@ -80,7 +80,7 @@ export const AiOpsPage = () => {
           </Tabs>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="p-8 animate-in slide-in-from-bottom-2 duration-500">
+          <div className="p-4 md:p-6 lg:p-8 animate-in slide-in-from-bottom-2 duration-500 min-w-0">
             {selectedTab === 'executions' ? <ExecutionsPage /> : null}
             {selectedTab === 'token-usage' ? <TokenUsagePage /> : null}
             {selectedTab === 'models' && isSuperAdmin ? <AiModelsPage /> : null}

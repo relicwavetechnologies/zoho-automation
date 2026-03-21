@@ -26,6 +26,7 @@ class PersonalVectorMemoryService {
     requesterUserId: string;
     text: string;
     limit?: number;
+    conversationKey?: string;
   }): Promise<PersonalMemoryMatch[]> {
     const normalized = input.text.trim();
     if (!normalized) {
@@ -37,6 +38,7 @@ class PersonalVectorMemoryService {
     const groups = await qdrantAdapter.search({
       companyId: input.companyId,
       requesterUserId: input.requesterUserId,
+      conversationKey: input.conversationKey,
       denseVector: queryVector,
       limit: Math.max(1, Math.min(profile.groupLimit, input.limit ?? profile.finalTopK)),
       candidateLimit: profile.branchLimit,

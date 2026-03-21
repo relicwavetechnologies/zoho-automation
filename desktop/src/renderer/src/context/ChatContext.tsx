@@ -149,6 +149,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const activeThreadLoadVersionRef = useRef(0)
   const activePlanRef = useRef<ExecutionPlan | null>(null)
   const activeExecutionIdRef = useRef<string | null>(null)
+  const activeExecutionMessageIdRef = useRef<string | null>(null)
   const liveBlocksRef = useRef<ContentBlock[]>([])
   const loadThreadsRef = useRef<(() => Promise<void>) | null>(null)
   const pendingLocalActionRef = useRef<PendingLocalActionState | null>(null)
@@ -198,6 +199,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     setIsThinking(false)
     replaceActivePlan(null)
     replaceActiveExecutionId(null)
+    activeExecutionMessageIdRef.current = null
     activeRequestIdRef.current = null
     pendingLocalActionRef.current = null
     setPendingLocalAction(null)
@@ -205,60 +207,133 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   }, [replaceActiveExecutionId, replaceActivePlan])
 
   const finishPendingApprovalStream = useCallback(() => {
-    setLiveBlocks([])
-    liveBlocksRef.current = []
     setIsStreaming(false)
     setIsThinking(false)
     activeRequestIdRef.current = null
     runningCommandRef.current = null
   }, [])
 
-  const archiveLiveBlocksForContinuation = useCallback(async (input: {
-    threadId: string
-    summaryContent?: string
-    summaryMetadata?: MessageMetadata
-  }) => {
-    const finalizedBlocks = liveBlocksRef.current
-    const metadata: MessageMetadata | undefined = finalizedBlocks.length > 0 || input.summaryMetadata
+  const restorePendingExecutionFromMessages = useCallback((threadId: string, nextMessages: Message[]) => {
+    const pausedMessage = [...nextMessages]
+      .reverse()
+      .find((message) =>
+        message.role === 'assistant'
+        && message.threadId === threadId
+        && message.metadata?.executionId
+        && message.metadata.executionState?.state === 'waiting_for_approval'
+        && message.metadata.desktopPendingAction)
+
+    if (!pausedMessage || !pausedMessage.metadata?.desktopPendingAction || !pausedMessage.metadata.executionId) {
+      activeExecutionMessageIdRef.current = null
+      pendingLocalActionRef.current = null
+      setPendingLocalAction(null)
+      return
+    }
+
+    const action = pausedMessage.metadata.desktopPendingAction
+    const pendingAction: PendingLocalActionState | null = action.kind === 'tool_action' && action.approvalId && action.toolId && action.actionGroup && action.operation && action.title && action.summary
       ? {
-        ...(input.summaryMetadata ?? {}),
-        ...(finalizedBlocks.length > 0 ? { contentBlocks: finalizedBlocks } : {}),
-      }
-      : undefined
-
-    let persistedMessage: Message | null = null
-    if (token && (finalizedBlocks.length > 0 || input.summaryContent)) {
-      try {
-        const response = await window.desktopAPI.threads.addMessage(token, input.threadId, {
-          role: 'assistant',
-          content: input.summaryContent ?? '',
-          metadata: metadata as Record<string, unknown> | undefined,
-        })
-        persistedMessage = (response.data as Message | undefined) ?? null
-      } catch {
-        setError('Local action finished, but saving the execution card failed.')
-      }
-    }
-
-    if (persistedMessage) {
-      setMessages((prev) => [...prev, persistedMessage!])
-    } else if (finalizedBlocks.length > 0) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `assistant-local-turn-${Date.now()}`,
-          threadId: input.threadId,
-          role: 'assistant',
-          content: input.summaryContent ?? '',
-          createdAt: new Date().toISOString(),
-          metadata,
+        id: pausedMessage.metadata.executionId,
+        threadId,
+        workspaceName: currentWorkspace?.name ?? 'Remote action',
+        workspacePath: currentWorkspace?.path ?? '',
+        source: 'agent',
+        action: {
+          kind: 'tool_action',
+          approvalId: action.approvalId,
+          toolId: action.toolId,
+          actionGroup: action.actionGroup,
+          operation: action.operation,
+          title: action.title,
+          summary: action.summary,
+          ...(action.subject ? { subject: action.subject } : {}),
+          ...(action.explanation ? { explanation: action.explanation } : {}),
         },
-      ])
-    }
-    setLiveBlocks([])
-    liveBlocksRef.current = []
-    setIsThinking(false)
-  }, [token])
+      }
+      : action.kind === 'run_command' && action.command
+        ? {
+          id: pausedMessage.metadata.executionId,
+          threadId,
+          workspaceName: currentWorkspace?.name ?? 'Workspace',
+          workspacePath: currentWorkspace?.path ?? '',
+          source: 'agent',
+          action: {
+            kind: 'run_command',
+            command: action.command,
+          },
+        }
+        : action.kind === 'write_file' && action.path && action.content !== undefined
+          ? {
+            id: pausedMessage.metadata.executionId,
+            threadId,
+            workspaceName: currentWorkspace?.name ?? 'Workspace',
+            workspacePath: currentWorkspace?.path ?? '',
+            source: 'agent',
+            action: {
+              kind: 'write_file',
+              path: action.path,
+              content: action.content,
+            },
+          }
+          : action.kind === 'mkdir' && action.path
+            ? {
+              id: pausedMessage.metadata.executionId,
+              threadId,
+              workspaceName: currentWorkspace?.name ?? 'Workspace',
+              workspacePath: currentWorkspace?.path ?? '',
+              source: 'agent',
+              action: {
+                kind: 'mkdir',
+                path: action.path,
+              },
+            }
+            : action.kind === 'delete_path' && action.path
+              ? {
+                id: pausedMessage.metadata.executionId,
+                threadId,
+                workspaceName: currentWorkspace?.name ?? 'Workspace',
+                workspacePath: currentWorkspace?.path ?? '',
+                source: 'agent',
+                action: {
+                  kind: 'delete_path',
+                  path: action.path,
+                },
+              }
+              : null
+
+    activeExecutionMessageIdRef.current = pausedMessage.id
+    replaceActiveExecutionId(pausedMessage.metadata.executionId)
+    pendingLocalActionRef.current = pendingAction
+    setPendingLocalAction(pendingAction)
+  }, [currentWorkspace?.name, currentWorkspace?.path, replaceActiveExecutionId])
+
+  const upsertAssistantMessage = useCallback((message: Message) => {
+    setMessages((prev) => {
+      const existingIndex = prev.findIndex((entry) => entry.id === message.id)
+      if (existingIndex >= 0) {
+        const next = [...prev]
+        next[existingIndex] = message
+        return next
+      }
+      return [...prev, message]
+    })
+  }, [])
+
+  const promotePersistedExecutionToLive = useCallback((threadId: string) => {
+    const persistedMessageId = activeExecutionMessageIdRef.current
+    if (!persistedMessageId) return
+
+    setMessages((prev) => {
+      const target = prev.find((message) => message.id === persistedMessageId && message.threadId === threadId)
+      if (!target) return prev
+      const blocks = target.metadata?.contentBlocks ?? []
+      if (blocks.length > 0) {
+        setLiveBlocks(blocks)
+        liveBlocksRef.current = blocks
+      }
+      return prev.filter((message) => message.id !== persistedMessageId)
+    })
+  }, [])
 
   const commitPartialAssistant = useCallback(() => {
     const blocks = liveBlocksRef.current
@@ -435,6 +510,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         ...(activePlanRef.current ? { plan: activePlanRef.current } : {}),
         mode: activeModeRef.current,
         executionId,
+        ...(activeExecutionMessageIdRef.current ? { continuationMessageId: activeExecutionMessageIdRef.current } : {}),
       })
 
       if (!response.success) throw new Error(response.message || 'Desktop action loop failed')
@@ -493,11 +569,6 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
 
     if (runningCommand.source === 'agent') {
       if (cancelRequestedRef.current) return
-      await archiveLiveBlocksForContinuation({
-        threadId: runningCommand.threadId,
-        summaryContent: completion.summaryContent,
-        summaryMetadata: completion.summaryMetadata,
-      })
       await runAgentLocalActionTurn({
         threadId: runningCommand.threadId,
         actionResult: { kind: 'run_command', ok: completion.ok, summary: completion.actionResultSummary },
@@ -507,7 +578,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
 
     await persistLocalSummary({ threadId: runningCommand.threadId, content: completion.summaryContent, metadata: completion.summaryMetadata })
     await finalizeLocalBlocks({ threadId: runningCommand.threadId })
-  }, [archiveLiveBlocksForContinuation, finalizeLocalBlocks, persistLocalSummary, replaceActivePlan, runAgentLocalActionTurn])
+  }, [finalizeLocalBlocks, persistLocalSummary, replaceActivePlan, runAgentLocalActionTurn])
 
   // ── SSE stream event subscriber ──
   useEffect(() => {
@@ -598,15 +669,24 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
           resetLiveState()
           break
         case 'done': {
-          const raw = event.data as { message?: Message; actionIssued?: boolean } | null
+          const raw = event.data as { message?: Message; actionIssued?: boolean; state?: string } | null
           const persistedMessage = raw?.message
-          setMessages((prev) => {
-            if (persistedMessage) return [...prev, persistedMessage]
-            const blocks = liveBlocksRef.current
-            const textContent = blocks.filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text').map((b) => b.content).join('')
-            if (!textContent && blocks.length === 0) return prev
-            return [...prev, { id: `assistant-${Date.now()}`, threadId: activeThreadRef.current?.id ?? '', role: 'assistant', content: textContent, createdAt: new Date().toISOString(), metadata: blocks.length > 0 ? { contentBlocks: blocks } : undefined }]
-          })
+          if (raw?.actionIssued) {
+            if (persistedMessage?.id) {
+              activeExecutionMessageIdRef.current = persistedMessage.id
+            }
+          } else if (persistedMessage) {
+            upsertAssistantMessage(persistedMessage)
+            activeExecutionMessageIdRef.current = null
+          } else {
+            setMessages((prev) => {
+              const blocks = liveBlocksRef.current
+              const textContent = blocks.filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text').map((b) => b.content).join('')
+              if (!textContent && blocks.length === 0) return prev
+              return [...prev, { id: `assistant-${Date.now()}`, threadId: activeThreadRef.current?.id ?? '', role: 'assistant', content: textContent, createdAt: new Date().toISOString(), metadata: blocks.length > 0 ? { contentBlocks: blocks } : undefined }]
+            })
+            activeExecutionMessageIdRef.current = null
+          }
           void loadThreadsRef.current?.()
           cancelRequestedRef.current = false
           if (raw?.actionIssued) {
@@ -621,7 +701,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       }
     })
     return unsubscribe
-  }, [currentWorkspace, finishPendingApprovalStream, replaceActiveExecutionId, replaceActivePlan, replaceLiveBlocks, resetLiveState])
+  }, [currentWorkspace, finishPendingApprovalStream, replaceActiveExecutionId, replaceActivePlan, replaceLiveBlocks, resetLiveState, upsertAssistantMessage])
 
   // ── Terminal event subscriber ──
   useEffect(() => {
@@ -764,6 +844,9 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     })
 
     if (pendingAction.action.kind === 'tool_action') {
+      if (pendingAction.source === 'agent') {
+        promotePersistedExecutionToLive(pendingAction.threadId)
+      }
       const result = await window.desktopAPI.chat.resolveHitlAction(
         token!,
         pendingAction.threadId,
@@ -788,6 +871,9 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
 
     if (pendingAction.action.kind === 'run_command') {
       const command = pendingAction.action.command
+      if (pendingAction.source === 'agent') {
+        promotePersistedExecutionToLive(pendingAction.threadId)
+      }
       logFrontendDebug('approval.command.approved', {
         executionId,
         threadId: pendingAction.threadId,
@@ -819,15 +905,13 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     }
 
     const toolBlock = buildAgentActionToolBlock(pendingAction.action)
+    if (pendingAction.source === 'agent') {
+      promotePersistedExecutionToLive(pendingAction.threadId)
+    }
     replaceLiveBlocks((prev) => [...prev, toolBlock])
     const completion = await runWorkspaceAction({ action: pendingAction.action as NonCommandWorkspaceAction, toolBlockId: toolBlock.id, threadId: pendingAction.threadId })
 
     if (pendingAction.source === 'agent') {
-      await archiveLiveBlocksForContinuation({
-        threadId: pendingAction.threadId,
-        summaryContent: completion.summaryContent,
-        summaryMetadata: completion.summaryMetadata,
-      })
       await runAgentLocalActionTurn({ threadId: pendingAction.threadId, actionResult: { kind: pendingAction.action.kind, ok: completion.ok, summary: completion.actionResultSummary } })
       return
     }
@@ -836,7 +920,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       summaryContent: completion.summaryContent,
       summaryMetadata: completion.summaryMetadata,
     })
-  }, [appendOutput, archiveLiveBlocksForContinuation, finalizeLocalBlocks, finishCommandExecution, persistExecutionEvent, replaceActivePlan, replaceLiveBlocks, runAgentLocalActionTurn, runWorkspaceAction])
+  }, [appendOutput, finalizeLocalBlocks, finishCommandExecution, persistExecutionEvent, promotePersistedExecutionToLive, replaceActivePlan, replaceLiveBlocks, runAgentLocalActionTurn, runWorkspaceAction])
 
   useEffect(() => {
     approveCommandRef.current = approveCommand
@@ -870,6 +954,9 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     })
 
     if (pendingAction.action.kind === 'tool_action') {
+      if (pendingAction.source === 'agent') {
+        promotePersistedExecutionToLive(pendingAction.threadId)
+      }
       const result = await window.desktopAPI.chat.resolveHitlAction(
         token!,
         pendingAction.threadId,
@@ -895,7 +982,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     if (pendingAction.action.kind === 'run_command') {
       const completion = summarizeCommandCompletion({ command: pendingAction.action.command, cwd: pendingAction.workspacePath, status: 'rejected' })
       if (pendingAction.source === 'agent') {
-        await persistLocalSummary({ threadId: pendingAction.threadId, content: completion.summaryContent, metadata: completion.summaryMetadata })
+        promotePersistedExecutionToLive(pendingAction.threadId)
         await runAgentLocalActionTurn({ threadId: pendingAction.threadId, actionResult: { kind: 'run_command', ok: false, summary: completion.actionResultSummary } })
         return
       }
@@ -907,12 +994,12 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     const summaryContent = `Rejected ${fileAction.kind.replace('_', ' ')} for \`${fileAction.path}\`.`
     const summaryMetadata: MessageMetadata = { localFileSummary: { kind: fileAction.kind, path: fileAction.path, status: 'rejected' } }
     if (pendingAction.source === 'agent') {
-      await persistLocalSummary({ threadId: pendingAction.threadId, content: summaryContent, metadata: summaryMetadata })
+      promotePersistedExecutionToLive(pendingAction.threadId)
       await runAgentLocalActionTurn({ threadId: pendingAction.threadId, actionResult: { kind: fileAction.kind, ok: false, summary: `User rejected ${fileAction.kind} for ${fileAction.path}` } })
       return
     }
     await finalizeLocalBlocks({ threadId: pendingAction.threadId, summaryContent, summaryMetadata })
-  }, [finalizeLocalBlocks, persistExecutionEvent, persistLocalSummary, replaceLiveBlocks, runAgentLocalActionTurn, token])
+  }, [finalizeLocalBlocks, persistExecutionEvent, promotePersistedExecutionToLive, runAgentLocalActionTurn, token])
 
   const killCommand = useCallback(async (executionId: string) => {
     const runningCommand = runningCommandRef.current
@@ -941,6 +1028,9 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     const threadPreview = allThreads.find((thread) => thread.id === threadId) ?? null
     setActiveThread(threadPreview)
     setMessages([])
+    pendingLocalActionRef.current = null
+    setPendingLocalAction(null)
+    activeExecutionMessageIdRef.current = null
     setThreadPagination({
       hasMoreOlder: false,
       nextBeforeMessageId: null,
@@ -960,6 +1050,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         setMessages(data.messages)
         setThreadPagination(data.pagination)
         replaceActivePlan(null)
+        restorePendingExecutionFromMessages(data.thread.id, data.messages)
         setError(null)
       }
     } catch {
@@ -969,7 +1060,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         setIsThreadLoading(false)
       }
     }
-  }, [allThreads, token, currentWorkspace, isThreadInCurrentWorkspace, isStreaming, replaceActivePlan, setSelectedDepartmentId])
+  }, [allThreads, token, currentWorkspace, isThreadInCurrentWorkspace, isStreaming, replaceActivePlan, restorePendingExecutionFromMessages, setSelectedDepartmentId])
 
   const loadOlderMessages = useCallback(async () => {
     const threadId = activeThreadRef.current?.id
@@ -1069,6 +1160,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     setIsStreaming(true)
     setIsThinking(false)
     replaceActivePlan(null)
+    activeExecutionMessageIdRef.current = null
     setLiveBlocks([])
     liveBlocksRef.current = []
     setError(null)
@@ -1156,6 +1248,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
         setIsThreadLoading(false)
         setIsLoadingOlderMessages(false)
         replaceActivePlan(null)
+        activeExecutionMessageIdRef.current = null
 
         const userMsg: Message = { 
           id: `temp-${Date.now()}`, 

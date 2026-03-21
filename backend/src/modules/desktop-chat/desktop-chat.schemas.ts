@@ -31,6 +31,7 @@ export const actionResultSchema = z.object({
   kind: z.enum(['list_files', 'read_file', 'write_file', 'mkdir', 'delete_path', 'run_command', 'tool_action']),
   ok: z.boolean(),
   summary: z.string().min(1).max(30000),
+  payload: z.record(z.unknown()).optional(),
 });
 
 export const actSchema = z.object({
@@ -39,6 +40,7 @@ export const actSchema = z.object({
   actionResult: actionResultSchema.optional(),
   mode: z.enum(['fast', 'high', 'xtreme']).optional().default('xtreme'),
   executionId: z.string().uuid().optional(),
+  continuationMessageId: z.string().uuid().optional(),
 });
 
 export type DesktopSendRequest = z.infer<typeof sendSchema>;

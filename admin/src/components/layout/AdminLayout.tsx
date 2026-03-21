@@ -53,9 +53,9 @@ export function AdminLayout() {
           </div>
         </header>
         
-        <main className="flex-1 overflow-hidden flex flex-col">
-          <div className="flex-1 overflow-auto bg-black/[0.02]">
-            <div className="mx-auto w-full max-w-[1400px] p-8 lg:p-10 animate-in fade-in slide-in-from-bottom-2 duration-700">
+        <main className="flex-1 overflow-hidden flex flex-col min-w-0">
+          <div className="flex-1 overflow-auto bg-black/[0.02] min-w-0">
+            <div className="mx-auto w-full max-w-[1400px] p-6 lg:p-8 animate-in fade-in slide-in-from-bottom-2 duration-700 min-w-0">
               <Outlet />
             </div>
           </div>

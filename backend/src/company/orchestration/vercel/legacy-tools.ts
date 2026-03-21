@@ -1253,7 +1253,7 @@ export const createVercelDesktopTools = (
     }),
 
     docSearch: tool({
-      description: 'Internal company document search only. Use for private docs and uploaded files.',
+      description: 'Internal company document search only. Use this before workspace, Google Drive, or repo inspection when the user is asking about uploaded files, private docs, or indexed company documents.',
       inputSchema: z.object({
         operation: z.enum(['search', 'readChunkContext']),
         query: z.string().min(1),
@@ -1315,7 +1315,7 @@ export const createVercelDesktopTools = (
     }),
 
     documentOcrRead: tool({
-      description: 'List visible uploaded files and extract machine-readable text from a selected document.',
+      description: 'List visible uploaded files and extract machine-readable text from a selected document. Use this as an internal uploaded-file path before workspace, Google Drive, or repo inspection when you need the exact file contents.',
       inputSchema: z.object({
         operation: z.enum(['listFiles', 'extractText']),
         fileAssetId: z.string().optional(),
@@ -1738,7 +1738,7 @@ export const createVercelDesktopTools = (
     }),
 
     coding: tool({
-      description: 'Primary local coding tool for the open workspace. Use inspectWorkspace to list files, readFiles to read exact files, planCommand or runScriptPlan only when you already know the exact shell command, writeFilePlan only when you already have the full file path and full file content, and verifyResult after an approved local action finishes. Do not call writeFilePlan without contentPlan.path and contentPlan.content. Do not call planCommand or runScriptPlan without command.',
+      description: 'Primary local coding tool for the open workspace. Use this for real local workspace work only, not as the first step for uploaded/company document retrieval. If the request is about uploaded files or internal company docs, use the internal document tools first. Use inspectWorkspace to list files, readFiles to read exact files, planCommand or runScriptPlan only when you already know the exact shell command, writeFilePlan only when you already have the full file path and full file content, and verifyResult after an approved local action finishes. Do not call writeFilePlan without contentPlan.path and contentPlan.content. Do not call planCommand or runScriptPlan without command.',
       inputSchema: z.discriminatedUnion('operation', [
         z.object({
           operation: z.literal('inspectWorkspace'),
@@ -2079,7 +2079,7 @@ export const createVercelDesktopTools = (
     }),
 
     googleDrive: tool({
-      description: 'Use the connected Google account to list, read, download, and upload Drive files.',
+      description: 'Use the connected Google account to list, read, download, and upload Drive files. Do not use this as the first path for uploaded/company documents when the internal document tools can handle the request.',
       inputSchema: z.object({
         operation: z.enum(['listFiles', 'getFile', 'downloadFile', 'createFolder', 'uploadFile', 'updateFile', 'deleteFile']),
         query: z.string().optional(),

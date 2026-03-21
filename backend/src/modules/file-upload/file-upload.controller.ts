@@ -170,8 +170,13 @@ class FileUploadController extends BaseController {
   retryIngestion = async (req: Request, res: Response): Promise<void> => {
     const session = this.session(req);
     const { fileAssetId } = req.params;
-    await fileUploadService.retryIngestion(fileAssetId, session.companyId);
-    res.json(ApiResponse.success({ fileAssetId }, 'Ingestion retry initiated'));
+    const result = await fileUploadService.retryIngestion(fileAssetId, session.companyId);
+    res.json(
+      ApiResponse.success(
+        { fileAssetId, ...result },
+        result.alreadyDone ? 'File is already indexed' : 'Ingestion retry initiated',
+      ),
+    );
   };
 
   /**

@@ -16,7 +16,7 @@ export type CachedDesktopThreadContext = {
 };
 
 const DESKTOP_THREAD_CONTEXT_TTL_SECONDS = 60 * 15;
-export const DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT = 40;
+export const DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT = 120;
 
 const contextKey = (threadId: string, userId: string) =>
   `desktop:thread:${threadId}:user:${userId}:context`;
@@ -113,7 +113,6 @@ class DesktopThreadContextCache {
     userId: string;
     message: CachedDesktopThreadMessage;
     maxMessages?: number;
-    loader?: () => Promise<CachedDesktopThreadContext>;
   }): Promise<void> {
     const redis = redisConnection.getClient();
     const key = contextKey(input.threadId, input.userId);
@@ -121,15 +120,10 @@ class DesktopThreadContextCache {
     const existing = parseContext(await redis.get(key), maxMessages);
 
     if (!existing) {
-      if (!input.loader) {
-        return;
-      }
-      const loaded = await input.loader();
-      await this.save(loaded, maxMessages);
-      logger.info('desktop.thread_context.cache.rebuilt', {
+      logger.info('desktop.thread_context.cache.append_skipped', {
         threadId: input.threadId,
         userId: input.userId,
-        messageCount: loaded.messages.length,
+        reason: 'cache_missing',
       });
       return;
     }

@@ -98,6 +98,10 @@ const isCollectionNotFoundError = (error: unknown): error is VectorStoreError =>
 const isMissingPayloadIndexError = (error: unknown): error is VectorStoreError =>
   error instanceof VectorStoreError && error.message.includes('Index required but not found');
 
+// This collection currently provisions dense named vectors only. Do not send lexical
+// branches until sparse/lexical vectors are actually configured server-side.
+const QDRANT_LEXICAL_BRANCH_ENABLED = false;
+
 const buildPointId = (point: {
   companyId: string;
   sourceType: string;
@@ -194,6 +198,13 @@ const buildSearchFilter = (query: VectorSearchQuery): Record<string, unknown> =>
     must.push({
       key: 'fileAssetId',
       match: { value: query.fileAssetId },
+    });
+  }
+
+  if (query.conversationKey) {
+    must.push({
+      key: 'conversationKey',
+      match: { value: query.conversationKey },
     });
   }
 
@@ -453,13 +464,32 @@ export class QdrantAdapter implements VectorStoreAdapter {
       },
     }));
 
-    await this.request({
-      method: 'PUT',
-      path: `/collections/${encodeURIComponent(this.collection)}/points?wait=true`,
-      body: {
-        points: qdrantPoints,
-      },
-    });
+    try {
+      await this.request({
+        method: 'PUT',
+        path: `/collections/${encodeURIComponent(this.collection)}/points?wait=true`,
+        body: {
+          points: qdrantPoints,
+        },
+      });
+    } catch (error) {
+      if (isMissingPayloadIndexError(error)) {
+        logger.warn('qdrant.upsert.retry_missing_index', {
+          collection: this.collection,
+          pointCount: qdrantPoints.length,
+        });
+        await this.ensureIndexes();
+        await this.request({
+          method: 'PUT',
+          path: `/collections/${encodeURIComponent(this.collection)}/points?wait=true`,
+          body: {
+            points: qdrantPoints,
+          },
+        });
+        return;
+      }
+      throw error;
+    }
   }
 
   async upsertVectors(records: QdrantUpsertInput[]): Promise<void> {
@@ -501,6 +531,8 @@ export class QdrantAdapter implements VectorStoreAdapter {
 
   async deleteBySource(input: VectorDeleteBySourceInput): Promise<void> {
     try {
+      await this.ensureCollection();
+      await this.ensureIndexes();
       await this.request({
         method: 'POST',
         path: `/collections/${encodeURIComponent(this.collection)}/points/delete?wait=true`,
@@ -516,6 +548,29 @@ export class QdrantAdapter implements VectorStoreAdapter {
       });
     } catch (error) {
       if (isCollectionNotFoundError(error)) {
+        return;
+      }
+      if (isMissingPayloadIndexError(error)) {
+        logger.warn('qdrant.delete.retry_missing_index', {
+          collection: this.collection,
+          companyId: input.companyId,
+          sourceType: input.sourceType,
+          sourceId: input.sourceId,
+        });
+        await this.ensureIndexes();
+        await this.request({
+          method: 'POST',
+          path: `/collections/${encodeURIComponent(this.collection)}/points/delete?wait=true`,
+          body: {
+            filter: {
+              must: [
+                { key: 'companyId', match: { value: input.companyId } },
+                { key: 'sourceType', match: { value: input.sourceType } },
+                { key: 'sourceId', match: { value: input.sourceId } },
+              ],
+            },
+          },
+        });
         return;
       }
       throw error;
@@ -545,7 +600,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
       },
     ];
 
-    if (query.lexicalQueryText?.trim()) {
+    if (QDRANT_LEXICAL_BRANCH_ENABLED && query.lexicalQueryText?.trim()) {
       prefetch.push({
         query: query.lexicalQueryText.trim(),
         limit: branchLimit,

@@ -34,7 +34,9 @@ import { logger } from '../../utils/logger';
 import { departmentService } from '../../company/departments/department.service';
 import { prisma } from '../../utils/prisma';
 import { aiTokenUsageService } from '../../company/ai-usage/ai-token-usage.service';
-import { estimateTokens } from '../../utils/token-estimator';
+import { AI_MODEL_CATALOG_MAP, type AiModelCatalogEntry } from '../../company/ai-models';
+import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../company/integrations/vector';
+import { estimateTokens, getTokenBudget } from '../../utils/token-estimator';
 import {
   buildDesktopPlannerPrompt,
   completeExecutionPlan,
@@ -49,6 +51,22 @@ import {
   type ExecutionPlan,
   type ExecutionPlanOwner,
 } from './desktop-plan';
+import {
+  applyActionResultToTaskState,
+  buildTaskStateContext,
+  buildThreadSummaryContext,
+  createEmptyTaskState,
+  markDesktopSourceArtifactsUsed,
+  parseDesktopTaskState,
+  parseDesktopThreadSummary,
+  refreshDesktopThreadSummary,
+  resolveDesktopTaskReferences,
+  selectDesktopSourceArtifacts,
+  upsertDesktopSourceArtifacts,
+  updateTaskStateFromToolEnvelope,
+  type DesktopTaskState,
+  type DesktopThreadSummary,
+} from './desktop-thread-memory';
 
 type DesktopWorkspaceAction =
   | { kind: 'list_files'; path?: string }
@@ -84,7 +102,43 @@ type PersistedPlanMetadata = {
   plan?: ExecutionPlan;
 };
 
+type DesktopExecutionState = 'running' | 'waiting_for_approval' | 'running_after_approval' | 'completed' | 'failed' | 'cancelled';
+
+type PersistedExecutionMetadata = {
+  executionState?: {
+    state: DesktopExecutionState;
+    paused?: boolean;
+    resumeOfExecutionId?: string;
+  };
+  pendingApprovalAction?: PendingApprovalAction;
+  desktopPendingAction?: DesktopWorkspaceAction | RemoteApprovalAction;
+  taskStateSnapshot?: DesktopTaskState;
+  threadSummarySnapshot?: DesktopThreadSummary;
+  contextAssembly?: DesktopContextAssemblyMetrics;
+};
+
 type ThreadHistorySnapshot = CachedDesktopThreadContext;
+type DesktopContextClass =
+  | 'lightweight_chat'
+  | 'normal_work'
+  | 'long_running_task'
+  | 'document_grounded_followup';
+
+type DesktopContextAssemblyMetrics = {
+  contextClass: DesktopContextClass;
+  modelId: string;
+  usableContextBudget: number;
+  targetContextBudget: number;
+  estimatedPromptTokens: number;
+  usedContextBudgetPercent: number;
+  includedRawMessageCount: number;
+  includedConversationRetrievalCount: number;
+  includedSourceArtifactCount: number;
+  includedThreadSummary: boolean;
+  includedTaskState: boolean;
+  includedWorkspaceContext: boolean;
+  compactionTier: number;
+};
 
 const resolveWorkflowInvocationMessage = async (input: {
   companyId: string;
@@ -163,12 +217,79 @@ type DesktopChildRoute = z.infer<typeof desktopChildRouteSchema>;
 
 const buildConversationKey = (threadId: string): string => `desktop:${threadId}`;
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
-const MODEL_HISTORY_MESSAGE_LIMIT = 12;
+const MODEL_HISTORY_MESSAGE_LIMIT = 8;
+const DESKTOP_CONTEXT_TARGET_RATIO = 0.6;
+const DESKTOP_LIGHT_CONTEXT_TARGET_RATIO = 0.12;
+const DESKTOP_NORMAL_CONTEXT_TARGET_RATIO = 0.28;
+const DESKTOP_MAX_LOOP_STEPS = 200;
 
 const summarizeText = (value: string | null | undefined, limit = 280): string | null => {
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const isReferentialFollowup = (value: string | null | undefined): boolean =>
+  /\b(next task|pick the next|move on|move to next|continue|next one|same file|same one|next estimate|what next)\b/i.test(value ?? '');
+
+const isLightweightChatTurn = (value: string | null | undefined): boolean =>
+  /^(hi|hello|hey|thanks|thank you|ok|okay|cool|great|nice|yes|no)[.! ]*$/i.test((value ?? '').trim());
+
+const resolveModelCatalogEntry = (resolvedModel: {
+  effectiveProvider: string;
+  effectiveModelId: string;
+}): AiModelCatalogEntry | null => {
+  const direct = AI_MODEL_CATALOG_MAP.get(
+    `${resolvedModel.effectiveProvider}:${resolvedModel.effectiveModelId}`,
+  );
+  if (direct) return direct;
+
+  if (resolvedModel.effectiveProvider === 'google') {
+    return AI_MODEL_CATALOG_MAP.get('google:gemini-3.1-flash-lite-preview')
+      ?? AI_MODEL_CATALOG_MAP.get('google:gemini-2.5-flash')
+      ?? null;
+  }
+
+  return null;
+};
+
+const SHOULD_LOG_LLM_CONTEXT = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.LOG_LLM_CONTEXT ?? '').trim().toLowerCase(),
+);
+
+const logLlmContext = (input: {
+  phase: 'send' | 'act' | 'streamAct';
+  executionId: string;
+  threadId: string;
+  systemPrompt: string;
+  messages: ModelMessage[];
+  workspace?: { name: string; path: string };
+  taskState?: DesktopTaskState;
+  threadSummary?: DesktopThreadSummary;
+  resolvedUserReferences?: string[];
+}): void => {
+  if (!SHOULD_LOG_LLM_CONTEXT) {
+    return;
+  }
+
+  logger.error('vercel.llm.context', {
+    phase: input.phase,
+    executionId: input.executionId,
+    threadId: input.threadId,
+    workspace: input.workspace ?? null,
+    resolvedUserReferences: input.resolvedUserReferences ?? [],
+    activeSourceArtifacts: input.taskState?.activeSourceArtifacts ?? [],
+    threadSummary: input.threadSummary ?? null,
+    taskState: input.taskState ?? null,
+    systemPrompt: input.systemPrompt,
+    messages: input.messages.map((message, index) => ({
+      index,
+      role: message.role,
+      content: typeof message.content === 'string'
+        ? message.content
+        : JSON.stringify(message.content),
+    })),
+  }, { always: true });
 };
 
 const flattenModelContent = (content: ModelMessage['content'] | string | undefined): string => {
@@ -515,6 +636,164 @@ const appendEventSafe = async (input: Parameters<typeof executionService.appendE
   }
 };
 
+const runInBackground = (label: string, task: () => Promise<void>): void => {
+  queueMicrotask(() => {
+    void task().catch((error) => {
+      logger.warn('vercel.desktop.background_task.failed', {
+        label,
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
+    });
+  });
+};
+
+const buildExecutionMetadata = (input: {
+  state: DesktopExecutionState;
+  executionId: string;
+  contentBlocks?: PersistedContentBlock[];
+  plan?: ExecutionPlan | null;
+  citations?: Array<Record<string, unknown>>;
+  conversationRefs?: PersistedConversationRefs | null;
+  pendingApprovalAction?: PendingApprovalAction | null;
+  desktopPendingAction?: DesktopWorkspaceAction | RemoteApprovalAction | null;
+  workflowExecution?: Record<string, unknown>;
+  resumeOfExecutionId?: string;
+  taskStateSnapshot?: DesktopTaskState | null;
+  threadSummarySnapshot?: DesktopThreadSummary | null;
+  contextAssembly?: DesktopContextAssemblyMetrics | null;
+}): Record<string, unknown> => ({
+  executionId: input.executionId,
+  ...(input.contentBlocks ? { contentBlocks: input.contentBlocks } : {}),
+  ...(input.plan ? { plan: input.plan } : {}),
+  ...(input.citations && input.citations.length > 0 ? { citations: input.citations } : {}),
+  ...(input.conversationRefs ? { conversationRefs: input.conversationRefs } : {}),
+  ...(input.workflowExecution ? { workflowExecution: input.workflowExecution } : {}),
+  ...(input.taskStateSnapshot ? { taskStateSnapshot: input.taskStateSnapshot } : {}),
+  ...(input.threadSummarySnapshot ? { threadSummarySnapshot: input.threadSummarySnapshot } : {}),
+  ...(input.contextAssembly ? { contextAssembly: input.contextAssembly } : {}),
+  executionState: {
+    state: input.state,
+    paused: input.state === 'waiting_for_approval',
+    ...(input.resumeOfExecutionId ? { resumeOfExecutionId: input.resumeOfExecutionId } : {}),
+  },
+  ...(input.pendingApprovalAction ? { pendingApprovalAction: input.pendingApprovalAction } : {}),
+  ...(input.desktopPendingAction ? { desktopPendingAction: input.desktopPendingAction } : {}),
+});
+
+const persistAssistantMessage = async (input: {
+  threadId: string;
+  userId: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  existingMessageId?: string;
+}): Promise<Awaited<ReturnType<typeof desktopThreadsService.addMessage>>> =>
+  desktopThreadsService.addOwnedThreadMessage(
+    input.threadId,
+    input.userId,
+    'assistant',
+    input.content,
+    input.metadata,
+    {
+      requiredChannel: 'desktop',
+      contextLimit: DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT,
+      ...(input.existingMessageId ? { existingMessageId: input.existingMessageId } : {}),
+    },
+  );
+
+const loadContinuationMessageState = async (input: {
+  threadId: string;
+  userId: string;
+  messageId?: string;
+}): Promise<{
+  persistedBlocks: PersistedContentBlock[];
+  plan: ExecutionPlan | null;
+  taskState: DesktopTaskState;
+  threadSummary: DesktopThreadSummary;
+}> => {
+  if (!input.messageId) {
+    return {
+      persistedBlocks: [],
+      plan: null,
+      taskState: createEmptyTaskState(),
+      threadSummary: parseDesktopThreadSummary(null),
+    };
+  }
+
+  const message = await desktopThreadsService.getOwnedThreadMessage(input.threadId, input.userId, input.messageId);
+  const metadata = message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+    ? message.metadata as Record<string, unknown>
+    : {};
+
+  const rawBlocks = Array.isArray(metadata.contentBlocks) ? metadata.contentBlocks : [];
+  const persistedBlocks = rawBlocks.flatMap((block) => {
+    const record = block && typeof block === 'object' && !Array.isArray(block)
+      ? block as Record<string, unknown>
+      : null;
+    if (!record || typeof record.type !== 'string') return [];
+    if (record.type === 'text' && typeof record.content === 'string') {
+      return [{ type: 'text', content: record.content } satisfies PersistedContentBlock];
+    }
+    if (record.type === 'thinking') {
+      return [{ type: 'thinking', text: typeof record.text === 'string' ? record.text : undefined } satisfies PersistedContentBlock];
+    }
+    if (
+      record.type === 'tool'
+      && typeof record.id === 'string'
+      && typeof record.name === 'string'
+      && typeof record.label === 'string'
+      && typeof record.icon === 'string'
+      && (record.status === 'running' || record.status === 'done' || record.status === 'failed')
+    ) {
+      return [{
+        type: 'tool',
+        id: record.id,
+        name: record.name,
+        label: record.label,
+        icon: record.icon,
+        status: record.status,
+        resultSummary: typeof record.resultSummary === 'string' ? record.resultSummary : undefined,
+      } satisfies PersistedContentBlock];
+    }
+    return [];
+  });
+
+  const plan = metadata.plan && typeof metadata.plan === 'object' && !Array.isArray(metadata.plan)
+    ? executionPlanSchema.safeParse(metadata.plan).success
+      ? executionPlanSchema.parse(metadata.plan)
+      : null
+    : null;
+
+  return {
+    persistedBlocks,
+    plan,
+    taskState: parseDesktopTaskState(metadata.taskStateSnapshot),
+    threadSummary: parseDesktopThreadSummary(metadata.threadSummarySnapshot),
+  };
+};
+
+const loadThreadMemory = async (threadId: string, userId: string): Promise<{
+  summary: DesktopThreadSummary;
+  taskState: DesktopTaskState;
+}> => {
+  const thread = await desktopThreadsService.getThreadMeta(threadId, userId);
+  return {
+    summary: parseDesktopThreadSummary((thread as Record<string, unknown>).summaryJson),
+    taskState: parseDesktopTaskState((thread as Record<string, unknown>).taskStateJson),
+  };
+};
+
+const persistThreadMemory = async (input: {
+  threadId: string;
+  userId: string;
+  summary?: DesktopThreadSummary | null;
+  taskState?: DesktopTaskState | null;
+}): Promise<void> => {
+  await desktopThreadsService.updateOwnedThreadMemory(input.threadId, input.userId, {
+    ...(input.summary !== undefined ? { summaryJson: input.summary ? input.summary as unknown as Record<string, unknown> : null } : {}),
+    ...(input.taskState !== undefined ? { taskStateJson: input.taskState ? input.taskState as unknown as Record<string, unknown> : null } : {}),
+  });
+};
+
 const persistUiEvent = async (
   executionId: string,
   type: 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'action' | 'text' | 'done' | 'error' | 'plan',
@@ -771,18 +1050,229 @@ const collectRecentAttachedFiles = (history: ThreadHistorySnapshot): AttachedFil
   return Array.from(merged.values());
 };
 
+const hydrateAttachedFilesForArtifacts = async (input: {
+  companyId: string;
+  artifacts: Array<{ fileAssetId: string }>;
+}): Promise<AttachedFileRef[]> => {
+  if (input.artifacts.length === 0) {
+    return [];
+  }
+
+  const fileAssetIds = input.artifacts.map((artifact) => artifact.fileAssetId);
+  const assets = await prisma.fileAsset.findMany({
+    where: {
+      companyId: input.companyId,
+      id: { in: fileAssetIds },
+    },
+    select: {
+      id: true,
+      fileName: true,
+      mimeType: true,
+      cloudinaryUrl: true,
+    },
+  });
+
+  const byId = new Map(assets.map((asset) => [asset.id, asset]));
+  return fileAssetIds.flatMap((fileAssetId) => {
+    const asset = byId.get(fileAssetId);
+    if (!asset) return [];
+    return [{
+      fileAssetId: asset.id,
+      fileName: asset.fileName,
+      mimeType: asset.mimeType,
+      cloudinaryUrl: asset.cloudinaryUrl,
+    }];
+  });
+};
+
+const buildSourceArtifactEntriesFromAttachments = (
+  attachments: AttachedFileRef[],
+): Array<{
+  fileAssetId: string;
+  fileName: string;
+  sourceType: 'uploaded_file';
+}> =>
+  attachments.map((file) => ({
+    fileAssetId: file.fileAssetId,
+    fileName: file.fileName,
+    sourceType: 'uploaded_file' as const,
+  }));
+
+const resolveDesktopGroundingAttachments = async (input: {
+  companyId: string;
+  message?: string;
+  currentAttachedFiles: AttachedFileRef[];
+  recentAttachedFiles: AttachedFileRef[];
+  taskState: DesktopTaskState;
+}): Promise<{
+  attachments: AttachedFileRef[];
+  taskState: DesktopTaskState;
+  source: 'current' | 'artifact' | 'recent' | 'none';
+}> => {
+  let nextTaskState = input.taskState;
+
+  if (input.currentAttachedFiles.length > 0) {
+    nextTaskState = upsertDesktopSourceArtifacts({
+      taskState: nextTaskState,
+      artifacts: buildSourceArtifactEntriesFromAttachments(input.currentAttachedFiles),
+    });
+  }
+
+  const artifactCandidates = input.currentAttachedFiles.length === 0
+    ? selectDesktopSourceArtifacts({
+      taskState: nextTaskState,
+      message: input.message,
+    })
+    : [];
+
+  const artifactAttachments = artifactCandidates.length > 0
+    ? await hydrateAttachedFilesForArtifacts({
+      companyId: input.companyId,
+      artifacts: artifactCandidates,
+    })
+    : [];
+
+  if (artifactCandidates.length > 0) {
+    logger.info('desktop.source_artifacts.selected', {
+      companyId: input.companyId,
+      requestedMessage: summarizeText(input.message, 180),
+      candidates: artifactCandidates.map((artifact) => ({
+        fileAssetId: artifact.fileAssetId,
+        fileName: artifact.fileName,
+      })),
+      hydratedCount: artifactAttachments.length,
+    });
+  }
+
+  if (artifactAttachments.length > 0) {
+    nextTaskState = markDesktopSourceArtifactsUsed({
+      taskState: nextTaskState,
+      fileAssetIds: artifactAttachments.map((file) => file.fileAssetId),
+    });
+  } else if (artifactCandidates.length > 0) {
+    logger.warn('desktop.source_artifacts.no_usable_files', {
+      companyId: input.companyId,
+      requestedMessage: summarizeText(input.message, 180),
+      fileAssetIds: artifactCandidates.map((artifact) => artifact.fileAssetId),
+    });
+  }
+
+  const merged = new Map<string, AttachedFileRef>();
+  for (const file of input.currentAttachedFiles) {
+    merged.set(file.fileAssetId, file);
+  }
+  for (const file of artifactAttachments) {
+    if (!merged.has(file.fileAssetId)) {
+      merged.set(file.fileAssetId, file);
+    }
+  }
+  for (const file of input.recentAttachedFiles) {
+    if (!merged.has(file.fileAssetId)) {
+      merged.set(file.fileAssetId, file);
+    }
+  }
+
+  const attachments = Array.from(merged.values());
+  return {
+    attachments,
+    taskState: nextTaskState,
+    source: input.currentAttachedFiles.length > 0
+      ? 'current'
+      : artifactAttachments.length > 0
+        ? 'artifact'
+        : input.recentAttachedFiles.length > 0
+          ? 'recent'
+          : 'none',
+  };
+};
+
+const maybeStoreConversationTurn = (input: {
+  companyId: string;
+  userId: string;
+  threadId: string;
+  sourceId: string;
+  role: 'user' | 'assistant';
+  text: string;
+}): void => {
+  if (!input.text.trim()) {
+    return;
+  }
+  runInBackground(`personal-vector-store:${input.sourceId}`, async () => {
+    await personalVectorMemoryService.storeChatTurn({
+      companyId: input.companyId,
+      requesterUserId: input.userId,
+      conversationKey: buildConversationKey(input.threadId),
+      sourceId: input.sourceId,
+      role: input.role,
+      text: input.text,
+      channel: 'desktop',
+      chatId: input.threadId,
+    });
+  });
+};
+
+const retrieveConversationMemory = async (input: {
+  companyId: string;
+  userId: string;
+  threadId: string;
+  queryText: string;
+  contextClass: DesktopContextClass;
+  threadSummary: DesktopThreadSummary;
+  taskState: DesktopTaskState;
+}): Promise<string[]> => {
+  if (
+    input.contextClass === 'lightweight_chat'
+    || !input.queryText.trim()
+    || (!isReferentialFollowup(input.queryText)
+      && input.contextClass !== 'long_running_task'
+      && input.contextClass !== 'document_grounded_followup')
+  ) {
+    return [];
+  }
+
+  const limit = input.contextClass === 'document_grounded_followup' ? 6 : 4;
+  try {
+    const matches = await personalVectorMemoryService.query({
+      companyId: input.companyId,
+      requesterUserId: input.userId,
+      conversationKey: buildConversationKey(input.threadId),
+      text: input.queryText,
+      limit,
+    });
+    return dedupeConversationSnippets({
+      snippets: summarizeConversationMatches(matches, limit),
+      threadSummary: input.threadSummary,
+      taskState: input.taskState,
+    });
+  } catch (error) {
+    logger.warn('desktop.context.conversation_retrieval.failed', {
+      threadId: input.threadId,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return [];
+  }
+};
+
 const mapHistoryToMessages = async (
   threadId: string,
   session: MemberSessionDTO,
 ): Promise<{ messages: ModelMessage[]; history: ThreadHistorySnapshot }> => {
   const history = await hydrateConversationState(threadId, session);
-  const messages = mapHistorySnapshotToMessages(history);
+  const messages = mapHistorySnapshotToMessages(history, { limit: MODEL_HISTORY_MESSAGE_LIMIT });
   return { messages, history };
 };
 
-const mapHistorySnapshotToMessages = (history: ThreadHistorySnapshot): ModelMessage[] => {
+const mapHistorySnapshotToMessages = (
+  history: ThreadHistorySnapshot,
+  options?: { limit?: number; lowValueFilter?: boolean },
+): ModelMessage[] => {
+  const limit = options?.limit ?? MODEL_HISTORY_MESSAGE_LIMIT;
+  const lowValueFilter = options?.lowValueFilter ?? false;
+  const selected = lowValueFilter
+    ? history.messages.filter((message) => !isLightweightChatTurn(message.content)).slice(-limit)
+    : history.messages.slice(-limit);
   const messages: ModelMessage[] = [];
-  for (const message of history.messages.slice(-MODEL_HISTORY_MESSAGE_LIMIT)) {
+  for (const message of selected) {
     messages.push({
       role: message.role === 'assistant' ? 'assistant' : 'user',
       content: message.content,
@@ -791,18 +1281,278 @@ const mapHistorySnapshotToMessages = (history: ThreadHistorySnapshot): ModelMess
   return messages;
 };
 
+const chooseDesktopContextClass = (input: {
+  latestUserMessage?: string;
+  taskState: DesktopTaskState;
+  threadSummary: DesktopThreadSummary;
+  history: ThreadHistorySnapshot;
+}): DesktopContextClass => {
+  const latestUserMessage = input.latestUserMessage?.trim() ?? '';
+  if (isLightweightChatTurn(latestUserMessage)) {
+    return 'lightweight_chat';
+  }
+  if (
+    input.taskState.activeSourceArtifacts.length > 0
+    && isReferentialFollowup(latestUserMessage)
+  ) {
+    return 'document_grounded_followup';
+  }
+  if (
+    input.taskState.activeSourceArtifacts.length > 0
+    || input.taskState.completedMutations.length > 0
+    || Boolean(input.taskState.pendingApproval)
+    || input.threadSummary.sourceMessageCount >= 10
+    || input.history.messages.length >= 16
+  ) {
+    return 'long_running_task';
+  }
+  return 'normal_work';
+};
+
+const getDesktopContextBudget = (input: {
+  resolvedModel: { effectiveProvider: string; effectiveModelId: string };
+  contextClass: DesktopContextClass;
+}): { usableContextBudget: number; targetContextBudget: number; modelId: string } => {
+  const catalogEntry = resolveModelCatalogEntry(input.resolvedModel);
+  const usableContextBudget = catalogEntry
+    ? getTokenBudget(catalogEntry)
+    : input.resolvedModel.effectiveProvider === 'google'
+      ? 1_048_576 - 32_768
+      : 128_000 - 16_384;
+  const ratio = input.contextClass === 'lightweight_chat'
+    ? DESKTOP_LIGHT_CONTEXT_TARGET_RATIO
+    : input.contextClass === 'normal_work'
+      ? DESKTOP_NORMAL_CONTEXT_TARGET_RATIO
+      : DESKTOP_CONTEXT_TARGET_RATIO;
+  return {
+    usableContextBudget,
+    targetContextBudget: Math.max(12_000, Math.floor(usableContextBudget * ratio)),
+    modelId: input.resolvedModel.effectiveModelId,
+  };
+};
+
+const summarizeConversationMatches = (
+  matches: PersonalMemoryMatch[],
+  maxCount: number,
+): string[] =>
+  matches
+    .slice(0, maxCount)
+    .map((match) => summarizeText(match.content, 320))
+    .filter((entry): entry is string => Boolean(entry));
+
+const dedupeConversationSnippets = (input: {
+  snippets: string[];
+  threadSummary?: DesktopThreadSummary;
+  taskState?: DesktopTaskState;
+}): string[] => {
+  const summaryText = input.threadSummary ? JSON.stringify(input.threadSummary) : '';
+  const taskStateText = input.taskState ? JSON.stringify(input.taskState) : '';
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const snippet of input.snippets) {
+    const normalized = snippet.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    if (summaryText.includes(normalized) || taskStateText.includes(normalized)) continue;
+    seen.add(normalized);
+    deduped.push(normalized);
+  }
+  return deduped;
+};
+
+const buildAdaptiveHistoryMessages = (input: {
+  history: ThreadHistorySnapshot;
+  targetBudgetTokens: number;
+  reservedTokens: number;
+  contextClass: DesktopContextClass;
+}): {
+  messages: ModelMessage[];
+  includedRawMessageCount: number;
+  compactionTier: number;
+} => {
+  const maxMessages = input.contextClass === 'lightweight_chat'
+    ? 8
+    : input.contextClass === 'normal_work'
+      ? 16
+      : 32;
+  const lowValueFilter = input.contextClass !== 'lightweight_chat';
+  const selected: typeof input.history.messages = [];
+  let used = 0;
+  let compactionTier = 1;
+  const recent = input.history.messages.slice(-40).filter((message) =>
+    lowValueFilter ? !isLightweightChatTurn(message.content) : true,
+  );
+
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    const message = recent[index]!;
+    const estimated = estimateTokens(message.content);
+    if (
+      selected.length >= maxMessages
+      || used + estimated + input.reservedTokens > input.targetBudgetTokens
+    ) {
+      compactionTier = Math.max(compactionTier, 4);
+      continue;
+    }
+    used += estimated;
+    selected.unshift(message);
+  }
+
+  return {
+    messages: selected.map((message) => ({
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      content: message.content,
+    })),
+    includedRawMessageCount: selected.length,
+    compactionTier,
+  };
+};
+
+const logDesktopContextSummary = (input: DesktopContextAssemblyMetrics & {
+  executionId: string;
+  threadId: string;
+}): void => {
+  logger.info('desktop.context.summary', input);
+};
+
+const buildDesktopContextAssembly = async (input: {
+  executionId: string;
+  threadId: string;
+  session: MemberSessionDTO;
+  mode: 'fast' | 'high' | 'xtreme';
+  latestUserMessage: string;
+  history: ThreadHistorySnapshot;
+  workspace?: { name: string; path: string };
+  taskState: DesktopTaskState;
+  threadSummary: DesktopThreadSummary;
+  resolvedUserReferences: string[];
+  routerAcknowledgement?: string;
+  departmentName?: string;
+  departmentRoleSlug?: string;
+  departmentSystemPrompt?: string;
+  departmentSkillsMarkdown?: string;
+  dateScope?: string;
+  latestActionResult?: { kind: string; ok: boolean; summary: string };
+  activeAttachments: AttachedFileRef[];
+}): Promise<{
+  systemPrompt: string;
+  historyMessages: ModelMessage[];
+  contextClass: DesktopContextClass;
+  conversationSnippets: string[];
+  metrics: DesktopContextAssemblyMetrics;
+}> => {
+  const resolvedModel = await resolveVercelLanguageModel(input.mode);
+  const contextClass = chooseDesktopContextClass({
+    latestUserMessage: input.latestUserMessage,
+    taskState: input.taskState,
+    threadSummary: input.threadSummary,
+    history: input.history,
+  });
+  const conversationSnippets = await retrieveConversationMemory({
+    companyId: input.session.companyId,
+    userId: input.session.userId,
+    threadId: input.threadId,
+    queryText: input.latestUserMessage,
+    contextClass,
+    threadSummary: input.threadSummary,
+    taskState: input.taskState,
+  });
+  const systemPrompt = buildSystemPrompt({
+    threadId: input.threadId,
+    workspace: input.workspace,
+    dateScope: input.dateScope,
+    latestActionResult: input.latestActionResult,
+    latestUserMessage: input.latestUserMessage,
+    resolvedUserReferences: input.resolvedUserReferences,
+    routerAcknowledgement: input.routerAcknowledgement,
+    departmentName: input.departmentName,
+    departmentRoleSlug: input.departmentRoleSlug,
+    departmentSystemPrompt: input.departmentSystemPrompt,
+    departmentSkillsMarkdown: input.departmentSkillsMarkdown,
+    threadSummary: input.threadSummary,
+    taskState: input.taskState,
+    conversationRetrievalSnippets: conversationSnippets,
+    contextClass,
+  });
+  const budget = getDesktopContextBudget({
+    resolvedModel,
+    contextClass,
+  });
+  const reservedTokens =
+    estimateTokens(systemPrompt)
+    + estimateTokens(input.latestUserMessage)
+    + (input.activeAttachments.length > 0 ? 8_000 : 1_500);
+  const historySelection = buildAdaptiveHistoryMessages({
+    history: input.history,
+    targetBudgetTokens: budget.targetContextBudget,
+    reservedTokens,
+    contextClass,
+  });
+  const historyMessages = historySelection.messages;
+  const estimatedPromptTokens =
+    estimateTokens(systemPrompt)
+    + estimateMessageTokens(historyMessages)
+    + estimateTokens(input.latestUserMessage);
+  const usedContextBudgetPercent = Number(
+    ((estimatedPromptTokens / Math.max(1, budget.usableContextBudget)) * 100).toFixed(2),
+  );
+  const metrics: DesktopContextAssemblyMetrics = {
+    contextClass,
+    modelId: budget.modelId,
+    usableContextBudget: budget.usableContextBudget,
+    targetContextBudget: budget.targetContextBudget,
+    estimatedPromptTokens,
+    usedContextBudgetPercent,
+    includedRawMessageCount: historySelection.includedRawMessageCount,
+    includedConversationRetrievalCount: conversationSnippets.length,
+    includedSourceArtifactCount: input.activeAttachments.length,
+    includedThreadSummary: input.threadSummary.sourceMessageCount > 0,
+    includedTaskState:
+      input.taskState.completedMutations.length > 0
+      || input.taskState.activeSourceArtifacts.length > 0
+      || Boolean(input.taskState.pendingApproval)
+      || Boolean(input.taskState.activeObjective),
+    includedWorkspaceContext: Boolean(input.workspace),
+    compactionTier: Math.max(
+      historySelection.compactionTier,
+      conversationSnippets.length > 0 ? 3 : 1,
+      (input.threadSummary.sourceMessageCount > 0 || Boolean(input.taskState.activeObjective)) ? 2 : 1,
+      estimatedPromptTokens > budget.targetContextBudget ? 5 : 1,
+    ),
+  };
+
+  logDesktopContextSummary({
+    executionId: input.executionId,
+    threadId: input.threadId,
+    ...metrics,
+  });
+
+  return {
+    systemPrompt,
+    historyMessages,
+    contextClass,
+    conversationSnippets,
+    metrics,
+  };
+};
+
 const buildSystemPrompt = (input: {
   threadId: string;
   workspace?: { name: string; path: string };
   dateScope?: string;
   latestActionResult?: { kind: string; ok: boolean; summary: string };
   latestUserMessage?: string;
+  resolvedUserReferences?: string[];
   routerAcknowledgement?: string;
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
+  threadSummary?: DesktopThreadSummary;
+  taskState?: DesktopTaskState;
+  conversationRetrievalSnippets?: string[];
+  contextClass?: DesktopContextClass;
 }) => {
+  const latestMessage = input.latestUserMessage?.trim() ?? '';
+  const shouldPrioritizeInternalDocs = /\b(uploaded|upload|company doc|company docs|internal doc|internal docs|document|documents|file|files|csv|pdf|sheet|spreadsheet|assignment)\b/i.test(latestMessage);
   const parts = [
     'You are the Vercel AI SDK desktop runtime for a tool-using assistant.',
     'Use the available comprehensive tools directly.',
@@ -810,6 +1560,9 @@ const buildSystemPrompt = (input: {
     'Only claim actions and results that are confirmed by tool outputs.',
     'If a tool returns a pending approval action, treat that as the next required step instead of inventing completion.',
     'Prefer the coding tool for local workspace work and the repo tool only for remote GitHub repositories.',
+    'For uploaded files or internal company documents, prioritize the internal document tools before any workspace, Google Drive, local filesystem, or remote repository search.',
+    'Use internal indexed document search when you need retrieval or matching against company documents. Use OCR/direct uploaded-file reading when you need the exact uploaded file contents. Both of these internal document paths come before workspace, Drive, or repo inspection.',
+    'Do not inspect the workspace, local filesystem, Google Drive, or remote repositories to find an uploaded/company document unless the internal document tools failed or the user explicitly asked for those other sources.',
     'For specialized or complex workflows, first search relevant skills with the skillSearch tool, read the chosen skill, and then proceed with the task.',
     'When a local action result is available, use that result as the source of truth for the next step instead of repeating the same command or rereading the same file without a concrete reason.',
     'Do not repeat a successful local command, file read, or file write unless you explicitly need a different verification step or the user asked to retry.',
@@ -822,6 +1575,24 @@ const buildSystemPrompt = (input: {
       `Open workspace root: ${input.workspace.path}.`,
       'References like "this repo" or "this workspace" refer to that local root.',
     );
+  }
+  if (shouldPrioritizeInternalDocs) {
+    parts.push(
+      'Document retrieval priority for this request:',
+      '1. Use the internal document tools first: indexed company-document search and OCR/direct uploaded-file reading.',
+      '2. Choose indexed search for retrieval/matching and OCR/direct file reading for exact file extraction when needed.',
+      '3. Only after those internal document paths fail, consider workspace files, Google Drive, or repo sources, unless the user explicitly asked for those sources.',
+    );
+  }
+  if ((input.taskState?.activeSourceArtifacts.length ?? 0) > 0) {
+    parts.push(
+      'This thread has active source artifacts from uploaded/company documents.',
+      'For follow-up requests like "next task", "continue", or "pick the next one", treat those source artifacts as the default grounding context.',
+      'Do not search Google Drive, the workspace, local filesystem, or remote repos for a previously uploaded/company file unless artifact retrieval produced no relevant match or the user explicitly asked for those sources.',
+    );
+  }
+  if (input.contextClass) {
+    parts.push(`Context assembly class: ${input.contextClass}.`);
   }
   parts.push(`Local date context: ${getLocalDateContext()} (${LOCAL_TIME_ZONE}).`);
   if (input.dateScope) {
@@ -851,6 +1622,27 @@ const buildSystemPrompt = (input: {
   const conversationRefsContext = buildConversationRefsContext(buildConversationKey(input.threadId));
   if (conversationRefsContext) {
     parts.push(conversationRefsContext);
+  }
+  const threadSummaryContext = input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null;
+  if (threadSummaryContext) {
+    parts.push(threadSummaryContext);
+  }
+  const taskStateContext = input.taskState ? buildTaskStateContext(input.taskState) : null;
+  if (taskStateContext) {
+    parts.push(taskStateContext);
+  }
+  if (input.resolvedUserReferences && input.resolvedUserReferences.length > 0) {
+    parts.push(
+      'Deterministic reference resolution:',
+      ...input.resolvedUserReferences.map((entry) => `- ${entry}`),
+      'Use these resolved identifiers as the source of truth unless the user explicitly asks to refresh from the system of record.',
+    );
+  }
+  if (input.conversationRetrievalSnippets && input.conversationRetrievalSnippets.length > 0) {
+    parts.push(
+      'Retrieved conversation memory:',
+      ...input.conversationRetrievalSnippets.map((entry) => `- ${entry}`),
+    );
   }
   if (input.latestActionResult) {
     parts.push(
@@ -1086,7 +1878,7 @@ const runVercelLoop = async (input: {
         },
       },
     },
-    stopWhen: [stopOnPendingApproval, stepCountIs(20)],
+    stopWhen: [stopOnPendingApproval, stepCountIs(DESKTOP_MAX_LOOP_STEPS)],
   });
 };
 
@@ -1117,7 +1909,7 @@ const runVercelStreamLoop = async (input: {
         },
       },
     },
-    stopWhen: [stopOnPendingApproval, stepCountIs(20)],
+    stopWhen: [stopOnPendingApproval, stepCountIs(DESKTOP_MAX_LOOP_STEPS)],
   });
 };
 
@@ -1128,6 +1920,7 @@ export const executeAutomatedDesktopTurn = async (input: {
   mode?: 'fast' | 'high' | 'xtreme';
   executionId?: string;
   entrypoint?: 'desktop_scheduled_workflow';
+  attachedFiles?: AttachedFileRef[];
   metadata?: Record<string, unknown>;
 }): Promise<{
   executionId: string;
@@ -1176,6 +1969,8 @@ export const executeAutomatedDesktopTurn = async (input: {
   });
 
   try {
+    const threadMemory = await loadThreadMemory(input.threadId, input.session.userId);
+    const resolvedUserContext = resolveDesktopTaskReferences(input.prompt, threadMemory.taskState);
     const runtime: VercelRuntimeRequestContext = {
       channel: 'desktop',
       threadId: input.threadId,
@@ -1193,22 +1988,12 @@ export const executeAutomatedDesktopTurn = async (input: {
       larkUserId: input.session.larkUserId ?? undefined,
       authProvider: input.session.authProvider,
       mode,
-      dateScope: inferDateScope(input.prompt),
+      dateScope: inferDateScope(resolvedUserContext.message),
       allowedToolIds: departmentRuntime.allowedToolIds,
       allowedActionsByTool: departmentRuntime.allowedActionsByTool,
       departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
       departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
     };
-    const systemPrompt = buildSystemPrompt({
-      threadId: input.threadId,
-      dateScope: runtime.dateScope,
-      latestUserMessage: input.prompt,
-      departmentName: departmentRuntime.departmentName,
-      departmentRoleSlug: departmentRuntime.departmentRoleSlug,
-      departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
-      departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
-    });
-
     logger.info('desktop.workflow.execution.runtime', {
       executionId,
       threadId: input.threadId,
@@ -1222,11 +2007,46 @@ export const executeAutomatedDesktopTurn = async (input: {
     });
 
     let persistedBlocks: PersistedContentBlock[] = [];
-    const { messages: historyMessages } = await mapHistoryToMessages(input.threadId, input.session);
+    const { history } = await mapHistoryToMessages(input.threadId, input.session);
+    const grounding = await resolveDesktopGroundingAttachments({
+      companyId: input.session.companyId,
+      message: resolvedUserContext.message,
+      currentAttachedFiles: input.attachedFiles ?? [],
+      recentAttachedFiles: collectRecentAttachedFiles(history),
+      taskState: threadMemory.taskState,
+    });
+    const contextAssembly = await buildDesktopContextAssembly({
+      executionId,
+      threadId: input.threadId,
+      session: input.session,
+      mode,
+      latestUserMessage: resolvedUserContext.message,
+      history,
+      taskState: grounding.taskState,
+      threadSummary: threadMemory.summary,
+      resolvedUserReferences: resolvedUserContext.resolvedReferences,
+      departmentName: departmentRuntime.departmentName,
+      departmentRoleSlug: departmentRuntime.departmentRoleSlug,
+      departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
+      departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+      dateScope: runtime.dateScope,
+      activeAttachments: grounding.attachments,
+    });
+    const workflowMessages = [...contextAssembly.historyMessages, { role: 'user', content: resolvedUserContext.message }];
+    logLlmContext({
+      phase: 'workflow',
+      executionId,
+      threadId: input.threadId,
+      systemPrompt: contextAssembly.systemPrompt,
+      messages: workflowMessages,
+      taskState: grounding.taskState,
+      threadSummary: threadMemory.summary,
+      resolvedUserReferences: resolvedUserContext.resolvedReferences,
+    });
     const result = await runVercelLoop({
       runtime,
-      system: systemPrompt,
-      messages: [...historyMessages, { role: 'user', content: input.prompt }],
+      system: contextAssembly.systemPrompt,
+      messages: workflowMessages,
       onToolStart: async (toolName, activityId, title) => {
         logger.info('desktop.workflow.execution.tool.start', {
           executionId,
@@ -1319,12 +2139,18 @@ export const executeAutomatedDesktopTurn = async (input: {
       'assistant',
       assistantText,
       {
-        executionId,
-        contentBlocks: persistedBlocks,
-        ...(citations.length > 0 ? { citations } : {}),
-        ...(conversationRefs ? { conversationRefs } : {}),
-        ...(input.metadata ? { workflowExecution: input.metadata } : {}),
-        ...(pendingApproval ? { pendingApprovalAction: pendingApproval } : {}),
+        ...buildExecutionMetadata({
+          state: pendingApproval ? 'waiting_for_approval' : 'completed',
+          executionId,
+          contentBlocks: persistedBlocks,
+          citations: citations as Array<Record<string, unknown>>,
+          conversationRefs,
+          workflowExecution: input.metadata,
+          pendingApprovalAction: pendingApproval ?? null,
+          taskStateSnapshot: grounding.taskState,
+          threadSummarySnapshot: threadMemory.summary,
+          contextAssembly: contextAssembly.metrics,
+        }),
       },
     );
     logger.info('desktop.workflow.execution.message.persisted', {
@@ -1336,16 +2162,26 @@ export const executeAutomatedDesktopTurn = async (input: {
       assistantTextPreview: summarizeText(assistantText, 1200),
     });
     conversationMemoryStore.addAssistantMessage(buildConversationKey(input.threadId), assistantMessage.id, assistantText);
-    await recordTokenUsage({
-      userId: input.session.userId,
+    maybeStoreConversationTurn({
       companyId: input.session.companyId,
-      channel: 'desktop',
+      userId: input.session.userId,
       threadId: input.threadId,
-      mode,
-      agentTarget: 'desktop.workflow',
-      systemPrompt,
-      messages: [...historyMessages, { role: 'user', content: input.prompt }],
-      outputText: assistantText,
+      sourceId: assistantMessage.id,
+      role: 'assistant',
+      text: assistantText,
+    });
+    runInBackground(`workflow-record-token-usage:${executionId}`, async () => {
+      await recordTokenUsage({
+        userId: input.session.userId,
+        companyId: input.session.companyId,
+        channel: 'desktop',
+        threadId: input.threadId,
+        mode,
+        agentTarget: 'desktop.workflow',
+        systemPrompt: contextAssembly.systemPrompt,
+        messages: workflowMessages,
+        outputText: assistantText,
+      });
     });
 
     await appendEventSafe({
@@ -1429,6 +2265,24 @@ export class VercelDesktopEngine {
     const requesterAiRole = session.aiRole ?? session.role;
     const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(session.companyId, requesterAiRole);
     const departmentRuntime = await resolveDepartmentRuntime(session, threadId, fallbackAllowedToolIds);
+    const baseThreadMemory = await loadThreadMemory(threadId, session.userId);
+    let activeThreadSummary = baseThreadMemory.summary;
+    let activeTaskState = baseThreadMemory.taskState;
+    if (attachedFiles.length > 0) {
+      activeTaskState = upsertDesktopSourceArtifacts({
+        taskState: activeTaskState,
+        artifacts: buildSourceArtifactEntriesFromAttachments(attachedFiles),
+      });
+    }
+    if ((storedUserMessage || effectiveMessage).trim()) {
+      activeTaskState = {
+        ...activeTaskState,
+        activeObjective: summarizeText((storedUserMessage || effectiveMessage).trim(), 300),
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    const resolvedUserContext = resolveDesktopTaskReferences(effectiveMessage, activeTaskState);
+    const effectivePromptMessage = resolvedUserContext.message;
 
     await startRun({
       executionId,
@@ -1437,7 +2291,7 @@ export class VercelDesktopEngine {
       entrypoint: 'desktop_send',
       session,
       mode,
-      message: effectiveMessage,
+      message: effectivePromptMessage,
     });
     await appendEventSafe({
       executionId,
@@ -1446,7 +2300,7 @@ export class VercelDesktopEngine {
       actorType: 'system',
       actorKey: 'vercel',
       title: 'Vercel desktop execution started',
-      summary: summarizeText(storedUserMessage || effectiveMessage),
+      summary: summarizeText(storedUserMessage || effectivePromptMessage),
       status: 'running',
       payload: { threadId, mode },
     });
@@ -1454,7 +2308,7 @@ export class VercelDesktopEngine {
       executionId,
       threadId,
       mode,
-      messagePreview: summarizeText(storedUserMessage || effectiveMessage, 200),
+      messagePreview: summarizeText(storedUserMessage || effectivePromptMessage, 200),
       attachedFileCount: attachedFiles.length,
     });
 
@@ -1478,7 +2332,7 @@ export class VercelDesktopEngine {
       const childRoute = await runDesktopChildRouter({
         executionId,
         threadId,
-        message: effectiveMessage,
+        message: effectivePromptMessage,
         workspace,
         history: preRouterHistory.messages.slice(-6).map((entry) => ({
           role: entry.role === 'assistant' ? 'assistant' : 'user',
@@ -1497,6 +2351,14 @@ export class VercelDesktopEngine {
         },
       );
       conversationMemoryStore.addUserMessage(buildConversationKey(threadId), messageId, storedUserMessage);
+      maybeStoreConversationTurn({
+        companyId: session.companyId,
+        userId: session.userId,
+        threadId,
+        sourceId: userMessage.id,
+        role: 'user',
+        text: storedUserMessage,
+      });
       const history = appendMessageToHistory(preRouterHistory, {
         id: userMessage.id,
         role: userMessage.role,
@@ -1509,7 +2371,7 @@ export class VercelDesktopEngine {
       if (childRoute.route === 'fast_reply' && childRoute.reply?.trim()) {
         const reply = childRoute.reply.trim();
         const childRouterPrompt = buildChildRouterPrompt({
-          message: effectiveMessage,
+          message: effectivePromptMessage,
           workspace,
           history: preRouterHistory.messages.slice(-6).map((entry) => ({
             role: entry.role === 'assistant' ? 'assistant' : 'user',
@@ -1537,31 +2399,41 @@ export class VercelDesktopEngine {
           },
         );
         conversationMemoryStore.addAssistantMessage(buildConversationKey(threadId), assistantMessage.id, reply);
-        await recordTokenUsage({
-          userId: session.userId,
+        maybeStoreConversationTurn({
           companyId: session.companyId,
-          channel: 'desktop',
+          userId: session.userId,
           threadId,
-          mode: 'fast',
-          agentTarget: 'desktop.child_router',
-          systemPrompt: 'Desktop child router',
-          messages: [{ role: 'user', content: childRouterPrompt }],
-          outputText: reply,
+          sourceId: assistantMessage.id,
+          role: 'assistant',
+          text: reply,
         });
-        await appendEventSafe({
-          executionId,
-          phase: 'delivery',
-          eventType: 'child_router.fast_reply',
-          actorType: 'agent',
-          actorKey: 'child_router',
-          title: 'Fast child reply delivered',
-          summary: summarizeText(reply, 600),
-          status: 'done',
+        runInBackground(`child-router-fast-reply:${executionId}`, async () => {
+          await recordTokenUsage({
+            userId: session.userId,
+            companyId: session.companyId,
+            channel: 'desktop',
+            threadId,
+            mode: 'fast',
+            agentTarget: 'desktop.child_router',
+            systemPrompt: 'Desktop child router',
+            messages: [{ role: 'user', content: childRouterPrompt }],
+            outputText: reply,
+          });
+          await appendEventSafe({
+            executionId,
+            phase: 'delivery',
+            eventType: 'child_router.fast_reply',
+            actorType: 'agent',
+            actorKey: 'child_router',
+            title: 'Fast child reply delivered',
+            summary: summarizeText(reply, 600),
+            status: 'done',
+          });
+          await completeRun(executionId, reply);
+          await uiEventQueue;
         });
-        await completeRun(executionId, reply);
-        queueUiEvent('done', { executionId, pendingApproval: null, actionIssued: false });
-        await uiEventQueue;
-        sendSseEvent(res, 'done', { message: assistantMessage, executionId, pendingApproval: null, actionIssued: false });
+        queueUiEvent('done', { executionId, pendingApproval: null, actionIssued: false, state: 'completed' });
+        sendSseEvent(res, 'done', { message: assistantMessage, executionId, pendingApproval: null, actionIssued: false, state: 'completed' });
         res.end();
         return;
       }
@@ -1591,7 +2463,7 @@ export class VercelDesktopEngine {
           status: 'done',
         });
       }
-      let activePlan = await generateExecutionPlan({ message: effectiveMessage, workspace });
+      let activePlan = await generateExecutionPlan({ message: effectivePromptMessage, workspace });
       const emitPlan = (plan: ExecutionPlan) => {
         sendSseEvent(res, 'plan', plan);
         queueUiEvent('plan', plan);
@@ -1625,54 +2497,80 @@ export class VercelDesktopEngine {
         authProvider: session.authProvider,
         mode,
         workspace,
-        dateScope: inferDateScope(effectiveMessage),
+        dateScope: inferDateScope(effectivePromptMessage),
         allowedActionsByTool: departmentRuntime.allowedActionsByTool,
         allowedToolIds: departmentRuntime.allowedToolIds,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
       };
-      const systemPrompt = buildSystemPrompt({
+      const grounding = await resolveDesktopGroundingAttachments({
+        companyId: session.companyId,
+        message: effectivePromptMessage,
+        currentAttachedFiles: attachedFiles,
+        recentAttachedFiles: collectRecentAttachedFiles(history),
+        taskState: activeTaskState,
+      });
+      activeTaskState = grounding.taskState;
+      logger.info('desktop.source_artifacts.grounding', {
+        executionId,
         threadId,
+        source: grounding.source,
+        attachmentCount: grounding.attachments.length,
+        activeSourceArtifacts: activeTaskState.activeSourceArtifacts.map((artifact) => artifact.fileName),
+      });
+      const activeAttachments = grounding.attachments;
+      const contextAssembly = await buildDesktopContextAssembly({
+        executionId,
+        threadId,
+        session,
+        mode,
+        latestUserMessage: effectivePromptMessage,
+        history,
         workspace,
-        dateScope: runtime.dateScope,
-        latestUserMessage: effectiveMessage,
+        taskState: activeTaskState,
+        threadSummary: activeThreadSummary,
+        resolvedUserReferences: resolvedUserContext.resolvedReferences,
         routerAcknowledgement: routerAcknowledgement ?? undefined,
         departmentName: departmentRuntime.departmentName,
         departmentRoleSlug: departmentRuntime.departmentRoleSlug,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+        dateScope: runtime.dateScope,
+        activeAttachments,
       });
 
-      const historyMessages = mapHistorySnapshotToMessages(history);
-      const mergedAttachments = new Map<string, AttachedFileRef>();
-      for (const file of collectRecentAttachedFiles(history)) {
-        mergedAttachments.set(file.fileAssetId, file);
-      }
-      for (const file of attachedFiles) {
-        mergedAttachments.set(file.fileAssetId, file);
-      }
-
-      let inputMessages = historyMessages;
-      const activeAttachments = Array.from(mergedAttachments.values());
+      let inputMessages = contextAssembly.historyMessages;
       if (activeAttachments.length > 0) {
         const visionParts = await buildVisionContent({
-          userMessage: effectiveMessage,
+          userMessage: effectivePromptMessage,
           attachedFiles: activeAttachments,
           companyId: session.companyId,
           requesterUserId: session.userId,
           requesterAiRole,
         });
         inputMessages = [
-          ...historyMessages,
+          ...contextAssembly.historyMessages,
           { role: 'user', content: visionParts as ModelMessage['content'] },
         ];
-      } else if (effectiveMessage.trim()) {
-        inputMessages = [...historyMessages, { role: 'user', content: effectiveMessage }];
+      } else if (effectivePromptMessage.trim()) {
+        inputMessages = [...contextAssembly.historyMessages, { role: 'user', content: effectivePromptMessage }];
       }
+
+      logLlmContext({
+        phase: 'send',
+        executionId,
+        threadId,
+        systemPrompt: contextAssembly.systemPrompt,
+        messages: inputMessages,
+        workspace,
+        taskState: activeTaskState,
+        threadSummary: activeThreadSummary,
+        resolvedUserReferences: resolvedUserContext.resolvedReferences,
+      });
 
       const result = await runVercelStreamLoop({
         runtime,
-        system: systemPrompt,
+        system: contextAssembly.systemPrompt,
         messages: inputMessages,
         onToolStart: async (toolName, activityId, title) => {
           const ownerAgent = resolvePlanOwnerFromToolName(toolName);
@@ -1723,6 +2621,12 @@ export class VercelDesktopEngine {
           });
         },
         onToolFinish: async (toolName, activityId, title, output) => {
+          activeTaskState = updateTaskStateFromToolEnvelope({
+            taskState: activeTaskState,
+            toolName,
+            output,
+            latestObjective: storedUserMessage || effectiveMessage,
+          });
           const ownerAgent = resolvePlanOwnerFromToolName(toolName);
           if (activePlan && ownerAgent) {
             activePlan = updateExecutionPlanTask(activePlan, {
@@ -1906,34 +2810,73 @@ export class VercelDesktopEngine {
       }
 
       const conversationRefs = buildPersistedConversationRefs(buildConversationKey(threadId));
-
-      const assistantMessage = await desktopThreadsService.addMessage(
+      const assistantMessage = await persistAssistantMessage({
         threadId,
-        session.userId,
-        'assistant',
-        finalText,
-        {
+        userId: session.userId,
+        content: finalText,
+        metadata: buildExecutionMetadata({
+          state: pendingApproval ? 'waiting_for_approval' : 'completed',
           executionId,
           contentBlocks: persistedBlocks,
-          ...(activePlan ? { plan: activePlan } : {}),
-          ...(citations.length > 0 ? { citations } : {}),
-          ...(conversationRefs ? { conversationRefs } : {}),
-        },
-      );
+          plan: activePlan,
+          citations: citations as Array<Record<string, unknown>>,
+          conversationRefs,
+          pendingApprovalAction: pendingApproval ?? null,
+          desktopPendingAction: pendingAction ?? null,
+          taskStateSnapshot: activeTaskState,
+          threadSummarySnapshot: activeThreadSummary,
+          contextAssembly: contextAssembly.metrics,
+        }),
+      });
       conversationMemoryStore.addAssistantMessage(buildConversationKey(threadId), assistantMessage.id, finalText);
-      await recordTokenUsage({
+      maybeStoreConversationTurn({
+        companyId: session.companyId,
+        userId: session.userId,
+        threadId,
+        sourceId: assistantMessage.id,
+        role: 'assistant',
+        text: finalText || approvalSummary || '',
+      });
+      const updatedHistoryForSummary = appendMessageToHistory(history, {
+        id: assistantMessage.id,
+        role: assistantMessage.role,
+        content: assistantMessage.content,
+        metadata: assistantMessage.metadata && typeof assistantMessage.metadata === 'object' && !Array.isArray(assistantMessage.metadata)
+          ? assistantMessage.metadata as Record<string, unknown>
+          : undefined,
+      });
+      runInBackground(`persist-thread-memory:${executionId}`, async () => {
+        const refreshedSummary = await refreshDesktopThreadSummary({
+          messages: updatedHistoryForSummary.messages.map((entry) => ({
+            role: entry.role,
+            content: entry.content,
+          })),
+          taskState: activeTaskState,
+          currentSummary: activeThreadSummary,
+        });
+        await persistThreadMemory({
+          threadId,
+          userId: session.userId,
+          summary: refreshedSummary,
+          taskState: activeTaskState,
+        });
+      });
+      runInBackground(`record-token-usage:${executionId}`, async () => {
+        await recordTokenUsage({
         userId: session.userId,
         companyId: session.companyId,
         channel: 'desktop',
         threadId,
         mode,
         agentTarget: 'desktop.vercel',
-        systemPrompt,
+        systemPrompt: contextAssembly.systemPrompt,
         messages: inputMessages,
         outputText: finalText || approvalSummary || '',
+        });
       });
 
-      await appendEventSafe({
+      runInBackground(`stream-finish:${executionId}`, async () => {
+        await appendEventSafe({
         executionId,
         phase: pendingApproval ? 'control' : 'synthesis',
         eventType: pendingApproval ? 'control.requested' : 'synthesis.completed',
@@ -1942,24 +2885,36 @@ export class VercelDesktopEngine {
         title: pendingApproval ? 'Approval requested' : 'Generated assistant response',
         summary: summarizeText(finalText || approvalSummary || 'Approval requested', 600),
         status: pendingApproval ? 'pending' : 'done',
-      });
+        });
 
-      if (!pendingApproval) {
-        if (activePlan) {
-          activePlan = completeExecutionPlan(activePlan, finalText);
-          await logAndPersistPlan({
-            executionId,
-            threadId,
-            plan: activePlan,
-            eventType: activePlan.status === 'completed' ? 'plan.completed' : activePlan.status === 'failed' ? 'plan.failed' : 'plan.updated',
-            emitSse: emitPlan,
-          });
+        if (!pendingApproval) {
+          if (activePlan) {
+            activePlan = completeExecutionPlan(activePlan, finalText);
+            await logAndPersistPlan({
+              executionId,
+              threadId,
+              plan: activePlan,
+              eventType: activePlan.status === 'completed' ? 'plan.completed' : activePlan.status === 'failed' ? 'plan.failed' : 'plan.updated',
+              emitSse: emitPlan,
+            });
+          }
+          await completeRun(executionId, finalText);
         }
-        await completeRun(executionId, finalText);
-      }
-      queueUiEvent('done', { executionId, pendingApproval: pendingApproval ?? null, actionIssued: Boolean(pendingAction) });
-      await uiEventQueue;
-      sendSseEvent(res, 'done', { message: assistantMessage, executionId, pendingApproval: pendingApproval ?? null, actionIssued: Boolean(pendingAction) });
+        await uiEventQueue;
+      });
+      queueUiEvent('done', {
+        executionId,
+        pendingApproval: pendingApproval ?? null,
+        actionIssued: Boolean(pendingAction),
+        state: pendingApproval ? 'waiting_for_approval' : 'completed',
+      });
+      sendSseEvent(res, 'done', {
+        message: assistantMessage,
+        executionId,
+        pendingApproval: pendingApproval ?? null,
+        actionIssued: Boolean(pendingAction),
+        state: pendingApproval ? 'waiting_for_approval' : 'completed',
+      });
       res.end();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Vercel desktop stream failed';
@@ -1987,12 +2942,45 @@ export class VercelDesktopEngine {
 
   async act(req: Request, res: Response, session: MemberSessionDTO): Promise<Response> {
     const threadId = req.params.threadId;
-    const { message, workspace, actionResult, mode, executionId: requestedExecutionId } = actSchema.parse(req.body);
+    const {
+      message,
+      workspace,
+      actionResult,
+      mode,
+      executionId: requestedExecutionId,
+      continuationMessageId,
+    } = actSchema.parse(req.body);
     const executionId = requestedExecutionId ?? randomUUID();
     const messageId = randomUUID();
     const requesterAiRole = session.aiRole ?? session.role;
     const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(session.companyId, requesterAiRole);
     const departmentRuntime = await resolveDepartmentRuntime(session, threadId, fallbackAllowedToolIds);
+    const baseThreadMemory = await loadThreadMemory(threadId, session.userId);
+    const continuationState = await loadContinuationMessageState({
+      threadId,
+      userId: session.userId,
+      messageId: continuationMessageId,
+    });
+    let activeThreadSummary = continuationState.threadSummary.sourceMessageCount > 0
+      ? continuationState.threadSummary
+      : baseThreadMemory.summary;
+    let activeTaskState = continuationState.taskState.updatedAt !== new Date(0).toISOString()
+      ? continuationState.taskState
+      : baseThreadMemory.taskState;
+    activeTaskState = applyActionResultToTaskState({
+      taskState: activeTaskState,
+      actionResult: actionResult ?? null,
+    });
+    if (message?.trim()) {
+      activeTaskState = {
+        ...activeTaskState,
+        activeObjective: summarizeText(message.trim(), 300),
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    const resolvedUserContext = message
+      ? resolveDesktopTaskReferences(message, activeTaskState)
+      : { message: message ?? '', resolvedReferences: [] };
 
     await startRun({
       executionId,
@@ -2001,7 +2989,7 @@ export class VercelDesktopEngine {
       entrypoint: 'desktop_act',
       session,
       mode,
-      message: message ?? actionResult?.summary ?? 'Local action continuation',
+      message: resolvedUserContext.message || message || actionResult?.summary || 'Local action continuation',
     });
 
     await appendEventSafe({
@@ -2011,7 +2999,7 @@ export class VercelDesktopEngine {
       actorType: 'system',
       actorKey: 'vercel',
       title: 'Vercel desktop action turn started',
-      summary: summarizeText(message ?? actionResult?.summary),
+      summary: summarizeText(resolvedUserContext.message || message || actionResult?.summary || 'Local action continuation'),
       status: 'running',
       payload: {
         threadId,
@@ -2022,8 +3010,16 @@ export class VercelDesktopEngine {
 
     try {
       if (message) {
-        await desktopThreadsService.addMessage(threadId, session.userId, 'user', message);
+        const userMessage = await desktopThreadsService.addMessage(threadId, session.userId, 'user', message);
         conversationMemoryStore.addUserMessage(buildConversationKey(threadId), messageId, message);
+        maybeStoreConversationTurn({
+          companyId: session.companyId,
+          userId: session.userId,
+          threadId,
+          sourceId: userMessage.id,
+          role: 'user',
+          text: message,
+        });
       }
 
       const runtime: VercelRuntimeRequestContext = {
@@ -2042,7 +3038,7 @@ export class VercelDesktopEngine {
         authProvider: session.authProvider,
         mode,
         workspace,
-        dateScope: inferDateScope(message),
+        dateScope: inferDateScope(resolvedUserContext.message || message),
         latestActionResult: actionResult,
         allowedToolIds: departmentRuntime.allowedToolIds,
         allowedActionsByTool: departmentRuntime.allowedActionsByTool,
@@ -2050,9 +3046,9 @@ export class VercelDesktopEngine {
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
       };
 
-      let persistedBlocks: PersistedContentBlock[] = [];
-      const { messages: historyMessages, history } = await mapHistoryToMessages(threadId, session);
-      let activePlan = extractLatestExecutionPlan(history);
+      let persistedBlocks: PersistedContentBlock[] = continuationState.persistedBlocks;
+      const { history } = await mapHistoryToMessages(threadId, session);
+      let activePlan = continuationState.plan ?? extractLatestExecutionPlan(history);
       if (activePlan && actionResult) {
         activePlan = updateExecutionPlanTask(activePlan, {
           ownerAgent: resolvePlanOwnerFromActionKind(actionResult.kind === 'tool_action' ? 'run_command' : actionResult.kind),
@@ -2066,24 +3062,88 @@ export class VercelDesktopEngine {
           eventType: activePlan.status === 'failed' ? 'plan.failed' : activePlan.status === 'completed' ? 'plan.completed' : 'plan.updated',
         });
       }
-      const continuationText = message ?? (actionResult
+      const continuationText = (message ? resolvedUserContext.message : undefined) ?? (actionResult
         ? [
           'Continue from this local action result.',
           `kind: ${actionResult.kind}`,
           `ok: ${String(actionResult.ok)}`,
           'summary:',
           actionResult.summary,
+          actionResult.payload ? `payload:\n${JSON.stringify(actionResult.payload)}` : '',
           actionResult.ok
             ? 'Do not repeat the same successful action unless a different verification or follow-up step is required.'
             : 'Use the failure details above to choose a different next step or a corrected retry.',
-        ].join('\n')
+          ].join('\n')
         : undefined);
+      const grounding = await resolveDesktopGroundingAttachments({
+        companyId: session.companyId,
+        message: continuationText ?? resolvedUserContext.message ?? message,
+        currentAttachedFiles: [],
+        recentAttachedFiles: collectRecentAttachedFiles(history),
+        taskState: activeTaskState,
+      });
+      activeTaskState = grounding.taskState;
+      logger.info('desktop.source_artifacts.grounding', {
+        executionId,
+        threadId,
+        source: grounding.source,
+        attachmentCount: grounding.attachments.length,
+        activeSourceArtifacts: activeTaskState.activeSourceArtifacts.map((artifact) => artifact.fileName),
+      });
+      const activeAttachments = grounding.attachments;
+      const latestContinuationMessage = continuationText
+        || resolvedUserContext.message
+        || message
+        || actionResult?.summary
+        || 'Local action continuation';
+      const contextAssembly = await buildDesktopContextAssembly({
+        executionId,
+        threadId,
+        session,
+        mode,
+        latestUserMessage: latestContinuationMessage,
+        history,
+        workspace,
+        taskState: activeTaskState,
+        threadSummary: activeThreadSummary,
+        resolvedUserReferences: resolvedUserContext.resolvedReferences,
+        departmentName: departmentRuntime.departmentName,
+        departmentRoleSlug: departmentRuntime.departmentRoleSlug,
+        departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
+        departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+        dateScope: runtime.dateScope,
+        latestActionResult: actionResult,
+        activeAttachments,
+      });
+      const modelMessages = continuationText
+        ? activeAttachments.length > 0
+          ? [...contextAssembly.historyMessages, {
+            role: 'user',
+            content: await buildVisionContent({
+              userMessage: continuationText,
+              attachedFiles: activeAttachments,
+              companyId: session.companyId,
+              requesterUserId: session.userId,
+              requesterAiRole,
+            }) as ModelMessage['content'],
+          }]
+          : [...contextAssembly.historyMessages, { role: 'user', content: continuationText }]
+        : contextAssembly.historyMessages;
+      logLlmContext({
+        phase: 'act',
+        executionId,
+        threadId,
+        systemPrompt: contextAssembly.systemPrompt,
+        messages: modelMessages,
+        workspace,
+        taskState: activeTaskState,
+        threadSummary: activeThreadSummary,
+        resolvedUserReferences: resolvedUserContext.resolvedReferences,
+      });
       const result = await runVercelLoop({
         runtime,
-        system: systemPrompt,
-        messages: continuationText
-          ? [...historyMessages, { role: 'user', content: continuationText }]
-          : historyMessages,
+        system: contextAssembly.systemPrompt,
+        messages: modelMessages,
         onToolStart: async (toolName, activityId, title) => {
           const ownerAgent = resolvePlanOwnerFromToolName(toolName);
           if (activePlan && ownerAgent) {
@@ -2110,6 +3170,12 @@ export class VercelDesktopEngine {
           });
         },
         onToolFinish: async (toolName, activityId, title, output) => {
+          activeTaskState = updateTaskStateFromToolEnvelope({
+            taskState: activeTaskState,
+            toolName,
+            output,
+            latestObjective: message ?? actionResult?.summary,
+          });
           const ownerAgent = resolvePlanOwnerFromToolName(toolName);
           if (activePlan && ownerAgent) {
             activePlan = updateExecutionPlanTask(activePlan, {
@@ -2190,35 +3256,72 @@ export class VercelDesktopEngine {
           return output?.citations ?? [];
         }));
       const conversationRefs = buildPersistedConversationRefs(buildConversationKey(threadId));
-      const assistantMessage = await desktopThreadsService.addMessage(
+      const assistantMessage = await persistAssistantMessage({
         threadId,
-        session.userId,
-        'assistant',
-        assistantText,
-        {
+        userId: session.userId,
+        content: assistantText,
+        metadata: buildExecutionMetadata({
+          state: 'completed',
           executionId,
           contentBlocks: persistedBlocks,
-          ...(activePlan ? { plan: activePlan } : {}),
-          ...(citations.length > 0 ? { citations } : {}),
-          ...(conversationRefs ? { conversationRefs } : {}),
-        },
-      );
+          plan: activePlan,
+          citations: citations as Array<Record<string, unknown>>,
+          conversationRefs,
+          taskStateSnapshot: activeTaskState,
+          threadSummarySnapshot: activeThreadSummary,
+          contextAssembly: contextAssembly.metrics,
+        }),
+        ...(continuationMessageId ? { existingMessageId: continuationMessageId } : {}),
+      });
       conversationMemoryStore.addAssistantMessage(buildConversationKey(threadId), assistantMessage.id, assistantText);
-      await recordTokenUsage({
+      maybeStoreConversationTurn({
+        companyId: session.companyId,
+        userId: session.userId,
+        threadId,
+        sourceId: assistantMessage.id,
+        role: 'assistant',
+        text: assistantText,
+      });
+      const updatedHistoryForSummary = appendMessageToHistory(history, {
+        id: assistantMessage.id,
+        role: assistantMessage.role,
+        content: assistantMessage.content,
+        metadata: assistantMessage.metadata && typeof assistantMessage.metadata === 'object' && !Array.isArray(assistantMessage.metadata)
+          ? assistantMessage.metadata as Record<string, unknown>
+          : undefined,
+      });
+      runInBackground(`persist-thread-memory:${executionId}`, async () => {
+        const refreshedSummary = await refreshDesktopThreadSummary({
+          messages: updatedHistoryForSummary.messages.map((entry) => ({
+            role: entry.role,
+            content: entry.content,
+          })),
+          taskState: activeTaskState,
+          currentSummary: activeThreadSummary,
+        });
+        await persistThreadMemory({
+          threadId,
+          userId: session.userId,
+          summary: refreshedSummary,
+          taskState: activeTaskState,
+        });
+      });
+      runInBackground(`record-token-usage:${executionId}`, async () => {
+        await recordTokenUsage({
         userId: session.userId,
         companyId: session.companyId,
         channel: 'desktop',
         threadId,
         mode,
         agentTarget: 'desktop.vercel',
-        systemPrompt,
-        messages: continuationText
-          ? [...historyMessages, { role: 'user', content: continuationText }]
-          : historyMessages,
+        systemPrompt: contextAssembly.systemPrompt,
+        messages: modelMessages,
         outputText: assistantText,
+        });
       });
 
-      await appendEventSafe({
+      runInBackground(`act-finish:${executionId}`, async () => {
+        await appendEventSafe({
         executionId,
         phase: 'synthesis',
         eventType: 'synthesis.completed',
@@ -2227,9 +3330,10 @@ export class VercelDesktopEngine {
         title: 'Generated assistant response',
         summary: summarizeText(assistantText, 600),
         status: 'done',
+        });
+        await persistUiEvent(executionId, 'done', { executionId, state: 'completed' });
+        await completeRun(executionId, assistantText);
       });
-      await persistUiEvent(executionId, 'done', { executionId });
-      await completeRun(executionId, assistantText);
 
       return res.json(ApiResponse.success({
         kind: 'answer',
@@ -2257,12 +3361,45 @@ export class VercelDesktopEngine {
 
   async streamAct(req: Request, res: Response, session: MemberSessionDTO): Promise<void> {
     const threadId = req.params.threadId;
-    const { message, workspace, actionResult, mode, executionId: requestedExecutionId } = actSchema.parse(req.body);
+    const {
+      message,
+      workspace,
+      actionResult,
+      mode,
+      executionId: requestedExecutionId,
+      continuationMessageId,
+    } = actSchema.parse(req.body);
     const executionId = requestedExecutionId ?? randomUUID();
     const messageId = randomUUID();
     const requesterAiRole = session.aiRole ?? session.role;
     const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(session.companyId, requesterAiRole);
     const departmentRuntime = await resolveDepartmentRuntime(session, threadId, fallbackAllowedToolIds);
+    const baseThreadMemory = await loadThreadMemory(threadId, session.userId);
+    const continuationState = await loadContinuationMessageState({
+      threadId,
+      userId: session.userId,
+      messageId: continuationMessageId,
+    });
+    let activeThreadSummary = continuationState.threadSummary.sourceMessageCount > 0
+      ? continuationState.threadSummary
+      : baseThreadMemory.summary;
+    let activeTaskState = continuationState.taskState.updatedAt !== new Date(0).toISOString()
+      ? continuationState.taskState
+      : baseThreadMemory.taskState;
+    activeTaskState = applyActionResultToTaskState({
+      taskState: activeTaskState,
+      actionResult: actionResult ?? null,
+    });
+    if (message?.trim()) {
+      activeTaskState = {
+        ...activeTaskState,
+        activeObjective: summarizeText(message.trim(), 300),
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    const resolvedUserContext = message
+      ? resolveDesktopTaskReferences(message, activeTaskState)
+      : { message: message ?? '', resolvedReferences: [] };
 
     await startRun({
       executionId,
@@ -2271,7 +3408,7 @@ export class VercelDesktopEngine {
       entrypoint: 'desktop_act',
       session,
       mode,
-      message: message ?? actionResult?.summary ?? 'Local action continuation',
+      message: resolvedUserContext.message || message || actionResult?.summary || 'Local action continuation',
     });
     await appendEventSafe({
       executionId,
@@ -2280,11 +3417,11 @@ export class VercelDesktopEngine {
       actorType: 'system',
       actorKey: 'vercel',
       title: 'Vercel desktop action stream started',
-      summary: summarizeText(message ?? actionResult?.summary),
+      summary: summarizeText(resolvedUserContext.message || message || actionResult?.summary || 'Local action continuation'),
       status: 'running',
       payload: {
         threadId,
-        workspacePath: workspace.path,
+        workspacePath: workspace?.path ?? null,
         hasActionResult: Boolean(actionResult),
       },
     });
@@ -2306,8 +3443,16 @@ export class VercelDesktopEngine {
       };
 
       if (message) {
-        await desktopThreadsService.addMessage(threadId, session.userId, 'user', message);
+        const userMessage = await desktopThreadsService.addMessage(threadId, session.userId, 'user', message);
         conversationMemoryStore.addUserMessage(buildConversationKey(threadId), messageId, message);
+        maybeStoreConversationTurn({
+          companyId: session.companyId,
+          userId: session.userId,
+          threadId,
+          sourceId: userMessage.id,
+          role: 'user',
+          text: message,
+        });
       }
 
       const runtime: VercelRuntimeRequestContext = {
@@ -2328,7 +3473,7 @@ export class VercelDesktopEngine {
         authProvider: session.authProvider,
         mode,
         workspace,
-        dateScope: inferDateScope(message),
+        dateScope: inferDateScope(resolvedUserContext.message || message),
         latestActionResult: actionResult,
         allowedToolIds: departmentRuntime.allowedToolIds,
         allowedActionsByTool: departmentRuntime.allowedActionsByTool,
@@ -2336,9 +3481,9 @@ export class VercelDesktopEngine {
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
       };
 
-      let persistedBlocks: PersistedContentBlock[] = [];
-      const { messages: historyMessages, history } = await mapHistoryToMessages(threadId, session);
-      let activePlan = extractLatestExecutionPlan(history);
+      let persistedBlocks: PersistedContentBlock[] = continuationState.persistedBlocks;
+      const { history } = await mapHistoryToMessages(threadId, session);
+      let activePlan = continuationState.plan ?? extractLatestExecutionPlan(history);
       const emitPlan = (plan: ExecutionPlan) => {
         sendSseEvent(res, 'plan', plan);
         queueUiEvent('plan', plan);
@@ -2357,24 +3502,88 @@ export class VercelDesktopEngine {
           emitSse: emitPlan,
         });
       }
-      const continuationText = message ?? (actionResult
+      const continuationText = (message ? resolvedUserContext.message : undefined) ?? (actionResult
         ? [
           'Continue from this local action result.',
           `kind: ${actionResult.kind}`,
           `ok: ${String(actionResult.ok)}`,
           'summary:',
           actionResult.summary,
+          actionResult.payload ? `payload:\n${JSON.stringify(actionResult.payload)}` : '',
           actionResult.ok
             ? 'Do not repeat the same successful action unless a different verification or follow-up step is required.'
             : 'Use the failure details above to choose a different next step or a corrected retry.',
-        ].join('\n')
+          ].join('\n')
         : undefined);
+      const grounding = await resolveDesktopGroundingAttachments({
+        companyId: session.companyId,
+        message: continuationText ?? resolvedUserContext.message ?? message,
+        currentAttachedFiles: [],
+        recentAttachedFiles: collectRecentAttachedFiles(history),
+        taskState: activeTaskState,
+      });
+      activeTaskState = grounding.taskState;
+      logger.info('desktop.source_artifacts.grounding', {
+        executionId,
+        threadId,
+        source: grounding.source,
+        attachmentCount: grounding.attachments.length,
+        activeSourceArtifacts: activeTaskState.activeSourceArtifacts.map((artifact) => artifact.fileName),
+      });
+      const activeAttachments = grounding.attachments;
+      const latestContinuationMessage = continuationText
+        || resolvedUserContext.message
+        || message
+        || actionResult?.summary
+        || 'Local action continuation';
+      const contextAssembly = await buildDesktopContextAssembly({
+        executionId,
+        threadId,
+        session,
+        mode,
+        latestUserMessage: latestContinuationMessage,
+        history,
+        workspace,
+        taskState: activeTaskState,
+        threadSummary: activeThreadSummary,
+        resolvedUserReferences: resolvedUserContext.resolvedReferences,
+        departmentName: departmentRuntime.departmentName,
+        departmentRoleSlug: departmentRuntime.departmentRoleSlug,
+        departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
+        departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+        dateScope: runtime.dateScope,
+        latestActionResult: actionResult,
+        activeAttachments,
+      });
+      const modelMessages = continuationText
+        ? activeAttachments.length > 0
+          ? [...contextAssembly.historyMessages, {
+            role: 'user',
+            content: await buildVisionContent({
+              userMessage: continuationText,
+              attachedFiles: activeAttachments,
+              companyId: session.companyId,
+              requesterUserId: session.userId,
+              requesterAiRole,
+            }) as ModelMessage['content'],
+          }]
+          : [...contextAssembly.historyMessages, { role: 'user', content: continuationText }]
+        : contextAssembly.historyMessages;
+      logLlmContext({
+        phase: 'streamAct',
+        executionId,
+        threadId,
+        systemPrompt: contextAssembly.systemPrompt,
+        messages: modelMessages,
+        workspace,
+        taskState: activeTaskState,
+        threadSummary: activeThreadSummary,
+        resolvedUserReferences: resolvedUserContext.resolvedReferences,
+      });
       const result = await runVercelStreamLoop({
         runtime,
-        system: systemPrompt,
-        messages: continuationText
-          ? [...historyMessages, { role: 'user', content: continuationText }]
-          : historyMessages,
+        system: contextAssembly.systemPrompt,
+        messages: modelMessages,
         onToolStart: async (toolName, activityId, title) => {
           const ownerAgent = resolvePlanOwnerFromToolName(toolName);
           if (activePlan && ownerAgent) {
@@ -2424,6 +3633,12 @@ export class VercelDesktopEngine {
           });
         },
         onToolFinish: async (toolName, activityId, title, output) => {
+          activeTaskState = updateTaskStateFromToolEnvelope({
+            taskState: activeTaskState,
+            toolName,
+            output,
+            latestObjective: message ?? actionResult?.summary,
+          });
           const ownerAgent = resolvePlanOwnerFromToolName(toolName);
           if (activePlan && ownerAgent) {
             activePlan = updateExecutionPlanTask(activePlan, {
@@ -2571,35 +3786,74 @@ export class VercelDesktopEngine {
       }
 
       const conversationRefs = buildPersistedConversationRefs(buildConversationKey(threadId));
-      const assistantMessage = await desktopThreadsService.addMessage(
+      const assistantMessage = await persistAssistantMessage({
         threadId,
-        session.userId,
-        'assistant',
-        finalText,
-        {
+        userId: session.userId,
+        content: finalText,
+        metadata: buildExecutionMetadata({
+          state: pendingApproval ? 'waiting_for_approval' : 'completed',
           executionId,
           contentBlocks: persistedBlocks,
-          ...(activePlan ? { plan: activePlan } : {}),
-          ...(citations.length > 0 ? { citations } : {}),
-          ...(conversationRefs ? { conversationRefs } : {}),
-        },
-      );
+          plan: activePlan,
+          citations: citations as Array<Record<string, unknown>>,
+          conversationRefs,
+          pendingApprovalAction: pendingApproval ?? null,
+          desktopPendingAction: pendingAction ?? null,
+          taskStateSnapshot: activeTaskState,
+          threadSummarySnapshot: activeThreadSummary,
+          contextAssembly: contextAssembly.metrics,
+        }),
+        ...(continuationMessageId ? { existingMessageId: continuationMessageId } : {}),
+      });
       conversationMemoryStore.addAssistantMessage(buildConversationKey(threadId), assistantMessage.id, finalText);
-      await recordTokenUsage({
+      maybeStoreConversationTurn({
+        companyId: session.companyId,
+        userId: session.userId,
+        threadId,
+        sourceId: assistantMessage.id,
+        role: 'assistant',
+        text: finalText || approvalSummary || '',
+      });
+      const updatedHistoryForSummary = appendMessageToHistory(history, {
+        id: assistantMessage.id,
+        role: assistantMessage.role,
+        content: assistantMessage.content,
+        metadata: assistantMessage.metadata && typeof assistantMessage.metadata === 'object' && !Array.isArray(assistantMessage.metadata)
+          ? assistantMessage.metadata as Record<string, unknown>
+          : undefined,
+      });
+      runInBackground(`persist-thread-memory:${executionId}`, async () => {
+        const refreshedSummary = await refreshDesktopThreadSummary({
+          messages: updatedHistoryForSummary.messages.map((entry) => ({
+            role: entry.role,
+            content: entry.content,
+          })),
+          taskState: activeTaskState,
+          currentSummary: activeThreadSummary,
+        });
+        await persistThreadMemory({
+          threadId,
+          userId: session.userId,
+          summary: refreshedSummary,
+          taskState: activeTaskState,
+        });
+      });
+      runInBackground(`record-token-usage:${executionId}`, async () => {
+        await recordTokenUsage({
         userId: session.userId,
         companyId: session.companyId,
         channel: 'desktop',
         threadId,
         mode,
         agentTarget: 'desktop.vercel',
-        systemPrompt,
-        messages: continuationText
-          ? [...historyMessages, { role: 'user', content: continuationText }]
-          : historyMessages,
+        systemPrompt: contextAssembly.systemPrompt,
+        messages: modelMessages,
         outputText: finalText || approvalSummary || '',
+        });
       });
 
-      await appendEventSafe({
+      runInBackground(`streamAct-finish:${executionId}`, async () => {
+        await appendEventSafe({
         executionId,
         phase: pendingApproval ? 'control' : 'synthesis',
         eventType: pendingApproval ? 'control.requested' : 'synthesis.completed',
@@ -2608,25 +3862,36 @@ export class VercelDesktopEngine {
         title: pendingApproval ? 'Approval requested' : 'Generated assistant response',
         summary: summarizeText(finalText || approvalSummary || 'Approval requested', 600),
         status: pendingApproval ? 'pending' : 'done',
+        });
+        if (!pendingApproval) {
+          if (activePlan) {
+            activePlan = completeExecutionPlan(activePlan, finalText);
+            await logAndPersistPlan({
+              executionId,
+              threadId,
+              plan: activePlan,
+              eventType: activePlan.status === 'completed' ? 'plan.completed' : activePlan.status === 'failed' ? 'plan.failed' : 'plan.updated',
+              emitSse: emitPlan,
+            });
+          }
+          await completeRun(executionId, finalText);
+        }
+        await uiEventQueue;
       });
 
-      if (!pendingApproval) {
-        if (activePlan) {
-          activePlan = completeExecutionPlan(activePlan, finalText);
-          await logAndPersistPlan({
-            executionId,
-            threadId,
-            plan: activePlan,
-            eventType: activePlan.status === 'completed' ? 'plan.completed' : activePlan.status === 'failed' ? 'plan.failed' : 'plan.updated',
-            emitSse: emitPlan,
-          });
-        }
-        await completeRun(executionId, finalText);
-      }
-
-      queueUiEvent('done', { executionId, pendingApproval: pendingApproval ?? null, actionIssued: Boolean(pendingAction) });
-      await uiEventQueue;
-      sendSseEvent(res, 'done', { message: assistantMessage, executionId, pendingApproval: pendingApproval ?? null, actionIssued: Boolean(pendingAction) });
+      queueUiEvent('done', {
+        executionId,
+        pendingApproval: pendingApproval ?? null,
+        actionIssued: Boolean(pendingAction),
+        state: pendingApproval ? 'waiting_for_approval' : 'completed',
+      });
+      sendSseEvent(res, 'done', {
+        message: assistantMessage,
+        executionId,
+        pendingApproval: pendingApproval ?? null,
+        actionIssued: Boolean(pendingAction),
+        state: pendingApproval ? 'waiting_for_approval' : 'completed',
+      });
       res.end();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Vercel desktop action stream failed';

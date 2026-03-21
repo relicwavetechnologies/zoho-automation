@@ -8,7 +8,7 @@ import { useWorkspace } from '../context/WorkspaceContext'
 import { PlanDrawer } from './PlanDrawer'
 import { FilesDrawer, type FileAssetRecord } from './FilesDrawer'
 
-type ComposerMode = 'fast' | 'high' | 'xtreme'
+type ComposerMode = 'fast' | 'high'
 
 type SavedWorkflowSummary = {
   id: string
@@ -456,42 +456,45 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
           )}
         >
           {isApprovalMode ? (
-            <div className="px-4 py-4">
-              <div className="flex items-start gap-3">
-                <div className="mt-0.5 rounded-lg bg-amber-500/10 p-2 text-amber-500/80">
-                  <ShieldAlert size={16} />
+            <div className="px-5 py-5 animate-in fade-in zoom-in-[0.98] duration-300">
+              <div className="flex items-start gap-4">
+                <div className="mt-0.5 rounded-xl bg-amber-500/10 p-2.5 text-amber-500/80 border border-amber-500/20 shadow-sm">
+                  <ShieldAlert size={18} />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="text-sm font-medium text-foreground/90">{approvalTitle}</div>
-                    <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-500/80">
+                    <div className="text-[15px] font-bold text-foreground/90 tracking-tight">{approvalTitle}</div>
+                    <span className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.1em] text-amber-500/80 shadow-sm">
                       Awaiting approval
                     </span>
                   </div>
-                  <div className="mt-1 text-sm text-muted-foreground">{approvalDescription}</div>
-                  <div className="mt-3 rounded-xl border border-border bg-black/40 px-4 py-3 font-mono text-[13px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-words">
+                  <div className="mt-1.5 text-[13px] text-muted-foreground/60 font-medium leading-relaxed">{approvalDescription}</div>
+                  
+                  <div className="mt-4 rounded-xl border border-border bg-black/40 px-4 py-3 font-mono text-[12px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-words shadow-inner">
                     {pendingActionPath}
                   </div>
-                  {pendingLocalAction?.workspacePath ? (
-                    <div className="mt-2 text-[10px] text-muted-foreground/50">
+                  
+                  {pendingLocalAction?.workspacePath && (
+                    <div className="mt-2 text-[10px] text-muted-foreground/40 font-medium px-1 truncate">
                       {pendingLocalAction.workspacePath}
                     </div>
-                  ) : null}
-                  <div className="mt-4 flex items-center gap-2">
+                  )}
+                  
+                  <div className="mt-6 flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => void approveCommand(pendingLocalAction!.id)}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary/10 border border-primary/20 px-3.5 py-1.5 text-xs font-semibold text-primary/90 hover:bg-primary/20 transition-colors"
+                      className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-4 py-2 text-[12px] font-bold uppercase tracking-wider hover:opacity-90 transition-all shadow-sm active:scale-[0.98]"
                     >
-                      <CheckCircle2 size={13} />
+                      <CheckCircle2 size={14} />
                       Approve
                     </button>
                     <button
                       type="button"
                       onClick={() => void rejectCommand(pendingLocalAction!.id)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/50 px-3.5 py-1.5 text-xs font-semibold text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                      className="inline-flex items-center gap-2 rounded-lg border border-border bg-secondary/50 px-4 py-2 text-[12px] font-bold uppercase tracking-wider text-muted-foreground transition-all hover:bg-secondary hover:text-foreground shadow-sm active:scale-[0.98]"
                     >
-                      <Ban size={13} />
+                      <Ban size={14} />
                       Reject
                     </button>
                   </div>

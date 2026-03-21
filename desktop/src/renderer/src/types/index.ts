@@ -211,6 +211,27 @@ export interface MessageMetadata {
   contentBlocks?: ContentBlock[]
   plan?: ExecutionPlan
   executionId?: string
+  executionState?: {
+    state: 'running' | 'waiting_for_approval' | 'running_after_approval' | 'completed' | 'failed' | 'cancelled'
+    paused?: boolean
+    resumeOfExecutionId?: string
+  }
+  taskStateSnapshot?: Record<string, unknown>
+  threadSummarySnapshot?: Record<string, unknown>
+  desktopPendingAction?: {
+    kind: 'list_files' | 'read_file' | 'write_file' | 'mkdir' | 'delete_path' | 'run_command' | 'tool_action'
+    approvalId?: string
+    toolId?: string
+    actionGroup?: 'read' | 'create' | 'update' | 'delete' | 'send' | 'execute'
+    operation?: string
+    title?: string
+    summary?: string
+    subject?: string
+    explanation?: string
+    path?: string
+    content?: string
+    command?: string
+  }
   attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>
   shareAction?: {
     type: 'conversation'

@@ -56,6 +56,7 @@ export type ActionResultPayload = {
   kind: DesktopWorkspaceAction['kind'] | RemoteApprovalAction['kind']
   ok: boolean
   summary: string
+  payload?: Record<string, unknown>
 }
 
 export type ActionCompletion = {

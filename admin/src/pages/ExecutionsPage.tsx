@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { X, Search, Filter, Calendar, Cpu, Zap, Activity, Clock, ChevronRight, ChevronLeft, ArrowUpRight, MessageSquare, Terminal, Layout, Share2, Shield, Info } from 'lucide-react'
+import { X, Search, Filter, Calendar, Cpu, Zap, Activity, Clock, ChevronRight, ChevronLeft, ArrowUpRight, MessageSquare, Terminal, Layout, Share2, Shield, Info, Layers } from 'lucide-react'
 
 import { useAdminAuth } from '../auth/AdminAuthProvider'
 import { Badge } from '../components/ui/badge'
@@ -194,7 +194,6 @@ export const ExecutionsPage = () => {
     setDetailById((prev) => ({ ...prev, [run.id]: prev[run.id] ?? run }))
     setOpenedExecutionIds((prev) => (prev.includes(run.id) ? prev : [...prev, run.id]))
     updateFilters({ selected: run.id }, { preservePage: true })
-    // No scrollIntoView here to avoid jumping if not desired
   }
 
   const closeExecution = (executionId: string) => {
@@ -285,20 +284,20 @@ export const ExecutionsPage = () => {
 
   return (
     <TooltipProvider delayDuration={0}>
-      <div className="flex flex-col gap-8 p-8 rounded-3xl border border-border/40 bg-card/30 backdrop-blur-xl shadow-2xl">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="relative group flex-1 max-w-lg">
+      <div className="flex flex-col gap-8 p-4 md:p-6 lg:p-8 rounded-3xl border border-border/40 bg-card/30 backdrop-blur-xl shadow-2xl min-w-0">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 min-w-0">
+          <div className="relative group flex-1 max-w-lg min-w-0">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/50 group-focus-within:text-primary transition-colors" />
             <Input
               value={filters.query}
               onChange={(event) => updateFilters({ query: event.target.value || null })}
-              placeholder="Search traces, tasks, or users..."
-              className="bg-background/50 border-border/30 h-11 pl-12 rounded-xl focus-visible:ring-primary/20"
+              placeholder="Search traces..."
+              className="bg-background/50 border-border/30 h-11 pl-12 rounded-xl focus-visible:ring-primary/20 w-full"
             />
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
             <Select value={filters.channel} onValueChange={(value) => updateFilters({ channel: value })}>
-              <SelectTrigger className="bg-background/50 border-border/30 h-11 w-[160px] text-xs font-bold uppercase tracking-widest rounded-xl">
+              <SelectTrigger className="bg-background/50 border-border/30 h-11 w-[140px] text-xs font-bold uppercase tracking-widest rounded-xl shadow-sm">
                 <SelectValue placeholder="Channel" />
               </SelectTrigger>
               <SelectContent>
@@ -307,26 +306,26 @@ export const ExecutionsPage = () => {
                 <SelectItem value="lark">Lark</SelectItem>
               </SelectContent>
             </Select>
-            <div className="flex items-center gap-3 bg-background/50 border border-border/30 rounded-xl px-4 h-11 shadow-sm">
-              <Calendar className="h-4 w-4 text-muted-foreground/60" />
+            <div className="flex items-center gap-2 bg-background/50 border border-border/30 rounded-xl px-3 h-11 shadow-sm shrink-0">
+              <Calendar className="h-3.5 w-3.5 text-muted-foreground/60" />
               <input 
                 type="date" 
                 value={filters.dateFrom} 
                 onChange={(e) => updateFilters({ dateFrom: e.target.value })}
-                className="bg-transparent text-[11px] font-bold uppercase tracking-tighter outline-none text-foreground"
+                className="bg-transparent text-[10px] font-bold uppercase tracking-tighter outline-none text-foreground w-[90px]"
               />
               <Separator orientation="vertical" className="h-4 bg-border/40" />
               <input 
                 type="date" 
                 value={filters.dateTo} 
                 onChange={(e) => updateFilters({ dateTo: e.target.value })}
-                className="bg-transparent text-[11px] font-bold uppercase tracking-tighter outline-none text-foreground"
+                className="bg-transparent text-[10px] font-bold uppercase tracking-tighter outline-none text-foreground w-[90px]"
               />
             </div>
           </div>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
+        <div className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-6 min-w-0">
           {[
             { label: 'Total', value: summary?.totalRuns, color: 'text-foreground' },
             { label: 'Failures', value: summary?.failedRuns, color: 'text-red-500' },
@@ -335,52 +334,52 @@ export const ExecutionsPage = () => {
             { label: 'Lark', value: summary?.byChannel.lark, color: 'text-foreground' },
             { label: 'Xtreme', value: summary?.byMode.xtreme, color: 'text-primary' },
           ].map((stat, i) => (
-            <div key={i} className="p-5 rounded-2xl border border-border/30 bg-muted/10 space-y-2 group hover:border-primary/20 transition-all">
-              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60 group-hover:text-primary transition-colors">{stat.label}</span>
-              <div className={cn("text-2xl font-bold tracking-tight", stat.color)}>{stat.value ?? 0}</div>
+            <div key={i} className="p-4 rounded-2xl border border-border/30 bg-muted/10 space-y-1.5 group hover:border-primary/20 transition-all min-w-0 overflow-hidden">
+              <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60 group-hover:text-primary transition-colors truncate block">{stat.label}</span>
+              <div className={cn("text-xl font-bold tracking-tight truncate", stat.color)}>{stat.value ?? 0}</div>
             </div>
           ))}
         </div>
       </div>
 
-      <div className="grid gap-10 xl:grid-cols-[1fr_460px] h-[calc(100vh-340px)] min-h-[600px]">
-        <div className="flex flex-col min-h-0">
-          <Card className="bg-card/20 border-border/40 shadow-2xl overflow-hidden backdrop-blur-sm rounded-3xl flex-1 flex flex-col">
-            <CardHeader className="border-b border-border/40 bg-muted/20 p-8 flex flex-row items-center justify-between shrink-0">
-              <div>
-                <CardTitle className="text-xl font-bold tracking-tight">Execution Timeline</CardTitle>
-                <CardDescription className="text-sm font-medium text-muted-foreground/70">Live telemetry across platform orchestration nodes.</CardDescription>
+      <div className="grid gap-6 2xl:grid-cols-[1fr_460px] h-[calc(100vh-340px)] min-h-[600px] min-w-0 mt-8">
+        <div className="flex flex-col min-h-0 min-w-0">
+          <Card className="bg-card/20 border-border/40 shadow-2xl overflow-hidden backdrop-blur-sm rounded-3xl flex-1 flex flex-col min-w-0">
+            <CardHeader className="border-b border-border/40 bg-muted/20 p-4 md:p-6 lg:p-8 flex flex-row items-center justify-between shrink-0 min-w-0">
+              <div className="min-w-0">
+                <CardTitle className="text-xl font-bold tracking-tight truncate">Execution Timeline</CardTitle>
+                <CardDescription className="text-sm font-medium text-muted-foreground/70 truncate">Platform telemetry nodes.</CardDescription>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 shrink-0">
                 <Button 
                   variant="outline" 
                   size="icon" 
-                  className="h-10 w-10 rounded-xl border-border/40 bg-background/50"
+                  className="h-9 w-9 rounded-xl border-border/40 bg-background/50 shadow-sm"
                   disabled={filters.page <= 1}
                   onClick={() => updateFilters({ page: String(filters.page - 1) })}
                 >
-                  <ChevronLeft className="h-5 w-5" />
+                  <ChevronLeft className="h-4 w-4" />
                 </Button>
-                <div className="bg-muted/30 px-4 py-2 rounded-xl border border-border/20">
-                  <span className="text-[10px] font-bold text-foreground tracking-widest uppercase">{filters.page} / {totalPages}</span>
+                <div className="bg-muted/30 px-3 py-1.5 rounded-xl border border-border/20 shadow-inner">
+                  <span className="text-[10px] font-bold text-foreground tracking-widest uppercase tabular-nums">{filters.page} / {totalPages}</span>
                 </div>
                 <Button 
                   variant="outline" 
                   size="icon" 
-                  className="h-10 w-10 rounded-xl border-border/40 bg-background/50"
+                  className="h-9 w-9 rounded-xl border-border/40 bg-background/50 shadow-sm"
                   disabled={filters.page >= totalPages}
                   onClick={() => updateFilters({ page: String(filters.page + 1) })}
                 >
-                  <ChevronRight className="h-5 w-5" />
+                  <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>
             </CardHeader>
-            <CardContent className="p-0 flex-1 min-h-0">
+            <CardContent className="p-0 flex-1 min-h-0 min-w-0">
               <ScrollArea className="h-full">
-                <div className="divide-y divide-border/40">
+                <div className="divide-y divide-border/40 min-w-0">
                   {loadingRuns ? (
                     Array.from({ length: 8 }).map((_, i) => (
-                      <div key={i} className="p-8 space-y-4">
+                      <div key={i} className="p-6 md:p-8 space-y-4">
                         <Skeleton className="h-5 w-1/4 rounded-lg opacity-40" />
                         <Skeleton className="h-4 w-1/2 rounded-lg opacity-20" />
                       </div>
@@ -391,60 +390,60 @@ export const ExecutionsPage = () => {
                         key={run.id}
                         onClick={() => openExecution(run)}
                         className={cn(
-                          "w-full p-8 text-left transition-all hover:bg-primary/[0.03] flex items-start justify-between group relative overflow-hidden",
+                          "w-full p-6 md:p-8 text-left transition-all hover:bg-primary/[0.03] flex items-start justify-between group relative overflow-hidden min-w-0",
                           activeExecutionId === run.id && "bg-primary/[0.05]"
                         )}
                       >
                         {activeExecutionId === run.id && <div className="absolute top-0 left-0 w-1.5 h-full bg-primary shadow-[0_0_15px_rgba(var(--primary),0.5)]" />}
-                        <div className="flex items-start gap-6 min-w-0">
+                        <div className="flex items-start gap-4 md:gap-6 min-w-0">
                           <div className={cn(
-                            "h-14 w-14 rounded-2xl border flex items-center justify-center shrink-0 transition-all duration-500 shadow-sm",
-                            activeExecutionId === run.id ? "bg-primary/10 border-primary/30 text-primary scale-110 shadow-lg" : "bg-muted/50 border-border/40 text-muted-foreground group-hover:bg-background group-hover:text-foreground"
+                            "h-12 w-12 md:h-14 md:w-14 rounded-2xl border flex items-center justify-center shrink-0 transition-all duration-500 shadow-sm",
+                            activeExecutionId === run.id ? "bg-primary/10 border-primary/30 text-primary scale-105 shadow-lg" : "bg-muted/50 border-border/40 text-muted-foreground group-hover:bg-background group-hover:text-foreground"
                           )}>
-                            {run.channel === 'lark' ? <MessageSquare className="h-6 w-6" /> : <Activity className="h-6 w-6" />}
+                            {run.channel === 'lark' ? <MessageSquare className="h-5 w-5 md:h-6 md:w-6" /> : <Activity className="h-5 w-5 md:h-6 md:w-6" />}
                           </div>
-                          <div className="min-w-0 space-y-2">
-                            <div className="flex items-center gap-3 flex-wrap">
-                              <span className="text-base font-bold text-foreground truncate tracking-tight">
+                          <div className="min-w-0 space-y-1.5 md:space-y-2">
+                            <div className="flex items-center gap-2 md:gap-3 flex-wrap min-w-0">
+                              <span className="text-sm md:text-base font-bold text-foreground truncate tracking-tight">
                                 {run.userEmail || run.userName || 'System Auth'}
                               </span>
-                              <Badge variant="outline" className="text-[10px] font-mono border-border/40 h-5 px-2 bg-muted/20">{run.id.slice(0, 8)}</Badge>
+                              <Badge variant="outline" className="text-[9px] md:text-[10px] font-mono border-border/40 h-5 px-2 bg-muted/20 shrink-0">{run.id.slice(0, 8)}</Badge>
                               {statusBadge(run.status)}
                             </div>
-                            <p className="text-sm text-muted-foreground/80 font-medium line-clamp-1 italic">
+                            <p className="text-xs md:text-sm text-muted-foreground/80 font-medium line-clamp-1 italic min-w-0">
                               {run.latestSummary ? `"${run.latestSummary}"` : 'Initializing execution flow...'}
                             </p>
-                            <div className="flex items-center gap-4 pt-1">
-                              <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-tighter text-muted-foreground/60">
-                                <Clock className="h-3.5 w-3.5" />
+                            <div className="flex items-center gap-3 md:gap-4 pt-1 flex-wrap min-w-0">
+                              <div className="flex items-center gap-1.5 text-[10px] md:text-[11px] font-bold uppercase tracking-tighter text-muted-foreground/60">
+                                <Clock className="h-3 w-3 md:h-3.5 md:w-3.5" />
                                 {formatDuration(run.durationMs)}
                               </div>
-                              <Separator orientation="vertical" className="h-3 bg-border/40" />
-                              <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-tighter text-muted-foreground/60">
-                                <Terminal className="h-3.5 w-3.5" />
+                              <Separator orientation="vertical" className="h-3 bg-border/40 hidden md:block" />
+                              <div className="flex items-center gap-1.5 text-[10px] md:text-[11px] font-bold uppercase tracking-tighter text-muted-foreground/60">
+                                <Terminal className="h-3 w-3 md:h-3.5 md:w-3.5" />
                                 {run.eventCount} Events
                               </div>
                               {run.mode && (
-                                <Badge variant="outline" className="text-[9px] font-bold uppercase tracking-widest h-5 bg-primary/5 text-primary border-primary/20">{run.mode}</Badge>
+                                <Badge variant="outline" className="text-[8px] md:text-[9px] font-bold uppercase tracking-widest h-5 bg-primary/5 text-primary border-primary/20 shrink-0">{run.mode}</Badge>
                               )}
                             </div>
                           </div>
                         </div>
-                        <div className="flex flex-col items-end gap-3 shrink-0 pt-1">
-                          <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">{formatDateTime(run.startedAt)}</span>
+                        <div className="flex flex-col items-end gap-2 md:gap-3 shrink-0 pt-1 ml-4">
+                          <span className="text-[10px] md:text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50 tabular-nums">{formatDateTime(run.startedAt)}</span>
                           <ChevronRight className={cn(
-                            "h-5 w-5 transition-all duration-500 opacity-0 group-hover:opacity-100",
+                            "h-4 w-4 md:h-5 md:w-5 transition-all duration-500 opacity-0 group-hover:opacity-100",
                             activeExecutionId === run.id ? "text-primary opacity-100 translate-x-1" : "text-muted-foreground"
                           )} />
                         </div>
                       </button>
                     ))
                   ) : (
-                    <div className="p-32 text-center flex flex-col items-center gap-6">
-                      <div className="h-20 w-20 rounded-3xl bg-muted/20 border border-border/30 flex items-center justify-center shadow-inner">
-                        <Activity className="h-10 w-10 text-muted-foreground/20" />
+                    <div className="p-20 md:p-32 text-center flex flex-col items-center gap-6 min-w-0">
+                      <div className="h-16 w-16 md:h-20 md:w-20 rounded-3xl bg-muted/20 border border-border/30 flex items-center justify-center shadow-inner">
+                        <Activity className="h-8 w-8 md:h-10 md:w-10 text-muted-foreground/20" />
                       </div>
-                      <p className="text-sm font-bold uppercase tracking-widest text-muted-foreground/50">No operational data detected.</p>
+                      <p className="text-sm font-bold uppercase tracking-widest text-muted-foreground/50">No operational data.</p>
                     </div>
                   )}
                 </div>
@@ -453,20 +452,20 @@ export const ExecutionsPage = () => {
           </Card>
         </div>
 
-        <div className="flex flex-col min-h-0">
-          <Card ref={detailCardRef} className="bg-card/30 border-border/40 shadow-2xl overflow-hidden flex-1 flex flex-col backdrop-blur-xl rounded-3xl">
+        <div className="hidden 2xl:flex flex-col min-h-0 min-w-0">
+          <Card ref={detailCardRef} className="bg-card/30 border-border/40 shadow-2xl overflow-hidden flex-1 flex flex-col backdrop-blur-xl rounded-3xl min-w-0">
             {!activeExecutionId ? (
-              <div className="flex-1 flex flex-col items-center justify-center p-16 text-center bg-muted/5">
+              <div className="flex-1 flex flex-col items-center justify-center p-16 text-center bg-muted/5 min-w-0">
                 <div className="h-24 w-24 rounded-[2.5rem] bg-muted/20 border border-border/20 flex items-center justify-center mb-8 shadow-inner">
                   <Zap className="h-12 w-12 text-muted-foreground/30" />
                 </div>
                 <h3 className="text-xl font-bold tracking-tight">Trace Inspector</h3>
                 <p className="text-sm text-muted-foreground/70 font-medium max-w-[280px] mt-3 leading-relaxed">
-                  Select an operational flow from the timeline to perform deep-packet inspection of its lifecycle.
+                  Select an operational flow to perform deep-packet inspection.
                 </p>
               </div>
             ) : activeLoadingDetail ? (
-              <div className="p-10 space-y-10 flex-1">
+              <div className="p-10 space-y-10 flex-1 min-w-0">
                 <div className="flex items-center gap-6">
                   <Skeleton className="h-16 w-16 rounded-2xl opacity-40" />
                   <div className="space-y-3">
@@ -478,88 +477,88 @@ export const ExecutionsPage = () => {
               </div>
             ) : (
               <>
-                <div className="p-8 border-b border-border/40 bg-muted/20 flex items-center justify-between backdrop-blur-sm shrink-0">
-                  <div className="flex items-center gap-6">
-                    <div className="h-16 w-16 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shadow-lg">
-                      <Activity className="h-8 w-8" />
+                <div className="p-6 md:p-8 border-b border-border/40 bg-muted/20 flex items-center justify-between backdrop-blur-sm shrink-0 min-w-0">
+                  <div className="flex items-center gap-4 md:gap-6 min-w-0">
+                    <div className="h-12 w-12 md:h-16 md:w-16 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shadow-lg shrink-0">
+                      <Activity className="h-6 w-6 md:h-8 md:w-8" />
                     </div>
                     <div className="min-w-0">
-                      <div className="text-lg font-bold truncate pr-4 tracking-tight">{activeDetail?.id.slice(0, 16)}...</div>
+                      <div className="text-base md:text-lg font-bold truncate pr-4 tracking-tight">{activeDetail?.id.slice(0, 16)}...</div>
                       <div className="flex items-center gap-3 mt-1.5">
                         {statusBadge(activeDetail?.status)}
                         <Badge variant="outline" className="text-[10px] font-bold uppercase tracking-widest bg-muted/30 border-border/20">{activeDetail?.channel}</Badge>
                       </div>
                     </div>
                   </div>
-                  <Button variant="ghost" size="icon" className="h-10 w-10 rounded-full hover:bg-accent/50 transition-colors" onClick={() => updateFilters({ selected: null })}>
+                  <Button variant="ghost" size="icon" className="h-10 w-10 rounded-full hover:bg-accent/50 transition-colors shrink-0" onClick={() => updateFilters({ selected: null })}>
                     <X className="h-5 w-5" />
                   </Button>
                 </div>
 
-                <div className="px-8 py-6 border-b border-border/40 flex items-center gap-8 bg-muted/10 shrink-0">
-                  <div className="flex-1 space-y-1.5">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">Operator</div>
+                <div className="px-6 md:px-8 py-4 md:py-6 border-b border-border/40 flex items-center gap-6 md:gap-8 bg-muted/10 shrink-0 min-w-0">
+                  <div className="flex-1 min-w-0 space-y-1.5">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60 truncate">Operator</div>
                     <div className="text-sm font-bold truncate text-foreground/90">{activeDetail?.userEmail || 'System Core'}</div>
                   </div>
                   <Separator orientation="vertical" className="h-10 bg-border/40" />
-                  <div className="flex-1 space-y-1.5">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">Runtime</div>
-                    <div className="text-sm font-bold text-foreground/90">{formatDuration(activeDetail?.durationMs)}</div>
+                  <div className="flex-1 min-w-0 space-y-1.5">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60 truncate">Runtime</div>
+                    <div className="text-sm font-bold text-foreground/90 truncate">{formatDuration(activeDetail?.durationMs)}</div>
                   </div>
                 </div>
 
-                <ScrollArea className="flex-1 min-h-0">
-                  <div className="p-8 space-y-10">
+                <ScrollArea className="flex-1 min-h-0 min-w-0">
+                  <div className="p-6 md:p-8 space-y-8 md:space-y-10 min-w-0">
                     {activeSynthesisEvent && (
-                      <div className="space-y-4">
+                      <div className="space-y-4 min-w-0">
                         <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-primary">
-                          <ArrowUpRight className="h-4 w-4" />
-                          Final Agent Synthesis
+                          <ArrowUpRight className="h-4 w-4 shrink-0" />
+                          Final Synthesis
                         </div>
-                        <div className="p-6 rounded-2xl bg-primary/5 border border-primary/10 text-sm font-medium leading-relaxed text-foreground whitespace-pre-wrap italic shadow-inner">
+                        <div className="p-5 md:p-6 rounded-2xl bg-primary/5 border border-primary/10 text-sm font-medium leading-relaxed text-foreground whitespace-pre-wrap italic shadow-inner min-w-0">
                           "{activeSynthesisEvent.summary}"
                         </div>
                       </div>
                     )}
 
-                    <div className="space-y-6">
-                      <div className="flex items-center justify-between">
-                        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">Operational Event Log</div>
-                        <Badge variant="secondary" className="text-[10px] h-5 font-bold px-2 bg-muted/30 border-border/20">{activeEvents.length} Sequence Nodes</Badge>
+                    <div className="space-y-6 min-w-0">
+                      <div className="flex items-center justify-between gap-4 min-w-0">
+                        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60 truncate">Event Log</div>
+                        <Badge variant="secondary" className="text-[10px] h-5 font-bold px-2 bg-muted/30 border-border/20 shrink-0">{activeEvents.length} Sequence Nodes</Badge>
                       </div>
 
-                      <div className="relative pl-6 border-l-2 border-border/40 space-y-8 ml-3">
+                      <div className="relative pl-6 border-l-2 border-border/40 space-y-8 ml-3 min-w-0">
                         {activeEvents.map((event, i) => {
                           const isOpen = expandedPayloads[event.id]
                           return (
-                            <div key={event.id} className="relative group/event">
+                            <div key={event.id} className="relative group/event min-w-0">
                               <div className={cn(
-                                "absolute -left-[33px] top-1 h-4 w-4 rounded-full bg-background border-4 transition-all duration-500",
+                                "absolute -left-[33px] top-1 h-4 w-4 rounded-full bg-background border-4 transition-all duration-500 shadow-sm",
                                 isOpen ? "border-primary scale-125 shadow-[0_0_10px_rgba(var(--primary),0.5)]" : "border-border group-hover/event:border-primary/50"
                               )} />
-                              <div className="space-y-2.5">
-                                <div className="flex items-center justify-between gap-4">
-                                  <span className="text-sm font-bold text-foreground/90 leading-tight">{event.title}</span>
-                                  <span className="text-[10px] font-bold text-muted-foreground/50 tabular-nums uppercase">{new Date(event.createdAt).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                              <div className="space-y-2 min-w-0">
+                                <div className="flex items-center justify-between gap-4 min-w-0">
+                                  <span className="text-sm font-bold text-foreground/90 leading-tight truncate">{event.title}</span>
+                                  <span className="text-[10px] font-bold text-muted-foreground/50 tabular-nums uppercase shrink-0">{new Date(event.createdAt).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
                                 </div>
                                 {event.summary && (
-                                  <p className="text-[13px] text-muted-foreground/80 font-medium leading-relaxed pr-6">{event.summary}</p>
+                                  <p className="text-[13px] text-muted-foreground/80 font-medium leading-relaxed pr-2 min-w-0">{event.summary}</p>
                                 )}
-                                <div className="flex items-center gap-3">
-                                  <Badge variant="outline" className="text-[9px] font-bold h-4 px-1.5 uppercase tracking-widest border-border/40 text-muted-foreground/70 bg-muted/10 font-mono">
+                                <div className="flex items-center gap-3 min-w-0 flex-wrap">
+                                  <Badge variant="outline" className="text-[9px] font-bold h-4 px-1.5 uppercase tracking-widest border-border/40 text-muted-foreground/70 bg-muted/10 font-mono shrink-0">
                                     {event.phase}
                                   </Badge>
                                   {event.payload && (
                                     <button 
                                       onClick={() => setExpandedPayloads(prev => ({ ...prev, [event.id]: !isOpen }))}
-                                      className="text-[10px] font-bold text-primary hover:underline uppercase tracking-widest decoration-2 underline-offset-4"
+                                      className="text-[10px] font-bold text-primary hover:underline uppercase tracking-widest decoration-2 underline-offset-4 shrink-0"
                                     >
-                                      {isOpen ? 'Close Data' : 'View Payload'}
+                                      {isOpen ? 'Close' : 'Payload'}
                                     </button>
                                   )}
                                 </div>
                                 {isOpen && event.payload && (
-                                  <div className="mt-4 p-5 rounded-2xl bg-black/40 border border-border/40 overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300">
+                                  <div className="mt-4 p-4 md:p-5 rounded-2xl bg-black/40 border border-border/40 overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 min-w-0">
                                     <pre className="text-[10px] font-mono text-zinc-400 overflow-auto max-h-[400px] custom-scrollbar leading-relaxed">
                                       {JSON.stringify(event.payload, null, 2)}
                                     </pre>
@@ -574,15 +573,15 @@ export const ExecutionsPage = () => {
                   </div>
                 </ScrollArea>
 
-                <div className="p-6 border-t border-border/40 bg-muted/20 shrink-0">
-                  <div className="flex items-center justify-between text-[10px] text-muted-foreground/50 font-bold uppercase tracking-[0.2em]">
-                    <div className="flex items-center gap-2">
-                      <Shield className="h-3 w-3" />
-                      <span>REQ: {activeDetail?.requestId?.slice(0, 12) || 'N/A'}</span>
+                <div className="p-4 md:p-6 border-t border-border/40 bg-muted/20 shrink-0 min-w-0">
+                  <div className="flex items-center justify-between gap-4 text-[10px] text-muted-foreground/50 font-bold uppercase tracking-[0.2em] min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Shield className="h-3 w-3 shrink-0" />
+                      <span className="truncate">REQ: {activeDetail?.requestId?.slice(0, 12) || 'N/A'}</span>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Layers className="h-3 w-3" />
-                      <span>THRD: {activeDetail?.threadId?.slice(0, 12) || 'N/A'}</span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Layers className="h-3 w-3 shrink-0" />
+                      <span className="truncate">THRD: {activeDetail?.threadId?.slice(0, 12) || 'N/A'}</span>
                     </div>
                   </div>
                 </div>

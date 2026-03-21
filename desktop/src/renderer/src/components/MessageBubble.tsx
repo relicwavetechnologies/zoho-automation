@@ -66,7 +66,7 @@ export function MessageBubble({ message, isLast }: Props): JSX.Element {
 
   const visibleCitations = useMemo(() => {
     const citations = message.metadata?.citations ?? []
-    return showAllCitations ? citations : citations.slice(0, 6)
+    return showAllCitations ? citations : citations.slice(0, 3)
   }, [message.metadata?.citations, showAllCitations])
 
   const hiddenCitationCount = Math.max(0, (message.metadata?.citations?.length ?? 0) - visibleCitations.length)
@@ -186,15 +186,11 @@ export function MessageBubble({ message, isLast }: Props): JSX.Element {
           )}
 
           {!isUser && message.metadata?.citations && message.metadata.citations.length > 0 && (
-            <div className="mt-3 w-full">
-              <div className="flex flex-wrap gap-2">
+            <div className="mt-2 w-full">
+              <div className="flex flex-wrap items-center gap-1.5">
                 {visibleCitations.map((citation) => {
                   const content = (
-                    <>
-                      <FileText size={11} className="text-amber-500/70" />
-                      <span className="max-w-[240px] truncate">{citation.title}</span>
-                      {citation.url && <ExternalLink size={10} className="text-muted-foreground/60" />}
-                    </>
+                    <FileText size={11} className="text-amber-500/70" />
                   )
 
                   if (citation.url) {
@@ -204,7 +200,8 @@ export function MessageBubble({ message, isLast }: Props): JSX.Element {
                         href={citation.url}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/30 px-3 py-1.5 text-[11px] text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors"
+                        title={citation.title}
+                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border bg-secondary/30 text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors shadow-sm"
                       >
                         {content}
                       </a>
@@ -214,23 +211,25 @@ export function MessageBubble({ message, isLast }: Props): JSX.Element {
                   return (
                     <div
                       key={citation.id}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/30 px-3 py-1.5 text-[11px] text-muted-foreground"
+                      title={citation.title}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border bg-secondary/30 text-muted-foreground shadow-sm"
                     >
                       {content}
                     </div>
                   )
                 })}
+                
+                {message.metadata.citations.length > 3 && (
+                  <button
+                    onClick={() => setShowAllCitations((value) => !value)}
+                    className="h-6 px-2 flex items-center justify-center rounded-full border border-border bg-secondary/30 text-[10px] font-black text-muted-foreground hover:bg-secondary hover:text-foreground transition-all shadow-sm"
+                  >
+                    {showAllCitations
+                      ? 'LESS'
+                      : `+${hiddenCitationCount}`}
+                  </button>
+                )}
               </div>
-              {message.metadata.citations.length > 6 && (
-                <button
-                  onClick={() => setShowAllCitations((value) => !value)}
-                  className="mt-2 inline-flex items-center rounded-lg border border-border bg-secondary/30 px-3 py-1.5 text-[11px] font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors"
-                >
-                  {showAllCitations
-                    ? 'Show fewer sources'
-                    : `Show ${hiddenCitationCount} more source${hiddenCitationCount === 1 ? '' : 's'}`}
-                </button>
-              )}
             </div>
           )}
 

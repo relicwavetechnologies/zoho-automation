@@ -35,7 +35,7 @@ function FileTypeIcon({ mimeType }: { mimeType: string }) {
 function ingestionLabel(status: string) {
   if (status === 'done') return { text: 'Indexed', cls: 'text-emerald-500/60' }
   if (status === 'processing') return { text: 'Processing...', cls: 'text-amber-500/60' }
-  if (status === 'failed') return { text: 'Failed', cls: 'text-red-500/60' }
+  if (status === 'failed') return { text: 'Failed', cls: 'text-red-500/80' }
   return { text: 'Pending', cls: 'text-muted-foreground/40' }
 }
 
@@ -138,7 +138,7 @@ export function FilesDrawer({ open, onClose, onReference, referencedIds }: Files
     try {
       const result = await window.desktopAPI.files.retry(token, fileId)
       if (result.success) {
-        setFiles(prev => prev.map(f => f.id === fileId ? { ...f, ingestionStatus: 'pending' } : f))
+        setFiles(prev => prev.map(f => f.id === fileId ? { ...f, ingestionStatus: 'pending', ingestionError: null } : f))
       }
     } finally {
       setRetryingIds(prev => {
@@ -325,6 +325,14 @@ export function FilesDrawer({ open, onClose, onReference, referencedIds }: Files
                           <span>{share.text}</span>
                         </div>
                       )}
+                    </div>
+                  )}
+                  {file.ingestionStatus === 'failed' && file.ingestionError && (
+                    <div
+                      className="mt-1.5 max-w-full truncate text-[11px] font-semibold text-red-500/85"
+                      title={file.ingestionError}
+                    >
+                      {file.ingestionError}
                     </div>
                   )}
                 </div>

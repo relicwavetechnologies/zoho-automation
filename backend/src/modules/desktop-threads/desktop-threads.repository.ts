@@ -1,4 +1,4 @@
-import type { DesktopMessage } from '../../generated/prisma';
+import { Prisma, type DesktopMessage } from '../../generated/prisma';
 import { BaseRepository } from '../../core/repository';
 import { prisma } from '../../utils/prisma';
 
@@ -40,6 +40,18 @@ export class DesktopThreadsRepository extends BaseRepository {
     return prisma.desktopThread.findFirst({
       where: { id: threadId, userId },
       include: threadInclude,
+    });
+  }
+
+  getOwnedMessage(threadId: string, userId: string, messageId: string) {
+    return prisma.desktopMessage.findFirst({
+      where: {
+        id: messageId,
+        threadId,
+        thread: {
+          userId,
+        },
+      },
     });
   }
 
@@ -107,6 +119,31 @@ export class DesktopThreadsRepository extends BaseRepository {
     return prisma.desktopThread.update({
       where: { id: threadId },
       data: { lastMessageAt: new Date() },
+      include: threadInclude,
+    });
+  }
+
+  updateThreadMemory(input: {
+    threadId: string;
+    summaryJson?: Record<string, unknown> | null;
+    taskStateJson?: Record<string, unknown> | null;
+  }) {
+    return prisma.desktopThread.update({
+      where: { id: input.threadId },
+      data: {
+        ...(input.summaryJson !== undefined
+          ? {
+            summaryJson: input.summaryJson ? JSON.parse(JSON.stringify(input.summaryJson)) : Prisma.DbNull,
+            summaryUpdatedAt: input.summaryJson ? new Date() : null,
+          }
+          : {}),
+        ...(input.taskStateJson !== undefined
+          ? {
+            taskStateJson: input.taskStateJson ? JSON.parse(JSON.stringify(input.taskStateJson)) : Prisma.DbNull,
+            taskStateUpdatedAt: input.taskStateJson ? new Date() : null,
+          }
+          : {}),
+      },
       include: threadInclude,
     });
   }
@@ -187,6 +224,25 @@ export class DesktopThreadsRepository extends BaseRepository {
         role: data.role,
         content: data.content,
         metadata: data.metadata ? JSON.parse(JSON.stringify(data.metadata)) : undefined,
+      },
+    });
+  }
+
+  updateMessage(data: {
+    messageId: string;
+    threadId: string;
+    role?: string;
+    content?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<DesktopMessage> {
+    return prisma.desktopMessage.update({
+      where: { id: data.messageId },
+      data: {
+        ...(data.role ? { role: data.role } : {}),
+        ...(data.content !== undefined ? { content: data.content } : {}),
+        ...(data.metadata !== undefined
+          ? { metadata: JSON.parse(JSON.stringify(data.metadata)) }
+          : {}),
       },
     });
   }

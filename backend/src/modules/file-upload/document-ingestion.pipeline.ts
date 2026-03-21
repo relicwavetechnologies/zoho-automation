@@ -63,10 +63,13 @@ class DocumentIngestionPipeline {
 
       logger.info('document.ingestion.complete', {
         fileAssetId: input.fileAssetId,
+        fileName: input.fileName,
         chunks: records.length,
         modality,
         companyId: input.companyId,
         allowedRoles: input.allowedRoles,
+        embeddingProvider: embeddingService.providerName,
+        mimeType: input.mimeType,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'unknown';
@@ -76,6 +79,10 @@ class DocumentIngestionPipeline {
       });
       logger.error('document.ingestion.error', {
         fileAssetId: input.fileAssetId,
+        fileName: input.fileName,
+        companyId: input.companyId,
+        mimeType: input.mimeType,
+        embeddingProvider: embeddingService.providerName,
         error: message,
       });
       throw error;
@@ -85,6 +92,14 @@ class DocumentIngestionPipeline {
   private async buildTextRecords(input: IngestionInput) {
     const rawText = await extractTextFromBuffer(input.buffer, input.mimeType, input.fileName);
     const truncatedText = normalizeExtractedText(rawText);
+
+    logger.info('document.ingestion.text.extracted', {
+      fileAssetId: input.fileAssetId,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      rawChars: rawText.length,
+      normalizedChars: truncatedText.length,
+    });
 
     if (!truncatedText) {
       throw new Error('No extractable text was found in this file');

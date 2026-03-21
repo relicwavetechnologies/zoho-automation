@@ -116,6 +116,9 @@ export class FileUploadService {
         .catch((err: any) => {
           logger.error('file.ingestion.failed_async', {
             fileAssetId: fileAsset.id,
+            fileName: input.fileName,
+            mimeType: resolvedMimeType,
+            companyId: input.companyId,
             error: err instanceof Error ? err.message : 'unknown',
           });
         });
@@ -226,13 +229,20 @@ export class FileUploadService {
     logger.info('file.asset.deleted', { fileAssetId, companyId });
   }
 
-  async retryIngestion(fileAssetId: string, companyId: string): Promise<void> {
+  async retryIngestion(fileAssetId: string, companyId: string): Promise<{ alreadyDone: boolean }> {
     const asset = await prisma.fileAsset.findFirst({
       where: { id: fileAssetId, companyId },
       include: { accessPolicies: true },
     });
     if (!asset) throw new Error('File asset not found');
-    if (asset.ingestionStatus === 'done') throw new Error('File is already successfully ingested');
+    if (asset.ingestionStatus === 'done') {
+      logger.info('file.ingestion.retry.skipped_already_done', {
+        fileAssetId: asset.id,
+        fileName: asset.fileName,
+        companyId: asset.companyId,
+      });
+      return { alreadyDone: true };
+    }
 
     // Fetch the raw buffer from Cloudinary seamlessly
     const res = await fetch(asset.cloudinaryUrl);
@@ -262,10 +272,15 @@ export class FileUploadService {
         .catch((err: any) => {
           logger.error('file.ingestion.retry_failed', {
             fileAssetId: asset.id,
+            fileName: asset.fileName,
+            mimeType: asset.mimeType,
+            companyId: asset.companyId,
             error: err instanceof Error ? err.message : 'unknown',
           });
         });
     });
+
+    return { alreadyDone: false };
   }
 
   async backfillVectorsFromSource(fileAssetId: string, companyId: string): Promise<void> {

@@ -13,10 +13,14 @@ export type CachedDesktopThreadMeta = {
     slug: string;
   } | null;
   lastMessageAt?: string | null;
+  summaryJson?: Record<string, unknown> | null;
+  summaryUpdatedAt?: string | null;
+  taskStateJson?: Record<string, unknown> | null;
+  taskStateUpdatedAt?: string | null;
   cachedAt: string;
 };
 
-const DESKTOP_THREAD_META_TTL_SECONDS = 60 * 15;
+const DESKTOP_THREAD_META_TTL_SECONDS = 60 * 5;
 
 const metaKey = (threadId: string, userId: string) =>
   `desktop:thread:${threadId}:user:${userId}:meta`;
@@ -52,6 +56,14 @@ const parseMeta = (serialized: string | null): CachedDesktopThreadMeta | null =>
         }
         : null,
       lastMessageAt: typeof record.lastMessageAt === 'string' ? record.lastMessageAt : null,
+      summaryJson: record.summaryJson && typeof record.summaryJson === 'object' && !Array.isArray(record.summaryJson)
+        ? record.summaryJson as Record<string, unknown>
+        : null,
+      summaryUpdatedAt: typeof record.summaryUpdatedAt === 'string' ? record.summaryUpdatedAt : null,
+      taskStateJson: record.taskStateJson && typeof record.taskStateJson === 'object' && !Array.isArray(record.taskStateJson)
+        ? record.taskStateJson as Record<string, unknown>
+        : null,
+      taskStateUpdatedAt: typeof record.taskStateUpdatedAt === 'string' ? record.taskStateUpdatedAt : null,
       cachedAt: typeof record.cachedAt === 'string' ? record.cachedAt : new Date().toISOString(),
     };
   } catch {
@@ -82,7 +94,6 @@ class DesktopThreadMetaCache {
     const key = metaKey(input.threadId, input.userId);
     const cached = parseMeta(await redis.get(key));
     if (cached) {
-      await redis.expire(key, DESKTOP_THREAD_META_TTL_SECONDS);
       logger.info('desktop.thread_meta.cache.hit', {
         threadId: input.threadId,
         userId: input.userId,
