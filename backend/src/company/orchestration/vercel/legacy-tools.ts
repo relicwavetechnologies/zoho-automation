@@ -1262,16 +1262,22 @@ export const createVercelDesktopTools = (
       execute: async (input) => withLifecycle(hooks, 'docSearch', 'Searching internal documents', async () => {
         const limit = Math.max(1, Math.min(10, input.limit ?? 5));
         const [queryVector] = await loadEmbeddingService().embed([input.query]);
-        const vectorMatches = await loadQdrantAdapter().search({
+        const vectorGroups = await loadQdrantAdapter().search({
           companyId: runtime.companyId,
-          vector: queryVector,
+          denseVector: queryVector,
           limit,
+          retrievalProfile: 'file',
+          lexicalQueryText: input.query,
+          fusion: 'dbsf',
+          groupByField: 'documentKey',
+          groupSize: 3,
           sourceTypes: ['file_document'],
           includeShared: true,
           includePersonal: false,
           includePublic: false,
           requesterAiRole: runtime.requesterAiRole,
         });
+        const vectorMatches = vectorGroups.flatMap((group) => group.hits);
         const matches = vectorMatches.map((entry) => asRecord(entry)).filter((entry): entry is Record<string, unknown> => Boolean(entry));
         const citationBuilder = loadBuildCitationFromVectorResult();
         const citations = matches

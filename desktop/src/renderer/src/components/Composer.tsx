@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { ArrowUp, AtSign, ChevronDown, Paperclip, Square, X, FileText, Image, File, Infinity, Zap, Flame, Rocket, ShieldAlert, CheckCircle2, Ban, Workflow } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { ACCEPTED_ATTACHMENT_INPUT, isAcceptedAttachmentFile } from '../lib/attachment-files'
 import { useAuth } from '../context/AuthContext'
 import { useChat } from '../context/ChatContext'
 import { useWorkspace } from '../context/WorkspaceContext'
@@ -33,17 +34,6 @@ type AttachedFile = {
 }
 
 const MAX_MB = 25
-const ALLOWED_TYPES = new Set([
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/msword',
-  'text/plain',
-  'text/markdown',
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-])
 
 const MODE_OPTIONS: Array<{
   value: ComposerMode
@@ -290,7 +280,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
     const newAttachments: AttachedFile[] = []
     for (const file of Array.from(files)) {
       if (file.size > MAX_MB * 1024 * 1024) continue
-      if (!ALLOWED_TYPES.has(file.type)) continue
+      if (!isAcceptedAttachmentFile(file)) continue
       const attachment: AttachedFile = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         file,
@@ -447,7 +437,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".pdf,.docx,.doc,.txt,.md,.jpg,.jpeg,.png,.webp,.gif"
+        accept={ACCEPTED_ATTACHMENT_INPUT}
         className="hidden"
         onChange={(e) => { if (e.target.files) { acceptFiles(e.target.files); e.target.value = '' } }}
       />

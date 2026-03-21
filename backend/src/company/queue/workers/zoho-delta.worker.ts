@@ -6,25 +6,13 @@ import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
 import { extractNormalizedEmails } from '../../integrations/zoho/zoho-email-scope';
 import { resolveZohoProvider } from '../../integrations/zoho/zoho-provider.resolver';
 import { embeddingService } from '../../integrations/embedding';
+import { buildCanonicalZohoChunks } from '../../integrations/vector';
 import { prisma } from '../../../utils/prisma';
 import { logger } from '../../../utils/logger';
 
 const MAX_DELTA_BATCH = 25;
 
-const hashContent = (content: string): string =>
-  createHash('sha256').update(content).digest('hex');
-
-const createChunks = (payload: Record<string, unknown>): string[] => {
-  const raw = JSON.stringify(payload);
-  const chunkSize = 240;
-  const chunks: string[] = [];
-
-  for (let index = 0; index < raw.length; index += chunkSize) {
-    chunks.push(raw.slice(index, index + chunkSize));
-  }
-
-  return chunks.length > 0 ? chunks : ['{}'];
-};
+const hashContent = (content: string): string => createHash('sha256').update(content).digest('hex');
 
 const recordEvent = async (input: {
   jobId: string;
@@ -44,7 +32,9 @@ const recordEvent = async (input: {
   });
 };
 
-const parsePayload = (value: Prisma.JsonValue | null): {
+const parsePayload = (
+  value: Prisma.JsonValue | null,
+): {
   sourceType: 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket';
   sourceId: string;
   operation: 'create' | 'update' | 'delete';
@@ -54,7 +44,13 @@ const parsePayload = (value: Prisma.JsonValue | null): {
   const obj = (value ?? {}) as Record<string, unknown>;
 
   return {
-    sourceType: (obj.sourceType as 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket') ?? 'zoho_contact',
+    sourceType:
+      (obj.sourceType as
+        | 'zoho_lead'
+        | 'zoho_contact'
+        | 'zoho_account'
+        | 'zoho_deal'
+        | 'zoho_ticket') ?? 'zoho_contact',
     sourceId: String(obj.sourceId ?? ''),
     operation: (obj.operation as 'create' | 'update' | 'delete') ?? 'update',
     eventKey: String(obj.eventKey ?? ''),
@@ -112,31 +108,52 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
       sourceType: parsed.sourceType,
       sourceId: parsed.sourceId,
     });
-    const basePayload = latestPayload ?? parsed.payload ?? {
-      sourceId: parsed.sourceId,
-      operation: parsed.operation,
-      generated: true,
-      reason: 'missing_upstream_payload',
-    };
+    const basePayload = latestPayload ??
+      parsed.payload ?? {
+        sourceId: parsed.sourceId,
+        operation: parsed.operation,
+        generated: true,
+        reason: 'missing_upstream_payload',
+      };
 
-    const chunks = createChunks(basePayload);
-    const embeddings = await embeddingService.embed(chunks);
     const referenceEmails = extractNormalizedEmails(basePayload);
+    const chunks = buildCanonicalZohoChunks({
+      companyId: job.companyId,
+      sourceType: parsed.sourceType,
+      sourceId: parsed.sourceId,
+      payload: basePayload,
+      referenceEmails,
+      connectionId: job.connectionId,
+    });
+    const embeddings = await embeddingService.embedDocuments(
+      chunks.map((chunk) => ({
+        title: chunk.title,
+        text: chunk.chunkText,
+      })),
+    );
     const records = chunks.map((chunk, index) => ({
       companyId: job.companyId,
       connectionId: job.connectionId,
       sourceType: parsed.sourceType,
       sourceId: parsed.sourceId,
-      chunkIndex: index,
-      contentHash: hashContent(chunk),
-      visibility: 'shared' as const,
+      chunkIndex: chunk.chunkIndex,
+      documentKey: chunk.documentKey,
+      chunkText: chunk.chunkText,
+      contentHash: hashContent(chunk.chunkText),
+      visibility: chunk.visibility,
       referenceEmails,
       payload: {
-        ...basePayload,
-        referenceEmails,
-        _chunk: chunk,
+        ...chunk.payload,
+        _chunk: chunk.chunkText,
       },
       embedding: embeddings[index],
+      denseEmbedding: embeddings[index],
+      updatedAt: chunk.sourceUpdatedAt,
+      embeddingSchemaVersion: chunk.embeddingSchemaVersion,
+      retrievalProfile: chunk.retrievalProfile,
+      sourceUpdatedAt: chunk.sourceUpdatedAt,
+      title: chunk.title,
+      content: chunk.chunkText,
     }));
     await vectorDocumentRepository.upsertMany(records);
     await qdrantAdapter.upsertVectors(records);
@@ -171,7 +188,11 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
   });
 };
 
-const failDeltaJobWithRetry = async (jobId: string, reason: string, failureCode?: string): Promise<void> => {
+const failDeltaJobWithRetry = async (
+  jobId: string,
+  reason: string,
+  failureCode?: string,
+): Promise<void> => {
   const job = await prisma.zohoSyncJob.findUnique({ where: { id: jobId } });
   if (!job) {
     return;
@@ -206,7 +227,9 @@ const failDeltaJobWithRetry = async (jobId: string, reason: string, failureCode?
     jobId,
     fromStatus: 'running',
     toStatus: shouldRetry ? 'queued' : 'failed',
-    message: shouldRetry ? 'Delta sync failed and queued for retry' : 'Delta sync failed after max retries',
+    message: shouldRetry
+      ? 'Delta sync failed and queued for retry'
+      : 'Delta sync failed after max retries',
     payload: {
       error: reason,
       retryCount: nextRetryCount,

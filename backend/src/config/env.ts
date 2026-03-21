@@ -1,6 +1,10 @@
 import dotenv from 'dotenv';
 
-import { EnvValidationError, EnvValidationIssue, validateEnvironmentContract } from './env.contract';
+import {
+  EnvValidationError,
+  EnvValidationIssue,
+  validateEnvironmentContract,
+} from './env.contract';
 
 dotenv.config();
 
@@ -16,13 +20,18 @@ const emitValidationLog = (
     const hh = String(now.getHours()).padStart(2, '0');
     const mm = String(now.getMinutes()).padStart(2, '0');
     const ss = String(now.getSeconds()).padStart(2, '0');
-    const badge = level === 'error' ? '\x1b[31mERR\x1b[0m' : level === 'warn' ? '\x1b[33mWRN\x1b[0m' : '\x1b[32mINF\x1b[0m';
+    const badge =
+      level === 'error'
+        ? '\x1b[31mERR\x1b[0m'
+        : level === 'warn'
+          ? '\x1b[33mWRN\x1b[0m'
+          : '\x1b[32mINF\x1b[0m';
     const metaPart = meta
       ? '  \x1b[2m' +
-      Object.entries(meta)
-        .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
-        .join('  ') +
-      '\x1b[0m'
+        Object.entries(meta)
+          .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+          .join('  ') +
+        '\x1b[0m'
       : '';
     const line = `\x1b[2m${hh}:${mm}:${ss}\x1b[0m ${badge} \x1b[1m${message}\x1b[0m${metaPart}`;
     if (level === 'error') {
@@ -116,12 +125,18 @@ export const ADMIN_SESSION_TTL_MINUTES = validated.config.ADMIN_SESSION_TTL_MINU
 export const CORS_ALLOWED_ORIGINS = validated.config.CORS_ALLOWED_ORIGINS;
 export const REDIS_URL = validated.config.REDIS_URL;
 export const ORCHESTRATION_WORKER_CONCURRENCY = validated.config.ORCHESTRATION_WORKER_CONCURRENCY;
-export const ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS = validated.config.ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS;
-export const ORCHESTRATION_QUEUE_ADD_BASE_DELAY_MS = validated.config.ORCHESTRATION_QUEUE_ADD_BASE_DELAY_MS;
-export const ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS = validated.config.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS;
-export const ORCHESTRATION_QUEUE_LOCK_DURATION_MS = validated.config.ORCHESTRATION_QUEUE_LOCK_DURATION_MS;
-export const ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS = validated.config.ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS;
-export const ORCHESTRATION_QUEUE_MAX_STALLED_COUNT = validated.config.ORCHESTRATION_QUEUE_MAX_STALLED_COUNT;
+export const ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS =
+  validated.config.ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS;
+export const ORCHESTRATION_QUEUE_ADD_BASE_DELAY_MS =
+  validated.config.ORCHESTRATION_QUEUE_ADD_BASE_DELAY_MS;
+export const ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS =
+  validated.config.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS;
+export const ORCHESTRATION_QUEUE_LOCK_DURATION_MS =
+  validated.config.ORCHESTRATION_QUEUE_LOCK_DURATION_MS;
+export const ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS =
+  validated.config.ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS;
+export const ORCHESTRATION_QUEUE_MAX_STALLED_COUNT =
+  validated.config.ORCHESTRATION_QUEUE_MAX_STALLED_COUNT;
 export const HITL_TIMEOUT_SECONDS = validated.config.HITL_TIMEOUT_SECONDS;
 export const CHECKPOINT_TTL_SECONDS = validated.config.CHECKPOINT_TTL_SECONDS;
 export const RETRY_MAX_ATTEMPTS = validated.config.RETRY_MAX_ATTEMPTS;
@@ -131,9 +146,12 @@ export const LARK_API_BASE_URL = validated.config.LARK_API_BASE_URL;
 export const LARK_APP_ID = validated.config.LARK_APP_ID;
 export const LARK_APP_SECRET = validated.config.LARK_APP_SECRET;
 export const LARK_BOT_TENANT_ACCESS_TOKEN = validated.config.LARK_BOT_TENANT_ACCESS_TOKEN;
-export const LARK_TENANT_TOKEN_REFRESH_BUFFER_SECONDS = validated.config.LARK_TENANT_TOKEN_REFRESH_BUFFER_SECONDS;
-export const LARK_TENANT_TOKEN_FETCH_MAX_RETRIES = validated.config.LARK_TENANT_TOKEN_FETCH_MAX_RETRIES;
-export const LARK_TENANT_TOKEN_RETRY_BASE_DELAY_MS = validated.config.LARK_TENANT_TOKEN_RETRY_BASE_DELAY_MS;
+export const LARK_TENANT_TOKEN_REFRESH_BUFFER_SECONDS =
+  validated.config.LARK_TENANT_TOKEN_REFRESH_BUFFER_SECONDS;
+export const LARK_TENANT_TOKEN_FETCH_MAX_RETRIES =
+  validated.config.LARK_TENANT_TOKEN_FETCH_MAX_RETRIES;
+export const LARK_TENANT_TOKEN_RETRY_BASE_DELAY_MS =
+  validated.config.LARK_TENANT_TOKEN_RETRY_BASE_DELAY_MS;
 export const LARK_VERIFICATION_TOKEN = validated.config.LARK_VERIFICATION_TOKEN;
 export const LARK_ENCRYPT_KEY = validated.config.LARK_ENCRYPT_KEY;
 export const LARK_WEBHOOK_SIGNING_SECRET = validated.config.LARK_WEBHOOK_SIGNING_SECRET;
@@ -161,11 +179,22 @@ export const SERPER_TIMEOUT_MS = validated.config.SERPER_TIMEOUT_MS;
 export const QDRANT_URL = validated.config.QDRANT_URL;
 export const QDRANT_API_KEY = validated.config.QDRANT_API_KEY;
 export const QDRANT_COLLECTION = validated.config.QDRANT_COLLECTION;
+export const QDRANT_RETRIEVAL_COLLECTION = validated.config.QDRANT_RETRIEVAL_COLLECTION;
 export const QDRANT_TIMEOUT_MS = validated.config.QDRANT_TIMEOUT_MS;
 export const EMBEDDING_PROVIDER = validated.config.EMBEDDING_PROVIDER;
 export const OPENAI_EMBEDDING_MODEL = validated.config.OPENAI_EMBEDDING_MODEL;
 export const GEMINI_EMBEDDING_MODEL = validated.config.GEMINI_EMBEDDING_MODEL;
+export const GEMINI_MULTIMODAL_EMBEDDING_MODEL = validated.config.GEMINI_MULTIMODAL_EMBEDDING_MODEL;
 export const GEMINI_MEDIA_ANALYSIS_MODEL = validated.config.GEMINI_MEDIA_ANALYSIS_MODEL;
+export const GOOGLE_CLOUD_PROJECT_ID = validated.config.GOOGLE_CLOUD_PROJECT_ID;
+export const GOOGLE_CLOUD_LOCATION = validated.config.GOOGLE_CLOUD_LOCATION;
+export const GOOGLE_RANKING_CONFIG = validated.config.GOOGLE_RANKING_CONFIG;
+export const GOOGLE_RANKING_MODEL = validated.config.GOOGLE_RANKING_MODEL;
+export const GOOGLE_CLOUD_ACCESS_TOKEN = validated.config.GOOGLE_CLOUD_ACCESS_TOKEN;
+export const GOOGLE_SERVICE_ACCOUNT_EMAIL = validated.config.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+export const GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY =
+  validated.config.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
+export const RAG_CHAT_RERANK_OPTIONAL = validated.config.RAG_CHAT_RERANK_OPTIONAL;
 export const ORCHESTRATION_ENGINE = validated.config.ORCHESTRATION_ENGINE;
 export const GROQ_API_KEY = validated.config.GROQ_API_KEY;
 export const GROQ_ROUTER_MODEL = validated.config.GROQ_ROUTER_MODEL;

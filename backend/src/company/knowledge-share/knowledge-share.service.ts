@@ -78,7 +78,8 @@ const serializeMeta = (meta: ShareMeta): string => JSON.stringify(meta);
 
 const buildFileConversationKey = (fileAssetId: string): string => `${FILE_PREFIX}${fileAssetId}`;
 
-const isFileConversationKey = (conversationKey: string): boolean => conversationKey.startsWith(FILE_PREFIX);
+const isFileConversationKey = (conversationKey: string): boolean =>
+  conversationKey.startsWith(FILE_PREFIX);
 
 const maybeEscalateClassification = (
   classification: ShareClassification,
@@ -105,7 +106,12 @@ const extractTextContent = (content: unknown): string => {
     return content
       .map((item) => {
         if (typeof item === 'string') return item;
-        if (item && typeof item === 'object' && 'text' in item && typeof (item as { text?: unknown }).text === 'string') {
+        if (
+          item &&
+          typeof item === 'object' &&
+          'text' in item &&
+          typeof (item as { text?: unknown }).text === 'string'
+        ) {
           return (item as { text: string }).text;
         }
         return '';
@@ -126,7 +132,10 @@ const hasProviderCredentials = (provider: AiModelProvider): boolean => {
   return Boolean((process.env.OPENAI_API_KEY || '').trim());
 };
 
-const invokeControlTarget = async (targetKey: AiControlTargetKey, prompt: string): Promise<string | null> => {
+const invokeControlTarget = async (
+  targetKey: AiControlTargetKey,
+  prompt: string,
+): Promise<string | null> => {
   try {
     const resolved = await aiModelControlService.resolveTarget(targetKey);
     if (!hasProviderCredentials(resolved.effectiveProvider)) {
@@ -136,18 +145,22 @@ const invokeControlTarget = async (targetKey: AiControlTargetKey, prompt: string
     const model =
       resolved.effectiveProvider === 'google'
         ? new ChatGoogle({
-          model: resolved.effectiveModelId,
-          apiKey: config.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
-          thinkingLevel: resolved.effectiveThinkingLevel,
-        })
+            model: resolved.effectiveModelId,
+            apiKey: config.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+            thinkingLevel: resolved.effectiveThinkingLevel,
+          })
         : new ChatOpenAI({
-          model: resolved.effectiveModelId,
-          temperature: 0,
-          apiKey: resolved.effectiveProvider === 'groq' ? config.GROQ_API_KEY : process.env.OPENAI_API_KEY,
-          configuration: resolved.effectiveProvider === 'groq'
-            ? { baseURL: 'https://api.groq.com/openai/v1' }
-            : undefined,
-        });
+            model: resolved.effectiveModelId,
+            temperature: 0,
+            apiKey:
+              resolved.effectiveProvider === 'groq'
+                ? config.GROQ_API_KEY
+                : process.env.OPENAI_API_KEY,
+            configuration:
+              resolved.effectiveProvider === 'groq'
+                ? { baseURL: 'https://api.groq.com/openai/v1' }
+                : undefined,
+          });
 
     const response = await model.invoke(prompt);
     const text = extractTextContent(response.content);
@@ -192,7 +205,9 @@ const heuristicClassification = (input: {
     return {
       classification: 'critical',
       confidence: 0.82,
-      reasons: ['Detected content that appears to include sensitive or approval-gated information.'],
+      reasons: [
+        'Detected content that appears to include sensitive or approval-gated information.',
+      ],
       riskFlags: ['heuristic_sensitive_content'],
     };
   }
@@ -206,7 +221,9 @@ const heuristicClassification = (input: {
     return {
       classification: 'safe',
       confidence: 0.72,
-      reasons: ['Content looks like reusable internal process knowledge rather than sensitive data.'],
+      reasons: [
+        'Content looks like reusable internal process knowledge rather than sensitive data.',
+      ],
       riskFlags: ['classifier_unavailable'],
     };
   }
@@ -214,7 +231,9 @@ const heuristicClassification = (input: {
   return {
     classification: 'review',
     confidence: 0.66,
-    reasons: ['Classifier was unavailable, so the request was conservatively downgraded to notification-level review.'],
+    reasons: [
+      'Classifier was unavailable, so the request was conservatively downgraded to notification-level review.',
+    ],
     riskFlags: ['classifier_unavailable'],
   };
 };
@@ -265,7 +284,11 @@ const summarizeSharedContent = async (input: {
       signal: AbortSignal.timeout(SUMMARY_MODEL_TIMEOUT_MS),
     });
     const summary = readString(extractTextContent(response.content))?.replace(/\s+/g, ' ');
-    return summary ? (summary.length > 180 ? `${summary.slice(0, 177)}...` : summary) : fallbackSummary(input.preview, input.targetType);
+    return summary
+      ? summary.length > 180
+        ? `${summary.slice(0, 177)}...`
+        : summary
+      : fallbackSummary(input.preview, input.targetType);
   } catch (error) {
     logger.warn('knowledge_share.summary.failed', {
       error: error instanceof Error ? error.message : 'unknown_error',
@@ -288,7 +311,9 @@ const classifyShareContent = async (input: {
       'Use review for potentially sensitive internal operational content that is probably okay to share but should notify admins.',
       'Use safe for generic reusable company knowledge that is not sensitive.',
       `Target type: ${input.targetType}`,
-      input.humanReason ? `Requester reason: ${input.humanReason}` : 'Requester reason: none provided',
+      input.humanReason
+        ? `Requester reason: ${input.humanReason}`
+        : 'Requester reason: none provided',
       'Content preview:',
       input.preview.slice(0, 4000),
     ].join('\n');
@@ -324,7 +349,10 @@ const buildNotificationText = (input: {
   classification: ShareClassification;
   mode: 'approval' | 'notification';
 }): string => {
-  const title = input.mode === 'approval' ? '**Knowledge Share Approval Required**' : '**Knowledge Shared With Admin Notification**';
+  const title =
+    input.mode === 'approval'
+      ? '**Knowledge Share Approval Required**'
+      : '**Knowledge Shared With Admin Notification**';
   return [
     title,
     `*Requested by:* ${input.requesterLabel}`,
@@ -352,9 +380,9 @@ class KnowledgeShareService {
     });
     const identity = user?.email
       ? await channelIdentityRepository.findLarkIdentityForProvisioning({
-        companyId: input.companyId,
-        email: user.email,
-      })
+          companyId: input.companyId,
+          email: user.email,
+        })
       : null;
 
     const displayName = readString(identity?.displayName) ?? readString(user?.name);
@@ -422,6 +450,18 @@ class KnowledgeShareService {
 
     const records = docs.map((doc) => {
       const payload = (doc.payload ?? {}) as Record<string, unknown>;
+      const content =
+        typeof payload._chunk === 'string'
+          ? payload._chunk
+          : typeof payload.text === 'string'
+            ? payload.text
+            : '';
+      const title =
+        typeof payload.title === 'string'
+          ? payload.title
+          : typeof payload.citationTitle === 'string'
+            ? payload.citationTitle
+            : 'document';
       return {
         companyId: doc.companyId,
         connectionId: doc.connectionId ?? undefined,
@@ -439,6 +479,24 @@ class KnowledgeShareService {
         },
         allowedRoles,
         embedding: doc.embedding,
+        denseEmbedding: doc.embedding,
+        documentKey: doc.documentKey ?? `${doc.companyId}:file_document:${doc.sourceId}`,
+        chunkText: content,
+        retrievalProfile: (payload.retrievalProfile as 'file' | undefined) ?? 'file',
+        embeddingSchemaVersion:
+          typeof payload.embeddingSchemaVersion === 'string'
+            ? payload.embeddingSchemaVersion
+            : undefined,
+        updatedAt:
+          typeof payload.sourceUpdatedAt === 'string'
+            ? payload.sourceUpdatedAt
+            : typeof payload.updatedAt === 'string'
+              ? payload.updatedAt
+              : undefined,
+        sourceUpdatedAt:
+          typeof payload.sourceUpdatedAt === 'string' ? payload.sourceUpdatedAt : undefined,
+        title,
+        content,
       };
     });
 
@@ -472,18 +530,47 @@ class KnowledgeShareService {
       createdAtLte: input.sharedThroughAt,
     });
 
-    await qdrantAdapter.upsertVectors(docsToRevert.map((doc) => ({
-      companyId: doc.companyId,
-      sourceType: doc.sourceType as 'chat_turn',
-      sourceId: doc.sourceId,
-      chunkIndex: doc.chunkIndex,
-      contentHash: doc.contentHash,
-      visibility: 'personal' as const,
-      ownerUserId: doc.ownerUserId ?? undefined,
-      conversationKey: doc.conversationKey ?? undefined,
-      payload: (doc.payload ?? {}) as Record<string, unknown>,
-      embedding: doc.embedding as number[],
-    })));
+    await qdrantAdapter.upsertVectors(
+      docsToRevert.map((doc) => {
+        const payload = (doc.payload ?? {}) as Record<string, unknown>;
+        const content =
+          typeof payload._chunk === 'string'
+            ? payload._chunk
+            : typeof payload.text === 'string'
+              ? payload.text
+              : '';
+        const title = typeof payload.title === 'string' ? payload.title : 'chat turn';
+        return {
+          companyId: doc.companyId,
+          sourceType: doc.sourceType as 'chat_turn',
+          sourceId: doc.sourceId,
+          chunkIndex: doc.chunkIndex,
+          contentHash: doc.contentHash,
+          visibility: 'personal' as const,
+          ownerUserId: doc.ownerUserId ?? undefined,
+          conversationKey: doc.conversationKey ?? undefined,
+          documentKey: doc.documentKey ?? `${doc.companyId}:chat_turn:${doc.sourceId}`,
+          chunkText: content,
+          payload,
+          denseEmbedding: doc.embedding as number[],
+          retrievalProfile: (payload.retrievalProfile as 'chat' | undefined) ?? 'chat',
+          embeddingSchemaVersion:
+            typeof payload.embeddingSchemaVersion === 'string'
+              ? payload.embeddingSchemaVersion
+              : undefined,
+          updatedAt:
+            typeof payload.sourceUpdatedAt === 'string'
+              ? payload.sourceUpdatedAt
+              : typeof payload.updatedAt === 'string'
+                ? payload.updatedAt
+                : undefined,
+          sourceUpdatedAt:
+            typeof payload.sourceUpdatedAt === 'string' ? payload.sourceUpdatedAt : undefined,
+          title,
+          content,
+        };
+      }),
+    );
 
     return docsToRevert.length;
   }
@@ -527,6 +614,18 @@ class KnowledgeShareService {
 
     const records = docs.map((doc) => {
       const payload = (doc.payload ?? {}) as Record<string, unknown>;
+      const content =
+        typeof payload._chunk === 'string'
+          ? payload._chunk
+          : typeof payload.text === 'string'
+            ? payload.text
+            : '';
+      const title =
+        typeof payload.title === 'string'
+          ? payload.title
+          : typeof payload.citationTitle === 'string'
+            ? payload.citationTitle
+            : 'document';
       return {
         companyId: doc.companyId,
         connectionId: doc.connectionId ?? undefined,
@@ -544,6 +643,24 @@ class KnowledgeShareService {
         },
         allowedRoles: input.previousAllowedRoles,
         embedding: doc.embedding,
+        denseEmbedding: doc.embedding,
+        documentKey: doc.documentKey ?? `${doc.companyId}:file_document:${doc.sourceId}`,
+        chunkText: content,
+        retrievalProfile: (payload.retrievalProfile as 'file' | undefined) ?? 'file',
+        embeddingSchemaVersion:
+          typeof payload.embeddingSchemaVersion === 'string'
+            ? payload.embeddingSchemaVersion
+            : undefined,
+        updatedAt:
+          typeof payload.sourceUpdatedAt === 'string'
+            ? payload.sourceUpdatedAt
+            : typeof payload.updatedAt === 'string'
+              ? payload.updatedAt
+              : undefined,
+        sourceUpdatedAt:
+          typeof payload.sourceUpdatedAt === 'string' ? payload.sourceUpdatedAt : undefined,
+        title,
+        content,
       };
     });
 
@@ -610,33 +727,36 @@ class KnowledgeShareService {
           actions:
             input.mode === 'approval'
               ? [
-                {
-                  id: 'admin_share_decision',
-                  label: 'Approve',
-                  value: { requestId: input.requestId, decision: 'approve' },
-                  style: 'primary',
-                },
-                {
-                  id: 'admin_share_decision',
-                  label: 'Reject',
-                  value: { requestId: input.requestId, decision: 'reject' },
-                  style: 'danger',
-                },
-              ]
+                  {
+                    id: 'admin_share_decision',
+                    label: 'Approve',
+                    value: { requestId: input.requestId, decision: 'approve' },
+                    style: 'primary',
+                  },
+                  {
+                    id: 'admin_share_decision',
+                    label: 'Reject',
+                    value: { requestId: input.requestId, decision: 'reject' },
+                    style: 'danger',
+                  },
+                ]
               : [
-                {
-                  id: 'admin_share_revert',
-                  label: 'Revert',
-                  value: { requestId: input.requestId },
-                  style: 'danger',
-                },
-              ],
+                  {
+                    id: 'admin_share_revert',
+                    label: 'Revert',
+                    value: { requestId: input.requestId },
+                    style: 'danger',
+                  },
+                ],
         });
 
         await auditService.recordLog({
           actorId: input.requesterUserId,
           companyId: input.companyId,
-          action: outbound.status === 'sent' ? 'knowledge_share.delivery.sent' : 'knowledge_share.delivery.failed',
+          action:
+            outbound.status === 'sent'
+              ? 'knowledge_share.delivery.sent'
+              : 'knowledge_share.delivery.failed',
           outcome: outbound.status === 'sent' ? 'success' : 'failure',
           metadata: {
             requestId: input.requestId,
@@ -652,20 +772,33 @@ class KnowledgeShareService {
       }),
     );
 
-    const successCount = results.filter((result) => result.status === 'fulfilled' && result.value).length;
+    const successCount = results.filter(
+      (result) => result.status === 'fulfilled' && result.value,
+    ).length;
     const failedCount = admins.length - successCount;
     return { recipientCount: admins.length, successCount, failedCount, mode: input.mode };
   }
 
-  private async getConversationPreview(companyId: string, requesterUserId: string, conversationKey: string): Promise<string> {
-    const preview = await personalVectorMemoryService.getConversationPreview(companyId, requesterUserId, conversationKey);
+  private async getConversationPreview(
+    companyId: string,
+    requesterUserId: string,
+    conversationKey: string,
+  ): Promise<string> {
+    const preview = await personalVectorMemoryService.getConversationPreview(
+      companyId,
+      requesterUserId,
+      conversationKey,
+    );
     if (!preview) {
       throw new Error('No personal conversation vectors found for this request');
     }
     return preview;
   }
 
-  private async getFilePreview(companyId: string, fileAssetId: string): Promise<{ preview: string; fileName: string }> {
+  private async getFilePreview(
+    companyId: string,
+    fileAssetId: string,
+  ): Promise<{ preview: string; fileName: string }> {
     const asset = await prisma.fileAsset.findFirst({
       where: { id: fileAssetId, companyId },
       select: { fileName: true, ingestionStatus: true, ingestionError: true },
@@ -674,7 +807,9 @@ class KnowledgeShareService {
       throw new Error('File asset not found');
     }
     if (asset.ingestionStatus !== 'done') {
-      throw new Error(asset.ingestionError || 'File must finish indexing before it can be shared company-wide');
+      throw new Error(
+        asset.ingestionError || 'File must finish indexing before it can be shared company-wide',
+      );
     }
 
     let docs = await vectorDocumentRepository.findByFileAsset({ companyId, fileAssetId });
@@ -701,7 +836,9 @@ class KnowledgeShareService {
     }
 
     if (!preview) {
-      throw new Error('No extractable indexed content found for this file. Re-upload a text-readable version or retry indexing.');
+      throw new Error(
+        'No extractable indexed content found for this file. Re-upload a text-readable version or retry indexing.',
+      );
     }
 
     return { preview: preview.slice(0, 2000), fileName: asset.fileName };
@@ -731,7 +868,8 @@ class KnowledgeShareService {
         where: { id: existingPending.id },
         data: {
           status: input.status,
-          requesterChannelIdentityId: input.requesterChannelIdentityId ?? existingPending.requesterChannelIdentityId,
+          requesterChannelIdentityId:
+            input.requesterChannelIdentityId ?? existingPending.requesterChannelIdentityId,
           reason: serializeMeta(input.meta),
           promotedVectorCount: input.promotedVectorCount ?? existingPending.promotedVectorCount,
         },
@@ -796,8 +934,13 @@ class KnowledgeShareService {
       };
     }
 
-    const preview = await this.getConversationPreview(input.companyId, input.requesterUserId, input.conversationKey);
-    const snapshotAt = pendingDocs[pendingDocs.length - 1]?.createdAt?.toISOString() ?? new Date().toISOString();
+    const preview = await this.getConversationPreview(
+      input.companyId,
+      input.requesterUserId,
+      input.conversationKey,
+    );
+    const snapshotAt =
+      pendingDocs[pendingDocs.length - 1]?.createdAt?.toISOString() ?? new Date().toISOString();
     const summary = await summarizeSharedContent({
       targetType: 'conversation',
       preview,
@@ -848,7 +991,10 @@ class KnowledgeShareService {
       promotedVectorCount,
     });
 
-    if (classification.classification === 'review' || classification.classification === 'critical') {
+    if (
+      classification.classification === 'review' ||
+      classification.classification === 'critical'
+    ) {
       const delivery = await this.notifyAdmins({
         companyId: input.companyId,
         requestId: row.id,
@@ -859,9 +1005,7 @@ class KnowledgeShareService {
         mode: classification.classification === 'critical' ? 'approval' : 'notification',
       });
       const finalStatus =
-        delivery.recipientCount === 0 || delivery.successCount === 0
-          ? 'delivery_failed'
-          : status;
+        delivery.recipientCount === 0 || delivery.successCount === 0 ? 'delivery_failed' : status;
       const updatedMeta: ShareMeta = { ...baseMeta, delivery };
       await prisma.vectorShareRequest.update({
         where: { id: row.id },
@@ -927,8 +1071,8 @@ class KnowledgeShareService {
 
     const currentAllowedRoles = await this.getFileAllowedRoles(input.companyId, input.fileAssetId);
     const allRoles = await aiRoleService.getRoleSlugs(input.companyId);
-    const isAlreadyShared = allRoles.length > 0
-      && allRoles.every((role) => currentAllowedRoles.includes(role));
+    const isAlreadyShared =
+      allRoles.length > 0 && allRoles.every((role) => currentAllowedRoles.includes(role));
     if (isAlreadyShared) {
       const latestShared = await this.getLatestConversationRequest({
         companyId: input.companyId,
@@ -999,7 +1143,11 @@ class KnowledgeShareService {
       promotedVectorCount,
     });
 
-    if (classification.classification === 'safe' || classification.classification === 'review' || classification.classification === 'critical') {
+    if (
+      classification.classification === 'safe' ||
+      classification.classification === 'review' ||
+      classification.classification === 'critical'
+    ) {
       const delivery = await this.notifyAdmins({
         companyId: input.companyId,
         requestId: row.id,
@@ -1010,9 +1158,7 @@ class KnowledgeShareService {
         mode: classification.classification === 'critical' ? 'approval' : 'notification',
       });
       const finalStatus =
-        delivery.recipientCount === 0 || delivery.successCount === 0
-          ? 'delivery_failed'
-          : status;
+        delivery.recipientCount === 0 || delivery.successCount === 0 ? 'delivery_failed' : status;
       await prisma.vectorShareRequest.update({
         where: { id: row.id },
         data: {
@@ -1051,7 +1197,9 @@ class KnowledgeShareService {
         requesterUserId: row.requesterUserId,
         requesterChannelIdentityId: row.requesterChannelIdentityId ?? undefined,
         conversationKey: row.conversationKey,
-        targetType: meta?.targetType ?? (isFileConversationKey(row.conversationKey) ? 'file_asset' : 'conversation'),
+        targetType:
+          meta?.targetType ??
+          (isFileConversationKey(row.conversationKey) ? 'file_asset' : 'conversation'),
         fileAssetId: meta?.fileAssetId,
         fileName: meta?.fileName,
         summary: meta?.summary,
@@ -1143,11 +1291,7 @@ class KnowledgeShareService {
     };
   }
 
-  async rejectRequest(input: {
-    requestId: string;
-    reviewerUserId: string;
-    decisionNote?: string;
-  }) {
+  async rejectRequest(input: { requestId: string; reviewerUserId: string; decisionNote?: string }) {
     const row = await prisma.vectorShareRequest.findUnique({ where: { id: input.requestId } });
     if (!row) {
       throw new Error('Vector share request not found');
@@ -1182,11 +1326,7 @@ class KnowledgeShareService {
     };
   }
 
-  async revertRequest(input: {
-    requestId: string;
-    reviewerUserId: string;
-    decisionNote?: string;
-  }) {
+  async revertRequest(input: { requestId: string; reviewerUserId: string; decisionNote?: string }) {
     const row = await prisma.vectorShareRequest.findUnique({ where: { id: input.requestId } });
     if (!row) {
       throw new Error('Vector share request not found');

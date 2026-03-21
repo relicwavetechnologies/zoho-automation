@@ -6,7 +6,12 @@ export type VectorDocumentUpsertInput = VectorUpsertDTO & {
   connectionId?: string;
   fileAssetId?: string;
   allowedRoles?: string[];
-  embedding: number[];
+  embedding?: number[];
+  documentKey?: string;
+  chunkText?: string;
+  embeddingSchemaVersion?: string;
+  retrievalProfile?: 'zoho' | 'file' | 'chat';
+  sourceUpdatedAt?: string;
 };
 
 class VectorDocumentRepository {
@@ -32,8 +37,13 @@ class VectorDocumentRepository {
           visibility: record.visibility ?? 'shared',
           ownerUserId: record.ownerUserId,
           conversationKey: record.conversationKey,
+          documentKey: record.documentKey,
+          chunkText: record.chunkText,
           payload: record.payload as Prisma.InputJsonValue,
-          embedding: record.embedding,
+          embedding: record.embedding ?? [],
+          embeddingSchemaVersion: record.embeddingSchemaVersion,
+          retrievalProfile: record.retrievalProfile,
+          sourceUpdatedAt: record.sourceUpdatedAt ? new Date(record.sourceUpdatedAt) : null,
         },
         update: {
           connectionId: record.connectionId,
@@ -42,14 +52,23 @@ class VectorDocumentRepository {
           visibility: record.visibility ?? 'shared',
           ownerUserId: record.ownerUserId,
           conversationKey: record.conversationKey,
+          documentKey: record.documentKey,
+          chunkText: record.chunkText,
           payload: record.payload as Prisma.InputJsonValue,
-          embedding: record.embedding,
+          embedding: record.embedding ?? [],
+          embeddingSchemaVersion: record.embeddingSchemaVersion,
+          retrievalProfile: record.retrievalProfile,
+          sourceUpdatedAt: record.sourceUpdatedAt ? new Date(record.sourceUpdatedAt) : null,
         },
       });
     }
   }
 
-  deleteBySource(input: { companyId: string; sourceType: string; sourceId: string }): Promise<Prisma.BatchPayload> {
+  deleteBySource(input: {
+    companyId: string;
+    sourceType: string;
+    sourceId: string;
+  }): Promise<Prisma.BatchPayload> {
     return prisma.vectorDocument.deleteMany({
       where: {
         companyId: input.companyId,
@@ -98,10 +117,7 @@ class VectorDocumentRepository {
     });
   }
 
-  findByFileAsset(input: {
-    companyId: string;
-    fileAssetId: string;
-  }): Promise<VectorDocument[]> {
+  findByFileAsset(input: { companyId: string; fileAssetId: string }): Promise<VectorDocument[]> {
     return prisma.vectorDocument.findMany({
       where: {
         companyId: input.companyId,

@@ -1,9 +1,16 @@
 import { prisma } from '../../utils/prisma';
 import { qdrantAdapter } from '../../company/integrations/vector/qdrant.adapter';
 import { embeddingService } from '../../company/integrations/embedding';
+import { googleRankingService } from '../../company/integrations/search';
 import { logger } from '../../utils/logger';
-import { extractTextFromBuffer, normalizeExtractedText } from '../file-upload/document-text-extractor';
-import { vectorDocumentRepository } from '../../company/integrations/vector/vector-document.repository';
+import {
+  extractTextFromBuffer,
+  normalizeExtractedText,
+} from '../file-upload/document-text-extractor';
+import {
+  RETRIEVAL_PROFILE_CONFIG,
+  vectorDocumentRepository,
+} from '../../company/integrations/vector';
 import { orangeDebug } from '../../utils/orange-debug';
 
 /**
@@ -34,13 +41,9 @@ export type TextContentPart = {
 
 export type VisionMessageContent = TextContentPart | ImageContentPart;
 
-const IMAGE_MIME_TYPES = new Set([
-  'image/jpeg', 'image/png', 'image/webp', 'image/gif',
-]);
+const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
-const VIDEO_MIME_TYPES = new Set([
-  'video/mp4', 'video/webm', 'video/quicktime',
-]);
+const VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
 
 const fetchIndexedFileChunks = async (input: {
   fileAssetId: string;
@@ -65,7 +68,9 @@ const fetchIndexedFileChunks = async (input: {
       .join('\n\n');
 
     const maxChars = input.maxChars ?? 18000;
-    return combined.length > maxChars ? `${combined.slice(0, maxChars)}\n...[document truncated]` : combined;
+    return combined.length > maxChars
+      ? `${combined.slice(0, maxChars)}\n...[document truncated]`
+      : combined;
   } catch (err) {
     logger.warn('file.vision.indexed_chunks.fetch.failed', {
       fileAssetId: input.fileAssetId,
@@ -86,30 +91,61 @@ const fetchRelevantDocumentChunks = async (input: {
   queryText: string;
 }): Promise<string> => {
   try {
-    const [queryVector] = await embeddingService.embed([input.queryText]);
-    const results = await qdrantAdapter.search({
+    const profile = RETRIEVAL_PROFILE_CONFIG.file;
+    const [queryVector] = await embeddingService.embedQueries([input.queryText]);
+    const groups = await qdrantAdapter.search({
       companyId: input.companyId,
-      vector: queryVector,
-      limit: 5,
+      denseVector: queryVector,
+      lexicalQueryText: input.queryText,
+      limit: profile.groupLimit,
+      candidateLimit: profile.branchLimit,
+      retrievalProfile: 'file',
+      fusion: 'dbsf',
+      groupByField: 'documentKey',
+      groupSize: profile.groupSize,
       sourceTypes: ['file_document'],
+      fileAssetId: input.fileAssetId,
       includeShared: true,
       includePersonal: false,
       includePublic: false,
       requesterAiRole: input.requesterAiRole,
+      useMultimodal: true,
+      queryMode: 'text',
     });
+    const results = groups.flatMap((group) => group.hits);
 
-    const fileChunks = results.filter(
-      (r) => typeof r.payload.fileAssetId === 'string' && r.payload.fileAssetId === input.fileAssetId,
-    );
+    const fileChunks = results;
     if (fileChunks.length === 0) return '';
 
-    return fileChunks
+    const reranked = await googleRankingService.rerank(
+      input.queryText,
+      fileChunks.map((r) => ({
+        id: `${r.sourceType}:${r.sourceId}:${r.chunkIndex}`,
+        documentKey: r.documentKey ?? `${input.companyId}:file_document:${input.fileAssetId}`,
+        chunkIndex: r.chunkIndex,
+        title: typeof r.payload.citationTitle === 'string' ? r.payload.citationTitle : undefined,
+        content:
+          typeof r.payload._chunk === 'string'
+            ? r.payload._chunk
+            : typeof r.payload.text === 'string'
+              ? r.payload.text
+              : '',
+        score: r.score,
+        payload: r.payload,
+      })),
+      profile.finalTopK,
+      { required: profile.rerankRequired },
+    );
+
+    return reranked
       .map((r) => {
-        const text = typeof r.payload._chunk === 'string'
-          ? r.payload._chunk
-          : typeof r.payload.text === 'string'
-            ? r.payload.text
-            : '';
+        const payload = r.payload ?? {};
+        const text =
+          typeof payload._chunk === 'string'
+            ? payload._chunk
+            : typeof payload.text === 'string'
+              ? payload.text
+              : '';
         return text;
       })
       .filter(Boolean)
@@ -140,7 +176,11 @@ const fetchDirectDocumentText = async (input: {
     }
 
     const arrayBuffer = await response.arrayBuffer();
-    const rawText = await extractTextFromBuffer(Buffer.from(arrayBuffer), input.mimeType, input.fileName);
+    const rawText = await extractTextFromBuffer(
+      Buffer.from(arrayBuffer),
+      input.mimeType,
+      input.fileName,
+    );
     return normalizeExtractedText(rawText);
   } catch (err) {
     logger.warn('file.vision.direct_fetch.error', {
@@ -172,7 +212,9 @@ export const buildVisionContent = async (input: {
   // Always put the user's text first
   parts.push({ type: 'text', text: input.userMessage });
 
-  const hasDocumentAttachments = input.attachedFiles.some((file) => !IMAGE_MIME_TYPES.has(file.mimeType));
+  const hasDocumentAttachments = input.attachedFiles.some(
+    (file) => !IMAGE_MIME_TYPES.has(file.mimeType),
+  );
   if (hasDocumentAttachments) {
     parts.push({
       type: 'text',
@@ -249,28 +291,29 @@ export const buildVisionContent = async (input: {
       const excerptLabel = VIDEO_MIME_TYPES.has(file.mimeType)
         ? `Relevant media excerpts from "${file.fileName}"`
         : `Relevant document excerpts from "${file.fileName}"`;
-      const fullIndexedContext = await fetchIndexedFileChunks({
+      const relevantContext = await fetchRelevantDocumentChunks({
         fileAssetId: file.fileAssetId,
         companyId: input.companyId,
+        requesterAiRole: input.requesterAiRole,
+        queryText: input.userMessage,
       });
 
-      if (fullIndexedContext) {
+      if (relevantContext) {
         parts.push({
           type: 'text',
-          text: `\n\n--- ${blockLabel} ---\n${fullIndexedContext}\n--- End ${blockLabel} ---`,
+          text: `\n\n--- ${excerptLabel} ---\n${relevantContext}\n--- End ${excerptLabel} ---`,
         });
       } else {
-        const relevantContext = await fetchRelevantDocumentChunks({
+        const fullIndexedContext = await fetchIndexedFileChunks({
           fileAssetId: file.fileAssetId,
           companyId: input.companyId,
-          requesterAiRole: input.requesterAiRole,
-          queryText: input.userMessage,
+          maxChars: 12_000,
         });
 
-        if (relevantContext) {
+        if (fullIndexedContext) {
           parts.push({
             type: 'text',
-            text: `\n\n--- ${excerptLabel} ---\n${relevantContext}\n--- End ${excerptLabel} ---`,
+            text: `\n\n--- ${blockLabel} ---\n${fullIndexedContext}\n--- End ${blockLabel} ---`,
           });
           continue;
         }
@@ -278,11 +321,11 @@ export const buildVisionContent = async (input: {
         const directText = VIDEO_MIME_TYPES.has(file.mimeType)
           ? ''
           : await fetchDirectDocumentText({
-            fileAssetId: file.fileAssetId,
-            fileName: file.fileName,
-            mimeType: file.mimeType,
-            cloudinaryUrl: file.cloudinaryUrl,
-          });
+              fileAssetId: file.fileAssetId,
+              fileName: file.fileName,
+              mimeType: file.mimeType,
+              cloudinaryUrl: file.cloudinaryUrl,
+            });
 
         if (directText) {
           parts.push({

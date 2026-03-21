@@ -70,7 +70,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: 'document-ocr-read',
     name: 'Document OCR Read',
-    description: 'List accessible uploaded files and extract machine-readable text from PDFs, docs, and scanned images.',
+    description: 'List accessible uploaded files and extract machine-readable text from PDFs, docs, CSVs, and scanned images.',
     category: 'workspace',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },

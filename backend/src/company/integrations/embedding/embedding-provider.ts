@@ -21,10 +21,17 @@ export type MediaAnalysisResult = {
   metadata?: Record<string, unknown>;
 };
 
+export type EmbeddingDocumentInput = {
+  text: string;
+  title?: string;
+};
+
 export interface EmbeddingProvider {
   readonly provider: EmbeddingProviderType;
   readonly dimension: number;
-  embedText(texts: string[]): Promise<number[][]>;
+  embedDocuments(inputs: EmbeddingDocumentInput[]): Promise<number[][]>;
+  embedQueries(texts: string[]): Promise<number[][]>;
+  embedMultimodalDocuments?(inputs: EmbeddingDocumentInput[]): Promise<number[][]>;
   analyzeMedia?(input: MediaAnalysisInput): Promise<MediaAnalysisResult>;
 }
 
@@ -59,9 +66,7 @@ const deterministicVector = (text: string, dimension: number): number[] => {
 
   const vector = new Array<number>(dimension);
   for (let index = 0; index < dimension; index += 1) {
-    const digest = createHash('sha256')
-      .update(`${index}:${normalized}`)
-      .digest();
+    const digest = createHash('sha256').update(`${index}:${normalized}`).digest();
     vector[index] = digest[index % digest.length] / 255;
   }
 
@@ -76,7 +81,9 @@ const parseGeminiText = (payload: unknown): string => {
     return '';
   }
 
-  const candidates = (payload as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }).candidates;
+  const candidates = (
+    payload as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }
+  ).candidates;
   const parts = candidates?.[0]?.content?.parts ?? [];
   return parts
     .map((part) => (typeof part?.text === 'string' ? part.text : ''))
@@ -89,8 +96,18 @@ export class FallbackEmbeddingProvider implements EmbeddingProvider {
 
   readonly dimension = FALLBACK_DIMENSION;
 
-  async embedText(texts: string[]): Promise<number[][]> {
+  async embedDocuments(inputs: EmbeddingDocumentInput[]): Promise<number[][]> {
+    return inputs.map((input) =>
+      deterministicVector([input.title, input.text].filter(Boolean).join('\n'), this.dimension),
+    );
+  }
+
+  async embedQueries(texts: string[]): Promise<number[][]> {
     return texts.map((text) => deterministicVector(text, this.dimension));
+  }
+
+  async embedMultimodalDocuments(inputs: EmbeddingDocumentInput[]): Promise<number[][]> {
+    return this.embedDocuments(inputs);
   }
 
   async analyzeMedia(input: MediaAnalysisInput): Promise<MediaAnalysisResult> {
@@ -101,7 +118,9 @@ export class FallbackEmbeddingProvider implements EmbeddingProvider {
         `${modality.toUpperCase()} asset: ${input.fileName}`,
         `mimeType=${input.mimeType}`,
         input.cloudinaryUrl ? `url=${input.cloudinaryUrl}` : '',
-      ].filter(Boolean).join('\n'),
+      ]
+        .filter(Boolean)
+        .join('\n'),
       metadata: {
         mimeType: input.mimeType,
       },
@@ -123,9 +142,9 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
     });
   }
 
-  async embedText(texts: string[]): Promise<number[][]> {
+  private async normalizeVectors(vectorsPromise: Promise<number[][]>): Promise<number[][]> {
     try {
-      const vectors = await this.client.embedDocuments(texts);
+      const vectors = await vectorsPromise;
       return vectors.map((vector) => {
         if (vector.length === this.dimension) {
           return vector;
@@ -145,6 +164,28 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
       throw error;
     }
   }
+
+  async embedDocuments(inputs: EmbeddingDocumentInput[]): Promise<number[][]> {
+    return this.normalizeVectors(
+      this.client.embedDocuments(
+        inputs.map((input) => [input.title, input.text].filter(Boolean).join('\n')),
+      ),
+    );
+  }
+
+  async embedQueries(texts: string[]): Promise<number[][]> {
+    const maybeClient = this.client as OpenAIEmbeddings & {
+      embedQuery?: (text: string) => Promise<number[]>;
+    };
+    if (typeof maybeClient.embedQuery === 'function') {
+      return this.normalizeVectors(Promise.all(texts.map((text) => maybeClient.embedQuery!(text))));
+    }
+    return this.normalizeVectors(this.client.embedDocuments(texts));
+  }
+
+  async embedMultimodalDocuments(inputs: EmbeddingDocumentInput[]): Promise<number[][]> {
+    return this.embedDocuments(inputs);
+  }
 }
 
 export class GeminiEmbeddingProvider implements EmbeddingProvider {
@@ -161,19 +202,24 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
     }
   }
 
-  async embedText(texts: string[]): Promise<number[][]> {
-    const response = await fetch(GEMINI_EMBEDDING_ENDPOINT(config.GEMINI_EMBEDDING_MODEL, this.apiKey), {
+  private async embedWithModel(input: {
+    model: string;
+    taskType: 'RETRIEVAL_DOCUMENT' | 'RETRIEVAL_QUERY';
+    inputs: EmbeddingDocumentInput[];
+  }): Promise<number[][]> {
+    const response = await fetch(GEMINI_EMBEDDING_ENDPOINT(input.model, this.apiKey), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        requests: texts.map((text) => ({
-          model: `models/${config.GEMINI_EMBEDDING_MODEL}`,
+        requests: input.inputs.map((entry) => ({
+          model: `models/${input.model}`,
           content: {
-            parts: [{ text }],
+            parts: [{ text: entry.text }],
           },
-          taskType: 'RETRIEVAL_DOCUMENT',
+          ...(entry.title ? { title: entry.title } : {}),
+          taskType: input.taskType,
           outputDimensionality: this.dimension,
         })),
       }),
@@ -183,18 +229,43 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
       throw new Error(`Gemini embedding request failed: HTTP ${response.status}`);
     }
 
-    const payload = await response.json() as {
+    const payload = (await response.json()) as {
       embeddings?: Array<{ values?: number[] }>;
     };
 
     return (payload.embeddings ?? []).map((entry) => entry.values ?? []);
   }
 
+  async embedDocuments(inputs: EmbeddingDocumentInput[]): Promise<number[][]> {
+    return this.embedWithModel({
+      model: config.GEMINI_EMBEDDING_MODEL,
+      taskType: 'RETRIEVAL_DOCUMENT',
+      inputs,
+    });
+  }
+
+  async embedQueries(texts: string[]): Promise<number[][]> {
+    return this.embedWithModel({
+      model: config.GEMINI_EMBEDDING_MODEL,
+      taskType: 'RETRIEVAL_QUERY',
+      inputs: texts.map((text) => ({ text })),
+    });
+  }
+
+  async embedMultimodalDocuments(inputs: EmbeddingDocumentInput[]): Promise<number[][]> {
+    return this.embedWithModel({
+      model: config.GEMINI_MULTIMODAL_EMBEDDING_MODEL,
+      taskType: 'RETRIEVAL_DOCUMENT',
+      inputs,
+    });
+  }
+
   async analyzeMedia(input: MediaAnalysisInput): Promise<MediaAnalysisResult> {
     const modality: EmbeddingModality = input.mimeType.startsWith('video/') ? 'video' : 'image';
-    const prompt = modality === 'video'
-      ? 'Summarize this video for retrieval. Include subjects, actions, setting, visible text, and useful search keywords in a compact paragraph.'
-      : 'Summarize this image for retrieval. Include main subjects, scene, visible text, and useful search keywords in a compact paragraph.';
+    const prompt =
+      modality === 'video'
+        ? 'Summarize this video for retrieval. Include subjects, actions, setting, visible text, and useful search keywords in a compact paragraph.'
+        : 'Summarize this image for retrieval. Include main subjects, scene, visible text, and useful search keywords in a compact paragraph.';
 
     const inlineData = {
       mimeType: input.mimeType,
@@ -203,7 +274,9 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
 
     const candidateModels = [
       config.GEMINI_MEDIA_ANALYSIS_MODEL,
-      ...GEMINI_MEDIA_ANALYSIS_FALLBACK_MODELS.filter((model) => model !== config.GEMINI_MEDIA_ANALYSIS_MODEL),
+      ...GEMINI_MEDIA_ANALYSIS_FALLBACK_MODELS.filter(
+        (model) => model !== config.GEMINI_MEDIA_ANALYSIS_MODEL,
+      ),
     ];
 
     let lastError = 'Gemini media analysis failed';
@@ -214,13 +287,12 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          contents: [{
-            role: 'user',
-            parts: [
-              { text: prompt },
-              { inlineData },
-            ],
-          }],
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: prompt }, { inlineData }],
+            },
+          ],
           generationConfig: {
             temperature: 0.1,
             maxOutputTokens: 300,

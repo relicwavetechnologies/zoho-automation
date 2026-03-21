@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger';
 import { orangeDebug } from '../../utils/orange-debug';
 import { cloudinaryAdapter } from './cloudinary.adapter';
 import { documentIngestionPipeline } from './document-ingestion.pipeline';
+import { resolveSupportedUploadMimeType } from './file-type-support';
 
 export type FileUploadInput = {
   buffer: Buffer;
@@ -26,29 +27,18 @@ export type FileUploadOutput = {
   ingestionStatus: string;
 };
 
-const SUPPORTED_MIME_TYPES = new Set([
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
-  'application/msword', // .doc  (legacy)
-  'text/plain',
-  'text/markdown',
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-  'video/mp4',
-  'video/webm',
-  'video/quicktime',
-]);
-
 export class FileUploadService {
   async upload(input: FileUploadInput): Promise<FileUploadOutput> {
     const maxBytes = config.DOC_UPLOAD_MAX_MB * 1024 * 1024;
     if (input.sizeBytes > maxBytes) {
       throw new Error(`File exceeds maximum size of ${config.DOC_UPLOAD_MAX_MB}MB`);
     }
-    if (!SUPPORTED_MIME_TYPES.has(input.mimeType)) {
-      throw new Error(`Unsupported file type: ${input.mimeType}`);
+    const resolvedMimeType = resolveSupportedUploadMimeType({
+      mimeType: input.mimeType,
+      fileName: input.fileName,
+    });
+    if (!resolvedMimeType) {
+      throw new Error(`Unsupported file type: ${input.mimeType || input.fileName}`);
     }
 
     const fileAssetId = randomUUID();
@@ -56,7 +46,7 @@ export class FileUploadService {
     // 1. Upload to Cloudinary
     const cloudResult = await cloudinaryAdapter.uploadBuffer({
       buffer: input.buffer,
-      mimeType: input.mimeType,
+      mimeType: resolvedMimeType,
       fileName: input.fileName,
       folder: config.CLOUDINARY_FOLDER,
       companyId: input.companyId,
@@ -71,7 +61,7 @@ export class FileUploadService {
         uploaderUserId: input.uploaderUserId,
         uploaderChannel: input.uploaderChannel,
         fileName: input.fileName,
-        mimeType: input.mimeType,
+        mimeType: resolvedMimeType,
         sizeBytes: input.sizeBytes,
         cloudinaryPublicId: cloudResult.publicId,
         cloudinaryUrl: cloudResult.secureUrl,
@@ -97,7 +87,7 @@ export class FileUploadService {
     logger.info('file.upload.created', {
       fileAssetId: fileAsset.id,
       companyId: input.companyId,
-      mimeType: input.mimeType,
+      mimeType: resolvedMimeType,
       allowedRoles: input.allowedRoles,
     });
     orangeDebug('file.upload.created', {
@@ -105,7 +95,7 @@ export class FileUploadService {
       companyId: input.companyId,
       uploaderUserId: input.uploaderUserId,
       uploaderChannel: input.uploaderChannel,
-      mimeType: input.mimeType,
+      mimeType: resolvedMimeType,
       fileName: input.fileName,
       allowedRoles: input.allowedRoles,
     });
@@ -117,7 +107,7 @@ export class FileUploadService {
           fileAssetId: fileAsset.id,
           companyId: input.companyId,
           buffer: input.buffer,
-          mimeType: input.mimeType,
+          mimeType: resolvedMimeType,
           fileName: input.fileName,
           sourceUrl: fileAsset.cloudinaryUrl,
           uploaderUserId: input.uploaderUserId,

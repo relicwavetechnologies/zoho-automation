@@ -357,12 +357,17 @@ model VectorDocument {
   sourceType   String
   sourceId     String
   chunkIndex   Int
+  documentKey  String?
   contentHash  String
   visibility   VectorVisibility @default(shared)
   ownerUserId  String?
   conversationKey String?
+  chunkText    String?
   payload      Json
-  embedding    Float[]
+  embedding    Float[]      @default([])
+  embeddingSchemaVersion String?
+  retrievalProfile String?
+  sourceUpdatedAt DateTime?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
@@ -371,6 +376,7 @@ model VectorDocument {
   @@index([companyId, visibility, ownerUserId])
   @@index([companyId, conversationKey])
   @@index([fileAssetId])
+  @@index([documentKey])
 }
 
 model FileAsset {

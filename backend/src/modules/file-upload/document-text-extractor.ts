@@ -1,5 +1,23 @@
 import { logger } from '../../utils/logger';
 import config from '../../config';
+import { extractTabularText } from './tabular-text-extractor';
+
+const decodeTextBuffer = (buffer: Buffer): string => {
+  if (buffer.length >= 2 && buffer[0] === 0xFF && buffer[1] === 0xFE) {
+    return buffer.toString('utf16le').replace(/^\uFEFF/, '');
+  }
+
+  if (buffer.length >= 2 && buffer[0] === 0xFE && buffer[1] === 0xFF) {
+    const swapped = Buffer.allocUnsafe(buffer.length);
+    for (let index = 0; index < buffer.length; index += 2) {
+      swapped[index] = buffer[index + 1] ?? 0;
+      swapped[index + 1] = buffer[index] ?? 0;
+    }
+    return swapped.toString('utf16le').replace(/^\uFEFF/, '');
+  }
+
+  return buffer.toString('utf-8').replace(/^\uFEFF/, '');
+};
 
 export const normalizeExtractedText = (rawText: string, maxWords = config.DOC_EXTRACT_MAX_WORDS): string => {
   const trimmed = rawText.trim();
@@ -41,7 +59,14 @@ export const extractTextFromBuffer = async (
   }
 
   if (mimeType === 'text/plain' || mimeType === 'text/markdown') {
-    return buffer.toString('utf-8');
+    return decodeTextBuffer(buffer);
+  }
+
+  if (mimeType === 'text/csv') {
+    return extractTabularText({
+      fileName,
+      rawText: decodeTextBuffer(buffer),
+    });
   }
 
   if (mimeType.startsWith('image/')) {

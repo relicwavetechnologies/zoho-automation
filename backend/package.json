@@ -19,7 +19,8 @@
     "lark:docs:validate": "node scripts/validate-lark-docs.cjs",
     "test:unit:config": "node --test tests/env-contract.test.cjs && node --test tests/bootstrap-health.test.cjs",
     "test:unit:lark": "node --test tests/lark-*.test.cjs",
-    "test:unit:zoho": "node --test tests/zoho-*.test.cjs tests/qdrant*.test.cjs tests/embedding*.test.cjs",
+    "test:unit:zoho": "node --test tests/zoho-*.test.cjs tests/qdrant*.test.cjs tests/embedding*.test.cjs tests/google-ranking*.test.cjs",
+    "test:unit:rag": "node --import tsx --test tests/embedding.service.test.cjs tests/qdrant.adapter.test.cjs tests/google-ranking.service.test.cjs tests/resilience.qdrant.test.cjs",
     "test:resilience": "node --test tests/resilience.*.test.cjs"
   },
   "dependencies": {

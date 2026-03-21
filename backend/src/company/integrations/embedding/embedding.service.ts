@@ -1,5 +1,6 @@
 import { logger } from '../../../utils/logger';
 import type {
+  EmbeddingDocumentInput,
   EmbeddingModality,
   EmbeddingProvider,
   MediaAnalysisInput,
@@ -42,18 +43,21 @@ export class EmbeddingService {
     return this.provider.dimension;
   }
 
-  async embedText(texts: string[]): Promise<number[][]> {
-    if (texts.length === 0) {
+  private async embedBatches<T>(
+    items: T[],
+    embedder: (batch: T[]) => Promise<number[][]>,
+  ): Promise<number[][]> {
+    if (items.length === 0) {
       return [];
     }
 
     const startedAt = Date.now();
-    const batches = chunk(texts, this.batchSize);
+    const batches = chunk(items, this.batchSize);
     const vectors: number[][] = [];
 
     for (const batch of batches) {
       try {
-        const chunkVectors = await this.provider.embedText(batch);
+        const chunkVectors = await embedder(batch);
         if (chunkVectors.length !== batch.length) {
           throw new Error('embedding provider returned mismatched vector count');
         }
@@ -68,7 +72,7 @@ export class EmbeddingService {
         logger.error('embedding.batch.failed', {
           provider: this.provider.provider,
           batchSize: batch.length,
-          totalInputs: texts.length,
+          totalInputs: items.length,
           error,
         });
         throw error;
@@ -78,7 +82,7 @@ export class EmbeddingService {
     logger.success('embedding.batch.success', {
       provider: this.provider.provider,
       batchSize: this.batchSize,
-      totalInputs: texts.length,
+      totalInputs: items.length,
       totalBatches: batches.length,
       latencyMs: Date.now() - startedAt,
     });
@@ -86,9 +90,41 @@ export class EmbeddingService {
     return vectors;
   }
 
+  async embedDocuments(inputs: Array<string | EmbeddingDocumentInput>): Promise<number[][]> {
+    return this.embedBatches(
+      inputs.map((input) => (typeof input === 'string' ? { text: input } : input)),
+      (batch) => this.provider.embedDocuments(batch),
+    );
+  }
+
+  async embedQueries(texts: string[]): Promise<number[][]> {
+    return this.embedBatches(texts, (batch) => this.provider.embedQueries(batch));
+  }
+
+  async embedMultimodalDocuments(
+    inputs: Array<string | EmbeddingDocumentInput>,
+  ): Promise<number[][]> {
+    const normalized = inputs.map((input) => (typeof input === 'string' ? { text: input } : input));
+    if (this.provider.embedMultimodalDocuments) {
+      try {
+        return await this.embedBatches(normalized, (batch) =>
+          this.provider.embedMultimodalDocuments!(batch),
+        );
+      } catch (error) {
+        logger.warn('embedding.multimodal.fallback_to_documents', {
+          provider: this.provider.provider,
+          reason: error instanceof Error ? error.message : 'unknown_error',
+        });
+      }
+    }
+    return this.embedDocuments(normalized);
+  }
+
   async analyzeMedia(input: MediaAnalysisInput): Promise<MediaAnalysisResult> {
     if (!this.provider.analyzeMedia) {
-      throw new Error(`embedding provider ${this.provider.provider} does not support media analysis`);
+      throw new Error(
+        `embedding provider ${this.provider.provider} does not support media analysis`,
+      );
     }
 
     return this.provider.analyzeMedia(input);
@@ -96,7 +132,9 @@ export class EmbeddingService {
 
   async embedMediaSummary(input: MediaAnalysisInput): Promise<EmbeddedMediaSummary> {
     const analysis = await this.analyzeMedia(input);
-    const [embedding] = await this.embedText([analysis.summary]);
+    const [embedding] = await this.embedDocuments([
+      { text: analysis.summary, title: input.fileName },
+    ]);
     return {
       ...analysis,
       embedding,
@@ -104,12 +142,16 @@ export class EmbeddingService {
   }
 
   async embed(input: string[]): Promise<number[][]> {
-    return this.embedText(input);
+    return this.embedDocuments(input);
   }
 
   async embedQuery(text: string): Promise<number[]> {
-    const [embedding] = await this.embedText([text]);
+    const [embedding] = await this.embedQueries([text]);
     return embedding;
+  }
+
+  async embedText(texts: string[]): Promise<number[][]> {
+    return this.embedDocuments(texts);
   }
 
   modalityForMimeType(mimeType: string): EmbeddingModality {

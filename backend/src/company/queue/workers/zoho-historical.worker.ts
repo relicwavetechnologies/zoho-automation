@@ -6,26 +6,18 @@ import { zohoHistoricalAdapter } from '../../integrations/zoho/zoho-historical.a
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
 import { extractNormalizedEmails } from '../../integrations/zoho/zoho-email-scope';
 import { embeddingService } from '../../integrations/embedding';
-import { qdrantAdapter, vectorDocumentRepository } from '../../integrations/vector';
+import {
+  buildCanonicalZohoChunks,
+  type QdrantUpsertInput,
+  qdrantAdapter,
+  vectorDocumentRepository,
+} from '../../integrations/vector';
 import { prisma } from '../../../utils/prisma';
 import { logger } from '../../../utils/logger';
 
 const HISTORICAL_BATCH_SIZE = 2;
 
-const createChunks = (record: Record<string, unknown>): string[] => {
-  const raw = JSON.stringify(record);
-  const chunkSize = 240;
-  const chunks: string[] = [];
-
-  for (let index = 0; index < raw.length; index += chunkSize) {
-    chunks.push(raw.slice(index, index + chunkSize));
-  }
-
-  return chunks.length > 0 ? chunks : ['{}'];
-};
-
-const hashContent = (content: string): string =>
-  createHash('sha256').update(content).digest('hex');
+const hashContent = (content: string): string => createHash('sha256').update(content).digest('hex');
 
 const recordEvent = async (input: {
   jobId: string;
@@ -54,10 +46,7 @@ const pickHistoricalJob = async (companyId?: string) =>
         in: ['queued', 'running'],
       },
     },
-    orderBy: [
-      { status: 'asc' },
-      { queuedAt: 'asc' },
-    ],
+    orderBy: [{ status: 'asc' }, { queuedAt: 'asc' }],
   });
 
 const markRunningIfNeeded = async (jobId: string): Promise<void> => {
@@ -85,29 +74,52 @@ const markRunningIfNeeded = async (jobId: string): Promise<void> => {
 const mapToVectorRecords = async (input: {
   companyId: string;
   connectionId: string;
-  sourceType: VectorUpsertDTO['sourceType'];
+  sourceType: Extract<
+    VectorUpsertDTO['sourceType'],
+    'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket'
+  >;
   sourceId: string;
   payload: Record<string, unknown>;
-}): Promise<(VectorUpsertDTO & { embedding: number[]; connectionId: string })[]> => {
-  const chunks = createChunks(input.payload);
-  const embeddings = await embeddingService.embed(chunks);
+}): Promise<Array<QdrantUpsertInput & { embedding: number[] }>> => {
   const referenceEmails = extractNormalizedEmails(input.payload);
+  const chunks = buildCanonicalZohoChunks({
+    companyId: input.companyId,
+    sourceType: input.sourceType,
+    sourceId: input.sourceId,
+    referenceEmails,
+    connectionId: input.connectionId,
+    payload: input.payload,
+  });
+  const embeddings = await embeddingService.embedDocuments(
+    chunks.map((chunk) => ({
+      title: chunk.title,
+      text: chunk.chunkText,
+    })),
+  );
 
   return chunks.map((chunk, index) => ({
     companyId: input.companyId,
     connectionId: input.connectionId,
     sourceType: input.sourceType,
     sourceId: input.sourceId,
-    chunkIndex: index,
-    contentHash: hashContent(chunk),
-    visibility: 'shared' as const,
+    chunkIndex: chunk.chunkIndex,
+    documentKey: chunk.documentKey,
+    chunkText: chunk.chunkText,
+    contentHash: hashContent(chunk.chunkText),
+    visibility: chunk.visibility,
     referenceEmails,
     payload: {
-      ...input.payload,
-      referenceEmails,
-      _chunk: chunk,
+      ...chunk.payload,
+      _chunk: chunk.chunkText,
     },
     embedding: embeddings[index],
+    denseEmbedding: embeddings[index],
+    updatedAt: chunk.sourceUpdatedAt,
+    embeddingSchemaVersion: chunk.embeddingSchemaVersion,
+    retrievalProfile: chunk.retrievalProfile,
+    sourceUpdatedAt: chunk.sourceUpdatedAt,
+    title: chunk.title,
+    content: chunk.chunkText,
   }));
 };
 
@@ -129,12 +141,13 @@ export const runZohoHistoricalSyncWorker = async (companyId?: string): Promise<v
       companyId: snapshot.companyId,
       cursor: snapshot.checkpoint ?? undefined,
       pageSize: HISTORICAL_BATCH_SIZE,
-      environment: (
-        await prisma.zohoConnection.findUnique({
-          where: { id: snapshot.connectionId },
-          select: { environment: true },
-        })
-      )?.environment ?? 'prod',
+      environment:
+        (
+          await prisma.zohoConnection.findUnique({
+            where: { id: snapshot.connectionId },
+            select: { environment: true },
+          })
+        )?.environment ?? 'prod',
     });
 
     if (batch.records.length === 0 && !batch.nextCursor) {
@@ -183,9 +196,10 @@ export const runZohoHistoricalSyncWorker = async (companyId?: string): Promise<v
     await qdrantAdapter.upsertVectors(vectorRecords);
 
     const processedBatches = snapshot.processedBatches + 1;
-    const estimatedTotalBatches = batch.total > 0
-      ? Math.max(1, Math.ceil(batch.total / HISTORICAL_BATCH_SIZE))
-      : processedBatches + (batch.nextCursor ? 2 : 1);
+    const estimatedTotalBatches =
+      batch.total > 0
+        ? Math.max(1, Math.ceil(batch.total / HISTORICAL_BATCH_SIZE))
+        : processedBatches + (batch.nextCursor ? 2 : 1);
     const totalBatches = Math.max(snapshot.totalBatches ?? 0, estimatedTotalBatches);
     const isDone = !batch.nextCursor;
     const progressPercent = isDone
@@ -258,11 +272,11 @@ export const runZohoHistoricalSyncWorker = async (companyId?: string): Promise<v
       jobId: job.id,
       fromStatus: 'running',
       toStatus: 'failed',
-        message: 'Historical sync failed',
-        payload: {
-          failureCode: error instanceof ZohoIntegrationError ? error.code : 'unknown',
-          error: error instanceof Error ? error.message : 'Unknown worker failure',
-        },
-      });
+      message: 'Historical sync failed',
+      payload: {
+        failureCode: error instanceof ZohoIntegrationError ? error.code : 'unknown',
+        error: error instanceof Error ? error.message : 'Unknown worker failure',
+      },
+    });
   }
 };

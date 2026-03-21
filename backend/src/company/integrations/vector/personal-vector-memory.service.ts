@@ -1,27 +1,15 @@
 import { createHash } from 'crypto';
 
+import config from '../../../config';
 import { embeddingService } from '../embedding';
 import { logger } from '../../../utils/logger';
+import { googleRankingService } from '../search/google-ranking.service';
 import { qdrantAdapter } from './qdrant.adapter';
 import { vectorDocumentRepository } from './vector-document.repository';
+import { buildCanonicalChatChunks } from './canonical-retrieval';
+import { RETRIEVAL_PROFILE_CONFIG } from './retrieval-contract';
 
-const CHAT_CHUNK_SIZE = 420;
-
-const chunkText = (text: string): string[] => {
-  const normalized = text.trim();
-  if (!normalized) {
-    return [];
-  }
-
-  const chunks: string[] = [];
-  for (let index = 0; index < normalized.length; index += CHAT_CHUNK_SIZE) {
-    chunks.push(normalized.slice(index, index + CHAT_CHUNK_SIZE));
-  }
-  return chunks;
-};
-
-const hashContent = (content: string): string =>
-  createHash('sha256').update(content).digest('hex');
+const hashContent = (content: string): string => createHash('sha256').update(content).digest('hex');
 
 export type PersonalMemoryMatch = {
   sourceId: string;
@@ -29,6 +17,7 @@ export type PersonalMemoryMatch = {
   content: string;
   role?: string;
   conversationKey?: string;
+  documentKey?: string;
 };
 
 class PersonalVectorMemoryService {
@@ -43,22 +32,63 @@ class PersonalVectorMemoryService {
       return [];
     }
 
-    const [queryVector] = await embeddingService.embed([normalized]);
-    const matches = await qdrantAdapter.search({
+    const [queryVector] = await embeddingService.embedQueries([normalized]);
+    const profile = RETRIEVAL_PROFILE_CONFIG.chat;
+    const groups = await qdrantAdapter.search({
       companyId: input.companyId,
       requesterUserId: input.requesterUserId,
-      vector: queryVector,
-      limit: Math.max(1, Math.min(6, input.limit ?? 4)),
+      denseVector: queryVector,
+      limit: Math.max(1, Math.min(profile.groupLimit, input.limit ?? profile.finalTopK)),
+      candidateLimit: profile.branchLimit,
+      retrievalProfile: 'chat',
+      lexicalQueryText: normalized,
+      fusion: 'dbsf',
+      groupByField: 'documentKey',
+      groupSize: profile.groupSize,
       sourceTypes: ['chat_turn'],
       includePersonal: true,
       includeShared: false,
       includePublic: false,
     });
+    const matches = groups.flatMap((group) => group.hits);
+    const reranked = await googleRankingService.rerank(
+      normalized,
+      matches.map((match) => ({
+        id: `${match.sourceType}:${match.sourceId}:${match.chunkIndex}`,
+        documentKey: match.documentKey ?? `${input.companyId}:chat_turn:${match.sourceId}`,
+        chunkIndex: match.chunkIndex,
+        title: typeof match.payload.title === 'string' ? match.payload.title : undefined,
+        content:
+          typeof match.payload._chunk === 'string'
+            ? match.payload._chunk
+            : typeof match.payload.text === 'string'
+              ? match.payload.text
+              : '',
+        score: match.score,
+        payload: match.payload,
+      })),
+      profile.finalTopK,
+      { required: config.NODE_ENV === 'production' && !config.RAG_CHAT_RERANK_OPTIONAL },
+    );
+    const rerankedById = new Map(reranked.map((item) => [item.id, item]));
 
     return matches
+      .filter((match) =>
+        rerankedById.has(`${match.sourceType}:${match.sourceId}:${match.chunkIndex}`),
+      )
+      .sort((left, right) => {
+        const leftScore =
+          rerankedById.get(`${left.sourceType}:${left.sourceId}:${left.chunkIndex}`)?.rerankScore ??
+          left.score;
+        const rightScore =
+          rerankedById.get(`${right.sourceType}:${right.sourceId}:${right.chunkIndex}`)
+            ?.rerankScore ?? right.score;
+        return rightScore - leftScore;
+      })
       .map((match) => ({
         sourceId: match.sourceId,
         score: match.score,
+        documentKey: match.documentKey,
         content:
           typeof match.payload._chunk === 'string'
             ? match.payload._chunk
@@ -67,7 +97,9 @@ class PersonalVectorMemoryService {
               : '',
         role: typeof match.payload.role === 'string' ? match.payload.role : undefined,
         conversationKey:
-          typeof match.payload.conversationKey === 'string' ? match.payload.conversationKey : undefined,
+          typeof match.payload.conversationKey === 'string'
+            ? match.payload.conversationKey
+            : undefined,
       }))
       .filter((match) => match.content.length > 0);
   }
@@ -82,30 +114,50 @@ class PersonalVectorMemoryService {
     channel: string;
     chatId: string;
   }): Promise<void> {
-    const chunks = chunkText(input.text);
+    const chunks = buildCanonicalChatChunks({
+      companyId: input.companyId,
+      sourceId: input.sourceId,
+      requesterUserId: input.requesterUserId,
+      conversationKey: input.conversationKey,
+      role: input.role,
+      channel: input.channel,
+      chatId: input.chatId,
+      text: input.text,
+      visibility: 'personal',
+    });
     if (chunks.length === 0) {
       return;
     }
 
-    const embeddings = await embeddingService.embed(chunks);
+    const embeddings = await embeddingService.embedDocuments(
+      chunks.map((chunk) => ({
+        title: chunk.title,
+        text: chunk.chunkText,
+      })),
+    );
     const records = chunks.map((chunk, index) => ({
       companyId: input.companyId,
       sourceType: 'chat_turn' as const,
       sourceId: input.sourceId,
-      chunkIndex: index,
-      contentHash: hashContent(chunk),
-      visibility: 'personal' as const,
+      chunkIndex: chunk.chunkIndex,
+      documentKey: chunk.documentKey,
+      chunkText: chunk.chunkText,
+      contentHash: hashContent(chunk.chunkText),
+      visibility: chunk.visibility,
       ownerUserId: input.requesterUserId,
       conversationKey: input.conversationKey,
       payload: {
-        role: input.role,
-        text: input.text,
-        channel: input.channel,
-        chatId: input.chatId,
-        conversationKey: input.conversationKey,
-        _chunk: chunk,
+        ...chunk.payload,
+        _chunk: chunk.chunkText,
       },
       embedding: embeddings[index],
+      denseEmbedding: embeddings[index],
+      updatedAt: chunk.sourceUpdatedAt,
+      embeddingSchemaVersion: chunk.embeddingSchemaVersion,
+      retrievalProfile: chunk.retrievalProfile,
+      sourceUpdatedAt: chunk.sourceUpdatedAt,
+      title: chunk.title,
+      content: chunk.chunkText,
     }));
 
     await vectorDocumentRepository.upsertMany(records);
@@ -162,19 +214,47 @@ class PersonalVectorMemoryService {
     });
 
     // Phase 3: Sync the updated visibility flag to Qdrant
-    const qdrantRecords = docsToShare.map((doc) => ({
-      companyId: doc.companyId,
-      sourceType: doc.sourceType as 'chat_turn',
-      sourceId: doc.sourceId,
-      chunkIndex: doc.chunkIndex,
-      contentHash: doc.contentHash,
-      visibility: 'shared' as const,
-      ownerUserId: doc.ownerUserId ?? undefined,
-      conversationKey: doc.conversationKey ?? undefined,
-      payload: (doc.payload ?? {}) as Record<string, unknown>,
-      embedding: doc.embedding as number[],
-    }));
-    await qdrantAdapter.upsertVectors(qdrantRecords);
+    await qdrantAdapter.upsertVectors(
+      docsToShare.map((doc) => {
+        const payload = (doc.payload ?? {}) as Record<string, unknown>;
+        const content =
+          typeof payload._chunk === 'string'
+            ? payload._chunk
+            : typeof payload.text === 'string'
+              ? payload.text
+              : '';
+        const title = typeof payload.title === 'string' ? payload.title : 'chat turn';
+        return {
+          companyId: doc.companyId,
+          sourceType: doc.sourceType as 'chat_turn',
+          sourceId: doc.sourceId,
+          chunkIndex: doc.chunkIndex,
+          contentHash: doc.contentHash,
+          visibility: 'shared' as const,
+          ownerUserId: doc.ownerUserId ?? undefined,
+          conversationKey: doc.conversationKey ?? undefined,
+          documentKey: doc.documentKey ?? `${doc.companyId}:chat_turn:${doc.sourceId}`,
+          chunkText: content,
+          payload,
+          denseEmbedding: doc.embedding as number[],
+          retrievalProfile: (payload.retrievalProfile as 'chat' | undefined) ?? 'chat',
+          embeddingSchemaVersion:
+            typeof payload.embeddingSchemaVersion === 'string'
+              ? payload.embeddingSchemaVersion
+              : undefined,
+          updatedAt:
+            typeof payload.sourceUpdatedAt === 'string'
+              ? payload.sourceUpdatedAt
+              : typeof payload.updatedAt === 'string'
+                ? payload.updatedAt
+                : undefined,
+          sourceUpdatedAt:
+            typeof payload.sourceUpdatedAt === 'string' ? payload.sourceUpdatedAt : undefined,
+          title,
+          content,
+        };
+      }),
+    );
 
     logger.info('personal.vector.conversation.shared', {
       companyId: input.companyId,

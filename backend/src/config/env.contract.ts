@@ -69,11 +69,21 @@ export type ValidatedEnv = {
   QDRANT_URL: string;
   QDRANT_API_KEY: string;
   QDRANT_COLLECTION: string;
+  QDRANT_RETRIEVAL_COLLECTION: string;
   QDRANT_TIMEOUT_MS: number;
   EMBEDDING_PROVIDER: 'gemini' | 'openai' | 'fallback';
   OPENAI_EMBEDDING_MODEL: string;
   GEMINI_EMBEDDING_MODEL: string;
+  GEMINI_MULTIMODAL_EMBEDDING_MODEL: string;
   GEMINI_MEDIA_ANALYSIS_MODEL: string;
+  GOOGLE_CLOUD_PROJECT_ID: string;
+  GOOGLE_CLOUD_LOCATION: string;
+  GOOGLE_RANKING_CONFIG: string;
+  GOOGLE_RANKING_MODEL: string;
+  GOOGLE_CLOUD_ACCESS_TOKEN: string;
+  GOOGLE_SERVICE_ACCOUNT_EMAIL: string;
+  GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: string;
+  RAG_CHAT_RERANK_OPTIONAL: boolean;
   ORCHESTRATION_ENGINE: 'legacy' | 'vercel' | 'langgraph';
   GROQ_API_KEY: string;
   GROQ_ROUTER_MODEL: string;
@@ -295,7 +305,13 @@ const parseNodeEnv = (value: string, issues: EnvValidationIssue[]): ValidatedEnv
 };
 
 const parseLogLevel = (value: string, issues: EnvValidationIssue[]): ValidatedEnv['LOG_LEVEL'] => {
-  if (value === 'debug' || value === 'info' || value === 'warn' || value === 'error' || value === 'fatal') {
+  if (
+    value === 'debug' ||
+    value === 'info' ||
+    value === 'warn' ||
+    value === 'error' ||
+    value === 'fatal'
+  ) {
     return value;
   }
 
@@ -309,7 +325,10 @@ const parseLogLevel = (value: string, issues: EnvValidationIssue[]): ValidatedEn
   return 'info';
 };
 
-const parseOrchestrationEngine = (value: string, issues: EnvValidationIssue[]): ValidatedEnv['ORCHESTRATION_ENGINE'] => {
+const parseOrchestrationEngine = (
+  value: string,
+  issues: EnvValidationIssue[],
+): ValidatedEnv['ORCHESTRATION_ENGINE'] => {
   if (value === 'legacy' || value === 'vercel' || value === 'langgraph') {
     return value;
   }
@@ -324,7 +343,10 @@ const parseOrchestrationEngine = (value: string, issues: EnvValidationIssue[]): 
   return 'langgraph';
 };
 
-const parseEmbeddingProvider = (value: string, issues: EnvValidationIssue[]): ValidatedEnv['EMBEDDING_PROVIDER'] => {
+const parseEmbeddingProvider = (
+  value: string,
+  issues: EnvValidationIssue[],
+): ValidatedEnv['EMBEDDING_PROVIDER'] => {
   if (value === 'gemini' || value === 'openai' || value === 'fallback') {
     return value;
   }
@@ -453,7 +475,10 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     }),
     DATABASE_URL: requireNonEmpty('DATABASE_URL', readString(parsedRaw.DATABASE_URL), issues),
     JWT_SECRET: requireNonEmpty('JWT_SECRET', readString(parsedRaw.JWT_SECRET, 'changeme'), issues),
-    ADMIN_JWT_SECRET: readString(parsedRaw.ADMIN_JWT_SECRET, readString(parsedRaw.JWT_SECRET, 'changeme')),
+    ADMIN_JWT_SECRET: readString(
+      parsedRaw.ADMIN_JWT_SECRET,
+      readString(parsedRaw.JWT_SECRET, 'changeme'),
+    ),
     ADMIN_SESSION_TTL_MINUTES: parseInteger({
       key: 'ADMIN_SESSION_TTL_MINUTES',
       value: readString(parsedRaw.ADMIN_SESSION_TTL_MINUTES, '480'),
@@ -461,7 +486,10 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       min: 1,
       issues,
     }),
-    CORS_ALLOWED_ORIGINS: parseOrigins(readString(parsedRaw.CORS_ALLOWED_ORIGINS, 'http://localhost:5173'), issues),
+    CORS_ALLOWED_ORIGINS: parseOrigins(
+      readString(parsedRaw.CORS_ALLOWED_ORIGINS, 'http://localhost:5173'),
+      issues,
+    ),
     REDIS_URL: readString(parsedRaw.REDIS_URL, 'redis://127.0.0.1:6379'),
     ORCHESTRATION_WORKER_CONCURRENCY: parseInteger({
       key: 'ORCHESTRATION_WORKER_CONCURRENCY',
@@ -582,10 +610,16 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     ZOHO_CLIENT_ID: readString(parsedRaw.ZOHO_CLIENT_ID),
     ZOHO_CLIENT_SECRET: readString(parsedRaw.ZOHO_CLIENT_SECRET),
     ZOHO_REDIRECT_URI: readString(parsedRaw.ZOHO_REDIRECT_URI),
-    ZOHO_ACCOUNTS_BASE_URL: readString(parsedRaw.ZOHO_ACCOUNTS_BASE_URL, 'https://accounts.zoho.com'),
+    ZOHO_ACCOUNTS_BASE_URL: readString(
+      parsedRaw.ZOHO_ACCOUNTS_BASE_URL,
+      'https://accounts.zoho.com',
+    ),
     ZOHO_API_BASE_URL: readString(parsedRaw.ZOHO_API_BASE_URL, 'https://www.zohoapis.com'),
     ZOHO_TOKEN_ENCRYPTION_KEY: readString(parsedRaw.ZOHO_TOKEN_ENCRYPTION_KEY),
-    ZOHO_PROVIDER_DEFAULT: parseZohoProviderDefault(readString(parsedRaw.ZOHO_PROVIDER_DEFAULT, 'rest'), issues),
+    ZOHO_PROVIDER_DEFAULT: parseZohoProviderDefault(
+      readString(parsedRaw.ZOHO_PROVIDER_DEFAULT, 'rest'),
+      issues,
+    ),
     ZOHO_MCP_ENABLED: parseBoolean({
       key: 'ZOHO_MCP_ENABLED',
       value: readString(parsedRaw.ZOHO_MCP_ENABLED, 'false'),
@@ -620,7 +654,10 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       issues,
     }),
     MCP_SECRET_ENCRYPTION_KEY: readString(parsedRaw.MCP_SECRET_ENCRYPTION_KEY),
-    OUTREACH_API_URL: readString(parsedRaw.OUTREACH_API_URL, 'https://agents.outreachdeal.com/webhook/dummy-data'),
+    OUTREACH_API_URL: readString(
+      parsedRaw.OUTREACH_API_URL,
+      'https://agents.outreachdeal.com/webhook/dummy-data',
+    ),
     OUTREACH_API_TIMEOUT_MS: parseInteger({
       key: 'OUTREACH_API_TIMEOUT_MS',
       value: readString(parsedRaw.OUTREACH_API_TIMEOUT_MS, '10000'),
@@ -639,6 +676,7 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     QDRANT_URL: readString(parsedRaw.QDRANT_URL, 'http://127.0.0.1:6333'),
     QDRANT_API_KEY: readString(parsedRaw.QDRANT_API_KEY),
     QDRANT_COLLECTION: readString(parsedRaw.QDRANT_COLLECTION, 'zoho_automation_docs'),
+    QDRANT_RETRIEVAL_COLLECTION: readString(parsedRaw.QDRANT_RETRIEVAL_COLLECTION, 'retrieval_v3'),
     QDRANT_TIMEOUT_MS: parseInteger({
       key: 'QDRANT_TIMEOUT_MS',
       value: readString(parsedRaw.QDRANT_TIMEOUT_MS, '5000'),
@@ -646,11 +684,40 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       min: 1000,
       issues,
     }),
-    EMBEDDING_PROVIDER: parseEmbeddingProvider(readString(parsedRaw.EMBEDDING_PROVIDER, 'gemini'), issues),
+    EMBEDDING_PROVIDER: parseEmbeddingProvider(
+      readString(parsedRaw.EMBEDDING_PROVIDER, 'gemini'),
+      issues,
+    ),
     OPENAI_EMBEDDING_MODEL: readString(parsedRaw.OPENAI_EMBEDDING_MODEL, 'text-embedding-3-small'),
     GEMINI_EMBEDDING_MODEL: readString(parsedRaw.GEMINI_EMBEDDING_MODEL, 'gemini-embedding-001'),
-    GEMINI_MEDIA_ANALYSIS_MODEL: readString(parsedRaw.GEMINI_MEDIA_ANALYSIS_MODEL, 'gemini-2.5-flash'),
-    ORCHESTRATION_ENGINE: parseOrchestrationEngine(readString(parsedRaw.ORCHESTRATION_ENGINE, 'langgraph'), issues),
+    GEMINI_MULTIMODAL_EMBEDDING_MODEL: readString(
+      parsedRaw.GEMINI_MULTIMODAL_EMBEDDING_MODEL,
+      'gemini-embedding-2-preview',
+    ),
+    GEMINI_MEDIA_ANALYSIS_MODEL: readString(
+      parsedRaw.GEMINI_MEDIA_ANALYSIS_MODEL,
+      'gemini-2.5-flash',
+    ),
+    GOOGLE_CLOUD_PROJECT_ID: readString(parsedRaw.GOOGLE_CLOUD_PROJECT_ID),
+    GOOGLE_CLOUD_LOCATION: readString(parsedRaw.GOOGLE_CLOUD_LOCATION, 'global'),
+    GOOGLE_RANKING_CONFIG: readString(parsedRaw.GOOGLE_RANKING_CONFIG, 'default_ranking_config'),
+    GOOGLE_RANKING_MODEL: readString(
+      parsedRaw.GOOGLE_RANKING_MODEL,
+      'semantic-ranker-default@latest',
+    ),
+    GOOGLE_CLOUD_ACCESS_TOKEN: readString(parsedRaw.GOOGLE_CLOUD_ACCESS_TOKEN),
+    GOOGLE_SERVICE_ACCOUNT_EMAIL: readString(parsedRaw.GOOGLE_SERVICE_ACCOUNT_EMAIL),
+    GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: readString(parsedRaw.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY),
+    RAG_CHAT_RERANK_OPTIONAL: parseBoolean({
+      key: 'RAG_CHAT_RERANK_OPTIONAL',
+      value: readString(parsedRaw.RAG_CHAT_RERANK_OPTIONAL, 'true'),
+      defaultValue: true,
+      issues,
+    }),
+    ORCHESTRATION_ENGINE: parseOrchestrationEngine(
+      readString(parsedRaw.ORCHESTRATION_ENGINE, 'langgraph'),
+      issues,
+    ),
     GROQ_API_KEY: readString(parsedRaw.GROQ_API_KEY),
     GROQ_ROUTER_MODEL: readString(parsedRaw.GROQ_ROUTER_MODEL, 'llama-3.1-8b-instant'),
     GEMINI_API_KEY: readString(parsedRaw.GEMINI_API_KEY, readString(parsedRaw.GOOGLE_API_KEY)),
@@ -702,7 +769,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
   const hasGoogleClientId = config.GOOGLE_OAUTH_CLIENT_ID.length > 0;
   const hasGoogleClientSecret = config.GOOGLE_OAUTH_CLIENT_SECRET.length > 0;
   const hasGoogleRedirectUri = config.GOOGLE_OAUTH_REDIRECT_URI.length > 0;
-  const hasAnyGoogleOAuthConfig = hasGoogleClientId || hasGoogleClientSecret || hasGoogleRedirectUri;
+  const hasAnyGoogleOAuthConfig =
+    hasGoogleClientId || hasGoogleClientSecret || hasGoogleRedirectUri;
 
   if ((hasLarkAppId && !hasLarkAppSecret) || (!hasLarkAppId && hasLarkAppSecret)) {
     issues.push({
@@ -727,7 +795,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       warnings.push({
         key: 'GOOGLE_OAUTH_CLIENT_ID,GOOGLE_OAUTH_CLIENT_SECRET,GOOGLE_OAUTH_REDIRECT_URI',
         code: 'paired_required',
-        message: 'GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_OAUTH_REDIRECT_URI should be set together',
+        message:
+          'GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_OAUTH_REDIRECT_URI should be set together',
         severity: 'warning',
       });
     }
@@ -737,7 +806,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
   const hasZohoClientSecret = config.ZOHO_CLIENT_SECRET.length > 0;
   const hasZohoRedirectUri = config.ZOHO_REDIRECT_URI.length > 0;
   const hasZohoTokenKey = config.ZOHO_TOKEN_ENCRYPTION_KEY.length > 0;
-  const hasAnyZohoAuthConfig = hasZohoClientId || hasZohoClientSecret || hasZohoRedirectUri || hasZohoTokenKey;
+  const hasAnyZohoAuthConfig =
+    hasZohoClientId || hasZohoClientSecret || hasZohoRedirectUri || hasZohoTokenKey;
 
   if (hasAnyZohoAuthConfig) {
     if (!hasZohoClientId || !hasZohoClientSecret || !hasZohoRedirectUri) {
@@ -778,7 +848,10 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     });
   }
 
-  if (readString(parsedRaw.SEPER_API_KEY).length > 0 && readString(parsedRaw.SERPER_API_KEY).length === 0) {
+  if (
+    readString(parsedRaw.SEPER_API_KEY).length > 0 &&
+    readString(parsedRaw.SERPER_API_KEY).length === 0
+  ) {
     warnings.push({
       key: 'SEPER_API_KEY,SERPER_API_KEY',
       code: 'deprecated_alias',
@@ -805,7 +878,6 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       severity: 'error',
     });
   }
-
 
   if (config.NODE_ENV === 'production' && !hasLarkVerificationToken && !hasLarkSigningSecret) {
     issues.push({
@@ -852,7 +924,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     warnings.push({
       key: 'EMBEDDING_PROVIDER,OPENAI_API_KEY',
       code: 'embedding_provider_fallback',
-      message: 'EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is missing; embeddings will fall back deterministically',
+      message:
+        'EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is missing; embeddings will fall back deterministically',
       severity: 'warning',
     });
   }
@@ -861,7 +934,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     warnings.push({
       key: 'EMBEDDING_PROVIDER,GEMINI_API_KEY',
       code: 'embedding_provider_fallback',
-      message: 'EMBEDDING_PROVIDER=gemini but GEMINI_API_KEY is missing; embeddings will fall back deterministically',
+      message:
+        'EMBEDDING_PROVIDER=gemini but GEMINI_API_KEY is missing; embeddings will fall back deterministically',
       severity: 'warning',
     });
   }
@@ -870,7 +944,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     warnings.push({
       key: 'LANGSMITH_TRACING,LANGSMITH_API_KEY,LANGSMITH_PROJECT',
       code: 'tracing_disabled',
-      message: 'LANGSMITH_TRACING is enabled but LANGSMITH_API_KEY/LANGSMITH_PROJECT are incomplete; tracing sink will be disabled',
+      message:
+        'LANGSMITH_TRACING is enabled but LANGSMITH_API_KEY/LANGSMITH_PROJECT are incomplete; tracing sink will be disabled',
       severity: 'warning',
     });
   }
@@ -879,7 +954,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     warnings.push({
       key: 'ZOHO_PROVIDER_DEFAULT,ZOHO_MCP_ENABLED',
       code: 'provider_default_disabled',
-      message: 'ZOHO_PROVIDER_DEFAULT is mcp but ZOHO_MCP_ENABLED is false; runtime will fall back to rest',
+      message:
+        'ZOHO_PROVIDER_DEFAULT is mcp but ZOHO_MCP_ENABLED is false; runtime will fall back to rest',
       severity: 'warning',
     });
   }
@@ -888,12 +964,18 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     warnings.push({
       key: 'MCP_SECRET_ENCRYPTION_KEY,ZOHO_TOKEN_ENCRYPTION_KEY',
       code: 'missing_value',
-      message: 'Set MCP_SECRET_ENCRYPTION_KEY (or ZOHO_TOKEN_ENCRYPTION_KEY fallback) for encrypted MCP credential storage',
+      message:
+        'Set MCP_SECRET_ENCRYPTION_KEY (or ZOHO_TOKEN_ENCRYPTION_KEY fallback) for encrypted MCP credential storage',
       severity: 'warning',
     });
   }
 
-  if (config.NODE_ENV !== 'production' && !hasLarkAppId && !hasLarkAppSecret && !hasStaticTenantToken) {
+  if (
+    config.NODE_ENV !== 'production' &&
+    !hasLarkAppId &&
+    !hasLarkAppSecret &&
+    !hasStaticTenantToken
+  ) {
     warnings.push({
       key: 'LARK_APP_ID,LARK_APP_SECRET,LARK_BOT_TENANT_ACCESS_TOKEN',
       code: 'lark_outbound_not_configured',

@@ -4,48 +4,14 @@ import { prisma } from '../../utils/prisma';
 import config from '../../config';
 import { logger } from '../../utils/logger';
 import { embeddingService } from '../../company/integrations/embedding';
-import { qdrantAdapter } from '../../company/integrations/vector/qdrant.adapter';
-import { vectorDocumentRepository } from '../../company/integrations/vector/vector-document.repository';
+import {
+  buildCanonicalFileChunks,
+  qdrantAdapter,
+  vectorDocumentRepository,
+} from '../../company/integrations/vector';
 import { extractTextFromBuffer, normalizeExtractedText } from './document-text-extractor';
 
-const DOC_CHUNK_SIZE = 600;
-const EMBEDDING_SCHEMA_VERSION = 'gemini-v1';
-
-const chunkText = (text: string, chunkSize = DOC_CHUNK_SIZE): string[] => {
-  const normalized = text.trim().replace(/\s+/g, ' ');
-  if (!normalized) return [];
-
-  const chunks: string[] = [];
-  const overlap = Math.floor(chunkSize * 0.1);
-  let pos = 0;
-
-  while (pos < normalized.length) {
-    chunks.push(normalized.slice(pos, pos + chunkSize));
-    pos += chunkSize - overlap;
-  }
-  return chunks;
-};
-
-const hashContent = (content: string): string =>
-  createHash('sha256').update(content).digest('hex');
-
-const buildBasePayload = (input: IngestionInput) => ({
-  citationType: 'file',
-  citationTitle: input.fileName,
-  sourceUrl: input.sourceUrl,
-  fileName: input.fileName,
-  mimeType: input.mimeType,
-  cloudinaryUrl: input.sourceUrl,
-  fileAssetId: input.fileAssetId,
-  allowedRoles: input.allowedRoles,
-  embeddingProvider: embeddingService.providerName,
-  embeddingModel: embeddingService.providerName === 'gemini'
-    ? config.GEMINI_EMBEDDING_MODEL
-    : embeddingService.providerName === 'openai'
-      ? config.OPENAI_EMBEDDING_MODEL
-      : 'fallback',
-  embeddingSchemaVersion: EMBEDDING_SCHEMA_VERSION,
-});
+const hashContent = (content: string): string => createHash('sha256').update(content).digest('hex');
 
 export type IngestionInput = {
   fileAssetId: string;
@@ -78,9 +44,10 @@ class DocumentIngestionPipeline {
       });
 
       const modality = embeddingService.modalityForMimeType(input.mimeType);
-      const records = modality === 'text'
-        ? await this.buildTextRecords(input)
-        : await this.buildMediaRecords(input, modality);
+      const records =
+        modality === 'text'
+          ? await this.buildTextRecords(input)
+          : await this.buildMediaRecords(input, modality);
 
       if (records.length === 0) {
         throw new Error('No indexable content was produced for this asset');
@@ -123,27 +90,57 @@ class DocumentIngestionPipeline {
       throw new Error('No extractable text was found in this file');
     }
 
-    const chunks = chunkText(truncatedText);
-    const embeddings = await embeddingService.embedText(chunks);
-    const basePayload = buildBasePayload(input);
+    const chunks = buildCanonicalFileChunks({
+      companyId: input.companyId,
+      fileAssetId: input.fileAssetId,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      sourceUrl: input.sourceUrl,
+      uploaderUserId: input.uploaderUserId,
+      allowedRoles: input.allowedRoles,
+      text: truncatedText,
+      metadata: {
+        embeddingProvider: embeddingService.providerName,
+        embeddingModel:
+          embeddingService.providerName === 'gemini'
+            ? config.GEMINI_EMBEDDING_MODEL
+            : embeddingService.providerName === 'openai'
+              ? config.OPENAI_EMBEDDING_MODEL
+              : 'fallback',
+        multimodalEmbeddingModel: config.GEMINI_MULTIMODAL_EMBEDDING_MODEL,
+      },
+    });
+    const denseEmbeddings = await embeddingService.embedDocuments(
+      chunks.map((chunk) => ({
+        title: chunk.title,
+        text: chunk.chunkText,
+      })),
+    );
 
     return chunks.map((chunk, index) => ({
       companyId: input.companyId,
       sourceType: 'file_document' as const,
       sourceId: input.fileAssetId,
-      chunkIndex: index,
-      contentHash: hashContent(chunk),
-      visibility: 'shared' as const,
+      chunkIndex: chunk.chunkIndex,
+      documentKey: chunk.documentKey,
+      chunkText: chunk.chunkText,
+      contentHash: hashContent(chunk.chunkText),
+      visibility: chunk.visibility,
       ownerUserId: input.uploaderUserId,
       fileAssetId: input.fileAssetId,
       allowedRoles: input.allowedRoles,
       payload: {
-        ...basePayload,
-        modality: 'text',
-        _chunk: chunk,
-        text: chunk,
+        ...chunk.payload,
+        _chunk: chunk.chunkText,
       },
-      embedding: embeddings[index],
+      embedding: denseEmbeddings[index],
+      denseEmbedding: denseEmbeddings[index],
+      updatedAt: chunk.sourceUpdatedAt,
+      embeddingSchemaVersion: chunk.embeddingSchemaVersion,
+      retrievalProfile: chunk.retrievalProfile,
+      sourceUpdatedAt: chunk.sourceUpdatedAt,
+      title: chunk.title,
+      content: chunk.chunkText,
     }));
   }
 
@@ -154,29 +151,56 @@ class DocumentIngestionPipeline {
       buffer: input.buffer,
       cloudinaryUrl: input.sourceUrl,
     });
-    const basePayload = buildBasePayload(input);
-
-    return [{
-      companyId: input.companyId,
-      sourceType: 'file_document' as const,
-      sourceId: input.fileAssetId,
-      chunkIndex: 0,
-      contentHash: hashContent(embeddedSummary.summary),
-      visibility: 'shared' as const,
-      ownerUserId: input.uploaderUserId,
-      fileAssetId: input.fileAssetId,
-      allowedRoles: input.allowedRoles,
-      payload: {
-        ...basePayload,
-        modality,
+    const [denseEmbedding] = await embeddingService.embedDocuments([
+      {
+        title: input.fileName,
         text: embeddedSummary.summary,
-        mediaSummary: embeddedSummary.summary,
-        segmentStartMs: 0,
-        ...(modality === 'video' ? { segmentEndMs: null } : {}),
-        ...(embeddedSummary.metadata ?? {}),
       },
-      embedding: embeddedSummary.embedding,
-    }];
+    ]);
+    const [chunk] = buildCanonicalFileChunks({
+      companyId: input.companyId,
+      fileAssetId: input.fileAssetId,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      sourceUrl: input.sourceUrl,
+      uploaderUserId: input.uploaderUserId,
+      allowedRoles: input.allowedRoles,
+      text: embeddedSummary.summary,
+      metadata: {
+        ...embeddedSummary.metadata,
+        embeddingProvider: embeddingService.providerName,
+        embeddingModel: config.GEMINI_EMBEDDING_MODEL,
+        multimodalEmbeddingModel: config.GEMINI_MULTIMODAL_EMBEDDING_MODEL,
+      },
+    });
+
+    return [
+      {
+        companyId: input.companyId,
+        sourceType: 'file_document' as const,
+        sourceId: input.fileAssetId,
+        chunkIndex: 0,
+        documentKey: chunk.documentKey,
+        chunkText: chunk.chunkText,
+        contentHash: hashContent(chunk.chunkText),
+        visibility: chunk.visibility,
+        ownerUserId: input.uploaderUserId,
+        fileAssetId: input.fileAssetId,
+        allowedRoles: input.allowedRoles,
+        payload: {
+          ...chunk.payload,
+          _chunk: chunk.chunkText,
+        },
+        embedding: denseEmbedding,
+        denseEmbedding,
+        updatedAt: chunk.sourceUpdatedAt,
+        embeddingSchemaVersion: chunk.embeddingSchemaVersion,
+        retrievalProfile: chunk.retrievalProfile,
+        sourceUpdatedAt: chunk.sourceUpdatedAt,
+        title: chunk.title,
+        content: chunk.chunkText,
+      },
+    ];
   }
 }
 

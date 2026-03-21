@@ -1,5 +1,10 @@
 import { embeddingService } from '../../integrations/embedding';
-import { qdrantAdapter } from '../../integrations/vector';
+import {
+  ACTIVE_EMBEDDING_SCHEMA_VERSION,
+  qdrantAdapter,
+  RETRIEVAL_PROFILE_CONFIG,
+} from '../../integrations/vector';
+import { googleRankingService } from '../../integrations/search';
 import { logger } from '../../../utils/logger';
 import { normalizeEmail, payloadReferencesEmail } from '../../integrations/zoho/zoho-email-scope';
 import type { ZohoScopeMode } from '../../tools/zoho-role-access.service';
@@ -23,7 +28,8 @@ export class ZohoRetrievalService {
     limit?: number;
     sourceTypes?: Array<ZohoRetrievalItem['sourceType']>;
   }): Promise<ZohoRetrievalItem[]> {
-    const limit = Math.max(1, Math.min(10, input.limit ?? 4));
+    const profile = RETRIEVAL_PROFILE_CONFIG.zoho;
+    const limit = Math.max(1, Math.min(profile.finalTopK, input.limit ?? 4));
     const startedAt = Date.now();
     try {
       const strictUserScopeEnabled = input.strictUserScopeEnabled ?? true;
@@ -38,42 +44,100 @@ export class ZohoRetrievalService {
         return [];
       }
 
-      const [queryVector] = await embeddingService.embed([input.text]);
-      const matches = await qdrantAdapter.search({
+      const [queryVector] = await embeddingService.embedQueries([input.text]);
+      const groups = await qdrantAdapter.search({
         companyId: input.companyId,
         requesterUserId: input.requesterUserId,
         requesterEmail: normalizedRequesterEmail,
         enforceEmailMatch: enforceEmailScope,
-        vector: queryVector,
-        limit,
-        sourceTypes: input.sourceTypes ?? ['zoho_lead', 'zoho_contact', 'zoho_account', 'zoho_deal', 'zoho_ticket'],
+        denseVector: queryVector,
+        lexicalQueryText: input.text,
+        limit: profile.groupLimit,
+        candidateLimit: profile.branchLimit,
+        retrievalProfile: 'zoho',
+        fusion: 'dbsf',
+        groupByField: 'documentKey',
+        groupSize: profile.groupSize,
+        rerankTopK: profile.rerankTopN,
+        rerankRequired: profile.rerankRequired,
+        schemaVersion: ACTIVE_EMBEDDING_SCHEMA_VERSION,
+        sourceTypes: input.sourceTypes ?? [
+          'zoho_lead',
+          'zoho_contact',
+          'zoho_account',
+          'zoho_deal',
+          'zoho_ticket',
+        ],
         includePersonal: false,
         includeShared: true,
         includePublic: false,
       });
+      const matches = groups.flatMap((group) => group.hits);
 
       const safeMatches =
         enforceEmailScope && normalizedRequesterEmail
-          ? matches.filter((match) => payloadReferencesEmail(match.payload, normalizedRequesterEmail))
+          ? matches.filter((match) =>
+              payloadReferencesEmail(match.payload, normalizedRequesterEmail),
+            )
           : matches;
+      const reranked = await googleRankingService.rerank(
+        input.text,
+        safeMatches.map((match) => ({
+          id: `${match.sourceType}:${match.sourceId}:${match.chunkIndex}`,
+          documentKey:
+            match.documentKey ?? `${input.companyId}:${match.sourceType}:${match.sourceId}`,
+          chunkIndex: match.chunkIndex,
+          title:
+            typeof match.payload.citationTitle === 'string'
+              ? match.payload.citationTitle
+              : typeof match.payload.title === 'string'
+                ? match.payload.title
+                : undefined,
+          content:
+            typeof match.payload._chunk === 'string'
+              ? match.payload._chunk
+              : typeof match.payload.text === 'string'
+                ? match.payload.text
+                : '',
+          score: match.score,
+          payload: match.payload,
+        })),
+        Math.min(profile.rerankTopN, safeMatches.length),
+        { required: profile.rerankRequired },
+      );
+      const rerankedById = new Map(reranked.map((item) => [item.id, item]));
+      const finalMatches = safeMatches
+        .filter((match) =>
+          rerankedById.has(`${match.sourceType}:${match.sourceId}:${match.chunkIndex}`),
+        )
+        .sort((left, right) => {
+          const leftScore =
+            rerankedById.get(`${left.sourceType}:${left.sourceId}:${left.chunkIndex}`)
+              ?.rerankScore ?? left.score;
+          const rightScore =
+            rerankedById.get(`${right.sourceType}:${right.sourceId}:${right.chunkIndex}`)
+              ?.rerankScore ?? right.score;
+          return rightScore - leftScore;
+        })
+        .slice(0, limit);
 
       logger.success('retrieval.query.executed', {
         companyId: input.companyId,
         limit,
-        matchCount: safeMatches.length,
+        matchCount: finalMatches.length,
         scopeMode,
         provider: embeddingService.providerName,
         latencyMs: Date.now() - startedAt,
       });
 
-      if (safeMatches.length === 0) {
+      if (finalMatches.length === 0) {
         logger.info('retrieval.query.empty', {
           companyId: input.companyId,
           limit,
         });
       }
 
-      return safeMatches.map((match) => ({
+      return finalMatches.map((match) => ({
         sourceType: match.sourceType as ZohoRetrievalItem['sourceType'],
         sourceId: match.sourceId,
         chunkIndex: match.chunkIndex,

@@ -6,20 +6,35 @@ import type { VectorUpsertDTO } from '../../contracts';
 import type {
   VectorDeleteBySourceInput,
   VectorPointUpsert,
+  VectorSearchGroup,
   VectorSearchQuery,
   VectorSearchResult,
   VectorStoreAdapter,
   VectorStoreHealth,
 } from './vector-store.adapter';
+import {
+  ACTIVE_EMBEDDING_SCHEMA_VERSION,
+  MULTIMODAL_VECTOR_NAME,
+  PRIMARY_TEXT_VECTOR_NAME,
+  type RetrievalProfile,
+} from './retrieval-contract';
 
 export type QdrantUpsertInput = VectorUpsertDTO & {
   connectionId?: string;
-  embedding: number[];
+  denseEmbedding: number[];
+  multimodalEmbedding?: number[];
+  updatedAt?: string;
+  embeddingSchemaVersion?: string;
+  retrievalProfile?: RetrievalProfile;
+  title?: string;
+  content?: string;
+  documentKey?: string;
+  sourceUpdatedAt?: string;
 };
 
 type QdrantPoint = {
   id: string | number;
-  vector: number[];
+  vector: Record<string, number[]>;
   payload: Record<string, unknown>;
 };
 
@@ -29,12 +44,24 @@ type QdrantCountResponse = {
   };
 };
 
-type QdrantSearchResponse = {
-  result?: Array<{
-    id: string | number;
-    score: number;
-    payload?: Record<string, unknown>;
-  }>;
+type QdrantGroupHit = {
+  id: string | number;
+  score: number;
+  payload?: Record<string, unknown>;
+};
+
+type QdrantGroupsResponse = {
+  result?:
+    | {
+        groups?: Array<{
+          id?: string | number;
+          hits?: QdrantGroupHit[];
+        }>;
+      }
+    | Array<{
+        id?: string | number;
+        hits?: QdrantGroupHit[];
+      }>;
 };
 
 class VectorStoreError extends Error {
@@ -47,12 +74,29 @@ class VectorStoreError extends Error {
   }
 }
 
+const OPENAI_DIMENSIONS: Record<string, number> = {
+  'text-embedding-3-small': 1536,
+  'text-embedding-3-large': 3072,
+  'text-embedding-ada-002': 1536,
+};
+
+const resolvePrimaryTextVectorSize = (): number => {
+  if (config.EMBEDDING_PROVIDER === 'openai') {
+    return OPENAI_DIMENSIONS[config.OPENAI_EMBEDDING_MODEL] ?? 1536;
+  }
+  if (config.EMBEDDING_PROVIDER === 'fallback') {
+    return 1536;
+  }
+  return 3072;
+};
+
+const resolveMultimodalVectorSize = (): number => 3072;
+
 const isCollectionNotFoundError = (error: unknown): error is VectorStoreError =>
   error instanceof VectorStoreError && error.message.includes('(404)');
 
 const isMissingPayloadIndexError = (error: unknown): error is VectorStoreError =>
-  error instanceof VectorStoreError
-  && error.message.includes('Index required but not found');
+  error instanceof VectorStoreError && error.message.includes('Index required but not found');
 
 const buildPointId = (point: {
   companyId: string;
@@ -67,9 +111,7 @@ const buildPointId = (point: {
     .padEnd(32, '0');
 
   const chars = seed.split('');
-  // UUID version 5 nibble.
   chars[12] = '5';
-  // RFC4122 variant nibble (8, 9, a, b).
   const variant = Number.parseInt(chars[16] ?? '0', 16);
   chars[16] = ((variant & 0x3) | 0x8).toString(16);
   const normalized = chars.join('');
@@ -91,26 +133,15 @@ const buildScopeShouldClauses = (query: VectorSearchQuery): Array<Record<string,
 
   if (includePublic) {
     should.push({
-      must: [
-        {
-          key: 'visibility',
-          match: { value: 'public' },
-        },
-      ],
+      must: [{ key: 'visibility', match: { value: 'public' } }],
     });
   }
 
   if (includeShared) {
     should.push({
       must: [
-        {
-          key: 'companyId',
-          match: { value: query.companyId },
-        },
-        {
-          key: 'visibility',
-          match: { value: 'shared' },
-        },
+        { key: 'companyId', match: { value: query.companyId } },
+        { key: 'visibility', match: { value: 'shared' } },
       ],
     });
   }
@@ -118,30 +149,16 @@ const buildScopeShouldClauses = (query: VectorSearchQuery): Array<Record<string,
   if (includePersonal && query.requesterUserId) {
     should.push({
       must: [
-        {
-          key: 'companyId',
-          match: { value: query.companyId },
-        },
-        {
-          key: 'visibility',
-          match: { value: 'personal' },
-        },
-        {
-          key: 'ownerUserId',
-          match: { value: query.requesterUserId },
-        },
+        { key: 'companyId', match: { value: query.companyId } },
+        { key: 'visibility', match: { value: 'personal' } },
+        { key: 'ownerUserId', match: { value: query.requesterUserId } },
       ],
     });
   }
 
   if (should.length === 0) {
     should.push({
-      must: [
-        {
-          key: 'companyId',
-          match: { value: query.companyId },
-        },
-      ],
+      must: [{ key: 'companyId', match: { value: query.companyId } }],
     });
   }
 
@@ -149,74 +166,91 @@ const buildScopeShouldClauses = (query: VectorSearchQuery): Array<Record<string,
 };
 
 const buildSearchFilter = (query: VectorSearchQuery): Record<string, unknown> => {
-  const must: Array<Record<string, unknown>> = [];
-  const filter: Record<string, unknown> = {
-    should: buildScopeShouldClauses(query),
-  };
+  const must: Array<Record<string, unknown>> = [
+    {
+      key: 'embeddingSchemaVersion',
+      match: { value: query.schemaVersion ?? ACTIVE_EMBEDDING_SCHEMA_VERSION },
+    },
+  ];
 
-  if (query.sourceTypes && query.sourceTypes.length > 0) {
-    must.push(
-      {
-        key: 'sourceType',
-        match: query.sourceTypes.length === 1
-          ? { value: query.sourceTypes[0] }
-          : { any: query.sourceTypes },
-      },
-    );
+  if (query.retrievalProfile) {
+    must.push({
+      key: 'retrievalProfile',
+      match: { value: query.retrievalProfile },
+    });
   }
 
-  if (query.enforceEmailMatch && typeof query.requesterEmail === 'string' && query.requesterEmail.trim().length > 0) {
+  if (query.sourceTypes && query.sourceTypes.length > 0) {
+    must.push({
+      key: 'sourceType',
+      match:
+        query.sourceTypes.length === 1
+          ? { value: query.sourceTypes[0] }
+          : { any: query.sourceTypes },
+    });
+  }
+
+  if (query.fileAssetId) {
+    must.push({
+      key: 'fileAssetId',
+      match: { value: query.fileAssetId },
+    });
+  }
+
+  if (query.enforceEmailMatch && typeof query.requesterEmail === 'string' && query.requesterEmail) {
     must.push({
       key: 'referenceEmails',
       match: { any: [query.requesterEmail.trim().toLowerCase()] },
     });
   }
 
-  // RBAC: When searching file_document vectors, restrict to allowedRoles the user's aiRole is in.
   const isFileDoctypeRequested =
     !query.sourceTypes ||
     query.sourceTypes.length === 0 ||
     query.sourceTypes.includes('file_document');
 
   if (isFileDoctypeRequested && query.requesterAiRole) {
-    filter.should = buildScopeShouldClauses(query);
     must.push({
       should: [
-        // Either allowedRoles is not set (legacy / unrestricted) …
-        {
-          is_empty: { key: 'allowedRoles' },
-        },
-        // … or the user's aiRole is in the allowedRoles array.
-        {
-          key: 'allowedRoles',
-          match: { any: [query.requesterAiRole] },
-        },
-        // … or the vector is not a file_document (don't restrict zoho/chat turns).
+        { is_empty: { key: 'allowedRoles' } },
+        { key: 'allowedRoles', match: { any: [query.requesterAiRole] } },
         {
           key: 'sourceType',
-          match: { any: ['zoho_lead', 'zoho_contact', 'zoho_account', 'zoho_deal', 'zoho_ticket', 'chat_turn'] },
+          match: {
+            any: [
+              'zoho_lead',
+              'zoho_contact',
+              'zoho_account',
+              'zoho_deal',
+              'zoho_ticket',
+              'chat_turn',
+            ],
+          },
         },
       ],
     });
   }
 
-  if (must.length > 0) {
-    filter.must = must;
-  }
-
-  return filter;
+  return {
+    should: buildScopeShouldClauses(query),
+    must,
+  };
 };
 
 export class QdrantAdapter implements VectorStoreAdapter {
   private readonly baseUrl = config.QDRANT_URL.replace(/\/$/, '');
 
-  private readonly collection = config.EMBEDDING_PROVIDER === 'gemini'
-    ? `${config.QDRANT_COLLECTION}_gemini`
+  private readonly collection = config.QDRANT_RETRIEVAL_COLLECTION.trim()
+    ? config.QDRANT_RETRIEVAL_COLLECTION
     : config.QDRANT_COLLECTION;
 
   private readonly apiKey = config.QDRANT_API_KEY;
 
   private readonly timeoutMs = config.QDRANT_TIMEOUT_MS;
+
+  private readonly primaryVectorSize = resolvePrimaryTextVectorSize();
+
+  private readonly multimodalVectorSize = resolveMultimodalVectorSize();
 
   private ensuringCollection: Promise<void> | null = null;
   private ensuringFilterIndexes: Promise<void> | null = null;
@@ -246,7 +280,10 @@ export class QdrantAdapter implements VectorStoreAdapter {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
-      const code = error instanceof Error && error.name === 'TimeoutError' ? 'vector_timeout' : 'vector_unavailable';
+      const code =
+        error instanceof Error && error.name === 'TimeoutError'
+          ? 'vector_timeout'
+          : 'vector_unavailable';
       throw new VectorStoreError(
         error instanceof Error ? error.message : 'Qdrant request failed',
         code,
@@ -266,20 +303,21 @@ export class QdrantAdapter implements VectorStoreAdapter {
     if (!response.ok) {
       throw new VectorStoreError(
         `Qdrant request failed (${response.status}): ${typeof payload === 'string' ? payload : raw}`,
-        response.status === 504 || response.status === 408 ? 'vector_timeout' : 'vector_unavailable',
+        response.status === 504 || response.status === 408
+          ? 'vector_timeout'
+          : 'vector_unavailable',
       );
     }
 
     return payload as T;
   }
 
-  private async ensureCollection(vectorSize: number): Promise<void> {
+  private async ensureCollection(): Promise<void> {
     if (!this.ensuringCollection) {
-      this.ensuringCollection = this.ensureCollectionInternal(vectorSize).finally(() => {
+      this.ensuringCollection = this.ensureCollectionInternal().finally(() => {
         this.ensuringCollection = null;
       });
     }
-
     return this.ensuringCollection;
   }
 
@@ -289,11 +327,10 @@ export class QdrantAdapter implements VectorStoreAdapter {
         this.ensuringFilterIndexes = null;
       });
     }
-
     return this.ensuringFilterIndexes;
   }
 
-  private async ensureCollectionInternal(vectorSize: number): Promise<void> {
+  private async ensureCollectionInternal(): Promise<void> {
     try {
       await this.request({
         method: 'GET',
@@ -301,7 +338,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
       });
       return;
     } catch (error) {
-      if (!(error instanceof VectorStoreError) || !error.message.includes('(404)')) {
+      if (!isCollectionNotFoundError(error)) {
         throw error;
       }
     }
@@ -311,29 +348,62 @@ export class QdrantAdapter implements VectorStoreAdapter {
       path: `/collections/${encodeURIComponent(this.collection)}`,
       body: {
         vectors: {
-          size: vectorSize,
-          distance: 'Cosine',
+          [PRIMARY_TEXT_VECTOR_NAME]: {
+            size: this.primaryVectorSize,
+            distance: 'Cosine',
+          },
+          [MULTIMODAL_VECTOR_NAME]: {
+            size: this.multimodalVectorSize,
+            distance: 'Cosine',
+          },
         },
       },
     });
 
     logger.info('qdrant.collection.created', {
       collection: this.collection,
-      vectorSize,
+      primaryVectorSize: this.primaryVectorSize,
+      multimodalVectorSize: this.multimodalVectorSize,
     });
   }
 
   private async ensureIndexesInternal(): Promise<void> {
-    const indexRequests: Array<{ fieldName: string; fieldSchema: 'keyword' | 'integer' }> = [
+    const indexRequests: Array<{
+      fieldName: string;
+      fieldSchema:
+        | 'keyword'
+        | 'integer'
+        | 'datetime'
+        | {
+            type: 'text';
+            tokenizer?: 'multilingual' | 'word';
+            lowercase?: boolean;
+            min_token_len?: number;
+          };
+    }> = [
       { fieldName: 'companyId', fieldSchema: 'keyword' },
+      { fieldName: 'documentKey', fieldSchema: 'keyword' },
       { fieldName: 'sourceType', fieldSchema: 'keyword' },
       { fieldName: 'sourceId', fieldSchema: 'keyword' },
+      { fieldName: 'fileAssetId', fieldSchema: 'keyword' },
       { fieldName: 'visibility', fieldSchema: 'keyword' },
       { fieldName: 'ownerUserId', fieldSchema: 'keyword' },
       { fieldName: 'referenceEmails', fieldSchema: 'keyword' },
       { fieldName: 'conversationKey', fieldSchema: 'keyword' },
       { fieldName: 'allowedRoles', fieldSchema: 'keyword' },
+      { fieldName: 'embeddingSchemaVersion', fieldSchema: 'keyword' },
+      { fieldName: 'retrievalProfile', fieldSchema: 'keyword' },
+      { fieldName: 'sourceUpdatedAt', fieldSchema: 'datetime' },
       { fieldName: 'chunkIndex', fieldSchema: 'integer' },
+      {
+        fieldName: 'chunkText',
+        fieldSchema: {
+          type: 'text',
+          tokenizer: 'multilingual',
+          lowercase: true,
+          min_token_len: 2,
+        },
+      },
     ];
 
     for (const indexRequest of indexRequests) {
@@ -360,14 +430,18 @@ export class QdrantAdapter implements VectorStoreAdapter {
       return;
     }
 
-    await this.ensureCollection(points[0].vector.length);
+    await this.ensureCollection();
     await this.ensureIndexes();
 
     const qdrantPoints: QdrantPoint[] = points.map((point) => ({
       id: point.id,
-      vector: point.vector,
+      vector: {
+        [PRIMARY_TEXT_VECTOR_NAME]: point.denseVector,
+        ...(point.multimodalVector ? { [MULTIMODAL_VECTOR_NAME]: point.multimodalVector } : {}),
+      },
       payload: {
         companyId: point.companyId,
+        documentKey: point.documentKey,
         sourceType: point.sourceType,
         sourceId: point.sourceId,
         chunkIndex: point.chunkIndex,
@@ -395,17 +469,31 @@ export class QdrantAdapter implements VectorStoreAdapter {
       sourceType: record.sourceType,
       sourceId: record.sourceId,
       chunkIndex: record.chunkIndex,
+      documentKey:
+        record.documentKey ?? `${record.companyId}:${record.sourceType}:${record.sourceId}`,
       contentHash: record.contentHash,
       visibility: record.visibility ?? 'shared',
       ownerUserId: record.ownerUserId,
       conversationKey: record.conversationKey,
       payload: {
         ...record.payload,
-        ...(Array.isArray(record.referenceEmails) ? { referenceEmails: record.referenceEmails } : {}),
+        ...(Array.isArray(record.referenceEmails)
+          ? { referenceEmails: record.referenceEmails }
+          : {}),
         ...(record.connectionId ? { connectionId: record.connectionId } : {}),
-        ...(Array.isArray((record as any).allowedRoles) ? { allowedRoles: (record as any).allowedRoles } : {}),
+        ...(record.fileAssetId ? { fileAssetId: record.fileAssetId } : {}),
+        ...(Array.isArray(record.allowedRoles) ? { allowedRoles: record.allowedRoles } : {}),
+        documentKey:
+          record.documentKey ?? `${record.companyId}:${record.sourceType}:${record.sourceId}`,
+        chunkText: record.content ?? record.payload.chunkText ?? record.payload.text,
+        sourceUpdatedAt: record.sourceUpdatedAt ?? record.updatedAt,
+        title: record.title,
+        text: record.content ?? record.payload.text,
+        embeddingSchemaVersion: record.embeddingSchemaVersion ?? ACTIVE_EMBEDDING_SCHEMA_VERSION,
+        retrievalProfile: record.retrievalProfile,
       },
-      vector: record.embedding,
+      denseVector: record.denseEmbedding,
+      multimodalVector: record.multimodalEmbedding,
     }));
 
     await this.upsert(points);
@@ -419,18 +507,9 @@ export class QdrantAdapter implements VectorStoreAdapter {
         body: {
           filter: {
             must: [
-              {
-                key: 'companyId',
-                match: { value: input.companyId },
-              },
-              {
-                key: 'sourceType',
-                match: { value: input.sourceType },
-              },
-              {
-                key: 'sourceId',
-                match: { value: input.sourceId },
-              },
+              { key: 'companyId', match: { value: input.companyId } },
+              { key: 'sourceType', match: { value: input.sourceType } },
+              { key: 'sourceId', match: { value: input.sourceId } },
             ],
           },
         },
@@ -448,68 +527,104 @@ export class QdrantAdapter implements VectorStoreAdapter {
     sourceType: VectorUpsertDTO['sourceType'];
     sourceId: string;
   }): Promise<void> {
-    await this.deleteBySource({
-      companyId: input.companyId,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-    });
+    await this.deleteBySource(input);
   }
 
-  async search(query: VectorSearchQuery): Promise<VectorSearchResult[]> {
-    let payload: QdrantSearchResponse;
+  async search(query: VectorSearchQuery): Promise<VectorSearchGroup[]> {
     const filter = buildSearchFilter(query);
+    const branchLimit = Math.max(
+      query.limit,
+      Math.min(50, Math.max(10, query.candidateLimit ?? Math.max(query.limit * 4, 24))),
+    );
+    const prefetch: Array<Record<string, unknown>> = [
+      {
+        query: query.denseVector,
+        using: PRIMARY_TEXT_VECTOR_NAME,
+        limit: branchLimit,
+        filter,
+      },
+    ];
+
+    if (query.lexicalQueryText?.trim()) {
+      prefetch.push({
+        query: query.lexicalQueryText.trim(),
+        limit: branchLimit,
+        filter,
+      });
+    }
+
+    if (query.useMultimodal && query.queryMode && query.queryMode !== 'text') {
+      prefetch.push({
+        query: query.denseVector,
+        using: MULTIMODAL_VECTOR_NAME,
+        limit: branchLimit,
+        filter,
+      });
+    }
+
+    let payload: QdrantGroupsResponse;
     try {
-      payload = await this.request<QdrantSearchResponse>({
+      await this.ensureCollection();
+      payload = await this.request<QdrantGroupsResponse>({
         method: 'POST',
-        path: `/collections/${encodeURIComponent(this.collection)}/points/search`,
+        path: `/collections/${encodeURIComponent(this.collection)}/points/query/groups`,
         body: {
-          vector: query.vector,
-          limit: Math.max(1, Math.min(20, query.limit)),
+          prefetch,
+          query: prefetch.length > 1 ? { fusion: query.fusion ?? 'dbsf' } : query.denseVector,
+          using: prefetch.length > 1 ? undefined : PRIMARY_TEXT_VECTOR_NAME,
+          filter: prefetch.length > 1 ? undefined : filter,
+          group_by: query.groupByField ?? 'documentKey',
+          group_size: Math.max(1, Math.min(10, query.groupSize ?? 3)),
+          limit: Math.max(1, Math.min(25, query.limit)),
           with_payload: true,
-          filter,
         },
       });
     } catch (error) {
       if (isCollectionNotFoundError(error)) {
-        // First retrieval may happen before initial ingestion; create lazily and return empty.
-        await this.ensureCollection(query.vector.length);
+        await this.ensureCollection();
         await this.ensureIndexes();
         return [];
       }
-
       if (isMissingPayloadIndexError(error)) {
         await this.ensureIndexes();
-        payload = await this.request<QdrantSearchResponse>({
-          method: 'POST',
-          path: `/collections/${encodeURIComponent(this.collection)}/points/search`,
-          body: {
-            vector: query.vector,
-            limit: Math.max(1, Math.min(20, query.limit)),
-            with_payload: true,
-            filter,
-          },
-        });
-      } else {
-        throw error;
+        return this.search(query);
       }
+      throw error;
     }
 
     await this.ensureIndexes();
 
-    return (payload.result ?? []).map((item) => ({
-      id: String(item.id),
-      score: item.score,
-      sourceType: (item.payload?.sourceType as VectorSearchResult['sourceType']) ?? 'zoho_contact',
-      sourceId: String(item.payload?.sourceId ?? ''),
-      chunkIndex: Number(item.payload?.chunkIndex ?? 0),
-      visibility: (item.payload?.visibility as VectorSearchResult['visibility']) ?? 'shared',
-      ownerUserId:
-        typeof item.payload?.ownerUserId === 'string' ? item.payload.ownerUserId : undefined,
-      conversationKey:
-        typeof item.payload?.conversationKey === 'string' ? item.payload.conversationKey : undefined,
-      allowedRoles:
-        Array.isArray(item.payload?.allowedRoles) ? (item.payload.allowedRoles as string[]) : undefined,
-      payload: (item.payload ?? {}) as Record<string, unknown>,
+    const groups = Array.isArray(payload.result)
+      ? payload.result
+      : Array.isArray(payload.result?.groups)
+        ? payload.result.groups
+        : [];
+
+    return groups.map((group) => ({
+      groupValue: String(group.id ?? ''),
+      hits: (group.hits ?? []).map(
+        (item): VectorSearchResult => ({
+          id: String(item.id),
+          score: item.score,
+          sourceType:
+            (item.payload?.sourceType as VectorSearchResult['sourceType']) ?? 'zoho_contact',
+          sourceId: String(item.payload?.sourceId ?? ''),
+          chunkIndex: Number(item.payload?.chunkIndex ?? 0),
+          documentKey:
+            typeof item.payload?.documentKey === 'string' ? item.payload.documentKey : undefined,
+          visibility: (item.payload?.visibility as VectorSearchResult['visibility']) ?? 'shared',
+          ownerUserId:
+            typeof item.payload?.ownerUserId === 'string' ? item.payload.ownerUserId : undefined,
+          conversationKey:
+            typeof item.payload?.conversationKey === 'string'
+              ? item.payload.conversationKey
+              : undefined,
+          allowedRoles: Array.isArray(item.payload?.allowedRoles)
+            ? (item.payload.allowedRoles as string[])
+            : undefined,
+          payload: (item.payload ?? {}) as Record<string, unknown>,
+        }),
+      ),
     }));
   }
 
@@ -524,12 +639,8 @@ export class QdrantAdapter implements VectorStoreAdapter {
           exact: true,
           filter: {
             must: [
-              {
-                key: 'companyId',
-                match: {
-                  value: companyId,
-                },
-              },
+              { key: 'companyId', match: { value: companyId } },
+              { key: 'embeddingSchemaVersion', match: { value: ACTIVE_EMBEDDING_SCHEMA_VERSION } },
             ],
           },
         },
@@ -540,26 +651,9 @@ export class QdrantAdapter implements VectorStoreAdapter {
       }
       if (isMissingPayloadIndexError(error)) {
         await this.ensureIndexes();
-        payload = await this.request<QdrantCountResponse>({
-          method: 'POST',
-          path: `/collections/${encodeURIComponent(this.collection)}/points/count`,
-          body: {
-            exact: true,
-            filter: {
-              must: [
-                {
-                  key: 'companyId',
-                  match: {
-                    value: companyId,
-                  },
-                },
-              ],
-            },
-          },
-        });
-      } else {
-        throw error;
+        return this.countByCompany(companyId);
       }
+      throw error;
     }
 
     return Number(payload.result?.count ?? 0);
