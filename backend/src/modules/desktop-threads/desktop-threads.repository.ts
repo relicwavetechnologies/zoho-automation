@@ -107,6 +107,43 @@ export class DesktopThreadsRepository extends BaseRepository {
     });
   }
 
+  async rotateCanonicalLarkThread(userId: string, companyId: string, departmentId?: string | null, title?: string | null) {
+    return prisma.$transaction(async (tx) => {
+      const existing = await tx.desktopThread.findFirst({
+        where: {
+          userId,
+          companyId,
+          channel: 'lark',
+          canonicalThreadKey: LARK_LIFETIME_THREAD_KEY,
+        },
+        include: threadInclude,
+      });
+
+      if (existing) {
+        await tx.desktopThread.update({
+          where: { id: existing.id },
+          data: {
+            canonicalThreadKey: null,
+          },
+        });
+      }
+
+      const created = await tx.desktopThread.create({
+        data: {
+          userId,
+          companyId,
+          channel: 'lark',
+          canonicalThreadKey: LARK_LIFETIME_THREAD_KEY,
+          departmentId: departmentId ?? existing?.departmentId ?? null,
+          ...(title ? { title } : {}),
+        },
+        include: threadInclude,
+      });
+
+      return { previous: existing, current: created };
+    });
+  }
+
   updateThreadTitle(threadId: string, title: string) {
     return prisma.desktopThread.update({
       where: { id: threadId },

@@ -3745,17 +3745,12 @@ export const createVercelDesktopTools = (
           || input.operation === 'categorizeBankTransactionAsVendorPayment'
           || input.operation === 'categorizeBankTransactionAsCustomerPayment'
           || input.operation === 'categorizeBankTransactionAsCreditNoteRefund'
-          || input.operation === 'emailInvoice'
-          || input.operation === 'remindInvoice'
-          || input.operation === 'emailEstimate'
           || input.operation === 'emailCreditNote'
           || input.operation === 'refundCreditNote'
-          || input.operation === 'emailSalesOrder'
           || input.operation === 'createInvoiceFromSalesOrder'
-          || input.operation === 'emailPurchaseOrder'
           || input.operation === 'addBooksComment'
           || input.operation === 'updateBooksComment'
-          || input.operation === 'emailContact' || input.operation === 'emailContactStatement' || input.operation === 'emailVendorPayment')
+          )
           && !input.body) {
           return buildEnvelope({
             success: false,
@@ -5068,7 +5063,7 @@ export const createVercelDesktopTools = (
     }),
 
     larkBase: tool({
-      description: 'Comprehensive Lark Base tool for bitable records.',
+      description: 'Comprehensive Lark Base tool for structured company tables and records in Lark Base (Bitable). Use this for Base apps/tables/records, not for personal memory or general chat recall.',
       inputSchema: z.object({
         operation: z.enum(['listApps', 'listTables', 'listViews', 'listFields', 'listRecords', 'getRecord', 'createRecord', 'updateRecord', 'deleteRecord']),
         appToken: z.string().optional(),
@@ -5086,202 +5081,238 @@ export const createVercelDesktopTools = (
         const appToken = input.appToken?.trim() || defaults?.defaultBaseAppToken;
         const tableId = input.tableId?.trim() || defaults?.defaultBaseTableId;
         const viewId = input.viewId?.trim() || defaults?.defaultBaseViewId;
-        const authInput = getLarkAuthInput(runtime);
         const baseService = loadLarkBaseService();
+        const LarkRuntimeClientError = loadLarkRuntimeClientError();
+        const baseConfigHint = [
+          'If this keeps failing, check Company Admin -> Lark operational config for default Base app/table/view ids and verify the connected Lark app has Base permissions.',
+          appToken ? `Current app token: ${appToken}.` : 'No Base app token is currently resolved.',
+          tableId ? `Current table id: ${tableId}.` : 'No Base table id is currently resolved.',
+          viewId ? `Current view id: ${viewId}.` : undefined,
+        ].filter((entry): entry is string => Boolean(entry)).join(' ');
+        const runWithLarkBaseAuth = <T>(run: (auth: Record<string, unknown>) => Promise<T>): Promise<T> =>
+          withLarkTenantFallback(runtime, run);
 
-        if (input.operation === 'listApps') {
-          const result = await baseService.listApps({
-            ...authInput,
-            pageSize: 50,
-          });
-          return buildEnvelope({
-            success: true,
-            summary: result.items.length > 0 ? `Found ${result.items.length} Lark Base app(s).` : 'No Lark Base apps were found.',
-            keyData: { items: result.items },
-            fullPayload: result as unknown as Record<string, unknown>,
-          });
-        }
+        try {
+          if (input.operation === 'listApps') {
+            const candidateTokens = Array.from(new Set(
+              [input.appToken?.trim(), defaults?.defaultBaseAppToken].filter((value): value is string => Boolean(value)),
+            ));
+            if (candidateTokens.length === 0) {
+              return buildEnvelope({
+                success: false,
+                summary: 'Automatic Lark Base app discovery is not available in this runtime. Provide appToken or configure a default Base app token in Company Admin.',
+                errorKind: 'missing_input',
+                retryable: false,
+              });
+            }
+            const items = candidateTokens.map((token, index) => ({
+              appToken: token,
+              name: index === 0 && token === defaults?.defaultBaseAppToken
+                ? 'Configured default Lark Base app'
+                : 'Provided Lark Base app',
+              raw: { app_token: token },
+            }));
+            return buildEnvelope({
+              success: true,
+              summary: `Resolved ${items.length} Lark Base app token(s) from configured defaults or provided input.`,
+              keyData: { items },
+              fullPayload: { items },
+            });
+          }
 
-        if (input.operation === 'listTables') {
-          if (!appToken) {
+          if (input.operation === 'listTables') {
+            if (!appToken) {
+              return buildEnvelope({
+                success: false,
+                summary: 'listTables requires appToken or a configured default Base app token.',
+                errorKind: 'missing_input',
+              });
+            }
+            const result = await runWithLarkBaseAuth((auth) => baseService.listTables({
+              ...auth,
+              appToken,
+              pageSize: 50,
+            }));
+            return buildEnvelope({
+              success: true,
+              summary: result.items.length > 0 ? `Found ${result.items.length} Lark Base table(s).` : 'No Lark Base tables were found.',
+              keyData: { app: { appToken }, items: result.items },
+              fullPayload: result as unknown as Record<string, unknown>,
+            });
+          }
+
+          if (input.operation === 'listViews') {
+            if (!appToken || !tableId) {
+              return buildEnvelope({
+                success: false,
+                summary: 'listViews requires appToken and tableId, or configured defaults.',
+                errorKind: 'missing_input',
+              });
+            }
+            const result = await runWithLarkBaseAuth((auth) => baseService.listViews({
+              ...auth,
+              appToken,
+              tableId,
+              pageSize: 50,
+            }));
+            return buildEnvelope({
+              success: true,
+              summary: result.items.length > 0 ? `Found ${result.items.length} Lark Base view(s).` : 'No Lark Base views were found.',
+              keyData: { app: { appToken }, table: { tableId }, items: result.items },
+              fullPayload: result as unknown as Record<string, unknown>,
+            });
+          }
+
+          if (input.operation === 'listFields') {
+            if (!appToken || !tableId) {
+              return buildEnvelope({
+                success: false,
+                summary: 'listFields requires appToken and tableId, or configured defaults.',
+                errorKind: 'missing_input',
+              });
+            }
+            const result = await runWithLarkBaseAuth((auth) => baseService.listFields({
+              ...auth,
+              appToken,
+              tableId,
+              pageSize: 200,
+            }));
+            const filteredItems = input.fieldNames && input.fieldNames.length > 0
+              ? result.items.filter((item) =>
+                input.fieldNames?.some((fieldName) => (asString(item.fieldName) ?? '').toLowerCase() === fieldName.toLowerCase()))
+              : result.items;
+            return buildEnvelope({
+              success: true,
+              summary: filteredItems.length > 0 ? `Found ${filteredItems.length} Lark Base field(s).` : 'No Lark Base fields matched the request.',
+              keyData: { app: { appToken }, table: { tableId }, items: filteredItems },
+              fullPayload: { ...result, items: filteredItems },
+            });
+          }
+
+          if (input.operation === 'getRecord') {
+            if (!appToken || !tableId || !input.recordId?.trim()) {
+              return buildEnvelope({
+                success: false,
+                summary: 'getRecord requires appToken, tableId, and recordId, or configured app/table defaults.',
+                errorKind: 'missing_input',
+              });
+            }
+            const record = await runWithLarkBaseAuth((auth) => baseService.getRecord({
+              ...auth,
+              appToken,
+              tableId,
+              recordId: input.recordId.trim(),
+            }));
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched Lark Base record ${record.recordId}.`,
+              keyData: { app: { appToken }, table: { tableId }, record },
+              fullPayload: { record },
+            });
+          }
+
+          if (input.operation === 'deleteRecord') {
+            if (!appToken || !tableId || !input.recordId?.trim()) {
+              return buildEnvelope({
+                success: false,
+                summary: 'deleteRecord requires appToken, tableId, and recordId, or configured app/table defaults.',
+                errorKind: 'missing_input',
+              });
+            }
+            await runWithLarkBaseAuth((auth) => baseService.deleteRecord({
+              ...auth,
+              appToken,
+              tableId,
+              recordId: input.recordId.trim(),
+            }));
+            return buildEnvelope({
+              success: true,
+              summary: `Deleted Lark Base record ${input.recordId.trim()}.`,
+              keyData: {
+                app: { appToken },
+                table: { tableId },
+                record: { recordId: input.recordId.trim() },
+              },
+            });
+          }
+
+          if (input.operation === 'listRecords') {
+            if (!appToken || !tableId) {
+              return buildEnvelope({
+                success: false,
+                summary: 'listRecords requires appToken and tableId, or configured defaults.',
+                errorKind: 'missing_input',
+              });
+            }
+            const result = await runWithLarkBaseAuth((auth) => baseService.listRecords({
+              ...auth,
+              appToken,
+              tableId,
+              viewId,
+              pageSize: 50,
+            }));
+            const normalizedQuery = input.query?.trim().toLowerCase();
+            const items = normalizedQuery
+              ? result.items.filter((item) =>
+                `${asString(item.recordId) ?? ''} ${JSON.stringify(asRecord(item.fields) ?? {})}`.toLowerCase().includes(normalizedQuery))
+              : result.items;
+            return buildEnvelope({
+              success: true,
+              summary: items.length > 0 ? `Found ${items.length} Lark Base record(s).` : 'No Lark Base records matched the request.',
+              keyData: {
+                app: { appToken },
+                table: { tableId },
+                view: viewId ? { viewId } : undefined,
+                items,
+              },
+              fullPayload: { ...result, items },
+            });
+          }
+
+          if (!appToken || !tableId || !input.fields) {
             return buildEnvelope({
               success: false,
-              summary: 'listTables requires appToken or a configured default Base app token.',
+              summary: `${input.operation} requires appToken, tableId, and fields, or configured app/table defaults.`,
               errorKind: 'missing_input',
             });
           }
-          const result = await baseService.listTables({
-            ...authInput,
-            appToken,
-            pageSize: 50,
-          });
+          const record = input.operation === 'createRecord'
+            ? await runWithLarkBaseAuth((auth) => baseService.createRecord({
+              ...auth,
+              appToken,
+              tableId,
+              fields: input.fields,
+            }))
+            : await runWithLarkBaseAuth((auth) => baseService.updateRecord({
+              ...auth,
+              appToken,
+              tableId,
+              recordId: input.recordId?.trim() ?? '',
+              fields: input.fields,
+            }));
           return buildEnvelope({
             success: true,
-            summary: result.items.length > 0 ? `Found ${result.items.length} Lark Base table(s).` : 'No Lark Base tables were found.',
-            keyData: { app: { appToken }, items: result.items },
-            fullPayload: result as unknown as Record<string, unknown>,
-          });
-        }
-
-        if (input.operation === 'listViews') {
-          if (!appToken || !tableId) {
-            return buildEnvelope({
-              success: false,
-              summary: 'listViews requires appToken and tableId, or configured defaults.',
-              errorKind: 'missing_input',
-            });
-          }
-          const result = await baseService.listViews({
-            ...authInput,
-            appToken,
-            tableId,
-            pageSize: 50,
-          });
-          return buildEnvelope({
-            success: true,
-            summary: result.items.length > 0 ? `Found ${result.items.length} Lark Base view(s).` : 'No Lark Base views were found.',
-            keyData: { app: { appToken }, table: { tableId }, items: result.items },
-            fullPayload: result as unknown as Record<string, unknown>,
-          });
-        }
-
-        if (input.operation === 'listFields') {
-          if (!appToken || !tableId) {
-            return buildEnvelope({
-              success: false,
-              summary: 'listFields requires appToken and tableId, or configured defaults.',
-              errorKind: 'missing_input',
-            });
-          }
-          const result = await baseService.listFields({
-            ...authInput,
-            appToken,
-            tableId,
-            pageSize: 200,
-          });
-          const filteredItems = input.fieldNames && input.fieldNames.length > 0
-            ? result.items.filter((item) =>
-              input.fieldNames?.some((fieldName) => (asString(item.fieldName) ?? '').toLowerCase() === fieldName.toLowerCase()))
-            : result.items;
-          return buildEnvelope({
-            success: true,
-            summary: filteredItems.length > 0 ? `Found ${filteredItems.length} Lark Base field(s).` : 'No Lark Base fields matched the request.',
-            keyData: { app: { appToken }, table: { tableId }, items: filteredItems },
-            fullPayload: { ...result, items: filteredItems },
-          });
-        }
-
-        if (input.operation === 'getRecord') {
-          if (!appToken || !tableId || !input.recordId?.trim()) {
-            return buildEnvelope({
-              success: false,
-              summary: 'getRecord requires appToken, tableId, and recordId, or configured app/table defaults.',
-              errorKind: 'missing_input',
-            });
-          }
-          const record = await baseService.getRecord({
-            ...authInput,
-            appToken,
-            tableId,
-            recordId: input.recordId.trim(),
-          });
-          return buildEnvelope({
-            success: true,
-            summary: `Fetched Lark Base record ${record.recordId}.`,
-            keyData: { app: { appToken }, table: { tableId }, record },
+            summary: `${input.operation === 'createRecord' ? 'Created' : 'Updated'} Lark Base record ${asString(record.recordId) ?? 'record'}.`,
+            keyData: {
+              app: { appToken },
+              table: { tableId },
+              record,
+            },
             fullPayload: { record },
           });
-        }
-
-        if (input.operation === 'deleteRecord') {
-          if (!appToken || !tableId || !input.recordId?.trim()) {
-            return buildEnvelope({
-              success: false,
-              summary: 'deleteRecord requires appToken, tableId, and recordId, or configured app/table defaults.',
-              errorKind: 'missing_input',
-            });
-          }
-          await baseService.deleteRecord({
-            ...authInput,
-            appToken,
-            tableId,
-            recordId: input.recordId.trim(),
-          });
-          return buildEnvelope({
-            success: true,
-            summary: `Deleted Lark Base record ${input.recordId.trim()}.`,
-            keyData: {
-              app: { appToken },
-              table: { tableId },
-              record: { recordId: input.recordId.trim() },
-            },
-          });
-        }
-
-        if (input.operation === 'listRecords') {
-          if (!appToken || !tableId) {
-            return buildEnvelope({
-              success: false,
-              summary: 'listRecords requires appToken and tableId, or configured defaults.',
-              errorKind: 'missing_input',
-            });
-          }
-          const result = await baseService.listRecords({
-            ...authInput,
-            appToken,
-            tableId,
-            viewId,
-            pageSize: 50,
-          });
-          const normalizedQuery = input.query?.trim().toLowerCase();
-          const items = normalizedQuery
-            ? result.items.filter((item) =>
-              `${asString(item.recordId) ?? ''} ${JSON.stringify(asRecord(item.fields) ?? {})}`.toLowerCase().includes(normalizedQuery))
-            : result.items;
-          return buildEnvelope({
-            success: true,
-            summary: items.length > 0 ? `Found ${items.length} Lark Base record(s).` : 'No Lark Base records matched the request.',
-            keyData: {
-              app: { appToken },
-              table: { tableId },
-              view: viewId ? { viewId } : undefined,
-              items,
-            },
-            fullPayload: { ...result, items },
-          });
-        }
-
-        if (!appToken || !tableId || !input.fields) {
+        } catch (error) {
+          const summary = input.operation === 'listApps'
+            ? 'Automatic Lark Base app discovery is not available in this runtime. Provide appToken or configure a default Base app token in Company Admin.'
+            : error instanceof LarkRuntimeClientError
+              ? `Lark Base ${input.operation} failed: ${error.message}. ${baseConfigHint}`
+              : `Lark Base ${input.operation} failed: ${error instanceof Error ? error.message : 'unknown error'}. ${baseConfigHint}`;
           return buildEnvelope({
             success: false,
-            summary: `${input.operation} requires appToken, tableId, and fields, or configured app/table defaults.`,
-            errorKind: 'missing_input',
+            summary,
+            errorKind: inferErrorKind(summary),
+            retryable: false,
           });
         }
-        const record = input.operation === 'createRecord'
-          ? await baseService.createRecord({
-            ...authInput,
-            appToken,
-            tableId,
-            fields: input.fields,
-          })
-          : await baseService.updateRecord({
-            ...authInput,
-            appToken,
-            tableId,
-            recordId: input.recordId?.trim() ?? '',
-            fields: input.fields,
-          });
-        return buildEnvelope({
-          success: true,
-          summary: `${input.operation === 'createRecord' ? 'Created' : 'Updated'} Lark Base record ${asString(record.recordId) ?? 'record'}.`,
-          keyData: {
-            app: { appToken },
-            table: { tableId },
-            record,
-          },
-          fullPayload: { record },
-        });
       }),
     }),
 

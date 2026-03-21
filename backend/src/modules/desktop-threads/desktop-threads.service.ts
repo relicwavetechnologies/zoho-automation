@@ -208,6 +208,39 @@ export class DesktopThreadsService extends BaseService {
     return created;
   }
 
+  async clearLarkLifetimeThreadContext(
+    userId: string,
+    companyId: string,
+    departmentId?: string | null,
+  ) {
+    const rotated = await this.repository.rotateCanonicalLarkThread(
+      userId,
+      companyId,
+      departmentId,
+      'Lark history',
+    );
+
+    if (rotated.previous) {
+      await Promise.allSettled([
+        desktopThreadMetaCache.invalidate(rotated.previous.id, userId),
+        desktopThreadContextCache.invalidate(rotated.previous.id, userId),
+      ]);
+    }
+
+    await this.cacheThreadMeta(rotated.current);
+    await desktopThreadContextCache.invalidate(rotated.current.id, userId);
+
+    logger.info('desktop.thread_context.cleared', {
+      userId,
+      companyId,
+      previousThreadId: rotated.previous?.id ?? null,
+      currentThreadId: rotated.current.id,
+      channel: 'lark',
+    });
+
+    return rotated;
+  }
+
   async getOwnedThreadContext(threadId: string, userId: string, limit = 120) {
     const thread = await this.repository.getOwnedThread(threadId, userId);
     if (!thread) throw new HttpException(404, 'Thread not found');

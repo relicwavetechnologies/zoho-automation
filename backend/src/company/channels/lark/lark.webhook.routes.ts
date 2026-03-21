@@ -18,6 +18,8 @@ import { inferLarkMessageType, parseLarkAttachmentKeys } from './lark-message-co
 import { ingestLarkAttachments } from './lark-file-ingestion';
 import { larkRecentFilesStore } from './lark-recent-files.store';
 import { orangeDebug } from '../../../utils/orange-debug';
+import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
+import { conversationMemoryStore } from '../../state/conversation';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
 type WebhookVerificationFailureReason = Exclude<LarkWebhookVerificationResult['reason'], undefined>;
@@ -125,6 +127,17 @@ const parseHitlDecision = (text: string): { actionId: string; decision: 'confirm
     decision: match[1] === 'confirm' ? 'confirmed' : 'cancelled',
     actionId: match[2],
   };
+};
+
+const isLarkClearContextCommand = (text: string): boolean => {
+  const normalized = text.trim().toLowerCase();
+  return normalized === '/clear'
+    || normalized === '/new'
+    || normalized === '/newchat'
+    || normalized === 'clear chat'
+    || normalized === 'clear context'
+    || normalized === 'start new chat'
+    || normalized === 'new chat';
 };
 
 const parseImplicitHitlDecision = (text: string): { decision: 'confirmed' | 'cancelled' } | null => {
@@ -834,6 +847,78 @@ export const createLarkWebhookEventHandler = (
         }
       }
 
+      if (parsed.kind === 'event_callback_message' && isLarkClearContextCommand(tracedMessageBase.text)) {
+        try {
+          if (scopedCompanyId && linkedUserId) {
+            const rotated = await desktopThreadsService.clearLarkLifetimeThreadContext(
+              linkedUserId,
+              scopedCompanyId,
+            );
+            dependencies.log.info('lark.chat_context.cleared', {
+              ...buildIngressTraceMeta({
+                requestId,
+                message: tracedMessageBase,
+                eventId: parsed.eventId,
+                textHash,
+                larkTenantKey,
+                companyId: scopedCompanyId,
+              }),
+              previousThreadId: rotated.previous?.id ?? null,
+              currentThreadId: rotated.current.id,
+              mode: 'persistent_thread_rotated',
+            });
+          } else {
+            conversationMemoryStore.clearConversation(`${tracedMessageBase.channel}:${tracedMessageBase.chatId}`);
+            dependencies.log.info('lark.chat_context.cleared', {
+              ...buildIngressTraceMeta({
+                requestId,
+                message: tracedMessageBase,
+                eventId: parsed.eventId,
+                textHash,
+                larkTenantKey,
+                companyId: scopedCompanyId ?? undefined,
+              }),
+              mode: 'conversation_memory_only',
+            });
+          }
+
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessageBase.chatId,
+            text: [
+              'Started a fresh chat context.',
+              '',
+              'Previous Lark chat context will not be used for the next turns.',
+              'Stored memories and vectors were kept.',
+            ].join('\n'),
+            correlationId: requestId,
+          });
+
+          return res.status(202).json({
+            success: true,
+            message: 'Lark chat context cleared',
+            data: {
+              channel: tracedMessageBase.channel,
+              messageId: tracedMessageBase.messageId,
+              chatId: tracedMessageBase.chatId,
+              cleared: true,
+            },
+          });
+        } catch (error) {
+          dependencies.log.warn('lark.chat_context.clear_failed', {
+            ...buildIngressTraceMeta({
+              requestId,
+              message: tracedMessageBase,
+              eventId: parsed.eventId,
+              textHash,
+              larkTenantKey,
+              companyId: scopedCompanyId ?? undefined,
+            }),
+            error: error instanceof Error ? error.message : 'unknown_error',
+          });
+          throw error;
+        }
+      }
+
       // ── File/Image Ingestion (runs AFTER linkedUserId resolution and idempotency) ─────────
       // This prevents duplicate webhook deliveries from creating duplicate FileAsset rows.
       let attachedFiles = normalized.attachedFiles ?? [];
@@ -982,7 +1067,7 @@ export const createLarkWebhookEventHandler = (
             text: responseText,
           });
         }
-        return res.status(202).json({
+        return res.status(parsed.kind === 'event_callback_card_action' ? 200 : 202).json({
           success: true,
           message: 'HITL callback processed',
           data: {

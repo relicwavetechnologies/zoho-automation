@@ -33,6 +33,14 @@ class PersonalVectorMemoryService {
       return [];
     }
 
+    logger.info('personal.vector.query.start', {
+      companyId: input.companyId,
+      requesterUserId: input.requesterUserId,
+      conversationKey: input.conversationKey,
+      queryLength: normalized.length,
+      limit: input.limit,
+    });
+
     const [queryVector] = await embeddingService.embedQueries([normalized]);
     const profile = RETRIEVAL_PROFILE_CONFIG.chat;
     const groups = await qdrantAdapter.search({
@@ -74,7 +82,7 @@ class PersonalVectorMemoryService {
     );
     const rerankedById = new Map(reranked.map((item) => [item.id, item]));
 
-    return matches
+    const finalMatches = matches
       .filter((match) =>
         rerankedById.has(`${match.sourceType}:${match.sourceId}:${match.chunkIndex}`),
       )
@@ -104,6 +112,17 @@ class PersonalVectorMemoryService {
             : undefined,
       }))
       .filter((match) => match.content.length > 0);
+
+    logger.info('personal.vector.query.completed', {
+      companyId: input.companyId,
+      requesterUserId: input.requesterUserId,
+      conversationKey: input.conversationKey,
+      candidateCount: matches.length,
+      resultCount: finalMatches.length,
+      topScores: finalMatches.slice(0, 3).map((match) => Number(match.score.toFixed(4))),
+    });
+
+    return finalMatches;
   }
 
   async storeChatTurn(input: {
@@ -116,6 +135,15 @@ class PersonalVectorMemoryService {
     channel: string;
     chatId: string;
   }): Promise<void> {
+    logger.info('personal.vector.turn.store.start', {
+      companyId: input.companyId,
+      requesterUserId: input.requesterUserId,
+      conversationKey: input.conversationKey,
+      sourceId: input.sourceId,
+      role: input.role,
+      textPreview: input.text.trim().slice(0, 160),
+    });
+
     const chunks = buildCanonicalChatChunks({
       companyId: input.companyId,
       sourceId: input.sourceId,
@@ -128,6 +156,13 @@ class PersonalVectorMemoryService {
       visibility: 'personal',
     });
     if (chunks.length === 0) {
+      logger.info('personal.vector.turn.store.skipped', {
+        companyId: input.companyId,
+        requesterUserId: input.requesterUserId,
+        conversationKey: input.conversationKey,
+        sourceId: input.sourceId,
+        reason: 'no_chunks',
+      });
       return;
     }
 
@@ -168,9 +203,15 @@ class PersonalVectorMemoryService {
     logger.info('personal.vector.turn.stored', {
       companyId: input.companyId,
       requesterUserId: input.requesterUserId,
+      conversationKey: input.conversationKey,
       sourceId: input.sourceId,
       role: input.role,
       chunkCount: records.length,
+      profileChunkCount: records.filter((record) => (record.payload as Record<string, unknown>)?.memoryKind === 'user_profile_fact').length,
+      memoryKinds: Array.from(new Set(records.map((record) => {
+        const payload = record.payload as Record<string, unknown>;
+        return typeof payload.memoryKind === 'string' ? payload.memoryKind : 'chat_turn';
+      }))),
     });
   }
 

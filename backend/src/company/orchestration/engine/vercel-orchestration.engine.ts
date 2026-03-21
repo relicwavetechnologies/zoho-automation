@@ -23,13 +23,14 @@ import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExe
 import { legacyOrchestrationEngine } from './legacy-orchestration.engine';
 import { buildVisionContent, type AttachedFileRef } from '../../../modules/desktop-chat/file-vision.builder';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
+import { runDesktopChildRouter } from '../../../modules/desktop-chat/vercel-desktop.engine';
 import { LarkStatusCoordinator } from './lark-status.coordinator';
 import { aiTokenUsageService } from '../../ai-usage/ai-token-usage.service';
 import { estimateTokens } from '../../../utils/token-estimator';
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
 const LARK_BLOCKED_TOOL_IDS = new Set(['coding']);
-const LARK_VERCEL_MODE: VercelRuntimeRequestContext['mode'] = 'fast';
+const LARK_VERCEL_MODE: VercelRuntimeRequestContext['mode'] = 'high';
 const LARK_THREAD_CONTEXT_MESSAGE_LIMIT = 20;
 const LARK_STATUS_HEARTBEAT_MESSAGES = [
   'Still working on this.',
@@ -203,6 +204,7 @@ const hydrateConversationRefsFromMetadata = (conversationKey: string, metadata: 
 const buildSystemPrompt = (input: {
   conversationKey: string;
   runtime: VercelRuntimeRequestContext;
+  routerAcknowledgement?: string;
 }) => {
   const parts = [
     'You are the Vercel AI SDK runtime for a tool-using assistant.',
@@ -235,6 +237,12 @@ const buildSystemPrompt = (input: {
   const refsContext = buildConversationRefsContext(input.conversationKey);
   if (refsContext) {
     parts.push(refsContext);
+  }
+  if (input.routerAcknowledgement?.trim()) {
+    parts.push(
+      `The user has already seen this short intake acknowledgement: "${input.routerAcknowledgement.trim()}"`,
+      'Do not repeat that acknowledgement verbatim. Continue from it and focus on execution.',
+    );
   }
   parts.push(`Conversation key: ${input.conversationKey}.`);
   return parts.join('\n');
@@ -282,7 +290,7 @@ const buildLarkStatusText = (input: {
     return 'Getting things ready.';
   }
   if (input.phase === 'planning') {
-    return 'Working on it.';
+    return withDetail('Working on it');
   }
   if (input.phase === 'tool_running') {
     return withDetail('Fetching results');
@@ -511,19 +519,6 @@ const executeLarkVercelTask = async (
 
   const runtime = await resolveRuntimeContext(task, message, persistentThread?.id);
   statusHistory.push('Context ready.');
-  await updateStatus('planning', 'Choosing the right tools and approach for this request.');
-
-  const tools = createVercelDesktopTools(runtime, {
-    onToolStart: async (_toolName, _activityId, title) => {
-      statusHistory.push(`Started ${title}`);
-      await updateStatus('tool_running', `Using ${title}.`);
-    },
-    onToolFinish: async (toolName, _activityId, title, output) => {
-      const summary = summarizeText(output.summary, 180) ?? output.summary;
-      statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${title}: ${summary}`);
-      await updateStatus('tool_done', `${title}: ${summary}`);
-    },
-  });
   const contextMessages = persistentThread
     ? (await desktopThreadsService.getCachedOwnedThreadContext(
       persistentThread.id,
@@ -548,6 +543,106 @@ const executeLarkVercelTask = async (
       role: entry.role,
       content: entry.content,
     })) as Array<ModelMessage & { id?: string }>;
+
+  const childRoute = await runDesktopChildRouter({
+    executionId: task.taskId,
+    threadId: persistentThread?.id ?? message.chatId,
+    message: message.text,
+    companyId: runtime.companyId,
+    userId: linkedUserId ?? undefined,
+    history: contextMessages.slice(-6).map((entry) => ({
+      role: entry.role === 'assistant' ? 'assistant' : 'user',
+      content: typeof entry.content === 'string' ? entry.content : flattenModelContent(entry.content),
+    })),
+    requesterEmail: message.trace?.requesterEmail,
+  });
+
+  if (childRoute.route === 'fast_reply' && childRoute.reply?.trim()) {
+    const reply = childRoute.reply.trim();
+    statusHistory.push('Handled directly by child router.');
+    await statusCoordinator.replace(reply, []);
+    const statusMessageId = statusCoordinator.getStatusMessageId();
+    conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, reply);
+    if (persistentThread) {
+      await desktopThreadsService.addOwnedThreadMessage(
+        persistentThread.id,
+        linkedUserId,
+        'assistant',
+        reply,
+        {
+          channel: 'lark',
+          lark: {
+            chatId: message.chatId,
+            outboundMessageId: statusMessageId ?? null,
+            statusMessageId: statusMessageId ?? null,
+            correlationId: task.taskId,
+          },
+        },
+        {
+          requiredChannel: 'lark',
+          contextLimit: LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
+        },
+      );
+    }
+    if (linkedUserId) {
+      const childRouterPrompt = [
+        'Lark child router handled this turn directly.',
+        `Latest user message: ${message.text}`,
+      ].join('\n');
+      const estimatedInputTokens = estimateTokens(childRouterPrompt);
+      const estimatedOutputTokens = estimateTokens(reply);
+      await aiTokenUsageService.record({
+        userId: linkedUserId,
+        companyId: runtime.companyId,
+        agentTarget: 'lark.child_router',
+        modelId: 'child_router_fast',
+        provider: 'google',
+        channel: 'lark',
+        threadId: persistentThread?.id,
+        estimatedInputTokens,
+        estimatedOutputTokens,
+        actualInputTokens: estimatedInputTokens,
+        actualOutputTokens: estimatedOutputTokens,
+        wasCompacted: false,
+        mode: 'fast',
+      });
+    }
+
+    return {
+      task,
+      status: 'done',
+      currentStep: 'child_router.fast_reply',
+      latestSynthesis: reply,
+      agentResults: [],
+      runtimeMeta: {
+        engine: 'vercel',
+        threadId: persistentThread?.id,
+        node: 'child_router.fast_reply',
+        stepHistory: task.plan,
+      },
+    };
+  }
+
+  const routerAcknowledgement = childRoute.route === 'handoff'
+    ? childRoute.acknowledgement?.trim() || 'I’ll take this in steps and start working through it now.'
+    : undefined;
+  statusHistory.push('Context ready.');
+  await updateStatus(
+    'planning',
+    routerAcknowledgement ?? 'Choosing the right tools and approach for this request.',
+  );
+
+  const tools = createVercelDesktopTools(runtime, {
+    onToolStart: async (_toolName, _activityId, title) => {
+      statusHistory.push(`Started ${title}`);
+      await updateStatus('tool_running', `Using ${title}.`);
+    },
+    onToolFinish: async (toolName, _activityId, title, output) => {
+      const summary = summarizeText(output.summary, 180) ?? output.summary;
+      statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${title}: ${summary}`);
+      await updateStatus('tool_done', `${title}: ${summary}`);
+    },
+  });
   const currentAttachments = (message.attachedFiles ?? []) as AttachedFileRef[];
   let inputMessages = contextMessages.map(({ role, content }) => ({ role, content })) as ModelMessage[];
   if (currentAttachments.length > 0) {
@@ -588,7 +683,11 @@ const executeLarkVercelTask = async (
     ];
   }
   const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
-  const systemPrompt = buildSystemPrompt({ conversationKey, runtime });
+  const systemPrompt = buildSystemPrompt({
+    conversationKey,
+    runtime,
+    routerAcknowledgement,
+  });
 
   try {
     const result = await generateText({

@@ -213,7 +213,7 @@ const desktopChildRouteSchema = z.object({
   reason: z.string().min(1).max(200).optional(),
 });
 
-type DesktopChildRoute = z.infer<typeof desktopChildRouteSchema>;
+export type DesktopChildRoute = z.infer<typeof desktopChildRouteSchema>;
 
 const buildConversationKey = (threadId: string): string => `desktop:${threadId}`;
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
@@ -222,6 +222,7 @@ const DESKTOP_CONTEXT_TARGET_RATIO = 0.6;
 const DESKTOP_LIGHT_CONTEXT_TARGET_RATIO = 0.12;
 const DESKTOP_NORMAL_CONTEXT_TARGET_RATIO = 0.28;
 const DESKTOP_MAX_LOOP_STEPS = 200;
+const WORKFLOW_AUTOCONTINUE_LIMIT = 2;
 
 const summarizeText = (value: string | null | undefined, limit = 280): string | null => {
   const trimmed = value?.trim();
@@ -229,8 +230,54 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
 };
 
+const isWorkflowExecutionRequest = (metadata?: Record<string, unknown>): boolean =>
+  typeof metadata?.workflowId === 'string' && metadata.workflowId.trim().length > 0;
+
+const isWorkflowProgressOnlyResponse = (value: string | null | undefined): boolean => {
+  const text = value?.trim();
+  if (!text) return false;
+  return /\b(execution plan:|i am starting the execution|i am now proceeding|i will begin execution now|i will report back|i am proceeding to execute|i have successfully loaded and parsed)\b/i.test(text);
+};
+
+const buildWorkflowAutoContinuationMessage = (input: {
+  assistantText: string;
+  toolOutputs: VercelToolEnvelope[];
+}): string => {
+  const completedSteps = input.toolOutputs
+    .slice(-6)
+    .map((output, index) => `${index + 1}. ${output.summary}`)
+    .join('\n');
+  return [
+    'Continue the workflow execution now.',
+    'Do not restate the execution plan, task list, or promise future work.',
+    'Perform the next actual workflow steps immediately using tools.',
+    'Only stop if one of these is true:',
+    '1. The workflow is fully complete and the final deliverable is ready.',
+    '2. A real approval gate blocks the next step.',
+    '3. A true hard block prevents progress.',
+    completedSteps ? 'Completed steps so far:' : '',
+    completedSteps,
+    'Your next response must reflect concrete progress, a true block, or final completion.',
+    `Latest response to avoid repeating:\n${input.assistantText.trim().slice(0, 1200)}`,
+  ].filter(Boolean).join('\n\n');
+};
+
 const isReferentialFollowup = (value: string | null | undefined): boolean =>
   /\b(next task|pick the next|move on|move to next|continue|next one|same file|same one|next estimate|what next)\b/i.test(value ?? '');
+
+const isPersonalMemoryQuestion = (value: string | null | undefined): boolean =>
+  /\b(do you know|do you remember|remember|recall|what(?:'s| is) my|my (?:fav|favorite|favourite|preferred)|favorite|favourite|preferred|preference|about me|my name|my email)\b/i.test(value ?? '');
+
+const expandConversationMemoryQuery = (value: string): string => {
+  const normalized = value
+    .replace(/\bfav\b/gi, 'favorite')
+    .replace(/\blang\b/gi, 'language')
+    .replace(/\bpref\b/gi, 'preference');
+  if (normalized === value) {
+    return value;
+  }
+  return `${value}\n${normalized}`;
+};
 
 const isLightweightChatTurn = (value: string | null | undefined): boolean =>
   /^(hi|hello|hey|thanks|thank you|ok|okay|cool|great|nice|yes|no)[.! ]*$/i.test((value ?? '').trim());
@@ -348,10 +395,13 @@ const recordTokenUsage = async (input: {
   });
 };
 
-const buildChildRouterPrompt = (input: {
+export const buildChildRouterPrompt = (input: {
   message: string;
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
   workspace?: { name: string; path: string };
+  requesterName?: string;
+  requesterEmail?: string;
+  retrievedMemorySnippets?: string[];
 }): string => {
   const historyBlock = input.history.length > 0
     ? input.history
@@ -363,6 +413,13 @@ const buildChildRouterPrompt = (input: {
   const workspaceBlock = input.workspace
     ? `Workspace is open at ${input.workspace.path} (${input.workspace.name}).`
     : 'No workspace context is active.';
+  const requesterContext = buildRequesterIdentityContext({
+    requesterName: input.requesterName,
+    requesterEmail: input.requesterEmail,
+  });
+  const retrievedMemoryBlock = input.retrievedMemorySnippets && input.retrievedMemorySnippets.length > 0
+    ? input.retrievedMemorySnippets.map((snippet, index) => `${index + 1}. ${snippet}`).join('\n')
+    : 'No retrieved conversation memory.';
 
   return [
     'Classify this desktop chat turn for a two-tier assistant runtime.',
@@ -373,10 +430,15 @@ const buildChildRouterPrompt = (input: {
     '- handoff: multi-step or heavier work likely to require more than 2-3 tool calls, iteration, or planning. Provide a short acknowledgement the user should see immediately.',
     'Rules:',
     '- Do not use tools.',
+    '- If retrieved conversation memory clearly answers a personal-memory question, prefer fast_reply and answer from that memory.',
     '- For fast_reply, fill reply and keep it short.',
     '- For handoff, fill acknowledgement and keep it short, concrete, and action-oriented.',
     '- Do not overuse handoff for tiny requests.',
     workspaceBlock,
+    `Current local date/time: ${getLocalDateTimeContext()} (${LOCAL_TIME_ZONE}).`,
+    requesterContext ?? '',
+    'Retrieved conversation memory:',
+    retrievedMemoryBlock,
     'Recent conversation:',
     historyBlock,
     'Latest user message:',
@@ -384,12 +446,16 @@ const buildChildRouterPrompt = (input: {
   ].join('\n\n');
 };
 
-const runDesktopChildRouter = async (input: {
+export const runDesktopChildRouter = async (input: {
   executionId: string;
   threadId: string;
   message: string;
   workspace?: { name: string; path: string };
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  requesterName?: string;
+  requesterEmail?: string;
+  companyId?: string;
+  userId?: string;
 }): Promise<DesktopChildRoute> => {
   logger.info('vercel.child_router.start', {
     executionId: input.executionId,
@@ -400,13 +466,23 @@ const runDesktopChildRouter = async (input: {
   });
 
   try {
+    const retrievedMemorySnippets = await retrieveConversationMemoryForChildRouter({
+      executionId: input.executionId,
+      threadId: input.threadId,
+      message: input.message,
+      companyId: input.companyId,
+      userId: input.userId,
+    });
     const model = await resolveVercelLanguageModel('fast');
     const result = await generateObject({
       model: model.model,
       schema: desktopChildRouteSchema,
       schemaName: 'desktop_child_route',
       schemaDescription: 'Routing decision for a fast desktop child assistant that either replies quickly or hands off to the main executor.',
-      prompt: buildChildRouterPrompt(input),
+      prompt: buildChildRouterPrompt({
+        ...input,
+        retrievedMemorySnippets,
+      }),
       temperature: 0,
       providerOptions: {
         google: {
@@ -422,7 +498,23 @@ const runDesktopChildRouter = async (input: {
       threadId: input.threadId,
       route: result.object.route,
       reason: result.object.reason ?? null,
+      retrievedMemorySnippetCount: retrievedMemorySnippets.length,
     });
+    if (result.object.route === 'fast_reply' && isPersonalMemoryQuestion(input.message)) {
+      if (retrievedMemorySnippets.length === 0) {
+        logger.info('vercel.child_router.override', {
+          executionId: input.executionId,
+          threadId: input.threadId,
+          fromRoute: 'fast_reply',
+          toRoute: 'direct_execute',
+          reason: 'personal_memory_question_requires_context_retrieval',
+        });
+        return {
+          route: 'direct_execute',
+          reason: 'personal memory question should use thread context and conversation retrieval',
+        };
+      }
+    }
     return result.object;
   } catch (error) {
     const fallbackRoute: DesktopChildRoute = shouldPlanDesktopTask(input.message)
@@ -442,6 +534,63 @@ const runDesktopChildRouter = async (input: {
       fallbackRoute: fallbackRoute.route,
     });
     return fallbackRoute;
+  }
+};
+
+const retrieveConversationMemoryForChildRouter = async (input: {
+  executionId: string;
+  threadId: string;
+  message: string;
+  companyId?: string;
+  userId?: string;
+}): Promise<string[]> => {
+  const isMemoryQuestion = isPersonalMemoryQuestion(input.message);
+  const referentialFollowup = isReferentialFollowup(input.message);
+  if ((!isMemoryQuestion && !referentialFollowup) || !input.companyId || !input.userId || !input.message.trim()) {
+    return [];
+  }
+
+  const limit = isMemoryQuestion ? 3 : 2;
+  logger.info('vercel.child_router.retrieval.start', {
+    executionId: input.executionId,
+    threadId: input.threadId,
+    isMemoryQuestion,
+    isReferentialFollowup: referentialFollowup,
+    queryLength: input.message.trim().length,
+    limit,
+  });
+
+  try {
+    const { matches, scope } = await queryConversationMemoryWithFallback({
+      companyId: input.companyId,
+      userId: input.userId,
+      threadId: input.threadId,
+      queryText: input.message,
+      limit,
+      isMemoryQuestion,
+      logPrefix: 'vercel.child_router.retrieval',
+    });
+    const snippets = dedupeConversationSnippets({
+      snippets: summarizeConversationMatches(matches, limit),
+      threadSummary: parseDesktopThreadSummary(null),
+      taskState: createEmptyTaskState(),
+    });
+    logger.info('vercel.child_router.retrieval.completed', {
+      executionId: input.executionId,
+      threadId: input.threadId,
+      scope,
+      matchCount: matches.length,
+      snippetCount: snippets.length,
+      topScores: matches.slice(0, 3).map((match) => Number(match.score.toFixed(4))),
+    });
+    return snippets;
+  } catch (error) {
+    logger.warn('vercel.child_router.retrieval.failed', {
+      executionId: input.executionId,
+      threadId: input.threadId,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return [];
   }
 };
 
@@ -588,6 +737,41 @@ const getLocalDateContext = (): string => {
     day: '2-digit',
   });
   return formatter.format(new Date());
+};
+
+const getLocalDateTimeContext = (): string => {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: LOCAL_TIME_ZONE,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+    timeZoneName: 'short',
+  });
+  return formatter.format(new Date());
+};
+
+const buildRequesterIdentityContext = (input: {
+  requesterName?: string;
+  requesterEmail?: string;
+}): string | null => {
+  const lines: string[] = [];
+  if (input.requesterName?.trim()) {
+    lines.push(`- name: ${input.requesterName.trim()}`);
+  }
+  if (input.requesterEmail?.trim()) {
+    lines.push(`- email: ${input.requesterEmail.trim()}`);
+  }
+  if (lines.length === 0) return null;
+  return [
+    'Requester identity context:',
+    ...lines,
+    '- Use this only when it helps with personalization or disambiguation.',
+  ].join('\n');
 };
 
 const shouldRecommendSkillFirst = (message?: string): boolean => {
@@ -1211,6 +1395,56 @@ const maybeStoreConversationTurn = (input: {
   });
 };
 
+const queryConversationMemoryWithFallback = async (input: {
+  companyId: string;
+  userId: string;
+  threadId: string;
+  queryText: string;
+  limit: number;
+  isMemoryQuestion: boolean;
+  logPrefix: 'desktop.context.conversation_retrieval' | 'vercel.child_router.retrieval';
+}): Promise<{
+  matches: PersonalMemoryMatch[];
+  scope: 'conversation' | 'global_personal';
+}> => {
+  const scopedMatches = await personalVectorMemoryService.query({
+    companyId: input.companyId,
+    requesterUserId: input.userId,
+    conversationKey: buildConversationKey(input.threadId),
+    text: input.isMemoryQuestion ? expandConversationMemoryQuery(input.queryText) : input.queryText,
+    limit: input.limit,
+  });
+  if (scopedMatches.length > 0 || !input.isMemoryQuestion) {
+    return {
+      matches: scopedMatches,
+      scope: 'conversation',
+    };
+  }
+
+  logger.info(`${input.logPrefix}.global_fallback.start`, {
+    threadId: input.threadId,
+    queryLength: input.queryText.trim().length,
+    limit: input.limit,
+  });
+
+  const globalMatches = await personalVectorMemoryService.query({
+    companyId: input.companyId,
+    requesterUserId: input.userId,
+    text: expandConversationMemoryQuery(input.queryText),
+    limit: input.limit,
+  });
+
+  logger.info(`${input.logPrefix}.global_fallback.completed`, {
+    threadId: input.threadId,
+    matchCount: globalMatches.length,
+  });
+
+  return {
+    matches: globalMatches,
+    scope: 'global_personal',
+  };
+};
+
 const retrieveConversationMemory = async (input: {
   companyId: string;
   userId: string;
@@ -1220,30 +1454,50 @@ const retrieveConversationMemory = async (input: {
   threadSummary: DesktopThreadSummary;
   taskState: DesktopTaskState;
 }): Promise<string[]> => {
+  const isMemoryQuestion = isPersonalMemoryQuestion(input.queryText);
   if (
-    input.contextClass === 'lightweight_chat'
+    (input.contextClass === 'lightweight_chat' && !isMemoryQuestion)
     || !input.queryText.trim()
     || (!isReferentialFollowup(input.queryText)
+      && !isMemoryQuestion
       && input.contextClass !== 'long_running_task'
       && input.contextClass !== 'document_grounded_followup')
   ) {
     return [];
   }
 
-  const limit = input.contextClass === 'document_grounded_followup' ? 6 : 4;
+  const limit = isMemoryQuestion ? 6 : input.contextClass === 'document_grounded_followup' ? 6 : 4;
   try {
-    const matches = await personalVectorMemoryService.query({
-      companyId: input.companyId,
-      requesterUserId: input.userId,
-      conversationKey: buildConversationKey(input.threadId),
-      text: input.queryText,
+    logger.info('desktop.context.conversation_retrieval.start', {
+      threadId: input.threadId,
+      contextClass: input.contextClass,
+      isMemoryQuestion,
+      queryLength: input.queryText.trim().length,
       limit,
     });
-    return dedupeConversationSnippets({
+    const { matches, scope } = await queryConversationMemoryWithFallback({
+      companyId: input.companyId,
+      userId: input.userId,
+      threadId: input.threadId,
+      queryText: input.queryText,
+      limit,
+      isMemoryQuestion,
+      logPrefix: 'desktop.context.conversation_retrieval',
+    });
+    const snippets = dedupeConversationSnippets({
       snippets: summarizeConversationMatches(matches, limit),
       threadSummary: input.threadSummary,
       taskState: input.taskState,
     });
+    logger.info('desktop.context.conversation_retrieval.completed', {
+      threadId: input.threadId,
+      contextClass: input.contextClass,
+      isMemoryQuestion,
+      scope,
+      matchCount: matches.length,
+      snippetCount: snippets.length,
+    });
+    return snippets;
   } catch (error) {
     logger.warn('desktop.context.conversation_retrieval.failed', {
       threadId: input.threadId,
@@ -1458,6 +1712,8 @@ const buildDesktopContextAssembly = async (input: {
   const systemPrompt = buildSystemPrompt({
     threadId: input.threadId,
     workspace: input.workspace,
+    requesterName: input.session.name,
+    requesterEmail: input.session.email,
     dateScope: input.dateScope,
     latestActionResult: input.latestActionResult,
     latestUserMessage: input.latestUserMessage,
@@ -1537,6 +1793,8 @@ const buildDesktopContextAssembly = async (input: {
 const buildSystemPrompt = (input: {
   threadId: string;
   workspace?: { name: string; path: string };
+  requesterName?: string;
+  requesterEmail?: string;
   dateScope?: string;
   latestActionResult?: { kind: string; ok: boolean; summary: string };
   latestUserMessage?: string;
@@ -1564,6 +1822,7 @@ const buildSystemPrompt = (input: {
     'Use internal indexed document search when you need retrieval or matching against company documents. Use OCR/direct uploaded-file reading when you need the exact uploaded file contents. Both of these internal document paths come before workspace, Drive, or repo inspection.',
     'Do not inspect the workspace, local filesystem, Google Drive, or remote repositories to find an uploaded/company document unless the internal document tools failed or the user explicitly asked for those other sources.',
     'For specialized or complex workflows, first search relevant skills with the skillSearch tool, read the chosen skill, and then proceed with the task.',
+    'If the user asks about prior conversation facts, personal preferences, or things they told you before, first use thread context and retrieved conversation memory. Do not call business tools like Zoho, Lark Base, Google Drive, or coding just to answer a personal-memory question unless the user explicitly asks for those systems.',
     'When a local action result is available, use that result as the source of truth for the next step instead of repeating the same command or rereading the same file without a concrete reason.',
     'Do not repeat a successful local command, file read, or file write unless you explicitly need a different verification step or the user asked to retry.',
     'For coding: planCommand and runScriptPlan require an exact command. writeFilePlan requires the full target path and full file content in contentPlan.',
@@ -1595,6 +1854,14 @@ const buildSystemPrompt = (input: {
     parts.push(`Context assembly class: ${input.contextClass}.`);
   }
   parts.push(`Local date context: ${getLocalDateContext()} (${LOCAL_TIME_ZONE}).`);
+  parts.push(`Current local date/time: ${getLocalDateTimeContext()} (${LOCAL_TIME_ZONE}).`);
+  const requesterContext = buildRequesterIdentityContext({
+    requesterName: input.requesterName,
+    requesterEmail: input.requesterEmail,
+  });
+  if (requesterContext) {
+    parts.push(requesterContext);
+  }
   if (input.dateScope) {
     parts.push(`Inferred date scope: ${input.dateScope}.`);
   }
@@ -2043,14 +2310,24 @@ export const executeAutomatedDesktopTurn = async (input: {
       threadSummary: threadMemory.summary,
       resolvedUserReferences: resolvedUserContext.resolvedReferences,
     });
-    const result = await runVercelLoop({
-      runtime,
-      system: contextAssembly.systemPrompt,
-      messages: workflowMessages,
-      onToolStart: async (toolName, activityId, title) => {
-        logger.info('desktop.workflow.execution.tool.start', {
-          executionId,
-          threadId: input.threadId,
+    let activeWorkflowMessages = workflowMessages;
+    let continuationCount = 0;
+    let result: Awaited<ReturnType<typeof runVercelLoop>>;
+    let toolOutputs: VercelToolEnvelope[] = [];
+    let failedToolOutputs: VercelToolEnvelope[] = [];
+    let failedToolSummaries: string[] = [];
+    let pendingApproval: PendingApprovalAction | null = null;
+    let assistantText = '';
+
+    while (true) {
+      result = await runVercelLoop({
+        runtime,
+        system: contextAssembly.systemPrompt,
+        messages: activeWorkflowMessages,
+        onToolStart: async (toolName, activityId, title) => {
+          logger.info('desktop.workflow.execution.tool.start', {
+            executionId,
+            threadId: input.threadId,
           toolName,
           activityId,
           title,
@@ -2069,10 +2346,10 @@ export const executeAutomatedDesktopTurn = async (input: {
           status: 'running',
         });
       },
-      onToolFinish: async (toolName, activityId, title, output) => {
-        logger.info('desktop.workflow.execution.tool.finish', {
-          executionId,
-          threadId: input.threadId,
+        onToolFinish: async (toolName, activityId, title, output) => {
+          logger.info('desktop.workflow.execution.tool.finish', {
+            executionId,
+            threadId: input.threadId,
           toolName,
           activityId,
           title,
@@ -2106,25 +2383,57 @@ export const executeAutomatedDesktopTurn = async (input: {
             pendingApprovalAction: output.pendingApprovalAction ?? null,
           },
         });
-      },
-    });
-    logger.info('desktop.workflow.execution.model.completed', {
-      executionId,
-      threadId: input.threadId,
-      stepCount: Array.isArray(result.steps) ? result.steps.length : null,
-      textPreview: summarizeText(result.text, 1200),
-    });
+        },
+      });
+      logger.info('desktop.workflow.execution.model.completed', {
+        executionId,
+        threadId: input.threadId,
+        continuationCount,
+        stepCount: Array.isArray(result.steps) ? result.steps.length : null,
+        textPreview: summarizeText(result.text, 1200),
+      });
 
-    const toolOutputs = (result.steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap((step) =>
-      (step.toolResults ?? [])
-        .map((toolResult) => toolResult.output as VercelToolEnvelope | undefined)
-        .filter((output): output is VercelToolEnvelope => Boolean(output)));
-    const failedToolOutputs = toolOutputs.filter((output) => output.success === false);
-    const failedToolSummaries = failedToolOutputs.map((output) => output.summary);
-    const pendingApproval = findPendingApproval(result.steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
-    const assistantText = pendingApproval
-      ? `Workflow execution blocked: ${pendingApproval.kind === 'tool_action' ? pendingApproval.summary : 'approval is required before the next step can continue.'}`
-      : result.text.trim();
+      toolOutputs = (result.steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap((step) =>
+        (step.toolResults ?? [])
+          .map((toolResult) => toolResult.output as VercelToolEnvelope | undefined)
+          .filter((output): output is VercelToolEnvelope => Boolean(output)));
+      failedToolOutputs = toolOutputs.filter((output) => output.success === false);
+      failedToolSummaries = failedToolOutputs.map((output) => output.summary);
+      pendingApproval = findPendingApproval(result.steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
+      assistantText = pendingApproval
+        ? `Workflow execution blocked: ${pendingApproval.kind === 'tool_action' ? pendingApproval.summary : 'approval is required before the next step can continue.'}`
+        : result.text.trim();
+
+      const shouldAutoContinue = isWorkflowExecutionRequest(input.metadata)
+        && !pendingApproval
+        && failedToolOutputs.length === 0
+        && continuationCount < WORKFLOW_AUTOCONTINUE_LIMIT
+        && isWorkflowProgressOnlyResponse(assistantText);
+      if (!shouldAutoContinue) {
+        break;
+      }
+
+      continuationCount += 1;
+      logger.info('desktop.workflow.execution.autocontinue', {
+        executionId,
+        threadId: input.threadId,
+        continuationCount,
+        toolCount: toolOutputs.length,
+        assistantTextPreview: summarizeText(assistantText, 600),
+      });
+      activeWorkflowMessages = [
+        ...activeWorkflowMessages,
+        { role: 'assistant', content: assistantText },
+        {
+          role: 'user',
+          content: buildWorkflowAutoContinuationMessage({
+            assistantText,
+            toolOutputs,
+          }),
+        },
+      ];
+    }
+
     persistedBlocks = appendTextBlock(persistedBlocks, assistantText);
 
     const citations = (result.steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap((step) =>
@@ -2334,6 +2643,10 @@ export class VercelDesktopEngine {
         threadId,
         message: effectivePromptMessage,
         workspace,
+        companyId: session.companyId,
+        userId: session.userId,
+        requesterName: session.name,
+        requesterEmail: session.email,
         history: preRouterHistory.messages.slice(-6).map((entry) => ({
           role: entry.role === 'assistant' ? 'assistant' : 'user',
           content: entry.content,
@@ -2373,6 +2686,8 @@ export class VercelDesktopEngine {
         const childRouterPrompt = buildChildRouterPrompt({
           message: effectivePromptMessage,
           workspace,
+          requesterName: session.name,
+          requesterEmail: session.email,
           history: preRouterHistory.messages.slice(-6).map((entry) => ({
             role: entry.role === 'assistant' ? 'assistant' : 'user',
             content: entry.content,

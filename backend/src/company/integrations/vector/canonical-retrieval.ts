@@ -146,6 +146,43 @@ const pickFirst = (payload: Record<string, unknown>, keys: string[]): string | n
   return null;
 };
 
+const extractProfileMemoryLines = (value: string): string[] => {
+  const lines: string[] = [];
+  const normalized = normalizeWhitespace(value);
+  if (!normalized) return lines;
+
+  const favoriteMatch = normalized.match(/\bmy (?:fav|favou?rite)\s+([a-z][a-z0-9 _-]{1,40}?)\s+is\s+(.+?)(?:[.!?]|$)/i);
+  if (favoriteMatch) {
+    const topic = favoriteMatch[1]?.trim();
+    const answer = favoriteMatch[2]?.trim();
+    if (topic && answer) {
+      lines.push(`User favorite ${topic}: ${answer}`);
+    }
+  }
+
+  const nameMatch = normalized.match(/\bmy name is\s+(.+?)(?:[.!?]|$)/i);
+  if (nameMatch?.[1]?.trim()) {
+    lines.push(`User name: ${nameMatch[1].trim()}`);
+  }
+
+  const preferMatch = normalized.match(/\bi prefer\s+(.+?)(?:[.!?]|$)/i);
+  if (preferMatch?.[1]?.trim()) {
+    lines.push(`User prefers: ${preferMatch[1].trim()}`);
+  }
+
+  const likeMatch = normalized.match(/\bi (?:really )?(?:like|love)\s+(.+?)(?:[.!?]|$)/i);
+  if (likeMatch?.[1]?.trim()) {
+    lines.push(`User likes: ${likeMatch[1].trim()}`);
+  }
+
+  const workMatch = normalized.match(/\bi work (?:at|for)\s+(.+?)(?:[.!?]|$)/i);
+  if (workMatch?.[1]?.trim()) {
+    lines.push(`User workplace: ${workMatch[1].trim()}`);
+  }
+
+  return Array.from(new Set(lines.map((line) => line.trim()).filter((line) => line.length > 0)));
+};
+
 const buildZohoTitle = (
   sourceType: VectorUpsertDTO['sourceType'],
   payload: Record<string, unknown>,
@@ -381,7 +418,7 @@ export const buildCanonicalChatChunks = (input: {
   const title = `${input.role} chat turn`;
   const documentKey = `${input.companyId}:chat_turn:${input.sourceId}`;
   const chunks = chunkContent(input.text, 'chat');
-  return chunks.map((content, chunkIndex) => ({
+  const baseChunks = chunks.map((content, chunkIndex) => ({
     id: stableHash(`${input.companyId}|chat_turn|${input.sourceId}|${chunkIndex}|${content}`),
     sourceType: 'chat_turn',
     sourceId: input.sourceId,
@@ -412,4 +449,44 @@ export const buildCanonicalChatChunks = (input: {
       sourceUpdatedAt: new Date().toISOString(),
     },
   }));
+
+  if (input.role !== 'user') {
+    return baseChunks;
+  }
+
+  const profileLines = extractProfileMemoryLines(input.text);
+  const profileChunks = profileLines.map((content, index) => ({
+    id: stableHash(`${input.companyId}|chat_turn|${input.sourceId}|profile|${index}|${content}`),
+    sourceType: 'chat_turn' as const,
+    sourceId: input.sourceId,
+    chunkIndex: baseChunks.length + index,
+    documentKey: `${documentKey}:profile`,
+    title: 'user profile memory',
+    chunkText: content,
+    chunkTokenCount: estimateTokenCount(content),
+    sourceUpdatedAt: new Date().toISOString(),
+    visibility: input.visibility ?? 'personal',
+    conversationKey: input.conversationKey,
+    ownerUserId: input.requesterUserId,
+    retrievalProfile: 'chat' as const,
+    embeddingSchemaVersion: ACTIVE_EMBEDDING_SCHEMA_VERSION,
+    payload: {
+      role: input.role,
+      documentKey: `${documentKey}:profile`,
+      chunkText: content,
+      text: content,
+      fullText: input.text,
+      channel: input.channel,
+      chatId: input.chatId,
+      conversationKey: input.conversationKey,
+      title: 'user profile memory',
+      citationTitle: 'user profile memory',
+      memoryKind: 'user_profile_fact',
+      embeddingSchemaVersion: ACTIVE_EMBEDDING_SCHEMA_VERSION,
+      retrievalProfile: 'chat',
+      sourceUpdatedAt: new Date().toISOString(),
+    },
+  }));
+
+  return [...baseChunks, ...profileChunks];
 };

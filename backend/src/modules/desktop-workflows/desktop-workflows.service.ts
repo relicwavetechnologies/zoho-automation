@@ -1506,6 +1506,8 @@ const buildExecutionPrompt = (input: {
   `- Run this workflow now for the scheduled slot ${formatScheduledSlot(input.scheduledFor, input.schedule.timezone)}.`,
   '- Produce the final deliverable directly in the assistant response.',
   '- Do not ask follow-up questions.',
+  '- Continue execution until one of these is true: the workflow is actually complete, an approval is required, a real hard block prevents progress, or a runtime guardrail stops the loop.',
+  '- Do not stop after only summarizing a plan, listing tasks, or saying you will proceed later.',
   ...(input.hasAttachedSourceArtifacts
     ? [
       '- This workflow has referenced uploaded/company source files. Use internal company document retrieval first.',
