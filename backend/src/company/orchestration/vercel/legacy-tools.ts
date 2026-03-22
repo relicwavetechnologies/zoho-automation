@@ -116,14 +116,6 @@ const loadWebSearchService = (): {
 const loadSearchIntegrationError = (): { new (...args: any[]): Error } =>
   loadModuleExport('../../integrations/search/web-search.service', 'SearchIntegrationError');
 
-const loadEmbeddingService = (): {
-  embed: (texts: string[]) => Promise<number[][]>;
-} => loadModuleExport('../../integrations/embedding', 'embeddingService');
-
-const loadVectorDocumentRepository = (): {
-  findByFileAsset: (input: { companyId: string; fileAssetId: string }) => Promise<Array<Record<string, unknown>>>;
-} => loadModuleExport('../../integrations/vector/vector-document.repository', 'vectorDocumentRepository');
-
 const loadFileUploadService = (): {
   listVisibleFiles: (input: {
     companyId: string;
@@ -141,12 +133,32 @@ const loadDocumentTextHelpers = (): {
   normalizeExtractedText: (rawText: string, maxWords?: number) => string;
 };
 
-const loadQdrantAdapter = (): {
-  search: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
-} => loadModuleExport('../../integrations/vector/qdrant.adapter', 'qdrantAdapter');
-
-const loadBuildCitationFromVectorResult = (): ((match: Record<string, unknown>, index?: number) => Record<string, unknown> | null) =>
-  loadModuleExport('../../integrations/vector/vector-citations', 'buildCitationFromVectorResult');
+const loadFileRetrievalService = (): {
+  search: (input: {
+    companyId: string;
+    query: string;
+    requesterAiRole?: string;
+    fileAssetId?: string;
+    limit?: number;
+    preferParentContext?: boolean;
+  }) => Promise<{
+    matches: Array<Record<string, unknown>>;
+    citations: Array<Record<string, unknown>>;
+    enhancements: string[];
+    queriesUsed: string[];
+    correctiveRetryUsed: boolean;
+  }>;
+  readChunkContext: (input: {
+    companyId: string;
+    fileAssetId: string;
+    chunkIndex?: number;
+  }) => Promise<{ text: string; source: 'parent_section' | 'chunk' | 'document' | 'missing' }>;
+  getIndexedFileText: (input: {
+    companyId: string;
+    fileAssetId: string;
+    maxChars?: number;
+  }) => Promise<string>;
+} => loadModuleExport('../../retrieval/file-retrieval.service', 'fileRetrievalService');
 
 const loadZohoReadAgent = (): { invoke: (input: Record<string, unknown>) => Promise<Record<string, unknown>> } =>
   new (loadModuleExport('../../agents/implementations/zoho-read.agent', 'ZohoReadAgent'))();
@@ -814,18 +826,11 @@ const resolveRuntimeFile = async (
 };
 
 const extractIndexedFileText = async (runtime: VercelRuntimeRequestContext, fileAssetId: string): Promise<string> => {
-  const docs = await loadVectorDocumentRepository().findByFileAsset({
+  return loadFileRetrievalService().getIndexedFileText({
     companyId: runtime.companyId,
     fileAssetId,
+    maxChars: 18_000,
   });
-  const chunks = docs
-    .map((entry) => asRecord(entry))
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
-    .map((entry) => asRecord(entry.payload))
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
-    .map((payload) => asString(payload._chunk) ?? asString(payload.text) ?? '')
-    .filter(Boolean);
-  return chunks.join('\n\n').trim();
 };
 
 const extractFileText = async (
@@ -1254,48 +1259,98 @@ export const createVercelDesktopTools = (
 
     docSearch: tool({
       description: 'Internal company document search only. Use this before workspace, Google Drive, or repo inspection when the user is asking about uploaded files, private docs, or indexed company documents.',
-      inputSchema: z.object({
-        operation: z.enum(['search', 'readChunkContext']),
-        query: z.string().min(1),
-        limit: z.number().int().min(1).max(10).optional(),
-      }),
+      inputSchema: z.discriminatedUnion('operation', [
+        z.object({
+          operation: z.literal('search'),
+          query: z.string().min(1),
+          fileAssetId: z.string().optional(),
+          limit: z.number().int().min(1).max(10).optional(),
+        }),
+        z.object({
+          operation: z.literal('readChunkContext'),
+          fileAssetId: z.string().min(1),
+          chunkIndex: z.number().int().min(0).optional(),
+          query: z.string().optional(),
+          limit: z.number().int().min(1).max(10).optional(),
+        }),
+      ]),
       execute: async (input) => withLifecycle(hooks, 'docSearch', 'Searching internal documents', async () => {
+        if (input.operation === 'readChunkContext') {
+          if (!input.fileAssetId?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'readChunkContext requires fileAssetId.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+
+          const context = await loadFileRetrievalService().readChunkContext({
+            companyId: runtime.companyId,
+            fileAssetId: input.fileAssetId.trim(),
+            chunkIndex: input.chunkIndex,
+          });
+
+          if (!context.text.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'No chunk context was found for that file reference.',
+              errorKind: 'not_found',
+              retryable: false,
+            });
+          }
+
+          return buildEnvelope({
+            success: true,
+            summary: `Loaded ${context.source.replace(/_/g, ' ')} context for file ${input.fileAssetId.trim()}.`,
+            keyData: {
+              fileAssetId: input.fileAssetId.trim(),
+              chunkIndex: input.chunkIndex,
+              source: context.source,
+            },
+            fullPayload: {
+              fileAssetId: input.fileAssetId.trim(),
+              chunkIndex: input.chunkIndex,
+              source: context.source,
+              text: context.text,
+            },
+            citations: [{
+              id: `file-${input.fileAssetId.trim()}-${input.chunkIndex ?? 0}`,
+              title: input.fileAssetId.trim(),
+              kind: 'file',
+              sourceType: 'file_document',
+              sourceId: input.fileAssetId.trim(),
+              fileAssetId: input.fileAssetId.trim(),
+              chunkIndex: input.chunkIndex,
+            }],
+          });
+        }
+
         const limit = Math.max(1, Math.min(10, input.limit ?? 5));
-        const [queryVector] = await loadEmbeddingService().embed([input.query]);
-        const vectorGroups = await loadQdrantAdapter().search({
+        const searchResult = await loadFileRetrievalService().search({
           companyId: runtime.companyId,
-          denseVector: queryVector,
+          query: input.query,
+          fileAssetId: input.fileAssetId?.trim(),
           limit,
-          retrievalProfile: 'file',
-          lexicalQueryText: input.query,
-          fusion: 'dbsf',
-          groupByField: 'documentKey',
-          groupSize: 3,
-          sourceTypes: ['file_document'],
-          includeShared: true,
-          includePersonal: false,
-          includePublic: false,
           requesterAiRole: runtime.requesterAiRole,
+          preferParentContext: true,
         });
-        const vectorMatches = vectorGroups.flatMap((group) => group.hits);
-        const matches = vectorMatches.map((entry) => asRecord(entry)).filter((entry): entry is Record<string, unknown> => Boolean(entry));
-        const citationBuilder = loadBuildCitationFromVectorResult();
-        const citations = matches
-          .map((match, index) => citationBuilder(match, index))
-          .filter((entry): entry is VercelCitation => entry !== null);
-        const normalizedMatches = matches.map((match, index) => {
-          const payload = asRecord(match.payload) ?? {};
+        const citations = searchResult.citations.filter((entry): entry is VercelCitation => Boolean(entry));
+        const normalizedMatches = searchResult.matches.map((match) => {
+          const payload = asRecord(match) ?? {};
           return {
-            id: `${asString(match.sourceType) ?? 'file_document'}:${asString(match.sourceId) ?? index + 1}`,
-            fileName: asString(payload.fileName) ?? asString(payload.title) ?? 'document',
-            text: asString(payload._chunk) ?? asString(payload.text) ?? '',
+            id: asString(payload.id) ?? 'file_document:unknown',
+            fileName: asString(payload.fileName) ?? 'document',
+            text: asString(payload.text) ?? '',
+            displayText: asString(payload.displayText) ?? asString(payload.text) ?? '',
             modality: asString(payload.modality) ?? 'text',
-            url: asString(payload.cloudinaryUrl) ?? asString(payload.sourceUrl),
-            score: typeof match.score === 'number' ? match.score : undefined,
-            sourceId: asString(match.sourceId),
-            chunkIndex: typeof match.chunkIndex === 'number' ? match.chunkIndex : undefined,
-            segmentStartMs: typeof payload.segmentStartMs === 'number' ? payload.segmentStartMs : undefined,
-            segmentEndMs: typeof payload.segmentEndMs === 'number' ? payload.segmentEndMs : undefined,
+            url: asString(payload.url),
+            score: typeof payload.score === 'number' ? payload.score : undefined,
+            sourceId: asString(payload.sourceId),
+            chunkIndex: typeof payload.chunkIndex === 'number' ? payload.chunkIndex : undefined,
+            documentClass: asString(payload.documentClass),
+            chunkingStrategy: asString(payload.chunkingStrategy),
+            sectionPath: Array.isArray(payload.sectionPath) ? payload.sectionPath : [],
           };
         });
         return buildEnvelope({
@@ -1305,9 +1360,14 @@ export const createVercelDesktopTools = (
             : 'No relevant internal document content matched the request.',
           keyData: {
             documentIds: uniqueDefinedStrings(citations.map((citation) => citation.sourceId)),
+            queriesUsed: searchResult.queriesUsed,
+            enhancements: searchResult.enhancements,
           },
           fullPayload: {
             matches: normalizedMatches,
+            queriesUsed: searchResult.queriesUsed,
+            enhancements: searchResult.enhancements,
+            correctiveRetryUsed: searchResult.correctiveRetryUsed,
           },
           citations,
         });

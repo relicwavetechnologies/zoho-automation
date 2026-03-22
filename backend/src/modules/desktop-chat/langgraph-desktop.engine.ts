@@ -6,6 +6,7 @@ import type { Request, Response } from 'express';
 import config from '../../config';
 import { HttpException } from '../../core/http-exception';
 import { executionService } from '../../company/observability';
+import { retrievalOrchestratorService } from '../../company/retrieval';
 import {
   desktopRuntimeAdapter,
   runtimeConversationRepository,
@@ -15,6 +16,7 @@ import {
   type RuntimeClassificationResult,
   type RuntimeDeliveryEnvelope,
   type RuntimeEvidenceItem,
+  type RuntimeGroundedEvidence,
   type RuntimeState,
 } from '../../company/orchestration/langgraph';
 import {
@@ -455,6 +457,8 @@ export class LanggraphDesktopEngine {
         freshnessNeed: routeContract.route.freshnessNeed,
         risk: routeContract.route.risk,
         domains: routeContract.route.domains,
+        knowledgeNeeds: routeContract.route.knowledgeNeeds,
+        preferredStrategy: routeContract.route.preferredStrategy,
         source: routeContract.source,
         fallbackReasonCode: routeContract.fallbackReasonCode,
       };
@@ -470,6 +474,8 @@ export class LanggraphDesktopEngine {
           : `Heuristic route for ${routeContract.route.intent}.`,
         source: routeContract.source === 'model' ? 'model' : 'heuristic_fallback',
         query: message,
+        knowledgeNeeds: routeContract.route.knowledgeNeeds,
+        preferredStrategy: routeContract.route.preferredStrategy,
         toolFamilies: [],
       };
       await persistNodeState(state, 'policy.gate');
@@ -610,9 +616,21 @@ export class LanggraphDesktopEngine {
         workspacePath: workspace?.path ?? null,
         mode,
       });
+      const retrievalPortfolio = retrievalOrchestratorService.planExecution({
+        messageText: message,
+        intent: state.classification.intent,
+        domains: state.classification.domains,
+        freshnessNeed: state.classification.freshnessNeed,
+        retrievalMode: state.retrieval.mode,
+        hasAttachments: mergedAttachments.size > 0,
+      });
+      state.retrieval.portfolioPlan = retrievalPortfolio.plan;
+      state.retrieval.systemDirectives = retrievalPortfolio.systemDirectives;
+      state.retrieval.toolFamilies = retrievalPortfolio.toolFamilies;
       const selectedFamilies = selectToolFamilies({
         classification: state.classification,
         retrieval: state.retrieval,
+        hasAttachments: mergedAttachments.size > 0,
       });
       logger.info('langgraph.desktop.path.direct', {
         executionId,
@@ -621,7 +639,6 @@ export class LanggraphDesktopEngine {
         retrievalMode: routeContract.route.retrievalMode,
         toolFamilies: selectedFamilies,
       });
-      state.retrieval.toolFamilies = selectedFamilies;
       state.plan = {
         kind: 'tool_loop',
         steps: ['research.execute', 'synthesis.compose', 'deliver.response'],
@@ -631,6 +648,7 @@ export class LanggraphDesktopEngine {
 
       const toolIndexByActivityId = new Map<string, number>();
       const evidence: RuntimeEvidenceItem[] = [];
+      const groundedEvidence: RuntimeGroundedEvidence[] = [];
       const executionSteps = state.execution.steps;
       const facade = new GraphToolFacade(runtime, {
         onToolStart: async (toolName, activityId, title, toolInput) => {
@@ -706,6 +724,11 @@ export class LanggraphDesktopEngine {
             summary: output.summary,
             fullPayload: output.fullPayload ?? output.keyData,
             citations: output.citations ?? [],
+          }));
+          groundedEvidence.push(...retrievalOrchestratorService.collectGroundedEvidence(toolName, {
+            summary: output.summary,
+            fullPayload: (output.fullPayload ?? output.keyData) as Record<string, unknown> | undefined,
+            citations: (output.citations ?? []) as Array<Record<string, unknown>>,
           }));
 
           sendDesktopSseEvent(res, 'activity_done', {
@@ -822,6 +845,7 @@ export class LanggraphDesktopEngine {
       });
 
       state.evidence = evidence;
+      state.groundedEvidence = groundedEvidence;
       await persistNodeState(state, 'research.execute');
 
       const researchSteps = researchResult.steps as Array<{ toolResults?: Array<{ output?: unknown }> }>;
@@ -957,6 +981,7 @@ export class LanggraphDesktopEngine {
           classification: state.classification,
           answerDraft: researchResult.text,
           evidence,
+          groundedEvidence,
         }),
         prompt: buildSynthesisInput({
           message,

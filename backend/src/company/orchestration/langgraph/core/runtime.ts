@@ -1,12 +1,15 @@
 import type { ModelMessage } from 'ai';
 
+import { retrievalOrchestratorService } from '../../../retrieval';
 import { buildVisionContent, type AttachedFileRef } from '../../../../modules/desktop-chat/file-vision.builder';
 import { getSupportedToolActionGroups, type ToolActionGroup } from '../../../tools/tool-action-groups';
 import type { GraphToolFamily } from '../graph-tool-facade';
+import { isGraphToolFamilyName } from '../graph-tool-facade';
 import type { RuntimeState } from '../runtime.state';
 import type {
   RuntimeClassificationResult,
   RuntimeEvidenceItem,
+  RuntimeGroundedEvidence,
   RuntimeRetrievalDecision,
 } from '../runtime.types';
 import type { PendingApprovalAction, VercelRuntimeRequestContext } from '../../vercel/types';
@@ -90,14 +93,26 @@ export const buildReadOnlyRuntimeContext = (input: {
 
 export const buildClassifierPrompt = (messageText: string) => [
   'Classify the request and respond with JSON only.',
-  'Keys: intent, complexity, freshnessNeed, risk, domains, retrievalMode.',
+  'Keys: intent, complexity, freshnessNeed, risk, domains, retrievalMode, knowledgeNeeds, preferredStrategy.',
   'Allowed complexity: simple, multi_step.',
   'Allowed freshnessNeed: none, maybe, required.',
   'Allowed risk: low, medium, high.',
   'Allowed retrievalMode: none, vector, web, both.',
+  'Allowed knowledgeNeeds: crm_entity, company_docs, workflow_skill, conversation_memory, hybrid_web, structured_finance, attachment_exact, relationship.',
+  'Allowed preferredStrategy: zoho_vector_plus_live, doc_chunk_search, doc_full_read, skill_db_search, chat_memory, internal_plus_web, structured_parser_plus_doc, attachment_first.',
   'Use domains from: zoho, books, docs, web, outreach, lark, repo, coding, google.',
   `Message: ${messageText}`,
 ].join('\n');
+
+const summarizeGroundedEvidence = (evidence: RuntimeGroundedEvidence[] | undefined): string =>
+  evidence && evidence.length > 0
+    ? evidence
+      .slice(0, 6)
+      .map((entry, index) =>
+        `${index + 1}. [${entry.sourceFamily}${entry.staleRisk ? `/${entry.staleRisk}` : ''}] ${entry.title ?? entry.sourceId}: ${entry.excerpt}`,
+      )
+      .join(' | ')
+    : 'none';
 
 export const buildResearchSystemPrompt = (input: {
   state: RuntimeState;
@@ -119,6 +134,16 @@ export const buildResearchSystemPrompt = (input: {
   `Intent: ${input.classification.intent}.`,
   `Freshness: ${input.classification.freshnessNeed}.`,
   `Retrieval mode: ${input.retrieval.mode}.`,
+  input.classification.knowledgeNeeds?.length
+    ? `Knowledge needs: ${input.classification.knowledgeNeeds.join(', ')}.`
+    : '',
+  input.classification.preferredStrategy
+    ? `Preferred retrieval strategy: ${input.classification.preferredStrategy}.`
+    : '',
+  input.retrieval.portfolioPlan?.steps.length
+    ? `Retrieval portfolio plan: ${input.retrieval.portfolioPlan.steps.map((step) => `${step.need}:${step.strategy}${step.required ? ':required' : ':optional'}`).join(' | ')}.`
+    : '',
+  ...(input.retrieval.systemDirectives ?? []),
   input.state.prompt.departmentPrompt ? `Department instructions:\n${input.state.prompt.departmentPrompt}` : '',
   input.state.prompt.skillsMarkdown ? `Skills context:\n${input.state.prompt.skillsMarkdown}` : '',
   input.additionalInstructions?.trim() ? input.additionalInstructions.trim() : '',
@@ -128,14 +153,18 @@ export const buildSynthesisJsonPrompt = (input: {
   classification: RuntimeClassificationResult;
   answerDraft: string;
   evidence: RuntimeEvidenceItem[];
+  groundedEvidence?: RuntimeGroundedEvidence[];
 }): string => [
   'Respond with JSON only.',
   'Keys: text, taskStatus.',
   'taskStatus must be one of: done, failed, cancelled.',
   'Ground the answer in the evidence and do not invent tool results.',
+  'If internal and web evidence are both present, explicitly separate them.',
+  'If CRM/live-read context is used for current facts, present it as the system-of-record and treat vector context as supporting evidence.',
   `Intent: ${input.classification.intent}`,
   `Draft answer: ${input.answerDraft}`,
   `Evidence summary: ${input.evidence.slice(0, 5).map((entry, index) => `${index + 1}. ${entry.summary}`).join(' | ') || 'none'}`,
+  `Grounded evidence summary: ${summarizeGroundedEvidence(input.groundedEvidence)}`,
 ].join('\n');
 
 export const buildSynthesisTextPrompt = (input: {
@@ -143,60 +172,38 @@ export const buildSynthesisTextPrompt = (input: {
   classification: RuntimeClassificationResult;
   answerDraft: string;
   evidence: RuntimeEvidenceItem[];
+  groundedEvidence?: RuntimeGroundedEvidence[];
 }): string => [
   input.state.prompt.baseSystemPrompt,
   input.state.prompt.channelInstructions,
   'Compose the final answer for the user.',
   'Ground the response only in the evidence and completed tool results.',
   'Do not claim any mutation, approval, or side effect that did not occur.',
+  'If internal and web evidence are both present, explicitly separate them in the answer.',
+  'If CRM/live-read context is used for freshness-sensitive facts, present it as current system-of-record context and treat vector context as supporting evidence.',
   'Return plain text only.',
   `Intent: ${input.classification.intent}.`,
   `Draft answer: ${input.answerDraft}`,
   `Evidence summary: ${input.evidence.slice(0, 5).map((entry, index) => `${index + 1}. ${entry.summary}`).join(' | ') || 'none'}`,
+  `Grounded evidence summary: ${summarizeGroundedEvidence(input.groundedEvidence)}`,
 ].join('\n\n');
 
 export const selectToolFamilies = (input: {
   classification: RuntimeClassificationResult;
   retrieval: RuntimeRetrievalDecision;
+  hasAttachments?: boolean;
 }): GraphToolFamily[] => {
-  const families = new Set<GraphToolFamily>();
-
-  if (input.retrieval.mode === 'web' || input.retrieval.mode === 'both') {
-    families.add('webSearch');
-    families.add('skillSearch');
-    if (input.classification.domains.includes('repo')) {
-      families.add('repo');
-    }
-  }
-
-  if (input.retrieval.mode === 'vector' || input.retrieval.mode === 'both') {
-    families.add('docSearch');
-    families.add('documentOcrRead');
-    if (input.classification.domains.includes('zoho')) {
-      families.add('zoho');
-    }
-    if (input.classification.domains.includes('books')) {
-      families.add('booksRead');
-    }
-    if (input.classification.domains.includes('outreach')) {
-      families.add('outreach');
-    }
-    if (input.classification.domains.includes('lark')) {
-      families.add('larkTask');
-      families.add('larkCalendar');
-      families.add('larkMeeting');
-      families.add('larkApproval');
-      families.add('larkDoc');
-      families.add('larkBase');
-    }
-    if (input.classification.domains.includes('google')) {
-      families.add('googleMail');
-      families.add('googleDrive');
-      families.add('googleCalendar');
-    }
-  }
-
-  return [...families];
+  return retrievalOrchestratorService
+    .planExecution({
+      messageText: input.retrieval.query ?? '',
+      intent: input.classification.intent,
+      domains: input.classification.domains,
+      freshnessNeed: input.classification.freshnessNeed,
+      retrievalMode: input.retrieval.mode,
+      hasAttachments: input.hasAttachments,
+    })
+    .toolFamilies
+    .filter(isGraphToolFamilyName);
 };
 
 export const buildInputMessages = async (input: {

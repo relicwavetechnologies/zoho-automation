@@ -31,6 +31,33 @@ export type GraphToolFamily =
   | 'larkDoc'
   | 'larkBase';
 
+export const GRAPH_TOOL_FAMILY_NAMES = [
+  'webSearch',
+  'docSearch',
+  'documentOcrRead',
+  'invoiceParser',
+  'statementParser',
+  'skillSearch',
+  'repo',
+  'coding',
+  'googleMail',
+  'googleDrive',
+  'googleCalendar',
+  'zoho',
+  'booksRead',
+  'booksWrite',
+  'outreach',
+  'larkTask',
+  'larkCalendar',
+  'larkMeeting',
+  'larkApproval',
+  'larkDoc',
+  'larkBase',
+] as const;
+
+export const isGraphToolFamilyName = (value: string): value is GraphToolFamily =>
+  (GRAPH_TOOL_FAMILY_NAMES as readonly string[]).includes(value);
+
 export const GRAPH_TOOL_FAMILY_MAP: Record<GraphToolFamily, string[]> = {
   webSearch: ['search-read', 'search-agent'],
   docSearch: ['search-documents'],

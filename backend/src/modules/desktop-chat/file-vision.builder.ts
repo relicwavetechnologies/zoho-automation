@@ -1,17 +1,11 @@
 import { prisma } from '../../utils/prisma';
-import { qdrantAdapter } from '../../company/integrations/vector/qdrant.adapter';
-import { embeddingService } from '../../company/integrations/embedding';
-import { googleRankingService } from '../../company/integrations/search';
 import { logger } from '../../utils/logger';
 import {
   extractTextFromBuffer,
   normalizeExtractedText,
 } from '../file-upload/document-text-extractor';
-import {
-  RETRIEVAL_PROFILE_CONFIG,
-  vectorDocumentRepository,
-} from '../../company/integrations/vector';
 import { orangeDebug } from '../../utils/orange-debug';
+import { fileRetrievalService } from '../../company/retrieval/file-retrieval.service';
 
 /**
  * Represents an attached file context for the AI message.
@@ -51,26 +45,11 @@ const fetchIndexedFileChunks = async (input: {
   maxChars?: number;
 }): Promise<string> => {
   try {
-    const documents = await vectorDocumentRepository.findByFileAsset({
+    return await fileRetrievalService.getIndexedFileText({
       companyId: input.companyId,
       fileAssetId: input.fileAssetId,
+      maxChars: input.maxChars,
     });
-    if (documents.length === 0) return '';
-
-    const combined = documents
-      .map((doc) => {
-        const payload = (doc.payload ?? {}) as Record<string, unknown>;
-        if (typeof payload._chunk === 'string') return payload._chunk;
-        if (typeof payload.text === 'string') return payload.text;
-        return '';
-      })
-      .filter(Boolean)
-      .join('\n\n');
-
-    const maxChars = input.maxChars ?? 18000;
-    return combined.length > maxChars
-      ? `${combined.slice(0, maxChars)}\n...[document truncated]`
-      : combined;
   } catch (err) {
     logger.warn('file.vision.indexed_chunks.fetch.failed', {
       fileAssetId: input.fileAssetId,
@@ -91,69 +70,24 @@ const fetchRelevantDocumentChunks = async (input: {
   queryText: string;
 }): Promise<string> => {
   try {
-    const profile = RETRIEVAL_PROFILE_CONFIG.file;
-    const [queryVector] = await embeddingService.embedQueries([input.queryText]);
-    const groups = await qdrantAdapter.search({
+    const search = await fileRetrievalService.search({
       companyId: input.companyId,
-      denseVector: queryVector,
-      lexicalQueryText: input.queryText,
-      limit: profile.groupLimit,
-      candidateLimit: profile.branchLimit,
-      retrievalProfile: 'file',
-      fusion: 'dbsf',
-      groupByField: 'documentKey',
-      groupSize: profile.groupSize,
-      sourceTypes: ['file_document'],
       fileAssetId: input.fileAssetId,
-      includeShared: true,
-      includePersonal: false,
-      includePublic: false,
       requesterAiRole: input.requesterAiRole,
-      useMultimodal: true,
-      queryMode: 'text',
+      query: input.queryText,
+      preferParentContext: true,
     });
-    const results = groups.flatMap((group) => group.hits);
     logger.info('file.vision.retrieval.query', {
       fileAssetId: input.fileAssetId,
       companyId: input.companyId,
-      hitCount: results.length,
+      hitCount: search.matches.length,
       queryPreview: input.queryText.slice(0, 160),
+      enhancements: search.enhancements,
+      correctiveRetryUsed: search.correctiveRetryUsed,
     });
 
-    const fileChunks = results;
-    if (fileChunks.length === 0) return '';
-
-    const reranked = await googleRankingService.rerank(
-      input.queryText,
-      fileChunks.map((r) => ({
-        id: `${r.sourceType}:${r.sourceId}:${r.chunkIndex}`,
-        documentKey: r.documentKey ?? `${input.companyId}:file_document:${input.fileAssetId}`,
-        chunkIndex: r.chunkIndex,
-        title: typeof r.payload.citationTitle === 'string' ? r.payload.citationTitle : undefined,
-        content:
-          typeof r.payload._chunk === 'string'
-            ? r.payload._chunk
-            : typeof r.payload.text === 'string'
-              ? r.payload.text
-              : '',
-        score: r.score,
-        payload: r.payload,
-      })),
-      profile.finalTopK,
-      { required: profile.rerankRequired },
-    );
-
-    return reranked
-      .map((r) => {
-        const payload = r.payload ?? {};
-        const text =
-          typeof payload._chunk === 'string'
-            ? payload._chunk
-            : typeof payload.text === 'string'
-              ? payload.text
-              : '';
-        return text;
-      })
+    return search.matches
+      .map((match) => match.displayText || match.text)
       .filter(Boolean)
       .join('\n\n');
   } catch (err) {

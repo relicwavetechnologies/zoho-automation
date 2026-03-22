@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { KNOWLEDGE_NEEDS, RETRIEVAL_STRATEGIES, retrievalPlannerService } from '../../retrieval';
 import type {
   RuntimeClassificationResult,
   RuntimeComplexity,
@@ -15,6 +16,8 @@ const RouteSchema = z.object({
   risk: z.enum(['low', 'medium', 'high']).optional(),
   domains: z.array(z.string().min(1)).optional(),
   retrievalMode: z.enum(['none', 'vector', 'web', 'both']).optional(),
+  knowledgeNeeds: z.array(z.enum(KNOWLEDGE_NEEDS)).optional(),
+  preferredStrategy: z.enum(RETRIEVAL_STRATEGIES).optional(),
 });
 
 type RouteSchemaShape = z.infer<typeof RouteSchema>;
@@ -29,7 +32,8 @@ export type ResolvedRouteContract = {
 };
 
 const WRITE_KEYWORDS = ['create', 'update', 'edit', 'delete', 'remove', 'send', 'schedule', 'upload', 'write'];
-const WEB_KEYWORDS = ['latest', 'current', 'today', 'news', 'website', 'site:', 'http://', 'https://', 'search', 'look up'];
+const WEB_KEYWORDS = ['news', 'website', 'site:', 'http://', 'https://', 'search', 'look up'];
+const FRESHNESS_KEYWORDS = ['latest', 'current', 'today', 'news'];
 const DOC_KEYWORDS = ['document', 'doc', 'pdf', 'file', 'upload', 'internal doc', 'folder'];
 const ZOHO_KEYWORDS = ['zoho', 'deal', 'contact', 'account', 'lead', 'crm', 'pipeline', 'case'];
 const BOOKS_KEYWORDS = ['invoice', 'payment', 'books', 'bank statement', 'estimate', 'vendor', 'overdue'];
@@ -69,7 +73,7 @@ const inferComplexity = (text: string): RuntimeComplexity => {
 };
 
 const inferFreshnessNeed = (text: string): RuntimeFreshnessNeed =>
-  WEB_KEYWORDS.some((keyword) => text.toLowerCase().includes(keyword)) ? 'required' : 'none';
+  FRESHNESS_KEYWORDS.some((keyword) => text.toLowerCase().includes(keyword)) ? 'required' : 'none';
 
 const inferRisk = (text: string): RuntimeRiskLevel => {
   const normalized = text.toLowerCase();
@@ -104,7 +108,7 @@ const inferRetrievalMode = (input: {
   if (input.intent === 'coding') return 'none';
   if (input.intent === 'repo_read' || input.intent === 'web_search') return 'web';
   const hasInternalDomain = input.domains.some((domain) => ['zoho', 'books', 'docs', 'outreach', 'lark', 'google'].includes(domain));
-  if (hasInternalDomain && input.freshnessNeed === 'required') {
+  if (hasInternalDomain && input.freshnessNeed === 'required' && input.domains.includes('web')) {
     return 'both';
   }
   if (hasInternalDomain) {
@@ -123,6 +127,13 @@ const buildHeuristicRoute = (messageText: string): ResolvedRouteContract['route'
   const risk = inferRisk(messageText);
   const intent = inferIntent(messageText, domains);
   const retrievalMode = inferRetrievalMode({ domains, freshnessNeed, intent });
+  const retrievalPlan = retrievalPlannerService.buildPlan({
+    messageText,
+    intent,
+    domains,
+    freshnessNeed,
+    retrievalMode,
+  });
 
   return {
     intent,
@@ -131,6 +142,8 @@ const buildHeuristicRoute = (messageText: string): ResolvedRouteContract['route'
     risk,
     domains,
     retrievalMode,
+    knowledgeNeeds: retrievalPlan.knowledgeNeeds,
+    preferredStrategy: retrievalPlan.preferredStrategy,
     source: 'heuristic_fallback',
   };
 };
@@ -155,13 +168,23 @@ const toRoute = (parsed: RouteSchemaShape, fallbackText: string): ResolvedRouteC
   const freshnessNeed = parsed.freshnessNeed ?? inferFreshnessNeed(fallbackText);
   const risk = parsed.risk ?? inferRisk(fallbackText);
   const intent = parsed.intent.trim();
+  const retrievalMode = parsed.retrievalMode ?? inferRetrievalMode({ domains, freshnessNeed, intent });
+  const retrievalPlan = retrievalPlannerService.buildPlan({
+    messageText: fallbackText,
+    intent,
+    domains,
+    freshnessNeed,
+    retrievalMode,
+  });
   return {
     intent,
     complexity,
     freshnessNeed,
     risk,
     domains,
-    retrievalMode: parsed.retrievalMode ?? inferRetrievalMode({ domains, freshnessNeed, intent }),
+    retrievalMode,
+    knowledgeNeeds: parsed.knowledgeNeeds ?? retrievalPlan.knowledgeNeeds,
+    preferredStrategy: parsed.preferredStrategy ?? retrievalPlan.preferredStrategy,
     source: 'model',
   };
 };

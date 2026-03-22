@@ -1,4 +1,10 @@
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
+import type {
+  GroundedEvidence,
+  KnowledgeNeed,
+  RetrievalPlan,
+  RetrievalStrategy,
+} from '../../retrieval';
 
 export type RuntimeChannel = 'desktop' | 'lark';
 export type RuntimeEngineMode = 'primary' | 'shadow';
@@ -102,6 +108,8 @@ export type RuntimeClassificationResult = {
   freshnessNeed: RuntimeFreshnessNeed;
   risk: RuntimeRiskLevel;
   domains: string[];
+  knowledgeNeeds: KnowledgeNeed[];
+  preferredStrategy?: RetrievalStrategy;
   source: 'model' | 'heuristic_fallback';
   fallbackReasonCode?: string;
 };
@@ -110,6 +118,10 @@ export type RuntimeRetrievalDecision = {
   mode: RuntimeRetrievalMode;
   rationale: string;
   source: 'policy' | 'model' | 'heuristic_fallback';
+  knowledgeNeeds?: KnowledgeNeed[];
+  preferredStrategy?: RetrievalStrategy;
+  portfolioPlan?: RetrievalPlan;
+  systemDirectives?: string[];
 };
 
 export type RuntimeEvidenceItem = {
@@ -159,3 +171,5 @@ export type RuntimeParityReport = {
   diffSummary?: string;
   metrics?: Record<string, unknown>;
 };
+
+export type RuntimeGroundedEvidence = GroundedEvidence;

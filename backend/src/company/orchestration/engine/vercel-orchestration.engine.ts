@@ -11,6 +11,7 @@ import type {
 } from '../../contracts';
 import { conversationMemoryStore } from '../../state/conversation';
 import { toolPermissionService } from '../../tools/tool-permission.service';
+import { retrievalOrchestratorService } from '../../retrieval';
 import { logger } from '../../../utils/logger';
 import { resolveVercelLanguageModel } from '../vercel/model-factory';
 import { createVercelDesktopTools } from '../vercel/tools';
@@ -205,7 +206,15 @@ const buildSystemPrompt = (input: {
   conversationKey: string;
   runtime: VercelRuntimeRequestContext;
   routerAcknowledgement?: string;
+  latestUserMessage?: string;
+  hasAttachedFiles?: boolean;
 }) => {
+  const retrievalGuidance = input.latestUserMessage?.trim()
+    ? retrievalOrchestratorService.buildPromptGuidance({
+      messageText: input.latestUserMessage,
+      hasAttachments: input.hasAttachedFiles,
+    })
+    : [];
   const parts = [
     'You are the Vercel AI SDK runtime for a tool-using assistant.',
     'Use the available comprehensive tools directly.',
@@ -243,6 +252,9 @@ const buildSystemPrompt = (input: {
       `The user has already seen this short intake acknowledgement: "${input.routerAcknowledgement.trim()}"`,
       'Do not repeat that acknowledgement verbatim. Continue from it and focus on execution.',
     );
+  }
+  if (retrievalGuidance.length > 0) {
+    parts.push('Retrieval portfolio guidance for this request:', ...retrievalGuidance);
   }
   parts.push(`Conversation key: ${input.conversationKey}.`);
   return parts.join('\n');
@@ -687,6 +699,8 @@ const executeLarkVercelTask = async (
     conversationKey,
     runtime,
     routerAcknowledgement,
+    latestUserMessage: message.text,
+    hasAttachedFiles: currentAttachments.length > 0,
   });
 
   try {

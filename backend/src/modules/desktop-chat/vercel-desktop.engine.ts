@@ -36,6 +36,7 @@ import { prisma } from '../../utils/prisma';
 import { aiTokenUsageService } from '../../company/ai-usage/ai-token-usage.service';
 import { AI_MODEL_CATALOG_MAP, type AiModelCatalogEntry } from '../../company/ai-models';
 import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../company/integrations/vector';
+import { retrievalOrchestratorService } from '../../company/retrieval';
 import { estimateTokens, getTokenBudget } from '../../utils/token-estimator';
 import {
   buildDesktopPlannerPrompt,
@@ -1727,6 +1728,7 @@ const buildDesktopContextAssembly = async (input: {
     taskState: input.taskState,
     conversationRetrievalSnippets: conversationSnippets,
     contextClass,
+    hasAttachedFiles: input.activeAttachments.length > 0,
   });
   const budget = getDesktopContextBudget({
     resolvedModel,
@@ -1808,9 +1810,16 @@ const buildSystemPrompt = (input: {
   taskState?: DesktopTaskState;
   conversationRetrievalSnippets?: string[];
   contextClass?: DesktopContextClass;
+  hasAttachedFiles?: boolean;
 }) => {
   const latestMessage = input.latestUserMessage?.trim() ?? '';
   const shouldPrioritizeInternalDocs = /\b(uploaded|upload|company doc|company docs|internal doc|internal docs|document|documents|file|files|csv|pdf|sheet|spreadsheet|assignment)\b/i.test(latestMessage);
+  const retrievalGuidance = latestMessage
+    ? retrievalOrchestratorService.buildPromptGuidance({
+      messageText: latestMessage,
+      hasAttachments: input.hasAttachedFiles,
+    })
+    : [];
   const parts = [
     'You are the Vercel AI SDK desktop runtime for a tool-using assistant.',
     'Use the available comprehensive tools directly.',
@@ -1852,6 +1861,9 @@ const buildSystemPrompt = (input: {
   }
   if (input.contextClass) {
     parts.push(`Context assembly class: ${input.contextClass}.`);
+  }
+  if (retrievalGuidance.length > 0) {
+    parts.push('Retrieval portfolio guidance for this request:', ...retrievalGuidance);
   }
   parts.push(`Local date context: ${getLocalDateContext()} (${LOCAL_TIME_ZONE}).`);
   parts.push(`Current local date/time: ${getLocalDateTimeContext()} (${LOCAL_TIME_ZONE}).`);

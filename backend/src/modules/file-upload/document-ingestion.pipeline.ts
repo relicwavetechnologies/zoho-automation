@@ -5,11 +5,12 @@ import config from '../../config';
 import { logger } from '../../utils/logger';
 import { embeddingService } from '../../company/integrations/embedding';
 import {
-  buildCanonicalFileChunks,
   qdrantAdapter,
   vectorDocumentRepository,
 } from '../../company/integrations/vector';
 import { extractTextFromBuffer, normalizeExtractedText } from './document-text-extractor';
+import { buildCanonicalFileChunks } from '../../company/integrations/vector/canonical-retrieval';
+import { buildIndexedFileChunks } from './file-chunking';
 
 const hashContent = (content: string): string => createHash('sha256').update(content).digest('hex');
 
@@ -105,7 +106,7 @@ class DocumentIngestionPipeline {
       throw new Error('No extractable text was found in this file');
     }
 
-    const chunks = buildCanonicalFileChunks({
+    const chunks = buildIndexedFileChunks({
       companyId: input.companyId,
       fileAssetId: input.fileAssetId,
       fileName: input.fileName,

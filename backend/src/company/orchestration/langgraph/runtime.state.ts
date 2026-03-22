@@ -1,5 +1,6 @@
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
 import type {
+  RuntimeGroundedEvidence,
   RuntimeActor,
   RuntimeChannel,
   RuntimeClassificationResult,
@@ -79,6 +80,7 @@ export type RuntimeState = {
     steps: RuntimeExecutionStepState[];
   };
   evidence?: RuntimeEvidenceItem[];
+  groundedEvidence?: RuntimeGroundedEvidence[];
   parity?: RuntimeParityReport;
   diagnostics: RuntimeDiagnostics;
   failure?: {

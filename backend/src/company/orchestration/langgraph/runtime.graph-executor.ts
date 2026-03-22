@@ -5,6 +5,7 @@ import { generateText, stepCountIs } from 'ai';
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
 import { resolveChannelAdapter } from '../../channels';
+import { retrievalOrchestratorService } from '../../retrieval';
 import type { ChannelAdapter } from '../../channels/base/channel-adapter';
 import type { AgentResultDTO, NormalizedIncomingMessageDTO, OrchestrationTaskDTO } from '../../contracts';
 import { conversationMemoryStore } from '../../state/conversation';
@@ -27,7 +28,12 @@ import { GraphToolFacade } from './graph-tool-facade';
 import { resolveRouteContract } from './route-contract';
 import { resolveSynthesisContract } from './synthesis-contract';
 import { runtimeLoopGuards } from './runtime.loop-guards';
-import type { RuntimeDeliveryEnvelope, RuntimeEvidenceItem, RuntimeExecutionStepState } from './runtime.types';
+import type {
+  RuntimeDeliveryEnvelope,
+  RuntimeEvidenceItem,
+  RuntimeExecutionStepState,
+  RuntimeGroundedEvidence,
+} from './runtime.types';
 import type { RuntimeState } from './runtime.state';
 import { runtimeConversationRepository } from './runtime-conversation.repository';
 import { runtimeRunRepository } from './runtime-run.repository';
@@ -237,6 +243,8 @@ export class RuntimeGraphExecutor {
       freshnessNeed: routeContract.route.freshnessNeed,
       risk: routeContract.route.risk,
       domains: routeContract.route.domains,
+      knowledgeNeeds: routeContract.route.knowledgeNeeds,
+      preferredStrategy: routeContract.route.preferredStrategy,
       source: routeContract.source,
       fallbackReasonCode: routeContract.fallbackReasonCode,
     };
@@ -251,6 +259,8 @@ export class RuntimeGraphExecutor {
         : `Heuristic route for ${routeContract.route.intent}.`,
       source: routeContract.source === 'model' ? 'model' : 'heuristic_fallback',
       query: message.text,
+      knowledgeNeeds: routeContract.route.knowledgeNeeds,
+      preferredStrategy: routeContract.route.preferredStrategy,
       toolFamilies: [],
     };
     const retrieval = state.retrieval;
@@ -292,11 +302,22 @@ export class RuntimeGraphExecutor {
       sourceUserId: message.userId,
       mode: LARK_VERCEL_MODE,
     });
+    const retrievalPortfolio = retrievalOrchestratorService.planExecution({
+      messageText: message.text,
+      intent: classification.intent,
+      domains: classification.domains,
+      freshnessNeed: classification.freshnessNeed,
+      retrievalMode: retrieval.mode,
+      hasAttachments: (message.attachedFiles ?? []).length > 0,
+    });
+    retrieval.portfolioPlan = retrievalPortfolio.plan;
+    retrieval.systemDirectives = retrievalPortfolio.systemDirectives;
+    retrieval.toolFamilies = retrievalPortfolio.toolFamilies;
     const selectedFamilies = selectToolFamilies({
       classification,
       retrieval,
+      hasAttachments: (message.attachedFiles ?? []).length > 0,
     });
-    retrieval.toolFamilies = selectedFamilies;
     state.plan = {
       kind: 'tool_loop',
       steps: ['research.execute', 'synthesis.compose', 'deliver.response'],
@@ -308,6 +329,7 @@ export class RuntimeGraphExecutor {
 
     const toolIndexByActivityId = new Map<string, number>();
     const evidence: RuntimeEvidenceItem[] = [];
+    const groundedEvidence: RuntimeGroundedEvidence[] = [];
     const facade = new GraphToolFacade(runtime, {
       onToolStart: async (toolName, activityId, title, toolInput) => {
         const inputGuard = runtimeLoopGuards.registerToolCall(state.diagnostics, toolName, toolInput ?? {});
@@ -355,6 +377,11 @@ export class RuntimeGraphExecutor {
           summary: output.summary,
           fullPayload: output.fullPayload ?? output.keyData,
           citations: output.citations ?? [],
+        }));
+        groundedEvidence.push(...retrievalOrchestratorService.collectGroundedEvidence(toolName, {
+          summary: output.summary,
+          fullPayload: (output.fullPayload ?? output.keyData) as Record<string, unknown> | undefined,
+          citations: (output.citations ?? []) as Array<Record<string, unknown>>,
         }));
         statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${toolName}: ${summarizeText(output.summary, 180) ?? output.summary}`);
         await runtimeConversationRepository.appendMessage({
@@ -413,6 +440,7 @@ export class RuntimeGraphExecutor {
     });
 
     state.evidence = evidence;
+    state.groundedEvidence = groundedEvidence;
     await this.persistNodeState(state, 'research.execute');
 
     const researchSteps = researchResult.steps as Array<{ toolResults?: Array<{ output?: unknown }> }>;
@@ -456,6 +484,7 @@ export class RuntimeGraphExecutor {
         classification,
         answerDraft: researchResult.text,
         evidence,
+        groundedEvidence,
       }),
       temperature: 0,
       providerOptions: {
@@ -512,6 +541,7 @@ export class RuntimeGraphExecutor {
         retrievalMode: retrieval.mode,
         toolFamilies: selectedFamilies,
         evidenceCount: evidence.length,
+        groundedEvidenceCount: groundedEvidence.length,
         synthesisSource: synthesisContract.source,
       },
     };
