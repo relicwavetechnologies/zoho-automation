@@ -15,9 +15,60 @@ export type DesktopThreadMessagesPage = {
   };
 };
 
+type TimedCacheEntry<T> = {
+  expiresAt: number;
+  value: T;
+};
+
+const DESKTOP_THREAD_LIST_CACHE_TTL_MS = 15_000;
+const DESKTOP_THREAD_PAGE_CACHE_TTL_MS = 10_000;
+
 export class DesktopThreadsService extends BaseService {
+  private readonly threadListCache = new Map<string, TimedCacheEntry<Awaited<ReturnType<DesktopThreadsRepository['listThreads']>>>>();
+  private readonly threadPageCache = new Map<string, TimedCacheEntry<DesktopThreadMessagesPage>>();
+
   constructor(private readonly repository: DesktopThreadsRepository = desktopThreadsRepository) {
     super();
+  }
+
+  private readTimedCache<T>(cache: Map<string, TimedCacheEntry<T>>, key: string): T | null {
+    const now = Date.now();
+    for (const [entryKey, entry] of cache.entries()) {
+      if (entry.expiresAt <= now) {
+        cache.delete(entryKey);
+      }
+    }
+    const cached = cache.get(key);
+    return cached && cached.expiresAt > now ? cached.value : null;
+  }
+
+  private writeTimedCache<T>(cache: Map<string, TimedCacheEntry<T>>, key: string, value: T, ttlMs: number): T {
+    cache.set(key, {
+      expiresAt: Date.now() + ttlMs,
+      value,
+    });
+    return value;
+  }
+
+  private threadListCacheKey(userId: string, companyId: string): string {
+    return `${userId}:${companyId}`;
+  }
+
+  private threadPageCacheKey(threadId: string, userId: string, limit: number, beforeMessageId?: string): string {
+    return `${threadId}:${userId}:${limit}:${beforeMessageId ?? 'first'}`;
+  }
+
+  private invalidateThreadListCache(userId: string, companyId: string): void {
+    this.threadListCache.delete(this.threadListCacheKey(userId, companyId));
+  }
+
+  private invalidateThreadPageCache(threadId: string, userId: string): void {
+    const prefix = `${threadId}:${userId}:`;
+    for (const key of this.threadPageCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.threadPageCache.delete(key);
+      }
+    }
   }
 
   private async cacheThreadMeta(thread: Awaited<ReturnType<DesktopThreadsRepository['getOwnedThread']>>) {
@@ -69,7 +120,13 @@ export class DesktopThreadsService extends BaseService {
   }
 
   async listThreads(userId: string, companyId: string) {
-    return this.repository.listThreads(userId, companyId);
+    const cacheKey = this.threadListCacheKey(userId, companyId);
+    const cached = this.readTimedCache(this.threadListCache, cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const threads = await this.repository.listThreads(userId, companyId);
+    return this.writeTimedCache(this.threadListCache, cacheKey, threads, DESKTOP_THREAD_LIST_CACHE_TTL_MS);
   }
 
   async getThread(threadId: string, userId: string) {
@@ -85,7 +142,7 @@ export class DesktopThreadsService extends BaseService {
       threadId,
       userId,
       loader: async () => {
-        const thread = await this.repository.getThread(threadId, userId);
+        const thread = await this.repository.getOwnedThread(threadId, userId);
         if (!thread) throw new HttpException(404, 'Thread not found');
         return {
           id: thread.id,
@@ -117,9 +174,7 @@ export class DesktopThreadsService extends BaseService {
   }
 
   async getThreadContext(threadId: string, userId: string, limit = 120) {
-    const thread = await this.repository.getThread(threadId, userId);
-    if (!thread) throw new HttpException(404, 'Thread not found');
-
+    const thread = await this.getThreadMeta(threadId, userId);
     const messages = await this.repository.listMessages(threadId, limit);
     return { thread, messages };
   }
@@ -132,8 +187,13 @@ export class DesktopThreadsService extends BaseService {
       beforeMessageId?: string;
     },
   ): Promise<DesktopThreadMessagesPage> {
-    const thread = await this.repository.getThread(threadId, userId);
-    if (!thread) throw new HttpException(404, 'Thread not found');
+    const cacheKey = this.threadPageCacheKey(threadId, userId, input.limit, input.beforeMessageId);
+    const cached = this.readTimedCache(this.threadPageCache, cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const thread = await this.getThreadMeta(threadId, userId);
 
     const before = input.beforeMessageId
       ? await this.repository.getMessageCursor(threadId, input.beforeMessageId)
@@ -148,7 +208,7 @@ export class DesktopThreadsService extends BaseService {
       before,
     });
 
-    return {
+    const pageResult = {
       thread,
       messages: page.messages,
       pagination: {
@@ -157,11 +217,14 @@ export class DesktopThreadsService extends BaseService {
         limit: input.limit,
       },
     };
+    return this.writeTimedCache(this.threadPageCache, cacheKey, pageResult, DESKTOP_THREAD_PAGE_CACHE_TTL_MS);
   }
 
   async createThread(userId: string, companyId: string, departmentId?: string | null, title?: string | null) {
     const thread = await this.repository.createThread(userId, companyId, departmentId, title);
     await this.cacheThreadMeta(thread);
+    this.invalidateThreadListCache(userId, companyId);
+    this.invalidateThreadPageCache(thread.id, userId);
     return thread;
   }
 
@@ -184,6 +247,8 @@ export class DesktopThreadsService extends BaseService {
 
     const created = await this.repository.createThread(userId, companyId, departmentId, normalizedTitle);
     await this.cacheThreadMeta(created);
+    this.invalidateThreadListCache(userId, companyId);
+    this.invalidateThreadPageCache(created.id, userId);
     return created;
   }
 
@@ -205,6 +270,8 @@ export class DesktopThreadsService extends BaseService {
       'Lark history',
     );
     await this.cacheThreadMeta(created);
+    this.invalidateThreadListCache(userId, companyId);
+    this.invalidateThreadPageCache(created.id, userId);
     return created;
   }
 
@@ -348,9 +415,14 @@ export class DesktopThreadsService extends BaseService {
   }
 
   async deleteThread(threadId: string, userId: string): Promise<void> {
+    const thread = await this.repository.getOwnedThread(threadId, userId);
     await this.repository.deleteThread(threadId, userId);
     await desktopThreadMetaCache.invalidate(threadId, userId);
     await desktopThreadContextCache.invalidate(threadId, userId);
+    this.invalidateThreadPageCache(threadId, userId);
+    if (thread) {
+      this.invalidateThreadListCache(userId, thread.companyId);
+    }
   }
 
   private async runPostCommitThreadMaintenance(input: {
@@ -384,6 +456,8 @@ export class DesktopThreadsService extends BaseService {
           message: input.message,
         }),
       ]);
+      this.invalidateThreadListCache(input.userId, latestThread.companyId);
+      this.invalidateThreadPageCache(input.threadId, input.userId);
     } catch (error) {
       logger.warn('desktop.thread.message.maintenance.failed', {
         threadId: input.threadId,

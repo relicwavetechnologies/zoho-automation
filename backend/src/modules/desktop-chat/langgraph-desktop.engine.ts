@@ -98,7 +98,7 @@ const buildRuntimeActor = (session: MemberSessionDTO) => ({
   larkUserId: session.larkUserId ?? undefined,
 });
 
-const resolveLanggraphDesktopModel = async (mode: 'fast' | 'high' | 'xtreme') => {
+const resolveLanggraphDesktopModel = async (mode: 'fast' | 'high') => {
   const resolved = await resolveVercelLanguageModel(mode);
   return {
     ...resolved,
@@ -159,7 +159,7 @@ const startExecutionRun = async (input: {
   threadId: string;
   messageId: string;
   session: MemberSessionDTO;
-  mode: 'fast' | 'high' | 'xtreme';
+  mode: 'fast' | 'high';
   message: string;
 }) => {
   await executionService.startRun({

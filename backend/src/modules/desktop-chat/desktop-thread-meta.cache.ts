@@ -98,7 +98,7 @@ class DesktopThreadMetaCache {
         threadId: input.threadId,
         userId: input.userId,
         departmentId: cached.departmentId ?? null,
-      });
+      }, { sampleRate: 0.05 });
       return cached;
     }
 
@@ -117,7 +117,7 @@ class DesktopThreadMetaCache {
       threadId: meta.id,
       userId: meta.userId,
       departmentId: meta.departmentId ?? null,
-    });
+    }, { sampleRate: 0.05 });
   }
 
   async invalidate(threadId: string, userId: string): Promise<void> {

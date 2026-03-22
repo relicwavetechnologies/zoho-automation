@@ -34,7 +34,7 @@ class AdminExecutionsController extends BaseController {
         userId: typeof req.query.userId === 'string' ? req.query.userId : undefined,
         companyId: typeof req.query.companyId === 'string' ? req.query.companyId : undefined,
         channel: typeof req.query.channel === 'string' ? (req.query.channel as ExecutionChannel) : undefined,
-        mode: typeof req.query.mode === 'string' ? (req.query.mode as 'fast' | 'high' | 'xtreme') : undefined,
+        mode: typeof req.query.mode === 'string' ? (req.query.mode as 'fast' | 'high') : undefined,
         status: typeof req.query.status === 'string' ? (req.query.status as ExecutionRunStatus) : undefined,
         dateFrom: typeof req.query.dateFrom === 'string' ? req.query.dateFrom : undefined,
         dateTo: typeof req.query.dateTo === 'string' ? req.query.dateTo : undefined,

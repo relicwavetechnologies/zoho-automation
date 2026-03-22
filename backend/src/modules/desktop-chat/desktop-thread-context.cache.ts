@@ -93,7 +93,7 @@ class DesktopThreadContextCache {
         threadId: input.threadId,
         userId: input.userId,
         messageCount: cached.messages.length,
-      });
+      }, { sampleRate: 0.05 });
       await redis.expire(key, DESKTOP_THREAD_CONTEXT_TTL_SECONDS);
       return cached;
     }
@@ -124,7 +124,7 @@ class DesktopThreadContextCache {
         threadId: input.threadId,
         userId: input.userId,
         reason: 'cache_missing',
-      });
+      }, { sampleRate: 0.1 });
       return;
     }
 
@@ -140,7 +140,7 @@ class DesktopThreadContextCache {
       userId: input.userId,
       messageCount: next.messages.length,
       role: input.message.role,
-    });
+    }, { sampleRate: 0.05 });
   }
 
   async invalidate(threadId: string, userId: string): Promise<void> {

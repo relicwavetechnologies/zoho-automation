@@ -39,6 +39,8 @@ const LARK_STATUS_HEARTBEAT_MESSAGES = [
   'Still working through the next step.',
 ] as const;
 
+const larkConversationHydrationVersions = new Map<string, string>();
+
 const buildConversationKey = (message: NormalizedIncomingMessageDTO): string => `${message.channel}:${message.chatId}`;
 const buildPersistentLarkConversationKey = (threadId: string): string => `lark-thread:${threadId}`;
 
@@ -532,25 +534,32 @@ const executeLarkVercelTask = async (
   const runtime = await resolveRuntimeContext(task, message, persistentThread?.id);
   statusHistory.push('Context ready.');
   const contextMessages = persistentThread
-    ? (await desktopThreadsService.getCachedOwnedThreadContext(
-      persistentThread.id,
-      linkedUserId,
-      LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
-    )).messages.map((entry) => {
-      if (entry.role === 'user') {
-        conversationMemoryStore.addUserMessage(conversationKey, entry.id, entry.content);
-      } else {
-        conversationMemoryStore.addAssistantMessage(conversationKey, entry.id, entry.content);
-        if (entry.metadata && typeof entry.metadata === 'object' && !Array.isArray(entry.metadata)) {
-          hydrateConversationRefsFromMetadata(conversationKey, entry.metadata as Record<string, unknown>);
+    ? await (async () => {
+      const cachedContext = await desktopThreadsService.getCachedOwnedThreadContext(
+        persistentThread.id,
+        linkedUserId!,
+        LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
+      );
+      const hydrationVersion = `${cachedContext.cachedAt}:${cachedContext.messages[cachedContext.messages.length - 1]?.id ?? 'empty'}`;
+      if (larkConversationHydrationVersions.get(conversationKey) !== hydrationVersion) {
+        for (const entry of cachedContext.messages) {
+          if (entry.role === 'user') {
+            conversationMemoryStore.addUserMessage(conversationKey, entry.id, entry.content);
+          } else {
+            conversationMemoryStore.addAssistantMessage(conversationKey, entry.id, entry.content);
+            if (entry.metadata && typeof entry.metadata === 'object' && !Array.isArray(entry.metadata)) {
+              hydrateConversationRefsFromMetadata(conversationKey, entry.metadata as Record<string, unknown>);
+            }
+          }
         }
+        larkConversationHydrationVersions.set(conversationKey, hydrationVersion);
       }
-      return {
+      return cachedContext.messages.map((entry) => ({
         id: entry.id,
         role: entry.role === 'assistant' ? 'assistant' : 'user',
         content: entry.content,
-      };
-    }) as Array<ModelMessage & { id?: string }>
+      })) as Array<ModelMessage & { id?: string }>;
+    })()
     : conversationMemoryStore.getContextMessages(conversationKey).map((entry) => ({
       role: entry.role,
       content: entry.content,
@@ -607,8 +616,8 @@ const executeLarkVercelTask = async (
         userId: linkedUserId,
         companyId: runtime.companyId,
         agentTarget: 'lark.child_router',
-        modelId: 'child_router_fast',
-        provider: 'google',
+        modelId: config.GROQ_ROUTER_MODEL,
+        provider: 'groq',
         channel: 'lark',
         threadId: persistentThread?.id,
         estimatedInputTokens,

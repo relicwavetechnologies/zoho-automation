@@ -1,12 +1,12 @@
 import { randomUUID } from 'crypto';
 
-import { generateObject, generateText, stepCountIs, streamText, type ModelMessage } from 'ai';
+import { generateText, stepCountIs, streamText, type ModelMessage } from 'ai';
 import { Request, Response } from 'express';
 import { z } from 'zod';
 
 import { ApiResponse } from '../../core/api-response';
 import config from '../../config';
-import { resolveVercelLanguageModel } from '../../company/orchestration/vercel/model-factory';
+import { resolveVercelChildRouterModel, resolveVercelLanguageModel } from '../../company/orchestration/vercel/model-factory';
 import { createVercelDesktopTools } from '../../company/orchestration/vercel/tools';
 import {
   scheduledWorkflowCapabilitySummarySchema,
@@ -141,6 +141,90 @@ type DesktopContextAssemblyMetrics = {
   compactionTier: number;
 };
 
+type ThreadMetaSnapshot = Awaited<ReturnType<typeof desktopThreadsService.getThreadMeta>>;
+type TimedPromiseCacheEntry<T> = {
+  expiresAt: number;
+  promise: Promise<T>;
+};
+
+const DURABLE_UI_EVENT_TYPES = new Set(['plan', 'action', 'error']);
+
+const extractFirstJsonObject = (text: string): string | null => {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    return null;
+  }
+  return trimmed.slice(start, end + 1);
+};
+
+const normalizeChildRouteResponse = (value: unknown): unknown => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.route === 'fast_reply|direct_execute|handoff') {
+    if (typeof record.reply === 'string' && record.reply.trim()) {
+      return {
+        ...record,
+        route: 'fast_reply',
+      };
+    }
+    if (typeof record.acknowledgement === 'string' && record.acknowledgement.trim()) {
+      return {
+        ...record,
+        route: 'handoff',
+      };
+    }
+    return {
+      ...record,
+      route: 'direct_execute',
+    };
+  }
+  if (typeof record.route === 'string') {
+    return record;
+  }
+  for (const key of ['result', 'decision', 'output', 'response', 'childRoute']) {
+    const nested = record[key];
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      const nestedRecord = nested as Record<string, unknown>;
+      if (typeof nestedRecord.route === 'string') {
+        return nestedRecord;
+      }
+    }
+  }
+  return record;
+};
+
+const buildTaskAwareRouterAcknowledgement = (message: string): string => {
+  const normalized = message.trim().replace(/\s+/g, ' ');
+  if (!normalized) {
+    return 'I’ll look into this and pull together the key details for you.';
+  }
+  const cleaned = normalized
+    .replace(/^[Pp]lease\s+/, '')
+    .replace(/^(can you|could you|would you|will you)\s+/i, '')
+    .replace(/^(help me|tell me|show me|find me|find|search for|look up|research)\s+/i, '')
+    .replace(/[?.!]+$/, '')
+    .trim();
+  const operational = cleaned
+    .replace(/\bmy\b/gi, 'your')
+    .replace(/\bme\b/gi, 'you')
+    .trim();
+  if (/^(get|list|show|check|find|pull|fetch|look up|search|read|open|review)\b/i.test(operational)) {
+    const sentence = operational.charAt(0).toLowerCase() + operational.slice(1);
+    return `I’ll ${sentence}.`;
+  }
+  const summary = summarizeText(cleaned || normalized, 140) ?? normalized;
+  return `I’ll help with ${summary} and pull together the key findings for you.`;
+};
+
 const resolveWorkflowInvocationMessage = async (input: {
   companyId: string;
   userId: string;
@@ -224,11 +308,44 @@ const DESKTOP_LIGHT_CONTEXT_TARGET_RATIO = 0.12;
 const DESKTOP_NORMAL_CONTEXT_TARGET_RATIO = 0.28;
 const DESKTOP_MAX_LOOP_STEPS = 200;
 const WORKFLOW_AUTOCONTINUE_LIMIT = 2;
+const ATTACHED_FILE_HYDRATION_CACHE_TTL_MS = 30_000;
+
+const attachedFileHydrationCache = new Map<string, TimedPromiseCacheEntry<AttachedFileRef[]>>();
+const conversationStateHydrationVersions = new Map<string, string>();
 
 const summarizeText = (value: string | null | undefined, limit = 280): string | null => {
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const getCachedPromiseValue = async <T>(
+  cache: Map<string, TimedPromiseCacheEntry<T>>,
+  key: string,
+  ttlMs: number,
+  loader: () => Promise<T>,
+): Promise<T> => {
+  const now = Date.now();
+  for (const [entryKey, entry] of cache.entries()) {
+    if (entry.expiresAt <= now) {
+      cache.delete(entryKey);
+    }
+  }
+
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return cached.promise;
+  }
+
+  const promise = loader().catch((error) => {
+    cache.delete(key);
+    throw error;
+  });
+  cache.set(key, {
+    expiresAt: now + ttlMs,
+    promise,
+  });
+  return promise;
 };
 
 const isWorkflowExecutionRequest = (metadata?: Record<string, unknown>): boolean =>
@@ -282,6 +399,18 @@ const expandConversationMemoryQuery = (value: string): string => {
 
 const isLightweightChatTurn = (value: string | null | undefined): boolean =>
   /^(hi|hello|hey|thanks|thank you|ok|okay|cool|great|nice|yes|no)[.! ]*$/i.test((value ?? '').trim());
+
+const shouldShowChildRouterAcknowledgement = (value: string | null | undefined): boolean => {
+  const input = value?.trim();
+  if (!input || isLightweightChatTurn(input)) {
+    return false;
+  }
+  if (shouldPlanDesktopTask(input)) {
+    return true;
+  }
+  return /\b(get|list|show|check|find|pull|fetch|look up|search|read|open|review)\b/i.test(input)
+    && /\b(lark|task|tasks|calendar|meeting|approval|doc|document|gmail|mail|email|drive|repo|workspace|zoho|invoice|statement|today|tomorrow|yesterday|latest)\b/i.test(input);
+};
 
 const resolveModelCatalogEntry = (resolvedModel: {
   effectiveProvider: string;
@@ -365,17 +494,21 @@ const recordTokenUsage = async (input: {
   companyId?: string | null;
   channel: 'desktop' | 'lark';
   threadId?: string;
-  mode: 'fast' | 'high' | 'xtreme';
+  mode: 'fast' | 'high';
   agentTarget: string;
   systemPrompt: string;
   messages: ModelMessage[];
   outputText: string;
+  resolvedModel?: {
+    effectiveModelId: string;
+    effectiveProvider: string;
+  };
 }): Promise<void> => {
   if (!input.userId || !input.companyId) {
     return;
   }
 
-  const resolvedModel = await resolveVercelLanguageModel(input.mode);
+  const resolvedModel = input.resolvedModel ?? await resolveVercelLanguageModel(input.mode);
   const estimatedInputTokens = estimateTokens(input.systemPrompt) + estimateMessageTokens(input.messages);
   const estimatedOutputTokens = estimateTokens(input.outputText);
 
@@ -424,16 +557,28 @@ export const buildChildRouterPrompt = (input: {
 
   return [
     'Classify this desktop chat turn for a two-tier assistant runtime.',
-    'Return structured JSON only.',
+    'Return exactly one JSON object only.',
+    'Do not wrap it in markdown, prose, arrays, or an outer envelope.',
+    'Required JSON keys:',
+    'route, reply, acknowledgement, reason',
+    'Allowed route values: fast_reply, direct_execute, handoff',
+    'Valid examples:',
+    '{"route":"fast_reply","reply":"Hi, how can I help?","reason":"simple greeting"}',
+    '{"route":"direct_execute","acknowledgement":"I’ll check that for you.","reason":"simple tool-backed request"}',
+    '{"route":"handoff","acknowledgement":"I’ll work through this step by step.","reason":"multi-step request"}',
     'Routes:',
     '- fast_reply: greetings, thanks, chit-chat, identity/capability questions, or short conversational replies that need no tools.',
-    '- direct_execute: straightforward work that should go directly to the main executor without a pre-ack.',
+    '- direct_execute: straightforward work that should go directly to the main executor. A short acknowledgement is allowed when the user is asking you to fetch, check, list, or get something.',
     '- handoff: multi-step or heavier work likely to require more than 2-3 tool calls, iteration, or planning. Provide a short acknowledgement the user should see immediately.',
     'Rules:',
     '- Do not use tools.',
     '- If retrieved conversation memory clearly answers a personal-memory question, prefer fast_reply and answer from that memory.',
     '- For fast_reply, fill reply and keep it short.',
+    '- For direct_execute, include route and reason. If the user is asking you to fetch, check, list, or get something from a system or tool, include a short acknowledgement too.',
     '- For handoff, fill acknowledgement and keep it short, concrete, and action-oriented.',
+    '- The acknowledgement must mirror the user request in plain language, so it feels specific to what they asked.',
+    '- Good acknowledgement example: "I’ll look up the latest AI job market trends and current AI work on Upwork for you."',
+    '- Avoid generic acknowledgements like "I’ll handle this in steps" unless the request itself is vague.',
     '- Do not overuse handoff for tiny requests.',
     workspaceBlock,
     `Current local date/time: ${getLocalDateTimeContext()} (${LOCAL_TIME_ZONE}).`,
@@ -474,34 +619,28 @@ export const runDesktopChildRouter = async (input: {
       companyId: input.companyId,
       userId: input.userId,
     });
-    const model = await resolveVercelLanguageModel('fast');
-    const result = await generateObject({
+    const model = await resolveVercelChildRouterModel();
+    const result = await generateText({
       model: model.model,
-      schema: desktopChildRouteSchema,
-      schemaName: 'desktop_child_route',
-      schemaDescription: 'Routing decision for a fast desktop child assistant that either replies quickly or hands off to the main executor.',
+      system: 'Return one valid JSON object only. No markdown, no prose, no code fences.',
       prompt: buildChildRouterPrompt({
         ...input,
         retrievedMemorySnippets,
       }),
       temperature: 0,
-      providerOptions: {
-        google: {
-          thinkingConfig: {
-            includeThoughts: false,
-            thinkingLevel: 'minimal',
-          },
-        },
-      },
     });
+    const rawJson = extractFirstJsonObject(result.text) ?? result.text.trim();
+    const parsedRoute = desktopChildRouteSchema.parse(
+      normalizeChildRouteResponse(JSON.parse(rawJson)),
+    );
     logger.info('vercel.child_router.completed', {
       executionId: input.executionId,
       threadId: input.threadId,
-      route: result.object.route,
-      reason: result.object.reason ?? null,
+      route: parsedRoute.route,
+      reason: parsedRoute.reason ?? null,
       retrievedMemorySnippetCount: retrievedMemorySnippets.length,
     });
-    if (result.object.route === 'fast_reply' && isPersonalMemoryQuestion(input.message)) {
+    if (parsedRoute.route === 'fast_reply' && isPersonalMemoryQuestion(input.message)) {
       if (retrievedMemorySnippets.length === 0) {
         logger.info('vercel.child_router.override', {
           executionId: input.executionId,
@@ -516,12 +655,18 @@ export const runDesktopChildRouter = async (input: {
         };
       }
     }
-    return result.object;
+    if (parsedRoute.route === 'direct_execute' && shouldShowChildRouterAcknowledgement(input.message)) {
+      return {
+        ...parsedRoute,
+        acknowledgement: parsedRoute.acknowledgement?.trim() || buildTaskAwareRouterAcknowledgement(input.message),
+      };
+    }
+    return parsedRoute;
   } catch (error) {
     const fallbackRoute: DesktopChildRoute = shouldPlanDesktopTask(input.message)
       ? {
         route: 'handoff',
-        acknowledgement: 'I’ll handle this in steps and start gathering the required context now.',
+        acknowledgement: buildTaskAwareRouterAcknowledgement(input.message),
         reason: 'router_fallback_complex',
       }
       : {
@@ -559,7 +704,7 @@ const retrieveConversationMemoryForChildRouter = async (input: {
     isReferentialFollowup: referentialFollowup,
     queryLength: input.message.trim().length,
     limit,
-  });
+  }, { sampleRate: 0.1 });
 
   try {
     const { matches, scope } = await queryConversationMemoryWithFallback({
@@ -583,7 +728,7 @@ const retrieveConversationMemoryForChildRouter = async (input: {
       matchCount: matches.length,
       snippetCount: snippets.length,
       topScores: matches.slice(0, 3).map((match) => Number(match.score.toFixed(4))),
-    });
+    }, { sampleRate: 0.1 });
     return snippets;
   } catch (error) {
     logger.warn('vercel.child_router.retrieval.failed', {
@@ -848,7 +993,6 @@ const buildExecutionMetadata = (input: {
   contextAssembly?: DesktopContextAssemblyMetrics | null;
 }): Record<string, unknown> => ({
   executionId: input.executionId,
-  ...(input.contentBlocks ? { contentBlocks: input.contentBlocks } : {}),
   ...(input.plan ? { plan: input.plan } : {}),
   ...(input.citations && input.citations.length > 0 ? { citations: input.citations } : {}),
   ...(input.conversationRefs ? { conversationRefs: input.conversationRefs } : {}),
@@ -877,7 +1021,17 @@ const persistAssistantMessage = async (input: {
     input.userId,
     'assistant',
     input.content,
-    input.metadata,
+    {
+      ...input.metadata,
+      shareAction: {
+        ...(input.metadata.shareAction && typeof input.metadata.shareAction === 'object' && !Array.isArray(input.metadata.shareAction)
+          ? input.metadata.shareAction as Record<string, unknown>
+          : {}),
+        type: 'conversation',
+        conversationKey: buildConversationKey(input.threadId),
+        label: "Share this chat's knowledge",
+      },
+    },
     {
       requiredChannel: 'desktop',
       contextLimit: DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT,
@@ -957,11 +1111,13 @@ const loadContinuationMessageState = async (input: {
 };
 
 const loadThreadMemory = async (threadId: string, userId: string): Promise<{
+  meta: ThreadMetaSnapshot;
   summary: DesktopThreadSummary;
   taskState: DesktopTaskState;
 }> => {
   const thread = await desktopThreadsService.getThreadMeta(threadId, userId);
   return {
+    meta: thread,
     summary: parseDesktopThreadSummary((thread as Record<string, unknown>).summaryJson),
     taskState: parseDesktopTaskState((thread as Record<string, unknown>).taskStateJson),
   };
@@ -984,6 +1140,10 @@ const persistUiEvent = async (
   type: 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'action' | 'text' | 'done' | 'error' | 'plan',
   data: unknown,
 ) => {
+  if (!DURABLE_UI_EVENT_TYPES.has(type)) {
+    return;
+  }
+
   const phase = type === 'thinking' || type === 'thinking_token'
     ? 'planning'
     : type === 'plan'
@@ -1025,7 +1185,7 @@ const startRun = async (input: {
   messageId: string;
   entrypoint: 'desktop_send' | 'desktop_act' | 'desktop_scheduled_workflow';
   session: MemberSessionDTO;
-  mode: 'fast' | 'high' | 'xtreme';
+  mode: 'fast' | 'high';
   message: string;
 }) => {
   await executionService.startRun({
@@ -1188,6 +1348,11 @@ const hydrateConversationState = async (
     },
   });
   const conversationKey = buildConversationKey(threadId);
+  const hydrationVersion = `${history.cachedAt}:${history.messages[history.messages.length - 1]?.id ?? 'empty'}`;
+
+  if (conversationStateHydrationVersions.get(conversationKey) === hydrationVersion) {
+    return history;
+  }
 
   for (const message of history.messages.slice(-20)) {
     if (message.role === 'user') {
@@ -1199,6 +1364,7 @@ const hydrateConversationState = async (
       }
     }
   }
+  conversationStateHydrationVersions.set(conversationKey, hydrationVersion);
 
   return history;
 };
@@ -1243,30 +1409,34 @@ const hydrateAttachedFilesForArtifacts = async (input: {
     return [];
   }
 
-  const fileAssetIds = input.artifacts.map((artifact) => artifact.fileAssetId);
-  const assets = await prisma.fileAsset.findMany({
-    where: {
-      companyId: input.companyId,
-      id: { in: fileAssetIds },
-    },
-    select: {
-      id: true,
-      fileName: true,
-      mimeType: true,
-      cloudinaryUrl: true,
-    },
-  });
+  const fileAssetIds = Array.from(new Set(input.artifacts.map((artifact) => artifact.fileAssetId)));
+  const cacheKey = `${input.companyId}:${fileAssetIds.slice().sort().join(',')}`;
 
-  const byId = new Map(assets.map((asset) => [asset.id, asset]));
-  return fileAssetIds.flatMap((fileAssetId) => {
-    const asset = byId.get(fileAssetId);
-    if (!asset) return [];
-    return [{
-      fileAssetId: asset.id,
-      fileName: asset.fileName,
-      mimeType: asset.mimeType,
-      cloudinaryUrl: asset.cloudinaryUrl,
-    }];
+  return getCachedPromiseValue(attachedFileHydrationCache, cacheKey, ATTACHED_FILE_HYDRATION_CACHE_TTL_MS, async () => {
+    const assets = await prisma.fileAsset.findMany({
+      where: {
+        companyId: input.companyId,
+        id: { in: fileAssetIds },
+      },
+      select: {
+        id: true,
+        fileName: true,
+        mimeType: true,
+        cloudinaryUrl: true,
+      },
+    });
+
+    const byId = new Map(assets.map((asset) => [asset.id, asset]));
+    return fileAssetIds.flatMap((fileAssetId) => {
+      const asset = byId.get(fileAssetId);
+      if (!asset) return [];
+      return [{
+        fileAssetId: asset.id,
+        fileName: asset.fileName,
+        mimeType: asset.mimeType,
+        cloudinaryUrl: asset.cloudinaryUrl,
+      }];
+    });
   });
 };
 
@@ -1426,7 +1596,7 @@ const queryConversationMemoryWithFallback = async (input: {
     threadId: input.threadId,
     queryLength: input.queryText.trim().length,
     limit: input.limit,
-  });
+  }, { sampleRate: 0.2 });
 
   const globalMatches = await personalVectorMemoryService.query({
     companyId: input.companyId,
@@ -1438,7 +1608,7 @@ const queryConversationMemoryWithFallback = async (input: {
   logger.info(`${input.logPrefix}.global_fallback.completed`, {
     threadId: input.threadId,
     matchCount: globalMatches.length,
-  });
+  }, { sampleRate: 0.2 });
 
   return {
     matches: globalMatches,
@@ -1475,7 +1645,7 @@ const retrieveConversationMemory = async (input: {
       isMemoryQuestion,
       queryLength: input.queryText.trim().length,
       limit,
-    });
+    }, { sampleRate: 0.1 });
     const { matches, scope } = await queryConversationMemoryWithFallback({
       companyId: input.companyId,
       userId: input.userId,
@@ -1497,7 +1667,7 @@ const retrieveConversationMemory = async (input: {
       scope,
       matchCount: matches.length,
       snippetCount: snippets.length,
-    });
+    }, { sampleRate: 0.1 });
     return snippets;
   } catch (error) {
     logger.warn('desktop.context.conversation_retrieval.failed', {
@@ -1672,7 +1842,7 @@ const buildDesktopContextAssembly = async (input: {
   executionId: string;
   threadId: string;
   session: MemberSessionDTO;
-  mode: 'fast' | 'high' | 'xtreme';
+  mode: 'fast' | 'high';
   latestUserMessage: string;
   history: ThreadHistorySnapshot;
   workspace?: { name: string; path: string };
@@ -1950,7 +2120,7 @@ const buildSystemPrompt = (input: {
 
 const resolveDepartmentRuntime = async (
   session: MemberSessionDTO,
-  threadId: string,
+  threadMeta: ThreadMetaSnapshot,
   fallbackAllowedToolIds: string[],
 ): Promise<{
   threadDepartmentId?: string;
@@ -1963,9 +2133,8 @@ const resolveDepartmentRuntime = async (
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
 }> => {
-  const threadSnapshot = await desktopThreadsService.getThread(threadId, session.userId);
-  const pinnedDepartment = threadSnapshot.thread?.department;
-  const pinnedDepartmentId = threadSnapshot.thread?.departmentId ?? session.resolvedDepartmentId;
+  const pinnedDepartment = threadMeta.department;
+  const pinnedDepartmentId = threadMeta.departmentId ?? session.resolvedDepartmentId;
 
   const resolved = await departmentService.resolveRuntimeContext({
     userId: session.userId,
@@ -2058,7 +2227,7 @@ const stopOnPendingApproval = ({
   steps: Array<{ toolResults?: Array<{ output: unknown }> }>;
 }): boolean => Boolean(findPendingApproval(steps));
 
-const resolveTargetKey = async (mode: 'fast' | 'high' | 'xtreme') => resolveVercelLanguageModel(mode);
+const resolveTargetKey = async (mode: 'fast' | 'high') => resolveVercelLanguageModel(mode);
 
 const generateExecutionPlan = async (input: {
   message: string;
@@ -2196,7 +2365,7 @@ export const executeAutomatedDesktopTurn = async (input: {
   session: MemberSessionDTO;
   threadId: string;
   prompt: string;
-  mode?: 'fast' | 'high' | 'xtreme';
+  mode?: 'fast' | 'high';
   executionId?: string;
   entrypoint?: 'desktop_scheduled_workflow';
   attachedFiles?: AttachedFileRef[];
@@ -2213,8 +2382,11 @@ export const executeAutomatedDesktopTurn = async (input: {
   const executionId = input.executionId ?? randomUUID();
   const messageId = randomUUID();
   const requesterAiRole = input.session.aiRole ?? input.session.role;
-  const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(input.session.companyId, requesterAiRole);
-  const departmentRuntime = await resolveDepartmentRuntime(input.session, input.threadId, fallbackAllowedToolIds);
+  const [fallbackAllowedToolIds, threadMemory] = await Promise.all([
+    toolPermissionService.getAllowedTools(input.session.companyId, requesterAiRole),
+    loadThreadMemory(input.threadId, input.session.userId),
+  ]);
+  const departmentRuntime = await resolveDepartmentRuntime(input.session, threadMemory.meta, fallbackAllowedToolIds);
 
   await startRun({
     executionId,
@@ -2248,7 +2420,6 @@ export const executeAutomatedDesktopTurn = async (input: {
   });
 
   try {
-    const threadMemory = await loadThreadMemory(input.threadId, input.session.userId);
     const resolvedUserContext = resolveDesktopTaskReferences(input.prompt, threadMemory.taskState);
     const runtime: VercelRuntimeRequestContext = {
       channel: 'desktop',
@@ -2584,9 +2755,11 @@ export class VercelDesktopEngine {
     const executionId = requestedExecutionId ?? randomUUID();
     const messageId = randomUUID();
     const requesterAiRole = session.aiRole ?? session.role;
-    const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(session.companyId, requesterAiRole);
-    const departmentRuntime = await resolveDepartmentRuntime(session, threadId, fallbackAllowedToolIds);
-    const baseThreadMemory = await loadThreadMemory(threadId, session.userId);
+    const [fallbackAllowedToolIds, baseThreadMemory] = await Promise.all([
+      toolPermissionService.getAllowedTools(session.companyId, requesterAiRole),
+      loadThreadMemory(threadId, session.userId),
+    ]);
+    const departmentRuntime = await resolveDepartmentRuntime(session, baseThreadMemory.meta, fallbackAllowedToolIds);
     let activeThreadSummary = baseThreadMemory.summary;
     let activeTaskState = baseThreadMemory.taskState;
     if (attachedFiles.length > 0) {
@@ -2745,6 +2918,10 @@ export class VercelDesktopEngine {
             systemPrompt: 'Desktop child router',
             messages: [{ role: 'user', content: childRouterPrompt }],
             outputText: reply,
+            resolvedModel: {
+              effectiveModelId: config.GROQ_ROUTER_MODEL,
+              effectiveProvider: 'groq',
+            },
           });
           await appendEventSafe({
             executionId,
@@ -2766,13 +2943,15 @@ export class VercelDesktopEngine {
       }
 
       let persistedBlocks: PersistedContentBlock[] = [];
-      const routerAcknowledgement = childRoute.route === 'handoff'
-        ? childRoute.acknowledgement?.trim() || 'I’ll take this in steps and start working through it now.'
-        : null;
+      const routerAcknowledgement = childRoute.acknowledgement?.trim()
+        || (childRoute.route === 'handoff'
+          ? 'I’ll take this in steps and start working through it now.'
+          : null);
       if (routerAcknowledgement) {
-        logger.info('vercel.child_router.handoff', {
+        logger.info('vercel.child_router.acknowledgement', {
           executionId,
           threadId,
+          route: childRoute.route,
           reason: childRoute.reason ?? null,
           textPreview: summarizeText(routerAcknowledgement, 200),
         });
@@ -2782,10 +2961,10 @@ export class VercelDesktopEngine {
         await appendEventSafe({
           executionId,
           phase: 'planning',
-          eventType: 'child_router.handoff',
+          eventType: 'child_router.acknowledgement',
           actorType: 'agent',
           actorKey: 'child_router',
-          title: 'Child router handed off to main executor',
+          title: 'Child router acknowledgement delivered',
           summary: summarizeText(routerAcknowledgement, 600),
           status: 'done',
         });
@@ -3029,10 +3208,6 @@ export class VercelDesktopEngine {
       for await (const part of result.fullStream) {
         if (part.type === 'reasoning-start') {
           hasReasoningBlock = true;
-          logger.info('vercel.stream.reasoning.start', {
-            executionId,
-            threadId,
-          });
           sendSseEvent(res, 'thinking', { text: '' });
           queueUiEvent('thinking', { text: '' });
           persistedBlocks = ensureThinkingBlock(persistedBlocks);
@@ -3043,23 +3218,12 @@ export class VercelDesktopEngine {
           if (!part.text) continue;
           if (!hasReasoningBlock) {
             hasReasoningBlock = true;
-            logger.info('vercel.stream.reasoning.implicit_start', {
-              executionId,
-              threadId,
-            });
             sendSseEvent(res, 'thinking', { text: '' });
             queueUiEvent('thinking', { text: '' });
             persistedBlocks = ensureThinkingBlock(persistedBlocks);
           }
           reasoningDeltaCount += 1;
           reasoningCharCount += part.text.length;
-          logger.info('vercel.stream.reasoning.delta', {
-            executionId,
-            threadId,
-            chars: part.text.length,
-            deltaCount: reasoningDeltaCount,
-            totalChars: reasoningCharCount,
-          });
           sendSseEvent(res, 'thinking_token', part.text);
           queueUiEvent('thinking_token', part.text);
           persistedBlocks = appendThinkingBlock(persistedBlocks, part.text);
@@ -3067,12 +3231,6 @@ export class VercelDesktopEngine {
         }
 
         if (part.type === 'reasoning-end') {
-          logger.info('vercel.stream.reasoning.end', {
-            executionId,
-            threadId,
-            deltaCount: reasoningDeltaCount,
-            totalChars: reasoningCharCount,
-          });
           continue;
         }
 
@@ -3280,14 +3438,16 @@ export class VercelDesktopEngine {
     const executionId = requestedExecutionId ?? randomUUID();
     const messageId = randomUUID();
     const requesterAiRole = session.aiRole ?? session.role;
-    const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(session.companyId, requesterAiRole);
-    const departmentRuntime = await resolveDepartmentRuntime(session, threadId, fallbackAllowedToolIds);
-    const baseThreadMemory = await loadThreadMemory(threadId, session.userId);
-    const continuationState = await loadContinuationMessageState({
-      threadId,
-      userId: session.userId,
-      messageId: continuationMessageId,
-    });
+    const [fallbackAllowedToolIds, baseThreadMemory, continuationState] = await Promise.all([
+      toolPermissionService.getAllowedTools(session.companyId, requesterAiRole),
+      loadThreadMemory(threadId, session.userId),
+      loadContinuationMessageState({
+        threadId,
+        userId: session.userId,
+        messageId: continuationMessageId,
+      }),
+    ]);
+    const departmentRuntime = await resolveDepartmentRuntime(session, baseThreadMemory.meta, fallbackAllowedToolIds);
     let activeThreadSummary = continuationState.threadSummary.sourceMessageCount > 0
       ? continuationState.threadSummary
       : baseThreadMemory.summary;
@@ -3699,14 +3859,16 @@ export class VercelDesktopEngine {
     const executionId = requestedExecutionId ?? randomUUID();
     const messageId = randomUUID();
     const requesterAiRole = session.aiRole ?? session.role;
-    const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(session.companyId, requesterAiRole);
-    const departmentRuntime = await resolveDepartmentRuntime(session, threadId, fallbackAllowedToolIds);
-    const baseThreadMemory = await loadThreadMemory(threadId, session.userId);
-    const continuationState = await loadContinuationMessageState({
-      threadId,
-      userId: session.userId,
-      messageId: continuationMessageId,
-    });
+    const [fallbackAllowedToolIds, baseThreadMemory, continuationState] = await Promise.all([
+      toolPermissionService.getAllowedTools(session.companyId, requesterAiRole),
+      loadThreadMemory(threadId, session.userId),
+      loadContinuationMessageState({
+        threadId,
+        userId: session.userId,
+        messageId: continuationMessageId,
+      }),
+    ]);
+    const departmentRuntime = await resolveDepartmentRuntime(session, baseThreadMemory.meta, fallbackAllowedToolIds);
     let activeThreadSummary = continuationState.threadSummary.sourceMessageCount > 0
       ? continuationState.threadSummary
       : baseThreadMemory.summary;

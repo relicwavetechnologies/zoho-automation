@@ -292,14 +292,24 @@ export class DesktopAuthService extends BaseService {
   <head>
     <meta charset="utf-8" />
     <title>Lark Desktop Sign-In</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
   </head>
-  <body style="font-family: sans-serif; background: #0a0a0a; color: #e4e4e7; display: flex; min-height: 100vh; align-items: center; justify-content: center;">
-    <div style="max-width: 520px; padding: 24px; border: 1px solid #27272a; border-radius: 12px; background: #111;">
-      <h1 style="margin: 0 0 12px 0; font-size: 20px;">Returning to desktop…</h1>
-      <p style="margin: 0 0 16px 0; color: #a1a1aa;">If the app does not open automatically, use the button below.</p>
-      <a href="${safeTarget}" style="display: inline-block; padding: 10px 16px; border-radius: 8px; background: #f4f4f5; color: #09090b; text-decoration: none; font-weight: 600;">Open Cursorr Desktop</a>
+  <body style="margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#05070b;color:#f4f4f5;min-height:100vh;display:flex;align-items:center;justify-content:center;overflow:hidden;">
+    <div style="position:fixed;inset:0;background:
+      radial-gradient(circle at 20% 20%, rgba(59,130,246,0.14), transparent 28%),
+      radial-gradient(circle at 80% 30%, rgba(16,185,129,0.10), transparent 24%),
+      linear-gradient(180deg, #07090d 0%, #05070b 100%);"></div>
+    <div style="position:fixed;inset:0;opacity:0.14;background-image:radial-gradient(rgba(255,255,255,0.22) 0.75px, transparent 0.75px);background-size:24px 24px;"></div>
+    <main style="position:relative;z-index:1;width:min(560px,calc(100vw - 40px));padding:32px 32px 28px;border:1px solid rgba(255,255,255,0.09);border-radius:28px;background:rgba(10,12,18,0.86);box-shadow:0 30px 120px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.05);backdrop-filter:blur(18px);">
+      <div style="display:inline-flex;align-items:center;gap:10px;margin-bottom:18px;padding:7px 12px;border-radius:999px;border:1px solid rgba(59,130,246,0.26);background:rgba(59,130,246,0.10);font-size:11px;font-weight:800;letter-spacing:0.18em;text-transform:uppercase;color:#60a5fa;">Desktop Handoff</div>
+      <h1 style="margin:0 0 12px 0;font-size:28px;line-height:1.05;font-weight:800;letter-spacing:-0.04em;">Returning to desktop…</h1>
+      <p style="margin:0 0 26px 0;max-width:420px;font-size:16px;line-height:1.6;color:rgba(228,228,231,0.68);">Your Lark sign-in finished successfully. If the desktop app does not open on its own, use the handoff button below.</p>
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+        <a href="${safeTarget}" style="display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 18px;border-radius:14px;background:linear-gradient(180deg,#3b82f6 0%,#2563eb 100%);color:#eff6ff;text-decoration:none;font-size:13px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;box-shadow:0 10px 30px rgba(37,99,235,0.28);">Open Divo Desktop</a>
+        <span style="font-size:12px;line-height:1.5;color:rgba(161,161,170,0.72);">If your browser blocks the custom protocol, approve the prompt and retry.</span>
+      </div>
       <script>window.location.replace(${JSON.stringify(target.toString())});</script>
-    </div>
+    </main>
   </body>
 </html>`;
   }
@@ -310,13 +320,20 @@ export class DesktopAuthService extends BaseService {
   <head>
     <meta charset="utf-8" />
     <title>Google Workspace Connected</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
   </head>
-  <body style="font-family: sans-serif; background: #0a0a0a; color: #e4e4e7; display: flex; min-height: 100vh; align-items: center; justify-content: center;">
-    <div style="max-width: 520px; padding: 24px; border: 1px solid #27272a; border-radius: 12px; background: #111;">
-      <h1 style="margin: 0 0 12px 0; font-size: 20px;">${input.success ? 'Google connected' : 'Google connection failed'}</h1>
-      <p style="margin: 0 0 16px 0; color: #a1a1aa;">${input.message}</p>
-      <p style="margin: 0; color: #71717a;">You can return to the desktop app.</p>
-    </div>
+  <body style="margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#05070b;color:#f4f4f5;min-height:100vh;display:flex;align-items:center;justify-content:center;overflow:hidden;">
+    <div style="position:fixed;inset:0;background:
+      radial-gradient(circle at 18% 22%, rgba(59,130,246,0.14), transparent 28%),
+      radial-gradient(circle at 78% 26%, rgba(16,185,129,0.10), transparent 24%),
+      linear-gradient(180deg, #07090d 0%, #05070b 100%);"></div>
+    <div style="position:fixed;inset:0;opacity:0.14;background-image:radial-gradient(rgba(255,255,255,0.22) 0.75px, transparent 0.75px);background-size:24px 24px;"></div>
+    <main style="position:relative;z-index:1;width:min(560px,calc(100vw - 40px));padding:32px 32px 28px;border:1px solid rgba(255,255,255,0.09);border-radius:28px;background:rgba(10,12,18,0.86);box-shadow:0 30px 120px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.05);backdrop-filter:blur(18px);">
+      <div style="display:inline-flex;align-items:center;gap:10px;margin-bottom:18px;padding:7px 12px;border-radius:999px;border:1px solid ${input.success ? 'rgba(16,185,129,0.24)' : 'rgba(239,68,68,0.22)'};background:${input.success ? 'rgba(16,185,129,0.10)' : 'rgba(239,68,68,0.10)'};font-size:11px;font-weight:800;letter-spacing:0.18em;text-transform:uppercase;color:${input.success ? '#34d399' : '#f87171'};">${input.success ? 'Connection Complete' : 'Connection Failed'}</div>
+      <h1 style="margin:0 0 12px 0;font-size:28px;line-height:1.05;font-weight:800;letter-spacing:-0.04em;">${input.success ? 'Google connected' : 'Google connection failed'}</h1>
+      <p style="margin:0 0 16px 0;max-width:430px;font-size:16px;line-height:1.6;color:rgba(228,228,231,0.68);">${input.message}</p>
+      <p style="margin:0;font-size:12px;line-height:1.6;color:rgba(161,161,170,0.72);">You can return to the desktop app and continue from the integrations screen.</p>
+    </main>
   </body>
 </html>`;
   }

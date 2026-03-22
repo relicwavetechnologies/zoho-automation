@@ -36,7 +36,7 @@ class ToolAccessCache {
         companyId,
         role,
         toolCount: values.length,
-      });
+      }, { sampleRate: 0.05 });
       return values;
     } catch {
       return null;
@@ -57,7 +57,7 @@ class ToolAccessCache {
       role,
       toolCount: normalized.length,
       hash: createHash('sha1').update(normalized.join(',')).digest('hex').slice(0, 12),
-    });
+    }, { sampleRate: 0.1 });
   }
 
   async set(companyId: string, role: string, toolIds: string[]): Promise<void> {

@@ -62,7 +62,7 @@ class DepartmentRuntimeCache {
         userId: input.userId,
         departmentId: input.departmentId,
         allowedToolCount: parsed.allowedToolIds.length,
-      });
+      }, { sampleRate: 0.05 });
       return parsed;
     } catch {
       return null;
@@ -88,7 +88,7 @@ class DepartmentRuntimeCache {
       userId: input.userId,
       departmentId: input.departmentId,
       allowedToolCount: input.runtime.allowedToolIds.length,
-    });
+    }, { sampleRate: 0.1 });
   }
 
   async invalidateDepartment(companyId: string, departmentId: string): Promise<void> {
