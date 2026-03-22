@@ -20,7 +20,38 @@ export type PersonalMemoryMatch = {
   documentKey?: string;
 };
 
+const PERSONAL_VECTOR_QUERY_CACHE_TTL_MS = 20_000;
+
+type PersonalMemoryQueryCacheEntry = {
+  expiresAt: number;
+  promise: Promise<PersonalMemoryMatch[]>;
+};
+
 class PersonalVectorMemoryService {
+  private readonly queryCache = new Map<string, PersonalMemoryQueryCacheEntry>();
+
+  private buildQueryCacheKey(input: {
+    companyId: string;
+    requesterUserId: string;
+    text: string;
+    conversationKey?: string;
+  }): string {
+    return [
+      input.companyId,
+      input.requesterUserId,
+      input.conversationKey ?? '',
+      hashContent(input.text.trim().toLowerCase()),
+    ].join(':');
+  }
+
+  private pruneExpiredQueryCache(nowMs = Date.now()): void {
+    for (const [key, entry] of this.queryCache.entries()) {
+      if (entry.expiresAt <= nowMs) {
+        this.queryCache.delete(key);
+      }
+    }
+  }
+
   async query(input: {
     companyId: string;
     requesterUserId: string;
@@ -33,96 +64,124 @@ class PersonalVectorMemoryService {
       return [];
     }
 
-    logger.info('personal.vector.query.start', {
-      companyId: input.companyId,
-      requesterUserId: input.requesterUserId,
-      conversationKey: input.conversationKey,
-      queryLength: normalized.length,
-      limit: input.limit,
-    });
-
-    const [queryVector] = await embeddingService.embedQueries([normalized]);
+    this.pruneExpiredQueryCache();
     const profile = RETRIEVAL_PROFILE_CONFIG.chat;
-    const groups = await qdrantAdapter.search({
+    const effectiveLimit = Math.max(profile.finalTopK, input.limit ?? profile.finalTopK);
+    const cacheKey = this.buildQueryCacheKey({
       companyId: input.companyId,
       requesterUserId: input.requesterUserId,
       conversationKey: input.conversationKey,
-      denseVector: queryVector,
-      limit: Math.max(1, Math.min(profile.groupLimit, input.limit ?? profile.finalTopK)),
-      candidateLimit: profile.branchLimit,
-      retrievalProfile: 'chat',
-      lexicalQueryText: normalized,
-      fusion: 'dbsf',
-      groupByField: 'documentKey',
-      groupSize: profile.groupSize,
-      sourceTypes: ['chat_turn'],
-      includePersonal: true,
-      includeShared: false,
-      includePublic: false,
+      text: normalized,
     });
-    const matches = groups.flatMap((group) => group.hits);
-    const reranked = await googleRankingService.rerank(
-      normalized,
-      matches.map((match) => ({
-        id: `${match.sourceType}:${match.sourceId}:${match.chunkIndex}`,
-        documentKey: match.documentKey ?? `${input.companyId}:chat_turn:${match.sourceId}`,
-        chunkIndex: match.chunkIndex,
-        title: typeof match.payload.title === 'string' ? match.payload.title : undefined,
-        content:
-          typeof match.payload._chunk === 'string'
-            ? match.payload._chunk
-            : typeof match.payload.text === 'string'
-              ? match.payload.text
-              : '',
-        score: match.score,
-        payload: match.payload,
-      })),
-      profile.finalTopK,
-      { required: config.NODE_ENV === 'production' && !config.RAG_CHAT_RERANK_OPTIONAL },
-    );
-    const rerankedById = new Map(reranked.map((item) => [item.id, item]));
+    const cached = this.queryCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return (await cached.promise).slice(0, input.limit ?? profile.finalTopK);
+    }
 
-    const finalMatches = matches
-      .filter((match) =>
-        rerankedById.has(`${match.sourceType}:${match.sourceId}:${match.chunkIndex}`),
-      )
-      .sort((left, right) => {
-        const leftScore =
-          rerankedById.get(`${left.sourceType}:${left.sourceId}:${left.chunkIndex}`)?.rerankScore ??
-          left.score;
-        const rightScore =
-          rerankedById.get(`${right.sourceType}:${right.sourceId}:${right.chunkIndex}`)
-            ?.rerankScore ?? right.score;
-        return rightScore - leftScore;
-      })
-      .map((match) => ({
-        sourceId: match.sourceId,
-        score: match.score,
-        documentKey: match.documentKey,
-        content:
-          typeof match.payload._chunk === 'string'
-            ? match.payload._chunk
-            : typeof match.payload.text === 'string'
-              ? match.payload.text
-              : '',
-        role: typeof match.payload.role === 'string' ? match.payload.role : undefined,
-        conversationKey:
-          typeof match.payload.conversationKey === 'string'
-            ? match.payload.conversationKey
-            : undefined,
-      }))
-      .filter((match) => match.content.length > 0);
+    const queryPromise = (async () => {
+      logger.info('personal.vector.query.start', {
+        companyId: input.companyId,
+        requesterUserId: input.requesterUserId,
+        conversationKey: input.conversationKey,
+        queryLength: normalized.length,
+        limit: input.limit,
+        effectiveLimit,
+      });
 
-    logger.info('personal.vector.query.completed', {
-      companyId: input.companyId,
-      requesterUserId: input.requesterUserId,
-      conversationKey: input.conversationKey,
-      candidateCount: matches.length,
-      resultCount: finalMatches.length,
-      topScores: finalMatches.slice(0, 3).map((match) => Number(match.score.toFixed(4))),
+      const [queryVector] = await embeddingService.embedQueries([normalized]);
+      const groups = await qdrantAdapter.search({
+        companyId: input.companyId,
+        requesterUserId: input.requesterUserId,
+        conversationKey: input.conversationKey,
+        denseVector: queryVector,
+        limit: Math.max(1, Math.min(profile.groupLimit, effectiveLimit)),
+        candidateLimit: profile.branchLimit,
+        retrievalProfile: 'chat',
+        lexicalQueryText: normalized,
+        fusion: 'dbsf',
+        groupByField: 'documentKey',
+        groupSize: profile.groupSize,
+        sourceTypes: ['chat_turn'],
+        includePersonal: true,
+        includeShared: false,
+        includePublic: false,
+      });
+      const matches = groups.flatMap((group) => group.hits);
+      const reranked = await googleRankingService.rerank(
+        normalized,
+        matches.map((match) => ({
+          id: `${match.sourceType}:${match.sourceId}:${match.chunkIndex}`,
+          documentKey: match.documentKey ?? `${input.companyId}:chat_turn:${match.sourceId}`,
+          chunkIndex: match.chunkIndex,
+          title: typeof match.payload.title === 'string' ? match.payload.title : undefined,
+          content:
+            typeof match.payload._chunk === 'string'
+              ? match.payload._chunk
+              : typeof match.payload.text === 'string'
+                ? match.payload.text
+                : '',
+          score: match.score,
+          payload: match.payload,
+        })),
+        profile.finalTopK,
+        { required: config.NODE_ENV === 'production' && !config.RAG_CHAT_RERANK_OPTIONAL },
+      );
+      const rerankedById = new Map(reranked.map((item) => [item.id, item]));
+
+      const finalMatches = matches
+        .filter((match) =>
+          rerankedById.has(`${match.sourceType}:${match.sourceId}:${match.chunkIndex}`),
+        )
+        .sort((left, right) => {
+          const leftScore =
+            rerankedById.get(`${left.sourceType}:${left.sourceId}:${left.chunkIndex}`)?.rerankScore ??
+            left.score;
+          const rightScore =
+            rerankedById.get(`${right.sourceType}:${right.sourceId}:${right.chunkIndex}`)
+              ?.rerankScore ?? right.score;
+          return rightScore - leftScore;
+        })
+        .map((match) => ({
+          sourceId: match.sourceId,
+          score: match.score,
+          documentKey: match.documentKey,
+          content:
+            typeof match.payload._chunk === 'string'
+              ? match.payload._chunk
+              : typeof match.payload.text === 'string'
+                ? match.payload.text
+                : '',
+          role: typeof match.payload.role === 'string' ? match.payload.role : undefined,
+          conversationKey:
+            typeof match.payload.conversationKey === 'string'
+              ? match.payload.conversationKey
+              : undefined,
+        }))
+        .filter((match) => match.content.length > 0);
+
+      logger.info('personal.vector.query.completed', {
+        companyId: input.companyId,
+        requesterUserId: input.requesterUserId,
+        conversationKey: input.conversationKey,
+        candidateCount: matches.length,
+        resultCount: finalMatches.length,
+        topScores: finalMatches.slice(0, 3).map((match) => Number(match.score.toFixed(4))),
+      });
+
+      return finalMatches;
+    })();
+
+    this.queryCache.set(cacheKey, {
+      expiresAt: Date.now() + PERSONAL_VECTOR_QUERY_CACHE_TTL_MS,
+      promise: queryPromise,
     });
 
-    return finalMatches;
+    try {
+      return (await queryPromise).slice(0, input.limit ?? profile.finalTopK);
+    } catch (error) {
+      this.queryCache.delete(cacheKey);
+      throw error;
+    }
   }
 
   async storeChatTurn(input: {

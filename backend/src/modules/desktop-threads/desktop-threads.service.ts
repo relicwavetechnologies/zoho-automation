@@ -85,7 +85,7 @@ export class DesktopThreadsService extends BaseService {
       threadId,
       userId,
       loader: async () => {
-        const thread = await this.repository.getThread(threadId, userId);
+        const thread = await this.repository.getOwnedThread(threadId, userId);
         if (!thread) throw new HttpException(404, 'Thread not found');
         return {
           id: thread.id,
@@ -117,9 +117,7 @@ export class DesktopThreadsService extends BaseService {
   }
 
   async getThreadContext(threadId: string, userId: string, limit = 120) {
-    const thread = await this.repository.getThread(threadId, userId);
-    if (!thread) throw new HttpException(404, 'Thread not found');
-
+    const thread = await this.getThreadMeta(threadId, userId);
     const messages = await this.repository.listMessages(threadId, limit);
     return { thread, messages };
   }

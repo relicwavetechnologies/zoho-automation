@@ -215,8 +215,8 @@ export function MessageBubble({ message, isLast }: Props): JSX.Element {
             </div>
           )}
           {isUser ? (
-            <div className="group/user relative inline-block rounded-2xl bg-secondary/40 px-4 py-3 max-w-[85%] border border-border/50 shadow-sm text-right mt-1 mb-1 break-words">
-              <p className="text-[13px] leading-relaxed text-foreground/90 whitespace-pre-wrap text-left">
+            <div className="group/user relative inline-block rounded-3xl bg-secondary/40 px-5 py-3.5 max-w-[85%] border border-border/50 shadow-sm text-right mt-1 mb-1 break-words">
+              <p className="text-[14px] leading-[1.6] text-foreground/90 whitespace-pre-wrap text-left break-words">
                 {displayContent}
               </p>
 

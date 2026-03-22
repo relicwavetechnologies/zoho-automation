@@ -140,6 +140,12 @@ type DesktopContextAssemblyMetrics = {
   compactionTier: number;
 };
 
+type ThreadMetaSnapshot = Awaited<ReturnType<typeof desktopThreadsService.getThreadMeta>>;
+type TimedPromiseCacheEntry<T> = {
+  expiresAt: number;
+  promise: Promise<T>;
+};
+
 const DURABLE_UI_EVENT_TYPES = new Set(['plan', 'action', 'error']);
 
 const extractFirstJsonObject = (text: string): string | null => {
@@ -275,11 +281,44 @@ const DESKTOP_LIGHT_CONTEXT_TARGET_RATIO = 0.12;
 const DESKTOP_NORMAL_CONTEXT_TARGET_RATIO = 0.28;
 const DESKTOP_MAX_LOOP_STEPS = 200;
 const WORKFLOW_AUTOCONTINUE_LIMIT = 2;
+const ATTACHED_FILE_HYDRATION_CACHE_TTL_MS = 30_000;
+
+const attachedFileHydrationCache = new Map<string, TimedPromiseCacheEntry<AttachedFileRef[]>>();
+const conversationStateHydrationVersions = new Map<string, string>();
 
 const summarizeText = (value: string | null | undefined, limit = 280): string | null => {
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const getCachedPromiseValue = async <T>(
+  cache: Map<string, TimedPromiseCacheEntry<T>>,
+  key: string,
+  ttlMs: number,
+  loader: () => Promise<T>,
+): Promise<T> => {
+  const now = Date.now();
+  for (const [entryKey, entry] of cache.entries()) {
+    if (entry.expiresAt <= now) {
+      cache.delete(entryKey);
+    }
+  }
+
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return cached.promise;
+  }
+
+  const promise = loader().catch((error) => {
+    cache.delete(key);
+    throw error;
+  });
+  cache.set(key, {
+    expiresAt: now + ttlMs,
+    promise,
+  });
+  return promise;
 };
 
 const isWorkflowExecutionRequest = (metadata?: Record<string, unknown>): boolean =>
@@ -1022,11 +1061,13 @@ const loadContinuationMessageState = async (input: {
 };
 
 const loadThreadMemory = async (threadId: string, userId: string): Promise<{
+  meta: ThreadMetaSnapshot;
   summary: DesktopThreadSummary;
   taskState: DesktopTaskState;
 }> => {
   const thread = await desktopThreadsService.getThreadMeta(threadId, userId);
   return {
+    meta: thread,
     summary: parseDesktopThreadSummary((thread as Record<string, unknown>).summaryJson),
     taskState: parseDesktopTaskState((thread as Record<string, unknown>).taskStateJson),
   };
@@ -1257,6 +1298,11 @@ const hydrateConversationState = async (
     },
   });
   const conversationKey = buildConversationKey(threadId);
+  const hydrationVersion = `${history.cachedAt}:${history.messages[history.messages.length - 1]?.id ?? 'empty'}`;
+
+  if (conversationStateHydrationVersions.get(conversationKey) === hydrationVersion) {
+    return history;
+  }
 
   for (const message of history.messages.slice(-20)) {
     if (message.role === 'user') {
@@ -1268,6 +1314,7 @@ const hydrateConversationState = async (
       }
     }
   }
+  conversationStateHydrationVersions.set(conversationKey, hydrationVersion);
 
   return history;
 };
@@ -1312,30 +1359,34 @@ const hydrateAttachedFilesForArtifacts = async (input: {
     return [];
   }
 
-  const fileAssetIds = input.artifacts.map((artifact) => artifact.fileAssetId);
-  const assets = await prisma.fileAsset.findMany({
-    where: {
-      companyId: input.companyId,
-      id: { in: fileAssetIds },
-    },
-    select: {
-      id: true,
-      fileName: true,
-      mimeType: true,
-      cloudinaryUrl: true,
-    },
-  });
+  const fileAssetIds = Array.from(new Set(input.artifacts.map((artifact) => artifact.fileAssetId)));
+  const cacheKey = `${input.companyId}:${fileAssetIds.slice().sort().join(',')}`;
 
-  const byId = new Map(assets.map((asset) => [asset.id, asset]));
-  return fileAssetIds.flatMap((fileAssetId) => {
-    const asset = byId.get(fileAssetId);
-    if (!asset) return [];
-    return [{
-      fileAssetId: asset.id,
-      fileName: asset.fileName,
-      mimeType: asset.mimeType,
-      cloudinaryUrl: asset.cloudinaryUrl,
-    }];
+  return getCachedPromiseValue(attachedFileHydrationCache, cacheKey, ATTACHED_FILE_HYDRATION_CACHE_TTL_MS, async () => {
+    const assets = await prisma.fileAsset.findMany({
+      where: {
+        companyId: input.companyId,
+        id: { in: fileAssetIds },
+      },
+      select: {
+        id: true,
+        fileName: true,
+        mimeType: true,
+        cloudinaryUrl: true,
+      },
+    });
+
+    const byId = new Map(assets.map((asset) => [asset.id, asset]));
+    return fileAssetIds.flatMap((fileAssetId) => {
+      const asset = byId.get(fileAssetId);
+      if (!asset) return [];
+      return [{
+        fileAssetId: asset.id,
+        fileName: asset.fileName,
+        mimeType: asset.mimeType,
+        cloudinaryUrl: asset.cloudinaryUrl,
+      }];
+    });
   });
 };
 
@@ -2008,7 +2059,7 @@ const buildSystemPrompt = (input: {
 
 const resolveDepartmentRuntime = async (
   session: MemberSessionDTO,
-  threadId: string,
+  threadMeta: ThreadMetaSnapshot,
   fallbackAllowedToolIds: string[],
 ): Promise<{
   threadDepartmentId?: string;
@@ -2021,9 +2072,8 @@ const resolveDepartmentRuntime = async (
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
 }> => {
-  const threadSnapshot = await desktopThreadsService.getThread(threadId, session.userId);
-  const pinnedDepartment = threadSnapshot.thread?.department;
-  const pinnedDepartmentId = threadSnapshot.thread?.departmentId ?? session.resolvedDepartmentId;
+  const pinnedDepartment = threadMeta.department;
+  const pinnedDepartmentId = threadMeta.departmentId ?? session.resolvedDepartmentId;
 
   const resolved = await departmentService.resolveRuntimeContext({
     userId: session.userId,
@@ -2271,8 +2321,11 @@ export const executeAutomatedDesktopTurn = async (input: {
   const executionId = input.executionId ?? randomUUID();
   const messageId = randomUUID();
   const requesterAiRole = input.session.aiRole ?? input.session.role;
-  const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(input.session.companyId, requesterAiRole);
-  const departmentRuntime = await resolveDepartmentRuntime(input.session, input.threadId, fallbackAllowedToolIds);
+  const [fallbackAllowedToolIds, threadMemory] = await Promise.all([
+    toolPermissionService.getAllowedTools(input.session.companyId, requesterAiRole),
+    loadThreadMemory(input.threadId, input.session.userId),
+  ]);
+  const departmentRuntime = await resolveDepartmentRuntime(input.session, threadMemory.meta, fallbackAllowedToolIds);
 
   await startRun({
     executionId,
@@ -2306,7 +2359,6 @@ export const executeAutomatedDesktopTurn = async (input: {
   });
 
   try {
-    const threadMemory = await loadThreadMemory(input.threadId, input.session.userId);
     const resolvedUserContext = resolveDesktopTaskReferences(input.prompt, threadMemory.taskState);
     const runtime: VercelRuntimeRequestContext = {
       channel: 'desktop',
@@ -2642,9 +2694,11 @@ export class VercelDesktopEngine {
     const executionId = requestedExecutionId ?? randomUUID();
     const messageId = randomUUID();
     const requesterAiRole = session.aiRole ?? session.role;
-    const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(session.companyId, requesterAiRole);
-    const departmentRuntime = await resolveDepartmentRuntime(session, threadId, fallbackAllowedToolIds);
-    const baseThreadMemory = await loadThreadMemory(threadId, session.userId);
+    const [fallbackAllowedToolIds, baseThreadMemory] = await Promise.all([
+      toolPermissionService.getAllowedTools(session.companyId, requesterAiRole),
+      loadThreadMemory(threadId, session.userId),
+    ]);
+    const departmentRuntime = await resolveDepartmentRuntime(session, baseThreadMemory.meta, fallbackAllowedToolIds);
     let activeThreadSummary = baseThreadMemory.summary;
     let activeTaskState = baseThreadMemory.taskState;
     if (attachedFiles.length > 0) {
@@ -3342,14 +3396,16 @@ export class VercelDesktopEngine {
     const executionId = requestedExecutionId ?? randomUUID();
     const messageId = randomUUID();
     const requesterAiRole = session.aiRole ?? session.role;
-    const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(session.companyId, requesterAiRole);
-    const departmentRuntime = await resolveDepartmentRuntime(session, threadId, fallbackAllowedToolIds);
-    const baseThreadMemory = await loadThreadMemory(threadId, session.userId);
-    const continuationState = await loadContinuationMessageState({
-      threadId,
-      userId: session.userId,
-      messageId: continuationMessageId,
-    });
+    const [fallbackAllowedToolIds, baseThreadMemory, continuationState] = await Promise.all([
+      toolPermissionService.getAllowedTools(session.companyId, requesterAiRole),
+      loadThreadMemory(threadId, session.userId),
+      loadContinuationMessageState({
+        threadId,
+        userId: session.userId,
+        messageId: continuationMessageId,
+      }),
+    ]);
+    const departmentRuntime = await resolveDepartmentRuntime(session, baseThreadMemory.meta, fallbackAllowedToolIds);
     let activeThreadSummary = continuationState.threadSummary.sourceMessageCount > 0
       ? continuationState.threadSummary
       : baseThreadMemory.summary;
@@ -3761,14 +3817,16 @@ export class VercelDesktopEngine {
     const executionId = requestedExecutionId ?? randomUUID();
     const messageId = randomUUID();
     const requesterAiRole = session.aiRole ?? session.role;
-    const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(session.companyId, requesterAiRole);
-    const departmentRuntime = await resolveDepartmentRuntime(session, threadId, fallbackAllowedToolIds);
-    const baseThreadMemory = await loadThreadMemory(threadId, session.userId);
-    const continuationState = await loadContinuationMessageState({
-      threadId,
-      userId: session.userId,
-      messageId: continuationMessageId,
-    });
+    const [fallbackAllowedToolIds, baseThreadMemory, continuationState] = await Promise.all([
+      toolPermissionService.getAllowedTools(session.companyId, requesterAiRole),
+      loadThreadMemory(threadId, session.userId),
+      loadContinuationMessageState({
+        threadId,
+        userId: session.userId,
+        messageId: continuationMessageId,
+      }),
+    ]);
+    const departmentRuntime = await resolveDepartmentRuntime(session, baseThreadMemory.meta, fallbackAllowedToolIds);
     let activeThreadSummary = continuationState.threadSummary.sourceMessageCount > 0
       ? continuationState.threadSummary
       : baseThreadMemory.summary;
