@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Activity, Cpu, Zap, BarChart3 } from 'lucide-react';
+import { Activity, Cpu, Zap, BarChart3, Layers3 } from 'lucide-react';
 
 import { useAdminAuth } from '../auth/AdminAuthProvider';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -8,8 +8,9 @@ import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { ExecutionsPage } from './ExecutionsPage';
 import TokenUsagePage from './TokenUsagePage';
 import { AiModelsPage } from './AiModelsPage';
+import { RagDiagnosticsPage } from './RagDiagnosticsPage';
 
-const AI_OPS_TABS = ['executions', 'token-usage', 'models'] as const;
+const AI_OPS_TABS = ['executions', 'token-usage', 'rag-diagnostics', 'models'] as const;
 type AiOpsTab = (typeof AI_OPS_TABS)[number];
 
 const isAiOpsTab = (value: string | null): value is AiOpsTab =>
@@ -67,6 +68,13 @@ export const AiOpsPage = () => {
                 <BarChart3 className="h-3.5 w-3.5" />
                 Token Usage
               </TabsTrigger>
+              <TabsTrigger
+                value="rag-diagnostics"
+                className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-10 text-xs font-bold tracking-wider uppercase transition-all flex items-center gap-2"
+              >
+                <Layers3 className="h-3.5 w-3.5" />
+                RAG Diagnostics
+              </TabsTrigger>
               {isSuperAdmin ? (
                 <TabsTrigger 
                   value="models" 
@@ -83,6 +91,7 @@ export const AiOpsPage = () => {
           <div className="p-4 md:p-6 lg:p-8 animate-in slide-in-from-bottom-2 duration-500 min-w-0">
             {selectedTab === 'executions' ? <ExecutionsPage /> : null}
             {selectedTab === 'token-usage' ? <TokenUsagePage /> : null}
+            {selectedTab === 'rag-diagnostics' ? <RagDiagnosticsPage /> : null}
             {selectedTab === 'models' && isSuperAdmin ? <AiModelsPage /> : null}
           </div>
         </CardContent>

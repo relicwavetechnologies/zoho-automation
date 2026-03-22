@@ -14,6 +14,13 @@ router.get('/members', requireRbacAction('onboarding.manage'), asyncHandler(comp
 router.get('/directory', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.getCompanyDirectory));
 router.get('/invites', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.listInvites));
 router.post('/invites', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.createInvite));
+router.get('/rag/files', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.listRagFiles));
+router.get(
+  '/rag/files/:fileAssetId',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.getRagFileDiagnostics),
+);
+router.post('/rag/replay', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.replayRagQuery));
 router.get('/:companyId/token-usage', requireRbacAction('onboarding.manage'), asyncHandler(adminAiTokenUsageController.getCompanyTokenUsage));
 router.post(
   '/invites/:inviteId/cancel',

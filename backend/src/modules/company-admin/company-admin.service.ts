@@ -34,10 +34,13 @@ import { zohoRoleAccessService } from '../../company/tools/zoho-role-access.serv
 import { knowledgeShareService } from '../../company/knowledge-share/knowledge-share.service';
 import { prisma } from '../../utils/prisma';
 import { qdrantAdapter, vectorDocumentRepository } from '../../company/integrations/vector';
+import { fileRetrievalService } from '../../company/retrieval/file-retrieval.service';
+import { retrievalOrchestratorService, retrievalPlannerService } from '../../company/retrieval';
 import {
   REQUIRED_ZOHO_OAUTH_SCOPES,
   resolveZohoOAuthScopes,
 } from '../../company/integrations/zoho/zoho-oauth-scopes';
+import { chooseFileChunkingPlan } from '../file-upload/file-chunking';
 
 export type SessionScope = {
   userId: string;
@@ -62,6 +65,14 @@ type CompanyDirectoryEntry = {
   larkRoles: string[];
   createdAt?: string;
   updatedAt?: string;
+};
+
+type RagReplayInput = {
+  companyId?: string;
+  query: string;
+  fileAssetId?: string;
+  preferParentContext?: boolean;
+  limit?: number;
 };
 
 const resolveCompanyScope = (session: SessionScope, requestedCompanyId?: string): string => {
@@ -1265,6 +1276,256 @@ export class CompanyAdminService extends BaseService {
       reviewerUserId: session.userId,
       decisionNote: input.decisionNote,
     });
+  }
+
+  async listRagFiles(session: SessionScope, input: {
+    companyId?: string;
+    query?: string;
+    ingestionStatus?: string;
+    limit?: number;
+  }) {
+    const scopedCompanyId = resolveCompanyScope(session, input.companyId);
+    const limit = Math.max(1, Math.min(input.limit ?? 50, 100));
+    const query = input.query?.trim();
+    const ingestionStatus = input.ingestionStatus?.trim();
+
+    const files = await prisma.fileAsset.findMany({
+      where: {
+        companyId: scopedCompanyId,
+        ...(ingestionStatus ? { ingestionStatus: ingestionStatus as never } : {}),
+        ...(query
+          ? {
+              OR: [
+                { fileName: { contains: query, mode: 'insensitive' } },
+                { mimeType: { contains: query, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ updatedAt: 'desc' }],
+      take: limit,
+      include: {
+        vectorDocs: {
+          orderBy: [{ chunkIndex: 'asc' }],
+          take: 1,
+        },
+        _count: {
+          select: {
+            vectorDocs: true,
+          },
+        },
+        accessPolicies: {
+          select: {
+            aiRole: true,
+            canRead: true,
+          },
+          orderBy: [{ aiRole: 'asc' }],
+        },
+      },
+    });
+
+    return files.map((file) => {
+      const firstPayload = (file.vectorDocs[0]?.payload ?? {}) as Record<string, unknown>;
+      const previewText =
+        typeof firstPayload._chunk === 'string'
+          ? firstPayload._chunk
+          : typeof firstPayload.text === 'string'
+            ? firstPayload.text
+            : '';
+      const plan = chooseFileChunkingPlan({
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        text: previewText,
+      });
+
+      return {
+        fileAssetId: file.id,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        ingestionStatus: file.ingestionStatus,
+        ingestionError: file.ingestionError ?? undefined,
+        updatedAt: file.updatedAt.toISOString(),
+        createdAt: file.createdAt.toISOString(),
+        chunkCount: file._count.vectorDocs,
+        documentClass:
+          typeof firstPayload.documentClass === 'string' ? firstPayload.documentClass : plan.documentClass,
+        chunkingStrategy:
+          typeof firstPayload.chunkingStrategy === 'string' ? firstPayload.chunkingStrategy : plan.strategy,
+        hierarchical:
+          typeof firstPayload.hierarchical === 'boolean' ? firstPayload.hierarchical : plan.hierarchical,
+        allowedRoles: file.accessPolicies.filter((policy) => policy.canRead).map((policy) => policy.aiRole),
+      };
+    });
+  }
+
+  async getRagFileDiagnostics(session: SessionScope, input: {
+    companyId?: string;
+    fileAssetId: string;
+  }) {
+    const scopedCompanyId = resolveCompanyScope(session, input.companyId);
+    const file = await prisma.fileAsset.findFirst({
+      where: {
+        id: input.fileAssetId,
+        companyId: scopedCompanyId,
+      },
+      include: {
+        vectorDocs: {
+          orderBy: [{ chunkIndex: 'asc' }],
+        },
+        accessPolicies: {
+          select: {
+            aiRole: true,
+            canRead: true,
+          },
+          orderBy: [{ aiRole: 'asc' }],
+        },
+      },
+    });
+
+    if (!file) {
+      throw new HttpException(404, 'File asset not found');
+    }
+
+    const chunks = file.vectorDocs.map((doc) => {
+      const payload = (doc.payload ?? {}) as Record<string, unknown>;
+      return {
+        id: doc.id,
+        chunkIndex: doc.chunkIndex,
+        documentKey: doc.documentKey ?? undefined,
+        contentHash: doc.contentHash,
+        embeddingSchemaVersion: doc.embeddingSchemaVersion ?? undefined,
+        retrievalProfile: doc.retrievalProfile ?? undefined,
+        sourceUpdatedAt: doc.sourceUpdatedAt?.toISOString(),
+        rawChunkText:
+          typeof payload._chunk === 'string'
+            ? payload._chunk
+            : typeof payload.rawChunkText === 'string'
+              ? payload.rawChunkText
+              : undefined,
+        indexedChunkText:
+          typeof payload.indexedChunkText === 'string'
+            ? payload.indexedChunkText
+            : typeof payload.text === 'string'
+              ? payload.text
+              : undefined,
+        documentClass: typeof payload.documentClass === 'string' ? payload.documentClass : undefined,
+        chunkingStrategy: typeof payload.chunkingStrategy === 'string' ? payload.chunkingStrategy : undefined,
+        sectionPath: Array.isArray(payload.sectionPath) ? payload.sectionPath : [],
+        parentSectionId: typeof payload.parentSectionId === 'string' ? payload.parentSectionId : undefined,
+        parentSectionText:
+          typeof payload.parentSectionText === 'string' ? payload.parentSectionText : undefined,
+        contextPrefix: typeof payload.contextPrefix === 'string' ? payload.contextPrefix : undefined,
+        contextualEnrichmentApplied:
+          typeof payload.contextualEnrichmentApplied === 'boolean'
+            ? payload.contextualEnrichmentApplied
+            : undefined,
+      };
+    });
+
+    const previewText = chunks[0]?.rawChunkText ?? '';
+    const inferredPlan = chooseFileChunkingPlan({
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      text: previewText,
+    });
+
+    return {
+      file: {
+        fileAssetId: file.id,
+        companyId: file.companyId,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        cloudinaryUrl: file.cloudinaryUrl,
+        ingestionStatus: file.ingestionStatus,
+        ingestionError: file.ingestionError ?? undefined,
+        updatedAt: file.updatedAt.toISOString(),
+        createdAt: file.createdAt.toISOString(),
+      },
+      diagnostics: {
+        chunkCount: chunks.length,
+        documentClass: chunks[0]?.documentClass ?? inferredPlan.documentClass,
+        chunkingStrategy: chunks[0]?.chunkingStrategy ?? inferredPlan.strategy,
+        hierarchical: inferredPlan.hierarchical,
+        contextualEnrichment: inferredPlan.contextualEnrichment,
+        allowedRoles: file.accessPolicies.filter((policy) => policy.canRead).map((policy) => policy.aiRole),
+      },
+      chunks,
+    };
+  }
+
+  async replayRagQuery(session: SessionScope, input: RagReplayInput) {
+    const scopedCompanyId = resolveCompanyScope(session, input.companyId);
+    const query = input.query.trim();
+    if (!query) {
+      throw new HttpException(400, 'query is required');
+    }
+
+    let fileFilter: string | undefined;
+    let fileMetadata:
+      | {
+          fileAssetId: string;
+          fileName: string;
+          mimeType: string;
+          ingestionStatus: string;
+        }
+      | undefined;
+
+    if (input.fileAssetId?.trim()) {
+      const file = await prisma.fileAsset.findFirst({
+        where: {
+          id: input.fileAssetId.trim(),
+          companyId: scopedCompanyId,
+        },
+      });
+      if (!file) {
+        throw new HttpException(404, 'Selected file was not found');
+      }
+      fileFilter = file.id;
+      fileMetadata = {
+        fileAssetId: file.id,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        ingestionStatus: file.ingestionStatus,
+      };
+    }
+
+    const startedAt = Date.now();
+    const planner = retrievalPlannerService.buildPlan({
+      messageText: query,
+      domains: ['docs'],
+      retrievalMode: 'vector',
+      hasAttachments: Boolean(fileFilter),
+    });
+    const orchestrator = retrievalOrchestratorService.planExecution({
+      messageText: query,
+      domains: ['docs'],
+      retrievalMode: 'vector',
+      hasAttachments: Boolean(fileFilter),
+    });
+    const retrieval = await fileRetrievalService.search({
+      companyId: scopedCompanyId,
+      query,
+      fileAssetId: fileFilter,
+      limit: input.limit,
+      preferParentContext: input.preferParentContext ?? true,
+    });
+
+    return {
+      file: fileMetadata,
+      planner,
+      orchestrator: {
+        toolFamilies: orchestrator.toolFamilies,
+        systemDirectives: orchestrator.systemDirectives,
+      },
+      retrieval,
+      metrics: {
+        durationMs: Date.now() - startedAt,
+        matchCount: retrieval.matches.length,
+        citationCount: retrieval.citations.length,
+        enhancements: retrieval.enhancements,
+        correctiveRetryUsed: retrieval.correctiveRetryUsed,
+      },
+    };
   }
 
   private getGoogleAdminRedirectUri(): string {

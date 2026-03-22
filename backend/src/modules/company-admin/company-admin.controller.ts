@@ -77,6 +77,80 @@ class CompanyAdminController extends BaseController {
     return res.json(ApiResponse.success(result, 'Invites loaded'));
   };
 
+  listRagFiles = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const query = typeof req.query.query === 'string' ? req.query.query : undefined;
+    const ingestionStatus =
+      typeof req.query.ingestionStatus === 'string' && req.query.ingestionStatus.trim().length > 0
+        ? req.query.ingestionStatus.trim()
+        : undefined;
+    const rawLimit =
+      typeof req.query.limit === 'string' && req.query.limit.trim().length > 0
+        ? Number(req.query.limit)
+        : undefined;
+    const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit) ? rawLimit : undefined;
+
+    const result = await this.service.listRagFiles(session, {
+      companyId,
+      query,
+      ingestionStatus,
+      limit,
+    });
+    return res.json(ApiResponse.success(result, 'RAG files loaded'));
+  };
+
+  getRagFileDiagnostics = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const result = await this.service.getRagFileDiagnostics(session, {
+      companyId,
+      fileAssetId: req.params.fileAssetId,
+    });
+    return res.json(ApiResponse.success(result, 'RAG file diagnostics loaded'));
+  };
+
+  replayRagQuery = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+
+    const query = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
+    if (!query) {
+      return res.status(400).json({ success: false, message: '`query` is required' });
+    }
+
+    const rawLimit = req.body?.limit;
+    const limit =
+      typeof rawLimit === 'number'
+        ? rawLimit
+        : typeof rawLimit === 'string' && rawLimit.trim().length > 0
+          ? Number(rawLimit)
+          : undefined;
+
+    const result = await this.service.replayRagQuery(session, {
+      companyId: typeof req.body?.companyId === 'string' ? req.body.companyId : undefined,
+      query,
+      fileAssetId:
+        typeof req.body?.fileAssetId === 'string' && req.body.fileAssetId.trim().length > 0
+          ? req.body.fileAssetId.trim()
+          : undefined,
+      preferParentContext:
+        typeof req.body?.preferParentContext === 'boolean' ? req.body.preferParentContext : undefined,
+      limit: typeof limit === 'number' && Number.isFinite(limit) ? limit : undefined,
+    });
+    return res.json(ApiResponse.success(result, 'RAG replay completed'));
+  };
+
   cancelInvite = async (req: Request, res: Response) => {
     const inviteId = req.params.inviteId;
     const session = this.readSession(req);
