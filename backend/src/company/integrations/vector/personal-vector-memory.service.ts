@@ -86,7 +86,7 @@ class PersonalVectorMemoryService {
         queryLength: normalized.length,
         limit: input.limit,
         effectiveLimit,
-      });
+      }, { sampleRate: 0.1 });
 
       const [queryVector] = await embeddingService.embedQueries([normalized]);
       const groups = await qdrantAdapter.search({
@@ -166,7 +166,7 @@ class PersonalVectorMemoryService {
         candidateCount: matches.length,
         resultCount: finalMatches.length,
         topScores: finalMatches.slice(0, 3).map((match) => Number(match.score.toFixed(4))),
-      });
+      }, { sampleRate: 0.1 });
 
       return finalMatches;
     })();
@@ -200,8 +200,8 @@ class PersonalVectorMemoryService {
       conversationKey: input.conversationKey,
       sourceId: input.sourceId,
       role: input.role,
-      textPreview: input.text.trim().slice(0, 160),
-    });
+      textLength: input.text.trim().length,
+    }, { sampleRate: 0.05 });
 
     const chunks = buildCanonicalChatChunks({
       companyId: input.companyId,
@@ -221,7 +221,7 @@ class PersonalVectorMemoryService {
         conversationKey: input.conversationKey,
         sourceId: input.sourceId,
         reason: 'no_chunks',
-      });
+      }, { sampleRate: 0.05 });
       return;
     }
 
@@ -271,7 +271,7 @@ class PersonalVectorMemoryService {
         const payload = record.payload as Record<string, unknown>;
         return typeof payload.memoryKind === 'string' ? payload.memoryKind : 'chat_turn';
       }))),
-    });
+    }, { sampleRate: 0.1 });
   }
 
   /**

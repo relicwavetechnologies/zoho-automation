@@ -703,7 +703,7 @@ const retrieveConversationMemoryForChildRouter = async (input: {
     isReferentialFollowup: referentialFollowup,
     queryLength: input.message.trim().length,
     limit,
-  });
+  }, { sampleRate: 0.1 });
 
   try {
     const { matches, scope } = await queryConversationMemoryWithFallback({
@@ -727,7 +727,7 @@ const retrieveConversationMemoryForChildRouter = async (input: {
       matchCount: matches.length,
       snippetCount: snippets.length,
       topScores: matches.slice(0, 3).map((match) => Number(match.score.toFixed(4))),
-    });
+    }, { sampleRate: 0.1 });
     return snippets;
   } catch (error) {
     logger.warn('vercel.child_router.retrieval.failed', {
@@ -1595,7 +1595,7 @@ const queryConversationMemoryWithFallback = async (input: {
     threadId: input.threadId,
     queryLength: input.queryText.trim().length,
     limit: input.limit,
-  });
+  }, { sampleRate: 0.2 });
 
   const globalMatches = await personalVectorMemoryService.query({
     companyId: input.companyId,
@@ -1607,7 +1607,7 @@ const queryConversationMemoryWithFallback = async (input: {
   logger.info(`${input.logPrefix}.global_fallback.completed`, {
     threadId: input.threadId,
     matchCount: globalMatches.length,
-  });
+  }, { sampleRate: 0.2 });
 
   return {
     matches: globalMatches,
@@ -1644,7 +1644,7 @@ const retrieveConversationMemory = async (input: {
       isMemoryQuestion,
       queryLength: input.queryText.trim().length,
       limit,
-    });
+    }, { sampleRate: 0.1 });
     const { matches, scope } = await queryConversationMemoryWithFallback({
       companyId: input.companyId,
       userId: input.userId,
@@ -1666,7 +1666,7 @@ const retrieveConversationMemory = async (input: {
       scope,
       matchCount: matches.length,
       snippetCount: snippets.length,
-    });
+    }, { sampleRate: 0.1 });
     return snippets;
   } catch (error) {
     logger.warn('desktop.context.conversation_retrieval.failed', {
@@ -3196,10 +3196,6 @@ export class VercelDesktopEngine {
       for await (const part of result.fullStream) {
         if (part.type === 'reasoning-start') {
           hasReasoningBlock = true;
-          logger.info('vercel.stream.reasoning.start', {
-            executionId,
-            threadId,
-          });
           sendSseEvent(res, 'thinking', { text: '' });
           queueUiEvent('thinking', { text: '' });
           persistedBlocks = ensureThinkingBlock(persistedBlocks);
@@ -3210,23 +3206,12 @@ export class VercelDesktopEngine {
           if (!part.text) continue;
           if (!hasReasoningBlock) {
             hasReasoningBlock = true;
-            logger.info('vercel.stream.reasoning.implicit_start', {
-              executionId,
-              threadId,
-            });
             sendSseEvent(res, 'thinking', { text: '' });
             queueUiEvent('thinking', { text: '' });
             persistedBlocks = ensureThinkingBlock(persistedBlocks);
           }
           reasoningDeltaCount += 1;
           reasoningCharCount += part.text.length;
-          logger.info('vercel.stream.reasoning.delta', {
-            executionId,
-            threadId,
-            chars: part.text.length,
-            deltaCount: reasoningDeltaCount,
-            totalChars: reasoningCharCount,
-          });
           sendSseEvent(res, 'thinking_token', part.text);
           queueUiEvent('thinking_token', part.text);
           persistedBlocks = appendThinkingBlock(persistedBlocks, part.text);
@@ -3234,12 +3219,6 @@ export class VercelDesktopEngine {
         }
 
         if (part.type === 'reasoning-end') {
-          logger.info('vercel.stream.reasoning.end', {
-            executionId,
-            threadId,
-            deltaCount: reasoningDeltaCount,
-            totalChars: reasoningCharCount,
-          });
           continue;
         }
 

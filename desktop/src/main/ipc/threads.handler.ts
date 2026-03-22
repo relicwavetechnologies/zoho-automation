@@ -36,6 +36,7 @@ const parseBackendError = async (
 export function registerThreadHandlers(): void {
   ipcMain.handle("desktop:threads", async (_event, token: string) => {
     const res = await net.fetch(`${BACKEND_URL}/api/desktop/threads`, {
+      cache: "no-store",
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok)
@@ -65,6 +66,7 @@ export function registerThreadHandlers(): void {
       const res = await net.fetch(
         `${BACKEND_URL}/api/desktop/threads/${threadId}${query ? `?${query}` : ""}`,
         {
+          cache: "no-store",
           headers: { Authorization: `Bearer ${token}` },
         },
       );

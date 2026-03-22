@@ -11,6 +11,11 @@ import { departmentService } from '../../company/departments/department.service'
 
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
 
+type TimedValueCacheEntry<T> = {
+  expiresAt: number;
+  value: T;
+};
+
 const createMessageSchema = z.object({
   role: z.string().min(1).max(32),
   content: z.string().max(20000),
@@ -27,6 +32,28 @@ const createThreadSchema = z.object({
   title: z.string().trim().min(1).max(160).optional(),
 });
 
+const DESKTOP_SHARE_STATUS_CACHE_TTL_MS = 15_000;
+const shareStatusCache = new Map<string, TimedValueCacheEntry<Date | null>>();
+
+const readTimedCache = <T>(cache: Map<string, TimedValueCacheEntry<T>>, key: string): T | null => {
+  const now = Date.now();
+  for (const [entryKey, entry] of cache.entries()) {
+    if (entry.expiresAt <= now) {
+      cache.delete(entryKey);
+    }
+  }
+  const cached = cache.get(key);
+  return cached && cached.expiresAt > now ? cached.value : null;
+};
+
+const writeTimedCache = <T>(cache: Map<string, TimedValueCacheEntry<T>>, key: string, value: T, ttlMs: number): T => {
+  cache.set(key, {
+    expiresAt: Date.now() + ttlMs,
+    value,
+  });
+  return value;
+};
+
 class DesktopThreadsController extends BaseController {
   private session(req: Request): MemberSessionDTO {
     const s = (req as MemberRequest).memberSession;
@@ -36,6 +63,7 @@ class DesktopThreadsController extends BaseController {
 
   list = async (req: Request, res: Response) => {
     const s = this.session(req);
+    res.setHeader('Cache-Control', 'no-store');
     const threads = await desktopThreadsService.listThreads(s.userId, s.companyId);
     return res.json(ApiResponse.success(threads, 'Threads listed'));
   };
@@ -43,43 +71,45 @@ class DesktopThreadsController extends BaseController {
   get = async (req: Request, res: Response) => {
     const s = this.session(req);
     const requesterAiRole = s.aiRole ?? s.role;
+    res.setHeader('Cache-Control', 'no-store');
     const query = getThreadQuerySchema.parse(req.query);
     const result = await desktopThreadsService.getThreadMessagesPage(req.params.threadId, s.userId, {
       limit: query.limit ?? 6,
       beforeMessageId: query.beforeMessageId,
     });
-    const canShareKnowledge = await toolPermissionService.isAllowed(
-      s.companyId,
-      'share_chat_vectors',
-      requesterAiRole,
-    );
+    const allowedTools = await toolPermissionService.getAllowedTools(s.companyId, requesterAiRole);
+    const canShareKnowledge = allowedTools.includes('share_chat_vectors');
     if (canShareKnowledge) {
       const conversationKey = `desktop:${req.params.threadId}`;
-      const latestSharedRequest = await prisma.vectorShareRequest.findFirst({
-        where: {
-          companyId: s.companyId,
-          conversationKey,
-          status: { in: ['approved', 'auto_shared', 'shared_notified', 'already_shared'] },
-        },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true, createdAt: true, reviewedAt: true, reason: true },
-      });
-      let sharedThroughAt: Date | null = null;
-      if (latestSharedRequest) {
-        try {
-          const meta = latestSharedRequest.reason ? JSON.parse(latestSharedRequest.reason) as { snapshotAt?: string } : null;
-          if (meta?.snapshotAt) {
-            const parsed = new Date(meta.snapshotAt);
-            if (!Number.isNaN(parsed.getTime())) {
-              sharedThroughAt = parsed;
+      const shareCacheKey = `${s.companyId}:${conversationKey}`;
+      let sharedThroughAt = readTimedCache(shareStatusCache, shareCacheKey);
+      if (sharedThroughAt === null && !shareStatusCache.has(shareCacheKey)) {
+        const latestSharedRequest = await prisma.vectorShareRequest.findFirst({
+          where: {
+            companyId: s.companyId,
+            conversationKey,
+            status: { in: ['approved', 'auto_shared', 'shared_notified', 'already_shared'] },
+          },
+          orderBy: { createdAt: 'desc' },
+          select: { createdAt: true, reviewedAt: true, reason: true },
+        });
+        if (latestSharedRequest) {
+          try {
+            const meta = latestSharedRequest.reason ? JSON.parse(latestSharedRequest.reason) as { snapshotAt?: string } : null;
+            if (meta?.snapshotAt) {
+              const parsed = new Date(meta.snapshotAt);
+              if (!Number.isNaN(parsed.getTime())) {
+                sharedThroughAt = parsed;
+              }
             }
+          } catch {
+            // Ignore malformed share metadata.
           }
-        } catch {
-          // Fall through to timestamp fallback below.
+          if (!sharedThroughAt) {
+            sharedThroughAt = latestSharedRequest.reviewedAt ?? latestSharedRequest.createdAt;
+          }
         }
-        if (!sharedThroughAt) {
-          sharedThroughAt = latestSharedRequest.reviewedAt ?? latestSharedRequest.createdAt;
-        }
+        writeTimedCache(shareStatusCache, shareCacheKey, sharedThroughAt, DESKTOP_SHARE_STATUS_CACHE_TTL_MS);
       }
       result.messages = result.messages.map((message) =>
         {

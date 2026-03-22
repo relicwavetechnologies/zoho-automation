@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { X, Search, Filter, Calendar, Cpu, Zap, Activity, Clock, ChevronRight, ChevronLeft, ArrowUpRight, MessageSquare, Terminal, Layout, Share2, Shield, Info, Layers } from 'lucide-react'
+import type { ImperativePanelHandle } from 'react-resizable-panels'
 
 import { useAdminAuth } from '../auth/AdminAuthProvider'
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '../components/ui/resizable'
 import { ScrollArea } from '../components/ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { Skeleton } from '../components/ui/skeleton'
@@ -76,6 +78,9 @@ type ExecutionListResponse = {
 }
 
 const DEFAULT_PAGE_SIZE = 25
+const TIMELINE_DEFAULT_SIZE = 58
+const TIMELINE_MIN_SIZE = 28
+const DETAIL_DEFAULT_SIZE = 42
 
 const formatDateTime = (value: string): string =>
   new Date(value).toLocaleString([], {
@@ -150,6 +155,13 @@ export const ExecutionsPage = () => {
   const [loadingDetailById, setLoadingDetailById] = useState<Record<string, boolean>>({})
   const [expandedPayloads, setExpandedPayloads] = useState<Record<string, boolean>>({})
   const detailCardRef = useRef<HTMLDivElement>(null)
+  const timelinePanelRef = useRef<ImperativePanelHandle | null>(null)
+  const lastTimelineSizeRef = useRef(TIMELINE_DEFAULT_SIZE)
+  const [isWideLayout, setIsWideLayout] = useState(() => {
+    if (typeof window === 'undefined') return true
+    return window.matchMedia('(min-width: 1280px)').matches
+  })
+  const [timelineCollapsed, setTimelineCollapsed] = useState(false)
 
   const filters = useMemo(() => {
     const page = Math.max(1, Number.parseInt(searchParams.get('page') ?? '1', 10) || 1)
@@ -195,6 +207,24 @@ export const ExecutionsPage = () => {
     setOpenedExecutionIds((prev) => (prev.includes(run.id) ? prev : [...prev, run.id]))
     updateFilters({ selected: run.id }, { preservePage: true })
   }
+
+  const collapseTimeline = useCallback(() => {
+    const panel = timelinePanelRef.current
+    if (!panel) return
+    const currentSize = panel.getSize()
+    if (currentSize > TIMELINE_MIN_SIZE) {
+      lastTimelineSizeRef.current = currentSize
+    }
+    panel.collapse()
+    setTimelineCollapsed(true)
+  }, [])
+
+  const expandTimeline = useCallback(() => {
+    const panel = timelinePanelRef.current
+    if (!panel) return
+    panel.resize(Math.max(TIMELINE_MIN_SIZE, lastTimelineSizeRef.current))
+    setTimelineCollapsed(false)
+  }, [])
 
   const closeExecution = (executionId: string) => {
     setOpenedExecutionIds((prev) => {
@@ -278,9 +308,32 @@ export const ExecutionsPage = () => {
   }, [activeExecutionId, token])
 
   useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mediaQuery = window.matchMedia('(min-width: 1280px)')
+    const syncLayout = (event?: MediaQueryListEvent) => {
+      setIsWideLayout(event?.matches ?? mediaQuery.matches)
+    }
+    syncLayout()
+    mediaQuery.addEventListener('change', syncLayout)
+    return () => mediaQuery.removeEventListener('change', syncLayout)
+  }, [])
+
+  useEffect(() => {
     if (!filters.selected) return
     setOpenedExecutionIds((prev) => (prev.includes(filters.selected) ? prev : [...prev, filters.selected]))
   }, [filters.selected])
+
+  useEffect(() => {
+    if (!activeExecutionId) {
+      if (timelineCollapsed) expandTimeline()
+      return
+    }
+    collapseTimeline()
+    if (typeof window === 'undefined' || isWideLayout) return
+    window.requestAnimationFrame(() => {
+      detailCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }, [activeExecutionId, collapseTimeline, expandTimeline, isWideLayout, timelineCollapsed])
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -342,9 +395,31 @@ export const ExecutionsPage = () => {
         </div>
       </div>
 
-      <div className="grid gap-6 2xl:grid-cols-[1fr_460px] h-[calc(100vh-340px)] min-h-[600px] min-w-0 mt-8">
-        <div className="flex flex-col min-h-0 min-w-0">
-          <Card className="bg-card/20 border-border/40 shadow-2xl overflow-hidden backdrop-blur-sm rounded-3xl flex-1 flex flex-col min-w-0">
+      <ResizablePanelGroup
+        direction={isWideLayout ? 'horizontal' : 'vertical'}
+        className={cn(
+          'min-w-0 mt-8',
+          isWideLayout ? 'h-[calc(100vh-340px)] min-h-[600px]' : 'min-h-[900px]'
+        )}
+      >
+        <ResizablePanel
+          ref={timelinePanelRef}
+          defaultSize={TIMELINE_DEFAULT_SIZE}
+          minSize={isWideLayout ? TIMELINE_MIN_SIZE : 24}
+          collapsible
+          collapsedSize={0}
+          order={1}
+          onCollapse={() => setTimelineCollapsed(true)}
+          onExpand={() => setTimelineCollapsed(false)}
+          onResize={(size) => {
+            if (size > TIMELINE_MIN_SIZE) {
+              lastTimelineSizeRef.current = size
+            }
+          }}
+          className="min-w-0"
+        >
+          <div className="flex h-full flex-col min-h-0 min-w-0">
+          <Card className="bg-card/20 border-border/40 shadow-2xl overflow-hidden backdrop-blur-sm rounded-3xl flex flex-col min-w-0 min-h-[520px] xl:h-[calc(100vh-340px)]">
             <CardHeader className="border-b border-border/40 bg-muted/20 p-4 md:p-6 lg:p-8 flex flex-row items-center justify-between shrink-0 min-w-0">
               <div className="min-w-0">
                 <CardTitle className="text-xl font-bold tracking-tight truncate">Execution Timeline</CardTitle>
@@ -450,10 +525,19 @@ export const ExecutionsPage = () => {
               </ScrollArea>
             </CardContent>
           </Card>
-        </div>
+          </div>
+        </ResizablePanel>
 
-        <div className="hidden 2xl:flex flex-col min-h-0 min-w-0">
-          <Card ref={detailCardRef} className="bg-card/30 border-border/40 shadow-2xl overflow-hidden flex-1 flex flex-col backdrop-blur-xl rounded-3xl min-w-0">
+        <ResizableHandle withHandle className="my-3 xl:my-0" />
+
+        <ResizablePanel
+          defaultSize={DETAIL_DEFAULT_SIZE}
+          minSize={isWideLayout ? 32 : 35}
+          order={2}
+          className="min-w-0"
+        >
+          <div className="flex h-full flex-col min-h-0 min-w-0">
+          <Card ref={detailCardRef} className="bg-card/30 border-border/40 shadow-2xl overflow-hidden flex flex-col backdrop-blur-xl rounded-3xl min-w-0 min-h-[420px] xl:h-[calc(100vh-340px)]">
             {!activeExecutionId ? (
               <div className="flex-1 flex flex-col items-center justify-center p-16 text-center bg-muted/5 min-w-0">
                 <div className="h-24 w-24 rounded-[2.5rem] bg-muted/20 border border-border/20 flex items-center justify-center mb-8 shadow-inner">
@@ -490,9 +574,21 @@ export const ExecutionsPage = () => {
                       </div>
                     </div>
                   </div>
-                  <Button variant="ghost" size="icon" className="h-10 w-10 rounded-full hover:bg-accent/50 transition-colors shrink-0" onClick={() => updateFilters({ selected: null })}>
-                    <X className="h-5 w-5" />
-                  </Button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {timelineCollapsed && (
+                      <Button
+                        variant="outline"
+                        className="h-10 rounded-xl border-border/40 bg-background/50 text-xs font-bold uppercase tracking-wider"
+                        onClick={expandTimeline}
+                      >
+                        <Layout className="mr-2 h-4 w-4" />
+                        Show Timeline
+                      </Button>
+                    )}
+                    <Button variant="ghost" size="icon" className="h-10 w-10 rounded-full hover:bg-accent/50 transition-colors shrink-0" onClick={() => updateFilters({ selected: null })}>
+                      <X className="h-5 w-5" />
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="px-6 md:px-8 py-4 md:py-6 border-b border-border/40 flex items-center gap-6 md:gap-8 bg-muted/10 shrink-0 min-w-0">
@@ -588,8 +684,9 @@ export const ExecutionsPage = () => {
               </>
             )}
           </Card>
-        </div>
-      </div>
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
     </TooltipProvider>
   )
 }
