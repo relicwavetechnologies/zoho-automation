@@ -634,9 +634,9 @@ export const RagDiagnosticsPage = () => {
                       <div className="text-xs uppercase tracking-wide text-muted-foreground">Planned Steps</div>
                       <div className="mt-3 space-y-2">
                         {replayResult.planner.steps.map((step, index) => (
-                          <div key={`${step.need}-${step.strategy}-${index}`} className="rounded-md bg-secondary/20 p-3 text-sm">
+                            <div key={`${step.need}-${step.strategy}-${index}`} className="rounded-md bg-secondary/20 p-3 text-sm">
                             <div className="font-medium text-foreground">
-                              {step.need} -> {step.strategy}
+                              {step.need} {'->'} {step.strategy}
                             </div>
                             <div className="mt-1 text-muted-foreground">
                               {step.required ? 'required' : 'optional'}
