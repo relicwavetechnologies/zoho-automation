@@ -77,13 +77,13 @@ interface ChatState {
   sendMessage: (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-    mode?: 'fast' | 'high' | 'xtreme',
+    mode?: 'fast' | 'high',
     workflowInvocation?: WorkflowInvocation,
   ) => Promise<void>
   sendInitialMessage: (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-    mode?: 'fast' | 'high' | 'xtreme',
+    mode?: 'fast' | 'high',
     workflowInvocation?: WorkflowInvocation,
   ) => Promise<void>
   stopExecution: () => Promise<void>
@@ -156,7 +156,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const runningCommandRef = useRef<RunningCommandState | null>(null)
   const approveCommandRef = useRef<((executionId: string) => Promise<void>) | null>(null)
   const cancelRequestedRef = useRef(false)
-  const activeModeRef = useRef<'fast' | 'high' | 'xtreme'>('xtreme')
+  const activeModeRef = useRef<'fast' | 'high'>('high')
   const autoApproveLocalActionsRef = useRef(autoApproveLocalActions)
 
   // ── Shared live-block utilities ──
@@ -1132,7 +1132,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const sendMessage = useCallback(async (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-    mode: 'fast' | 'high' | 'xtreme' = 'xtreme',
+    mode: 'fast' | 'high' = 'high',
     workflowInvocation?: WorkflowInvocation,
   ) => {
     if (!token || !currentWorkspace || !activeThread || isStreaming) return
@@ -1212,7 +1212,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const sendInitialMessage = useCallback(async (
     text: string,
     attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-    mode: 'fast' | 'high' | 'xtreme' = 'xtreme',
+    mode: 'fast' | 'high' = 'high',
     workflowInvocation?: WorkflowInvocation,
   ) => {
     if (!token || !currentWorkspace || isStreaming) return

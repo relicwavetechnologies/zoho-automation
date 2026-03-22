@@ -142,7 +142,7 @@ export type ExecutionPlanOwnerAgent =
   | 'workspace'
   | 'terminal'
 export type ExecutionChannel = 'desktop' | 'lark'
-export type ExecutionMode = 'fast' | 'high' | 'xtreme' | null
+export type ExecutionMode = 'fast' | 'high' | null
 export type ExecutionRunStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 export type ExecutionPhase = 'request' | 'planning' | 'tool' | 'synthesis' | 'delivery' | 'error' | 'control'
 export type ExecutionActorType = 'system' | 'planner' | 'agent' | 'tool' | 'model' | 'delivery'

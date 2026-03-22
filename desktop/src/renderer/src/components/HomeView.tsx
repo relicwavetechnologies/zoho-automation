@@ -1,8 +1,9 @@
-import { useMemo } from 'react'
-import { useWorkspace } from '../context/WorkspaceContext'
-import { Composer } from './Composer'
-import { Plus, Sparkles, Terminal } from 'lucide-react'
-import { Logo } from './Logo'
+import { useMemo } from "react";
+import { useWorkspace } from "../context/WorkspaceContext";
+import { useChat } from "../context/ChatContext";
+import { Composer } from "./Composer";
+import { Plus, Sparkles, Terminal, ArrowUpRight } from "lucide-react";
+import { Logo } from "./Logo";
 
 const GREETINGS = [
   "How can I help?",
@@ -23,52 +24,98 @@ const GREETINGS = [
   "What should we solve?",
   "Ready to assist you.",
   "Let's get to work.",
-  "How can I assist?"
-]
+  "How can I assist?",
+];
+
+const QUICK_PROMPTS = [
+  "Summarize my recent PRs",
+  "Explain the auth flow",
+  "Generate a new component",
+  "Debug latest test failure",
+];
 
 export function HomeView(): JSX.Element {
-  const { currentWorkspace } = useWorkspace()
-  
+  const { currentWorkspace } = useWorkspace();
+  const { sendInitialMessage } = useChat();
+
   // Select a random greeting on mount
   const greeting = useMemo(() => {
-    return GREETINGS[Math.floor(Math.random() * GREETINGS.length)]
-  }, [])
+    return GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+  }, []);
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 h-full bg-background selection:bg-primary/30">
-      <div className="w-full max-w-[760px] flex flex-col items-center -mt-24">
-        
+      <div className="w-full max-w-[760px] flex flex-col items-center">
         {/* Stylish Side-by-Side Branding */}
         <div className="flex items-center gap-5 mb-14 animate-in fade-in duration-1000 slide-in-from-bottom-2">
           <div className="relative group">
             <div className="absolute -inset-3 bg-primary/10 rounded-full blur-xl opacity-0 group-hover:opacity-100 transition-opacity duration-700" />
-            <Logo size={48} className="relative transition-transform duration-500 group-hover:scale-105" />
+            <Logo
+              size={48}
+              className="relative transition-transform duration-500 group-hover:scale-105"
+            />
           </div>
           <h1 className="text-[32px] sm:text-[40px] font-medium tracking-[-0.03em] text-foreground/85 leading-none">
             {greeting}
           </h1>
         </div>
-        
+
         {/* Main Action */}
         <div className="w-full relative animate-in fade-in duration-1000 zoom-in-[0.99] delay-100">
           <Composer isHome={true} />
         </div>
 
+        {/* Quick Prompts */}
+        <div className="mt-10 flex flex-wrap justify-center gap-2 animate-in fade-in duration-1000 slide-in-from-bottom-2 delay-200">
+          {QUICK_PROMPTS.map((prompt) => (
+            <button
+              key={prompt}
+              onClick={() => {
+                void sendInitialMessage(prompt);
+              }}
+              className="group flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary/5 hover:bg-secondary/10 border border-transparent hover:border-border/30 transition-all text-muted-foreground hover:text-foreground shadow-sm"
+            >
+              <span className="text-[11px] font-medium tracking-tight">
+                {prompt}
+              </span>
+              <ArrowUpRight
+                size={12}
+                className="opacity-0 group-hover:opacity-100 transition-opacity -ml-0.5"
+              />
+            </button>
+          ))}
+        </div>
+
         {/* Minimal Suggested Starts */}
-        <div className="mt-16 flex flex-wrap justify-center gap-3 animate-in fade-in duration-1000 slide-in-from-bottom-2 delay-300">
+        <div className="mt-10 flex flex-wrap justify-center gap-3 animate-in fade-in duration-1000 slide-in-from-bottom-2 delay-300">
           <button className="group flex items-center gap-2.5 px-4 py-2 rounded-xl bg-secondary/10 border border-border/30 hover:border-primary/30 hover:bg-secondary/20 transition-all shadow-sm">
-            <Plus size={14} className="text-muted-foreground/40 group-hover:text-primary/60" />
-            <span className="text-[12px] font-bold text-muted-foreground/60 group-hover:text-foreground/80 tracking-tight">New Workflow</span>
-          </button>
-          
-          <button className="group flex items-center gap-2.5 px-4 py-2 rounded-xl bg-secondary/10 border border-border/30 hover:border-primary/30 hover:bg-secondary/20 transition-all shadow-sm">
-            <Sparkles size={14} className="text-muted-foreground/40 group-hover:text-primary/60" />
-            <span className="text-[12px] font-bold text-muted-foreground/60 group-hover:text-foreground/80 tracking-tight">Search Assets</span>
+            <Plus
+              size={14}
+              className="text-muted-foreground/40 group-hover:text-primary/60"
+            />
+            <span className="text-[12px] font-bold text-muted-foreground/60 group-hover:text-foreground/80 tracking-tight">
+              New Workflow
+            </span>
           </button>
 
           <button className="group flex items-center gap-2.5 px-4 py-2 rounded-xl bg-secondary/10 border border-border/30 hover:border-primary/30 hover:bg-secondary/20 transition-all shadow-sm">
-            <Terminal size={14} className="text-muted-foreground/40 group-hover:text-primary/60" />
-            <span className="text-[12px] font-bold text-muted-foreground/60 group-hover:text-foreground/80 tracking-tight">Run Command</span>
+            <Sparkles
+              size={14}
+              className="text-muted-foreground/40 group-hover:text-primary/60"
+            />
+            <span className="text-[12px] font-bold text-muted-foreground/60 group-hover:text-foreground/80 tracking-tight">
+              Search Assets
+            </span>
+          </button>
+
+          <button className="group flex items-center gap-2.5 px-4 py-2 rounded-xl bg-secondary/10 border border-border/30 hover:border-primary/30 hover:bg-secondary/20 transition-all shadow-sm">
+            <Terminal
+              size={14}
+              className="text-muted-foreground/40 group-hover:text-primary/60"
+            />
+            <span className="text-[12px] font-bold text-muted-foreground/60 group-hover:text-foreground/80 tracking-tight">
+              Run Command
+            </span>
           </button>
         </div>
 
@@ -82,5 +129,5 @@ export function HomeView(): JSX.Element {
         </div>
       </div>
     </div>
-  )
+  );
 }

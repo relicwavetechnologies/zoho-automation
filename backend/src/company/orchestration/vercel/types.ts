@@ -112,7 +112,7 @@ export type VercelRuntimeRequestContext = {
   larkOpenId?: string;
   larkUserId?: string;
   authProvider?: string;
-  mode: 'fast' | 'high' | 'xtreme';
+  mode: 'fast' | 'high';
   workspace?: VercelRuntimeWorkspace;
   dateScope?: string;
   latestActionResult?: {

@@ -73,7 +73,7 @@ export type DesktopAPI = {
       message: string,
       requestId: string,
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-      mode?: 'fast' | 'high' | 'xtreme',
+      mode?: 'fast' | 'high',
       workspace?: { name: string; path: string },
       workflowInvocation?: { workflowId: string; workflowName?: string; overrideText?: string },
     ) => Promise<{ success: boolean; data?: unknown; error?: string }>
@@ -89,7 +89,7 @@ export type DesktopAPI = {
       threadId: string
       message: string
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>
-      mode?: 'fast' | 'high' | 'xtreme'
+      mode?: 'fast' | 'high'
       companyId?: string
       workspace?: { name: string; path: string }
       workflowInvocation?: { workflowId: string; workflowName?: string; overrideText?: string }

@@ -225,7 +225,7 @@ export function registerChatHandlers(): void {
       message: string,
       requestId: string,
       attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
-      mode?: 'fast' | 'high' | 'xtreme',
+      mode?: 'fast' | 'high',
       workspace?: { name: string; path: string },
       workflowInvocation?: { workflowId: string; workflowName?: string; overrideText?: string },
     ) => {
@@ -348,7 +348,7 @@ export function registerChatHandlers(): void {
         threadId: string
         message: string
         attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>
-        mode?: 'fast' | 'high' | 'xtreme'
+        mode?: 'fast' | 'high'
         companyId?: string
         workspace?: { name: string; path: string }
         workflowInvocation?: { workflowId: string; workflowName?: string; overrideText?: string }

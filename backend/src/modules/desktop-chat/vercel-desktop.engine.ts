@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 import { ApiResponse } from '../../core/api-response';
 import config from '../../config';
-import { resolveVercelLanguageModel } from '../../company/orchestration/vercel/model-factory';
+import { resolveVercelChildRouterModel, resolveVercelLanguageModel } from '../../company/orchestration/vercel/model-factory';
 import { createVercelDesktopTools } from '../../company/orchestration/vercel/tools';
 import {
   scheduledWorkflowCapabilitySummarySchema,
@@ -364,17 +364,21 @@ const recordTokenUsage = async (input: {
   companyId?: string | null;
   channel: 'desktop' | 'lark';
   threadId?: string;
-  mode: 'fast' | 'high' | 'xtreme';
+  mode: 'fast' | 'high';
   agentTarget: string;
   systemPrompt: string;
   messages: ModelMessage[];
   outputText: string;
+  resolvedModel?: {
+    effectiveModelId: string;
+    effectiveProvider: string;
+  };
 }): Promise<void> => {
   if (!input.userId || !input.companyId) {
     return;
   }
 
-  const resolvedModel = await resolveVercelLanguageModel(input.mode);
+  const resolvedModel = input.resolvedModel ?? await resolveVercelLanguageModel(input.mode);
   const estimatedInputTokens = estimateTokens(input.systemPrompt) + estimateMessageTokens(input.messages);
   const estimatedOutputTokens = estimateTokens(input.outputText);
 
@@ -473,7 +477,7 @@ export const runDesktopChildRouter = async (input: {
       companyId: input.companyId,
       userId: input.userId,
     });
-    const model = await resolveVercelLanguageModel('fast');
+    const model = await resolveVercelChildRouterModel();
     const result = await generateObject({
       model: model.model,
       schema: desktopChildRouteSchema,
@@ -1024,7 +1028,7 @@ const startRun = async (input: {
   messageId: string;
   entrypoint: 'desktop_send' | 'desktop_act' | 'desktop_scheduled_workflow';
   session: MemberSessionDTO;
-  mode: 'fast' | 'high' | 'xtreme';
+  mode: 'fast' | 'high';
   message: string;
 }) => {
   await executionService.startRun({
@@ -1671,7 +1675,7 @@ const buildDesktopContextAssembly = async (input: {
   executionId: string;
   threadId: string;
   session: MemberSessionDTO;
-  mode: 'fast' | 'high' | 'xtreme';
+  mode: 'fast' | 'high';
   latestUserMessage: string;
   history: ThreadHistorySnapshot;
   workspace?: { name: string; path: string };
@@ -2046,7 +2050,7 @@ const stopOnPendingApproval = ({
   steps: Array<{ toolResults?: Array<{ output: unknown }> }>;
 }): boolean => Boolean(findPendingApproval(steps));
 
-const resolveTargetKey = async (mode: 'fast' | 'high' | 'xtreme') => resolveVercelLanguageModel(mode);
+const resolveTargetKey = async (mode: 'fast' | 'high') => resolveVercelLanguageModel(mode);
 
 const generateExecutionPlan = async (input: {
   message: string;
@@ -2184,7 +2188,7 @@ export const executeAutomatedDesktopTurn = async (input: {
   session: MemberSessionDTO;
   threadId: string;
   prompt: string;
-  mode?: 'fast' | 'high' | 'xtreme';
+  mode?: 'fast' | 'high';
   executionId?: string;
   entrypoint?: 'desktop_scheduled_workflow';
   attachedFiles?: AttachedFileRef[];
@@ -2733,6 +2737,10 @@ export class VercelDesktopEngine {
             systemPrompt: 'Desktop child router',
             messages: [{ role: 'user', content: childRouterPrompt }],
             outputText: reply,
+            resolvedModel: {
+              effectiveModelId: config.GROQ_ROUTER_MODEL,
+              effectiveProvider: 'groq',
+            },
           });
           await appendEventSafe({
             executionId,
