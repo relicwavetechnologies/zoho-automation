@@ -168,6 +168,24 @@ const normalizeChildRouteResponse = (value: unknown): unknown => {
     return value;
   }
   const record = value as Record<string, unknown>;
+  if (record.route === 'fast_reply|direct_execute|handoff') {
+    if (typeof record.reply === 'string' && record.reply.trim()) {
+      return {
+        ...record,
+        route: 'fast_reply',
+      };
+    }
+    if (typeof record.acknowledgement === 'string' && record.acknowledgement.trim()) {
+      return {
+        ...record,
+        route: 'handoff',
+      };
+    }
+    return {
+      ...record,
+      route: 'direct_execute',
+    };
+  }
   if (typeof record.route === 'string') {
     return record;
   }
@@ -194,6 +212,14 @@ const buildTaskAwareRouterAcknowledgement = (message: string): string => {
     .replace(/^(help me|tell me|show me|find me|find|search for|look up|research)\s+/i, '')
     .replace(/[?.!]+$/, '')
     .trim();
+  const operational = cleaned
+    .replace(/\bmy\b/gi, 'your')
+    .replace(/\bme\b/gi, 'you')
+    .trim();
+  if (/^(get|list|show|check|find|pull|fetch|look up|search|read|open|review)\b/i.test(operational)) {
+    const sentence = operational.charAt(0).toLowerCase() + operational.slice(1);
+    return `I’ll ${sentence}.`;
+  }
   const summary = summarizeText(cleaned || normalized, 140) ?? normalized;
   return `I’ll help with ${summary} and pull together the key findings for you.`;
 };
@@ -373,6 +399,18 @@ const expandConversationMemoryQuery = (value: string): string => {
 const isLightweightChatTurn = (value: string | null | undefined): boolean =>
   /^(hi|hello|hey|thanks|thank you|ok|okay|cool|great|nice|yes|no)[.! ]*$/i.test((value ?? '').trim());
 
+const shouldShowChildRouterAcknowledgement = (value: string | null | undefined): boolean => {
+  const input = value?.trim();
+  if (!input || isLightweightChatTurn(input)) {
+    return false;
+  }
+  if (shouldPlanDesktopTask(input)) {
+    return true;
+  }
+  return /\b(get|list|show|check|find|pull|fetch|look up|search|read|open|review)\b/i.test(input)
+    && /\b(lark|task|tasks|calendar|meeting|approval|doc|document|gmail|mail|email|drive|repo|workspace|zoho|invoice|statement|today|tomorrow|yesterday|latest)\b/i.test(input);
+};
+
 const resolveModelCatalogEntry = (resolvedModel: {
   effectiveProvider: string;
   effectiveModelId: string;
@@ -520,17 +558,22 @@ export const buildChildRouterPrompt = (input: {
     'Classify this desktop chat turn for a two-tier assistant runtime.',
     'Return exactly one JSON object only.',
     'Do not wrap it in markdown, prose, arrays, or an outer envelope.',
-    'Required JSON shape:',
-    '{"route":"fast_reply|direct_execute|handoff","reply":"string?","acknowledgement":"string?","reason":"string?"}',
+    'Required JSON keys:',
+    'route, reply, acknowledgement, reason',
+    'Allowed route values: fast_reply, direct_execute, handoff',
+    'Valid examples:',
+    '{"route":"fast_reply","reply":"Hi, how can I help?","reason":"simple greeting"}',
+    '{"route":"direct_execute","acknowledgement":"I’ll check that for you.","reason":"simple tool-backed request"}',
+    '{"route":"handoff","acknowledgement":"I’ll work through this step by step.","reason":"multi-step request"}',
     'Routes:',
     '- fast_reply: greetings, thanks, chit-chat, identity/capability questions, or short conversational replies that need no tools.',
-    '- direct_execute: straightforward work that should go directly to the main executor without a pre-ack.',
+    '- direct_execute: straightforward work that should go directly to the main executor. A short acknowledgement is allowed when the user is asking you to fetch, check, list, or get something.',
     '- handoff: multi-step or heavier work likely to require more than 2-3 tool calls, iteration, or planning. Provide a short acknowledgement the user should see immediately.',
     'Rules:',
     '- Do not use tools.',
     '- If retrieved conversation memory clearly answers a personal-memory question, prefer fast_reply and answer from that memory.',
     '- For fast_reply, fill reply and keep it short.',
-    '- For direct_execute, include route and reason only.',
+    '- For direct_execute, include route and reason. If the user is asking you to fetch, check, list, or get something from a system or tool, include a short acknowledgement too.',
     '- For handoff, fill acknowledgement and keep it short, concrete, and action-oriented.',
     '- The acknowledgement must mirror the user request in plain language, so it feels specific to what they asked.',
     '- Good acknowledgement example: "I’ll look up the latest AI job market trends and current AI work on Upwork for you."',
@@ -610,6 +653,12 @@ export const runDesktopChildRouter = async (input: {
           reason: 'personal memory question should use thread context and conversation retrieval',
         };
       }
+    }
+    if (parsedRoute.route === 'direct_execute' && shouldShowChildRouterAcknowledgement(input.message)) {
+      return {
+        ...parsedRoute,
+        acknowledgement: parsedRoute.acknowledgement?.trim() || buildTaskAwareRouterAcknowledgement(input.message),
+      };
     }
     return parsedRoute;
   } catch (error) {
@@ -2882,13 +2931,15 @@ export class VercelDesktopEngine {
       }
 
       let persistedBlocks: PersistedContentBlock[] = [];
-      const routerAcknowledgement = childRoute.route === 'handoff'
-        ? childRoute.acknowledgement?.trim() || 'I’ll take this in steps and start working through it now.'
-        : null;
+      const routerAcknowledgement = childRoute.acknowledgement?.trim()
+        || (childRoute.route === 'handoff'
+          ? 'I’ll take this in steps and start working through it now.'
+          : null);
       if (routerAcknowledgement) {
-        logger.info('vercel.child_router.handoff', {
+        logger.info('vercel.child_router.acknowledgement', {
           executionId,
           threadId,
+          route: childRoute.route,
           reason: childRoute.reason ?? null,
           textPreview: summarizeText(routerAcknowledgement, 200),
         });
@@ -2898,10 +2949,10 @@ export class VercelDesktopEngine {
         await appendEventSafe({
           executionId,
           phase: 'planning',
-          eventType: 'child_router.handoff',
+          eventType: 'child_router.acknowledgement',
           actorType: 'agent',
           actorKey: 'child_router',
-          title: 'Child router handed off to main executor',
+          title: 'Child router acknowledgement delivered',
           summary: summarizeText(routerAcknowledgement, 600),
           status: 'done',
         });
