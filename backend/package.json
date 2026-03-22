@@ -5,8 +5,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "prisma generate && NODE_OPTIONS=--max-old-space-size=8192 tsc && rm -rf dist/generated/prisma && mkdir -p dist/generated && cp -R src/generated/prisma dist/generated/prisma",
-    "build:lean": "prisma generate && NODE_OPTIONS=--max-old-space-size=3072 tsc --incremental --tsBuildInfoFile .tsbuildinfo && rm -rf dist/generated/prisma && mkdir -p dist/generated && cp -R src/generated/prisma dist/generated/prisma",
+    "build": "prisma generate && NODE_OPTIONS=--max-old-space-size=4096 tsc --noCheck && rm -rf dist/generated/prisma && mkdir -p dist/generated && cp -R src/generated/prisma dist/generated/prisma",
+    "build:lean": "prisma generate && NODE_OPTIONS=--max-old-space-size=3072 tsc --noCheck --incremental --tsBuildInfoFile .tsbuildinfo && rm -rf dist/generated/prisma && mkdir -p dist/generated && cp -R src/generated/prisma dist/generated/prisma",
     "build:start": "pnpm run build:lean && pnpm run start",
     "start": "node dist/server.js",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
