@@ -47,6 +47,9 @@ export function AppSidebar() {
   const { navItems, session, logout } = useAdminAuth()
   const location = useLocation()
   const isSuperAdmin = session?.role === "SUPER_ADMIN"
+  const accountLabel = isSuperAdmin ? "Super Admin" : "Admin"
+  const accountSecondary = session?.companyId || session?.userId || "Account"
+  const avatarInitial = accountLabel[0] || "A"
 
   return (
     <Sidebar collapsible="icon" className="border-r border-border bg-background/50 backdrop-blur-md">
@@ -113,15 +116,15 @@ export function AppSidebar() {
                 >
                   <div className="h-9 w-9 rounded-xl border border-border bg-black/20 flex items-center justify-center shadow-sm transition-transform group-hover:scale-105">
                     <span className="text-xs font-bold text-muted-foreground/60 uppercase">
-                      {session?.email?.[0] || 'A'}
+                      {avatarInitial}
                     </span>
                   </div>
                   <div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden ml-1">
                     <span className="truncate font-bold text-foreground/90 tracking-tight">
-                      {isSuperAdmin ? "Super Admin" : "Admin"}
+                      {accountLabel}
                     </span>
                     <span className="truncate text-[11px] text-muted-foreground/40 font-medium">
-                      {session?.email || "Account"}
+                      {accountSecondary}
                     </span>
                   </div>
                   <ChevronUp className="ml-auto h-4 w-4 text-muted-foreground/30 group-data-[collapsible=icon]:hidden" />

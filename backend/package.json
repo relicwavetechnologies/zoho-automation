@@ -5,10 +5,10 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "prisma generate && NODE_OPTIONS=--max-old-space-size=4096 tsc --noCheck && rm -rf dist/generated/prisma && mkdir -p dist/generated && cp -R src/generated/prisma dist/generated/prisma",
-    "build:lean": "prisma generate && NODE_OPTIONS=--max-old-space-size=3072 tsc --noCheck --incremental --tsBuildInfoFile .tsbuildinfo && rm -rf dist/generated/prisma && mkdir -p dist/generated && cp -R src/generated/prisma dist/generated/prisma",
-    "build:start": "pnpm run build:lean && pnpm run start",
-    "start": "node dist/server.js",
+    "build": "prisma generate",
+    "build:lean": "prisma generate",
+    "build:start": "pnpm run build && pnpm run start",
+    "start": "node --import tsx src/server.ts",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "typecheck": "NODE_OPTIONS=--max-old-space-size=8192 tsc --noEmit",
     "typecheck:vercel": "NODE_OPTIONS=--max-old-space-size=8192 tsc -p tsconfig.vercel.json --noEmit",
@@ -44,6 +44,7 @@
     "mammoth": "^1.11.0",
     "multer": "^2.1.1",
     "pdf-parse": "^2.4.5",
+    "tsx": "^4.21.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -58,7 +59,6 @@
     "prettier": "^3.4.2",
     "prisma": "^6.1.0",
     "ts-node-dev": "^2.0.0",
-    "tsx": "^4.21.0",
     "typescript": "^5.7.2"
   },
   "pnpm": {
