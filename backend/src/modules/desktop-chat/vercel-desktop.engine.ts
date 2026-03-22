@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 
-import { generateObject, generateText, stepCountIs, streamText, type ModelMessage } from 'ai';
+import { generateText, stepCountIs, streamText, type ModelMessage } from 'ai';
 import { Request, Response } from 'express';
 import { z } from 'zod';
 
@@ -138,6 +138,58 @@ type DesktopContextAssemblyMetrics = {
   includedTaskState: boolean;
   includedWorkspaceContext: boolean;
   compactionTier: number;
+};
+
+const DURABLE_UI_EVENT_TYPES = new Set(['plan', 'action', 'error']);
+
+const extractFirstJsonObject = (text: string): string | null => {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    return null;
+  }
+  return trimmed.slice(start, end + 1);
+};
+
+const normalizeChildRouteResponse = (value: unknown): unknown => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.route === 'string') {
+    return record;
+  }
+  for (const key of ['result', 'decision', 'output', 'response', 'childRoute']) {
+    const nested = record[key];
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      const nestedRecord = nested as Record<string, unknown>;
+      if (typeof nestedRecord.route === 'string') {
+        return nestedRecord;
+      }
+    }
+  }
+  return record;
+};
+
+const buildTaskAwareRouterAcknowledgement = (message: string): string => {
+  const normalized = message.trim().replace(/\s+/g, ' ');
+  if (!normalized) {
+    return 'I’ll look into this and pull together the key details for you.';
+  }
+  const cleaned = normalized
+    .replace(/^[Pp]lease\s+/, '')
+    .replace(/^(can you|could you|would you|will you)\s+/i, '')
+    .replace(/^(help me|tell me|show me|find me|find|search for|look up|research)\s+/i, '')
+    .replace(/[?.!]+$/, '')
+    .trim();
+  const summary = summarizeText(cleaned || normalized, 140) ?? normalized;
+  return `I’ll help with ${summary} and pull together the key findings for you.`;
 };
 
 const resolveWorkflowInvocationMessage = async (input: {
@@ -427,7 +479,10 @@ export const buildChildRouterPrompt = (input: {
 
   return [
     'Classify this desktop chat turn for a two-tier assistant runtime.',
-    'Return structured JSON only.',
+    'Return exactly one JSON object only.',
+    'Do not wrap it in markdown, prose, arrays, or an outer envelope.',
+    'Required JSON shape:',
+    '{"route":"fast_reply|direct_execute|handoff","reply":"string?","acknowledgement":"string?","reason":"string?"}',
     'Routes:',
     '- fast_reply: greetings, thanks, chit-chat, identity/capability questions, or short conversational replies that need no tools.',
     '- direct_execute: straightforward work that should go directly to the main executor without a pre-ack.',
@@ -436,7 +491,11 @@ export const buildChildRouterPrompt = (input: {
     '- Do not use tools.',
     '- If retrieved conversation memory clearly answers a personal-memory question, prefer fast_reply and answer from that memory.',
     '- For fast_reply, fill reply and keep it short.',
+    '- For direct_execute, include route and reason only.',
     '- For handoff, fill acknowledgement and keep it short, concrete, and action-oriented.',
+    '- The acknowledgement must mirror the user request in plain language, so it feels specific to what they asked.',
+    '- Good acknowledgement example: "I’ll look up the latest AI job market trends and current AI work on Upwork for you."',
+    '- Avoid generic acknowledgements like "I’ll handle this in steps" unless the request itself is vague.',
     '- Do not overuse handoff for tiny requests.',
     workspaceBlock,
     `Current local date/time: ${getLocalDateTimeContext()} (${LOCAL_TIME_ZONE}).`,
@@ -478,33 +537,27 @@ export const runDesktopChildRouter = async (input: {
       userId: input.userId,
     });
     const model = await resolveVercelChildRouterModel();
-    const result = await generateObject({
+    const result = await generateText({
       model: model.model,
-      schema: desktopChildRouteSchema,
-      schemaName: 'desktop_child_route',
-      schemaDescription: 'Routing decision for a fast desktop child assistant that either replies quickly or hands off to the main executor.',
+      system: 'Return one valid JSON object only. No markdown, no prose, no code fences.',
       prompt: buildChildRouterPrompt({
         ...input,
         retrievedMemorySnippets,
       }),
       temperature: 0,
-      providerOptions: {
-        google: {
-          thinkingConfig: {
-            includeThoughts: false,
-            thinkingLevel: 'minimal',
-          },
-        },
-      },
     });
+    const rawJson = extractFirstJsonObject(result.text) ?? result.text.trim();
+    const parsedRoute = desktopChildRouteSchema.parse(
+      normalizeChildRouteResponse(JSON.parse(rawJson)),
+    );
     logger.info('vercel.child_router.completed', {
       executionId: input.executionId,
       threadId: input.threadId,
-      route: result.object.route,
-      reason: result.object.reason ?? null,
+      route: parsedRoute.route,
+      reason: parsedRoute.reason ?? null,
       retrievedMemorySnippetCount: retrievedMemorySnippets.length,
     });
-    if (result.object.route === 'fast_reply' && isPersonalMemoryQuestion(input.message)) {
+    if (parsedRoute.route === 'fast_reply' && isPersonalMemoryQuestion(input.message)) {
       if (retrievedMemorySnippets.length === 0) {
         logger.info('vercel.child_router.override', {
           executionId: input.executionId,
@@ -519,12 +572,12 @@ export const runDesktopChildRouter = async (input: {
         };
       }
     }
-    return result.object;
+    return parsedRoute;
   } catch (error) {
     const fallbackRoute: DesktopChildRoute = shouldPlanDesktopTask(input.message)
       ? {
         route: 'handoff',
-        acknowledgement: 'I’ll handle this in steps and start gathering the required context now.',
+        acknowledgement: buildTaskAwareRouterAcknowledgement(input.message),
         reason: 'router_fallback_complex',
       }
       : {
@@ -851,7 +904,6 @@ const buildExecutionMetadata = (input: {
   contextAssembly?: DesktopContextAssemblyMetrics | null;
 }): Record<string, unknown> => ({
   executionId: input.executionId,
-  ...(input.contentBlocks ? { contentBlocks: input.contentBlocks } : {}),
   ...(input.plan ? { plan: input.plan } : {}),
   ...(input.citations && input.citations.length > 0 ? { citations: input.citations } : {}),
   ...(input.conversationRefs ? { conversationRefs: input.conversationRefs } : {}),
@@ -880,7 +932,17 @@ const persistAssistantMessage = async (input: {
     input.userId,
     'assistant',
     input.content,
-    input.metadata,
+    {
+      ...input.metadata,
+      shareAction: {
+        ...(input.metadata.shareAction && typeof input.metadata.shareAction === 'object' && !Array.isArray(input.metadata.shareAction)
+          ? input.metadata.shareAction as Record<string, unknown>
+          : {}),
+        type: 'conversation',
+        conversationKey: buildConversationKey(input.threadId),
+        label: "Share this chat's knowledge",
+      },
+    },
     {
       requiredChannel: 'desktop',
       contextLimit: DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT,
@@ -987,6 +1049,10 @@ const persistUiEvent = async (
   type: 'thinking' | 'thinking_token' | 'activity' | 'activity_done' | 'action' | 'text' | 'done' | 'error' | 'plan',
   data: unknown,
 ) => {
+  if (!DURABLE_UI_EVENT_TYPES.has(type)) {
+    return;
+  }
+
   const phase = type === 'thinking' || type === 'thinking_token'
     ? 'planning'
     : type === 'plan'

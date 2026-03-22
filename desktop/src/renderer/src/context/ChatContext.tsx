@@ -151,6 +151,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const activeExecutionIdRef = useRef<string | null>(null)
   const activeExecutionMessageIdRef = useRef<string | null>(null)
   const liveBlocksRef = useRef<ContentBlock[]>([])
+  const deletingThreadIdsRef = useRef<Set<string>>(new Set())
   const loadThreadsRef = useRef<(() => Promise<void>) | null>(null)
   const pendingLocalActionRef = useRef<PendingLocalActionState | null>(null)
   const runningCommandRef = useRef<RunningCommandState | null>(null)
@@ -676,7 +677,18 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
               activeExecutionMessageIdRef.current = persistedMessage.id
             }
           } else if (persistedMessage) {
-            upsertAssistantMessage(persistedMessage)
+            const liveBlocks = liveBlocksRef.current
+            upsertAssistantMessage(
+              liveBlocks.length > 0
+                ? {
+                  ...persistedMessage,
+                  metadata: {
+                    ...(persistedMessage.metadata ?? {}),
+                    contentBlocks: liveBlocks,
+                  },
+                }
+                : persistedMessage,
+            )
             activeExecutionMessageIdRef.current = null
           } else {
             setMessages((prev) => {
@@ -1135,7 +1147,12 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     mode: 'fast' | 'high' = 'high',
     workflowInvocation?: WorkflowInvocation,
   ) => {
-    if (!token || !currentWorkspace || !activeThread || isStreaming) return
+    const targetThread = activeThreadRef.current
+    if (!token || !currentWorkspace || !targetThread || isStreaming) return
+    if (deletingThreadIdsRef.current.has(targetThread.id)) {
+      setError('This chat is being deleted. Start or select another chat.')
+      return
+    }
     const trimmedText = text.trim()
     cancelRequestedRef.current = false
     activeModeRef.current = mode
@@ -1150,7 +1167,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
 
     const userMsg: Message = { 
       id: `temp-${Date.now()}`, 
-      threadId: activeThread.id, 
+      threadId: targetThread.id, 
       role: 'user', 
       content: visibleUserText, 
       metadata: attachedFiles && attachedFiles.length > 0 ? { attachedFiles } : undefined,
@@ -1168,9 +1185,9 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
     const runMatch = trimmedText.match(/^\/run\s+([\s\S]+)$/i)
     if (runMatch) {
       const command = runMatch[1].trim()
-      try { await window.desktopAPI.threads.addMessage(token, activeThread.id, { role: 'user', content: trimmedText }) } catch { setError('Failed to save the command request.') }
+      try { await window.desktopAPI.threads.addMessage(token, targetThread.id, { role: 'user', content: trimmedText }) } catch { setError('Failed to save the command request.') }
       const executionId = crypto.randomUUID()
-      const nextPendingAction = { id: executionId, threadId: activeThread.id, workspaceName: currentWorkspace.name, workspacePath: currentWorkspace.path, action: { kind: 'run_command', command } as const, source: 'manual' as const }
+      const nextPendingAction = { id: executionId, threadId: targetThread.id, workspaceName: currentWorkspace.name, workspacePath: currentWorkspace.path, action: { kind: 'run_command', command } as const, source: 'manual' as const }
       pendingLocalActionRef.current = nextPendingAction
       setPendingLocalAction(nextPendingAction)
       setIsStreaming(false)
@@ -1185,7 +1202,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       replaceActiveExecutionId(requestId)
       const sendRes = await window.desktopAPI.chat.startStream(
         token,
-        activeThread.id,
+        targetThread.id,
         trimmedText,
         requestId,
         attachedFiles,
@@ -1207,7 +1224,7 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
       activeRequestIdRef.current = null
       replaceActiveExecutionId(null)
     }
-  }, [token, currentWorkspace, activeThread, isStreaming, replaceActiveExecutionId, replaceActivePlan, runAgentLocalActionTurn])
+  }, [token, currentWorkspace, isStreaming, replaceActiveExecutionId, replaceActivePlan, runAgentLocalActionTurn])
 
   const sendInitialMessage = useCallback(async (
     text: string,
@@ -1322,27 +1339,40 @@ export function ChatProvider({ children }: { children: ReactNode }): JSX.Element
   const deleteThread = useCallback(async (threadId: string) => {
     if (isStreaming) return
     if (!token) return
+    deletingThreadIdsRef.current.add(threadId)
+    const wasActive = activeThreadRef.current?.id === threadId
+    unbindThread(threadId)
+    setAllThreads((prev) => prev.filter((thread) => thread.id !== threadId))
+    if (wasActive) {
+      activeThreadRef.current = null
+      setActiveThread(null)
+      setMessages([])
+      setThreadPagination({
+        hasMoreOlder: false,
+        nextBeforeMessageId: null,
+        limit: INITIAL_THREAD_MESSAGE_LIMIT,
+      })
+      setIsThreadLoading(false)
+      setIsLoadingOlderMessages(false)
+      replaceActivePlan(null)
+      resetLiveState()
+    }
     try {
       const result = await window.desktopAPI.threads.delete(token, threadId)
-      if (!result?.success) { setError('Failed to delete thread'); return }
-      unbindThread(threadId)
-      setAllThreads((prev) => prev.filter((thread) => thread.id !== threadId))
-      if (activeThreadRef.current?.id === threadId) {
-        setActiveThread(null)
-        setMessages([])
-        setThreadPagination({
-          hasMoreOlder: false,
-          nextBeforeMessageId: null,
-          limit: INITIAL_THREAD_MESSAGE_LIMIT,
-        })
-        setIsThreadLoading(false)
-        setIsLoadingOlderMessages(false)
-        replaceActivePlan(null)
+      if (!result?.success) {
+        setError('Failed to delete thread')
+        deletingThreadIdsRef.current.delete(threadId)
+        void loadThreadsRef.current?.()
+        return
       }
     } catch {
+      deletingThreadIdsRef.current.delete(threadId)
+      void loadThreadsRef.current?.()
       setError('Failed to delete thread — please restart the app and try again')
+      return
     }
-  }, [token, isStreaming, replaceActivePlan, unbindThread])
+    deletingThreadIdsRef.current.delete(threadId)
+  }, [token, isStreaming, replaceActivePlan, resetLiveState, unbindThread])
 
   return (
     <ChatContext.Provider value={{
