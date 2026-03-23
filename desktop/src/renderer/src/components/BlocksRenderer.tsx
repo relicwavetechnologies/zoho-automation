@@ -60,7 +60,7 @@ function ApprovalBlockCard({ block }: { block: Extract<ContentBlock, { type: 'ap
                     <div className="mt-1 text-sm text-muted-foreground">
                         {block.description}
                     </div>
-                    <div className="mt-3 rounded-xl border border-border bg-black/20 px-4 py-3 font-mono text-[13px] leading-relaxed text-foreground/80">
+                    <div className="mt-3 max-h-[min(20rem,40vh)] overflow-y-auto rounded-xl border border-border bg-black/20 px-4 py-3 font-mono text-[13px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-words">
                         {block.subject}
                     </div>
                     <div className="mt-2 text-[10px] text-muted-foreground/50">

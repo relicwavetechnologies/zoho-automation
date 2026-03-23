@@ -88,6 +88,14 @@ export function MessageBubble({ message, isLast }: Props): JSX.Element {
     (message.metadata?.citations?.length ?? 0) - visibleCitations.length,
   );
 
+  if (
+    !isUser &&
+    !message.content.trim() &&
+    (!blocks || blocks.length === 0)
+  ) {
+    return <></>;
+  }
+
   const shareConversation = async (): Promise<void> => {
     if (!token || !message.metadata?.shareAction || shareState === "sharing")
       return;

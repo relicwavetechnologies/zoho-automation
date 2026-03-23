@@ -470,7 +470,7 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
                   </div>
                   <div className="mt-1.5 text-[13px] text-muted-foreground/60 font-medium leading-relaxed">{approvalDescription}</div>
                   
-                  <div className="mt-4 rounded-xl border border-border bg-black/40 px-4 py-3 font-mono text-[12px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-words shadow-inner">
+                  <div className="mt-4 max-h-[min(22rem,45vh)] overflow-y-auto rounded-xl border border-border bg-black/40 px-4 py-3 font-mono text-[12px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-words shadow-inner">
                     {pendingActionPath}
                   </div>
                   

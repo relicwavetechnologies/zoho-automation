@@ -34,8 +34,8 @@ const resolveDesktopEnvDefines = (mode: string) => {
   }))
 
   return {
-    'process.env.DIVO_BACKEND_URL': JSON.stringify(env.DIVO_BACKEND_URL || 'http://localhost:8000'),
-    'process.env.DIVO_WEB_APP_URL': JSON.stringify(env.DIVO_WEB_APP_URL || 'http://localhost:5173'),
+    'process.env.DIVO_BACKEND_URL': JSON.stringify(env.DIVO_BACKEND_URL || ''),
+    'process.env.DIVO_WEB_APP_URL': JSON.stringify(env.DIVO_WEB_APP_URL || ''),
   }
 }
 

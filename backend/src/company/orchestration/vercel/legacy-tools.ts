@@ -54,6 +54,8 @@ const loadLarkTasksService = (): {
   createTask: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   getTask: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   updateTask: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  addMembers: (input: Record<string, unknown>) => Promise<void>;
+  removeMembers: (input: Record<string, unknown>) => Promise<void>;
   deleteTask: (input: Record<string, unknown>) => Promise<void>;
 } => loadModuleExport('../../channels/lark/lark-tasks.service', 'larkTasksService');
 
@@ -4418,6 +4420,88 @@ export const createVercelDesktopTools = (
             url: asString(task.url),
           });
         };
+        const extractTaskAssigneeIds = (task: Record<string, unknown>): string[] => {
+          const readMemberId = (value: unknown): string | undefined => {
+            const record = asRecord(value);
+            if (!record) {
+              return asString(value);
+            }
+            return asString(record.id)
+              ?? asString(record.member_id)
+              ?? asString(record.member_open_id)
+              ?? asString(record.open_id)
+              ?? asString(record.user_id)
+              ?? asString(record.memberUserId)
+              ?? asString(record.memberOpenId)
+              ?? asString(record.larkOpenId)
+              ?? asString(record.externalUserId);
+          };
+          const candidateCollections = [
+            asArray(task.members),
+            asArray(asRecord(task.raw)?.members),
+            asArray(task.assignees),
+            asArray(asRecord(task.raw)?.assignees),
+          ];
+          return uniqueDefinedStrings(
+            candidateCollections.flatMap((collection) => collection.map((entry) => readMemberId(entry))),
+          );
+        };
+        const syncTaskAssignees = async (inputArgs: {
+          taskGuid: string;
+          desiredAssigneeIds: string[];
+        }): Promise<{
+          task: Record<string, unknown>;
+          addedIds: string[];
+          removedIds: string[];
+          currentAssigneeIds: string[];
+        }> => {
+          const currentTask = await withLarkTenantFallback(runtime, (auth) => larkTasksService.getTask({
+            ...auth,
+            taskGuid: inputArgs.taskGuid,
+          }));
+          const currentAssigneeIds = extractTaskAssigneeIds(currentTask);
+          const desiredAssigneeIds = uniqueDefinedStrings(inputArgs.desiredAssigneeIds);
+          const toAdd = desiredAssigneeIds.filter((id) => !currentAssigneeIds.includes(id));
+          const toRemove = currentAssigneeIds.filter((id) => !desiredAssigneeIds.includes(id));
+
+          if (toAdd.length > 0) {
+            await withLarkTenantFallback(runtime, (auth) => larkTasksService.addMembers({
+              ...auth,
+              taskGuid: inputArgs.taskGuid,
+              members: toAdd.map((id) => ({
+                id,
+                type: 'user',
+                role: 'assignee',
+              })),
+            }));
+          }
+
+          if (toRemove.length > 0) {
+            await withLarkTenantFallback(runtime, (auth) => larkTasksService.removeMembers({
+              ...auth,
+              taskGuid: inputArgs.taskGuid,
+              members: toRemove.map((id) => ({
+                id,
+                type: 'user',
+                role: 'assignee',
+              })),
+            }));
+          }
+
+          const refreshedTask = toAdd.length > 0 || toRemove.length > 0
+            ? await withLarkTenantFallback(runtime, (auth) => larkTasksService.getTask({
+              ...auth,
+              taskGuid: inputArgs.taskGuid,
+            }))
+            : currentTask;
+
+          return {
+            task: refreshedTask,
+            addedIds: toAdd,
+            removedIds: toRemove,
+            currentAssigneeIds,
+          };
+        };
         const resolveTaskGuid = async (taskRef?: string): Promise<string | null> => {
           const trimmed = taskRef?.trim();
           if (!trimmed) {
@@ -4626,16 +4710,6 @@ export const createVercelDesktopTools = (
             retryable: false,
           });
         }
-        if ((input.operation === 'update' || input.operation === 'complete' || input.operation === 'reassign')
-          && ((resolvedAssignees?.people.length ?? 0) > 0 || (input.assigneeIds?.length ?? 0) > 0)) {
-          return buildEnvelope({
-            success: false,
-            summary: 'Assignee changes for an existing task are not supported by the current task update route.',
-            errorKind: 'unsupported',
-            retryable: false,
-          });
-        }
-
         if (input.operation === 'delete') {
           const taskGuid = await resolveTaskGuid(input.taskId);
           if (!taskGuid) {
@@ -4665,6 +4739,11 @@ export const createVercelDesktopTools = (
             type: 'user',
           };
         }).filter((person) => typeof person.id === 'string');
+        const desiredAssigneeIds = uniqueDefinedStrings([
+          ...resolvedMembers.map((person) => person.id),
+          ...(input.assigneeIds ?? []),
+        ]);
+        const assigneeChangeRequested = desiredAssigneeIds.length > 0;
 
         const baseBody: Record<string, unknown> = {
           ...(tasklistId ? { tasklist_id: tasklistId } : {}),
@@ -4718,7 +4797,7 @@ export const createVercelDesktopTools = (
         const updateFields = Object.keys(taskPayload)
           .map((field) => field === 'completed' ? 'completed_at' : field)
           .filter((field) => ['description', 'extra', 'start', 'due', 'completed_at', 'summary', 'repeat_rule', 'custom_fields'].includes(field));
-        if (updateFields.length === 0) {
+        if (updateFields.length === 0 && !assigneeChangeRequested) {
           return buildEnvelope({
             success: false,
             summary: 'Lark task update requires at least one field to change.',
@@ -4726,18 +4805,35 @@ export const createVercelDesktopTools = (
             retryable: false,
           });
         }
-        const task = await withLarkTenantFallback(runtime, (auth) => larkTasksService.updateTask({
+        let task = await withLarkTenantFallback(runtime, (auth) => larkTasksService.getTask({
           ...auth,
           taskGuid,
-          body: {
-            task: taskPayload,
-            update_fields: updateFields,
-          },
         }));
+        if (updateFields.length > 0) {
+          task = await withLarkTenantFallback(runtime, (auth) => larkTasksService.updateTask({
+            ...auth,
+            taskGuid,
+            body: {
+              task: taskPayload,
+              update_fields: updateFields,
+            },
+          }));
+        }
+        let assigneeSyncSummary: string | null = null;
+        if (assigneeChangeRequested) {
+          const assigneeSync = await syncTaskAssignees({
+            taskGuid,
+            desiredAssigneeIds,
+          });
+          task = assigneeSync.task;
+          assigneeSyncSummary = assigneeSync.addedIds.length > 0 || assigneeSync.removedIds.length > 0
+            ? `assignees +${assigneeSync.addedIds.length}/-${assigneeSync.removedIds.length}`
+            : 'assignees unchanged';
+        }
         rememberTask(task);
         return buildEnvelope({
           success: true,
-          summary: `Updated Lark task: ${asString(task.summary) ?? asString(task.taskId) ?? 'task'}.`,
+          summary: `${input.operation === 'reassign' ? 'Reassigned' : 'Updated'} Lark task: ${asString(task.summary) ?? asString(task.taskId) ?? 'task'}${assigneeSyncSummary ? ` (${assigneeSyncSummary})` : ''}.`,
           keyData: { task },
           fullPayload: { task },
         });

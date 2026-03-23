@@ -4,10 +4,9 @@ import { join } from "path";
 type RuntimeConfig = {
   backendUrl: string;
   webAppUrl: string;
+  backendUrlSource: string;
+  webAppUrlSource: string;
 };
-
-const DEFAULT_BACKEND_URL = "http://localhost:8000";
-const DEFAULT_WEB_APP_URL = "http://localhost:5173";
 
 function parseEnvFile(filePath: string): Record<string, string> {
   if (!existsSync(filePath)) {
@@ -44,7 +43,10 @@ function parseEnvFile(filePath: string): Record<string, string> {
   return result;
 }
 
-function readBundledEnv(): Record<string, string> {
+function readBundledEnv(): {
+  values: Record<string, string>;
+  source: string | null;
+} {
   const candidates = [
     join(process.resourcesPath, "app.env"),
     join(__dirname, "../../.env"),
@@ -53,11 +55,17 @@ function readBundledEnv(): Record<string, string> {
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
-      return parseEnvFile(candidate);
+      return {
+        values: parseEnvFile(candidate),
+        source: `file:${candidate}`,
+      };
     }
   }
 
-  return {};
+  return {
+    values: {},
+    source: null,
+  };
 }
 
 function firstDefined(
@@ -76,17 +84,48 @@ function firstDefined(
   return undefined;
 }
 
+function resolveWithSource(
+  processEnv: Record<string, string | undefined>,
+  fileEnv: { values: Record<string, string>; source: string | null },
+  keys: string[],
+): { value: string; source: string } {
+  const processValue = firstDefined([processEnv], keys);
+  if (processValue) {
+    return { value: processValue, source: "process.env" };
+  }
+
+  const fileValue = firstDefined([fileEnv.values], keys);
+  if (fileValue) {
+    return {
+      value: fileValue,
+      source: fileEnv.source ?? "file:.env",
+    };
+  }
+
+  return {
+    value: "",
+    source: "unset",
+  };
+}
+
 export function readRuntimeConfig(): RuntimeConfig {
   const fileEnv = readBundledEnv();
   const env = process.env as Record<string, string | undefined>;
-  const sources = [env, fileEnv];
+  const backend = resolveWithSource(
+    env,
+    fileEnv,
+    ["DIVO_BACKEND_URL", "CURSORR_BACKEND_URL"],
+  );
+  const webApp = resolveWithSource(
+    env,
+    fileEnv,
+    ["DIVO_WEB_APP_URL", "CURSORR_WEB_APP_URL"],
+  );
 
   return {
-    backendUrl:
-      firstDefined(sources, ["DIVO_BACKEND_URL", "CURSORR_BACKEND_URL"])
-      ?? DEFAULT_BACKEND_URL,
-    webAppUrl:
-      firstDefined(sources, ["DIVO_WEB_APP_URL", "CURSORR_WEB_APP_URL"])
-      ?? DEFAULT_WEB_APP_URL,
+    backendUrl: backend.value,
+    webAppUrl: webApp.value,
+    backendUrlSource: backend.source,
+    webAppUrlSource: webApp.source,
   };
 }

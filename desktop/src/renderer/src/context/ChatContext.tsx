@@ -199,6 +199,7 @@ export function ChatProvider({
   const activePlanRef = useRef<ExecutionPlan | null>(null);
   const activeExecutionIdRef = useRef<string | null>(null);
   const activeExecutionMessageIdRef = useRef<string | null>(null);
+  const messagesRef = useRef<Message[]>([]);
   const liveBlocksRef = useRef<ContentBlock[]>([]);
   const ephemeralRuntimeCacheRef = useRef<
     Map<string, EphemeralRuntimeThreadCache>
@@ -412,6 +413,10 @@ export function ChatProvider({
   }, []);
 
   useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
     autoApproveLocalActionsRef.current = autoApproveLocalActions;
     window.localStorage.setItem(
       AUTO_APPROVE_LOCAL_ACTIONS_KEY,
@@ -444,17 +449,70 @@ export function ChatProvider({
     runningCommandRef.current = null;
   }, []);
 
+  const resolveContinuationMessageId = useCallback(
+    (threadId: string, executionId: string, preferredMessageId?: string | null) => {
+      if (preferredMessageId) {
+        return preferredMessageId;
+      }
+      if (activeExecutionMessageIdRef.current) {
+        return activeExecutionMessageIdRef.current;
+      }
+
+      const pausedMessage = [...messagesRef.current]
+        .reverse()
+        .find((message) => {
+          if (message.role !== "assistant" || message.threadId !== threadId) {
+            return false;
+          }
+          if (message.metadata?.executionId !== executionId) {
+            return false;
+          }
+          return (
+            message.metadata.executionState?.state === "waiting_for_approval" &&
+            Boolean(message.metadata.desktopPendingAction)
+          );
+        });
+
+      const resolvedMessageId = pausedMessage?.id ?? null;
+      logFrontendDebug("approval.continuation_message.resolve", {
+        threadId,
+        executionId,
+        preferredMessageId: preferredMessageId ?? null,
+        activeExecutionMessageId: activeExecutionMessageIdRef.current,
+        resolvedMessageId,
+      });
+      return resolvedMessageId;
+    },
+    [],
+  );
+
   const restorePendingExecutionFromMessages = useCallback(
     (threadId: string, nextMessages: Message[]) => {
+      const supersededExecutionIds = new Set(
+        nextMessages.flatMap((message) => {
+          const executionId = message.metadata?.executionId;
+          if (
+            message.role !== "assistant" ||
+            message.threadId !== threadId ||
+            typeof executionId !== "string"
+          ) {
+            return [];
+          }
+          const state = message.metadata.executionState?.state;
+          return state && state !== "waiting_for_approval" ? [executionId] : [];
+        }),
+      );
+
       const pausedMessage = [...nextMessages]
         .reverse()
         .find(
           (message) =>
             message.role === "assistant" &&
             message.threadId === threadId &&
-            message.metadata?.executionId &&
+            typeof message.metadata?.executionId === "string" &&
             message.metadata.executionState?.state === "waiting_for_approval" &&
-            message.metadata.desktopPendingAction,
+            message.metadata.desktopPendingAction &&
+            !supersededExecutionIds.has(message.metadata.executionId),
         );
 
       if (
@@ -462,6 +520,11 @@ export function ChatProvider({
         !pausedMessage.metadata?.desktopPendingAction ||
         !pausedMessage.metadata.executionId
       ) {
+        logFrontendDebug("approval.restore.none", {
+          threadId,
+          messageCount: nextMessages.length,
+          supersededExecutionCount: supersededExecutionIds.size,
+        });
         activeExecutionMessageIdRef.current = null;
         pendingLocalActionRef.current = null;
         setPendingLocalAction(null);
@@ -496,6 +559,7 @@ export function ChatProvider({
                   ? { explanation: action.explanation }
                   : {}),
               },
+              continuationMessageId: pausedMessage.id,
             }
           : action.kind === "run_command" && action.command
             ? {
@@ -508,6 +572,7 @@ export function ChatProvider({
                   kind: "run_command",
                   command: action.command,
                 },
+                continuationMessageId: pausedMessage.id,
               }
             : action.kind === "write_file" &&
                 action.path &&
@@ -523,6 +588,7 @@ export function ChatProvider({
                     path: action.path,
                     content: action.content,
                   },
+                  continuationMessageId: pausedMessage.id,
                 }
               : action.kind === "mkdir" && action.path
                 ? {
@@ -535,6 +601,7 @@ export function ChatProvider({
                       kind: "mkdir",
                       path: action.path,
                     },
+                    continuationMessageId: pausedMessage.id,
                   }
                 : action.kind === "delete_path" && action.path
                   ? {
@@ -547,6 +614,7 @@ export function ChatProvider({
                         kind: "delete_path",
                         path: action.path,
                       },
+                      continuationMessageId: pausedMessage.id,
                     }
                   : null;
 
@@ -554,6 +622,12 @@ export function ChatProvider({
       replaceActiveExecutionId(pausedMessage.metadata.executionId);
       pendingLocalActionRef.current = pendingAction;
       setPendingLocalAction(pendingAction);
+      logFrontendDebug("approval.restore.pending", {
+        threadId,
+        executionId: pausedMessage.metadata.executionId,
+        messageId: pausedMessage.id,
+        actionKind: pendingAction?.action.kind ?? null,
+      });
     },
     [currentWorkspace?.name, currentWorkspace?.path, replaceActiveExecutionId],
   );
@@ -775,6 +849,7 @@ export function ChatProvider({
       threadId: string;
       initialMessage?: string;
       actionResult?: ActionResultPayload;
+      continuationMessageId?: string | null;
     }): Promise<void> => {
       if (!token) return;
       if (typeof window.desktopAPI.chat.actStream !== "function") {
@@ -823,9 +898,18 @@ export function ChatProvider({
             ...(activePlanRef.current ? { plan: activePlanRef.current } : {}),
             mode: activeModeRef.current,
             executionId,
-            ...(activeExecutionMessageIdRef.current
-              ? { continuationMessageId: activeExecutionMessageIdRef.current }
-              : {}),
+            ...(() => {
+              const continuationMessageId = resolveContinuationMessageId(
+                input.threadId,
+                executionId,
+                input.continuationMessageId,
+              );
+              if (!continuationMessageId) {
+                return {};
+              }
+              activeExecutionMessageIdRef.current = continuationMessageId;
+              return { continuationMessageId };
+            })(),
           },
         );
 
@@ -850,6 +934,7 @@ export function ChatProvider({
     },
     [
       currentWorkspace,
+      resolveContinuationMessageId,
       replaceActiveExecutionId,
       replaceLiveBlocks,
       resetLiveState,
@@ -1022,8 +1107,17 @@ export function ChatProvider({
               workspacePath: currentWorkspace?.path ?? "",
               action,
               source: "agent",
+              continuationMessageId:
+                activeExecutionMessageIdRef.current ?? undefined,
             };
             setPendingLocalAction(pendingLocalActionRef.current);
+            logFrontendDebug("approval.action.received", {
+              threadId,
+              executionId: actionId,
+              actionKind: action.kind,
+              continuationMessageId:
+                pendingLocalActionRef.current.continuationMessageId ?? null,
+            });
             if (
               autoApproveLocalActionsRef.current &&
               action.kind !== "list_files" &&
@@ -1063,12 +1157,30 @@ export function ChatProvider({
               message?: Message;
               actionIssued?: boolean;
               state?: string;
+              executionId?: string;
             } | null;
             const persistedMessage = raw?.message;
             if (raw?.actionIssued) {
               if (persistedMessage?.id) {
                 activeExecutionMessageIdRef.current = persistedMessage.id;
+                if (
+                  raw.executionId &&
+                  pendingLocalActionRef.current?.id === raw.executionId
+                ) {
+                  const nextPendingAction = {
+                    ...pendingLocalActionRef.current,
+                    continuationMessageId: persistedMessage.id,
+                  };
+                  pendingLocalActionRef.current = nextPendingAction;
+                  setPendingLocalAction(nextPendingAction);
+                }
               }
+              logFrontendDebug("approval.done.awaiting", {
+                executionId: raw.executionId ?? null,
+                persistedMessageId: persistedMessage?.id ?? null,
+                pendingActionKind:
+                  pendingLocalActionRef.current?.action.kind ?? null,
+              });
             } else if (persistedMessage) {
               const liveBlocks = liveBlocksRef.current;
               upsertAssistantMessage(
@@ -1330,6 +1442,24 @@ export function ChatProvider({
       const pendingAction = pendingLocalActionRef.current;
       if (!pendingAction || pendingAction.id !== executionId) return;
 
+      const continuationMessageId =
+        pendingAction.source === "agent"
+          ? resolveContinuationMessageId(
+              pendingAction.threadId,
+              executionId,
+              pendingAction.continuationMessageId,
+            )
+          : null;
+      if (continuationMessageId) {
+        activeExecutionMessageIdRef.current = continuationMessageId;
+      }
+      logFrontendDebug("approval.command.approve.start", {
+        executionId,
+        threadId: pendingAction.threadId,
+        actionKind: pendingAction.action.kind,
+        continuationMessageId,
+      });
+
       pendingLocalActionRef.current = null;
       setPendingLocalAction(null);
       void persistExecutionEvent({
@@ -1373,6 +1503,7 @@ export function ChatProvider({
         await runAgentLocalActionTurn({
           threadId: pendingAction.threadId,
           actionResult,
+          continuationMessageId,
         });
         return;
       }
@@ -1470,6 +1601,7 @@ export function ChatProvider({
             ok: completion.ok,
             summary: completion.actionResultSummary,
           },
+          continuationMessageId,
         });
         return;
       }
@@ -1487,6 +1619,7 @@ export function ChatProvider({
       promotePersistedExecutionToLive,
       replaceActivePlan,
       replaceLiveBlocks,
+      resolveContinuationMessageId,
       runAgentLocalActionTurn,
       runWorkspaceAction,
     ],
@@ -1500,6 +1633,24 @@ export function ChatProvider({
     async (executionId: string) => {
       const pendingAction = pendingLocalActionRef.current;
       if (!pendingAction || pendingAction.id !== executionId) return;
+
+      const continuationMessageId =
+        pendingAction.source === "agent"
+          ? resolveContinuationMessageId(
+              pendingAction.threadId,
+              executionId,
+              pendingAction.continuationMessageId,
+            )
+          : null;
+      if (continuationMessageId) {
+        activeExecutionMessageIdRef.current = continuationMessageId;
+      }
+      logFrontendDebug("approval.command.reject.start", {
+        executionId,
+        threadId: pendingAction.threadId,
+        actionKind: pendingAction.action.kind,
+        continuationMessageId,
+      });
 
       pendingLocalActionRef.current = null;
       setPendingLocalAction(null);
@@ -1549,6 +1700,7 @@ export function ChatProvider({
         await runAgentLocalActionTurn({
           threadId: pendingAction.threadId,
           actionResult,
+          continuationMessageId,
         });
         return;
       }
@@ -1568,6 +1720,7 @@ export function ChatProvider({
               ok: false,
               summary: completion.actionResultSummary,
             },
+            continuationMessageId,
           });
           return;
         }
@@ -1600,6 +1753,7 @@ export function ChatProvider({
             ok: false,
             summary: `User rejected ${fileAction.kind} for ${fileAction.path}`,
           },
+          continuationMessageId,
         });
         return;
       }
@@ -1613,6 +1767,7 @@ export function ChatProvider({
       finalizeLocalBlocks,
       persistExecutionEvent,
       promotePersistedExecutionToLive,
+      resolveContinuationMessageId,
       runAgentLocalActionTurn,
       token,
     ],

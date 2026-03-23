@@ -30,6 +30,15 @@ type GetTaskInput = LarkTasksAuthInput & {
   taskGuid: string;
 };
 
+type MutateTaskMembersInput = LarkTasksAuthInput & {
+  taskGuid: string;
+  members: Array<{
+    id: string;
+    type?: string;
+    role?: string;
+  }>;
+};
+
 type ListTasklistsInput = LarkTasksAuthInput & {
   pageSize?: number;
   pageToken?: string;
@@ -222,6 +231,48 @@ class LarkTasksService {
       throw new LarkRuntimeClientError('Lark task update returned no task payload', 'lark_runtime_invalid_response');
     }
     return task;
+  }
+
+  async addMembers(input: MutateTaskMembersInput): Promise<void> {
+    await larkRuntimeClient.requestJson({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+      appUserId: input.appUserId,
+      credentialMode: input.credentialMode ?? 'tenant',
+      method: 'POST',
+      path: `/open-apis/task/v2/tasks/${encodeURIComponent(input.taskGuid)}/add_members`,
+      query: {
+        user_id_type: 'open_id',
+      },
+      body: {
+        members: input.members.map((member) => ({
+          id: member.id,
+          type: member.type ?? 'user',
+          ...(member.role ? { role: member.role } : {}),
+        })),
+      },
+    });
+  }
+
+  async removeMembers(input: MutateTaskMembersInput): Promise<void> {
+    await larkRuntimeClient.requestJson({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+      appUserId: input.appUserId,
+      credentialMode: input.credentialMode ?? 'tenant',
+      method: 'POST',
+      path: `/open-apis/task/v2/tasks/${encodeURIComponent(input.taskGuid)}/remove_members`,
+      query: {
+        user_id_type: 'open_id',
+      },
+      body: {
+        members: input.members.map((member) => ({
+          id: member.id,
+          type: member.type ?? 'user',
+          ...(member.role ? { role: member.role } : {}),
+        })),
+      },
+    });
   }
 
   async deleteTask(input: GetTaskInput): Promise<void> {

@@ -1,6 +1,7 @@
 import { app, shell, BrowserWindow } from "electron";
 import { join } from "path";
 import { URL } from "url";
+import { readRuntimeConfig } from "../shared/runtime-config";
 
 import { registerAuthHandlers } from "./ipc/auth.handler";
 import { registerChatHandlers } from "./ipc/chat.handler";
@@ -126,6 +127,19 @@ registerWorkspaceHandlers(getMainWindow);
 
 /* ─── App lifecycle ─── */
 app.whenReady().then(() => {
+  const runtimeConfig = readRuntimeConfig();
+  console.info("[desktop:runtime.config]", {
+    backendUrl: runtimeConfig.backendUrl,
+    backendUrlSource: runtimeConfig.backendUrlSource,
+    webAppUrl: runtimeConfig.webAppUrl,
+    webAppUrlSource: runtimeConfig.webAppUrlSource,
+  });
+  if (!runtimeConfig.backendUrl) {
+    console.warn(
+      "[desktop:runtime.config] DIVO_BACKEND_URL is unset. Desktop API calls will fail until it is configured.",
+    );
+  }
+
   registerProtocolClient();
   createWindow();
 

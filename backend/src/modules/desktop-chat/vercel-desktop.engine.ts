@@ -3345,6 +3345,14 @@ export class VercelDesktopEngine {
           contextAssembly: contextAssembly.metrics,
         }),
       });
+      logger.info('vercel.stream.message.persisted', {
+        executionId,
+        threadId,
+        assistantMessageId: assistantMessage.id,
+        messageState: pendingApproval ? 'waiting_for_approval' : 'completed',
+        existingMessageId: null,
+        pendingActionKind: pendingAction?.kind ?? null,
+      });
       conversationMemoryStore.addAssistantMessage(buildConversationKey(threadId), assistantMessage.id, finalText);
       maybeStoreConversationTurn({
         companyId: session.companyId,
@@ -4277,7 +4285,9 @@ export class VercelDesktopEngine {
       const steps = await result.steps;
       const pendingApproval = findPendingApproval(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
       const pendingAction = pendingApproval ? mapPendingApprovalAction(pendingApproval) : null;
-      const finalText = pendingApproval ? '' : streamedText.trim();
+      const finalText = pendingApproval
+        ? (streamedText.trim() || 'Approval required to continue with the requested workspace changes.')
+        : streamedText.trim();
       const approvalSummary = pendingAction
         ? pendingAction.kind === 'run_command'
           ? pendingAction.command
@@ -4325,6 +4335,14 @@ export class VercelDesktopEngine {
           contextAssembly: contextAssembly.metrics,
         }),
         ...(continuationMessageId ? { existingMessageId: continuationMessageId } : {}),
+      });
+      logger.info('vercel.stream_act.message.persisted', {
+        executionId,
+        threadId,
+        assistantMessageId: assistantMessage.id,
+        existingMessageId: continuationMessageId ?? null,
+        messageState: pendingApproval ? 'waiting_for_approval' : 'completed',
+        pendingActionKind: pendingAction?.kind ?? null,
       });
       conversationMemoryStore.addAssistantMessage(buildConversationKey(threadId), assistantMessage.id, finalText);
       maybeStoreConversationTurn({

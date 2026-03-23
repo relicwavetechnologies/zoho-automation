@@ -37,6 +37,7 @@ export type PendingLocalActionState = {
   workspacePath: string
   action: DesktopPendingAction
   source: 'manual' | 'agent'
+  continuationMessageId?: string
 }
 
 export type RunningCommandState = {

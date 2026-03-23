@@ -2,10 +2,22 @@ import { contextBridge, ipcRenderer } from "electron";
 import { readRuntimeConfig } from "../shared/runtime-config";
 
 const runtimeConfig = readRuntimeConfig();
+console.info("[desktop:runtime.config.preload]", {
+  backendUrl: runtimeConfig.backendUrl,
+  backendUrlSource: runtimeConfig.backendUrlSource,
+  webAppUrl: runtimeConfig.webAppUrl,
+  webAppUrlSource: runtimeConfig.webAppUrlSource,
+});
+if (!runtimeConfig.backendUrl) {
+  console.warn(
+    "[desktop:runtime.config.preload] DIVO_BACKEND_URL is unset.",
+  );
+}
 
 export type DesktopAPI = {
   config: {
     backendUrl: string;
+    backendUrlSource?: string;
   };
   auth: {
     openLarkLogin: () => Promise<void>;
@@ -205,6 +217,7 @@ export type DesktopAPI = {
 const api: DesktopAPI = {
   config: {
     backendUrl: runtimeConfig.backendUrl,
+    backendUrlSource: runtimeConfig.backendUrlSource,
   },
   auth: {
     openLarkLogin: () => ipcRenderer.invoke("desktop-auth:open-lark-login"),
