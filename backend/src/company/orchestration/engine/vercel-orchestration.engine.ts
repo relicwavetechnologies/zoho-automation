@@ -29,6 +29,11 @@ import { runDesktopChildRouter } from '../../../modules/desktop-chat/vercel-desk
 import { LarkStatusCoordinator } from './lark-status.coordinator';
 import { aiTokenUsageService } from '../../ai-usage/ai-token-usage.service';
 import { estimateTokens } from '../../../utils/token-estimator';
+import { personalVectorMemoryService } from '../../integrations/vector/personal-vector-memory.service';
+import {
+  buildUserPersonalizationPromptSections,
+  retrieveUserPersonalizationMemory,
+} from '../../integrations/vector/user-personalization';
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
 const LARK_BLOCKED_TOOL_IDS = new Set(['coding']);
@@ -54,6 +59,17 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const runInBackground = (label: string, task: () => Promise<void>): void => {
+  queueMicrotask(() => {
+    void task().catch((error) => {
+      logger.warn('vercel.lark.background_task.failed', {
+        label,
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
+    });
+  });
 };
 
 const runWithModelCircuitBreaker = async <T>(
@@ -234,6 +250,7 @@ const buildSystemPrompt = (input: {
   routerAcknowledgement?: string;
   latestUserMessage?: string;
   hasAttachedFiles?: boolean;
+  userPersonalizationSections?: string[];
 }) => {
   const retrievalGuidance = input.latestUserMessage?.trim()
     ? retrievalOrchestratorService.buildPromptGuidance({
@@ -268,6 +285,9 @@ const buildSystemPrompt = (input: {
   }
   if (input.runtime.dateScope) {
     parts.push(`Inferred date scope: ${input.runtime.dateScope}.`);
+  }
+  if (input.userPersonalizationSections && input.userPersonalizationSections.length > 0) {
+    parts.push(...input.userPersonalizationSections);
   }
   const refsContext = buildConversationRefsContext(input.conversationKey);
   if (refsContext) {
@@ -551,6 +571,18 @@ const executeLarkVercelTask = async (
       },
     );
     persistedUserMessageId = userMessage.id;
+    runInBackground(`lark-personal-vector-store:user:${userMessage.id}`, async () => {
+      await personalVectorMemoryService.storeChatTurn({
+        companyId,
+        requesterUserId: linkedUserId!,
+        conversationKey,
+        sourceId: userMessage.id,
+        role: 'user',
+        text: message.text,
+        channel: 'lark',
+        chatId: message.chatId,
+      });
+    });
   } else {
     conversationMemoryStore.addUserMessage(conversationKey, message.messageId, message.text);
   }
@@ -592,6 +624,7 @@ const executeLarkVercelTask = async (
   const childRoute = await runDesktopChildRouter({
     executionId: task.taskId,
     threadId: persistentThread?.id ?? message.chatId,
+    conversationKey,
     message: message.text,
     companyId: runtime.companyId,
     userId: linkedUserId ?? undefined,
@@ -609,7 +642,7 @@ const executeLarkVercelTask = async (
     const statusMessageId = statusCoordinator.getStatusMessageId();
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, reply);
     if (persistentThread) {
-      await desktopThreadsService.addOwnedThreadMessage(
+      const assistantMessage = await desktopThreadsService.addOwnedThreadMessage(
         persistentThread.id,
         linkedUserId,
         'assistant',
@@ -628,6 +661,18 @@ const executeLarkVercelTask = async (
           contextLimit: LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
         },
       );
+      runInBackground(`lark-personal-vector-store:assistant:${assistantMessage.id}`, async () => {
+        await personalVectorMemoryService.storeChatTurn({
+          companyId: runtime.companyId,
+          requesterUserId: linkedUserId!,
+          conversationKey,
+          sourceId: assistantMessage.id,
+          role: 'assistant',
+          text: reply,
+          channel: 'lark',
+          chatId: message.chatId,
+        });
+      });
     }
     if (linkedUserId) {
       const childRouterPrompt = [
@@ -728,12 +773,21 @@ const executeLarkVercelTask = async (
     ];
   }
   const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
+  const userPersonalization = await retrieveUserPersonalizationMemory({
+    companyId: runtime.companyId,
+    userId: linkedUserId ?? undefined,
+    conversationKey,
+    latestUserMessage: message.text,
+    limit: 6,
+    logPrefix: 'lark.personalization',
+  });
   const systemPrompt = buildSystemPrompt({
     conversationKey,
     runtime,
     routerAcknowledgement,
     latestUserMessage: message.text,
     hasAttachedFiles: currentAttachments.length > 0,
+    userPersonalizationSections: buildUserPersonalizationPromptSections(userPersonalization),
   });
 
   try {
@@ -816,7 +870,7 @@ const executeLarkVercelTask = async (
 
     if (persistentThread) {
       const conversationRefs = buildPersistedConversationRefs(conversationKey);
-      await desktopThreadsService.addOwnedThreadMessage(
+      const assistantMessage = await desktopThreadsService.addOwnedThreadMessage(
         persistentThread.id,
         linkedUserId,
         'assistant',
@@ -837,6 +891,20 @@ const executeLarkVercelTask = async (
           contextLimit: LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
         },
       );
+      if (!pendingApproval) {
+        runInBackground(`lark-personal-vector-store:assistant:${assistantMessage.id}`, async () => {
+          await personalVectorMemoryService.storeChatTurn({
+            companyId: runtime.companyId,
+            requesterUserId: linkedUserId!,
+            conversationKey,
+            sourceId: assistantMessage.id,
+            role: 'assistant',
+            text: finalText,
+            channel: 'lark',
+            chatId: message.chatId,
+          });
+        });
+      }
     }
 
     const agentResults = mapToolStepsToAgentResults(steps).map((entry) => ({
