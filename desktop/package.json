@@ -9,6 +9,7 @@
     "dist": "electron-vite build && electron-builder",
     "dist:mac": "electron-vite build && electron-builder --mac dmg",
     "dist:mac:dir": "electron-vite build && electron-builder --mac dir",
+    "dist:mac:universal": "electron-vite build && electron-builder --mac dmg --universal",
     "dist:win": "electron-vite build && electron-builder --win",
     "dist:linux": "electron-vite build && electron-builder --linux",
     "preview": "electron-vite preview",
@@ -72,8 +73,11 @@
         "dmg"
       ],
       "artifactName": "${productName}-${version}-${arch}.${ext}",
-      "hardenedRuntime": false,
-      "gatekeeperAssess": false
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "notarize": true
     },
     "dmg": {
       "artifactName": "${productName}-${version}-${arch}.${ext}"
@@ -82,7 +86,7 @@
       {
         "name": "Divo",
         "schemes": [
-          "divo"
+          "cursorr"
         ]
       }
     ]

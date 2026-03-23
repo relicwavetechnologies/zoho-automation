@@ -9,8 +9,11 @@ import { registerTerminalHandlers } from "./ipc/terminal.handler";
 import { registerThreadHandlers } from "./ipc/threads.handler";
 import { registerWorkspaceHandlers } from "./ipc/workspace.handler";
 
-const PROTOCOL_SCHEME = "divo";
+const PROTOCOL_SCHEME = "cursorr";
 let mainWindow: BrowserWindow | null = null;
+let pendingAuthCallback:
+  | { code?: string | null; state?: string | null; error?: string | null }
+  | null = null;
 
 function getMainWindow(): BrowserWindow | null {
   return mainWindow;
@@ -38,6 +41,13 @@ function createWindow(): void {
     mainWindow?.show();
   });
 
+  mainWindow.webContents.on("did-finish-load", () => {
+    if (pendingAuthCallback && mainWindow) {
+      mainWindow.webContents.send("desktop-auth:callback", pendingAuthCallback);
+      pendingAuthCallback = null;
+    }
+  });
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url);
     return { action: "deny" };
@@ -57,12 +67,12 @@ function handleDeepLink(url: string): void {
       const code = parsed.searchParams.get("code");
       const state = parsed.searchParams.get("state");
       const error = parsed.searchParams.get("error");
-      if ((code || error) && mainWindow) {
-        mainWindow.webContents.send("desktop-auth:callback", {
-          code,
-          state,
-          error,
-        });
+      if (code || error) {
+        pendingAuthCallback = { code, state, error };
+        if (mainWindow && !mainWindow.webContents.isLoading()) {
+          mainWindow.webContents.send("desktop-auth:callback", pendingAuthCallback);
+          pendingAuthCallback = null;
+        }
       }
     }
   } catch {
@@ -70,15 +80,17 @@ function handleDeepLink(url: string): void {
   }
 }
 
-/* ─── Custom protocol registration ─── */
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [
-      "--",
-      process.argv[1],
-    ]);
+function registerProtocolClient(): void {
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [
+        "--",
+        process.argv[1],
+      ]);
+    }
+    return;
   }
-} else {
+
   app.setAsDefaultProtocolClient(PROTOCOL_SCHEME);
 }
 
@@ -114,7 +126,15 @@ registerWorkspaceHandlers(getMainWindow);
 
 /* ─── App lifecycle ─── */
 app.whenReady().then(() => {
+  registerProtocolClient();
   createWindow();
+
+  const initialDeepLink = process.argv.find((arg) =>
+    arg.startsWith(`${PROTOCOL_SCHEME}://`),
+  );
+  if (initialDeepLink) {
+    handleDeepLink(initialDeepLink);
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
