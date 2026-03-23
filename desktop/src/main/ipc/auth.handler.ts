@@ -1,7 +1,8 @@
 import { ipcMain, shell } from "electron";
 import { net } from "electron";
+import { readRuntimeConfig } from "../../shared/runtime-config";
 
-const BACKEND_URL = process.env.DIVO_BACKEND_URL ?? "http://localhost:8000";
+const { backendUrl: BACKEND_URL, webAppUrl: WEB_APP_URL } = readRuntimeConfig();
 
 export function registerAuthHandlers(): void {
   ipcMain.handle("desktop-auth:open-lark-login", async () => {
@@ -139,7 +140,6 @@ export function registerAuthHandlers(): void {
   );
 
   ipcMain.handle("desktop-auth:open-login", async () => {
-    const webAppUrl = process.env.DIVO_WEB_APP_URL ?? "http://localhost:5173";
-    shell.openExternal(`${webAppUrl}/desktop-login?desktop=true`);
+    shell.openExternal(`${WEB_APP_URL}/desktop-login?desktop=true`);
   });
 }

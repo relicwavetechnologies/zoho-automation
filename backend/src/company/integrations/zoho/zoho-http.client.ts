@@ -1,6 +1,7 @@
 import { Buffer } from 'buffer';
 
 import config from '../../../config';
+import { CircuitBreakerOpenError, runWithCircuitBreaker } from '../../observability/circuit-breaker';
 import { logger } from '../../../utils/logger';
 import { ZohoIntegrationError, ZohoFailureCode } from './zoho.errors';
 
@@ -102,6 +103,12 @@ const classifyHttpFailure = (status: number): { code: ZohoFailureCode; retriable
   return { code: 'unknown', retriable: false };
 };
 
+const ZOHO_CIRCUIT_BREAKER = {
+  failureThreshold: 5,
+  windowMs: 60_000,
+  openMs: 120_000,
+};
+
 export class ZohoHttpClient {
   private readonly fetchImpl: typeof fetch;
 
@@ -122,6 +129,24 @@ export class ZohoHttpClient {
   }
 
   async requestJson<T>(input: RequestInput): Promise<T> {
+    try {
+      return await runWithCircuitBreaker('zoho', input.base, {
+        ...ZOHO_CIRCUIT_BREAKER,
+        isFailure: (error) => error instanceof ZohoIntegrationError ? error.retriable : true,
+      }, () => this.requestJsonInternal(input));
+    } catch (error) {
+      if (error instanceof CircuitBreakerOpenError) {
+        throw new ZohoIntegrationError({
+          message: 'Zoho is temporarily unavailable. Please try again shortly.',
+          code: 'unknown',
+          retriable: true,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async requestJsonInternal<T>(input: RequestInput): Promise<T> {
     const retryPolicy = {
       maxAttempts: Math.max(1, input.retry?.maxAttempts ?? this.retry.maxAttempts),
       baseDelayMs: Math.max(0, input.retry?.baseDelayMs ?? this.retry.baseDelayMs),
@@ -271,6 +296,24 @@ export class ZohoHttpClient {
   }
 
   async requestRaw(input: RequestInput): Promise<ZohoRawResponse> {
+    try {
+      return await runWithCircuitBreaker('zoho', `${input.base}:raw`, {
+        ...ZOHO_CIRCUIT_BREAKER,
+        isFailure: (error) => error instanceof ZohoIntegrationError ? error.retriable : true,
+      }, () => this.requestRawInternal(input));
+    } catch (error) {
+      if (error instanceof CircuitBreakerOpenError) {
+        throw new ZohoIntegrationError({
+          message: 'Zoho is temporarily unavailable. Please try again shortly.',
+          code: 'unknown',
+          retriable: true,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async requestRawInternal(input: RequestInput): Promise<ZohoRawResponse> {
     const retryPolicy = {
       maxAttempts: Math.max(1, input.retry?.maxAttempts ?? this.retry.maxAttempts),
       baseDelayMs: Math.max(0, input.retry?.baseDelayMs ?? this.retry.baseDelayMs),

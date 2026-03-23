@@ -33,6 +33,8 @@ export type MemberUsageRow = {
   totalTokens: number;
   monthlyLimit: number;
   percentUsed: number;
+  limitExceeded: boolean;
+  overageTokens: number;
   lastModelId: string | null;
   compactionEvents: number;
 };
@@ -216,6 +218,7 @@ class AiTokenUsageService {
 
     const members: MemberUsageRow[] = Object.entries(byMember).map(([userId, data]) => {
       const limit = policyMap.get(userId) ?? 2_000_000;
+      const overageTokens = Math.max(0, data.tokens - limit);
       return {
         userId,
         userName: data.name,
@@ -223,6 +226,8 @@ class AiTokenUsageService {
         totalTokens: data.tokens,
         monthlyLimit: limit,
         percentUsed: Number(((data.tokens / limit) * 100).toFixed(2)),
+        limitExceeded: data.tokens >= limit,
+        overageTokens,
         lastModelId: data.lastModel,
         compactionEvents: data.compacted,
       };

@@ -1,7 +1,8 @@
 import { ipcMain } from "electron";
 import { net } from "electron";
+import { readRuntimeConfig } from "../../shared/runtime-config";
 
-const BACKEND_URL = process.env.DIVO_BACKEND_URL ?? "http://localhost:8000";
+const { backendUrl: BACKEND_URL } = readRuntimeConfig();
 const activeStreamControllers = new Map<string, AbortController>();
 
 const parseBackendError = async (

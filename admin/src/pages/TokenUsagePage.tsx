@@ -13,6 +13,8 @@ type MemberUsageRow = {
   totalTokens: number;
   monthlyLimit: number;
   percentUsed: number;
+  limitExceeded: boolean;
+  overageTokens: number;
   lastModelId: string | null;
   compactionEvents: number;
 };
@@ -185,15 +187,27 @@ export default function TokenUsagePage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.members.map((member) => (
+                {[...data.members]
+                  .sort((a, b) => Number(b.limitExceeded) - Number(a.limitExceeded) || b.percentUsed - a.percentUsed)
+                  .map((member) => (
                   <TableRow key={member.userId} className="border-zinc-800 hover:bg-zinc-900/50">
                     <TableCell className="font-medium text-zinc-300">
                       <div className="flex flex-col">
-                        <span>{member.userName || member.userEmail || member.userId}</span>
+                        <span className="flex items-center gap-2">
+                          {member.limitExceeded ? (
+                            <span className="inline-block h-2.5 w-2.5 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.7)]" />
+                          ) : null}
+                          <span>{member.userName || member.userEmail || member.userId}</span>
+                        </span>
                         {member.userName && member.userEmail && (
                           <span className="text-[10px] text-zinc-500 font-normal">{member.userEmail}</span>
                         )}
                         <span className="text-xs text-zinc-500 font-normal">{member.lastModelId}</span>
+                        {member.limitExceeded ? (
+                          <span className="text-[10px] text-red-400 font-normal">
+                            Over limit by {member.overageTokens.toLocaleString()} tokens
+                          </span>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell className="text-right text-zinc-400 font-mono">

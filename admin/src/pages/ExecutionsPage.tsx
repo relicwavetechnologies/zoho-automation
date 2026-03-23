@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { X, Search, Filter, Calendar, Cpu, Zap, Activity, Clock, ChevronRight, ChevronLeft, ArrowUpRight, MessageSquare, Terminal, Layout, Share2, Shield, Info, Layers } from 'lucide-react'
-import type { ImperativePanelHandle } from 'react-resizable-panels'
+import type { PanelImperativeHandle, PanelSize } from 'react-resizable-panels'
 
 import { useAdminAuth } from '../auth/AdminAuthProvider'
 import { Badge } from '../components/ui/badge'
@@ -90,7 +90,7 @@ const formatDateTime = (value: string): string =>
     minute: '2-digit',
   })
 
-const formatDuration = (durationMs: number | null): string => {
+const formatDuration = (durationMs?: number | null): string => {
   if (!durationMs || durationMs < 1000) return 'under 1s'
   const seconds = Math.round(durationMs / 1000)
   if (seconds < 60) return `${seconds}s`
@@ -155,7 +155,7 @@ export const ExecutionsPage = () => {
   const [loadingDetailById, setLoadingDetailById] = useState<Record<string, boolean>>({})
   const [expandedPayloads, setExpandedPayloads] = useState<Record<string, boolean>>({})
   const detailCardRef = useRef<HTMLDivElement>(null)
-  const timelinePanelRef = useRef<ImperativePanelHandle | null>(null)
+  const timelinePanelRef = useRef<PanelImperativeHandle | null>(null)
   const lastTimelineSizeRef = useRef(TIMELINE_DEFAULT_SIZE)
   const [isWideLayout, setIsWideLayout] = useState(() => {
     if (typeof window === 'undefined') return true
@@ -211,7 +211,7 @@ export const ExecutionsPage = () => {
   const collapseTimeline = useCallback(() => {
     const panel = timelinePanelRef.current
     if (!panel) return
-    const currentSize = panel.getSize()
+    const currentSize = panel.getSize().asPercentage
     if (currentSize > TIMELINE_MIN_SIZE) {
       lastTimelineSizeRef.current = currentSize
     }
@@ -403,17 +403,16 @@ export const ExecutionsPage = () => {
         )}
       >
         <ResizablePanel
-          ref={timelinePanelRef}
+          panelRef={timelinePanelRef}
+          id="executions-timeline-panel"
           defaultSize={TIMELINE_DEFAULT_SIZE}
           minSize={isWideLayout ? TIMELINE_MIN_SIZE : 24}
           collapsible
           collapsedSize={0}
-          order={1}
-          onCollapse={() => setTimelineCollapsed(true)}
-          onExpand={() => setTimelineCollapsed(false)}
-          onResize={(size) => {
-            if (size > TIMELINE_MIN_SIZE) {
-              lastTimelineSizeRef.current = size
+          onResize={(size: PanelSize) => {
+            setTimelineCollapsed(size.asPercentage <= 0)
+            if (size.asPercentage > TIMELINE_MIN_SIZE) {
+              lastTimelineSizeRef.current = size.asPercentage
             }
           }}
           className="min-w-0"
@@ -531,9 +530,9 @@ export const ExecutionsPage = () => {
         <ResizableHandle withHandle className="my-3 xl:my-0" />
 
         <ResizablePanel
+          id="executions-detail-panel"
           defaultSize={DETAIL_DEFAULT_SIZE}
           minSize={isWideLayout ? 32 : 35}
-          order={2}
           className="min-w-0"
         >
           <div className="flex h-full flex-col min-h-0 min-w-0">

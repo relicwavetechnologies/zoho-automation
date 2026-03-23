@@ -28,6 +28,7 @@ import {
   type CachedDesktopThreadMessage,
 } from './desktop-thread-context.cache';
 import { executionService } from '../../company/observability';
+import { CircuitBreakerOpenError, runWithCircuitBreaker } from '../../company/observability/circuit-breaker';
 import { conversationMemoryStore } from '../../company/state/conversation/conversation-memory.store';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { logger } from '../../utils/logger';
@@ -148,6 +149,29 @@ type TimedPromiseCacheEntry<T> = {
 };
 
 const DURABLE_UI_EVENT_TYPES = new Set(['plan', 'action', 'error']);
+const GEMINI_CIRCUIT_BREAKER = {
+  failureThreshold: 5,
+  windowMs: 60_000,
+  openMs: 120_000,
+};
+
+const runWithModelCircuitBreaker = async <T>(
+  provider: string,
+  operation: string,
+  run: () => Promise<T> | T,
+): Promise<T> => {
+  if (provider !== 'google') {
+    return Promise.resolve(run());
+  }
+  try {
+    return await runWithCircuitBreaker('gemini', operation, GEMINI_CIRCUIT_BREAKER, async () => Promise.resolve(run()));
+  } catch (error) {
+    if (error instanceof CircuitBreakerOpenError) {
+      throw new Error('Gemini is temporarily unavailable. Please try again shortly.');
+    }
+    throw error;
+  }
+};
 
 const extractFirstJsonObject = (text: string): string | null => {
   const trimmed = text.trim();
@@ -620,7 +644,7 @@ export const runDesktopChildRouter = async (input: {
       userId: input.userId,
     });
     const model = await resolveVercelChildRouterModel();
-    const result = await generateText({
+    const result = await runWithModelCircuitBreaker(model.effectiveProvider, 'child_router', () => generateText({
       model: model.model,
       system: 'Return one valid JSON object only. No markdown, no prose, no code fences.',
       prompt: buildChildRouterPrompt({
@@ -628,7 +652,7 @@ export const runDesktopChildRouter = async (input: {
         retrievedMemorySnippets,
       }),
       temperature: 0,
-    });
+    }));
     const rawJson = extractFirstJsonObject(result.text) ?? result.text.trim();
     const parsedRoute = desktopChildRouteSchema.parse(
       normalizeChildRouteResponse(JSON.parse(rawJson)),
@@ -2238,7 +2262,7 @@ const generateExecutionPlan = async (input: {
   }
 
   const plannerModel = await resolveVercelLanguageModel('fast');
-  const result = await generateText({
+  const result = await runWithModelCircuitBreaker(plannerModel.effectiveProvider, 'desktop_planner', () => generateText({
     model: plannerModel.model,
     system: 'Return JSON only.',
     prompt: buildDesktopPlannerPrompt(input),
@@ -2251,7 +2275,7 @@ const generateExecutionPlan = async (input: {
         },
       },
     },
-  }).catch(() => null);
+  })).catch(() => null);
 
   const raw = result?.text?.trim();
   if (!raw) {
@@ -2312,7 +2336,7 @@ const runVercelLoop = async (input: {
     onToolFinish: async (toolName, activityId, title, output) => input.onToolFinish(toolName, activityId, title, output),
   });
 
-  return generateText({
+  const result = await runWithModelCircuitBreaker(resolvedModel.effectiveProvider, 'desktop_generate', () => generateText({
     model: resolvedModel.model,
     system: input.system,
     messages: input.messages,
@@ -2327,7 +2351,15 @@ const runVercelLoop = async (input: {
       },
     },
     stopWhen: [stopOnPendingApproval, stepCountIs(DESKTOP_MAX_LOOP_STEPS)],
+  }));
+  logger.info('vercel.tool_loop.summary', {
+    mode: input.runtime.mode,
+    modelId: resolvedModel.effectiveModelId,
+    stepCount: Array.isArray(result.steps) ? result.steps.length : 0,
+    stepLimit: DESKTOP_MAX_LOOP_STEPS,
+    hitStepLimit: Array.isArray(result.steps) ? result.steps.length >= DESKTOP_MAX_LOOP_STEPS : false,
   });
+  return result;
 };
 
 const runVercelStreamLoop = async (input: {
@@ -2343,7 +2375,7 @@ const runVercelStreamLoop = async (input: {
     onToolFinish: async (toolName, activityId, title, output) => input.onToolFinish(toolName, activityId, title, output),
   });
 
-  return streamText({
+  return runWithModelCircuitBreaker(resolvedModel.effectiveProvider, 'desktop_stream', () => streamText({
     model: resolvedModel.model,
     system: input.system,
     messages: input.messages,
@@ -2358,7 +2390,7 @@ const runVercelStreamLoop = async (input: {
       },
     },
     stopWhen: [stopOnPendingApproval, stepCountIs(DESKTOP_MAX_LOOP_STEPS)],
-  });
+  }));
 };
 
 export const executeAutomatedDesktopTurn = async (input: {

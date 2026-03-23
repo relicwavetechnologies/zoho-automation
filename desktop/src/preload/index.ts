@@ -1,4 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
+import { readRuntimeConfig } from "../shared/runtime-config";
+
+const runtimeConfig = readRuntimeConfig();
 
 export type DesktopAPI = {
   config: {
@@ -201,7 +204,7 @@ export type DesktopAPI = {
 
 const api: DesktopAPI = {
   config: {
-    backendUrl: process.env.DIVO_BACKEND_URL ?? "http://localhost:8000",
+    backendUrl: runtimeConfig.backendUrl,
   },
   auth: {
     openLarkLogin: () => ipcRenderer.invoke("desktop-auth:open-lark-login"),

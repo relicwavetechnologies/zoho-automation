@@ -1,6 +1,7 @@
 import { ipcMain, net } from "electron";
+import { readRuntimeConfig } from "../../shared/runtime-config";
 
-const BACKEND_URL = process.env.DIVO_BACKEND_URL ?? "http://localhost:8000";
+const { backendUrl: BACKEND_URL } = readRuntimeConfig();
 
 export function registerFilesHandlers(): void {
   /**

@@ -8,11 +8,12 @@
     "target": "ES2022",
     "lib": ["ES2022"],
     "outDir": "./out",
+    "tsBuildInfoFile": "./tsconfig.node.tsbuildinfo",
     "strict": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "types": ["electron-vite/node"]
   },
-  "include": ["src/main/**/*", "src/preload/**/*", "electron.vite.config.ts"]
+  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "electron.vite.config.ts"]
 }

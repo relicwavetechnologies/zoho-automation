@@ -20,6 +20,7 @@ import { larkRecentFilesStore } from './lark-recent-files.store';
 import { orangeDebug } from '../../../utils/orange-debug';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
 import { conversationMemoryStore } from '../../state/conversation';
+import { createRateLimitMiddleware, createRedisAvailabilityMiddleware } from '../../../middlewares/rate-limit.middleware';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
 type WebhookVerificationFailureReason = Exclude<LarkWebhookVerificationResult['reason'], undefined>;
@@ -214,6 +215,27 @@ const readMessageAgeMs = (timestamp: string): number | null => {
 
 const toIdempotencyStorageKey = (channel: string, keyType: IngressIdempotencyKeyType, key: string): string =>
   `company:idempotent:${channel}:${keyType}:${key}`;
+
+const larkWebhookRateLimit = createRateLimitMiddleware({
+  name: 'lark_webhook',
+  max: 120,
+  windowMs: 60_000,
+  message: 'Lark webhook rate limit exceeded. Please retry shortly.',
+  key: (req) => {
+    const parsed = parseLarkIngressPayload(req.body);
+    if ('larkTenantKey' in parsed && typeof parsed.larkTenantKey === 'string' && parsed.larkTenantKey.trim()) {
+      return parsed.larkTenantKey.trim();
+    }
+    return req.ip;
+  },
+  skip: (req) => parseLarkIngressPayload(req.body).kind === 'url_verification',
+});
+
+const larkWebhookRedisGuard = createRedisAvailabilityMiddleware({
+  name: 'lark_webhook_runtime',
+  message: 'Lark runtime is temporarily unavailable while infrastructure recovers.',
+  skip: (req) => parseLarkIngressPayload(req.body).kind === 'url_verification',
+});
 
 export const buildPrimaryIngressIdempotencyKey = (input: {
   channel: string;
@@ -1312,7 +1334,7 @@ export const createLarkWebhookEventHandler = (
 
 export const createLarkWebhookRoutes = (overrides: Partial<LarkWebhookRouteDependencies> = {}): Router => {
   const larkWebhookRoutes = Router();
-  larkWebhookRoutes.post('/events', createLarkWebhookEventHandler(overrides));
+  larkWebhookRoutes.post('/events', larkWebhookRedisGuard, larkWebhookRateLimit, createLarkWebhookEventHandler(overrides));
   return larkWebhookRoutes;
 };
 

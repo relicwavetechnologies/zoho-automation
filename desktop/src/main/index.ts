@@ -1,6 +1,5 @@
 import { app, shell, BrowserWindow } from "electron";
 import { join } from "path";
-import { is } from "@electron-toolkit/utils";
 import { URL } from "url";
 
 import { registerAuthHandlers } from "./ipc/auth.handler";
@@ -44,7 +43,7 @@ function createWindow(): void {
     return { action: "deny" };
   });
 
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+  if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
     mainWindow.loadFile(join(__dirname, "../renderer/index.html"));

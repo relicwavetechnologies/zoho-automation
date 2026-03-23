@@ -5,14 +5,27 @@ import {
   requireAdminSession,
   requireCompanyScope,
 } from '../../middlewares/admin-auth.middleware';
+import { createRateLimitMiddleware } from '../../middlewares/rate-limit.middleware';
 import { asyncHandler } from '../../utils/async-handler';
 import { adminAuthController } from './admin-auth.controller';
 
 const router = Router();
 
+const adminLoginRateLimit = createRateLimitMiddleware({
+  name: 'admin_login',
+  max: 5,
+  windowMs: 15 * 60_000,
+  message: 'Too many admin login attempts. Please wait a few minutes and try again.',
+  key: (req) => {
+    const body = req.body as { email?: unknown } | undefined;
+    const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : 'unknown_email';
+    return `${req.ip}:${email}`;
+  },
+});
+
 router.post('/bootstrap-super-admin', asyncHandler(adminAuthController.bootstrapSuperAdmin));
-router.post('/login/super-admin', asyncHandler(adminAuthController.loginSuperAdmin));
-router.post('/login/company-admin', asyncHandler(adminAuthController.loginCompanyAdmin));
+router.post('/login/super-admin', adminLoginRateLimit, asyncHandler(adminAuthController.loginSuperAdmin));
+router.post('/login/company-admin', adminLoginRateLimit, asyncHandler(adminAuthController.loginCompanyAdmin));
 router.post('/signup/company-admin', asyncHandler(adminAuthController.signupCompanyAdmin));
 router.post('/signup/member-invite', asyncHandler(adminAuthController.signupFromInvite));
 router.post(

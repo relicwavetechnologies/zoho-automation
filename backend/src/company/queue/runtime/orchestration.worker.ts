@@ -16,6 +16,7 @@ import {
   ORCHESTRATION_QUEUE_NAME,
   type OrchestrationJobData,
 } from './orchestration.queue';
+import { pushDeadLetterRecord } from './dead-letter.queue';
 import { QueueTaskTimeoutError, withTaskTimeout } from './queue-safety';
 import { redisConnection } from './redis.connection';
 
@@ -524,6 +525,21 @@ export const startOrchestrationWorker = (): Worker<OrchestrationJobData, void, t
   });
   worker.on('failed', (job, error) => {
     const classifiedError = classifyRuntimeError(error);
+    void pushDeadLetterRecord({
+      queue: 'orchestration',
+      failedAt: new Date().toISOString(),
+      taskId: job?.data.taskId,
+      jobId: typeof job?.id === 'string' ? job.id : job?.id != null ? String(job.id) : undefined,
+      requestId: job?.data.message.trace?.requestId,
+      companyId: job?.data.message.trace?.companyId,
+      channel: job?.data.message.channel,
+      messageId: job?.data.message.messageId,
+      chatId: job?.data.message.chatId,
+      userId: job?.data.message.userId,
+      error: {
+        message: classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'unknown_runtime_failure',
+      },
+    });
     orangeDebug('queue.job.failed', {
       taskId: job?.data.taskId,
       jobId: job?.id,

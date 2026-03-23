@@ -15,6 +15,7 @@ import { retrievalOrchestratorService } from '../../retrieval';
 import { logger } from '../../../utils/logger';
 import { resolveVercelLanguageModel } from '../vercel/model-factory';
 import { createVercelDesktopTools } from '../vercel/tools';
+import { CircuitBreakerOpenError, runWithCircuitBreaker } from '../../observability/circuit-breaker';
 import type {
   PendingApprovalAction,
   VercelRuntimeRequestContext,
@@ -38,6 +39,11 @@ const LARK_STATUS_HEARTBEAT_MESSAGES = [
   'Still gathering the right details.',
   'Still working through the next step.',
 ] as const;
+const GEMINI_CIRCUIT_BREAKER = {
+  failureThreshold: 5,
+  windowMs: 60_000,
+  openMs: 120_000,
+};
 
 const larkConversationHydrationVersions = new Map<string, string>();
 
@@ -48,6 +54,24 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const runWithModelCircuitBreaker = async <T>(
+  provider: string,
+  operation: string,
+  run: () => Promise<T> | T,
+): Promise<T> => {
+  if (provider !== 'google') {
+    return Promise.resolve(run());
+  }
+  try {
+    return await runWithCircuitBreaker('gemini', operation, GEMINI_CIRCUIT_BREAKER, async () => Promise.resolve(run()));
+  } catch (error) {
+    if (error instanceof CircuitBreakerOpenError) {
+      throw new Error('Gemini is temporarily unavailable. Please try again shortly.');
+    }
+    throw error;
+  }
 };
 
 const flattenModelContent = (content: ModelMessage['content'] | string | undefined): string => {
@@ -713,7 +737,7 @@ const executeLarkVercelTask = async (
   });
 
   try {
-    const result = await generateText({
+    const result = await runWithModelCircuitBreaker(resolvedModel.effectiveProvider, 'lark_generate', () => generateText({
       model: resolvedModel.model,
       system: systemPrompt,
       messages: inputMessages.length > 0
@@ -730,6 +754,14 @@ const executeLarkVercelTask = async (
         },
       },
       stopWhen: [stopOnPendingApproval, stepCountIs(20)],
+    }));
+    logger.info('vercel.tool_loop.summary', {
+      mode: runtime.mode,
+      modelId: resolvedModel.effectiveModelId,
+      stepCount: Array.isArray(result.steps) ? result.steps.length : 0,
+      stepLimit: 20,
+      hitStepLimit: Array.isArray(result.steps) ? result.steps.length >= 20 : false,
+      channel: 'lark',
     });
 
     const steps = result.steps as Array<{ toolResults?: Array<{ toolName?: string; output?: unknown }> }>;

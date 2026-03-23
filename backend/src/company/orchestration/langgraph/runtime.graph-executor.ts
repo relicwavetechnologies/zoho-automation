@@ -4,6 +4,7 @@ import { generateText, stepCountIs } from 'ai';
 
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
+import { CircuitBreakerOpenError, runWithCircuitBreaker } from '../../observability/circuit-breaker';
 import { resolveChannelAdapter } from '../../channels';
 import { retrievalOrchestratorService } from '../../retrieval';
 import type { ChannelAdapter } from '../../channels/base/channel-adapter';
@@ -52,11 +53,34 @@ type GraphExecutionMode =
   };
 
 const LARK_VERCEL_MODE: VercelRuntimeRequestContext['mode'] = 'fast';
+const GEMINI_CIRCUIT_BREAKER = {
+  failureThreshold: 5,
+  windowMs: 60_000,
+  openMs: 120_000,
+};
 
 const summarizeText = (value: string | null | undefined, limit = 280): string | null => {
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const runWithModelCircuitBreaker = async <T>(
+  provider: string,
+  operation: string,
+  run: () => Promise<T> | T,
+): Promise<T> => {
+  if (provider !== 'google') {
+    return Promise.resolve(run());
+  }
+  try {
+    return await runWithCircuitBreaker('gemini', operation, GEMINI_CIRCUIT_BREAKER, async () => Promise.resolve(run()));
+  } catch (error) {
+    if (error instanceof CircuitBreakerOpenError) {
+      throw new Error('Gemini is temporarily unavailable. Please try again shortly.');
+    }
+    throw error;
+  }
 };
 
 const buildStatusText = (input: {
@@ -210,7 +234,7 @@ export class RuntimeGraphExecutor {
     await updateStatus('processing');
 
     const classifierModel = await resolveVercelLanguageModel(LARK_VERCEL_MODE);
-    const classifierOutput = await generateText({
+    const classifierOutput = await runWithModelCircuitBreaker(classifierModel.effectiveProvider, 'langgraph_classifier', () => generateText({
       model: classifierModel.model,
       system: 'Return JSON only.',
       prompt: buildClassifierPrompt(message.text),
@@ -223,7 +247,7 @@ export class RuntimeGraphExecutor {
           },
         },
       },
-    }).catch((error) => {
+    })).catch((error) => {
       logger.warn('langgraph.classifier.failed', {
         taskId: task.taskId,
         messageId: message.messageId,
@@ -417,7 +441,7 @@ export class RuntimeGraphExecutor {
       }>,
     });
     const researchModel = await resolveVercelLanguageModel(runtime.mode);
-    const researchResult = await generateText({
+    const researchResult = await runWithModelCircuitBreaker(researchModel.effectiveProvider, 'langgraph_research', () => generateText({
       model: researchModel.model,
       system: buildResearchSystemPrompt({
         state,
@@ -437,6 +461,14 @@ export class RuntimeGraphExecutor {
         },
       },
       stopWhen: [stepCountIs(12)],
+    }));
+    logger.info('vercel.tool_loop.summary', {
+      mode: runtime.mode,
+      modelId: researchModel.effectiveModelId,
+      stepCount: Array.isArray(researchResult.steps) ? researchResult.steps.length : 0,
+      stepLimit: 12,
+      hitStepLimit: Array.isArray(researchResult.steps) ? researchResult.steps.length >= 12 : false,
+      channel: message.channel,
     });
 
     state.evidence = evidence;
@@ -477,7 +509,7 @@ export class RuntimeGraphExecutor {
     });
 
     const synthesisModel = await resolveVercelLanguageModel(runtime.mode);
-    const synthesisOutput = await generateText({
+    const synthesisOutput = await runWithModelCircuitBreaker(synthesisModel.effectiveProvider, 'langgraph_synthesis', () => generateText({
       model: synthesisModel.model,
       system: 'Return JSON only.',
       prompt: buildSynthesisJsonPrompt({
@@ -495,7 +527,7 @@ export class RuntimeGraphExecutor {
           },
         },
       },
-    }).catch((error) => {
+    })).catch((error) => {
       logger.warn('langgraph.synthesis.failed', {
         taskId: task.taskId,
         messageId: message.messageId,
