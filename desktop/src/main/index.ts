@@ -9,6 +9,7 @@ import { registerFilesHandlers } from "./ipc/files.handler";
 import { registerTerminalHandlers } from "./ipc/terminal.handler";
 import { registerThreadHandlers } from "./ipc/threads.handler";
 import { registerWorkspaceHandlers } from "./ipc/workspace.handler";
+import { backendLiveClient } from "./services/backend-live.client";
 
 const PROTOCOL_SCHEME = "cursorr";
 let mainWindow: BrowserWindow | null = null;
@@ -124,6 +125,7 @@ registerFilesHandlers();
 registerTerminalHandlers();
 registerThreadHandlers();
 registerWorkspaceHandlers(getMainWindow);
+backendLiveClient.setMainWindowGetter(getMainWindow);
 
 /* ─── App lifecycle ─── */
 app.whenReady().then(() => {

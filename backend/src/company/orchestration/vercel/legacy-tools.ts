@@ -19,6 +19,7 @@ import type {
   VercelRuntimeToolHooks,
   VercelToolEnvelope,
 } from './types';
+import type { MemberSessionDTO } from '../../../modules/member-auth/member-auth.service';
 import {
   discoverRepositories,
   inspectRepository,
@@ -126,6 +127,40 @@ const loadFileUploadService = (): {
     isAdmin?: boolean;
   }) => Promise<Array<Record<string, unknown>>>;
 } => loadModuleExport('../../../modules/file-upload/file-upload.service', 'fileUploadService');
+
+const loadDesktopWorkflowsService = (): {
+  createDraft: (session: MemberSessionDTO, input?: { name?: string | null; departmentId?: string | null }) => Promise<Record<string, any>>;
+  get: (session: MemberSessionDTO, workflowId: string) => Promise<Record<string, any>>;
+  author: (
+    session: MemberSessionDTO,
+    workflowId: string,
+    message: string,
+    attachedFiles?: Array<{ fileAssetId: string; cloudinaryUrl: string; mimeType: string; fileName: string }>,
+  ) => Promise<Record<string, any>>;
+  update: (
+    session: MemberSessionDTO,
+    workflowId: string,
+    input: Record<string, unknown>,
+  ) => Promise<Record<string, any>>;
+  publish: (session: MemberSessionDTO, input: Record<string, unknown>) => Promise<Record<string, any>>;
+  runNow: (session: MemberSessionDTO, workflowId: string, overrideText?: string | null) => Promise<Record<string, any>>;
+  setScheduleState: (session: MemberSessionDTO, workflowId: string, scheduleEnabled: boolean) => Promise<Record<string, any>>;
+  listVisibleSummaries: (session: MemberSessionDTO) => Promise<Array<Record<string, any>>>;
+  resolveVisibleWorkflow: (session: MemberSessionDTO, reference: string) => Promise<Record<string, any>>;
+} => loadModuleExport('../../../modules/desktop-workflows/desktop-workflows.service', 'desktopWorkflowsService');
+
+const loadWorkflowScheduleHelpers = (): {
+  zonedDateTimeToUtc: (input: {
+    year: number;
+    month: number;
+    day: number;
+    hour: number;
+    minute: number;
+    timeZone: string;
+  }) => Date;
+} => ({
+  zonedDateTimeToUtc: loadModuleExport('../../../modules/desktop-workflows/desktop-workflows.schedule', 'zonedDateTimeToUtc'),
+});
 
 const loadDocumentTextHelpers = (): {
   extractTextFromBuffer: (buffer: Buffer, mimeType: string, fileName: string) => Promise<string>;
@@ -261,6 +296,244 @@ const loadZohoFinanceOpsService = (): {
   reconcileBankClosing: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
 } => loadModuleExport('../../integrations/zoho/zoho-finance-ops.service', 'zohoFinanceOpsService');
 
+const workflowAttachedFileSchema = z.object({
+  fileAssetId: z.string().min(1),
+  cloudinaryUrl: z.string().url(),
+  mimeType: z.string().min(1),
+  fileName: z.string().min(1),
+}).strict();
+
+const workflowDestinationSchema = z.object({
+  kind: z.enum(['desktop_inbox', 'desktop_thread', 'lark_chat']),
+  label: z.string().trim().max(160).optional(),
+  value: z.string().trim().max(200).optional(),
+}).strict();
+
+const workflowScheduleInputSchema = z.object({
+  frequency: z.enum(['hourly', 'daily', 'weekly', 'monthly', 'one_time']),
+  timezone: z.string().trim().min(1).max(100).optional(),
+  time: z.string().trim().regex(/^\d{2}:\d{2}$/).optional(),
+  intervalHours: z.number().int().min(1).max(24).optional(),
+  minute: z.number().int().min(0).max(59).optional(),
+  dayOfWeek: z.enum(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']).optional(),
+  dayOfMonth: z.number().int().min(1).max(31).optional(),
+  runDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+}).strict();
+
+const WORKFLOW_DAY_CODE_BY_VALUE: Record<string, 'MO' | 'TU' | 'WE' | 'TH' | 'FR' | 'SA' | 'SU'> = {
+  monday: 'MO',
+  tuesday: 'TU',
+  wednesday: 'WE',
+  thursday: 'TH',
+  friday: 'FR',
+  saturday: 'SA',
+  sunday: 'SU',
+};
+
+const buildRuntimeWorkflowSession = (runtime: VercelRuntimeRequestContext): MemberSessionDTO => ({
+  userId: runtime.userId,
+  companyId: runtime.companyId,
+  role: runtime.requesterAiRole,
+  aiRole: runtime.requesterAiRole,
+  sessionId: runtime.executionId,
+  expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+  authProvider: runtime.channel === 'lark' ? 'lark' : 'password',
+  email: runtime.requesterEmail ?? '',
+  larkTenantKey: runtime.larkTenantKey,
+  larkOpenId: runtime.larkOpenId,
+  larkUserId: runtime.larkUserId,
+  resolvedDepartmentId: runtime.departmentId,
+  resolvedDepartmentName: runtime.departmentName,
+  resolvedDepartmentRoleSlug: runtime.departmentRoleSlug,
+});
+
+const buildRuntimeWorkflowDestinations = (
+  runtime: VercelRuntimeRequestContext,
+): Array<z.infer<typeof workflowDestinationSchema>> => {
+  if (runtime.channel === 'lark' && runtime.chatId) {
+    return [{
+      kind: 'lark_chat',
+      label: 'Current Lark chat',
+      value: runtime.chatId,
+    }];
+  }
+  return [{
+    kind: 'desktop_thread',
+    label: 'Current desktop thread',
+    value: runtime.threadId,
+  }];
+};
+
+const toWorkflowOutputConfig = (destinations: Array<z.infer<typeof workflowDestinationSchema>>) => {
+  const sourceDestinations = destinations.length > 0
+    ? destinations
+    : [{ kind: 'desktop_inbox', label: 'Desktop inbox' } as const];
+
+  const normalizedDestinations = sourceDestinations.map((destination) => {
+    if (destination.kind === 'desktop_inbox') {
+      return {
+        id: 'desktop_inbox',
+        kind: 'desktop_inbox' as const,
+        label: destination.label || 'Desktop inbox',
+      };
+    }
+    if (destination.kind === 'desktop_thread') {
+      return {
+        id: 'desktop_thread',
+        kind: 'desktop_thread' as const,
+        label: destination.label || 'Desktop thread',
+        threadId: destination.value || destination.label || 'desktop-thread',
+      };
+    }
+    return {
+      id: 'lark_chat',
+      kind: 'lark_chat' as const,
+      label: destination.label || 'Lark chat',
+      chatId: destination.value || destination.label || 'lark-chat',
+    };
+  });
+
+  return {
+    version: 'v1' as const,
+    destinations: normalizedDestinations,
+    defaultDestinationIds: normalizedDestinations.map((destination) => destination.id),
+  };
+};
+
+const buildWorkflowOutputConfigSignature = (value: unknown): string => {
+  const record = asRecord(value);
+  const destinations = asArray(record?.destinations)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((destination) => [
+      asString(destination.kind) ?? '',
+      asString(destination.id) ?? '',
+      asString(destination.threadId) ?? '',
+      asString(destination.chatId) ?? '',
+      asString(destination.label) ?? '',
+    ].join(':'))
+    .sort();
+  const defaultIds = asArray(record?.defaultDestinationIds)
+    .map((entry) => asString(entry))
+    .filter((entry): entry is string => Boolean(entry))
+    .sort();
+  return JSON.stringify({ destinations, defaultIds });
+};
+
+const shouldAdoptRuntimeWorkflowDestinations = (
+  currentOutputConfig: unknown,
+  desiredOutputConfig: ReturnType<typeof toWorkflowOutputConfig>,
+): boolean => buildWorkflowOutputConfigSignature(currentOutputConfig) !== buildWorkflowOutputConfigSignature(desiredOutputConfig);
+
+const parseWorkflowTime = (value: string): { hour: number; minute: number } => {
+  const [hour, minute] = value.split(':').map((part) => Number(part));
+  return { hour, minute };
+};
+
+const toWorkflowScheduleConfig = (
+  input: z.infer<typeof workflowScheduleInputSchema>,
+): { ok: true; schedule: Record<string, unknown> } | { ok: false; summary: string; userAction: string } => {
+  const timezone = input.timezone?.trim() || 'Asia/Kolkata';
+  if (input.frequency === 'hourly') {
+    if (!input.intervalHours) {
+      return {
+        ok: false,
+        summary: 'Hourly schedules need intervalHours.',
+        userAction: 'Ask the user how many hours apart the workflow should run.',
+      };
+    }
+    return {
+      ok: true,
+      schedule: {
+        type: 'hourly',
+        timezone,
+        intervalHours: input.intervalHours,
+        minute: input.minute ?? 0,
+      },
+    };
+  }
+  if (input.frequency === 'daily') {
+    if (!input.time) {
+      return {
+        ok: false,
+        summary: 'Daily schedules need a time.',
+        userAction: 'Ask the user what time the workflow should run each day.',
+      };
+    }
+    return { ok: true, schedule: { type: 'daily', timezone, time: parseWorkflowTime(input.time) } };
+  }
+  if (input.frequency === 'weekly') {
+    if (!input.time || !input.dayOfWeek) {
+      return {
+        ok: false,
+        summary: 'Weekly schedules need both a dayOfWeek and time.',
+        userAction: 'Ask the user which weekday and time the workflow should run.',
+      };
+    }
+    return {
+      ok: true,
+      schedule: {
+        type: 'weekly',
+        timezone,
+        time: parseWorkflowTime(input.time),
+        daysOfWeek: [WORKFLOW_DAY_CODE_BY_VALUE[input.dayOfWeek]],
+      },
+    };
+  }
+  if (input.frequency === 'monthly') {
+    if (!input.time || !input.dayOfMonth) {
+      return {
+        ok: false,
+        summary: 'Monthly schedules need both a dayOfMonth and time.',
+        userAction: 'Ask the user which day of the month and time the workflow should run.',
+      };
+    }
+    return {
+      ok: true,
+      schedule: {
+        type: 'monthly',
+        timezone,
+        time: parseWorkflowTime(input.time),
+        dayOfMonth: input.dayOfMonth,
+      },
+    };
+  }
+  if (!input.runDate || !input.time) {
+    return {
+      ok: false,
+      summary: 'One-time schedules need both runDate and time.',
+      userAction: 'Ask the user which date and time the workflow should run once.',
+    };
+  }
+  const zonedRunAt = loadWorkflowScheduleHelpers().zonedDateTimeToUtc({
+    year: Number(input.runDate.slice(0, 4)),
+    month: Number(input.runDate.slice(5, 7)),
+    day: Number(input.runDate.slice(8, 10)),
+    hour: parseWorkflowTime(input.time).hour,
+    minute: parseWorkflowTime(input.time).minute,
+    timeZone: timezone,
+  });
+  return {
+    ok: true,
+    schedule: {
+      type: 'one_time',
+      timezone,
+      runAt: zonedRunAt.toISOString(),
+    },
+  };
+};
+
+const summarizeWorkflowCandidates = (candidates: Array<Record<string, unknown>>): string =>
+  candidates
+    .slice(0, 6)
+    .map((candidate) => {
+      const id = asString(candidate.id) ?? 'unknown';
+      const name = asString(candidate.name) ?? 'Unnamed workflow';
+      const status = asString(candidate.status) ?? 'unknown';
+      return `- ${name} (${id}) [${status}]`;
+    })
+    .join('\n');
+
 const loadHitlActionService = (): {
   createPending: (input: {
     taskId: string;
@@ -277,6 +550,35 @@ const loadHitlActionService = (): {
     metadata?: Record<string, unknown>;
   }) => Promise<{ actionId: string }>;
 } => loadModuleExport('../../state/hitl/hitl-action.service', 'hitlActionService');
+
+type DesktopWsGatewayLike = {
+  getPolicyDecision: (
+    userId: string,
+    companyId: string,
+    action: RemoteDesktopLocalAction,
+  ) => {
+    status: 'allow' | 'ask' | 'deny' | 'none' | 'ambiguous';
+    session?: {
+      wsSessionId: string;
+      activeWorkspace?: { path: string; name: string };
+    };
+  };
+  dispatchRemoteLocalAction: (input: {
+    userId: string;
+    companyId: string;
+    action: RemoteDesktopLocalAction;
+    reason?: string;
+    overrideAsk?: boolean;
+  }) => Promise<{
+    kind: RemoteDesktopLocalAction['kind'];
+    ok: boolean;
+    summary: string;
+    payload?: Record<string, unknown>;
+  }>;
+};
+
+const loadDesktopWsGateway = (): DesktopWsGatewayLike =>
+  loadModuleExport<DesktopWsGatewayLike>('../../../modules/desktop-live/desktop-ws.gateway', 'desktopWsGateway');
 
 const loadZohoRoleAccessService = (): {
   resolveScopeMode: (companyId: string, requesterAiRole?: string) => Promise<'email_scoped' | 'company_scoped'>;
@@ -506,6 +808,138 @@ const createPendingRemoteApproval = async (input: {
       explanation: input.explanation,
       payload: input.payload,
     },
+  });
+};
+
+type RemoteDesktopLocalAction =
+  | { kind: 'list_files'; path?: string }
+  | { kind: 'read_file'; path: string }
+  | { kind: 'write_file'; path: string; content: string }
+  | { kind: 'mkdir'; path: string }
+  | { kind: 'delete_path'; path: string }
+  | { kind: 'run_command'; command: string };
+
+const summarizeRemoteLocalAction = (action: RemoteDesktopLocalAction): string => {
+  switch (action.kind) {
+    case 'run_command':
+      return `Run shell command: ${action.command}`;
+    case 'write_file':
+      return `Write file: ${action.path}`;
+    case 'mkdir':
+      return `Create directory: ${action.path}`;
+    case 'delete_path':
+      return `Delete path: ${action.path}`;
+    case 'read_file':
+      return `Read file: ${action.path}`;
+    case 'list_files':
+      return `Inspect workspace${action.path ? ` in ${action.path}` : ''}`;
+    default:
+      return 'Run local desktop action';
+  }
+};
+
+const createPendingDesktopRemoteApproval = async (input: {
+  runtime: VercelRuntimeRequestContext;
+  action: RemoteDesktopLocalAction;
+  actionGroup: ToolActionGroup;
+  operation: string;
+  summary: string;
+  subject?: string;
+  explanation?: string;
+}): Promise<VercelToolEnvelope> => {
+  const actionType =
+    input.actionGroup === 'delete'
+      ? 'delete'
+      : input.actionGroup === 'execute'
+        ? 'execute'
+        : input.actionGroup === 'update'
+          ? 'update'
+          : 'write';
+  const pending = await loadHitlActionService().createPending({
+    taskId: input.runtime.executionId,
+    actionType,
+    summary: input.summary,
+    chatId: input.runtime.chatId ?? input.runtime.threadId,
+    threadId: input.runtime.threadId,
+    executionId: input.runtime.executionId,
+    channel: input.runtime.channel,
+    toolId: 'coding',
+    actionGroup: input.actionGroup,
+    subject: input.subject,
+    payload: {
+      toolId: 'coding',
+      actionGroup: input.actionGroup,
+      operation: input.operation,
+      desktopRemoteLocalAction: input.action,
+    },
+    metadata: {
+      companyId: input.runtime.companyId,
+      userId: input.runtime.userId,
+      requesterAiRole: input.runtime.requesterAiRole,
+      requesterEmail: input.runtime.requesterEmail,
+      departmentId: input.runtime.departmentId,
+      departmentName: input.runtime.departmentName,
+      departmentRoleSlug: input.runtime.departmentRoleSlug,
+      authProvider: input.runtime.authProvider,
+      larkTenantKey: input.runtime.larkTenantKey,
+      larkOpenId: input.runtime.larkOpenId,
+      larkUserId: input.runtime.larkUserId,
+      mode: input.runtime.mode,
+      desktopRemoteLocalAction: input.action,
+      desktopRemoteLocalActionGroup: input.actionGroup,
+      desktopRemoteLocalOperation: input.operation,
+      desktopRemoteLocalSummary: input.summary,
+      ...(input.explanation ? { desktopRemoteLocalExplanation: input.explanation } : {}),
+      approvalExecutionMode: 'desktop_remote',
+    },
+  });
+  return buildEnvelope({
+    success: true,
+    summary: input.summary,
+    pendingApprovalAction: {
+      kind: 'tool_action',
+      approvalId: pending.actionId,
+      scope: 'backend_remote',
+      toolId: 'coding',
+      actionGroup: input.actionGroup,
+      operation: input.operation,
+      title: 'Desktop execution approval required',
+      summary: input.summary,
+      subject: input.subject,
+      explanation: input.explanation,
+      payload: {
+        desktopRemoteLocalAction: input.action,
+      },
+    },
+  });
+};
+
+const buildRemoteLocalExecutionUnavailableEnvelope = (
+  status: 'none' | 'ambiguous' | 'deny',
+): VercelToolEnvelope => {
+  if (status === 'none') {
+    return buildEnvelope({
+      success: false,
+      summary: 'No active desktop workspace is available for local execution.',
+      errorKind: 'missing_input',
+      retryable: true,
+      userAction: 'Open Divo Desktop, select the target workspace, and keep it connected before retrying.',
+    });
+  }
+  if (status === 'ambiguous') {
+    return buildEnvelope({
+      success: false,
+      summary: 'Multiple desktop workspaces are online; remote execution target is ambiguous.',
+      errorKind: 'validation',
+      retryable: true,
+      userAction: 'Keep exactly one eligible desktop workspace connected before retrying.',
+    });
+  }
+  return buildEnvelope({
+    success: false,
+    summary: 'This desktop workspace policy denies the requested local action.',
+    errorKind: 'permission',
+    retryable: false,
   });
 };
 
@@ -1100,8 +1534,15 @@ const resolveWorkspacePath = (runtime: VercelRuntimeRequestContext, candidate: s
   return path.join(workspaceRoot, candidate);
 };
 
-const inspectWorkspace = async (workspaceRoot: string) => {
-  const entries = await fs.readdir(workspaceRoot, { withFileTypes: true });
+const inspectWorkspace = async (workspaceRoot: string, targetPath?: string) => {
+  const directoryPath = targetPath?.trim()
+    ? path.resolve(workspaceRoot, targetPath.trim())
+    : workspaceRoot;
+  const relativePath = path.relative(workspaceRoot, directoryPath);
+  if (relativePath === '..' || relativePath.startsWith(`..${path.sep}`)) {
+    throw new Error('Requested inspect path escapes the active workspace');
+  }
+  const entries = await fs.readdir(directoryPath, { withFileTypes: true });
   return entries
     .slice(0, 50)
     .map((entry) => ({
@@ -1118,12 +1559,21 @@ const getCodingActivityTitle = (operation: string): string => {
       return 'Reading workspace files';
     case 'verifyResult':
       return 'Verifying local command results';
+    case 'runCommand':
     case 'planCommand':
       return 'Planning shell command';
+    case 'runScript':
     case 'runScriptPlan':
       return 'Planning script execution';
+    case 'writeFile':
     case 'writeFilePlan':
       return 'Planning file write';
+    case 'createDirectory':
+    case 'mkdirPlan':
+      return 'Planning directory creation';
+    case 'deletePath':
+    case 'deletePathPlan':
+      return 'Planning path deletion';
     default:
       return 'Running local coding action';
   }
@@ -1172,6 +1622,13 @@ const VERCEL_TOOL_PERMISSION_IDS: Record<string, string[]> = {
   documentOcrRead: ['document-ocr-read'],
   invoiceParser: ['invoice-parser'],
   statementParser: ['statement-parser'],
+  workflowDraft: ['workflow-authoring'],
+  workflowPlan: ['workflow-authoring'],
+  workflowBuild: ['workflow-authoring'],
+  workflowSave: ['workflow-authoring'],
+  workflowSchedule: ['workflow-authoring'],
+  workflowList: ['workflow-authoring'],
+  workflowRun: ['workflow-authoring'],
   skillSearch: ['skill-search'],
   repo: ['repo'],
   coding: ['coding'],
@@ -1585,6 +2042,502 @@ export const createVercelDesktopTools = (
       }),
     }),
 
+    workflowDraft: tool({
+      description: 'Create a reusable workflow/prompt draft or reopen an existing draft. Use when the user wants to make a process reusable, save it for later, or prepare it for scheduling.',
+      inputSchema: z.object({
+        workflowId: z.string().uuid().optional(),
+        name: z.string().trim().min(1).max(160).optional(),
+        departmentId: z.string().uuid().nullable().optional(),
+        destinations: z.array(workflowDestinationSchema).max(10).optional(),
+      }).strict(),
+      execute: async (input) => withLifecycle(hooks, 'workflowDraft', 'Preparing workflow draft', async () => {
+        const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'create');
+        if (permissionError) {
+          return permissionError;
+        }
+        const session = buildRuntimeWorkflowSession(runtime);
+        const workflowsService = loadDesktopWorkflowsService();
+        const destinations = input.destinations ?? buildRuntimeWorkflowDestinations(runtime);
+        const desiredOutputConfig = toWorkflowOutputConfig(destinations);
+
+        if (input.workflowId) {
+          const existing = await workflowsService.get(session, input.workflowId);
+          const normalized = shouldAdoptRuntimeWorkflowDestinations(existing.outputConfig, desiredOutputConfig)
+            ? await workflowsService.update(session, input.workflowId, {
+              outputConfig: desiredOutputConfig,
+              ...(input.departmentId !== undefined || runtime.departmentId
+                ? { departmentId: input.departmentId ?? runtime.departmentId ?? null }
+                : {}),
+            })
+            : existing;
+          return buildEnvelope({
+            success: true,
+            summary: `Resumed workflow draft "${asString(normalized.name) ?? input.workflowId}".`,
+            keyData: {
+              workflowId: normalized.id,
+              name: normalized.name,
+              status: normalized.status,
+            },
+            fullPayload: normalized,
+          });
+        }
+
+        const created = await workflowsService.createDraft(session, {
+          name: input.name ?? null,
+          departmentId: input.departmentId ?? runtime.departmentId ?? null,
+        });
+        const normalized = await workflowsService.update(session, created.id as string, {
+          outputConfig: desiredOutputConfig,
+          ...(input.departmentId !== undefined || runtime.departmentId
+            ? { departmentId: input.departmentId ?? runtime.departmentId ?? null }
+            : {}),
+        });
+
+        return buildEnvelope({
+          success: true,
+          summary: `Created workflow draft "${asString(normalized.name) ?? asString(created.name) ?? 'New workflow'}".`,
+          keyData: {
+            workflowId: normalized.id,
+            name: normalized.name,
+            status: normalized.status,
+          },
+          fullPayload: normalized,
+        });
+      }),
+    }),
+
+    workflowPlan: tool({
+      description: 'Advance workflow planning from a user brief. Use this when the user wants a reusable prompt/workflow or wants to schedule a repeatable process. If required details are missing, this tool returns exactly what to ask next.',
+      inputSchema: z.object({
+        workflowId: z.string().uuid().optional(),
+        brief: z.string().trim().min(1).max(12000).optional(),
+        attachedFiles: z.array(workflowAttachedFileSchema).max(12).optional(),
+      }).strict(),
+      execute: async (input) => withLifecycle(hooks, 'workflowPlan', 'Planning workflow', async () => {
+        const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'create');
+        if (permissionError) {
+          return permissionError;
+        }
+        if (!input.brief?.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: 'Workflow planning needs the process or prompt brief first.',
+            errorKind: 'missing_input',
+            retryable: false,
+            userAction: 'Ask the user what reusable process/prompt they want to create.',
+          });
+        }
+        const session = buildRuntimeWorkflowSession(runtime);
+        const workflowsService = loadDesktopWorkflowsService();
+        let workflowId = input.workflowId;
+        if (!workflowId) {
+          const created = await workflowsService.createDraft(session, {
+            departmentId: runtime.departmentId ?? null,
+          });
+          const destinations = buildRuntimeWorkflowDestinations(runtime);
+          const normalized = await workflowsService.update(session, created.id as string, {
+            outputConfig: toWorkflowOutputConfig(destinations),
+            ...(runtime.departmentId ? { departmentId: runtime.departmentId } : {}),
+          });
+          workflowId = asString(normalized.id) ?? asString(created.id);
+        }
+        if (!workflowId) {
+          return buildEnvelope({
+            success: false,
+            summary: 'Workflow planning could not create a draft workflow.',
+            errorKind: 'api_failure',
+            retryable: true,
+          });
+        }
+
+        const runtimeDestinations = buildRuntimeWorkflowDestinations(runtime);
+        const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations);
+        const current = await workflowsService.get(session, workflowId);
+        if (shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)) {
+          await workflowsService.update(session, workflowId, {
+            outputConfig: desiredOutputConfig,
+            ...(runtime.departmentId ? { departmentId: runtime.departmentId } : {}),
+          });
+        }
+
+        const planned = await workflowsService.author(session, workflowId, input.brief.trim(), input.attachedFiles ?? []);
+        const planningState = asRecord(planned.planningState);
+        const openQuestions = asArray(planningState?.openQuestions)
+          .map((entry) => asRecord(entry))
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+        if (openQuestions.length > 0 && planningState?.readyToBuild !== true) {
+          const firstQuestion = asString(openQuestions[0]?.question) ?? 'Ask the user for the next missing workflow detail.';
+          return buildEnvelope({
+            success: false,
+            summary: asString(planned.aiDraft)
+              ?? asString(planned.userIntent)
+              ?? `Workflow planning needs more details. ${firstQuestion}`,
+            errorKind: 'missing_input',
+            retryable: false,
+            userAction: firstQuestion,
+            keyData: {
+              workflowId: planned.id,
+              name: planned.name,
+              readyToBuild: planningState?.readyToBuild ?? false,
+              openQuestionCount: openQuestions.length,
+            },
+            fullPayload: planned,
+          });
+        }
+
+        return buildEnvelope({
+          success: true,
+          summary: planningState?.readyToBuild === true
+            ? `Workflow "${asString(planned.name) ?? workflowId}" is ready to build.`
+            : `Workflow "${asString(planned.name) ?? workflowId}" planning was updated.`,
+          keyData: {
+            workflowId: planned.id,
+            name: planned.name,
+            readyToBuild: planningState?.readyToBuild ?? false,
+          },
+          fullPayload: planned,
+        });
+      }),
+    }),
+
+    workflowBuild: tool({
+      description: 'Build the reusable workflow/prompt once planning is complete. If planning is still incomplete, this tool tells you exactly what to ask the user next.',
+      inputSchema: z.object({
+        workflowId: z.string().uuid(),
+      }).strict(),
+      execute: async (input) => withLifecycle(hooks, 'workflowBuild', 'Building workflow', async () => {
+        const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'update');
+        if (permissionError) {
+          return permissionError;
+        }
+        const session = buildRuntimeWorkflowSession(runtime);
+        const workflowsService = loadDesktopWorkflowsService();
+        const runtimeDestinations = buildRuntimeWorkflowDestinations(runtime);
+        const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations);
+        let current = await workflowsService.get(session, input.workflowId);
+        if (shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)) {
+          current = await workflowsService.update(session, input.workflowId, {
+            outputConfig: desiredOutputConfig,
+            ...(runtime.departmentId ? { departmentId: runtime.departmentId } : {}),
+          });
+        }
+        const planningState = asRecord(current.planningState);
+        const openQuestions = asArray(planningState?.openQuestions)
+          .map((entry) => asRecord(entry))
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+        if (planningState?.readyToBuild !== true) {
+          const firstQuestion = asString(openQuestions[0]?.question) ?? 'Ask the user for the remaining workflow details before building.';
+          return buildEnvelope({
+            success: false,
+            summary: `Workflow "${asString(current.name) ?? input.workflowId}" is not ready to build yet.`,
+            errorKind: 'missing_input',
+            retryable: false,
+            userAction: firstQuestion,
+            keyData: {
+              workflowId: current.id,
+              name: current.name,
+              openQuestionCount: openQuestions.length,
+            },
+            fullPayload: current,
+          });
+        }
+
+        const built = await workflowsService.author(session, input.workflowId, 'Build the reusable workflow now.');
+        return buildEnvelope({
+          success: true,
+          summary: `Built workflow "${asString(built.name) ?? input.workflowId}".`,
+          keyData: {
+            workflowId: built.id,
+            name: built.name,
+            built: typeof built.compiledPrompt === 'string' && built.compiledPrompt.trim().length > 0,
+          },
+          fullPayload: built,
+        });
+      }),
+    }),
+
+    workflowSave: tool({
+      description: 'Save or publish a built reusable workflow. Requires explicit confirmation before saving, and never enables a schedule unless explicitly requested.',
+      inputSchema: z.object({
+        workflowId: z.string().uuid(),
+        confirm: z.boolean().optional(),
+        scheduleEnabled: z.boolean().optional(),
+        departmentId: z.string().uuid().nullable().optional(),
+        destinations: z.array(workflowDestinationSchema).max(10).optional(),
+      }).strict(),
+      execute: async (input) => withLifecycle(hooks, 'workflowSave', 'Saving workflow', async () => {
+        const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'update');
+        if (permissionError) {
+          return permissionError;
+        }
+        if (input.confirm !== true) {
+          return buildEnvelope({
+            success: false,
+            summary: input.scheduleEnabled
+              ? 'Saving and enabling a workflow schedule requires explicit confirmation.'
+              : 'Saving this reusable workflow requires explicit confirmation.',
+            errorKind: 'missing_input',
+            retryable: false,
+            userAction: input.scheduleEnabled
+              ? 'Ask the user to confirm saving and enabling the schedule.'
+              : 'Ask the user to confirm saving the reusable workflow.',
+          });
+        }
+
+        const session = buildRuntimeWorkflowSession(runtime);
+        const workflowsService = loadDesktopWorkflowsService();
+        const runtimeDestinations = input.destinations ?? buildRuntimeWorkflowDestinations(runtime);
+        const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations);
+        let current = await workflowsService.get(session, input.workflowId);
+        if (shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)) {
+          current = await workflowsService.update(session, input.workflowId, {
+            outputConfig: desiredOutputConfig,
+            ...(input.departmentId !== undefined || runtime.departmentId
+              ? { departmentId: input.departmentId ?? runtime.departmentId ?? null }
+              : {}),
+          });
+        }
+        if (typeof current.compiledPrompt !== 'string' || !current.compiledPrompt.trim()) {
+          return buildEnvelope({
+            success: false,
+            summary: `Workflow "${asString(current.name) ?? input.workflowId}" is not built yet.`,
+            errorKind: 'missing_input',
+            retryable: false,
+            userAction: 'Build the workflow first, then save or publish it.',
+            fullPayload: current,
+          });
+        }
+
+        const outputConfig = input.destinations
+          ? toWorkflowOutputConfig(input.destinations)
+          : current.outputConfig;
+        const published = await workflowsService.publish(session, {
+          workflowId: current.id,
+          name: current.name,
+          userIntent: current.userIntent,
+          aiDraft: current.aiDraft ?? undefined,
+          workflowSpec: current.workflowSpec,
+          compiledPrompt: current.compiledPrompt,
+          schedule: current.schedule,
+          scheduleEnabled: input.scheduleEnabled ?? false,
+          outputConfig,
+          departmentId: input.departmentId ?? runtime.departmentId ?? current.departmentId ?? null,
+        });
+
+        return buildEnvelope({
+          success: true,
+          summary: input.scheduleEnabled
+            ? `Saved and scheduled workflow "${asString(current.name) ?? input.workflowId}".`
+            : `Saved workflow "${asString(current.name) ?? input.workflowId}".`,
+          keyData: {
+            workflowId: published.workflowId,
+            status: published.status,
+            scheduleEnabled: published.scheduleEnabled,
+            nextRunAt: published.nextRunAt,
+            primaryThreadId: published.primaryThreadId,
+          },
+          fullPayload: published,
+        });
+      }),
+    }),
+
+    workflowSchedule: tool({
+      description: 'Update a workflow schedule or enable/disable scheduling. If timing is missing, this tool tells you what to ask the user next. Enabling a schedule requires explicit confirmation.',
+      inputSchema: z.object({
+        workflowId: z.string().uuid(),
+        schedule: workflowScheduleInputSchema.optional(),
+        scheduleEnabled: z.boolean().optional(),
+        confirm: z.boolean().optional(),
+      }).strict(),
+      execute: async (input) => withLifecycle(hooks, 'workflowSchedule', 'Updating workflow schedule', async () => {
+        const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'update');
+        if (permissionError) {
+          return permissionError;
+        }
+        if (!input.schedule && input.scheduleEnabled === undefined) {
+          return buildEnvelope({
+            success: false,
+            summary: 'Workflow scheduling needs either a new schedule or an explicit enable/disable decision.',
+            errorKind: 'missing_input',
+            retryable: false,
+            userAction: 'Ask the user what schedule to set, or whether they want scheduling enabled or paused.',
+          });
+        }
+
+        const session = buildRuntimeWorkflowSession(runtime);
+        const workflowsService = loadDesktopWorkflowsService();
+        const runtimeDestinations = buildRuntimeWorkflowDestinations(runtime);
+        const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations);
+        let current = await workflowsService.get(session, input.workflowId);
+        if (shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)) {
+          current = await workflowsService.update(session, input.workflowId, {
+            outputConfig: desiredOutputConfig,
+            ...(runtime.departmentId ? { departmentId: runtime.departmentId } : {}),
+          });
+        }
+        if (input.schedule) {
+          const parsedSchedule = toWorkflowScheduleConfig(input.schedule);
+          if (!parsedSchedule.ok) {
+            return buildEnvelope({
+              success: false,
+              summary: parsedSchedule.summary,
+              errorKind: 'missing_input',
+              retryable: false,
+              userAction: parsedSchedule.userAction,
+            });
+          }
+          current = await workflowsService.update(session, input.workflowId, {
+            schedule: parsedSchedule.schedule,
+          });
+        }
+
+        if (input.scheduleEnabled === true) {
+          if (input.confirm !== true) {
+            return buildEnvelope({
+              success: false,
+              summary: 'Enabling a workflow schedule requires explicit confirmation.',
+              errorKind: 'missing_input',
+              retryable: false,
+              userAction: 'Ask the user to confirm enabling the workflow schedule.',
+            });
+          }
+          if (typeof current.compiledPrompt !== 'string' || !current.compiledPrompt.trim() || asString(current.status) === 'draft') {
+            return buildEnvelope({
+              success: false,
+              summary: `Workflow "${asString(current.name) ?? input.workflowId}" must be built and saved before scheduling is enabled.`,
+              errorKind: 'missing_input',
+              retryable: false,
+              userAction: 'Build and save the workflow first, then enable its schedule.',
+            });
+          }
+          const scheduled = await workflowsService.setScheduleState(session, input.workflowId, true);
+          return buildEnvelope({
+            success: true,
+            summary: `Enabled scheduling for "${asString(current.name) ?? input.workflowId}".`,
+            keyData: scheduled,
+            fullPayload: scheduled,
+          });
+        }
+
+        if (input.scheduleEnabled === false) {
+          const paused = await workflowsService.setScheduleState(session, input.workflowId, false);
+          return buildEnvelope({
+            success: true,
+            summary: `Paused scheduling for "${asString(current.name) ?? input.workflowId}".`,
+            keyData: paused,
+            fullPayload: paused,
+          });
+        }
+
+        const refreshed = await workflowsService.get(session, input.workflowId);
+        return buildEnvelope({
+          success: true,
+          summary: `Updated the saved schedule for "${asString(refreshed.name) ?? input.workflowId}".`,
+          keyData: {
+            workflowId: refreshed.id,
+            schedule: refreshed.schedule,
+          },
+          fullPayload: refreshed,
+        });
+      }),
+    }),
+
+    workflowList: tool({
+      description: 'List saved reusable prompts/workflows available to the current user. Use this for requests like "show my saved prompts" or "list workflows".',
+      inputSchema: z.object({
+        query: z.string().trim().max(160).optional(),
+      }).strict(),
+      execute: async (input) => withLifecycle(hooks, 'workflowList', 'Listing workflows', async () => {
+        const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'read');
+        if (permissionError) {
+          return permissionError;
+        }
+        const session = buildRuntimeWorkflowSession(runtime);
+        const workflows = await loadDesktopWorkflowsService().listVisibleSummaries(session);
+        const filtered = input.query?.trim()
+          ? workflows.filter((workflow) => (asString(workflow.name) ?? '').toLowerCase().includes(input.query!.trim().toLowerCase()))
+          : workflows;
+        return buildEnvelope({
+          success: true,
+          summary: filtered.length > 0
+            ? `Found ${filtered.length} saved workflow(s).`
+            : 'No saved workflows matched the current request.',
+          keyData: {
+            workflowCount: filtered.length,
+          },
+          fullPayload: {
+            workflows: filtered,
+          },
+        });
+      }),
+    }),
+
+    workflowRun: tool({
+      description: 'Run a saved workflow now by id or exact/near-exact name. Use this when the user asks to run a saved prompt/workflow, not when they want immediate ad hoc execution.',
+      inputSchema: z.object({
+        workflowId: z.string().uuid().optional(),
+        name: z.string().trim().min(1).max(160).optional(),
+        overrideText: z.string().trim().max(4000).optional(),
+      }).strict(),
+      execute: async (input) => withLifecycle(hooks, 'workflowRun', 'Running saved workflow', async () => {
+        const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'execute');
+        if (permissionError) {
+          return permissionError;
+        }
+        const reference = input.workflowId ?? input.name?.trim();
+        if (!reference) {
+          return buildEnvelope({
+            success: false,
+            summary: 'Workflow execution needs a workflow id or workflow name.',
+            errorKind: 'missing_input',
+            retryable: false,
+            userAction: 'Ask the user which saved workflow should be run.',
+          });
+        }
+        const session = buildRuntimeWorkflowSession(runtime);
+        const workflowsService = loadDesktopWorkflowsService();
+        const resolved = await workflowsService.resolveVisibleWorkflow(session, reference);
+        if (resolved.status === 'not_found') {
+          return buildEnvelope({
+            success: false,
+            summary: `No saved workflow matched "${reference}".`,
+            errorKind: 'missing_input',
+            retryable: false,
+            userAction: 'Ask the user for the exact workflow name or tell them to list saved workflows first.',
+          });
+        }
+        if (resolved.status === 'ambiguous') {
+          return buildEnvelope({
+            success: false,
+            summary: `Multiple saved workflows matched "${reference}":\n${summarizeWorkflowCandidates(resolved.candidates as Array<Record<string, unknown>>)}`,
+            errorKind: 'missing_input',
+            retryable: false,
+            userAction: 'Ask the user which exact saved workflow should run.',
+            fullPayload: resolved,
+          });
+        }
+        const run = await workflowsService.runNow(session, asString(asRecord(resolved.workflow)?.id) ?? reference, input.overrideText ?? null);
+        return buildEnvelope({
+          success: asString(run.status) !== 'failed',
+          summary: asString(run.resultSummary)
+            ?? (asString(run.errorSummary)
+              ? `Workflow run finished with an issue: ${asString(run.errorSummary)}`
+              : `Started workflow "${asString(asRecord(resolved.workflow)?.name) ?? reference}".`),
+          keyData: {
+            workflowId: run.workflowId,
+            runId: run.runId,
+            status: run.status,
+            threadId: run.threadId,
+          },
+          fullPayload: {
+            resolved,
+            run,
+          },
+          ...(asString(run.status) === 'failed' ? { errorKind: 'api_failure' as const, retryable: true } : {}),
+        });
+      }),
+    }),
+
     skillSearch: tool({
       description: 'Use this before tool execution when a request is workflow-like or the correct tool path is not obvious. searchSkills finds the right workflow guide; readSkill loads the full operating instructions so you can confidently choose the real domain tool and continue the task.',
       inputSchema: z.object({
@@ -1800,12 +2753,13 @@ export const createVercelDesktopTools = (
     }),
 
     coding: tool({
-      description: 'Primary local coding tool for the open workspace. Use this for real local workspace work only, not as the first step for uploaded/company document retrieval. If the request is about uploaded files or internal company docs, use the internal document tools first. Use inspectWorkspace to list files, readFiles to read exact files, planCommand or runScriptPlan only when you already know the exact shell command, writeFilePlan only when you already have the full file path and full file content, and verifyResult after an approved local action finishes. Do not call writeFilePlan without contentPlan.path and contentPlan.content. Do not call planCommand or runScriptPlan without command.',
+      description: 'Primary executable local coding tool for the active workspace. Use this for real local workspace work, not as the first step for uploaded/company document retrieval. If the request is about uploaded files or internal company docs, use the internal document tools first. When a workspace is connected, ambiguous file and folder requests refer to LOCAL files by default, not Google Drive or other cloud integrations, unless the user explicitly names a cloud service. These operations execute through workspace policy and approval when needed; they are not suggestion-only plans. The terminal path is the universal local-workspace executor: if a task can be done with shell commands in the active workspace, use runCommand with the exact command. Use inspectWorkspace to list files in the workspace root or a specific subdirectory, readFiles to read exact files, writeFile when you already have the full target path and exact file content, createDirectory to create directories, deletePath to remove files or folders, and runCommand when you need an exact terminal command such as moving, renaming, organizing files, running Python, tests, shell utilities, git, package installs, or multi-file operations. To inspect a folder, call inspectWorkspace with that exact folder path. Never infer a subdirectory\'s contents from the root listing. Use verifyResult after an approved local action finishes, and verify destructive or mutating actions before reporting success. Legacy aliases like planCommand, runScriptPlan, runScript, writeFilePlan, mkdirPlan, and deletePathPlan are still accepted. Do not call writeFile without contentPlan.path and contentPlan.content. Do not call runCommand without an exact command.',
       inputSchema: z.discriminatedUnion('operation', [
         z.object({
           operation: z.literal('inspectWorkspace'),
           objective: z.string().min(1),
           workspaceRoot: z.string().optional(),
+          path: z.string().optional(),
         }),
         z.object({
           operation: z.literal('readFiles'),
@@ -1814,7 +2768,19 @@ export const createVercelDesktopTools = (
           paths: z.array(z.string()).min(1),
         }),
         z.object({
+          operation: z.literal('runCommand'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          command: z.string().min(1),
+        }),
+        z.object({
           operation: z.literal('planCommand'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          command: z.string().min(1),
+        }),
+        z.object({
+          operation: z.literal('runScript'),
           objective: z.string().min(1),
           workspaceRoot: z.string().optional(),
           command: z.string().min(1),
@@ -1826,6 +2792,15 @@ export const createVercelDesktopTools = (
           command: z.string().min(1),
         }),
         z.object({
+          operation: z.literal('writeFile'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          contentPlan: z.object({
+            path: z.string().min(1),
+            content: z.string().min(1),
+          }),
+        }),
+        z.object({
           operation: z.literal('writeFilePlan'),
           objective: z.string().min(1),
           workspaceRoot: z.string().optional(),
@@ -1833,6 +2808,30 @@ export const createVercelDesktopTools = (
             path: z.string().min(1),
             content: z.string().min(1),
           }),
+        }),
+        z.object({
+          operation: z.literal('createDirectory'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          path: z.string().min(1),
+        }),
+        z.object({
+          operation: z.literal('mkdirPlan'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          path: z.string().min(1),
+        }),
+        z.object({
+          operation: z.literal('deletePath'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          path: z.string().min(1),
+        }),
+        z.object({
+          operation: z.literal('deletePathPlan'),
+          objective: z.string().min(1),
+          workspaceRoot: z.string().optional(),
+          path: z.string().min(1),
         }),
         z.object({
           operation: z.literal('verifyResult'),
@@ -1851,13 +2850,166 @@ export const createVercelDesktopTools = (
           });
         }
 
+        const executeLarkRemoteLocalAction = async (
+          action: RemoteDesktopLocalAction,
+          actionGroup: ToolActionGroup,
+          successSummary: string,
+        ): Promise<VercelToolEnvelope> => {
+          const gateway = loadDesktopWsGateway();
+          const policy = gateway.getPolicyDecision(runtime.userId, runtime.companyId, action);
+          if (policy.status === 'none' || policy.status === 'ambiguous' || policy.status === 'deny') {
+            return buildRemoteLocalExecutionUnavailableEnvelope(policy.status);
+          }
+          if (policy.status === 'ask') {
+            return createPendingDesktopRemoteApproval({
+              runtime,
+              action,
+              actionGroup,
+              operation: input.operation,
+              summary: summarizeRemoteLocalAction(action),
+              explanation: input.objective,
+            });
+          }
+
+          const result = await gateway.dispatchRemoteLocalAction({
+            userId: runtime.userId,
+            companyId: runtime.companyId,
+            action,
+            reason: input.objective,
+          });
+          return buildEnvelope({
+            success: result.ok,
+            summary: result.ok ? successSummary : result.summary,
+            keyData: {
+              workspaceRoot: policy.session?.activeWorkspace?.path ?? workspaceRoot,
+              actionKind: action.kind,
+            },
+            fullPayload: {
+              action,
+              result,
+            },
+            ...(result.ok ? {} : { errorKind: 'api_failure', retryable: true }),
+          });
+        };
+
+        if (runtime.channel === 'lark') {
+          if (input.operation === 'inspectWorkspace') {
+            const result = await executeLarkRemoteLocalAction(
+              { kind: 'list_files', ...(input.path?.trim() ? { path: input.path.trim() } : {}) },
+              'read',
+              `Inspected workspace entries in ${input.path?.trim() ? input.path.trim() : workspaceRoot}.`,
+            );
+            if (!result.success) {
+              return result;
+            }
+            const payload = asRecord(result.fullPayload?.result?.payload);
+            const items = asArray(payload?.items).map((entry) => asRecord(entry)).filter((entry): entry is Record<string, unknown> => Boolean(entry));
+            const resolvedPath = asString(payload?.path) ?? workspaceRoot;
+            return buildEnvelope({
+              success: true,
+              summary: `Inspected ${items.length} workspace entries in ${resolvedPath}.`,
+              keyData: {
+                workspaceRoot: resolvedPath,
+                files: items,
+              },
+              fullPayload: { items },
+            });
+          }
+
+          if (input.operation === 'readFiles') {
+            const files: Array<{ path: string; content: string }> = [];
+            for (const filePath of input.paths) {
+              const result = await executeLarkRemoteLocalAction(
+                { kind: 'read_file', path: filePath },
+                'read',
+                `Read workspace file ${filePath}.`,
+              );
+              if (!result.success) {
+                return result;
+              }
+              const payload = asRecord(result.fullPayload?.result?.payload);
+              const content = asString(payload?.content);
+              const resolvedPath = asString(payload?.path) ?? filePath;
+              if (content === undefined) {
+                return buildEnvelope({
+                  success: false,
+                  summary: `Remote desktop read succeeded but returned no file content for ${filePath}.`,
+                  errorKind: 'api_failure',
+                  retryable: true,
+                });
+              }
+              files.push({
+                path: resolvedPath,
+                content,
+              });
+            }
+            return buildEnvelope({
+              success: true,
+              summary: `Read ${files.length} workspace file(s).`,
+              keyData: {
+                workspaceRoot,
+                files: files.map((item) => item.path),
+              },
+              fullPayload: { files },
+            });
+          }
+
+          if (input.operation === 'verifyResult') {
+            return summarizeActionResult(runtime, input.expectedOutputs);
+          }
+
+          if (
+            input.operation === 'runCommand'
+            || input.operation === 'planCommand'
+            || input.operation === 'runScript'
+            || input.operation === 'runScriptPlan'
+          ) {
+            return executeLarkRemoteLocalAction(
+              { kind: 'run_command', command: input.command.trim() },
+              'execute',
+              `Executed shell command: ${input.command.trim()}`,
+            );
+          }
+
+          if (input.operation === 'writeFile' || input.operation === 'writeFilePlan') {
+            return executeLarkRemoteLocalAction(
+              {
+                kind: 'write_file',
+                path: input.contentPlan.path,
+                content: input.contentPlan.content,
+              },
+              'write',
+              `Wrote file ${input.contentPlan.path}.`,
+            );
+          }
+
+          if (input.operation === 'createDirectory' || input.operation === 'mkdirPlan') {
+            return executeLarkRemoteLocalAction(
+              { kind: 'mkdir', path: input.path },
+              'write',
+              `Created directory ${input.path}.`,
+            );
+          }
+
+          if (input.operation === 'deletePath' || input.operation === 'deletePathPlan') {
+            return executeLarkRemoteLocalAction(
+              { kind: 'delete_path', path: input.path },
+              'delete',
+              `Deleted ${input.path}.`,
+            );
+          }
+        }
+
         if (input.operation === 'inspectWorkspace') {
-          const items = await inspectWorkspace(workspaceRoot);
+          const items = await inspectWorkspace(workspaceRoot, input.path?.trim());
+          const inspectedPath = input.path?.trim()
+            ? resolveWorkspacePath(runtime, input.path.trim())
+            : workspaceRoot;
           return buildEnvelope({
             success: true,
-            summary: `Inspected ${items.length} workspace entries in ${workspaceRoot}.`,
+            summary: `Inspected ${items.length} workspace entries in ${inspectedPath}.`,
             keyData: {
-              workspaceRoot,
+              workspaceRoot: inspectedPath,
               files: items,
             },
             fullPayload: { items },
@@ -1881,7 +3033,12 @@ export const createVercelDesktopTools = (
           return summarizeActionResult(runtime, input.expectedOutputs);
         }
 
-        if (input.operation === 'planCommand' || input.operation === 'runScriptPlan') {
+        if (
+          input.operation === 'runCommand'
+          || input.operation === 'planCommand'
+          || input.operation === 'runScript'
+          || input.operation === 'runScriptPlan'
+        ) {
           const command = input.command.trim();
           return buildEnvelope({
             success: true,
@@ -1896,7 +3053,7 @@ export const createVercelDesktopTools = (
           });
         }
 
-        if (input.operation === 'writeFilePlan') {
+        if (input.operation === 'writeFile' || input.operation === 'writeFilePlan') {
           const targetPath = input.contentPlan.path;
           const content = input.contentPlan.content;
           return buildEnvelope({
@@ -1907,6 +3064,34 @@ export const createVercelDesktopTools = (
               kind: 'write_file',
               path: targetPath,
               content,
+              explanation: input.objective,
+            },
+          });
+        }
+
+        if (input.operation === 'createDirectory' || input.operation === 'mkdirPlan') {
+          const targetPath = input.path;
+          return buildEnvelope({
+            success: true,
+            summary: `Proposed directory creation: ${targetPath}`,
+            keyData: { workspaceRoot },
+            pendingApprovalAction: {
+              kind: 'create_directory',
+              path: targetPath,
+              explanation: input.objective,
+            },
+          });
+        }
+
+        if (input.operation === 'deletePath' || input.operation === 'deletePathPlan') {
+          const targetPath = input.path;
+          return buildEnvelope({
+            success: true,
+            summary: `Proposed path deletion: ${targetPath}`,
+            keyData: { workspaceRoot },
+            pendingApprovalAction: {
+              kind: 'delete_path',
+              path: targetPath,
               explanation: input.objective,
             },
           });
@@ -2141,7 +3326,7 @@ export const createVercelDesktopTools = (
     }),
 
     googleDrive: tool({
-      description: 'Use the connected Google account to list, read, download, and upload Drive files. Do not use this as the first path for uploaded/company documents when the internal document tools can handle the request.',
+      description: 'Use the connected Google account to list, read, download, and upload Drive files. Do not use this as the first path for uploaded/company documents when the internal document tools can handle the request. If a desktop workspace is connected, ambiguous file and folder requests should go to the LOCAL workspace instead of Google Drive unless the user explicitly says "Drive" or otherwise names Google Drive.',
       inputSchema: z.object({
         operation: z.enum(['listFiles', 'getFile', 'downloadFile', 'createFolder', 'uploadFile', 'updateFile', 'deleteFile']),
         query: z.string().optional(),

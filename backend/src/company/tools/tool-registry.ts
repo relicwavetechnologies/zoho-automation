@@ -92,6 +92,15 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
+    id: 'workflow-authoring',
+    name: 'Workflow Authoring',
+    description: 'Create, plan, save, schedule, list, and run reusable prompts/workflows across desktop and Lark.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    supportedActionGroups: ['read', 'create', 'update', 'execute'],
+  },
+  {
     id: 'search-zoho-context',
     name: 'Search Zoho Context',
     description: 'Search indexed Zoho CRM records (deals, contacts, tickets) from the vector database.',

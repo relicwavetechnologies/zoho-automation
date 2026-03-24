@@ -3,8 +3,10 @@ import { larkDirectorySyncScheduler, larkTenantTokenService } from './company/ch
 import { initializeOrchestrationRuntime, shutdownOrchestrationRuntime } from './company/queue/runtime';
 import loaders from './loaders';
 import { runBootstrapHealthChecks } from './loaders/bootstrap-health';
+import { desktopWsGateway } from './modules/desktop-live/desktop-ws.gateway';
 import { desktopWorkflowsService } from './modules/desktop-workflows/desktop-workflows.service';
 import { logger } from './utils/logger';
+import { createServer } from 'http';
 
 let isShuttingDown = false;
 
@@ -13,13 +15,15 @@ const startServer = async () => {
     await runBootstrapHealthChecks();
     await initializeOrchestrationRuntime();
     const app = await loaders();
+    const httpServer = createServer(app);
+    desktopWsGateway.attach(httpServer);
     larkDirectorySyncScheduler.start();
     desktopWorkflowsService.startDueProcessor();
     larkTenantTokenService.getAccessToken().catch((error) => {
       logger.warn('lark.tenant_token.prewarm.failed', { reason: error instanceof Error ? error.message : 'unknown' });
     });
 
-    app.listen(config.PORT, () => {
+    httpServer.listen(config.PORT, () => {
       logger.info('server.started', { port: config.PORT, nodeEnv: config.NODE_ENV }, { always: true });
     });
   } catch (error) {

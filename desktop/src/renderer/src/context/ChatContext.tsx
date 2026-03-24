@@ -40,6 +40,24 @@ type WorkflowInvocation = {
   overrideText?: string;
 };
 
+type QueuedOutboundAttachment = {
+  fileAssetId: string;
+  cloudinaryUrl: string;
+  mimeType: string;
+  fileName: string;
+};
+
+type QueuedOutboundMessage = {
+  id: string;
+  threadId: string;
+  text: string;
+  visibleContent: string;
+  createdAt: string;
+  mode: "fast" | "high";
+  attachedFiles?: QueuedOutboundAttachment[];
+  workflowInvocation?: WorkflowInvocation;
+};
+
 const isActivityFailure = (input: {
   label?: string;
   resultSummary?: string;
@@ -71,6 +89,7 @@ interface ChatState {
   activePlan: ExecutionPlan | null;
   liveBlocks: ContentBlock[];
   pendingLocalAction: PendingLocalActionState | null;
+  queuedMessages: QueuedOutboundMessage[];
   error: string | null;
   loadThreads: () => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
@@ -103,6 +122,8 @@ interface ChatState {
   approveCommand: (executionId: string) => Promise<void>;
   rejectCommand: (executionId: string) => Promise<void>;
   killCommand: (executionId: string) => Promise<void>;
+  editQueuedMessage: (queuedMessageId: string) => QueuedOutboundMessage | null;
+  deleteQueuedMessage: (queuedMessageId: string) => void;
   setAutoApproveLocalActions: (enabled: boolean) => void;
   clearError: () => void;
 }
@@ -190,6 +211,9 @@ export function ChatProvider({
   const [liveBlocks, setLiveBlocks] = useState<ContentBlock[]>([]);
   const [pendingLocalAction, setPendingLocalAction] =
     useState<PendingLocalActionState | null>(null);
+  const [queuedMessagesByThread, setQueuedMessagesByThread] = useState<
+    Record<string, QueuedOutboundMessage[]>
+  >({});
   const [error, setError] = useState<string | null>(null);
 
   // ── Refs for mutable cross-callback access ──
@@ -208,6 +232,10 @@ export function ChatProvider({
     new Map(),
   );
   const deletingThreadIdsRef = useRef<Set<string>>(new Set());
+  const queuedMessagesByThreadRef = useRef<Record<string, QueuedOutboundMessage[]>>(
+    {},
+  );
+  const flushingQueuedMessageRef = useRef(false);
   const loadThreadsRef = useRef<(() => Promise<void>) | null>(null);
   const pendingLocalActionRef = useRef<PendingLocalActionState | null>(null);
   const runningCommandRef = useRef<RunningCommandState | null>(null);
@@ -217,6 +245,22 @@ export function ChatProvider({
   const cancelRequestedRef = useRef(false);
   const activeModeRef = useRef<"fast" | "high">("high");
   const autoApproveLocalActionsRef = useRef(autoApproveLocalActions);
+
+  useEffect(() => {
+    if (!token) {
+      void window.desktopAPI.chat.disconnectLivePresence();
+      return;
+    }
+    void window.desktopAPI.chat.updateLivePresence(
+      token,
+      currentWorkspace
+        ? {
+            name: currentWorkspace.name,
+            path: currentWorkspace.path,
+          }
+        : null,
+    );
+  }, [token, currentWorkspace?.name, currentWorkspace?.path]);
 
   // ── Shared live-block utilities ──
   const appendOutput = useCallback((prev: string, chunk: string): string => {
@@ -417,6 +461,10 @@ export function ChatProvider({
   }, [messages]);
 
   useEffect(() => {
+    queuedMessagesByThreadRef.current = queuedMessagesByThread;
+  }, [queuedMessagesByThread]);
+
+  useEffect(() => {
     autoApproveLocalActionsRef.current = autoApproveLocalActions;
     window.localStorage.setItem(
       AUTO_APPROVE_LOCAL_ACTIONS_KEY,
@@ -498,7 +546,7 @@ export function ChatProvider({
           ) {
             return [];
           }
-          const state = message.metadata.executionState?.state;
+          const state = message.metadata?.executionState?.state;
           return state && state !== "waiting_for_approval" ? [executionId] : [];
         }),
       );
@@ -2011,7 +2059,7 @@ export function ChatProvider({
       workflowInvocation?: WorkflowInvocation,
     ) => {
       const targetThread = activeThreadRef.current;
-      if (!token || !currentWorkspace || !targetThread || isStreaming) return;
+      if (!token || !currentWorkspace || !targetThread) return;
       if (deletingThreadIdsRef.current.has(targetThread.id)) {
         setError("This chat is being deleted. Start or select another chat.");
         return;
@@ -2035,25 +2083,18 @@ export function ChatProvider({
             : `Run saved workflow "${workflowInvocation.workflowName}".`
           : "");
 
-      const userMsg: Message = {
-        id: `temp-${Date.now()}`,
-        threadId: targetThread.id,
-        role: "user",
-        content: visibleUserText,
-        metadata:
-          attachedFiles && attachedFiles.length > 0
-            ? { attachedFiles }
-            : undefined,
-        createdAt: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, userMsg]);
-      setIsStreaming(true);
-      setIsThinking(false);
-      replaceActivePlan(null);
-      activeExecutionMessageIdRef.current = null;
-      setLiveBlocks([]);
-      liveBlocksRef.current = [];
-      setError(null);
+      if (isStreaming) {
+        queueOutboundMessage({
+          threadId: targetThread.id,
+          text: trimmedText,
+          visibleContent: visibleUserText,
+          attachedFiles,
+          mode,
+          workflowInvocation,
+        });
+        setError(null);
+        return;
+      }
 
       const runMatch = trimmedText.match(/^\/run\s+([\s\S]+)$/i);
       if (runMatch) {
@@ -2083,35 +2124,14 @@ export function ChatProvider({
         return;
       }
 
-      try {
-        const requestId = crypto.randomUUID();
-        activeRequestIdRef.current = requestId;
-        replaceActiveExecutionId(requestId);
-        const sendRes = await window.desktopAPI.chat.startStream(
-          token,
-          targetThread.id,
-          trimmedText,
-          requestId,
-          attachedFiles,
-          mode,
-          { name: currentWorkspace.name, path: currentWorkspace.path },
-          workflowInvocation,
-        );
-        if (!sendRes.success) {
-          setError("Failed to send message");
-          setIsStreaming(false);
-          setIsThinking(false);
-          activeRequestIdRef.current = null;
-          replaceActiveExecutionId(null);
-        }
-      } catch (err) {
-        if ((err as Error).name !== "AbortError")
-          setError("Stream failed. Please try again.");
-        setIsStreaming(false);
-        setIsThinking(false);
-        activeRequestIdRef.current = null;
-        replaceActiveExecutionId(null);
-      }
+      await dispatchOutgoingMessage({
+        threadId: targetThread.id,
+        text: trimmedText,
+        visibleContent: visibleUserText,
+        attachedFiles,
+        mode,
+        workflowInvocation,
+      });
     },
     [
       token,
@@ -2135,7 +2155,7 @@ export function ChatProvider({
       mode: "fast" | "high" = "high",
       workflowInvocation?: WorkflowInvocation,
     ) => {
-      if (!token || !currentWorkspace || isStreaming) return;
+      if (!token || !currentWorkspace) return;
       if ((session?.departments?.length ?? 0) > 1 && !selectedDepartmentId) {
         setError("Select a department before starting a new chat.");
         return;
@@ -2158,6 +2178,19 @@ export function ChatProvider({
             ? `Run workflow "${workflowInvocation.workflowName}" with a one-time override.`
             : `Run saved workflow "${workflowInvocation.workflowName}".`
           : "");
+
+      if (isStreaming && activeThreadRef.current) {
+        queueOutboundMessage({
+          threadId: activeThreadRef.current.id,
+          text: trimmedText,
+          visibleContent: visibleUserText,
+          attachedFiles,
+          mode,
+          workflowInvocation,
+        });
+        setError(null);
+        return;
+      }
 
       try {
         const res = await window.desktopAPI.threads.create(
@@ -2273,7 +2306,204 @@ export function ChatProvider({
     resetLiveState();
   }, [commitPartialAssistant, resetLiveState]);
 
+  const upsertQueuedMessagesForThread = useCallback(
+    (threadId: string, updater: (current: QueuedOutboundMessage[]) => QueuedOutboundMessage[]) => {
+      setQueuedMessagesByThread((prev) => {
+        const current = prev[threadId] ?? [];
+        const next = updater(current);
+        if (next.length === 0) {
+          const { [threadId]: _removed, ...rest } = prev;
+          return rest;
+        }
+        return {
+          ...prev,
+          [threadId]: next,
+        };
+      });
+    },
+    [],
+  );
+
+  const queueOutboundMessage = useCallback(
+    (input: {
+      threadId: string;
+      text: string;
+      visibleContent: string;
+      attachedFiles?: QueuedOutboundAttachment[];
+      mode: "fast" | "high";
+      workflowInvocation?: WorkflowInvocation;
+    }): QueuedOutboundMessage => {
+      const queuedMessage: QueuedOutboundMessage = {
+        id: `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        threadId: input.threadId,
+        text: input.text,
+        visibleContent: input.visibleContent,
+        createdAt: new Date().toISOString(),
+        mode: input.mode,
+        attachedFiles: input.attachedFiles,
+        workflowInvocation: input.workflowInvocation,
+      };
+      upsertQueuedMessagesForThread(input.threadId, (current) => [
+        ...current,
+        queuedMessage,
+      ]);
+      return queuedMessage;
+    },
+    [upsertQueuedMessagesForThread],
+  );
+
+  const removeQueuedMessageById = useCallback(
+    (queuedMessageId: string): QueuedOutboundMessage | null => {
+      let removed: QueuedOutboundMessage | null = null;
+      setQueuedMessagesByThread((prev) => {
+        const next: Record<string, QueuedOutboundMessage[]> = {};
+        for (const [threadId, queue] of Object.entries(prev)) {
+          const filtered = queue.filter((item) => {
+            if (item.id === queuedMessageId) {
+              removed = item;
+              return false;
+            }
+            return true;
+          });
+          if (filtered.length > 0) {
+            next[threadId] = filtered;
+          }
+        }
+        return next;
+      });
+      return removed;
+    },
+    [],
+  );
+
+  const dispatchOutgoingMessage = useCallback(
+    async (input: {
+      threadId: string;
+      text: string;
+      visibleContent: string;
+      attachedFiles?: QueuedOutboundAttachment[];
+      mode: "fast" | "high";
+      workflowInvocation?: WorkflowInvocation;
+    }) => {
+      if (!token || !currentWorkspace) return false;
+
+      const userMsg: Message = {
+        id: `temp-${Date.now()}`,
+        threadId: input.threadId,
+        role: "user",
+        content: input.visibleContent,
+        metadata:
+          input.attachedFiles && input.attachedFiles.length > 0
+            ? { attachedFiles: input.attachedFiles }
+            : undefined,
+        createdAt: new Date().toISOString(),
+      };
+
+      cancelRequestedRef.current = false;
+      activeModeRef.current = input.mode;
+      setMessages((prev) => [...prev, userMsg]);
+      setIsStreaming(true);
+      setIsThinking(false);
+      replaceActivePlan(null);
+      activeExecutionMessageIdRef.current = null;
+      setLiveBlocks([]);
+      liveBlocksRef.current = [];
+      setError(null);
+
+      try {
+        const requestId = crypto.randomUUID();
+        activeRequestIdRef.current = requestId;
+        replaceActiveExecutionId(requestId);
+        const sendRes = await window.desktopAPI.chat.startStream(
+          token,
+          input.threadId,
+          input.text,
+          requestId,
+          input.attachedFiles,
+          input.mode,
+          { name: currentWorkspace.name, path: currentWorkspace.path },
+          input.workflowInvocation,
+        );
+        if (!sendRes.success) {
+          setError("Failed to send message");
+          setIsStreaming(false);
+          setIsThinking(false);
+          activeRequestIdRef.current = null;
+          replaceActiveExecutionId(null);
+          setMessages((prev) => prev.filter((message) => message.id !== userMsg.id));
+          return false;
+        }
+        return true;
+      } catch (err) {
+        if ((err as Error).name !== "AbortError") {
+          setError("Stream failed. Please try again.");
+        }
+        setIsStreaming(false);
+        setIsThinking(false);
+        activeRequestIdRef.current = null;
+        replaceActiveExecutionId(null);
+        setMessages((prev) => prev.filter((message) => message.id !== userMsg.id));
+        return false;
+      }
+    },
+    [currentWorkspace, replaceActiveExecutionId, replaceActivePlan, token],
+  );
+
   const clearError = useCallback(() => setError(null), []);
+
+  const editQueuedMessage = useCallback(
+    (queuedMessageId: string): QueuedOutboundMessage | null =>
+      removeQueuedMessageById(queuedMessageId),
+    [removeQueuedMessageById],
+  );
+
+  const deleteQueuedMessage = useCallback((queuedMessageId: string) => {
+    removeQueuedMessageById(queuedMessageId);
+  }, [removeQueuedMessageById]);
+
+  useEffect(() => {
+    const activeThreadId = activeThreadRef.current?.id;
+    if (!activeThreadId) return;
+    if (flushingQueuedMessageRef.current) return;
+    if (isStreaming || isThinking) return;
+    if (activeExecutionIdRef.current) return;
+    if (pendingLocalActionRef.current || runningCommandRef.current) return;
+    if (activeRequestIdRef.current) return;
+
+    const nextQueuedMessage =
+      queuedMessagesByThreadRef.current[activeThreadId]?.[0] ?? null;
+    if (!nextQueuedMessage) return;
+
+    const removedQueuedMessage = removeQueuedMessageById(nextQueuedMessage.id);
+    if (!removedQueuedMessage) return;
+
+    flushingQueuedMessageRef.current = true;
+    void (async () => {
+      const didDispatch = await dispatchOutgoingMessage({
+        threadId: removedQueuedMessage.threadId,
+        text: removedQueuedMessage.text,
+        visibleContent: removedQueuedMessage.visibleContent,
+        attachedFiles: removedQueuedMessage.attachedFiles,
+        mode: removedQueuedMessage.mode,
+        workflowInvocation: removedQueuedMessage.workflowInvocation,
+      });
+      if (!didDispatch) {
+        upsertQueuedMessagesForThread(removedQueuedMessage.threadId, (current) => [
+          removedQueuedMessage,
+          ...current,
+        ]);
+      }
+      flushingQueuedMessageRef.current = false;
+    })();
+  }, [
+    dispatchOutgoingMessage,
+    isStreaming,
+    isThinking,
+    pendingLocalAction,
+    queuedMessagesByThread,
+    removeQueuedMessageById,
+    upsertQueuedMessagesForThread,
+  ]);
 
   const deleteThread = useCallback(
     async (threadId: string) => {
@@ -2282,6 +2512,7 @@ export function ChatProvider({
       deletingThreadIdsRef.current.add(threadId);
       clearEphemeralRuntimeCacheForThread(threadId);
       clearCachedThreadPage(threadId);
+      upsertQueuedMessagesForThread(threadId, () => []);
       const wasActive = activeThreadRef.current?.id === threadId;
       unbindThread(threadId);
       setAllThreads((prev) => prev.filter((thread) => thread.id !== threadId));
@@ -2325,8 +2556,13 @@ export function ChatProvider({
       replaceActivePlan,
       resetLiveState,
       unbindThread,
+      upsertQueuedMessagesForThread,
     ],
   );
+
+  const queuedMessages = activeThread
+    ? queuedMessagesByThread[activeThread.id] ?? []
+    : [];
 
   return (
     <ChatContext.Provider
@@ -2343,6 +2579,7 @@ export function ChatProvider({
         activePlan,
         liveBlocks,
         pendingLocalAction,
+        queuedMessages,
         error,
         loadThreads,
         selectThread,
@@ -2355,6 +2592,8 @@ export function ChatProvider({
         approveCommand,
         rejectCommand,
         killCommand,
+        editQueuedMessage,
+        deleteQueuedMessage,
         setAutoApproveLocalActions,
         clearError,
       }}

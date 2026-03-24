@@ -45,9 +45,16 @@ const defaultChecks = (): BootstrapCheck[] => [
   {
     name: 'redis',
     run: async () => {
-      const { redisConnection } = await import('../company/queue/runtime/redis.connection');
-      const redis = redisConnection.getClient();
-      await redis.ping();
+      const {
+        queueRedisConnection,
+        stateRedisConnection,
+        cacheRedisConnection,
+      } = await import('../company/queue/runtime/redis.connection');
+      await Promise.all([
+        queueRedisConnection.getClient().ping(),
+        stateRedisConnection.getClient().ping(),
+        cacheRedisConnection.getClient().ping(),
+      ]);
     },
   },
 ];

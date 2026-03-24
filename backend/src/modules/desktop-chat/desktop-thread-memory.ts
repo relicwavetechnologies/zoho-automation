@@ -5,9 +5,13 @@ import { resolveVercelLanguageModel } from '../../company/orchestration/vercel/m
 import type { PendingApprovalAction, VercelToolEnvelope } from '../../company/orchestration/vercel/types';
 
 export type DesktopThreadSummary = {
+  summary?: string;
   latestObjective?: string;
+  latestUserGoal?: string;
   userGoals: string[];
+  activeEntities: string[];
   resolvedReferences: string[];
+  completedActions: string[];
   completedWrites: string[];
   pendingApprovals: string[];
   constraints: string[];
@@ -91,15 +95,21 @@ type ThreadMessageLike = {
 };
 
 const summarySchema = z.object({
+  summary: z.string().trim().max(1600).optional(),
   latestObjective: z.string().trim().max(300).optional(),
+  latestUserGoal: z.string().trim().max(300).optional(),
   userGoals: z.array(z.string().trim().min(1).max(300)).max(8).default([]),
+  activeEntities: z.array(z.string().trim().min(1).max(300)).max(8).default([]),
   resolvedReferences: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
+  completedActions: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
   completedWrites: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
   pendingApprovals: z.array(z.string().trim().min(1).max(300)).max(6).default([]),
   constraints: z.array(z.string().trim().min(1).max(300)).max(8).default([]),
 });
 
 const emptySummary = (): DesktopThreadSummary => ({
+  activeEntities: [],
+  completedActions: [],
   userGoals: [],
   resolvedReferences: [],
   completedWrites: [],
@@ -145,9 +155,13 @@ export const parseDesktopThreadSummary = (value: unknown): DesktopThreadSummary 
   }
 
   return {
+    summary: asString(record.summary),
     latestObjective: asString(record.latestObjective),
+    latestUserGoal: asString(record.latestUserGoal),
     userGoals: Array.isArray(record.userGoals) ? record.userGoals.flatMap((entry) => asString(entry) ? [asString(entry)!] : []).slice(0, 8) : [],
+    activeEntities: Array.isArray(record.activeEntities) ? record.activeEntities.flatMap((entry) => asString(entry) ? [asString(entry)!] : []).slice(0, 8) : [],
     resolvedReferences: Array.isArray(record.resolvedReferences) ? record.resolvedReferences.flatMap((entry) => asString(entry) ? [asString(entry)!] : []).slice(0, 10) : [],
+    completedActions: Array.isArray(record.completedActions) ? record.completedActions.flatMap((entry) => asString(entry) ? [asString(entry)!] : []).slice(0, 10) : [],
     completedWrites: Array.isArray(record.completedWrites) ? record.completedWrites.flatMap((entry) => asString(entry) ? [asString(entry)!] : []).slice(0, 10) : [],
     pendingApprovals: Array.isArray(record.pendingApprovals) ? record.pendingApprovals.flatMap((entry) => asString(entry) ? [asString(entry)!] : []).slice(0, 6) : [],
     constraints: Array.isArray(record.constraints) ? record.constraints.flatMap((entry) => asString(entry) ? [asString(entry)!] : []).slice(0, 8) : [],
@@ -432,14 +446,26 @@ export const buildTaskStateContext = (taskState: DesktopTaskState): string | nul
 
 export const buildThreadSummaryContext = (summary: DesktopThreadSummary): string | null => {
   const lines: string[] = [];
+  if (summary.summary) {
+    lines.push(`Summary: ${summary.summary}`);
+  }
   if (summary.latestObjective) {
     lines.push(`Latest objective: ${summary.latestObjective}`);
+  }
+  if (summary.latestUserGoal) {
+    lines.push(`Latest user goal: ${summary.latestUserGoal}`);
   }
   if (summary.userGoals.length > 0) {
     lines.push(`User goals: ${summary.userGoals.join(' | ')}`);
   }
+  if (summary.activeEntities.length > 0) {
+    lines.push(`Active entities: ${summary.activeEntities.join(' | ')}`);
+  }
   if (summary.resolvedReferences.length > 0) {
     lines.push(`Resolved refs: ${summary.resolvedReferences.join(' | ')}`);
+  }
+  if (summary.completedActions.length > 0) {
+    lines.push(`Completed actions: ${summary.completedActions.join(' | ')}`);
   }
   if (summary.completedWrites.length > 0) {
     lines.push(`Completed writes: ${summary.completedWrites.join(' | ')}`);
@@ -604,6 +630,58 @@ const mergeUnique = (current: string[], incoming: string[], maxLength: number): 
   return merged.slice(-maxLength);
 };
 
+export const THREAD_SUMMARY_RECENT_WINDOW_MESSAGE_COUNT = 12;
+const THREAD_SUMMARY_MIN_MESSAGE_COUNT = 16;
+const THREAD_SUMMARY_REFRESH_DELTA = 6;
+
+const collectActiveEntities = (taskState: DesktopTaskState): string[] => {
+  const activeEntities: string[] = [];
+  if (taskState.currentEntity) {
+    activeEntities.push(
+      `${taskState.currentEntity.module}:${taskState.currentEntity.recordId}${taskState.currentEntity.label ? ` (${taskState.currentEntity.label})` : ''}`,
+    );
+  }
+  for (const artifact of taskState.activeSourceArtifacts.slice(0, 4)) {
+    activeEntities.push(`source:${artifact.fileName}`);
+  }
+  return activeEntities;
+};
+
+const buildDeterministicNarrativeSummary = (input: {
+  latestObjective?: string;
+  latestUserGoal?: string;
+  userGoals: string[];
+  activeEntities: string[];
+  completedActions: string[];
+  pendingApprovals: string[];
+  constraints: string[];
+}): string | undefined => {
+  const parts: string[] = [];
+  if (input.latestObjective) {
+    parts.push(`Current objective: ${input.latestObjective}.`);
+  }
+  if (input.latestUserGoal && input.latestUserGoal !== input.latestObjective) {
+    parts.push(`Latest user goal: ${input.latestUserGoal}.`);
+  }
+  if (input.userGoals.length > 0) {
+    parts.push(`Recent goals: ${input.userGoals.slice(-3).join(' | ')}.`);
+  }
+  if (input.activeEntities.length > 0) {
+    parts.push(`Active entities: ${input.activeEntities.slice(0, 4).join(' | ')}.`);
+  }
+  if (input.completedActions.length > 0) {
+    parts.push(`Recent completed actions: ${input.completedActions.slice(-3).join(' | ')}.`);
+  }
+  if (input.pendingApprovals.length > 0) {
+    parts.push(`Pending approvals: ${input.pendingApprovals.join(' | ')}.`);
+  }
+  if (input.constraints.length > 0) {
+    parts.push(`Constraints: ${input.constraints.slice(-3).join(' | ')}.`);
+  }
+  const summary = parts.join(' ').trim();
+  return summary ? summarizeText(summary, 1500) : undefined;
+};
+
 export const updateTaskStateFromToolEnvelope = (input: {
   taskState: DesktopTaskState;
   toolName: string;
@@ -749,34 +827,67 @@ const buildDeterministicSummary = (input: {
   taskState: DesktopTaskState;
   currentSummary: DesktopThreadSummary;
 }): DesktopThreadSummary => {
-  const olderMessages = input.messages.slice(0, -8);
+  const olderMessages = input.messages.slice(0, -THREAD_SUMMARY_RECENT_WINDOW_MESSAGE_COUNT);
   const recentUserGoals = olderMessages
     .filter((message) => message.role === 'user')
     .map((message) => summarizeText(message.content.trim(), 180))
     .filter(Boolean)
     .slice(-4);
 
+  const activeEntities = mergeUnique(
+    input.currentSummary.activeEntities,
+    collectActiveEntities(input.taskState),
+    8,
+  );
+  const completedActions = mergeUnique(
+    input.currentSummary.completedActions,
+    input.taskState.completedMutations.slice(-6).map((mutation) => summarizeText(mutation.summary, 180)),
+    10,
+  );
+  const latestUserGoal = recentUserGoals[recentUserGoals.length - 1]
+    ?? input.currentSummary.latestUserGoal
+    ?? input.taskState.activeObjective
+    ?? input.currentSummary.latestObjective;
+  const pendingApprovals = input.taskState.pendingApproval ? [summarizeText(input.taskState.pendingApproval.summary, 180)] : [];
+  const constraints = mergeUnique(
+    input.currentSummary.constraints,
+    input.taskState.activeSourceArtifacts.slice(0, 4).map((artifact) => `Active source artifact: ${artifact.fileName}`),
+    8,
+  );
+  const userGoals = mergeUnique(input.currentSummary.userGoals, recentUserGoals, 8);
+  const completedWrites = mergeUnique(
+    input.currentSummary.completedWrites,
+    input.taskState.completedMutations.filter((mutation) => mutation.ok).slice(-6).map((mutation) => summarizeText(mutation.summary, 180)),
+    10,
+  );
+  const resolvedReferences = mergeUnique(
+    input.currentSummary.resolvedReferences,
+    Object.values(input.taskState.workingSets)
+      .flatMap((workingSet) => Object.entries(workingSet.ordinalMap).slice(0, 6).map(([ordinal, recordId]) =>
+        `${ordinal} -> ${workingSet.module}:${recordId}${workingSet.labelsByRecordId[recordId] ? ` (${workingSet.labelsByRecordId[recordId]})` : ''}`)),
+    10,
+  );
+  const latestObjective = input.taskState.activeObjective ?? input.currentSummary.latestObjective;
+
   return {
-    latestObjective: input.taskState.activeObjective ?? input.currentSummary.latestObjective,
-    userGoals: mergeUnique(input.currentSummary.userGoals, recentUserGoals, 8),
-    resolvedReferences: mergeUnique(
-      input.currentSummary.resolvedReferences,
-      Object.values(input.taskState.workingSets)
-        .flatMap((workingSet) => Object.entries(workingSet.ordinalMap).slice(0, 6).map(([ordinal, recordId]) =>
-          `${ordinal} -> ${workingSet.module}:${recordId}${workingSet.labelsByRecordId[recordId] ? ` (${workingSet.labelsByRecordId[recordId]})` : ''}`)),
-      10,
-    ),
-    constraints: mergeUnique(
-      input.currentSummary.constraints,
-      input.taskState.activeSourceArtifacts.slice(0, 4).map((artifact) => `Active source artifact: ${artifact.fileName}`),
-      8,
-    ),
-    completedWrites: mergeUnique(
-      input.currentSummary.completedWrites,
-      input.taskState.completedMutations.filter((mutation) => mutation.ok).slice(-6).map((mutation) => summarizeText(mutation.summary, 180)),
-      10,
-    ),
-    pendingApprovals: input.taskState.pendingApproval ? [summarizeText(input.taskState.pendingApproval.summary, 180)] : [],
+    summary: buildDeterministicNarrativeSummary({
+      latestObjective,
+      latestUserGoal,
+      userGoals,
+      activeEntities,
+      completedActions,
+      pendingApprovals,
+      constraints,
+    }),
+    latestObjective,
+    latestUserGoal,
+    userGoals,
+    activeEntities,
+    resolvedReferences,
+    completedActions,
+    completedWrites,
+    pendingApprovals,
+    constraints,
     sourceMessageCount: input.messages.length,
     updatedAt: new Date().toISOString(),
   };
@@ -786,13 +897,13 @@ export const shouldRefreshDesktopThreadSummary = (input: {
   messages: ThreadMessageLike[];
   currentSummary: DesktopThreadSummary;
 }): boolean => {
-  if (input.messages.length < 10) {
+  if (input.messages.length < THREAD_SUMMARY_MIN_MESSAGE_COUNT) {
     return false;
   }
   if (input.currentSummary.sourceMessageCount === 0) {
     return true;
   }
-  return input.messages.length - input.currentSummary.sourceMessageCount >= 4;
+  return input.messages.length - input.currentSummary.sourceMessageCount >= THREAD_SUMMARY_REFRESH_DELTA;
 };
 
 export const refreshDesktopThreadSummary = async (input: {
@@ -808,7 +919,7 @@ export const refreshDesktopThreadSummary = async (input: {
     return deterministic;
   }
 
-  const olderMessages = input.messages.slice(0, -8).map((message) => ({
+  const olderMessages = input.messages.slice(0, -THREAD_SUMMARY_RECENT_WINDOW_MESSAGE_COUNT).map((message) => ({
     role: message.role,
     content: summarizeText(message.content.trim(), 500),
   }));
@@ -819,17 +930,31 @@ export const refreshDesktopThreadSummary = async (input: {
       model: model.model,
       schema: summarySchema,
       system: [
-        'Summarize the older portion of a desktop assistant thread into compact operational memory.',
-        'Keep facts concrete and machine-usable.',
-        'Preserve goals, resolved object references, completed writes, pending approvals, and constraints.',
-        'Do not restate chatter, greetings, or speculative reasoning.',
+        'Summarize the older portion of an assistant thread into rolling compact memory for future turns.',
+        'Keep facts concrete, durable, and machine-usable.',
+        'Preserve the high-level summary, current objective, latest user goal, active entities, user goals, resolved object references, completed actions, completed writes, pending approvals, and constraints.',
+        'Do not restate greetings, repetitive acknowledgements, or speculative reasoning.',
+        'Favor continuity and important operational state over verbatim detail.',
       ].join('\n'),
       prompt: JSON.stringify({
+        priorSummary: {
+          summary: input.currentSummary.summary,
+          latestObjective: input.currentSummary.latestObjective,
+          latestUserGoal: input.currentSummary.latestUserGoal,
+          userGoals: input.currentSummary.userGoals,
+          activeEntities: input.currentSummary.activeEntities,
+          resolvedReferences: input.currentSummary.resolvedReferences,
+          completedActions: input.currentSummary.completedActions,
+          completedWrites: input.currentSummary.completedWrites,
+          pendingApprovals: input.currentSummary.pendingApprovals,
+          constraints: input.currentSummary.constraints,
+        },
         olderMessages,
         taskState: {
           activeObjective: input.taskState.activeObjective,
           activeModule: input.taskState.activeModule,
           currentEntity: input.taskState.currentEntity,
+          activeSourceArtifacts: input.taskState.activeSourceArtifacts.slice(0, 4).map((artifact) => artifact.fileName),
           completedMutations: input.taskState.completedMutations.slice(-6),
           pendingApproval: input.taskState.pendingApproval,
         },
@@ -846,9 +971,13 @@ export const refreshDesktopThreadSummary = async (input: {
     });
 
     return {
+      summary: result.object.summary ?? deterministic.summary,
       latestObjective: result.object.latestObjective ?? deterministic.latestObjective,
+      latestUserGoal: result.object.latestUserGoal ?? deterministic.latestUserGoal,
       userGoals: result.object.userGoals.length > 0 ? result.object.userGoals : deterministic.userGoals,
+      activeEntities: result.object.activeEntities.length > 0 ? result.object.activeEntities : deterministic.activeEntities,
       resolvedReferences: result.object.resolvedReferences.length > 0 ? result.object.resolvedReferences : deterministic.resolvedReferences,
+      completedActions: result.object.completedActions.length > 0 ? result.object.completedActions : deterministic.completedActions,
       completedWrites: result.object.completedWrites.length > 0 ? result.object.completedWrites : deterministic.completedWrites,
       pendingApprovals: result.object.pendingApprovals.length > 0 ? result.object.pendingApprovals : deterministic.pendingApprovals,
       constraints: result.object.constraints.length > 0 ? result.object.constraints : deterministic.constraints,

@@ -4,11 +4,15 @@ import { logger } from '../../../utils/logger';
 import { runtimeControlSignalsRepository, type RuntimeControlSignal } from './control-signals.repository';
 import { enqueueOrchestrationTask, getOrchestrationQueue, requeueOrchestrationTask } from './orchestration.queue';
 import { startOrchestrationWorker, stopOrchestrationWorker } from './orchestration.worker';
-import { redisConnection } from './redis.connection';
+import { cacheRedisConnection, queueRedisConnection, stateRedisConnection } from './redis.connection';
 
 export const initializeOrchestrationRuntime = async (): Promise<void> => {
   try {
-    await redisConnection.ensureReady();
+    await Promise.all([
+      queueRedisConnection.ensureReady(),
+      stateRedisConnection.ensureReady(),
+      cacheRedisConnection.ensureReady(),
+    ]);
   } catch (error) {
     logger.error('orchestration.runtime.init.failed', { error });
     throw error;
@@ -18,7 +22,11 @@ export const initializeOrchestrationRuntime = async (): Promise<void> => {
 
 export const shutdownOrchestrationRuntime = async (): Promise<void> => {
   await stopOrchestrationWorker();
-  await redisConnection.disconnect();
+  await Promise.all([
+    queueRedisConnection.disconnect(),
+    stateRedisConnection.disconnect(),
+    cacheRedisConnection.disconnect(),
+  ]);
 };
 
 export const orchestrationRuntime = {

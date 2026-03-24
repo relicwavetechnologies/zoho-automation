@@ -8,6 +8,7 @@ import { ApiResponse } from '../../core/api-response';
 import config from '../../config';
 import { resolveVercelChildRouterModel, resolveVercelLanguageModel } from '../../company/orchestration/vercel/model-factory';
 import { createVercelDesktopTools } from '../../company/orchestration/vercel/tools';
+import { buildWorkspaceAwarePromptSections } from '../../company/orchestration/vercel/workspace-aware-prompt';
 import {
   scheduledWorkflowCapabilitySummarySchema,
   scheduledWorkflowScheduleConfigSchema,
@@ -31,6 +32,7 @@ import { executionService } from '../../company/observability';
 import { CircuitBreakerOpenError, runWithCircuitBreaker } from '../../company/observability/circuit-breaker';
 import { conversationMemoryStore } from '../../company/state/conversation/conversation-memory.store';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
+import { TOOL_REGISTRY_MAP } from '../../company/tools/tool-registry';
 import { logger } from '../../utils/logger';
 import { departmentService } from '../../company/departments/department.service';
 import { prisma } from '../../utils/prisma';
@@ -69,6 +71,7 @@ import {
   type DesktopTaskState,
   type DesktopThreadSummary,
 } from './desktop-thread-memory';
+import { appendLatestAgentRunLog, resetLatestAgentRunLog } from '../../utils/latest-agent-run-log';
 
 type DesktopWorkspaceAction =
   | { kind: 'list_files'; path?: string }
@@ -226,6 +229,64 @@ const normalizeChildRouteResponse = (value: unknown): unknown => {
   return record;
 };
 
+const truncateString = (value: unknown, maxLength: number): string | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.length > maxLength ? trimmed.slice(0, maxLength) : trimmed;
+};
+
+const sanitizeChildRouteCandidate = (value: unknown): unknown => {
+  const normalized = normalizeChildRouteResponse(value);
+  if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) {
+    return normalized;
+  }
+  const record = normalized as Record<string, unknown>;
+  const route = typeof record.route === 'string' ? record.route.trim() : undefined;
+  return {
+    ...(route ? { route } : {}),
+    ...(truncateString(record.reply, 600) ? { reply: truncateString(record.reply, 600) } : {}),
+    ...(truncateString(record.acknowledgement, 400)
+      ? { acknowledgement: truncateString(record.acknowledgement, 400) }
+      : {}),
+    ...(truncateString(record.reason, 200) ? { reason: truncateString(record.reason, 200) } : {}),
+    ...(truncateString(record.normalizedIntent, 400)
+      ? { normalizedIntent: truncateString(record.normalizedIntent, 400) }
+      : {}),
+    ...(truncateString(record.suggestedSkillQuery, 300)
+      ? { suggestedSkillQuery: truncateString(record.suggestedSkillQuery, 300) }
+      : {}),
+    ...(Array.isArray(record.suggestedToolIds)
+      ? {
+        suggestedToolIds: record.suggestedToolIds
+          .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+          .map((entry) => entry.trim().slice(0, 80))
+          .slice(0, 12),
+      }
+      : {}),
+    ...(Array.isArray(record.suggestedActions)
+      ? {
+        suggestedActions: record.suggestedActions
+          .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+          .map((entry) => entry.trim().slice(0, 200))
+          .slice(0, 10),
+      }
+      : {}),
+  };
+};
+
+const isWorkflowCapabilityQuestion = (message: string): boolean => {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized.includes('workflow')) {
+    return false;
+  }
+  return ['output', 'destination', 'where', 'deliver', 'send', 'go'].some((token) => normalized.includes(token));
+};
+
 const buildTaskAwareRouterAcknowledgement = (message: string): string => {
   const normalized = message.trim().replace(/\s+/g, ' ');
   if (!normalized) {
@@ -247,6 +308,76 @@ const buildTaskAwareRouterAcknowledgement = (message: string): string => {
   }
   const summary = summarizeText(cleaned || normalized, 140) ?? normalized;
   return `I’ll help with ${summary} and pull together the key findings for you.`;
+};
+
+const ensureChildRouteAcknowledgement = (
+  route: DesktopChildRoute,
+  message: string,
+): DesktopChildRoute => {
+  if (route.route === 'fast_reply') {
+    return route;
+  }
+  return {
+    ...route,
+    acknowledgement: route.acknowledgement?.trim() || buildTaskAwareRouterAcknowledgement(message),
+  };
+};
+
+const buildAllowedToolCatalog = (input: {
+  allowedToolIds?: string[];
+  allowedActionsByTool?: Record<string, import('../../company/tools/tool-action-groups').ToolActionGroup[]>;
+}): string => {
+  const allowed = Array.from(new Set(input.allowedToolIds ?? []));
+  if (allowed.length === 0) {
+    return 'No explicit allowed tool catalog was provided.';
+  }
+  return allowed.map((toolId) => {
+    const def = TOOL_REGISTRY_MAP.get(toolId);
+    const actions = input.allowedActionsByTool?.[toolId];
+    const actionText = actions && actions.length > 0 ? ` actions=${actions.join(',')}` : '';
+    if (!def) {
+      return `- ${toolId}${actionText}`;
+    }
+    return `- ${toolId}: ${def.description}${actionText}`;
+  }).join('\n');
+};
+
+const summarizeChildRouterTaskState = (taskState?: DesktopTaskState): string => {
+  if (!taskState) {
+    return 'No task state available.';
+  }
+  const lines = [
+    taskState.activeObjective ? `activeObjective=${taskState.activeObjective}` : '',
+    taskState.pendingApproval
+      ? `pendingApproval=${JSON.stringify(taskState.pendingApproval).slice(0, 600)}`
+      : '',
+    taskState.activeSourceArtifacts.length > 0
+      ? `activeSourceArtifacts=${taskState.activeSourceArtifacts.map((artifact) => artifact.fileName).join(', ')}`
+      : '',
+    taskState.completedMutations.length > 0
+      ? `completedMutations=${taskState.completedMutations.slice(-4).map((mutation) => `${mutation.module ?? 'unknown'}:${mutation.recordId ?? 'n/a'}:${mutation.summary}`).join(' | ')}`
+      : '',
+  ].filter(Boolean);
+  return lines.length > 0 ? lines.join('\n') : 'No meaningful task state available.';
+};
+
+const summarizeChildRouterThreadSummary = (threadSummary?: DesktopThreadSummary): string => {
+  if (!threadSummary || threadSummary.sourceMessageCount === 0) {
+    return 'No thread summary available.';
+  }
+  return JSON.stringify({
+    sourceMessageCount: threadSummary.sourceMessageCount,
+    summary: threadSummary.summary ?? null,
+    latestObjective: threadSummary.latestObjective ?? null,
+    latestUserGoal: threadSummary.latestUserGoal ?? null,
+    activeEntities: threadSummary.activeEntities,
+    userGoals: threadSummary.userGoals,
+    completedActions: threadSummary.completedActions,
+    completedWrites: threadSummary.completedWrites,
+    resolvedReferences: threadSummary.resolvedReferences,
+    pendingApprovals: threadSummary.pendingApprovals,
+    constraints: threadSummary.constraints,
+  });
 };
 
 const resolveWorkflowInvocationMessage = async (input: {
@@ -320,6 +451,10 @@ const desktopChildRouteSchema = z.object({
   reply: z.string().min(1).max(600).optional(),
   acknowledgement: z.string().min(1).max(400).optional(),
   reason: z.string().min(1).max(200).optional(),
+  normalizedIntent: z.string().min(1).max(400).optional(),
+  suggestedToolIds: z.array(z.string().min(1).max(80)).max(12).optional(),
+  suggestedSkillQuery: z.string().min(1).max(300).optional(),
+  suggestedActions: z.array(z.string().min(1).max(200)).max(10).optional(),
 });
 
 export type DesktopChildRoute = z.infer<typeof desktopChildRouteSchema>;
@@ -459,7 +594,7 @@ const SHOULD_LOG_LLM_CONTEXT = ['1', 'true', 'yes', 'on'].includes(
 );
 
 const logLlmContext = (input: {
-  phase: 'send' | 'act' | 'streamAct';
+  phase: 'send' | 'act' | 'streamAct' | 'workflow';
   executionId: string;
   threadId: string;
   systemPrompt: string;
@@ -469,6 +604,23 @@ const logLlmContext = (input: {
   threadSummary?: DesktopThreadSummary;
   resolvedUserReferences?: string[];
 }): void => {
+  void appendLatestAgentRunLog(input.executionId, 'llm.context', {
+    phase: input.phase,
+    threadId: input.threadId,
+    workspace: input.workspace ?? null,
+    resolvedUserReferences: input.resolvedUserReferences ?? [],
+    activeSourceArtifacts: input.taskState?.activeSourceArtifacts ?? [],
+    threadSummary: input.threadSummary ?? null,
+    taskState: input.taskState ?? null,
+    systemPrompt: input.systemPrompt,
+    messages: input.messages.map((message, index) => ({
+      index,
+      role: message.role,
+      content: typeof message.content === 'string'
+        ? message.content
+        : JSON.stringify(message.content),
+    })),
+  });
   if (!SHOULD_LOG_LLM_CONTEXT) {
     return;
   }
@@ -557,9 +709,16 @@ export const buildChildRouterPrompt = (input: {
   message: string;
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
   workspace?: { name: string; path: string };
+  approvalPolicySummary?: string;
   requesterName?: string;
   requesterEmail?: string;
   retrievedMemorySnippets?: string[];
+  allowedToolIds?: string[];
+  allowedActionsByTool?: Record<string, import('../../company/tools/tool-action-groups').ToolActionGroup[]>;
+  departmentSystemPrompt?: string;
+  departmentSkillsMarkdown?: string;
+  taskState?: DesktopTaskState;
+  threadSummary?: DesktopThreadSummary;
 }): string => {
   const historyBlock = input.history.length > 0
     ? input.history
@@ -569,7 +728,7 @@ export const buildChildRouterPrompt = (input: {
     : 'No useful prior conversation history.';
 
   const workspaceBlock = input.workspace
-    ? `Workspace is open at ${input.workspace.path} (${input.workspace.name}).`
+    ? `Workspace is open at ${input.workspace.path} (${input.workspace.name}). Approval policy: ${input.approvalPolicySummary ?? 'unknown'}.`
     : 'No workspace context is active.';
   const requesterContext = buildRequesterIdentityContext({
     requesterName: input.requesterName,
@@ -578,35 +737,57 @@ export const buildChildRouterPrompt = (input: {
   const retrievedMemoryBlock = input.retrievedMemorySnippets && input.retrievedMemorySnippets.length > 0
     ? input.retrievedMemorySnippets.map((snippet, index) => `${index + 1}. ${snippet}`).join('\n')
     : 'No retrieved conversation memory.';
+  const toolCatalogBlock = buildAllowedToolCatalog({
+    allowedToolIds: input.allowedToolIds,
+    allowedActionsByTool: input.allowedActionsByTool,
+  });
+  const threadSummaryBlock = summarizeChildRouterThreadSummary(input.threadSummary);
+  const taskStateBlock = summarizeChildRouterTaskState(input.taskState);
 
   return [
-    'Classify this desktop chat turn for a two-tier assistant runtime.',
+    'Classify and enrich this chat turn for a two-tier assistant runtime.',
     'Return exactly one JSON object only.',
     'Do not wrap it in markdown, prose, arrays, or an outer envelope.',
     'Required JSON keys:',
-    'route, reply, acknowledgement, reason',
+    'route, reply, acknowledgement, reason, normalizedIntent, suggestedToolIds, suggestedSkillQuery, suggestedActions',
     'Allowed route values: fast_reply, direct_execute, handoff',
     'Valid examples:',
-    '{"route":"fast_reply","reply":"Hi, how can I help?","reason":"simple greeting"}',
-    '{"route":"direct_execute","acknowledgement":"I’ll check that for you.","reason":"simple tool-backed request"}',
-    '{"route":"handoff","acknowledgement":"I’ll work through this step by step.","reason":"multi-step request"}',
+    '{"route":"fast_reply","reply":"Hi, how can I help?","reason":"simple greeting","normalizedIntent":"greeting","suggestedToolIds":[],"suggestedActions":[]}',
+    '{"route":"direct_execute","acknowledgement":"I’ll check that for you.","reason":"simple tool-backed request","normalizedIntent":"list saved workflows","suggestedToolIds":["workflowList"],"suggestedActions":["call workflowList"]}',
+    '{"route":"handoff","acknowledgement":"I’ll work through this step by step.","reason":"multi-step request","normalizedIntent":"schedule a reusable workflow","suggestedToolIds":["skillSearch","workflowPlan","workflowSchedule"],"suggestedSkillQuery":"workflow scheduling reusable prompt","suggestedActions":["search relevant skill","plan workflow","ask for missing schedule details"]}',
     'Routes:',
     '- fast_reply: greetings, thanks, chit-chat, identity/capability questions, or short conversational replies that need no tools.',
-    '- direct_execute: straightforward work that should go directly to the main executor. A short acknowledgement is allowed when the user is asking you to fetch, check, list, or get something.',
-    '- handoff: multi-step or heavier work likely to require more than 2-3 tool calls, iteration, or planning. Provide a short acknowledgement the user should see immediately.',
+    '- direct_execute: straightforward work that should go directly to the main executor. Always include a short acknowledgement the user should see immediately.',
+    '- handoff: multi-step or heavier work likely to require more than 2-3 tool calls, iteration, or planning. Always include a short acknowledgement the user should see immediately.',
     'Rules:',
     '- Do not use tools.',
     '- If retrieved conversation memory clearly answers a personal-memory question, prefer fast_reply and answer from that memory.',
+    '- When a workspace is active, ambiguous file and folder requests refer to the LOCAL workspace by default, not Google Drive or any other cloud integration, unless the user explicitly names a cloud service.',
+    '- If a workspace is active, capability questions about local files, repos, or terminal access should reflect that you can inspect and operate on the active workspace through the coding tool, including approved terminal commands and file operations. The terminal tool gives you direct execution access within the active workspace and can handle most file, directory, script, install, and git tasks the user approves. Do not answer with generic "I only have access to shared/public files" language.',
+    '- If a workspace is active and the user asks whether you can see all files, answer that you can inspect the active workspace but do not automatically know every file until you inspect it.',
+    '- To check what is inside a folder, inspect that exact folder path. Never infer or guess the contents of a subdirectory from the root listing.',
+    '- If a workspace is active and the user asks you to create, delete, move, rename, organize, modify, scaffold, or inspect local files or folders, do not answer with a manual workaround unless no workspace is available. Route to direct_execute or handoff so the main executor can use the coding tool.',
+    '- Use the allowed tool catalog to suggest the best next tool ids or skill query. Prefer concrete allowed tools over vague guesses.',
+    '- If the right tool path is unclear, suggest skillSearch first and provide a concise suggestedSkillQuery.',
     '- For fast_reply, fill reply and keep it short.',
-    '- For direct_execute, include route and reason. If the user is asking you to fetch, check, list, or get something from a system or tool, include a short acknowledgement too.',
-    '- For handoff, fill acknowledgement and keep it short, concrete, and action-oriented.',
+    '- For direct_execute, always fill acknowledgement and keep it short, concrete, and action-oriented.',
+    '- For handoff, always fill acknowledgement and keep it short, concrete, and action-oriented.',
     '- The acknowledgement must mirror the user request in plain language, so it feels specific to what they asked.',
     '- Good acknowledgement example: "I’ll look up the latest AI job market trends and current AI work on Upwork for you."',
+    '- The acknowledgement is always user-visible before execution, so it must sound like one coherent assistant, not an internal router.',
     '- Avoid generic acknowledgements like "I’ll handle this in steps" unless the request itself is vague.',
     '- Do not overuse handoff for tiny requests.',
     workspaceBlock,
     `Current local date/time: ${getLocalDateTimeContext()} (${LOCAL_TIME_ZONE}).`,
     requesterContext ?? '',
+    input.departmentSystemPrompt?.trim() ? `Department instructions:\n${input.departmentSystemPrompt.trim()}` : '',
+    input.departmentSkillsMarkdown?.trim() ? `Department skill context:\n${input.departmentSkillsMarkdown.trim()}` : '',
+    'Allowed tool catalog:',
+    toolCatalogBlock,
+    'Thread summary:',
+    threadSummaryBlock,
+    'Task state:',
+    taskStateBlock,
     'Retrieved conversation memory:',
     retrievedMemoryBlock,
     'Recent conversation:',
@@ -621,11 +802,18 @@ export const runDesktopChildRouter = async (input: {
   threadId: string;
   message: string;
   workspace?: { name: string; path: string };
+  approvalPolicySummary?: string;
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
   requesterName?: string;
   requesterEmail?: string;
   companyId?: string;
   userId?: string;
+  allowedToolIds?: string[];
+  allowedActionsByTool?: Record<string, import('../../company/tools/tool-action-groups').ToolActionGroup[]>;
+  departmentSystemPrompt?: string;
+  departmentSkillsMarkdown?: string;
+  taskState?: DesktopTaskState;
+  threadSummary?: DesktopThreadSummary;
 }): Promise<DesktopChildRoute> => {
   logger.info('vercel.child_router.start', {
     executionId: input.executionId,
@@ -644,6 +832,28 @@ export const runDesktopChildRouter = async (input: {
       userId: input.userId,
     });
     const model = await resolveVercelChildRouterModel();
+    await appendLatestAgentRunLog(input.executionId, 'child_router.start', {
+      message: input.message,
+      workspace: input.workspace ?? null,
+      approvalPolicySummary: input.approvalPolicySummary ?? null,
+      history: input.history,
+      retrievedMemorySnippets,
+      allowedToolIds: input.allowedToolIds ?? [],
+      allowedActionsByTool: input.allowedActionsByTool ?? {},
+      departmentSystemPrompt: input.departmentSystemPrompt ?? null,
+      hasDepartmentSkillsMarkdown: Boolean(input.departmentSkillsMarkdown?.trim()),
+      taskState: input.taskState ?? null,
+      threadSummary: input.threadSummary ?? null,
+      model: {
+        provider: model.effectiveProvider,
+        modelId: model.effectiveModelId,
+        thinkingLevel: model.thinkingLevel,
+      },
+      prompt: buildChildRouterPrompt({
+        ...input,
+        retrievedMemorySnippets,
+      }),
+    });
     const result = await runWithModelCircuitBreaker(model.effectiveProvider, 'child_router', () => generateText({
       model: model.model,
       system: 'Return one valid JSON object only. No markdown, no prose, no code fences.',
@@ -652,11 +862,23 @@ export const runDesktopChildRouter = async (input: {
         retrievedMemorySnippets,
       }),
       temperature: 0,
+      providerOptions: {
+        google: {
+          thinkingConfig: {
+            includeThoughts: true,
+            thinkingLevel: model.thinkingLevel,
+          },
+        },
+      },
     }));
     const rawJson = extractFirstJsonObject(result.text) ?? result.text.trim();
     const parsedRoute = desktopChildRouteSchema.parse(
-      normalizeChildRouteResponse(JSON.parse(rawJson)),
+      sanitizeChildRouteCandidate(JSON.parse(rawJson)),
     );
+    await appendLatestAgentRunLog(input.executionId, 'child_router.completed', {
+      rawText: result.text,
+      parsedRoute,
+    });
     logger.info('vercel.child_router.completed', {
       executionId: input.executionId,
       threadId: input.threadId,
@@ -680,12 +902,19 @@ export const runDesktopChildRouter = async (input: {
       }
     }
     if (parsedRoute.route === 'direct_execute' && shouldShowChildRouterAcknowledgement(input.message)) {
-      return {
-        ...parsedRoute,
-        acknowledgement: parsedRoute.acknowledgement?.trim() || buildTaskAwareRouterAcknowledgement(input.message),
-      };
+      return ensureChildRouteAcknowledgement(parsedRoute, input.message);
     }
-    return parsedRoute;
+    if (parsedRoute.route === 'fast_reply' && isWorkflowCapabilityQuestion(input.message)) {
+      return ensureChildRouteAcknowledgement({
+        route: 'direct_execute',
+        acknowledgement: 'I’ll check the workflow output configuration for you.',
+        reason: 'workflow_output_question_requires_current_workflow_config',
+        normalizedIntent: 'workflow output capability question',
+        suggestedToolIds: ['workflowList', 'workflowDraft'],
+        suggestedActions: ['inspect current workflow output destinations'],
+      }, input.message);
+    }
+    return ensureChildRouteAcknowledgement(parsedRoute, input.message);
   } catch (error) {
     const fallbackRoute: DesktopChildRoute = shouldPlanDesktopTask(input.message)
       ? {
@@ -695,6 +924,7 @@ export const runDesktopChildRouter = async (input: {
       }
       : {
         route: 'direct_execute',
+        acknowledgement: buildTaskAwareRouterAcknowledgement(input.message),
         reason: 'router_fallback_direct',
       };
     logger.warn('vercel.child_router.failed', {
@@ -702,6 +932,10 @@ export const runDesktopChildRouter = async (input: {
       threadId: input.threadId,
       error: error instanceof Error ? error.message : 'unknown_error',
       fallbackRoute: fallbackRoute.route,
+    });
+    await appendLatestAgentRunLog(input.executionId, 'child_router.failed', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+      fallbackRoute,
     });
     return fallbackRoute;
   }
@@ -767,10 +1001,13 @@ const retrieveConversationMemoryForChildRouter = async (input: {
 const shouldPlanDesktopTask = (message?: string): boolean => {
   const input = message?.trim();
   if (!input) return false;
-  const lowered = input.toLowerCase();
   if (isBareContinuationMessage(input)) return false;
   if (input.length >= 120) return true;
   if (/\b(and|then|after that|also|compare|audit|investigate|analyze|review|summarize|implement|debug|refactor|prepare)\b/i.test(input)) {
+    return true;
+  }
+  if (/\b(create|make|mkdir|delete|remove|move|rename|organize|cleanup|clean up|run|execute)\b/i.test(input)
+    && /\b(workspace|repo|folder|directory|file|files|terminal|command|script)\b/i.test(input)) {
     return true;
   }
   if (/\b(create|update|send|draft|write|read|search)\b/i.test(input) && /\b(zoho|lark|google|repo|workspace|file|document|calendar|task|invoice|payment)\b/i.test(input)) {
@@ -1860,6 +2097,7 @@ const logDesktopContextSummary = (input: DesktopContextAssemblyMetrics & {
   threadId: string;
 }): void => {
   logger.info('desktop.context.summary', input);
+  void appendLatestAgentRunLog(input.executionId, 'desktop.context.summary', input);
 };
 
 const buildDesktopContextAssembly = async (input: {
@@ -1874,6 +2112,8 @@ const buildDesktopContextAssembly = async (input: {
   threadSummary: DesktopThreadSummary;
   resolvedUserReferences: string[];
   routerAcknowledgement?: string;
+  childRouteHints?: DesktopChildRoute;
+  approvalPolicySummary?: string;
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentSystemPrompt?: string;
@@ -1914,6 +2154,8 @@ const buildDesktopContextAssembly = async (input: {
     latestUserMessage: input.latestUserMessage,
     resolvedUserReferences: input.resolvedUserReferences,
     routerAcknowledgement: input.routerAcknowledgement,
+    childRouteHints: input.childRouteHints,
+    approvalPolicySummary: input.approvalPolicySummary,
     departmentName: input.departmentName,
     departmentRoleSlug: input.departmentRoleSlug,
     departmentSystemPrompt: input.departmentSystemPrompt,
@@ -1989,6 +2231,7 @@ const buildDesktopContextAssembly = async (input: {
 const buildSystemPrompt = (input: {
   threadId: string;
   workspace?: { name: string; path: string };
+  approvalPolicySummary?: string;
   requesterName?: string;
   requesterEmail?: string;
   dateScope?: string;
@@ -1996,6 +2239,7 @@ const buildSystemPrompt = (input: {
   latestUserMessage?: string;
   resolvedUserReferences?: string[];
   routerAcknowledgement?: string;
+  childRouteHints?: DesktopChildRoute;
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentSystemPrompt?: string;
@@ -2018,17 +2262,22 @@ const buildSystemPrompt = (input: {
     'You are the Vercel AI SDK desktop runtime for a tool-using assistant.',
     'Use the available comprehensive tools directly.',
     'Do not refer to Mastra, LangGraph, workflows, or internal orchestration.',
-    'Only claim actions and results that are confirmed by tool outputs.',
-    'If a tool returns a pending approval action, treat that as the next required step instead of inventing completion.',
-    'Prefer the coding tool for local workspace work and the repo tool only for remote GitHub repositories.',
+    'If the user describes a repeatable process, wants to make it reusable, wants to save it for later, asks to schedule it, asks to list saved prompts/workflows, or asks to run a saved workflow, prefer the dedicated workflow authoring tools over ad hoc execution.',
+    'If a workflow authoring tool returns missing_input, ask the user exactly for that missing detail instead of guessing.',
+    ...buildWorkspaceAwarePromptSections({
+      workspace: input.workspace,
+      approvalPolicySummary: input.approvalPolicySummary,
+      latestActionResult: input.latestActionResult,
+      availability: input.workspace ? 'available' : 'unknown',
+    }),
     'For uploaded files or internal company documents, prioritize the internal document tools before any workspace, Google Drive, local filesystem, or remote repository search.',
     'Use internal indexed document search when you need retrieval or matching against company documents. Use OCR/direct uploaded-file reading when you need the exact uploaded file contents. Both of these internal document paths come before workspace, Drive, or repo inspection.',
     'Do not inspect the workspace, local filesystem, Google Drive, or remote repositories to find an uploaded/company document unless the internal document tools failed or the user explicitly asked for those other sources.',
     'For specialized or complex workflows, first search relevant skills with the skillSearch tool, read the chosen skill, and then proceed with the task.',
+    'If a request might be about reusable workflow creation, recurring scheduling, save-for-later behavior, or the right scheduling/calendar route is unclear, search skills before guessing.',
     'If the user asks about prior conversation facts, personal preferences, or things they told you before, first use thread context and retrieved conversation memory. Do not call business tools like Zoho, Lark Base, Google Drive, or coding just to answer a personal-memory question unless the user explicitly asks for those systems.',
     'When a local action result is available, use that result as the source of truth for the next step instead of repeating the same command or rereading the same file without a concrete reason.',
     'Do not repeat a successful local command, file read, or file write unless you explicitly need a different verification step or the user asked to retry.',
-    'For coding: planCommand and runScriptPlan require an exact command. writeFilePlan requires the full target path and full file content in contentPlan.',
     'After an approved local action finishes, prefer verifyResult or the next logically required step over restarting the whole plan.',
   ];
   if (input.workspace) {
@@ -2055,6 +2304,20 @@ const buildSystemPrompt = (input: {
   }
   if (input.contextClass) {
     parts.push(`Context assembly class: ${input.contextClass}.`);
+  }
+  if (input.childRouteHints) {
+    parts.push(
+      'Child router guidance for this turn:',
+      JSON.stringify({
+        route: input.childRouteHints.route,
+        reason: input.childRouteHints.reason ?? null,
+        normalizedIntent: input.childRouteHints.normalizedIntent ?? null,
+        suggestedToolIds: input.childRouteHints.suggestedToolIds ?? [],
+        suggestedSkillQuery: input.childRouteHints.suggestedSkillQuery ?? null,
+        suggestedActions: input.childRouteHints.suggestedActions ?? [],
+      }),
+      'Use these hints to choose the correct next tools when they fit the request and available permissions.',
+    );
   }
   if (retrievalGuidance.length > 0) {
     parts.push('Retrieval portfolio guidance for this request:', ...retrievalGuidance);
@@ -2245,6 +2508,89 @@ const findPendingApproval = (steps: Array<{ toolResults?: Array<{ output: unknow
   return null;
 };
 
+const findBlockingUserInput = (
+  steps: Array<{ toolResults?: Array<{ output: unknown }> }>,
+): VercelToolEnvelope | null => {
+  for (const step of steps) {
+    for (const result of step.toolResults ?? []) {
+      const output = result.output as VercelToolEnvelope | undefined;
+      if (output?.errorKind === 'missing_input') {
+        return output;
+      }
+    }
+  }
+  return null;
+};
+
+const stopOnBlockingUserInput = ({
+  steps,
+}: {
+  steps: Array<{ toolResults?: Array<{ output: unknown }> }>;
+}): boolean => Boolean(findBlockingUserInput(steps));
+
+const toClarificationQuestion = (value: string | null | undefined): string | null => {
+  const raw = summarizeText(value, 500)?.trim();
+  if (!raw) {
+    return null;
+  }
+  const normalized = raw.replace(/\s+/g, ' ').trim();
+  const lower = normalized.toLowerCase();
+
+  if (lower.includes('requires title and markdown')) {
+    return 'Please send the document title and the markdown content you want in the Lark doc.';
+  }
+  if (lower.includes('need both a dayofweek and time') || lower.includes('need both a weekday and time')) {
+    return 'Which weekday and time should this run?';
+  }
+  if (lower.startsWith('ask the user ')) {
+    const rewritten = normalized.replace(/^Ask the user\s+/i, '').replace(/\.$/, '');
+    if (/^(which|what|when|where|who|how)\b/i.test(rewritten)) {
+      return `${rewritten}?`.replace(/\?\?$/, '?');
+    }
+    return `Please ${rewritten}.`;
+  }
+  if (lower.startsWith('please provide ')) {
+    const rewritten = normalized.replace(/^Please provide\s+/i, '').replace(/\.$/, '');
+    return `Please provide ${rewritten}.`;
+  }
+  if (lower.includes('requires ')) {
+    const requirement = normalized.replace(/^.*?requires?\s+/i, '').replace(/\.$/, '');
+    return `Please provide ${requirement}.`;
+  }
+  return null;
+};
+
+const buildMissingInputResponseText = (output: VercelToolEnvelope | null | undefined): string | null => {
+  if (!output) {
+    return null;
+  }
+  const question = toClarificationQuestion(output.userAction) ?? toClarificationQuestion(output.summary);
+  if (question) {
+    return [
+      'I need a bit more information before I can finish this.',
+      '',
+      question,
+    ].join('\n');
+  }
+  const action = output.userAction?.trim();
+  if (action) {
+    return [
+      'I need a bit more information before I can finish this.',
+      '',
+      action,
+    ].join('\n');
+  }
+  const summary = summarizeText(output.summary, 600) ?? output.summary;
+  if (!summary) {
+    return null;
+  }
+  return [
+    'I need a bit more information before I can finish this.',
+    '',
+    summary,
+  ].join('\n');
+};
+
 const stopOnPendingApproval = ({
   steps,
 }: {
@@ -2332,8 +2678,27 @@ const runVercelLoop = async (input: {
 }) => {
   const resolvedModel = await resolveTargetKey(input.runtime.mode);
   const tools = createVercelDesktopTools(input.runtime, {
-    onToolStart: async (toolName, activityId, title) => input.onToolStart(toolName, activityId, title),
-    onToolFinish: async (toolName, activityId, title, output) => input.onToolFinish(toolName, activityId, title, output),
+    onToolStart: async (toolName, activityId, title) => {
+      await appendLatestAgentRunLog(input.runtime.executionId, 'tool.start', {
+        toolName,
+        activityId,
+        title,
+        channel: input.runtime.channel,
+        threadId: input.runtime.threadId,
+      });
+      await input.onToolStart(toolName, activityId, title);
+    },
+    onToolFinish: async (toolName, activityId, title, output) => {
+      await appendLatestAgentRunLog(input.runtime.executionId, 'tool.finish', {
+        toolName,
+        activityId,
+        title,
+        output,
+        channel: input.runtime.channel,
+        threadId: input.runtime.threadId,
+      });
+      await input.onToolFinish(toolName, activityId, title, output);
+    },
   });
 
   const result = await runWithModelCircuitBreaker(resolvedModel.effectiveProvider, 'desktop_generate', () => generateText({
@@ -2350,7 +2715,7 @@ const runVercelLoop = async (input: {
         },
       },
     },
-    stopWhen: [stopOnPendingApproval, stepCountIs(DESKTOP_MAX_LOOP_STEPS)],
+    stopWhen: [stopOnPendingApproval, stopOnBlockingUserInput, stepCountIs(DESKTOP_MAX_LOOP_STEPS)],
   }));
   logger.info('vercel.tool_loop.summary', {
     mode: input.runtime.mode,
@@ -2371,8 +2736,27 @@ const runVercelStreamLoop = async (input: {
 }) => {
   const resolvedModel = await resolveTargetKey(input.runtime.mode);
   const tools = createVercelDesktopTools(input.runtime, {
-    onToolStart: async (toolName, activityId, title) => input.onToolStart(toolName, activityId, title),
-    onToolFinish: async (toolName, activityId, title, output) => input.onToolFinish(toolName, activityId, title, output),
+    onToolStart: async (toolName, activityId, title) => {
+      await appendLatestAgentRunLog(input.runtime.executionId, 'tool.start', {
+        toolName,
+        activityId,
+        title,
+        channel: input.runtime.channel,
+        threadId: input.runtime.threadId,
+      });
+      await input.onToolStart(toolName, activityId, title);
+    },
+    onToolFinish: async (toolName, activityId, title, output) => {
+      await appendLatestAgentRunLog(input.runtime.executionId, 'tool.finish', {
+        toolName,
+        activityId,
+        title,
+        output,
+        channel: input.runtime.channel,
+        threadId: input.runtime.threadId,
+      });
+      await input.onToolFinish(toolName, activityId, title, output);
+    },
   });
 
   return runWithModelCircuitBreaker(resolvedModel.effectiveProvider, 'desktop_stream', () => streamText({
@@ -2389,7 +2773,7 @@ const runVercelStreamLoop = async (input: {
         },
       },
     },
-    stopWhen: [stopOnPendingApproval, stepCountIs(DESKTOP_MAX_LOOP_STEPS)],
+    stopWhen: [stopOnPendingApproval, stopOnBlockingUserInput, stepCountIs(DESKTOP_MAX_LOOP_STEPS)],
   }));
 };
 
@@ -2419,6 +2803,18 @@ export const executeAutomatedDesktopTurn = async (input: {
     loadThreadMemory(input.threadId, input.session.userId),
   ]);
   const departmentRuntime = await resolveDepartmentRuntime(input.session, threadMemory.meta, fallbackAllowedToolIds);
+
+  await resetLatestAgentRunLog(executionId, {
+    channel: 'desktop',
+    entrypoint: input.entrypoint ?? 'desktop_scheduled_workflow',
+    threadId: input.threadId,
+    userId: input.session.userId,
+    companyId: input.session.companyId,
+    mode,
+    prompt: input.prompt,
+    attachedFiles: input.attachedFiles ?? [],
+    metadata: input.metadata ?? null,
+  });
 
   await startRun({
     executionId,
@@ -2615,11 +3011,15 @@ export const executeAutomatedDesktopTurn = async (input: {
       failedToolOutputs = toolOutputs.filter((output) => output.success === false);
       failedToolSummaries = failedToolOutputs.map((output) => output.summary);
       pendingApproval = findPendingApproval(result.steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
-      assistantText = pendingApproval
+      const blockingUserInput = findBlockingUserInput(result.steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
+      assistantText = blockingUserInput
+        ? ((buildMissingInputResponseText(blockingUserInput) ?? result.text.trim()) || 'I need one more detail from you before I can continue.')
+        : pendingApproval
         ? `Workflow execution blocked: ${pendingApproval.kind === 'tool_action' ? pendingApproval.summary : 'approval is required before the next step can continue.'}`
         : result.text.trim();
 
       const shouldAutoContinue = isWorkflowExecutionRequest(input.metadata)
+        && !blockingUserInput
         && !pendingApproval
         && failedToolOutputs.length === 0
         && continuationCount < WORKFLOW_AUTOCONTINUE_LIMIT
@@ -2724,6 +3124,19 @@ export const executeAutomatedDesktopTurn = async (input: {
     } else {
       await completeRun(executionId, assistantText);
     }
+    await appendLatestAgentRunLog(executionId, pendingApproval ? 'run.waiting_for_approval' : 'run.completed', {
+      channel: 'desktop',
+      entrypoint: input.entrypoint ?? 'desktop_scheduled_workflow',
+      threadId: input.threadId,
+      finalText: assistantText,
+      pendingApproval: pendingApproval
+        ? {
+          kind: pendingApproval.kind,
+          approvalId: pendingApproval.kind === 'tool_action' ? pendingApproval.approvalId : null,
+        }
+        : null,
+      hadToolFailures: failedToolOutputs.length > 0,
+    });
     logger.info('desktop.workflow.execution.completed', {
       executionId,
       threadId: input.threadId,
@@ -2742,6 +3155,12 @@ export const executeAutomatedDesktopTurn = async (input: {
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Scheduled desktop workflow execution failed';
+    await appendLatestAgentRunLog(executionId, 'run.failed', {
+      channel: 'desktop',
+      entrypoint: input.entrypoint ?? 'desktop_scheduled_workflow',
+      threadId: input.threadId,
+      error: errorMessage,
+    });
     logger.error('desktop.workflow.execution.failed', {
       executionId,
       threadId: input.threadId,
@@ -2769,6 +3188,7 @@ export class VercelDesktopEngine {
       message,
       attachedFiles,
       workspace,
+      approvalPolicySummary,
       mode,
       executionId: requestedExecutionId,
       workflowInvocation,
@@ -2810,6 +3230,19 @@ export class VercelDesktopEngine {
     const resolvedUserContext = resolveDesktopTaskReferences(effectiveMessage, activeTaskState);
     const effectivePromptMessage = resolvedUserContext.message;
 
+    await resetLatestAgentRunLog(executionId, {
+      channel: 'desktop',
+      entrypoint: 'desktop_send',
+      threadId,
+      userId: session.userId,
+      companyId: session.companyId,
+      mode,
+      message: effectivePromptMessage,
+      storedUserMessage,
+      attachedFiles,
+      workspace: workspace ?? null,
+      activeSourceArtifacts: activeTaskState.activeSourceArtifacts,
+    });
     await startRun({
       executionId,
       threadId,
@@ -2860,10 +3293,17 @@ export class VercelDesktopEngine {
         threadId,
         message: effectivePromptMessage,
         workspace,
+        approvalPolicySummary,
         companyId: session.companyId,
         userId: session.userId,
         requesterName: session.name,
         requesterEmail: session.email,
+        allowedToolIds: departmentRuntime.allowedToolIds,
+        allowedActionsByTool: departmentRuntime.allowedActionsByTool,
+        departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
+        departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+        taskState: activeTaskState,
+        threadSummary: activeThreadSummary,
         history: preRouterHistory.messages.slice(-6).map((entry) => ({
           role: entry.role === 'assistant' ? 'assistant' : 'user',
           content: entry.content,
@@ -2940,6 +3380,7 @@ export class VercelDesktopEngine {
           text: reply,
         });
         runInBackground(`child-router-fast-reply:${executionId}`, async () => {
+          const childRouterModel = await resolveVercelChildRouterModel();
           await recordTokenUsage({
             userId: session.userId,
             companyId: session.companyId,
@@ -2950,10 +3391,7 @@ export class VercelDesktopEngine {
             systemPrompt: 'Desktop child router',
             messages: [{ role: 'user', content: childRouterPrompt }],
             outputText: reply,
-            resolvedModel: {
-              effectiveModelId: config.GROQ_ROUTER_MODEL,
-              effectiveProvider: 'groq',
-            },
+            resolvedModel: childRouterModel,
           });
           await appendEventSafe({
             executionId,
@@ -2965,6 +3403,13 @@ export class VercelDesktopEngine {
             summary: summarizeText(reply, 600),
             status: 'done',
           });
+          await appendLatestAgentRunLog(executionId, 'run.completed', {
+            channel: 'desktop',
+            entrypoint: 'desktop_send',
+            route: 'fast_reply',
+            threadId,
+            finalText: reply,
+          });
           await completeRun(executionId, reply);
           await uiEventQueue;
         });
@@ -2975,10 +3420,9 @@ export class VercelDesktopEngine {
       }
 
       let persistedBlocks: PersistedContentBlock[] = [];
-      const routerAcknowledgement = childRoute.acknowledgement?.trim()
-        || (childRoute.route === 'handoff'
-          ? 'I’ll take this in steps and start working through it now.'
-          : null);
+      const routerAcknowledgement = childRoute.route === 'fast_reply'
+        ? null
+        : (childRoute.acknowledgement?.trim() || buildTaskAwareRouterAcknowledgement(effectivePromptMessage));
       if (routerAcknowledgement) {
         logger.info('vercel.child_router.acknowledgement', {
           executionId,
@@ -3035,6 +3479,7 @@ export class VercelDesktopEngine {
         authProvider: session.authProvider,
         mode,
         workspace,
+        desktopApprovalPolicySummary: approvalPolicySummary,
         dateScope: inferDateScope(effectivePromptMessage),
         allowedActionsByTool: departmentRuntime.allowedActionsByTool,
         allowedToolIds: departmentRuntime.allowedToolIds,
@@ -3065,10 +3510,12 @@ export class VercelDesktopEngine {
         latestUserMessage: effectivePromptMessage,
         history,
         workspace,
+        approvalPolicySummary,
         taskState: activeTaskState,
         threadSummary: activeThreadSummary,
         resolvedUserReferences: resolvedUserContext.resolvedReferences,
         routerAcknowledgement: routerAcknowledgement ?? undefined,
+        childRouteHints: childRoute,
         departmentName: departmentRuntime.departmentName,
         departmentRoleSlug: departmentRuntime.departmentRoleSlug,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
@@ -3277,9 +3724,14 @@ export class VercelDesktopEngine {
 
       const steps = await result.steps;
       const pendingApproval = findPendingApproval(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
+      const blockingUserInput = findBlockingUserInput(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
       const pendingAction = pendingApproval ? mapPendingApprovalAction(pendingApproval) : null;
       const combinedText = `${routerAcknowledgement ? `${routerAcknowledgement}\n\n` : ''}${streamedText.trim()}`.trim();
-      const finalText = pendingApproval ? (routerAcknowledgement ?? '') : combinedText;
+      const finalText = blockingUserInput
+        ? ((buildMissingInputResponseText(blockingUserInput) ?? combinedText) || 'I need one more detail from you before I can continue.')
+        : pendingApproval
+          ? (routerAcknowledgement ?? '')
+          : combinedText;
       const citations = (steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap((step) =>
         (step.toolResults ?? []).flatMap((toolResult) => {
           const output = toolResult.output as VercelToolEnvelope | undefined;
@@ -3300,6 +3752,7 @@ export class VercelDesktopEngine {
             ? pendingAction.summary
             : pendingAction.kind
         : pendingApproval?.kind ?? null;
+      const blockingSummary = blockingUserInput?.userAction ?? blockingUserInput?.summary ?? null;
 
       logger.info('vercel.stream.response.summary', {
         executionId,
@@ -3307,7 +3760,7 @@ export class VercelDesktopEngine {
         pendingApproval: pendingApproval?.kind ?? null,
         textChars: finalText.length,
         citations: citations.length,
-        responsePreview: summarizeText(finalText || approvalSummary || '', 240),
+        responsePreview: summarizeText(finalText || approvalSummary || blockingSummary || '', 240),
       });
 
       if (pendingAction) {
@@ -3404,11 +3857,11 @@ export class VercelDesktopEngine {
         await appendEventSafe({
         executionId,
         phase: pendingApproval ? 'control' : 'synthesis',
-        eventType: pendingApproval ? 'control.requested' : 'synthesis.completed',
+        eventType: pendingApproval ? 'control.requested' : blockingUserInput ? 'synthesis.missing_input' : 'synthesis.completed',
         actorType: pendingApproval ? 'system' : 'agent',
         actorKey: pendingApproval ? pendingApproval.kind : 'vercel',
-        title: pendingApproval ? 'Approval requested' : 'Generated assistant response',
-        summary: summarizeText(finalText || approvalSummary || 'Approval requested', 600),
+        title: pendingApproval ? 'Approval requested' : blockingUserInput ? 'Clarification requested' : 'Generated assistant response',
+        summary: summarizeText(finalText || approvalSummary || blockingSummary || 'Approval requested', 600),
         status: pendingApproval ? 'pending' : 'done',
         });
 
@@ -3425,6 +3878,19 @@ export class VercelDesktopEngine {
           }
           await completeRun(executionId, finalText);
         }
+        await appendLatestAgentRunLog(executionId, pendingApproval ? 'run.waiting_for_approval' : 'run.completed', {
+          channel: 'desktop',
+          entrypoint: 'desktop_send',
+          threadId,
+          finalText: finalText || approvalSummary || blockingSummary || '',
+          pendingApproval: pendingApproval
+            ? {
+              kind: pendingApproval.kind,
+              approvalId: pendingApproval.kind === 'tool_action' ? pendingApproval.approvalId : null,
+            }
+            : null,
+          actionIssued: Boolean(pendingAction),
+        });
         await uiEventQueue;
       });
       queueUiEvent('done', {
@@ -3443,6 +3909,12 @@ export class VercelDesktopEngine {
       res.end();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Vercel desktop stream failed';
+      await appendLatestAgentRunLog(executionId, 'run.failed', {
+        channel: 'desktop',
+        entrypoint: 'desktop_send',
+        threadId,
+        error: errorMessage,
+      });
       logger.error('vercel.stream.failed', {
         executionId,
         threadId,
@@ -3470,6 +3942,7 @@ export class VercelDesktopEngine {
     const {
       message,
       workspace,
+      approvalPolicySummary,
       actionResult,
       mode,
       executionId: requestedExecutionId,
@@ -3565,6 +4038,7 @@ export class VercelDesktopEngine {
         authProvider: session.authProvider,
         mode,
         workspace,
+        desktopApprovalPolicySummary: approvalPolicySummary,
         dateScope: inferDateScope(resolvedUserContext.message || message),
         latestActionResult: actionResult,
         allowedToolIds: departmentRuntime.allowedToolIds,
@@ -3631,6 +4105,7 @@ export class VercelDesktopEngine {
         latestUserMessage: latestContinuationMessage,
         history,
         workspace,
+        approvalPolicySummary,
         taskState: activeTaskState,
         threadSummary: activeThreadSummary,
         resolvedUserReferences: resolvedUserContext.resolvedReferences,
@@ -3754,9 +4229,20 @@ export class VercelDesktopEngine {
       });
 
       const pendingApproval = findPendingApproval(result.steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
+      const blockingUserInput = findBlockingUserInput(result.steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
       if (pendingApproval) {
         const action = mapPendingApprovalAction(pendingApproval);
         await persistUiEvent(executionId, 'action', { action, executionId });
+        await appendLatestAgentRunLog(executionId, 'run.waiting_for_approval', {
+          channel: 'desktop',
+          entrypoint: 'desktop_act',
+          threadId,
+          pendingApproval: {
+            kind: pendingApproval.kind,
+            approvalId: pendingApproval.kind === 'tool_action' ? pendingApproval.approvalId : null,
+          },
+          actionIssued: true,
+        });
         return res.json(ApiResponse.success({
           kind: 'action',
           action,
@@ -3765,7 +4251,9 @@ export class VercelDesktopEngine {
         }, 'Local action requested'));
       }
 
-      const assistantText = result.text.trim();
+      const assistantText = blockingUserInput
+        ? ((buildMissingInputResponseText(blockingUserInput) ?? result.text.trim()) || 'I need one more detail from you before I can continue.')
+        : result.text.trim();
       if (activePlan) {
         activePlan = completeExecutionPlan(activePlan, assistantText);
         await logAndPersistPlan({
@@ -3859,6 +4347,12 @@ export class VercelDesktopEngine {
         status: 'done',
         });
         await persistUiEvent(executionId, 'done', { executionId, state: 'completed' });
+        await appendLatestAgentRunLog(executionId, 'run.completed', {
+          channel: 'desktop',
+          entrypoint: 'desktop_act',
+          threadId,
+          finalText: assistantText,
+        });
         await completeRun(executionId, assistantText);
       });
 
@@ -3870,6 +4364,12 @@ export class VercelDesktopEngine {
       }, 'Assistant reply created'));
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Vercel desktop action loop failed';
+      await appendLatestAgentRunLog(executionId, 'run.failed', {
+        channel: 'desktop',
+        entrypoint: 'desktop_act',
+        threadId,
+        error: errorMessage,
+      });
       await appendEventSafe({
         executionId,
         phase: 'error',
@@ -3891,6 +4391,7 @@ export class VercelDesktopEngine {
     const {
       message,
       workspace,
+      approvalPolicySummary,
       actionResult,
       mode,
       executionId: requestedExecutionId,
@@ -4002,6 +4503,7 @@ export class VercelDesktopEngine {
         authProvider: session.authProvider,
         mode,
         workspace,
+        desktopApprovalPolicySummary: approvalPolicySummary,
         dateScope: inferDateScope(resolvedUserContext.message || message),
         latestActionResult: actionResult,
         allowedToolIds: departmentRuntime.allowedToolIds,
@@ -4073,6 +4575,7 @@ export class VercelDesktopEngine {
         latestUserMessage: latestContinuationMessage,
         history,
         workspace,
+        approvalPolicySummary,
         taskState: activeTaskState,
         threadSummary: activeThreadSummary,
         resolvedUserReferences: resolvedUserContext.resolvedReferences,
@@ -4284,8 +4787,11 @@ export class VercelDesktopEngine {
 
       const steps = await result.steps;
       const pendingApproval = findPendingApproval(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
+      const blockingUserInput = findBlockingUserInput(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
       const pendingAction = pendingApproval ? mapPendingApprovalAction(pendingApproval) : null;
-      const finalText = pendingApproval
+      const finalText = blockingUserInput
+        ? ((buildMissingInputResponseText(blockingUserInput) ?? streamedText.trim()) || 'I need one more detail from you before I can continue.')
+        : pendingApproval
         ? (streamedText.trim() || 'Approval required to continue with the requested workspace changes.')
         : streamedText.trim();
       const approvalSummary = pendingAction
@@ -4295,6 +4801,7 @@ export class VercelDesktopEngine {
             ? pendingAction.summary
             : pendingAction.kind
         : pendingApproval?.kind ?? null;
+      const blockingSummary = blockingUserInput?.userAction ?? blockingUserInput?.summary ?? null;
       const citations = (steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap((step) =>
         (step.toolResults ?? []).flatMap((toolResult) => {
           const output = toolResult.output as VercelToolEnvelope | undefined;
@@ -4395,11 +4902,11 @@ export class VercelDesktopEngine {
         await appendEventSafe({
         executionId,
         phase: pendingApproval ? 'control' : 'synthesis',
-        eventType: pendingApproval ? 'control.requested' : 'synthesis.completed',
+        eventType: pendingApproval ? 'control.requested' : blockingUserInput ? 'synthesis.missing_input' : 'synthesis.completed',
         actorType: pendingApproval ? 'system' : 'agent',
         actorKey: pendingApproval ? pendingApproval.kind : 'vercel',
-        title: pendingApproval ? 'Approval requested' : 'Generated assistant response',
-        summary: summarizeText(finalText || approvalSummary || 'Approval requested', 600),
+        title: pendingApproval ? 'Approval requested' : blockingUserInput ? 'Clarification requested' : 'Generated assistant response',
+        summary: summarizeText(finalText || approvalSummary || blockingSummary || 'Approval requested', 600),
         status: pendingApproval ? 'pending' : 'done',
         });
         if (!pendingApproval) {
@@ -4415,6 +4922,19 @@ export class VercelDesktopEngine {
           }
           await completeRun(executionId, finalText);
         }
+        await appendLatestAgentRunLog(executionId, pendingApproval ? 'run.waiting_for_approval' : 'run.completed', {
+          channel: 'desktop',
+          entrypoint: 'desktop_stream_act',
+          threadId,
+          finalText: finalText || approvalSummary || blockingSummary || '',
+          pendingApproval: pendingApproval
+            ? {
+              kind: pendingApproval.kind,
+              approvalId: pendingApproval.kind === 'tool_action' ? pendingApproval.approvalId : null,
+            }
+            : null,
+          actionIssued: Boolean(pendingAction),
+        });
         await uiEventQueue;
       });
 
@@ -4434,6 +4954,12 @@ export class VercelDesktopEngine {
       res.end();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Vercel desktop action stream failed';
+      await appendLatestAgentRunLog(executionId, 'run.failed', {
+        channel: 'desktop',
+        entrypoint: 'desktop_stream_act',
+        threadId,
+        error: errorMessage,
+      });
       logger.error('vercel.stream.failed', {
         executionId,
         threadId,

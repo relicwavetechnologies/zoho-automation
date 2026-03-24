@@ -1,9 +1,10 @@
 import type { HITLActionDTO, HitlActionStatus } from '../../contracts';
-import { redisConnection } from '../../queue/runtime/redis.connection';
+import { stateRedisConnection } from '../../queue/runtime/redis.connection';
 
 const actionKey = (actionId: string) => `company:hitl:action:${actionId}`;
 const taskActionKey = (taskId: string) => `company:task:${taskId}:hitl:action`;
 const chatActionKey = (channel: string, chatId: string) => `company:chat:${channel}:${chatId}:hitl:latest`;
+const HITL_ACTION_TTL_SECONDS = 60 * 60 * 24;
 
 type StoredHitlAction = HITLActionDTO & {
   _chatId?: string;
@@ -58,7 +59,7 @@ class HitlActionRepository {
       metadata?: Record<string, unknown>;
     },
   ): Promise<void> {
-    const redis = redisConnection.getClient();
+    const redis = stateRedisConnection.getClient();
     const key = actionKey(action.actionId);
     await redis
       .multi()
@@ -83,13 +84,14 @@ class HitlActionRepository {
       })
       .set(taskActionKey(action.taskId), action.actionId)
       .set(chatActionKey(input.channel ?? action.channel ?? 'unknown', input.chatId), action.actionId)
-      .expire(key, 60 * 60 * 24)
-      .expire(chatActionKey(input.channel ?? action.channel ?? 'unknown', input.chatId), 60 * 60 * 24)
+      .expire(key, HITL_ACTION_TTL_SECONDS)
+      .expire(taskActionKey(action.taskId), HITL_ACTION_TTL_SECONDS)
+      .expire(chatActionKey(input.channel ?? action.channel ?? 'unknown', input.chatId), HITL_ACTION_TTL_SECONDS)
       .exec();
   }
 
   async getByActionId(actionId: string): Promise<StoredHitlAction | null> {
-    const redis = redisConnection.getClient();
+    const redis = stateRedisConnection.getClient();
     const stored = await redis.hgetall(actionKey(actionId));
     return parseStoredAction(stored);
   }
@@ -120,7 +122,7 @@ class HitlActionRepository {
   }
 
   async getByTaskId(taskId: string): Promise<StoredHitlAction | null> {
-    const redis = redisConnection.getClient();
+    const redis = stateRedisConnection.getClient();
     const id = await redis.get(taskActionKey(taskId));
     if (!id) {
       return null;
@@ -129,7 +131,7 @@ class HitlActionRepository {
   }
 
   async getLatestPendingByChat(channel: string, chatId: string): Promise<StoredHitlAction | null> {
-    const redis = redisConnection.getClient();
+    const redis = stateRedisConnection.getClient();
     const id = await redis.get(chatActionKey(channel, chatId));
     if (!id) {
       return null;
@@ -142,7 +144,7 @@ class HitlActionRepository {
   }
 
   async resolve(actionId: string, decision: 'confirmed' | 'cancelled' | 'expired'): Promise<boolean> {
-    const redis = redisConnection.getClient();
+    const redis = stateRedisConnection.getClient();
     const key = actionKey(actionId);
     const now = new Date().toISOString();
     const action = await this.getByActionId(actionId);
@@ -171,6 +173,7 @@ class HitlActionRepository {
     const resolved = Number(result) === 1;
     if (resolved && action._channel && action._chatId) {
       await redis.del(chatActionKey(action._channel, action._chatId));
+      await redis.del(taskActionKey(action.taskId));
     }
 
     return resolved;

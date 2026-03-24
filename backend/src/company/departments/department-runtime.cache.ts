@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 
-import { redisConnection } from '../queue/runtime/redis.connection';
+import { cacheRedisConnection } from '../queue/runtime/redis.connection';
 import { logger } from '../../utils/logger';
 
 type CachedDepartmentRuntime = {
@@ -30,7 +30,7 @@ const runtimeKey = (input: {
   `company:${input.companyId}:department_runtime:department:${input.departmentId}:user:${input.userId}:fallback:${fallbackHash(input.fallbackAllowedToolIds)}`;
 
 const invalidateByPattern = async (pattern: string): Promise<number> => {
-  const redis = redisConnection.getClient();
+  const redis = cacheRedisConnection.getClient();
   let cursor = '0';
   let deleted = 0;
   do {
@@ -50,7 +50,7 @@ class DepartmentRuntimeCache {
     departmentId: string;
     fallbackAllowedToolIds: string[];
   }): Promise<CachedDepartmentRuntime | null> {
-    const redis = redisConnection.getClient();
+    const redis = cacheRedisConnection.getClient();
     const key = runtimeKey(input);
     const cached = await redis.get(key);
     if (!cached) return null;
@@ -76,7 +76,7 @@ class DepartmentRuntimeCache {
     fallbackAllowedToolIds: string[];
     runtime: CachedDepartmentRuntime;
   }): Promise<void> {
-    const redis = redisConnection.getClient();
+    const redis = cacheRedisConnection.getClient();
     await redis.set(
       runtimeKey(input),
       JSON.stringify(input.runtime),

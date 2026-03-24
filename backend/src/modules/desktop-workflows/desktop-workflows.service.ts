@@ -1110,7 +1110,7 @@ const buildPlanningSkillContext = async (input: {
     .filter(Boolean)
     .join('\n')
     .trim();
-  if (!query || !includesAny(query, ['workflow', 'task', 'invoice', 'estimate', 'meeting', 'lark', 'zoho', 'google', 'approval', 'send', 'create', 'update'])) {
+  if (!query || !includesAny(query, ['workflow', 'task', 'schedule', 'scheduling', 'recurring', 'calendar', 'invoice', 'estimate', 'meeting', 'lark', 'zoho', 'google', 'approval', 'send', 'create', 'update'])) {
     return { text: null, suggestedToolFamilies: [] };
   }
 
@@ -2226,6 +2226,7 @@ class DesktopWorkflowsService {
     const parsed = parseWorkflowRow(workflow);
     const nextName = input.name ? deriveWorkflowName(input.name) : workflow.name;
     const nextIntent = input.userIntent ?? workflow.userIntent;
+    const compileIntent = nextIntent.trim() || 'Draft workflow pending author input.';
     const nextSchedule = input.schedule ?? parsed.schedule;
     const nextOutputConfig = input.outputConfig ?? parsed.outputConfig;
     const nextWorkflowSpec = input.workflowSpec
@@ -2235,7 +2236,7 @@ class DesktopWorkflowsService {
       )
       : parsed.workflowSpec;
     const nextCompiled = compileScheduledWorkflowDefinition({
-      userIntent: nextIntent,
+      userIntent: compileIntent,
       workflowSpec: nextWorkflowSpec,
       schedule: nextSchedule,
       outputConfig: nextOutputConfig,
@@ -2414,7 +2415,12 @@ class DesktopWorkflowsService {
     };
   }
 
-  async runNow(session: MemberSessionDTO, workflowId: string, overrideText?: string | null): Promise<{
+  async runNow(
+    session: MemberSessionDTO,
+    workflowId: string,
+    overrideText?: string | null,
+    progress?: (phase: string) => Promise<void>,
+  ): Promise<{
     workflowId: string;
     runId: string;
     executionId: string | null;
@@ -2440,7 +2446,13 @@ class DesktopWorkflowsService {
       throw new HttpException(403, 'Temporary overrides are blocked for workflows that can write, send, delete, or execute.');
     }
 
-    const result = await this.executeWorkflow(workflow.id, new Date(), 'manual', overrideText?.trim() || null);
+    const result = await this.executeWorkflow(
+      workflow.id,
+      new Date(),
+      'manual',
+      overrideText?.trim() || null,
+      progress,
+    );
     return {
       workflowId: workflow.id,
       runId: result.runId,
@@ -2492,6 +2504,103 @@ class DesktopWorkflowsService {
     });
 
     return rows.map((row) => this.serializeWorkflow(row));
+  }
+
+  async listVisibleSummaries(session: MemberSessionDTO): Promise<Array<{
+    id: string;
+    name: string;
+    status: WorkflowPresentationStatus;
+    scheduleEnabled: boolean;
+    nextRunAt: string | null;
+    updatedAt: string;
+  }>> {
+    const rows = await prisma.scheduledWorkflow.findMany({
+      where: {
+        companyId: session.companyId,
+        createdByUserId: session.userId,
+        status: { not: 'archived' },
+      },
+      orderBy: [
+        { updatedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        scheduleEnabled: true,
+        nextRunAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      status: normalizeWorkflowStatus(row),
+      scheduleEnabled: row.scheduleEnabled,
+      nextRunAt: row.nextRunAt?.toISOString() ?? null,
+      updatedAt: row.updatedAt.toISOString(),
+    }));
+  }
+
+  async resolveVisibleWorkflow(
+    session: MemberSessionDTO,
+    reference: string,
+  ): Promise<
+    | {
+      status: 'resolved';
+      workflow: {
+        id: string;
+        name: string;
+        status: WorkflowPresentationStatus;
+        scheduleEnabled: boolean;
+        nextRunAt: string | null;
+        updatedAt: string;
+      };
+    }
+    | {
+      status: 'ambiguous';
+      candidates: Array<{
+        id: string;
+        name: string;
+        status: WorkflowPresentationStatus;
+        scheduleEnabled: boolean;
+        nextRunAt: string | null;
+        updatedAt: string;
+      }>;
+    }
+    | { status: 'not_found' }
+  > {
+    const normalized = reference.trim();
+    if (!normalized) {
+      return { status: 'not_found' };
+    }
+
+    const all = await this.listVisibleSummaries(session);
+    const normalizedLower = normalized.toLowerCase();
+    const exactId = all.find((workflow) => workflow.id === normalized);
+    if (exactId) {
+      return { status: 'resolved', workflow: exactId };
+    }
+
+    const exactNameMatches = all.filter((workflow) => workflow.name.trim().toLowerCase() === normalizedLower);
+    if (exactNameMatches.length === 1) {
+      return { status: 'resolved', workflow: exactNameMatches[0] };
+    }
+    if (exactNameMatches.length > 1) {
+      return { status: 'ambiguous', candidates: exactNameMatches.slice(0, 10) };
+    }
+
+    const containsMatches = all.filter((workflow) => workflow.name.trim().toLowerCase().includes(normalizedLower));
+    if (containsMatches.length === 1) {
+      return { status: 'resolved', workflow: containsMatches[0] };
+    }
+    if (containsMatches.length > 1) {
+      return { status: 'ambiguous', candidates: containsMatches.slice(0, 10) };
+    }
+
+    return { status: 'not_found' };
   }
 
   async archive(session: MemberSessionDTO, workflowId: string): Promise<void> {
@@ -2931,6 +3040,7 @@ class DesktopWorkflowsService {
     scheduledFor: Date,
     trigger: 'manual' | 'scheduled',
     overrideText?: string | null,
+    progress?: (phase: string) => Promise<void>,
   ): Promise<{
     runId: string;
     executionId: string | null;
@@ -2972,6 +3082,7 @@ class DesktopWorkflowsService {
       createdByUserId: workflow.createdByUserId,
       departmentId: workflow.departmentId,
     });
+    await progress?.(`Loaded workflow "${workflow.name}" and restored execution identity.`);
     const primaryThread = await this.resolvePrimaryExecutionThread({
       workflowName: workflow.name,
       outputConfig,
@@ -2979,6 +3090,7 @@ class DesktopWorkflowsService {
       companyId: session.companyId,
       departmentId: workflow.departmentId,
     });
+    await progress?.(`Resolved primary delivery thread: ${primaryThread.title ?? primaryThread.id}.`);
     logger.info('desktop.workflow.execute.thread.resolved', {
       workflowId: workflow.id,
       workflowName: workflow.name,
@@ -3024,6 +3136,7 @@ class DesktopWorkflowsService {
       trigger,
       runStatus: run.status,
     });
+    await progress?.(`Created workflow run ${run.id}. Starting execution.`);
 
     const executionPrompt = buildExecutionPrompt({
       workflowName: workflow.name,
@@ -3039,6 +3152,7 @@ class DesktopWorkflowsService {
       workflowRunId: run.id,
       promptPreview: summarizeResult(executionPrompt, 1200),
     });
+    await progress?.('Running the workflow runtime now.');
 
     try {
       const workflowAttachedFiles = findLatestAttachedFiles(workflow.messages);
@@ -3063,6 +3177,13 @@ class DesktopWorkflowsService {
         assistantMessageId: execution.message.id,
         textPreview: summarizeResult(execution.text, 1200),
       });
+      await progress?.(
+        execution.pendingApproval
+          ? 'Execution paused because an approval is required.'
+          : execution.hadToolFailures
+            ? 'Execution finished with tool failures. Preparing the final summary.'
+            : 'Execution finished. Delivering the result now.',
+      );
 
       const deliveries = await this.deliverResult({
         workflowId: workflow.id,
@@ -3081,6 +3202,7 @@ class DesktopWorkflowsService {
         deliveryCount: deliveries.length,
         deliveries,
       });
+      await progress?.(`Delivered the workflow result to ${deliveries.length} destination${deliveries.length === 1 ? '' : 's'}.`);
       const nextRunAt = trigger === 'scheduled'
         ? getNextScheduledRunAt(schedule, new Date(scheduledFor.getTime() + 1000))
         : workflow.nextRunAt;

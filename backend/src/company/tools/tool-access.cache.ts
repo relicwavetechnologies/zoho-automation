@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 
-import { redisConnection } from '../queue/runtime/redis.connection';
+import { cacheRedisConnection } from '../queue/runtime/redis.connection';
 import { logger } from '../../utils/logger';
 
 const TOOL_ACCESS_CACHE_TTL_SECONDS = 60 * 5;
@@ -9,7 +9,7 @@ const allowedToolsKey = (companyId: string, role: string) =>
   `company:${companyId}:tool_access:allowed_tools:${role}`;
 
 const invalidateByPattern = async (pattern: string): Promise<number> => {
-  const redis = redisConnection.getClient();
+  const redis = cacheRedisConnection.getClient();
   let cursor = '0';
   let deleted = 0;
   do {
@@ -24,7 +24,7 @@ const invalidateByPattern = async (pattern: string): Promise<number> => {
 
 class ToolAccessCache {
   async getAllowedTools(companyId: string, role: string): Promise<string[] | null> {
-    const redis = redisConnection.getClient();
+    const redis = cacheRedisConnection.getClient();
     const cached = await redis.get(allowedToolsKey(companyId, role));
     if (!cached) return null;
     try {
@@ -44,7 +44,7 @@ class ToolAccessCache {
   }
 
   async setAllowedTools(companyId: string, role: string, toolIds: string[]): Promise<void> {
-    const redis = redisConnection.getClient();
+    const redis = cacheRedisConnection.getClient();
     const normalized = [...new Set(toolIds)].sort();
     await redis.set(
       allowedToolsKey(companyId, role),

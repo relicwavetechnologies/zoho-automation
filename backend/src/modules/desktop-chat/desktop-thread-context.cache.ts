@@ -1,4 +1,4 @@
-import { redisConnection } from '../../company/queue/runtime/redis.connection';
+import { cacheRedisConnection } from '../../company/queue/runtime/redis.connection';
 import { logger } from '../../utils/logger';
 
 export type CachedDesktopThreadMessage = {
@@ -64,7 +64,7 @@ const parseContext = (serialized: string | null, maxMessages = DESKTOP_THREAD_CO
 
 class DesktopThreadContextCache {
   private async save(context: CachedDesktopThreadContext, maxMessages = DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT): Promise<void> {
-    const redis = redisConnection.getClient();
+    const redis = cacheRedisConnection.getClient();
     const payload: CachedDesktopThreadContext = {
       ...context,
       messages: trimMessages(context.messages, maxMessages),
@@ -84,7 +84,7 @@ class DesktopThreadContextCache {
     maxMessages?: number;
     loader: () => Promise<CachedDesktopThreadContext>;
   }): Promise<CachedDesktopThreadContext> {
-    const redis = redisConnection.getClient();
+    const redis = cacheRedisConnection.getClient();
     const key = contextKey(input.threadId, input.userId);
     const maxMessages = input.maxMessages ?? DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT;
     const cached = parseContext(await redis.get(key), maxMessages);
@@ -114,7 +114,7 @@ class DesktopThreadContextCache {
     message: CachedDesktopThreadMessage;
     maxMessages?: number;
   }): Promise<void> {
-    const redis = redisConnection.getClient();
+    const redis = cacheRedisConnection.getClient();
     const key = contextKey(input.threadId, input.userId);
     const maxMessages = input.maxMessages ?? DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT;
     const existing = parseContext(await redis.get(key), maxMessages);
@@ -144,7 +144,7 @@ class DesktopThreadContextCache {
   }
 
   async invalidate(threadId: string, userId: string): Promise<void> {
-    const redis = redisConnection.getClient();
+    const redis = cacheRedisConnection.getClient();
     await redis.del(contextKey(threadId, userId));
     logger.info('desktop.thread_context.cache.invalidated', {
       threadId,

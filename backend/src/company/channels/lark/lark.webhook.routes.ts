@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextFunction, Request, Response, Router } from 'express';
 
 import {
@@ -19,8 +20,13 @@ import { ingestLarkAttachments } from './lark-file-ingestion';
 import { larkRecentFilesStore } from './lark-recent-files.store';
 import { orangeDebug } from '../../../utils/orange-debug';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
+import { desktopWorkflowsService } from '../../../modules/desktop-workflows/desktop-workflows.service';
 import { conversationMemoryStore } from '../../state/conversation';
 import { createRateLimitMiddleware, createRedisAvailabilityMiddleware } from '../../../middlewares/rate-limit.middleware';
+import type { MemberSessionDTO } from '../../../modules/member-auth/member-auth.service';
+import { toolPermissionService } from '../../tools/tool-permission.service';
+import { LarkStatusCoordinator } from '../../orchestration/engine/lark-status.coordinator';
+import { runtimeTaskStore } from '../../orchestration/runtime-task.store';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
 type WebhookVerificationFailureReason = Exclude<LarkWebhookVerificationResult['reason'], undefined>;
@@ -44,10 +50,14 @@ type LarkWebhookRouteDependencies = {
   enqueueTask: (
     normalized: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>>,
   ) => Promise<{ taskId: string }>;
+  requeueTask: (
+    taskId: string,
+    normalized: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>>,
+  ) => Promise<{ taskId: string }>;
   resolveHitlAction: (actionId: string, decision: 'confirmed' | 'cancelled') => Promise<boolean>;
   getStoredHitlAction: (actionId: string) => Promise<Record<string, unknown> | null>;
   getLatestPendingHitlAction: (channel: 'lark', chatId: string) => Promise<Record<string, unknown> | null>;
-  executeStoredHitlAction: (action: Record<string, unknown>) => Promise<{ ok: boolean; summary: string }>;
+  executeStoredHitlAction: (action: Record<string, unknown>) => Promise<{ kind?: string; ok: boolean; summary: string; payload?: Record<string, unknown> }>;
   resolveCompanyIdByTenantKey: (larkTenantKey: string) => Promise<string | null>;
   resolveWorkspaceVerificationConfig: (
     companyId: string,
@@ -113,9 +123,43 @@ const toCompactJson = (value: unknown, maxLength = 1200): string | undefined => 
   }
 };
 
-const buildIngressAckText = (text: string): string => {
-  void text;
+const buildIngressAckText = (input: { text: string; queuedBehindActive?: boolean; queuedCountAhead?: number }): string => {
+  void input.text;
+  if (input.queuedBehindActive) {
+    const ahead = Math.max(1, input.queuedCountAhead ?? 1);
+    return [
+      'Queued your message.',
+      '',
+      `There ${ahead === 1 ? 'is' : 'are'} ${ahead} request${ahead === 1 ? '' : 's'} ahead of it in this Lark chat.`,
+      'I will respond here after the current run finishes.',
+      'Send /q to interrupt the active run.',
+    ].join('\n');
+  }
   return 'Working on it.';
+};
+
+const buildApprovalContinuationText = (input: {
+  kind?: string;
+  ok?: boolean;
+  summary?: string;
+  actionSummary?: string;
+  payload?: Record<string, unknown>;
+}): string => {
+  const payloadJson = input.payload
+    ? JSON.stringify(input.payload)
+    : '';
+  const compactPayload = payloadJson.length > 6000 ? `${payloadJson.slice(0, 6000)}...` : payloadJson;
+  return [
+    'Continue from this local action result.',
+    `kind: ${input.kind ?? 'local_action'}`,
+    `ok: ${String(Boolean(input.ok))}`,
+    'summary:',
+    input.summary?.trim() || input.actionSummary?.trim() || 'No summary available.',
+    compactPayload ? `payload:\n${compactPayload}` : '',
+    input.ok
+      ? 'Do not repeat the same successful action unless a different verification or follow-up step is required.'
+      : 'Use the failure details above to choose a different next step or a corrected retry.',
+  ].filter(Boolean).join('\n');
 };
 
 const parseHitlDecision = (text: string): { actionId: string; decision: 'confirmed' | 'cancelled' } | null => {
@@ -139,6 +183,142 @@ const isLarkClearContextCommand = (text: string): boolean => {
     || normalized === 'clear context'
     || normalized === 'start new chat'
     || normalized === 'new chat';
+};
+
+const parseLarkWorkflowCommand = (
+  text: string,
+): { kind: 'list' } | { kind: 'run'; reference: string } | null => {
+  const trimmed = text.trim();
+  const normalized = trimmed.toLowerCase();
+  if (normalized === '/prompts' || normalized === '/workflows') {
+    return { kind: 'list' };
+  }
+  if (normalized.startsWith('/workflow ')) {
+    const reference = trimmed.slice('/workflow '.length).trim();
+    return reference ? { kind: 'run', reference } : { kind: 'list' };
+  }
+  if (normalized.startsWith('/workflows ')) {
+    const reference = trimmed.slice('/workflows '.length).trim();
+    return reference ? { kind: 'run', reference } : { kind: 'list' };
+  }
+  return null;
+};
+
+const isLarkCommandMenuCommand = (text: string): boolean => {
+  const normalized = text.trim().toLowerCase();
+  return normalized === '/'
+    || normalized === '/help'
+    || normalized === '/commands';
+};
+
+const buildLarkCommandMenuText = (): string => [
+  'Available commands:',
+  '',
+  '/clear',
+  'Start a fresh chat context for this Lark conversation.',
+  '',
+  '/prompts',
+  'List your saved reusable prompts/workflows.',
+  '',
+  '/workflows',
+  'List your saved reusable prompts/workflows.',
+  '',
+  '/workflow <id-or-name>',
+  'Run one saved workflow by exact id or name.',
+  '',
+  '/workflows <id-or-name>',
+  'Same as /workflow <id-or-name>.',
+].join('\n');
+
+const buildLarkWorkflowSession = (input: {
+  userId: string;
+  companyId: string;
+  aiRole: string;
+  email?: string;
+  larkTenantKey?: string;
+  larkOpenId?: string;
+  larkUserId?: string;
+}): MemberSessionDTO => ({
+  userId: input.userId,
+  companyId: input.companyId,
+  role: input.aiRole,
+  aiRole: input.aiRole,
+  sessionId: randomUUID(),
+  expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+  authProvider: 'lark',
+  email: input.email ?? '',
+  larkTenantKey: input.larkTenantKey,
+  larkOpenId: input.larkOpenId,
+  larkUserId: input.larkUserId,
+});
+
+const formatWorkflowListText = (rows: Array<Record<string, unknown>>): string => {
+  if (rows.length === 0) {
+    return 'No saved workflows were found. You can ask me to turn a repeatable task into a reusable workflow.';
+  }
+  return [
+    `Saved workflows (${rows.length}):`,
+    '',
+    ...rows.slice(0, 20).map((row, index) => {
+      const name = typeof row.name === 'string' ? row.name : 'Unnamed workflow';
+      const id = typeof row.id === 'string' ? row.id : 'unknown';
+      const status = typeof row.status === 'string' ? row.status : 'unknown';
+      const nextRunAt = typeof row.nextRunAt === 'string' && row.nextRunAt.trim()
+        ? `, next run ${row.nextRunAt}`
+        : '';
+      return `${index + 1}. ${name} (${id}) [${status}${nextRunAt}]`;
+    }),
+  ].join('\n');
+};
+
+const formatWorkflowAmbiguityText = (reference: string, candidates: Array<Record<string, unknown>>): string => [
+  `Multiple saved workflows matched "${reference}".`,
+  '',
+  ...candidates.slice(0, 10).map((candidate, index) => {
+    const name = typeof candidate.name === 'string' ? candidate.name : 'Unnamed workflow';
+    const id = typeof candidate.id === 'string' ? candidate.id : 'unknown';
+    const status = typeof candidate.status === 'string' ? candidate.status : 'unknown';
+    return `${index + 1}. ${name} (${id}) [${status}]`;
+  }),
+  '',
+  'Run /workflow <exact-id-or-name> with one of the entries above.',
+].join('\n');
+
+const formatWorkflowRunResultText = (input: {
+  workflowName: string;
+  status: 'succeeded' | 'failed' | 'blocked';
+  resultSummary?: string | null;
+  errorSummary?: string | null;
+  threadId?: string | null;
+}): string => {
+  if (input.status === 'failed') {
+    return [
+      `Workflow "${input.workflowName}" failed.`,
+      '',
+      input.errorSummary?.trim() || 'Unknown error',
+    ].join('\n');
+  }
+
+  if (input.status === 'blocked') {
+    return [
+      `Workflow "${input.workflowName}" is blocked pending approval.`,
+      '',
+      input.resultSummary?.trim() || input.errorSummary?.trim() || 'Execution paused for approval.',
+      input.threadId ? `Thread: ${input.threadId}` : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  return [
+    `Workflow "${input.workflowName}" completed.`,
+    '',
+    input.resultSummary?.trim() || 'Execution succeeded.',
+    input.threadId ? `Thread: ${input.threadId}` : '',
+  ].filter(Boolean).join('\n');
+};
+
+const isLarkInterruptCommand = (text: string): boolean => {
+  const normalized = text.trim().toLowerCase();
+  return normalized === '/q' || normalized === '/stop' || normalized === '/cancel';
 };
 
 const parseImplicitHitlDecision = (text: string): { decision: 'confirmed' | 'cancelled' } | null => {
@@ -312,6 +492,11 @@ const defaultEnqueueTask: LarkWebhookRouteDependencies['enqueueTask'] = async (n
   return orchestrationRuntime.enqueue(normalized);
 };
 
+const defaultRequeueTask: LarkWebhookRouteDependencies['requeueTask'] = async (taskId, normalized) => {
+  const { orchestrationRuntime } = require('../../queue/runtime') as typeof import('../../queue/runtime');
+  return orchestrationRuntime.requeue(taskId, normalized);
+};
+
 const defaultResolveHitlAction: LarkWebhookRouteDependencies['resolveHitlAction'] = async (
   actionId,
   decision,
@@ -334,6 +519,33 @@ const defaultGetLatestPendingHitlAction: LarkWebhookRouteDependencies['getLatest
 };
 
 const defaultExecuteStoredHitlAction: LarkWebhookRouteDependencies['executeStoredHitlAction'] = async (action) => {
+  const metadata = typeof action.metadata === 'object' && action.metadata !== null && !Array.isArray(action.metadata)
+    ? action.metadata as Record<string, unknown>
+    : {};
+  const remoteLocalAction = metadata.desktopRemoteLocalAction;
+  if (remoteLocalAction && typeof remoteLocalAction === 'object' && !Array.isArray(remoteLocalAction)) {
+    const companyId = typeof metadata.companyId === 'string' ? metadata.companyId.trim() : '';
+    const userId = typeof metadata.userId === 'string' ? metadata.userId.trim() : '';
+    if (!companyId || !userId) {
+      throw new Error('Stored desktop remote action is missing companyId or userId');
+    }
+    const { desktopWsGateway } = require('../../../modules/desktop-live/desktop-ws.gateway') as typeof import('../../../modules/desktop-live/desktop-ws.gateway');
+    const result = await desktopWsGateway.dispatchRemoteLocalAction({
+      companyId,
+      userId,
+      action: remoteLocalAction as import('../../../modules/desktop-live/desktop-ws.gateway').RemoteLocalAction,
+      reason: typeof metadata.desktopRemoteLocalExplanation === 'string'
+        ? metadata.desktopRemoteLocalExplanation
+        : undefined,
+      overrideAsk: true,
+    });
+    return {
+      kind: result.kind,
+      ok: result.ok,
+      summary: result.summary,
+      payload: result.payload,
+    };
+  }
   const { executeStoredRemoteToolAction } = require('../../state') as typeof import('../../state');
   return executeStoredRemoteToolAction(action as any);
 };
@@ -384,6 +596,7 @@ const createDefaultDependencies = (): LarkWebhookRouteDependencies => ({
   parsePayload: parseLarkIngressPayload,
   claimIngressKey: defaultClaimIngressKey,
   enqueueTask: defaultEnqueueTask,
+  requeueTask: defaultRequeueTask,
   resolveHitlAction: defaultResolveHitlAction,
   getStoredHitlAction: defaultGetStoredHitlAction,
   getLatestPendingHitlAction: defaultGetLatestPendingHitlAction,
@@ -869,6 +1082,198 @@ export const createLarkWebhookEventHandler = (
         }
       }
 
+      if (parsed.kind === 'event_callback_message' && isLarkCommandMenuCommand(tracedMessageBase.text)) {
+        await dependencies.adapter.sendMessage({
+          chatId: tracedMessageBase.chatId,
+          text: buildLarkCommandMenuText(),
+          correlationId: requestId,
+        });
+        return res.status(202).json({
+          success: true,
+          message: 'Command menu handled',
+        });
+      }
+
+      if (parsed.kind === 'event_callback_message' && isLarkInterruptCommand(tracedMessageBase.text)) {
+        const { orchestrationRuntime } = require('../../queue/runtime') as typeof import('../../queue/runtime');
+        const conversationState = runtimeTaskStore.getConversationExecutionState('lark', tracedMessageBase.chatId);
+        if (!conversationState.runningTask) {
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessageBase.chatId,
+            text: 'No active run is currently executing in this Lark chat.',
+            correlationId: requestId,
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Interrupt command handled with no active run',
+          });
+        }
+
+        await orchestrationRuntime.control(conversationState.runningTask.taskId, 'cancelled');
+        await dependencies.adapter.sendMessage({
+          chatId: tracedMessageBase.chatId,
+          text: [
+            'Interrupt requested.',
+            '',
+            `Stopped active task ${conversationState.runningTask.taskId}.`,
+            'Any queued message in this chat will continue after cancellation settles.',
+          ].join('\n'),
+          correlationId: requestId,
+        });
+        return res.status(202).json({
+          success: true,
+          message: 'Interrupt command handled',
+          data: {
+            taskId: conversationState.runningTask.taskId,
+          },
+        });
+      }
+
+      const workflowCommand = parsed.kind === 'event_callback_message'
+        ? parseLarkWorkflowCommand(tracedMessageBase.text)
+        : null;
+
+      if (parsed.kind === 'event_callback_message' && workflowCommand) {
+        if (!scopedCompanyId || !linkedUserId) {
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessageBase.chatId,
+            text: 'Workflow commands need a linked desktop account for this Lark user. Link your account first, then retry.',
+            correlationId: requestId,
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Workflow command handled without linked account',
+          });
+        }
+
+        const workflowSession = buildLarkWorkflowSession({
+          userId: linkedUserId,
+          companyId: scopedCompanyId,
+          aiRole: userRole,
+          email: requesterEmail,
+          larkTenantKey,
+          larkOpenId: normalized.trace?.larkOpenId,
+          larkUserId: normalized.trace?.larkUserId,
+        });
+
+        try {
+          const statusCoordinator = new LarkStatusCoordinator({
+            adapter: dependencies.adapter,
+            chatId: tracedMessageBase.chatId,
+            correlationId: requestId,
+          });
+          const workflowToolsAllowed = await toolPermissionService.isAllowed(
+            scopedCompanyId,
+            'workflow-authoring',
+            userRole,
+          );
+          if (!workflowToolsAllowed) {
+            await statusCoordinator.replace('You do not currently have permission to use saved workflow commands in this workspace.');
+            await statusCoordinator.close();
+            return res.status(202).json({
+              success: true,
+              message: 'Workflow command blocked by permissions',
+            });
+          }
+
+          if (workflowCommand.kind === 'list') {
+            await statusCoordinator.update({
+              text: 'Checking your saved workflows...',
+            }, { force: true });
+            const workflows = await desktopWorkflowsService.listVisibleSummaries(workflowSession);
+            await statusCoordinator.replace(formatWorkflowListText(workflows));
+            await statusCoordinator.close();
+            return res.status(202).json({
+              success: true,
+              message: 'Workflow list command handled',
+              data: { count: workflows.length },
+            });
+          }
+
+          await statusCoordinator.update({
+            text: `Looking up saved workflow "${workflowCommand.reference}"...`,
+          }, { force: true });
+          const resolved = await desktopWorkflowsService.resolveVisibleWorkflow(workflowSession, workflowCommand.reference);
+          if (resolved.status === 'not_found') {
+            await statusCoordinator.replace(`No saved workflow matched "${workflowCommand.reference}". Use /workflows to list your saved workflows.`);
+            await statusCoordinator.close();
+            return res.status(202).json({
+              success: true,
+              message: 'Workflow command handled with no match',
+            });
+          }
+          if (resolved.status === 'ambiguous') {
+            await statusCoordinator.replace(formatWorkflowAmbiguityText(workflowCommand.reference, resolved.candidates));
+            await statusCoordinator.close();
+            return res.status(202).json({
+              success: true,
+              message: 'Workflow command handled with ambiguity',
+              data: { count: resolved.candidates.length },
+            });
+          }
+
+          await statusCoordinator.update({
+            text: `Running workflow "${resolved.workflow.name}"...`,
+          }, { force: true });
+          statusCoordinator.startHeartbeat(() => ({
+            text: `Workflow "${resolved.workflow.name}" is still running...`,
+          }));
+          const run = await desktopWorkflowsService.runNow(
+            workflowSession,
+            typeof resolved.workflow.id === 'string' ? resolved.workflow.id : workflowCommand.reference,
+            null,
+            async (phase) => {
+              await statusCoordinator.update({
+                text: [
+                  `Running workflow "${resolved.workflow.name}"...`,
+                  '',
+                  phase.trim(),
+                ].join('\n'),
+              });
+            },
+          );
+          await statusCoordinator.replace(formatWorkflowRunResultText({
+            workflowName: resolved.workflow.name,
+            status: run.status,
+            resultSummary: run.resultSummary,
+            errorSummary: run.errorSummary,
+            threadId: run.threadId,
+          }));
+          await statusCoordinator.close();
+          return res.status(202).json({
+            success: true,
+            message: 'Workflow run command handled',
+            data: {
+              workflowId: run.workflowId,
+              runId: run.runId,
+              status: run.status,
+            },
+          });
+        } catch (error) {
+          dependencies.log.warn('lark.workflow_command.failed', {
+            ...buildIngressTraceMeta({
+              requestId,
+              message: tracedMessageBase,
+              eventId: parsed.eventId,
+              textHash,
+              larkTenantKey,
+              companyId: scopedCompanyId,
+            }),
+            command: tracedMessageBase.text,
+            error: error instanceof Error ? error.message : 'unknown_error',
+          });
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessageBase.chatId,
+            text: `Workflow command failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            correlationId: requestId,
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Workflow command failed gracefully',
+          });
+        }
+      }
+
       if (parsed.kind === 'event_callback_message' && isLarkClearContextCommand(tracedMessageBase.text)) {
         try {
           if (scopedCompanyId && linkedUserId) {
@@ -1045,14 +1450,84 @@ export const createLarkWebhookEventHandler = (
         const resolved = await dependencies.resolveHitlAction(hitlDecision.actionId, hitlDecision.decision);
         let executionSummary: string | undefined;
         let executionOk: boolean | undefined;
+        let executionPayload: Record<string, unknown> | undefined;
+        let executionKind: string | undefined;
+        let resumedTaskId: string | undefined;
         if (resolved && hitlDecision.decision === 'confirmed' && storedAction) {
           try {
             const executionResult = await dependencies.executeStoredHitlAction(storedAction);
+            executionKind = executionResult.kind;
             executionSummary = executionResult.summary;
             executionOk = executionResult.ok;
+            executionPayload = executionResult.payload;
+            if (typeof storedAction.taskId === 'string' && storedAction.taskId.trim()) {
+              const continuationText = buildApprovalContinuationText({
+                kind: executionResult.kind,
+                ok: executionResult.ok,
+                summary: executionSummary,
+                actionSummary: typeof storedAction.summary === 'string' ? storedAction.summary : undefined,
+                payload: executionResult.payload,
+              });
+              await dependencies.requeueTask(storedAction.taskId, {
+                ...tracedMessage,
+                messageId: randomUUID(),
+                timestamp: new Date().toISOString(),
+                text: continuationText,
+                rawEvent: {
+                  kind: 'hitl_approval_continuation',
+                  sourceActionId: hitlDecision.actionId,
+                  sourceMessageId: tracedMessage.messageId,
+                  executionSummary,
+                  executionPayload: executionResult.payload,
+                },
+                trace: {
+                  ...tracedMessage.trace,
+                  requestId,
+                  receivedAt: new Date().toISOString(),
+                  textHash: buildLarkTextHash(continuationText),
+                  statusMessageId: parsed.kind === 'event_callback_card_action'
+                    ? tracedMessage.messageId
+                    : tracedMessage.trace?.statusMessageId,
+                },
+              });
+              resumedTaskId = storedAction.taskId;
+            }
           } catch (error) {
             executionSummary = error instanceof Error ? error.message : 'Stored approval action execution failed';
             executionOk = false;
+            if (typeof storedAction.taskId === 'string' && storedAction.taskId.trim()) {
+              const continuationText = buildApprovalContinuationText({
+                kind: executionKind,
+                ok: false,
+                summary: executionSummary,
+                actionSummary: typeof storedAction.summary === 'string' ? storedAction.summary : undefined,
+                payload: executionPayload,
+              });
+              await dependencies.requeueTask(storedAction.taskId, {
+                ...tracedMessage,
+                messageId: randomUUID(),
+                timestamp: new Date().toISOString(),
+                text: continuationText,
+                rawEvent: {
+                  kind: 'hitl_approval_continuation',
+                  sourceActionId: hitlDecision.actionId,
+                  sourceMessageId: tracedMessage.messageId,
+                  executionSummary,
+                  executionOk: false,
+                  executionPayload,
+                },
+                trace: {
+                  ...tracedMessage.trace,
+                  requestId,
+                  receivedAt: new Date().toISOString(),
+                  textHash: buildLarkTextHash(continuationText),
+                  statusMessageId: parsed.kind === 'event_callback_card_action'
+                    ? tracedMessage.messageId
+                    : tracedMessage.trace?.statusMessageId,
+                },
+              });
+              resumedTaskId = storedAction.taskId;
+            }
           }
         }
         dependencies.log.info('lark.webhook.hitl.decision', {
@@ -1069,14 +1544,17 @@ export const createLarkWebhookEventHandler = (
           resolved,
           executionOk,
           executionSummary,
+          resumedTaskId,
         });
         const responseText = !resolved
           ? `Approval action ${hitlDecision.actionId} is not pending or was not found.`
           : hitlDecision.decision === 'cancelled'
             ? `Rejected request.\n\n${storedAction && typeof storedAction.summary === 'string' ? storedAction.summary : hitlDecision.actionId}`
-            : executionOk
-              ? `Approved and executed.\n\n${executionSummary ?? storedAction?.summary ?? hitlDecision.actionId}`
-              : `Approval was recorded, but execution failed.\n\n${executionSummary ?? storedAction?.summary ?? hitlDecision.actionId}`;
+            : resumedTaskId
+              ? `Approved and continuing.\n\n${executionSummary ?? storedAction?.summary ?? hitlDecision.actionId}`
+              : executionOk
+                ? `Approved and executed.\n\n${executionSummary ?? storedAction?.summary ?? hitlDecision.actionId}`
+                : `Approval was recorded, but execution failed.\n\n${executionSummary ?? storedAction?.summary ?? hitlDecision.actionId}`;
         if (parsed.kind === 'event_callback_card_action') {
           await dependencies.adapter.updateMessage({
             messageId: tracedMessage.messageId,
@@ -1098,6 +1576,7 @@ export const createLarkWebhookEventHandler = (
             resolved,
             executionOk,
             executionSummary,
+            resumedTaskId,
           },
         });
       }
@@ -1112,9 +1591,15 @@ export const createLarkWebhookEventHandler = (
       let statusMessageId: string | undefined;
       if (shouldSendImmediateAck) {
         try {
+          const conversationState = runtimeTaskStore.getConversationExecutionState('lark', tracedMessage.chatId);
+          const queuedBehindActive = Boolean(conversationState.runningTask);
           const ack = await dependencies.adapter.sendMessage({
             chatId: tracedMessage.chatId,
-            text: buildIngressAckText(tracedMessage.text),
+            text: buildIngressAckText({
+              text: tracedMessage.text,
+              queuedBehindActive,
+              queuedCountAhead: (queuedBehindActive ? 1 : 0) + conversationState.pendingCount,
+            }),
             correlationId: requestId,
           });
           if (ack.status !== 'failed') {

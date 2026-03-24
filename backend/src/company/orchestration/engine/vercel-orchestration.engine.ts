@@ -13,8 +13,9 @@ import { conversationMemoryStore } from '../../state/conversation';
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import { retrievalOrchestratorService } from '../../retrieval';
 import { logger } from '../../../utils/logger';
-import { resolveVercelLanguageModel } from '../vercel/model-factory';
+import { resolveVercelChildRouterModel, resolveVercelLanguageModel } from '../vercel/model-factory';
 import { createVercelDesktopTools } from '../vercel/tools';
+import { buildWorkspaceAwarePromptSections } from '../vercel/workspace-aware-prompt';
 import { CircuitBreakerOpenError, runWithCircuitBreaker } from '../../observability/circuit-breaker';
 import type {
   PendingApprovalAction,
@@ -25,15 +26,33 @@ import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExe
 import { legacyOrchestrationEngine } from './legacy-orchestration.engine';
 import { buildVisionContent, type AttachedFileRef } from '../../../modules/desktop-chat/file-vision.builder';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
-import { runDesktopChildRouter } from '../../../modules/desktop-chat/vercel-desktop.engine';
+import { DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT } from '../../../modules/desktop-chat/desktop-thread-context.cache';
+import {
+  buildTaskStateContext,
+  buildThreadSummaryContext,
+  createEmptyTaskState,
+  parseDesktopTaskState,
+  parseDesktopThreadSummary,
+  refreshDesktopThreadSummary,
+  updateTaskStateFromToolEnvelope,
+  type DesktopTaskState,
+  type DesktopThreadSummary,
+} from '../../../modules/desktop-chat/desktop-thread-memory';
+import { runDesktopChildRouter, type DesktopChildRoute } from '../../../modules/desktop-chat/vercel-desktop.engine';
 import { LarkStatusCoordinator } from './lark-status.coordinator';
 import { aiTokenUsageService } from '../../ai-usage/ai-token-usage.service';
 import { estimateTokens } from '../../../utils/token-estimator';
+import { AI_MODEL_CATALOG_MAP } from '../../ai-models';
+import { desktopWsGateway } from '../../../modules/desktop-live/desktop-ws.gateway';
+import { appendLatestAgentRunLog, resetLatestAgentRunLog } from '../../../utils/latest-agent-run-log';
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
-const LARK_BLOCKED_TOOL_IDS = new Set(['coding']);
+const LARK_BLOCKED_TOOL_IDS = new Set<string>();
 const LARK_VERCEL_MODE: VercelRuntimeRequestContext['mode'] = 'high';
-const LARK_THREAD_CONTEXT_MESSAGE_LIMIT = 20;
+const LARK_THREAD_CONTEXT_MESSAGE_LIMIT = DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT;
+const LARK_CONTEXT_TARGET_RATIO = 0.6;
+const LARK_LIGHT_CONTEXT_TARGET_RATIO = 0.12;
+const LARK_NORMAL_CONTEXT_TARGET_RATIO = 0.28;
 const LARK_STATUS_HEARTBEAT_MESSAGES = [
   'Still working on this.',
   'Still gathering the right details.',
@@ -54,6 +73,54 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const isProviderInvalidArgumentError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return message.toLowerCase().includes('invalid argument');
+};
+
+const compactMessageText = (value: string, limit: number): string => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+  return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const sanitizeMessagesForProviderRetry = (messages: ModelMessage[], latestUserMessage: string): ModelMessage[] => {
+  const compacted = messages
+    .map((message) => {
+      const flattened = flattenModelContent(message.content);
+      const limit = message.role === 'user' ? 6_000 : 4_000;
+      const content = compactMessageText(flattened, limit);
+      if (!content) {
+        return null;
+      }
+      return {
+        role: message.role,
+        content,
+      } as ModelMessage;
+    })
+    .filter((message): message is ModelMessage => Boolean(message));
+
+  const trimmedHistory = compacted.slice(-12);
+  const latestUser = compactMessageText(latestUserMessage, 6_000);
+  if (!latestUser) {
+    return trimmedHistory.length > 0 ? trimmedHistory : [{ role: 'user', content: 'Continue from the latest verified context.' }];
+  }
+
+  if (trimmedHistory.length === 0) {
+    return [{ role: 'user', content: latestUser }];
+  }
+
+  const last = trimmedHistory[trimmedHistory.length - 1];
+  if (last.role === 'user') {
+    trimmedHistory[trimmedHistory.length - 1] = { role: 'user', content: latestUser };
+    return trimmedHistory;
+  }
+
+  return [...trimmedHistory, { role: 'user', content: latestUser }];
 };
 
 const runWithModelCircuitBreaker = async <T>(
@@ -92,6 +159,142 @@ const flattenModelContent = (content: ModelMessage['content'] | string | undefin
 
 const estimateMessageTokens = (messages: ModelMessage[]): number =>
   messages.reduce((sum, message) => sum + estimateTokens(flattenModelContent(message.content)), 0);
+
+type LarkContextClass = 'lightweight_chat' | 'normal_work' | 'long_running_task' | 'document_grounded_followup';
+
+const isReferentialFollowup = (value: string | null | undefined): boolean =>
+  /\b(next task|pick the next|move on|move to next|continue|next one|same file|same one|next estimate|what next)\b/i.test(value ?? '');
+
+const isLightweightChatTurn = (value: string | null | undefined): boolean =>
+  /^(hi|hello|hey|thanks|thank you|ok|okay|cool|great|nice|yes|no)[.! ]*$/i.test((value ?? '').trim());
+
+const chooseLarkContextClass = (input: {
+  latestUserMessage?: string;
+  taskState: DesktopTaskState;
+  threadSummary: DesktopThreadSummary;
+  historyMessageCount: number;
+}): LarkContextClass => {
+  const latestUserMessage = input.latestUserMessage?.trim() ?? '';
+  if (isLightweightChatTurn(latestUserMessage)) {
+    return 'lightweight_chat';
+  }
+  if (
+    input.taskState.activeSourceArtifacts.length > 0
+    && isReferentialFollowup(latestUserMessage)
+  ) {
+    return 'document_grounded_followup';
+  }
+  if (
+    input.taskState.activeSourceArtifacts.length > 0
+    || input.taskState.completedMutations.length > 0
+    || Boolean(input.taskState.pendingApproval)
+    || input.threadSummary.sourceMessageCount >= 10
+    || input.historyMessageCount >= 16
+  ) {
+    return 'long_running_task';
+  }
+  return 'normal_work';
+};
+
+const resolveModelCatalogEntry = (resolvedModel: {
+  effectiveProvider: string;
+  effectiveModelId: string;
+}) =>
+  AI_MODEL_CATALOG_MAP.get(`${resolvedModel.effectiveProvider}:${resolvedModel.effectiveModelId}`)
+  ?? (resolvedModel.effectiveProvider === 'google'
+    ? AI_MODEL_CATALOG_MAP.get('google:gemini-3.1-flash-lite-preview')
+      ?? AI_MODEL_CATALOG_MAP.get('google:gemini-2.5-flash')
+      ?? null
+    : null);
+
+const resolveLarkContextBudget = (input: {
+  resolvedModel: { effectiveProvider: string; effectiveModelId: string };
+  contextClass: LarkContextClass;
+}): { usableContextBudget: number; targetContextBudget: number; modelId: string } => {
+  const catalogEntry = resolveModelCatalogEntry(input.resolvedModel);
+  const usableContextBudget = catalogEntry
+    ? Math.max(4_000, catalogEntry.maxContextTokens - catalogEntry.outputReserveTokens)
+    : input.resolvedModel.effectiveProvider === 'google'
+      ? 1_048_576 - 32_768
+      : 128_000 - 16_384;
+  const ratio = input.contextClass === 'lightweight_chat'
+    ? LARK_LIGHT_CONTEXT_TARGET_RATIO
+    : input.contextClass === 'normal_work'
+      ? LARK_NORMAL_CONTEXT_TARGET_RATIO
+      : LARK_CONTEXT_TARGET_RATIO;
+  return {
+    usableContextBudget,
+    targetContextBudget: Math.max(12_000, Math.floor(usableContextBudget * ratio)),
+    modelId: input.resolvedModel.effectiveModelId,
+  };
+};
+
+const buildAdaptiveLarkHistoryMessages = (input: {
+  messages: Array<ModelMessage & { id?: string }>;
+  targetBudgetTokens: number;
+  reservedTokens: number;
+  contextClass: LarkContextClass;
+}): {
+  messages: Array<ModelMessage & { id?: string }>;
+  includedRawMessageCount: number;
+  compactionTier: number;
+} => {
+  const maxMessages = input.contextClass === 'lightweight_chat'
+    ? 8
+    : input.contextClass === 'normal_work'
+      ? 16
+      : 32;
+  const lowValueFilter = input.contextClass !== 'lightweight_chat';
+  const selected: Array<ModelMessage & { id?: string }> = [];
+  let used = 0;
+  let compactionTier = 1;
+  const recent = input.messages.slice(-60).filter((message) =>
+    lowValueFilter ? !isLightweightChatTurn(flattenModelContent(message.content)) : true,
+  );
+
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    const message = recent[index]!;
+    const estimated = estimateTokens(flattenModelContent(message.content));
+    if (
+      selected.length >= maxMessages
+      || used + estimated + input.reservedTokens > input.targetBudgetTokens
+    ) {
+      compactionTier = Math.max(compactionTier, 4);
+      continue;
+    }
+    used += estimated;
+    selected.unshift(message);
+  }
+
+  return {
+    messages: selected,
+    includedRawMessageCount: selected.length,
+    compactionTier,
+  };
+};
+
+const loadLarkThreadMemory = async (threadId: string, userId: string): Promise<{
+  summary: DesktopThreadSummary;
+  taskState: DesktopTaskState;
+}> => {
+  const thread = await desktopThreadsService.getThreadMeta(threadId, userId);
+  return {
+    summary: parseDesktopThreadSummary((thread as Record<string, unknown>).summaryJson),
+    taskState: parseDesktopTaskState((thread as Record<string, unknown>).taskStateJson),
+  };
+};
+
+const persistLarkThreadMemory = async (input: {
+  threadId: string;
+  userId: string;
+  summary?: DesktopThreadSummary | null;
+  taskState?: DesktopTaskState | null;
+}) => {
+  await desktopThreadsService.updateOwnedThreadMemory(input.threadId, input.userId, {
+    ...(input.summary !== undefined ? { summaryJson: input.summary ? input.summary as unknown as Record<string, unknown> : null } : {}),
+    ...(input.taskState !== undefined ? { taskStateJson: input.taskState ? input.taskState as unknown as Record<string, unknown> : null } : {}),
+  });
+};
 
 const getLocalDateString = (offsetDays = 0): string => {
   const base = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
@@ -232,8 +435,11 @@ const buildSystemPrompt = (input: {
   conversationKey: string;
   runtime: VercelRuntimeRequestContext;
   routerAcknowledgement?: string;
+  childRouteHints?: DesktopChildRoute;
   latestUserMessage?: string;
   hasAttachedFiles?: boolean;
+  threadSummary?: DesktopThreadSummary;
+  taskState?: DesktopTaskState;
 }) => {
   const retrievalGuidance = input.latestUserMessage?.trim()
     ? retrievalOrchestratorService.buildPromptGuidance({
@@ -245,10 +451,16 @@ const buildSystemPrompt = (input: {
     'You are the Vercel AI SDK runtime for a tool-using assistant.',
     'Use the available comprehensive tools directly.',
     'Do not refer to Mastra, LangGraph, workflows, or internal orchestration.',
-    'Only claim actions and results that are confirmed by tool outputs.',
-    'If a tool returns a pending approval action, treat that as the next required step instead of inventing completion.',
-    'Prefer the coding tool for local workspace work and the repo tool only for remote GitHub repositories.',
+    'If the user describes a repeatable process, wants to save it for later, wants to make it reusable, asks to schedule it, asks to list saved prompts/workflows, or asks to run a saved workflow, prefer the dedicated workflow authoring tools over ad hoc execution.',
+    'If a workflow authoring tool returns missing_input, ask the user exactly for that missing detail instead of guessing.',
+    ...buildWorkspaceAwarePromptSections({
+      workspace: input.runtime.workspace,
+      approvalPolicySummary: input.runtime.desktopApprovalPolicySummary,
+      latestActionResult: input.runtime.latestActionResult,
+      availability: input.runtime.desktopExecutionAvailability ?? (input.runtime.workspace ? 'available' : 'unknown'),
+    }),
     'For specialized or complex workflows, first search relevant skills with the skillSearch tool, read the chosen skill, and then proceed with the task.',
+    'If a request might be about reusable workflow creation, recurring scheduling, save-for-later behavior, or the right scheduling/calendar route is unclear, search skills before guessing.',
   ];
 
   if (input.runtime.departmentName) {
@@ -269,6 +481,14 @@ const buildSystemPrompt = (input: {
   if (input.runtime.dateScope) {
     parts.push(`Inferred date scope: ${input.runtime.dateScope}.`);
   }
+  const threadSummaryContext = input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null;
+  if (threadSummaryContext) {
+    parts.push(threadSummaryContext);
+  }
+  const taskStateContext = input.taskState ? buildTaskStateContext(input.taskState) : null;
+  if (taskStateContext) {
+    parts.push(taskStateContext);
+  }
   const refsContext = buildConversationRefsContext(input.conversationKey);
   if (refsContext) {
     parts.push(refsContext);
@@ -277,6 +497,20 @@ const buildSystemPrompt = (input: {
     parts.push(
       `The user has already seen this short intake acknowledgement: "${input.routerAcknowledgement.trim()}"`,
       'Do not repeat that acknowledgement verbatim. Continue from it and focus on execution.',
+    );
+  }
+  if (input.childRouteHints) {
+    parts.push(
+      'Child router guidance for this turn:',
+      JSON.stringify({
+        route: input.childRouteHints.route,
+        reason: input.childRouteHints.reason ?? null,
+        normalizedIntent: input.childRouteHints.normalizedIntent ?? null,
+        suggestedToolIds: input.childRouteHints.suggestedToolIds ?? [],
+        suggestedSkillQuery: input.childRouteHints.suggestedSkillQuery ?? null,
+        suggestedActions: input.childRouteHints.suggestedActions ?? [],
+      }),
+      'Use these hints to choose the correct next tools when they fit the request and available permissions.',
     );
   }
   if (retrievalGuidance.length > 0) {
@@ -305,6 +539,89 @@ const stopOnPendingApproval = ({
 }: {
   steps: Array<{ toolResults?: Array<{ output: unknown }> }>;
 }): boolean => Boolean(findPendingApproval(steps));
+
+const findBlockingUserInput = (
+  steps: Array<{ toolResults?: Array<{ output: unknown }> }>,
+): VercelToolEnvelope | null => {
+  for (const step of steps) {
+    for (const result of step.toolResults ?? []) {
+      const output = result.output as VercelToolEnvelope | undefined;
+      if (output?.errorKind === 'missing_input') {
+        return output;
+      }
+    }
+  }
+  return null;
+};
+
+const stopOnBlockingUserInput = ({
+  steps,
+}: {
+  steps: Array<{ toolResults?: Array<{ output: unknown }> }>;
+}): boolean => Boolean(findBlockingUserInput(steps));
+
+const toClarificationQuestion = (value: string | null | undefined): string | null => {
+  const raw = summarizeText(value, 500)?.trim();
+  if (!raw) {
+    return null;
+  }
+  const normalized = raw.replace(/\s+/g, ' ').trim();
+  const lower = normalized.toLowerCase();
+
+  if (lower.includes('requires title and markdown')) {
+    return 'Please send the document title and the markdown content you want in the Lark doc.';
+  }
+  if (lower.includes('need both a dayofweek and time') || lower.includes('need both a weekday and time')) {
+    return 'Which weekday and time should this run?';
+  }
+  if (lower.startsWith('ask the user ')) {
+    const rewritten = normalized.replace(/^Ask the user\s+/i, '').replace(/\.$/, '');
+    if (/^(which|what|when|where|who|how)\b/i.test(rewritten)) {
+      return `${rewritten}?`.replace(/\?\?$/, '?');
+    }
+    return `Please ${rewritten}.`;
+  }
+  if (lower.startsWith('please provide ')) {
+    const rewritten = normalized.replace(/^Please provide\s+/i, '').replace(/\.$/, '');
+    return `Please provide ${rewritten}.`;
+  }
+  if (lower.includes('requires ')) {
+    const requirement = normalized.replace(/^.*?requires?\s+/i, '').replace(/\.$/, '');
+    return `Please provide ${requirement}.`;
+  }
+  return null;
+};
+
+const buildMissingInputResponseText = (output: VercelToolEnvelope | null | undefined): string | null => {
+  if (!output) {
+    return null;
+  }
+  const question = toClarificationQuestion(output.userAction) ?? toClarificationQuestion(output.summary);
+  if (question) {
+    return [
+      'I need a bit more information before I can finish this.',
+      '',
+      question,
+    ].join('\n');
+  }
+  const action = summarizeText(output.userAction, 400);
+  const summary = summarizeText(output.summary, 500);
+  if (action) {
+    return [
+      'I need a bit more information before I can finish this.',
+      '',
+      action,
+    ].join('\n');
+  }
+  if (summary) {
+    return [
+      'I need a bit more information before I can finish this.',
+      '',
+      summary,
+    ].join('\n');
+  }
+  return null;
+};
 
 const buildLarkStatusText = (input: {
   task: OrchestrationTaskDTO;
@@ -424,6 +741,12 @@ const resolveRuntimeContext = async (
   let departmentSkillsMarkdown: string | undefined;
   let allowedToolIds = fallbackAllowedToolIds;
   let allowedActionsByTool: Record<string, string[]> | undefined;
+  const desktopAvailability = linkedUserId
+    ? desktopWsGateway.getRemoteExecutionAvailability(linkedUserId, companyId)
+    : { status: 'none' as const };
+  const activeWorkspace = desktopAvailability.status === 'available'
+    ? desktopAvailability.session?.activeWorkspace
+    : undefined;
 
   if (linkedUserId) {
     const departments = await departmentService.listUserDepartments(linkedUserId, companyId);
@@ -460,6 +783,14 @@ const resolveRuntimeContext = async (
     larkUserId: message.trace?.larkUserId,
     authProvider: 'lark',
     mode: LARK_VERCEL_MODE,
+    workspace: activeWorkspace
+      ? {
+          name: activeWorkspace.name,
+          path: activeWorkspace.path,
+        }
+      : undefined,
+    desktopExecutionAvailability: desktopAvailability.status,
+    desktopApprovalPolicySummary: desktopWsGateway.getPolicySummary(linkedUserId, companyId),
     dateScope: inferDateScope(message.text),
     allowedToolIds: allowedToolIds.filter((toolId) => !LARK_BLOCKED_TOOL_IDS.has(toolId)),
     allowedActionsByTool: allowedActionsByTool
@@ -525,7 +856,12 @@ const executeLarkVercelTask = async (
   statusCoordinator.startHeartbeat(() => renderCurrentStatus(true));
 
   let persistedUserMessageId: string | undefined;
+  let activeThreadSummary = parseDesktopThreadSummary(null);
+  let activeTaskState = createEmptyTaskState();
   if (persistentThread) {
+    const threadMemory = await loadLarkThreadMemory(persistentThread.id, linkedUserId);
+    activeThreadSummary = threadMemory.summary;
+    activeTaskState = threadMemory.taskState;
     const userMessage = await desktopThreadsService.addOwnedThreadMessage(
       persistentThread.id,
       linkedUserId,
@@ -556,6 +892,16 @@ const executeLarkVercelTask = async (
   }
 
   const runtime = await resolveRuntimeContext(task, message, persistentThread?.id);
+  await resetLatestAgentRunLog(task.taskId, {
+    channel: 'lark',
+    entrypoint: 'lark_message',
+    taskId: task.taskId,
+    threadId: persistentThread?.id ?? message.chatId,
+    companyId: runtime.companyId,
+    userId: linkedUserId ?? null,
+    message: message.text,
+    workspace: runtime.workspace ?? null,
+  });
   statusHistory.push('Context ready.');
   const contextMessages = persistentThread
     ? await (async () => {
@@ -593,8 +939,16 @@ const executeLarkVercelTask = async (
     executionId: task.taskId,
     threadId: persistentThread?.id ?? message.chatId,
     message: message.text,
+    workspace: runtime.workspace,
+    approvalPolicySummary: runtime.desktopApprovalPolicySummary,
     companyId: runtime.companyId,
     userId: linkedUserId ?? undefined,
+    allowedToolIds: runtime.allowedToolIds,
+    allowedActionsByTool: runtime.allowedActionsByTool,
+    departmentSystemPrompt: runtime.departmentSystemPrompt,
+    departmentSkillsMarkdown: runtime.departmentSkillsMarkdown,
+    taskState: activeTaskState,
+    threadSummary: activeThreadSummary,
     history: contextMessages.slice(-6).map((entry) => ({
       role: entry.role === 'assistant' ? 'assistant' : 'user',
       content: typeof entry.content === 'string' ? entry.content : flattenModelContent(entry.content),
@@ -628,20 +982,41 @@ const executeLarkVercelTask = async (
           contextLimit: LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
         },
       );
+      const refreshedSummary = await refreshDesktopThreadSummary({
+        messages: [
+          ...contextMessages.map((entry) => ({
+            role: entry.role === 'assistant' ? 'assistant' : 'user',
+            content: flattenModelContent(entry.content),
+          })),
+          {
+            role: 'assistant',
+            content: reply,
+          },
+        ],
+        taskState: activeTaskState,
+        currentSummary: activeThreadSummary,
+      });
+      await persistLarkThreadMemory({
+        threadId: persistentThread.id,
+        userId: linkedUserId,
+        summary: refreshedSummary,
+        taskState: activeTaskState,
+      });
     }
     if (linkedUserId) {
       const childRouterPrompt = [
         'Lark child router handled this turn directly.',
         `Latest user message: ${message.text}`,
       ].join('\n');
+      const childRouterModel = await resolveVercelChildRouterModel();
       const estimatedInputTokens = estimateTokens(childRouterPrompt);
       const estimatedOutputTokens = estimateTokens(reply);
       await aiTokenUsageService.record({
         userId: linkedUserId,
         companyId: runtime.companyId,
         agentTarget: 'lark.child_router',
-        modelId: config.GROQ_ROUTER_MODEL,
-        provider: 'groq',
+        modelId: childRouterModel.effectiveModelId,
+        provider: childRouterModel.effectiveProvider,
         channel: 'lark',
         threadId: persistentThread?.id,
         estimatedInputTokens,
@@ -652,6 +1027,12 @@ const executeLarkVercelTask = async (
         mode: 'fast',
       });
     }
+    await appendLatestAgentRunLog(task.taskId, 'run.completed', {
+      channel: 'lark',
+      route: 'fast_reply',
+      threadId: persistentThread?.id ?? message.chatId,
+      finalText: reply,
+    });
 
     return {
       task,
@@ -668,9 +1049,9 @@ const executeLarkVercelTask = async (
     };
   }
 
-  const routerAcknowledgement = childRoute.route === 'handoff'
-    ? childRoute.acknowledgement?.trim() || 'I’ll take this in steps and start working through it now.'
-    : undefined;
+  const routerAcknowledgement = childRoute.route === 'fast_reply'
+    ? undefined
+    : childRoute.acknowledgement?.trim() || 'I’ll handle that now and keep it moving for you.';
   statusHistory.push('Context ready.');
   await updateStatus(
     'planning',
@@ -679,17 +1060,94 @@ const executeLarkVercelTask = async (
 
   const tools = createVercelDesktopTools(runtime, {
     onToolStart: async (_toolName, _activityId, title) => {
+      await appendLatestAgentRunLog(task.taskId, 'tool.start', {
+        toolName: _toolName,
+        activityId: _activityId,
+        title,
+        channel: 'lark',
+        threadId: persistentThread?.id ?? message.chatId,
+      });
       statusHistory.push(`Started ${title}`);
       await updateStatus('tool_running', `Using ${title}.`);
     },
     onToolFinish: async (toolName, _activityId, title, output) => {
+      await appendLatestAgentRunLog(task.taskId, 'tool.finish', {
+        toolName,
+        activityId: _activityId,
+        title,
+        output,
+        channel: 'lark',
+        threadId: persistentThread?.id ?? message.chatId,
+      });
       const summary = summarizeText(output.summary, 180) ?? output.summary;
       statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${title}: ${summary}`);
       await updateStatus('tool_done', `${title}: ${summary}`);
     },
   });
   const currentAttachments = (message.attachedFiles ?? []) as AttachedFileRef[];
-  let inputMessages = contextMessages.map(({ role, content }) => ({ role, content })) as ModelMessage[];
+  const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
+  const contextClass = chooseLarkContextClass({
+    latestUserMessage: message.text,
+    taskState: activeTaskState,
+    threadSummary: activeThreadSummary,
+    historyMessageCount: contextMessages.length,
+  });
+  const systemPrompt = buildSystemPrompt({
+    conversationKey,
+    runtime,
+    routerAcknowledgement,
+    childRouteHints: childRoute,
+    latestUserMessage: message.text,
+    hasAttachedFiles: currentAttachments.length > 0,
+    threadSummary: activeThreadSummary,
+    taskState: activeTaskState,
+  });
+  const budget = resolveLarkContextBudget({
+    resolvedModel,
+    contextClass,
+  });
+  const reservedTokens =
+    estimateTokens(systemPrompt)
+    + estimateTokens(message.text)
+    + (currentAttachments.length > 0 ? 8_000 : 1_500);
+  const historySelection = buildAdaptiveLarkHistoryMessages({
+    messages: contextMessages,
+    targetBudgetTokens: budget.targetContextBudget,
+    reservedTokens,
+    contextClass,
+  });
+  logger.info('lark.context.summary', {
+    taskId: task.taskId,
+    threadId: persistentThread?.id ?? message.chatId,
+    contextClass,
+    modelId: budget.modelId,
+    usableContextBudget: budget.usableContextBudget,
+    targetContextBudget: budget.targetContextBudget,
+    includedRawMessageCount: historySelection.includedRawMessageCount,
+    includedThreadSummary: activeThreadSummary.sourceMessageCount > 0,
+    includedTaskState:
+      activeTaskState.completedMutations.length > 0
+      || activeTaskState.activeSourceArtifacts.length > 0
+      || Boolean(activeTaskState.pendingApproval)
+      || Boolean(activeTaskState.activeObjective),
+    compactionTier: historySelection.compactionTier,
+  });
+  await appendLatestAgentRunLog(task.taskId, 'lark.context.summary', {
+    threadId: persistentThread?.id ?? message.chatId,
+    contextClass,
+    modelId: budget.modelId,
+    usableContextBudget: budget.usableContextBudget,
+    targetContextBudget: budget.targetContextBudget,
+    includedRawMessageCount: historySelection.includedRawMessageCount,
+    includedThreadSummary: activeThreadSummary.sourceMessageCount > 0,
+    includedTaskState:
+      activeTaskState.completedMutations.length > 0
+      || activeTaskState.activeSourceArtifacts.length > 0
+      || Boolean(activeTaskState.pendingApproval)
+      || Boolean(activeTaskState.activeObjective),
+    compactionTier: historySelection.compactionTier,
+  });
+  let inputMessages = historySelection.messages.map(({ role, content, id }) => ({ role, content, id })) as Array<ModelMessage & { id?: string }>;
   if (currentAttachments.length > 0) {
     const visionParts = await buildVisionContent({
       userMessage: message.text,
@@ -700,8 +1158,8 @@ const executeLarkVercelTask = async (
     });
     if (persistentThread && persistedUserMessageId) {
       let replacedCurrentMessage = false;
-      inputMessages = contextMessages.map((entry, index) => {
-        const shouldReplace = index === contextMessages.length - 1 && entry.id === persistedUserMessageId;
+      inputMessages = historySelection.messages.map((entry, index) => {
+        const shouldReplace = index === historySelection.messages.length - 1 && entry.id === persistedUserMessageId;
         if (shouldReplace) {
           replacedCurrentMessage = true;
         }
@@ -711,50 +1169,104 @@ const executeLarkVercelTask = async (
       }) as ModelMessage[];
       if (!replacedCurrentMessage) {
         inputMessages = [
-          ...contextMessages.map(({ role, content }) => ({ role, content })),
+          ...historySelection.messages.map(({ role, content }) => ({ role, content })),
           { role: 'user', content: visionParts as ModelMessage['content'] },
         ];
       }
     } else {
       inputMessages = [
-        ...contextMessages.map(({ role, content }) => ({ role, content })),
+        ...historySelection.messages.map(({ role, content }) => ({ role, content })),
         { role: 'user', content: visionParts as ModelMessage['content'] },
       ];
     }
-  } else if (message.text.trim() && !persistentThread) {
-    inputMessages = [
-      ...contextMessages.map(({ role, content }) => ({ role, content })),
-      { role: 'user', content: message.text },
-    ];
+  } else if (message.text.trim()) {
+    const hasCurrentUserTurn = persistentThread
+      ? inputMessages.some((entry) => entry.id === persistedUserMessageId)
+      : false;
+    if (!persistentThread || !hasCurrentUserTurn) {
+      inputMessages = [
+        ...inputMessages.map(({ role, content }) => ({ role, content })),
+        { role: 'user', content: message.text },
+      ];
+    }
   }
-  const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
-  const systemPrompt = buildSystemPrompt({
-    conversationKey,
-    runtime,
-    routerAcknowledgement,
-    latestUserMessage: message.text,
-    hasAttachedFiles: currentAttachments.length > 0,
-  });
 
   try {
-    const result = await runWithModelCircuitBreaker(resolvedModel.effectiveProvider, 'lark_generate', () => generateText({
-      model: resolvedModel.model,
-      system: systemPrompt,
-      messages: inputMessages.length > 0
-        ? inputMessages
-        : [{ role: 'user', content: message.text }],
-      tools,
-      temperature: config.OPENAI_TEMPERATURE,
-      providerOptions: {
-        google: {
-          thinkingConfig: {
-            includeThoughts: true,
-            thinkingLevel: resolvedModel.thinkingLevel,
+    const primaryMessages = inputMessages.length > 0
+      ? inputMessages
+      : [{ role: 'user', content: message.text }];
+    await appendLatestAgentRunLog(task.taskId, 'llm.context', {
+      phase: 'lark_generate',
+      threadId: persistentThread?.id ?? message.chatId,
+      systemPrompt,
+      messages: primaryMessages.map((entry, index) => ({
+        index,
+        role: entry.role,
+        content: typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content),
+      })),
+      runtime: {
+        allowedToolIds: runtime.allowedToolIds,
+        allowedActionsByTool: runtime.allowedActionsByTool ?? {},
+        departmentName: runtime.departmentName ?? null,
+        departmentRoleSlug: runtime.departmentRoleSlug ?? null,
+        routerAcknowledgement: routerAcknowledgement ?? null,
+        threadSummary: activeThreadSummary,
+        taskState: activeTaskState,
+        contextClass,
+      },
+    });
+    let result;
+    try {
+      result = await runWithModelCircuitBreaker(resolvedModel.effectiveProvider, 'lark_generate', () => generateText({
+        model: resolvedModel.model,
+        system: systemPrompt,
+        messages: primaryMessages,
+        tools,
+        temperature: config.OPENAI_TEMPERATURE,
+        providerOptions: {
+          google: {
+            thinkingConfig: {
+              includeThoughts: true,
+              thinkingLevel: resolvedModel.thinkingLevel,
+            },
           },
         },
-      },
-      stopWhen: [stopOnPendingApproval, stepCountIs(20)],
-    }));
+        stopWhen: [stopOnPendingApproval, stopOnBlockingUserInput, stepCountIs(20)],
+      }));
+    } catch (error) {
+      if (!isProviderInvalidArgumentError(error)) {
+        throw error;
+      }
+
+      const sanitizedMessages = sanitizeMessagesForProviderRetry(primaryMessages, message.text);
+      logger.warn('lark.generate.retry_with_sanitized_messages', {
+        taskId: task.taskId,
+        messageId: message.messageId,
+        originalMessageCount: primaryMessages.length,
+        sanitizedMessageCount: sanitizedMessages.length,
+        originalLatestUserLength: message.text.length,
+        sanitizedLatestUserLength: typeof sanitizedMessages[sanitizedMessages.length - 1]?.content === 'string'
+          ? sanitizedMessages[sanitizedMessages.length - 1]!.content.length
+          : 0,
+        error: error instanceof Error ? error.message : 'invalid_argument',
+      });
+      result = await runWithModelCircuitBreaker(resolvedModel.effectiveProvider, 'lark_generate_sanitized_retry', () => generateText({
+        model: resolvedModel.model,
+        system: systemPrompt,
+        messages: sanitizedMessages,
+        tools,
+        temperature: config.OPENAI_TEMPERATURE,
+        providerOptions: {
+          google: {
+            thinkingConfig: {
+              includeThoughts: true,
+              thinkingLevel: resolvedModel.thinkingLevel,
+            },
+          },
+        },
+        stopWhen: [stopOnPendingApproval, stopOnBlockingUserInput, stepCountIs(20)],
+      }));
+    }
     logger.info('vercel.tool_loop.summary', {
       mode: runtime.mode,
       modelId: resolvedModel.effectiveModelId,
@@ -766,7 +1278,10 @@ const executeLarkVercelTask = async (
 
     const steps = result.steps as Array<{ toolResults?: Array<{ toolName?: string; output?: unknown }> }>;
     const pendingApproval = findPendingApproval(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
-    const finalText = pendingApproval
+    const blockingUserInput = findBlockingUserInput(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
+    const finalText = blockingUserInput
+      ? ((buildMissingInputResponseText(blockingUserInput) ?? result.text.trim()) || 'I need one more detail from you before I can continue.')
+      : pendingApproval
       ? `Approval required before continuing: ${pendingApproval.kind === 'run_command' ? pendingApproval.command : pendingApproval.kind}.`
       : result.text.trim() || 'Done.';
 
@@ -809,7 +1324,7 @@ const executeLarkVercelTask = async (
         estimatedOutputTokens,
         actualInputTokens: estimatedInputTokens,
         actualOutputTokens: estimatedOutputTokens,
-        wasCompacted: false,
+        wasCompacted: historySelection.compactionTier > 1,
         mode: runtime.mode,
       });
     }
@@ -843,6 +1358,54 @@ const executeLarkVercelTask = async (
       ...entry,
       taskId: task.taskId,
     }));
+    for (const step of steps) {
+      for (const toolResult of step.toolResults ?? []) {
+        const output = toolResult.output as VercelToolEnvelope | undefined;
+        if (!output) continue;
+        activeTaskState = updateTaskStateFromToolEnvelope({
+          taskState: activeTaskState,
+          toolName: toolResult.toolName ?? 'unknown-tool',
+          output,
+          latestObjective: message.text,
+        });
+      }
+    }
+    if (persistentThread) {
+      const refreshedSummary = await refreshDesktopThreadSummary({
+        messages: [
+          ...contextMessages.map((entry) => ({
+            role: entry.role === 'assistant' ? 'assistant' : 'user',
+            content: flattenModelContent(entry.content),
+          })),
+          {
+            role: 'assistant',
+            content: finalText,
+          },
+        ],
+        taskState: activeTaskState,
+        currentSummary: activeThreadSummary,
+      });
+      await persistLarkThreadMemory({
+        threadId: persistentThread.id,
+        userId: linkedUserId,
+        summary: refreshedSummary,
+        taskState: activeTaskState,
+      });
+      activeThreadSummary = refreshedSummary;
+    }
+    await appendLatestAgentRunLog(task.taskId, pendingApproval ? 'run.waiting_for_approval' : 'run.completed', {
+      channel: 'lark',
+      route: childRoute.route,
+      threadId: persistentThread?.id ?? message.chatId,
+      finalText,
+      pendingApproval: pendingApproval
+        ? {
+          kind: pendingApproval.kind,
+          approvalId: pendingApproval.kind === 'tool_action' ? pendingApproval.approvalId : null,
+        }
+        : null,
+      stepCount: Array.isArray(result.steps) ? result.steps.length : 0,
+    });
 
     return {
       task,
@@ -859,6 +1422,11 @@ const executeLarkVercelTask = async (
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Vercel Lark runtime failed.';
+    await appendLatestAgentRunLog(task.taskId, 'run.failed', {
+      channel: 'lark',
+      threadId: persistentThread?.id ?? message.chatId,
+      error: errorMessage,
+    });
     statusHistory.push(`Failed: ${errorMessage}`);
     await statusCoordinator.replace(
       [

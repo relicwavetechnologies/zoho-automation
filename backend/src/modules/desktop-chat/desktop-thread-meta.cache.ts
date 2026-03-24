@@ -1,4 +1,4 @@
-import { redisConnection } from '../../company/queue/runtime/redis.connection';
+import { cacheRedisConnection } from '../../company/queue/runtime/redis.connection';
 import { logger } from '../../utils/logger';
 
 export type CachedDesktopThreadMeta = {
@@ -73,7 +73,7 @@ const parseMeta = (serialized: string | null): CachedDesktopThreadMeta | null =>
 
 class DesktopThreadMetaCache {
   private async save(meta: CachedDesktopThreadMeta): Promise<void> {
-    const redis = redisConnection.getClient();
+    const redis = cacheRedisConnection.getClient();
     await redis.set(
       metaKey(meta.id, meta.userId),
       JSON.stringify({
@@ -90,7 +90,7 @@ class DesktopThreadMetaCache {
     userId: string;
     loader: () => Promise<CachedDesktopThreadMeta>;
   }): Promise<CachedDesktopThreadMeta> {
-    const redis = redisConnection.getClient();
+    const redis = cacheRedisConnection.getClient();
     const key = metaKey(input.threadId, input.userId);
     const cached = parseMeta(await redis.get(key));
     if (cached) {
@@ -121,7 +121,7 @@ class DesktopThreadMetaCache {
   }
 
   async invalidate(threadId: string, userId: string): Promise<void> {
-    const redis = redisConnection.getClient();
+    const redis = cacheRedisConnection.getClient();
     await redis.del(metaKey(threadId, userId));
     logger.info('desktop.thread_meta.cache.invalidated', {
       threadId,

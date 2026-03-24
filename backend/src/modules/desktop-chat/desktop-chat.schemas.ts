@@ -22,6 +22,7 @@ export const sendSchema = z.object({
   message: z.string().max(10000).optional().default(''),
   attachedFiles: z.array(attachedFileSchema).optional().default([]),
   workspace: workspaceSchema.optional(),
+  approvalPolicySummary: z.string().max(1000).optional(),
   mode: z.enum(['fast', 'high']).optional().default('high'),
   executionId: z.string().uuid().optional(),
   workflowInvocation: workflowInvocationSchema.optional(),
@@ -37,6 +38,7 @@ export const actionResultSchema = z.object({
 export const actSchema = z.object({
   message: z.string().min(1).max(10000).optional(),
   workspace: workspaceSchema.optional(),
+  approvalPolicySummary: z.string().max(1000).optional(),
   actionResult: actionResultSchema.optional(),
   mode: z.enum(['fast', 'high']).optional().default('high'),
   executionId: z.string().uuid().optional(),

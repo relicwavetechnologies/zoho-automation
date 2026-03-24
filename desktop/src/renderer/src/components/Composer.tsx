@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { ArrowUp, AtSign, ChevronDown, Paperclip, Square, X, FileText, Image, File, Infinity, Zap, Flame, Rocket, ShieldAlert, CheckCircle2, Ban, Workflow } from 'lucide-react'
+import { ArrowUp, AtSign, ChevronDown, Paperclip, Square, X, FileText, Image, File, Infinity, Zap, Flame, Rocket, ShieldAlert, CheckCircle2, Ban, Workflow, Pencil, Trash2, Clock3 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { ACCEPTED_ATTACHMENT_INPUT, isAcceptedAttachmentFile } from '../lib/attachment-files'
 import { useAuth } from '../context/AuthContext'
@@ -134,7 +134,20 @@ function FileCard({ attachment, onRemove }: { attachment: AttachedFile; onRemove
 
 export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
   const { token } = useAuth()
-  const { sendMessage, sendInitialMessage, stopExecution, isStreaming, activeThread, activePlan, pendingLocalAction, approveCommand, rejectCommand } = useChat()
+  const {
+    sendMessage,
+    sendInitialMessage,
+    stopExecution,
+    isStreaming,
+    activeThread,
+    activePlan,
+    pendingLocalAction,
+    queuedMessages,
+    approveCommand,
+    rejectCommand,
+    editQueuedMessage,
+    deleteQueuedMessage,
+  } = useChat()
   const { currentWorkspace } = useWorkspace()
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
@@ -361,6 +374,40 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
     setAttachments(prev => prev.filter(a => a.id !== id))
   }
 
+  const restoreQueuedMessageToComposer = useCallback(async (queuedMessageId: string) => {
+    const queuedMessage = editQueuedMessage(queuedMessageId)
+    if (!queuedMessage) return
+
+    const workflowFromQueue = queuedMessage.workflowInvocation
+      ? workflowOptions.find((workflow) => workflow.id === queuedMessage.workflowInvocation?.workflowId) ?? {
+          id: queuedMessage.workflowInvocation.workflowId,
+          name: queuedMessage.workflowInvocation.workflowName,
+          status: 'draft' as const,
+          compiledPrompt: '',
+        }
+      : null
+
+    setText(queuedMessage.text)
+    setMode(queuedMessage.mode)
+    setSelectedWorkflow(workflowFromQueue)
+    setAttachments(
+      (queuedMessage.attachedFiles ?? []).map((file) => ({
+        id: `queued-${file.fileAssetId}`,
+        file: new Blob([], { type: file.mimeType }) as unknown as File,
+        name: file.fileName,
+        mimeType: file.mimeType,
+        sizeBytes: 0,
+        status: 'done',
+        fileAssetId: file.fileAssetId,
+        cloudinaryUrl: file.cloudinaryUrl,
+      })),
+    )
+
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+    })
+  }, [editQueuedMessage, workflowOptions])
+
   const handleReferenceDrawerFile = useCallback((file: FileAssetRecord) => {
     setAttachments(prev => {
       if (prev.some(a => a.fileAssetId === file.id)) return prev.filter(a => a.fileAssetId !== file.id)
@@ -509,6 +556,54 @@ export function Composer({ isHome }: { isHome?: boolean }): JSX.Element {
               {attachments.map(a => (
                 <FileCard key={a.id} attachment={a} onRemove={handleRemoveAttachment} />
               ))}
+            </div>
+          )}
+
+          {queuedMessages.length > 0 && (
+            <div className="border-b border-border/30 px-3.5 pt-3 pb-2">
+              <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/60">
+                <Clock3 size={12} />
+                <span>{queuedMessages.length} queued</span>
+              </div>
+              <div className="space-y-2">
+                {queuedMessages.map((queuedMessage) => (
+                  <div
+                    key={queuedMessage.id}
+                    className="rounded-xl border border-border/60 bg-secondary/20 px-3 py-2"
+                  >
+                    <div className="text-[13px] font-medium text-foreground/85">
+                      {queuedMessage.visibleContent || '(No text)'}
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground/60">
+                      <span>{queuedMessage.mode === 'high' ? 'High mode' : 'Fast mode'}</span>
+                      {queuedMessage.workflowInvocation ? (
+                        <span>Workflow: {queuedMessage.workflowInvocation.workflowName}</span>
+                      ) : null}
+                      {(queuedMessage.attachedFiles?.length ?? 0) > 0 ? (
+                        <span>{queuedMessage.attachedFiles?.length} file{queuedMessage.attachedFiles?.length === 1 ? '' : 's'}</span>
+                      ) : null}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void restoreQueuedMessageToComposer(queuedMessage.id)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
+                      >
+                        <Pencil size={11} />
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteQueuedMessage(queuedMessage.id)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
+                      >
+                        <Trash2 size={11} />
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

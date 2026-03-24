@@ -1,6 +1,6 @@
 import type { CheckpointDTO } from '../../contracts';
 import config from '../../../config';
-import { redisConnection } from '../../queue/runtime/redis.connection';
+import { stateRedisConnection } from '../../queue/runtime/redis.connection';
 import { emitRuntimeTrace, executionService } from '../../observability';
 import { logger } from '../../../utils/logger';
 
@@ -10,7 +10,7 @@ const checkpointLatestKey = (taskId: string) => `company:task:${taskId}:checkpoi
 
 class CheckpointRepository {
   async save(taskId: string, node: string, state: Record<string, unknown>): Promise<CheckpointDTO> {
-    const redis = redisConnection.getClient();
+    const redis = stateRedisConnection.getClient();
     const version = await redis.incr(checkpointVersionKey(taskId));
     const checkpoint: CheckpointDTO = {
       taskId,
@@ -81,7 +81,7 @@ class CheckpointRepository {
   }
 
   async getLatest(taskId: string): Promise<CheckpointDTO | null> {
-    const redis = redisConnection.getClient();
+    const redis = stateRedisConnection.getClient();
     const serialized = await redis.get(checkpointLatestKey(taskId));
     if (!serialized) {
       return null;
@@ -90,7 +90,7 @@ class CheckpointRepository {
   }
 
   async getHistory(taskId: string, limit = 100): Promise<CheckpointDTO[]> {
-    const redis = redisConnection.getClient();
+    const redis = stateRedisConnection.getClient();
     const serialized = await redis.lrange(checkpointHistoryKey(taskId), 0, Math.max(0, limit - 1));
     return serialized.map((value) => JSON.parse(value) as CheckpointDTO);
   }

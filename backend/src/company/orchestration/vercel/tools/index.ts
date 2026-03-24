@@ -6,6 +6,7 @@ import { buildLarkTaskTools } from './families/lark-task';
 import { buildOutreachTools } from './families/outreach';
 import { buildRepoCodingTools } from './families/repo-coding';
 import { buildSearchTools } from './families/search';
+import { buildWorkflowAuthoringTools } from './families/workflow-authoring';
 import { buildZohoBooksTools } from './families/zoho-books';
 import { buildZohoCrmTools } from './families/zoho-crm';
 
@@ -19,6 +20,7 @@ export const createVercelDesktopTools = (
   return {
     ...coreSearchTools,
     ...buildDocumentTools(runtime, hooks),
+    ...buildWorkflowAuthoringTools(runtime, hooks),
     ...(skillSearch ? { skillSearch } : {}),
   ...buildRepoCodingTools(runtime, hooks),
   ...buildGoogleTools(runtime, hooks),

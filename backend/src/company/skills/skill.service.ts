@@ -81,6 +81,53 @@ Use this skill for public internet research.
 - Prefer concise, source-backed findings over broad summaries.
 `,
   },
+  {
+    slug: 'workflows-scheduling-ops',
+    name: 'Workflows Scheduling Ops',
+    summary: 'Use this skill for reusable workflow authoring and scheduling: clarify intent, decide save vs run-now vs schedule, gather missing timing/destination details, and route to workflow or calendar tools safely.',
+    tags: ['workflow', 'scheduling', 'prompt', 'automation', 'calendar', 'lark', 'google'],
+    markdown: `# Workflows Scheduling Ops
+
+Use this skill when a request may need reusable workflow creation, saving for later, recurring scheduling, or direct calendar scheduling.
+
+## When to use
+- The user wants to make a process reusable
+- The user says "save this for later", "turn this into a workflow", or "make this a prompt"
+- The user asks to schedule recurring work
+- The user asks to run a saved workflow
+- The right path between workflow authoring and direct calendar scheduling is unclear
+
+## Operating pattern
+1. Decide whether the user wants:
+   - immediate one-time execution
+   - reusable workflow creation
+   - reusable workflow plus schedule
+   - direct calendar event scheduling
+2. If the request is reusable or recurring, prefer workflow-authoring tools.
+3. If the request is a normal meeting/event on a calendar, prefer Google Calendar or Lark Calendar tools.
+4. When workflow details are missing, ask only for the exact next missing field.
+5. Before saving or enabling a schedule, get explicit confirmation.
+
+## Ask for these details when missing
+- workflow/prompt objective
+- whether they want save only or save plus schedule
+- schedule timing
+- output destination when it cannot be inferred safely
+- calendar provider when the request is a direct event, not a reusable workflow
+
+## Routing rules
+- Reusable prompt/process: use workflowDraft, workflowPlan, workflowBuild, workflowSave, workflowSchedule
+- List saved prompts/workflows: use workflowList
+- Run saved workflow: use workflowRun
+- Direct calendar event: use googleCalendar or larkCalendar
+
+## Rules
+- Do not guess schedule time if the user has not provided it.
+- Do not silently enable scheduling just because a workflow was saved.
+- Do not ask generic calendar questions first if the user may actually want a reusable workflow.
+- If you feel lost between workflow authoring and domain execution, search and read this skill first.
+`,
+  },
 ] as const;
 
 const normalizeSearchValue = (value: string | null | undefined): string =>

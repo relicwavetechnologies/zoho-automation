@@ -23,6 +23,9 @@ export type ValidatedEnv = {
   ADMIN_SESSION_TTL_MINUTES: number;
   CORS_ALLOWED_ORIGINS: string;
   REDIS_URL: string;
+  REDIS_QUEUE_URL: string;
+  REDIS_STATE_URL: string;
+  REDIS_CACHE_URL: string;
   ORCHESTRATION_WORKER_CONCURRENCY: number;
   ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS: number;
   ORCHESTRATION_QUEUE_ADD_BASE_DELAY_MS: number;
@@ -460,6 +463,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     issues,
   });
 
+  const redisUrl = readString(parsedRaw.REDIS_URL, 'redis://127.0.0.1:6379');
+
   const config: ValidatedEnv = {
     PORT: port,
     NODE_ENV: nodeEnv,
@@ -490,7 +495,10 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       readString(parsedRaw.CORS_ALLOWED_ORIGINS, 'http://localhost:5173'),
       issues,
     ),
-    REDIS_URL: readString(parsedRaw.REDIS_URL, 'redis://127.0.0.1:6379'),
+    REDIS_URL: redisUrl,
+    REDIS_QUEUE_URL: readString(parsedRaw.REDIS_QUEUE_URL, redisUrl),
+    REDIS_STATE_URL: readString(parsedRaw.REDIS_STATE_URL, redisUrl),
+    REDIS_CACHE_URL: readString(parsedRaw.REDIS_CACHE_URL, redisUrl),
     ORCHESTRATION_WORKER_CONCURRENCY: parseInteger({
       key: 'ORCHESTRATION_WORKER_CONCURRENCY',
       value: readString(parsedRaw.ORCHESTRATION_WORKER_CONCURRENCY, '2'),
@@ -549,8 +557,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     }),
     CHECKPOINT_TTL_SECONDS: parseInteger({
       key: 'CHECKPOINT_TTL_SECONDS',
-      value: readString(parsedRaw.CHECKPOINT_TTL_SECONDS, '86400'),
-      defaultValue: 86400,
+      value: readString(parsedRaw.CHECKPOINT_TTL_SECONDS, '7200'),
+      defaultValue: 7200,
       min: 1,
       issues,
     }),
@@ -570,8 +578,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     }),
     INGRESS_IDEMPOTENCY_TTL_SECONDS: parseInteger({
       key: 'INGRESS_IDEMPOTENCY_TTL_SECONDS',
-      value: readString(parsedRaw.INGRESS_IDEMPOTENCY_TTL_SECONDS, '86400'),
-      defaultValue: 86400,
+      value: readString(parsedRaw.INGRESS_IDEMPOTENCY_TTL_SECONDS, '21600'),
+      defaultValue: 21600,
       min: 1,
       issues,
     }),
@@ -751,13 +759,20 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     CLOUDINARY_FOLDER: readString(parsedRaw.CLOUDINARY_FOLDER, 'zoho_automation_files'),
   };
 
-  if (!config.REDIS_URL.startsWith('redis://') && !config.REDIS_URL.startsWith('rediss://')) {
-    issues.push({
-      key: 'REDIS_URL',
-      code: 'invalid_protocol',
-      message: 'REDIS_URL must start with redis:// or rediss://',
-      severity: 'error',
-    });
+  for (const [key, value] of [
+    ['REDIS_URL', config.REDIS_URL],
+    ['REDIS_QUEUE_URL', config.REDIS_QUEUE_URL],
+    ['REDIS_STATE_URL', config.REDIS_STATE_URL],
+    ['REDIS_CACHE_URL', config.REDIS_CACHE_URL],
+  ] as const) {
+    if (!value.startsWith('redis://') && !value.startsWith('rediss://')) {
+      issues.push({
+        key,
+        code: 'invalid_protocol',
+        message: `${key} must start with redis:// or rediss://`,
+        severity: 'error',
+      });
+    }
   }
 
   const hasLarkAppId = config.LARK_APP_ID.length > 0;

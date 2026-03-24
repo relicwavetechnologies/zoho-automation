@@ -114,6 +114,8 @@ export type VercelRuntimeRequestContext = {
   authProvider?: string;
   mode: 'fast' | 'high';
   workspace?: VercelRuntimeWorkspace;
+  desktopExecutionAvailability?: 'available' | 'none' | 'ambiguous';
+  desktopApprovalPolicySummary?: string;
   dateScope?: string;
   latestActionResult?: {
     kind: string;

@@ -1,14 +1,9 @@
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { createOpenAI } from '@ai-sdk/openai';
 
 import config from '../../../config';
 
 const googleClient = createGoogleGenerativeAI({
   apiKey: config.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || undefined,
-});
-const groqClient = createOpenAI({
-  apiKey: config.GROQ_API_KEY || undefined,
-  baseURL: 'https://api.groq.com/openai/v1',
 });
 
 const VERCEL_MODELS: Record<'fast' | 'high', { modelId: string; thinkingLevel: 'low' | 'medium' }> = {
@@ -29,8 +24,8 @@ export const resolveVercelLanguageModel = async (
 };
 
 export const resolveVercelChildRouterModel = async () => ({
-  model: groqClient(config.GROQ_ROUTER_MODEL),
-  effectiveModelId: config.GROQ_ROUTER_MODEL,
-  effectiveProvider: 'groq' as const,
-  thinkingLevel: 'none' as const,
+  model: googleClient('gemini-3-flash-preview'),
+  effectiveModelId: 'gemini-3-flash-preview',
+  effectiveProvider: 'google' as const,
+  thinkingLevel: 'low' as const,
 });

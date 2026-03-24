@@ -56,7 +56,12 @@ export type DesktopAPI = {
         | { kind: "write_file"; path: string; content: string }
         | { kind: "mkdir"; path: string }
         | { kind: "delete_path"; path: string },
-    ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    ) => Promise<{
+      success: boolean;
+      data?: unknown;
+      error?: string;
+      message?: string;
+    }>;
   };
   terminal: {
     exec: (
@@ -129,13 +134,23 @@ export type DesktopAPI = {
         workflowName?: string;
         overrideText?: string;
       },
-    ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    ) => Promise<{
+      success: boolean;
+      data?: unknown;
+      error?: string;
+      message?: string;
+    }>;
     actStream: (
       token: string,
       threadId: string,
       requestId: string,
       payload: Record<string, unknown>,
-    ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    ) => Promise<{
+      success: boolean;
+      data?: unknown;
+      error?: string;
+      message?: string;
+    }>;
     sendMessageStream: (payload: {
       token: string;
       requestId: string;
@@ -155,10 +170,25 @@ export type DesktopAPI = {
         workflowName?: string;
         overrideText?: string;
       };
-    }) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    }) => Promise<{
+      success: boolean;
+      data?: unknown;
+      error?: string;
+      message?: string;
+    }>;
     stopStream: (
       requestId: string,
-    ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    ) => Promise<{
+      success: boolean;
+      data?: unknown;
+      error?: string;
+      message?: string;
+    }>;
+    updateLivePresence: (
+      token: string,
+      workspace?: { name: string; path: string } | null,
+    ) => Promise<{ success: boolean; error?: string }>;
+    disconnectLivePresence: () => Promise<{ success: boolean }>;
     act: (
       token: string,
       threadId: string,
@@ -333,6 +363,10 @@ const api: DesktopAPI = {
       ipcRenderer.invoke("desktop:chat:sendMessageStream", payload),
     stopStream: (requestId) =>
       ipcRenderer.invoke("desktop:chat:stopStream", requestId),
+    updateLivePresence: (token, workspace) =>
+      ipcRenderer.invoke("desktop:chat:updateLivePresence", token, workspace),
+    disconnectLivePresence: () =>
+      ipcRenderer.invoke("desktop:chat:disconnectLivePresence"),
     act: (token, threadId, payload) =>
       ipcRenderer.invoke("desktop:chat:act", token, threadId, payload),
     resolveHitlAction: (token, threadId, actionId, decision) =>

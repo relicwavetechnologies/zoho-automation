@@ -36,6 +36,10 @@ export type RuntimeTaskSnapshot = {
 class RuntimeTaskStore {
   private readonly tasks = new Map<string, RuntimeTaskSnapshot>();
 
+  private isActive(task: RuntimeTaskSnapshot): boolean {
+    return task.status === 'pending' || task.status === 'running';
+  }
+
   create(input: Omit<RuntimeTaskSnapshot, 'updatedAt' | 'createdAt' | 'controlSignal'>): RuntimeTaskSnapshot {
     const now = new Date().toISOString();
     const snapshot: RuntimeTaskSnapshot = {
@@ -72,6 +76,25 @@ class RuntimeTaskStore {
     return [...this.tasks.values()]
       .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
       .slice(0, limit);
+  }
+
+  findLatestActiveByConversation(channel: string, chatId: string): RuntimeTaskSnapshot | null {
+    const active = [...this.tasks.values()]
+      .filter((task) => task.channel === channel && task.chatId === chatId && this.isActive(task))
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+    return active[0] ?? null;
+  }
+
+  getConversationExecutionState(channel: string, chatId: string): {
+    runningTask: RuntimeTaskSnapshot | null;
+    pendingCount: number;
+  } {
+    const tasks = [...this.tasks.values()].filter((task) => task.channel === channel && task.chatId === chatId);
+    const runningTask = tasks
+      .filter((task) => task.status === 'running' || task.status === 'hitl')
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0] ?? null;
+    const pendingCount = tasks.filter((task) => task.status === 'pending').length;
+    return { runningTask, pendingCount };
   }
 }
 

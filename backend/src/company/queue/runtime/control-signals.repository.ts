@@ -4,6 +4,7 @@ import { redisConnection } from './redis.connection';
 export type RuntimeControlSignal = 'running' | 'paused' | 'cancelled';
 
 const signalKey = (taskId: string) => `company:task:${taskId}:control_signal`;
+const CONTROL_SIGNAL_TTL_SECONDS = 60 * 60 * 24;
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
@@ -13,7 +14,7 @@ const sleep = (ms: number) =>
 class RuntimeControlSignalsRepository {
   async set(taskId: string, signal: RuntimeControlSignal): Promise<void> {
     const redis = redisConnection.getClient();
-    await redis.set(signalKey(taskId), signal);
+    await redis.set(signalKey(taskId), signal, 'EX', CONTROL_SIGNAL_TTL_SECONDS);
   }
 
   async get(taskId: string): Promise<RuntimeControlSignal> {

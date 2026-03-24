@@ -124,6 +124,9 @@ export const ADMIN_JWT_SECRET = validated.config.ADMIN_JWT_SECRET;
 export const ADMIN_SESSION_TTL_MINUTES = validated.config.ADMIN_SESSION_TTL_MINUTES;
 export const CORS_ALLOWED_ORIGINS = validated.config.CORS_ALLOWED_ORIGINS;
 export const REDIS_URL = validated.config.REDIS_URL;
+export const REDIS_QUEUE_URL = validated.config.REDIS_QUEUE_URL;
+export const REDIS_STATE_URL = validated.config.REDIS_STATE_URL;
+export const REDIS_CACHE_URL = validated.config.REDIS_CACHE_URL;
 export const ORCHESTRATION_WORKER_CONCURRENCY = validated.config.ORCHESTRATION_WORKER_CONCURRENCY;
 export const ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS =
   validated.config.ORCHESTRATION_QUEUE_ADD_MAX_ATTEMPTS;
