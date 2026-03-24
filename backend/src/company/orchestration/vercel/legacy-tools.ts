@@ -1241,16 +1241,28 @@ const resolveRuntimeFile = async (
   runtime: VercelRuntimeRequestContext,
   input: { fileAssetId?: string; fileName?: string },
 ): Promise<RuntimeFileReference | null> => {
+  const runtimeAttachments = Array.isArray(runtime.attachedFiles) ? runtime.attachedFiles : [];
+  const attachmentMatches = runtimeAttachments
+    .filter((file) => file.fileAssetId && file.fileName)
+    .map((file) => ({
+      fileAssetId: file.fileAssetId,
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      cloudinaryUrl: file.cloudinaryUrl,
+    }));
   const files = await listVisibleRuntimeFiles(runtime);
+  const mergedFiles = [...attachmentMatches, ...files.filter((file) =>
+    !attachmentMatches.some((attachment) => attachment.fileAssetId === file.fileAssetId)
+  )];
   const normalizedId = input.fileAssetId?.trim();
   if (normalizedId) {
-    return files.find((file) => file.fileAssetId === normalizedId) ?? null;
+    return mergedFiles.find((file) => file.fileAssetId === normalizedId) ?? null;
   }
 
   const normalizedName = input.fileName?.trim().toLowerCase();
   if (normalizedName) {
-    return files.find((file) => file.fileName.trim().toLowerCase() === normalizedName)
-      ?? files.find((file) => file.fileName.trim().toLowerCase().includes(normalizedName))
+    return mergedFiles.find((file) => file.fileName.trim().toLowerCase() === normalizedName)
+      ?? mergedFiles.find((file) => file.fileName.trim().toLowerCase().includes(normalizedName))
       ?? null;
   }
 
@@ -1258,7 +1270,7 @@ const resolveRuntimeFile = async (
   if (!latest) {
     return null;
   }
-  return files.find((file) => file.fileAssetId === latest.fileAssetId) ?? latest;
+  return mergedFiles.find((file) => file.fileAssetId === latest.fileAssetId) ?? latest;
 };
 
 const extractIndexedFileText = async (runtime: VercelRuntimeRequestContext, fileAssetId: string): Promise<string> => {
@@ -2573,16 +2585,7 @@ export const createVercelDesktopTools = (
                 ? `Found ${skills.length} relevant skill${skills.length === 1 ? '' : 's'}.`
                 : 'No relevant skills matched the request.',
               keyData: {
-                skills: skills.map((skill) => ({
-                  id: skill.id,
-                  slug: skill.slug,
-                  name: skill.name,
-                  summary: skill.summary,
-                  scope: skill.scope,
-                  departmentName: skill.departmentName,
-                  tags: skill.tags,
-                  source: skill.source,
-                })),
+                skills,
               },
               fullPayload: {
                 skills,

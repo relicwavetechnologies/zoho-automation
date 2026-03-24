@@ -483,6 +483,16 @@ export const buildTaskStateContext = (taskState: DesktopTaskState): string | nul
   }
   if (taskState.pendingApproval) {
     lines.push(`Pending approval: ${taskState.pendingApproval.summary}`);
+    lines.push([
+      'Pending approval details:',
+      `tool=${taskState.pendingApproval.toolId}`,
+      `operation=${taskState.pendingApproval.operation}`,
+      taskState.pendingApproval.actionGroup ? `actionGroup=${taskState.pendingApproval.actionGroup}` : null,
+      taskState.pendingApproval.module ? `module=${taskState.pendingApproval.module}` : null,
+      taskState.pendingApproval.recordId ? `recordId=${taskState.pendingApproval.recordId}` : null,
+      taskState.pendingApproval.approvalId ? `approvalId=${taskState.pendingApproval.approvalId}` : null,
+      taskState.pendingApproval.payload ? `payloadKeys=${Object.keys(taskState.pendingApproval.payload).slice(0, 12).join(',')}` : null,
+    ].filter(Boolean).join(' '));
   }
   if (taskState.completedMutations.length > 0) {
     const recentMutations = taskState.completedMutations

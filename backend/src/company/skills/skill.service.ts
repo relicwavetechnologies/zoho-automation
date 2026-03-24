@@ -23,6 +23,17 @@ export type SkillRecord = {
   updatedAt?: string;
 };
 
+export type SkillSearchResult = {
+  id: string;
+  slug: string;
+  name: string;
+  summary: string;
+  tags: string[];
+  scope: SkillScope;
+  departmentName?: string;
+  source: 'database' | 'legacy';
+};
+
 const SYSTEM_GLOBAL_SKILLS = [
   {
     slug: 'coding-ops',
@@ -278,6 +289,17 @@ const toSkillRecord = (row: {
   source: 'database',
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
+});
+
+const toSkillSearchResult = (skill: SkillRecord): SkillSearchResult => ({
+  id: skill.id,
+  slug: skill.slug,
+  name: skill.name,
+  summary: skill.summary,
+  tags: [...skill.tags],
+  scope: skill.scope,
+  departmentName: skill.departmentName,
+  source: skill.source,
 });
 
 class SkillService {
@@ -586,7 +608,7 @@ class SkillService {
     departmentId?: string;
     query: string;
     limit?: number;
-  }): Promise<SkillRecord[]> {
+  }): Promise<SkillSearchResult[]> {
     const skills = await this.listVisibleSkills(input);
     return skills
       .map((skill) => ({ skill, score: scoreSkill(skill, input.query) }))
@@ -596,7 +618,7 @@ class SkillService {
         return left.skill.name.localeCompare(right.skill.name);
       })
       .slice(0, Math.max(1, Math.min(input.limit ?? 5, 10)))
-      .map((entry) => entry.skill);
+      .map((entry) => toSkillSearchResult(entry.skill));
   }
 
   async readVisibleSkill(input: {

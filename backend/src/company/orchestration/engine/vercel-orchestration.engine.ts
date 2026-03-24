@@ -35,6 +35,7 @@ import {
   parseDesktopTaskState,
   parseDesktopThreadSummary,
   refreshDesktopThreadSummary,
+  upsertDesktopSourceArtifacts,
   updateTaskStateFromToolEnvelope,
   type DesktopTaskState,
   type DesktopThreadSummary,
@@ -69,6 +70,18 @@ const larkConversationHydrationVersions = new Map<string, string>();
 
 const buildConversationKey = (message: NormalizedIncomingMessageDTO): string => `${message.channel}:${message.chatId}`;
 const buildPersistentLarkConversationKey = (threadId: string): string => `lark-thread:${threadId}`;
+const buildSourceArtifactEntriesFromAttachments = (
+  attachments: AttachedFileRef[],
+): Array<{
+  fileAssetId: string;
+  fileName: string;
+  sourceType: 'uploaded_file';
+}> =>
+  attachments.map((file) => ({
+    fileAssetId: file.fileAssetId,
+    fileName: file.fileName,
+    sourceType: 'uploaded_file' as const,
+  }));
 
 const summarizeText = (value: string | null | undefined, limit = 280): string | null => {
   const trimmed = value?.trim();
@@ -806,6 +819,7 @@ const resolveRuntimeContext = async (
     channel: 'lark',
     threadId: persistentThreadId ?? buildConversationKey(message),
     chatId: message.chatId,
+    attachedFiles: message.attachedFiles,
     executionId: task.taskId,
     companyId,
     userId: linkedUserId,
@@ -891,6 +905,7 @@ const executeLarkVercelTask = async (
   await updateStatus('preparing');
   statusCoordinator.startHeartbeat(() => renderCurrentStatus(true));
 
+  const currentAttachments = (message.attachedFiles ?? []) as AttachedFileRef[];
   let persistedUserMessageId: string | undefined;
   let activeThreadSummary = parseDesktopThreadSummary(null);
   let activeTaskState = createEmptyTaskState();
@@ -898,6 +913,12 @@ const executeLarkVercelTask = async (
     const threadMemory = await loadLarkThreadMemory(persistentThread.id, linkedUserId);
     activeThreadSummary = threadMemory.summary;
     activeTaskState = threadMemory.taskState;
+    if (currentAttachments.length > 0) {
+      activeTaskState = upsertDesktopSourceArtifacts({
+        taskState: activeTaskState,
+        artifacts: buildSourceArtifactEntriesFromAttachments(currentAttachments),
+      });
+    }
     const userMessage = await desktopThreadsService.addOwnedThreadMessage(
       persistentThread.id,
       linkedUserId,
@@ -1120,7 +1141,6 @@ const executeLarkVercelTask = async (
       await updateStatus('tool_done', `${title}: ${summary}`);
     },
   });
-  const currentAttachments = (message.attachedFiles ?? []) as AttachedFileRef[];
   const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
   const contextClass = chooseLarkContextClass({
     latestUserMessage: message.text,

@@ -100,6 +100,12 @@ export type VercelRuntimeRequestContext = {
   channel?: 'desktop' | 'lark';
   threadId: string;
   chatId?: string;
+  attachedFiles?: Array<{
+    fileAssetId: string;
+    cloudinaryUrl: string;
+    mimeType: string;
+    fileName: string;
+  }>;
   executionId: string;
   companyId: string;
   userId: string;

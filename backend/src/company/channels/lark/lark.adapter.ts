@@ -120,8 +120,8 @@ const buildEgressTraceMeta = (input: {
     taskId: input.correlationId,
   });
 
-const DEFAULT_LARK_CARD_TITLE = 'Finance Assistant';
-const DEFAULT_LARK_CARD_TAG = 'Lark';
+const DEFAULT_LARK_CARD_TITLE = 'Divo AI';
+const DEFAULT_LARK_CARD_TAG = 'Finance';
 const MAX_LARK_CARD_SUMMARY_LENGTH = 160;
 
 const normalizeLarkMarkdown = (value: string): string =>
@@ -251,11 +251,19 @@ const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<s
       },
     },
     header: {
-      template: 'green',
+      template: 'default',
       title: {
         tag: 'plain_text',
-        content: title,
+        content: DEFAULT_LARK_CARD_TITLE,
       },
+      ...(title !== DEFAULT_LARK_CARD_TITLE
+        ? {
+          subtitle: {
+            tag: 'plain_text',
+            content: title,
+          },
+        }
+        : {}),
       text_tag_list: [
         {
           tag: 'text_tag',
