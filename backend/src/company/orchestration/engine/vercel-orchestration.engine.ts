@@ -29,6 +29,7 @@ import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-
 import { DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT } from '../../../modules/desktop-chat/desktop-thread-context.cache';
 import {
   buildTaskStateContext,
+  filterThreadMessagesForContext,
   buildThreadSummaryContext,
   createEmptyTaskState,
   parseDesktopTaskState,
@@ -248,9 +249,15 @@ const buildAdaptiveLarkHistoryMessages = (input: {
   const selected: Array<ModelMessage & { id?: string }> = [];
   let used = 0;
   let compactionTier = 1;
-  const recent = input.messages.slice(-60).filter((message) =>
-    lowValueFilter ? !isLightweightChatTurn(flattenModelContent(message.content)) : true,
-  );
+  const recent = input.messages
+    .slice(-60)
+    .filter((message) => {
+      const flattened = flattenModelContent(message.content);
+      if (lowValueFilter && isLightweightChatTurn(flattened)) {
+        return false;
+      }
+      return filterThreadMessagesForContext([{ role: message.role, content: flattened }]).length > 0;
+    });
 
   for (let index = recent.length - 1; index >= 0; index -= 1) {
     const message = recent[index]!;
@@ -318,6 +325,19 @@ const inferDateScope = (message?: string): string | undefined => {
   if (lowered.includes('yesterday')) return getLocalDateString(-1);
   if (lowered.includes('today')) return getLocalDateString(0);
   return undefined;
+};
+
+const isWorkflowLikeRequest = (value: string | null | undefined): boolean =>
+  /\b(workflow|prompt|schedule|scheduled|every day|every week|every month|recurring|save (?:this|it) for later|make (?:this|it) reusable)\b/i.test(value ?? '');
+
+const hasSpecificWorkflowReference = (value: string | null | undefined): boolean => {
+  const text = value?.trim() ?? '';
+  if (!text) return false;
+  return /\b(this workflow|that workflow|current workflow)\b/i.test(text)
+    || /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(text)
+    || /\b(?:workflow named|workflow called|named workflow|called workflow)\b/i.test(text)
+    || /"[^"]{2,120}"/.test(text)
+    || /'[^']{2,120}'/.test(text);
 };
 
 const buildConversationRefsContext = (conversationKey: string): string | null => {
@@ -453,6 +473,9 @@ const buildSystemPrompt = (input: {
     'Do not refer to Mastra, LangGraph, workflows, or internal orchestration.',
     'If the user describes a repeatable process, wants to save it for later, wants to make it reusable, asks to schedule it, asks to list saved prompts/workflows, or asks to run a saved workflow, prefer the dedicated workflow authoring tools over ad hoc execution.',
     'If a workflow authoring tool returns missing_input, ask the user exactly for that missing detail instead of guessing.',
+    'Do not assume an existing saved workflow satisfies a new scheduling or reusable-workflow request unless the user explicitly names that workflow, gives its id, or clearly says to edit/update the current one.',
+    'If the user asks to schedule "a workflow" or describes a recurring process without naming an existing saved workflow, treat it as planning/creation work: gather missing details, plan it, or ask a clarification question instead of claiming an old workflow already covers it.',
+    'Use workflow listing and existing-workflow reuse only when the user is explicitly asking about saved workflows or references a specific saved workflow by name/id.',
     ...buildWorkspaceAwarePromptSections({
       workspace: input.runtime.workspace,
       approvalPolicySummary: input.runtime.desktopApprovalPolicySummary,
@@ -480,6 +503,19 @@ const buildSystemPrompt = (input: {
   }
   if (input.runtime.dateScope) {
     parts.push(`Inferred date scope: ${input.runtime.dateScope}.`);
+  }
+  if (input.latestUserMessage?.trim()) {
+    parts.push(
+      `Latest live user request: ${input.latestUserMessage.trim()}`,
+      'If older history, thread summary, or prior assistant conclusions conflict with the latest live user request, the latest live user request wins.',
+    );
+  }
+  if (isWorkflowLikeRequest(input.latestUserMessage) && !hasSpecificWorkflowReference(input.latestUserMessage)) {
+    parts.push(
+      'Current turn note: this is a fresh workflow planning/scheduling request, not a confirmed reference to a specific saved workflow.',
+      'Do not satisfy this turn by reusing or describing an older saved workflow unless a tool lookup confirms the exact match and the user clearly agrees that it is the same workflow.',
+      'If required schedule, destination, or workflow-definition details are missing, ask for them or use workflow planning tools to gather them.',
+    );
   }
   const threadSummaryContext = input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null;
   if (threadSummaryContext) {
@@ -949,10 +985,10 @@ const executeLarkVercelTask = async (
     departmentSkillsMarkdown: runtime.departmentSkillsMarkdown,
     taskState: activeTaskState,
     threadSummary: activeThreadSummary,
-    history: contextMessages.slice(-6).map((entry) => ({
+    history: filterThreadMessagesForContext(contextMessages.map((entry) => ({
       role: entry.role === 'assistant' ? 'assistant' : 'user',
       content: typeof entry.content === 'string' ? entry.content : flattenModelContent(entry.content),
-    })),
+    }))).slice(-6),
     requesterEmail: message.trace?.requesterEmail,
   });
 

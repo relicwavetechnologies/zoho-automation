@@ -94,6 +94,58 @@ type ThreadMessageLike = {
   content: string;
 };
 
+const isLightweightChatLike = (value: string | null | undefined): boolean =>
+  /^(hi|hello|hey|thanks|thank you|ok|okay|cool|great|nice|yes|no|done)[.! ]*$/i.test((value ?? '').trim());
+
+const isQueueOrStatusOnlyText = (value: string): boolean =>
+  /^(working on it\.?|still working on it\.?|still working through the next step\.?|still gathering the right details\.?|getting things ready\.?|queued your message\.?|send \/q to interrupt the active run\.?|there (?:is|are) \d+ requests ahead of it\.)$/i.test(value);
+
+const isRawInternalAssistantText = (value: string): boolean => {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return true;
+  if (isQueueOrStatusOnlyText(normalized)) return true;
+  if (
+    /^approval required before continuing:/i.test(normalized)
+    || /^multiple saved workflows matched /i.test(normalized)
+    || /^continue from this local action result\./i.test(normalized)
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:create|update|delete|run|build|save|schedule|workflow\w*|mark\w*|email\w*|submit\w*|approve\w*|open\w*|void\w*) requires\b/i.test(normalized)
+    || /\bneed[s]? both a dayofweek and time\b/i.test(normalized)
+    || /\bask the user\b/i.test(normalized)
+  ) {
+    return true;
+  }
+  return false;
+};
+
+export const shouldOmitFromThreadContext = (message: ThreadMessageLike): boolean => {
+  const normalized = message.content.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return true;
+  }
+  if (isLightweightChatLike(normalized)) {
+    return true;
+  }
+  if (message.role === 'assistant') {
+    if (isRawInternalAssistantText(normalized)) {
+      return true;
+    }
+    if (normalized.startsWith('I need a bit more information before I can finish this.')) {
+      return true;
+    }
+  }
+  if (message.role === 'user' && /^continue from this local action result\./i.test(normalized)) {
+    return true;
+  }
+  return false;
+};
+
+export const filterThreadMessagesForContext = <T extends ThreadMessageLike>(messages: T[]): T[] =>
+  messages.filter((message) => !shouldOmitFromThreadContext(message));
+
 const summarySchema = z.object({
   summary: z.string().trim().max(1600).optional(),
   latestObjective: z.string().trim().max(300).optional(),
@@ -827,8 +879,9 @@ const buildDeterministicSummary = (input: {
   taskState: DesktopTaskState;
   currentSummary: DesktopThreadSummary;
 }): DesktopThreadSummary => {
-  const olderMessages = input.messages.slice(0, -THREAD_SUMMARY_RECENT_WINDOW_MESSAGE_COUNT);
-  const recentUserGoals = olderMessages
+  const filteredMessages = filterThreadMessagesForContext(input.messages);
+  const olderMessages = filteredMessages.slice(0, -THREAD_SUMMARY_RECENT_WINDOW_MESSAGE_COUNT);
+  const recentUserGoals = filteredMessages
     .filter((message) => message.role === 'user')
     .map((message) => summarizeText(message.content.trim(), 180))
     .filter(Boolean)
@@ -919,7 +972,9 @@ export const refreshDesktopThreadSummary = async (input: {
     return deterministic;
   }
 
-  const olderMessages = input.messages.slice(0, -THREAD_SUMMARY_RECENT_WINDOW_MESSAGE_COUNT).map((message) => ({
+  const olderMessages = filterThreadMessagesForContext(input.messages)
+    .slice(0, -THREAD_SUMMARY_RECENT_WINDOW_MESSAGE_COUNT)
+    .map((message) => ({
     role: message.role,
     content: summarizeText(message.content.trim(), 500),
   }));

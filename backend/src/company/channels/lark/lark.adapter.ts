@@ -120,148 +120,158 @@ const buildEgressTraceMeta = (input: {
     taskId: input.correlationId,
   });
 
-/**
- * Builds the Lark interactive card content JSON from text + optional actions.
- * If no actions are provided, only a single markdown element is rendered (identical to the old behaviour).
- */
-type ParsedMarkdownTable = {
-  header: string[];
-  rows: string[][];
-};
+const DEFAULT_LARK_CARD_TITLE = 'Finance Assistant';
+const DEFAULT_LARK_CARD_TAG = 'Lark';
+const MAX_LARK_CARD_SUMMARY_LENGTH = 160;
 
-const MAX_LARK_TABLE_ROWS = 8;
-const MAX_LARK_TABLE_COLUMNS = 4;
-const MAX_LARK_CELL_LENGTH = 48;
+const normalizeLarkMarkdown = (value: string): string =>
+  value
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim();
 
-const escapeMarkdownCell = (value: string): string =>
-  value.replace(/\|/g, '\\|').trim();
+const stripMarkdownForSummary = (value: string): string =>
+  value
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/[*_~`>#-]+/g, ' ')
+    .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
-const normalizeCellText = (value: string, maxLength = MAX_LARK_CELL_LENGTH): string => {
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  if (!normalized) return '—';
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
-};
-
-const parseMarkdownTableRow = (line: string): string[] | null => {
-  const trimmed = line.trim();
-  if (!trimmed.includes('|')) return null;
-  const core = trimmed.replace(/^\|/, '').replace(/\|$/, '');
-  const cells = core.split('|').map((cell) => cell.trim());
-  return cells.length >= 2 ? cells : null;
-};
-
-const isMarkdownTableSeparator = (line: string): boolean => {
-  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
-  if (!trimmed) return false;
-  return trimmed.split('|').every((part) => /^:?-{3,}:?$/.test(part.trim()));
-};
-
-const parseFirstMarkdownTable = (text: string): {
-  before: string;
-  table: ParsedMarkdownTable | null;
-  after: string;
+const extractTitleAndBodyFromMarkdown = (markdown: string): {
+  title: string;
+  body: string;
 } => {
-  const lines = text.split('\n');
-  for (let index = 0; index < lines.length - 1; index += 1) {
-    const header = parseMarkdownTableRow(lines[index]);
-    if (!header) continue;
-    if (!isMarkdownTableSeparator(lines[index + 1])) continue;
-
-    const rows: string[][] = [];
-    let cursor = index + 2;
-    while (cursor < lines.length) {
-      const row = parseMarkdownTableRow(lines[cursor]);
-      if (!row) break;
-      rows.push(row);
-      cursor += 1;
-    }
-
-    if (rows.length === 0) continue;
-
+  const normalized = normalizeLarkMarkdown(markdown);
+  if (!normalized) {
     return {
-      before: lines.slice(0, index).join('\n').trim(),
-      table: { header, rows },
-      after: lines.slice(cursor).join('\n').trim(),
+      title: DEFAULT_LARK_CARD_TITLE,
+      body: 'No content available.',
     };
   }
 
+  const lines = normalized.split('\n');
+  const firstNonEmptyIndex = lines.findIndex((line) => line.trim().length > 0);
+  if (firstNonEmptyIndex === -1) {
+    return {
+      title: DEFAULT_LARK_CARD_TITLE,
+      body: 'No content available.',
+    };
+  }
+
+  const firstLine = lines[firstNonEmptyIndex]!.trim();
+  const headingMatch = firstLine.match(/^#\s+(.+)$/);
+  if (!headingMatch) {
+    return {
+      title: DEFAULT_LARK_CARD_TITLE,
+      body: normalized,
+    };
+  }
+
+  const body = lines
+    .slice(0, firstNonEmptyIndex)
+    .concat(lines.slice(firstNonEmptyIndex + 1))
+    .join('\n')
+    .trim();
+
   return {
-    before: text.trim(),
-    table: null,
-    after: '',
+    title: headingMatch[1].trim() || DEFAULT_LARK_CARD_TITLE,
+    body: body || normalized,
   };
 };
 
-const buildMarkdownElement = (content: string): Record<string, unknown> => ({
-  tag: 'markdown',
-  content,
-});
-
-const buildLarkTableColumns = (cells: string[], bold = false): Array<Record<string, unknown>> =>
-  cells.map((cell) => ({
-    tag: 'column',
-    width: 'weighted',
-    weight: 1,
-    elements: [
-      buildMarkdownElement(bold ? `**${escapeMarkdownCell(normalizeCellText(cell))}**` : escapeMarkdownCell(normalizeCellText(cell))),
-    ],
-  }));
-
-const buildLarkTableElements = (table: ParsedMarkdownTable): Array<Record<string, unknown>> => {
-  const header = table.header.slice(0, MAX_LARK_TABLE_COLUMNS);
-  const rows = table.rows.slice(0, MAX_LARK_TABLE_ROWS).map((row) => row.slice(0, MAX_LARK_TABLE_COLUMNS));
-  const elements: Array<Record<string, unknown>> = [
-    {
-      tag: 'column_set',
-      columns: buildLarkTableColumns(header, true),
-    },
-  ];
-
-  for (const row of rows) {
-    elements.push({
-      tag: 'column_set',
-      columns: buildLarkTableColumns(row),
-    });
+const buildLarkCardSummary = (title: string, body: string): string => {
+  const summarySource = stripMarkdownForSummary(body) || stripMarkdownForSummary(title) || DEFAULT_LARK_CARD_TITLE;
+  if (summarySource.length <= MAX_LARK_CARD_SUMMARY_LENGTH) {
+    return summarySource;
   }
-
-  if (table.rows.length > MAX_LARK_TABLE_ROWS) {
-    elements.push(buildMarkdownElement(`_Showing ${MAX_LARK_TABLE_ROWS} of ${table.rows.length} rows._`));
-  }
-
-  return elements;
+  return `${summarySource.slice(0, MAX_LARK_CARD_SUMMARY_LENGTH - 3)}...`;
 };
 
-const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<string, unknown> => {
-  const parsed = parseFirstMarkdownTable(text);
-  const elements: unknown[] = [];
+const buildLarkMarkdownElementV2 = (content: string, options?: {
+  textSize?: string;
+  margin?: string;
+}): Record<string, unknown> => ({
+  tag: 'markdown',
+  content,
+  text_size: options?.textSize ?? 'normal',
+  ...(options?.margin ? { margin: options.margin } : {}),
+});
 
-  if (parsed.table) {
-    if (parsed.before) {
-      elements.push(buildMarkdownElement(parsed.before));
-    }
-    elements.push(...buildLarkTableElements(parsed.table));
-    if (parsed.after) {
-      elements.push(buildMarkdownElement(parsed.after));
-    }
-  } else {
-    elements.push(buildMarkdownElement(text));
-  }
+const buildLarkButtonElementV2 = (action: ChannelAction, index: number): Record<string, unknown> => ({
+  tag: 'button',
+  element_id: `action_${index + 1}`,
+  text: {
+    tag: 'plain_text',
+    content: action.label,
+  },
+  type:
+    action.style === 'primary'
+      ? 'primary_filled'
+      : action.style === 'danger'
+        ? 'danger_filled'
+        : 'default',
+  width: 'fill',
+  behaviors: [
+    {
+      type: 'callback',
+      value: { id: action.id, ...action.value },
+    },
+  ],
+});
+
+const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<string, unknown> => {
+  const { title, body } = extractTitleAndBodyFromMarkdown(text);
+  const normalizedBody = normalizeLarkMarkdown(body);
+  const elements: Array<Record<string, unknown>> = [
+    buildLarkMarkdownElementV2(normalizedBody, { textSize: 'normal' }),
+  ];
 
   if (actions && actions.length > 0) {
-    elements.push({
-      tag: 'action',
-      actions: actions.map((action) => ({
-        tag: 'button',
-        text: { tag: 'plain_text', content: action.label },
-        type: action.style === 'primary' ? 'primary' : action.style === 'danger' ? 'danger' : 'default',
-        value: { id: action.id, ...action.value },
-      })),
-    });
+    elements.push(
+      buildLarkMarkdownElementV2('---', { margin: '8px 0 4px 0' }),
+    );
+    elements.push(
+      buildLarkMarkdownElementV2('**Actions**', { textSize: 'heading', margin: '0 0 4px 0' }),
+    );
+    elements.push(
+      ...actions.map((action, index) => buildLarkButtonElementV2(action, index)),
+    );
   }
 
   return {
-    config: { wide_screen_mode: true },
-    elements,
+    schema: '2.0',
+    config: {
+      width_mode: 'fill',
+      update_multi: true,
+      enable_forward: true,
+      summary: {
+        content: buildLarkCardSummary(title, normalizedBody),
+      },
+    },
+    header: {
+      template: 'green',
+      title: {
+        tag: 'plain_text',
+        content: title,
+      },
+      text_tag_list: [
+        {
+          tag: 'text_tag',
+          text: {
+            tag: 'plain_text',
+            content: DEFAULT_LARK_CARD_TAG,
+          },
+          color: 'green',
+        },
+      ],
+    },
+    body: {
+      vertical_spacing: '8px',
+      padding: '12px 12px 12px 12px',
+      elements,
+    },
   };
 };
 
