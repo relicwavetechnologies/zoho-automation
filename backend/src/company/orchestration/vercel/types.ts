@@ -123,6 +123,31 @@ export type VercelRuntimeRequestContext = {
   desktopExecutionAvailability?: 'available' | 'none' | 'ambiguous';
   desktopApprovalPolicySummary?: string;
   dateScope?: string;
+  taskState?: {
+    activeDomain?: string;
+    activeModule?: string;
+    currentEntity?: {
+      module: string;
+      recordId: string;
+      label?: string;
+      updatedAt?: string;
+    };
+    lastFetchedByModule?: Record<string, {
+      module: string;
+      recordId: string;
+      label?: string;
+      updatedAt?: string;
+    }>;
+    pendingApproval?: {
+      toolId: string;
+      actionGroup?: string;
+      operation: string;
+      module?: string;
+      recordId?: string;
+      payload?: Record<string, unknown>;
+      updatedAt?: string;
+    } | null;
+  };
   latestActionResult?: {
     kind: string;
     ok: boolean;

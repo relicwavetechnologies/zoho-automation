@@ -774,6 +774,7 @@ const resolveRuntimeContext = async (
   task: OrchestrationTaskDTO,
   message: NormalizedIncomingMessageDTO,
   persistentThreadId?: string,
+  taskState?: DesktopTaskState,
 ): Promise<VercelRuntimeRequestContext> => {
   const companyId = message.trace?.companyId;
   if (!companyId) {
@@ -833,6 +834,7 @@ const resolveRuntimeContext = async (
     larkUserId: message.trace?.larkUserId,
     authProvider: 'lark',
     mode: LARK_VERCEL_MODE,
+    taskState,
     workspace: activeWorkspace
       ? {
           name: activeWorkspace.name,
@@ -948,7 +950,7 @@ const executeLarkVercelTask = async (
     conversationMemoryStore.addUserMessage(conversationKey, message.messageId, message.text);
   }
 
-  const runtime = await resolveRuntimeContext(task, message, persistentThread?.id);
+  const runtime = await resolveRuntimeContext(task, message, persistentThread?.id, activeTaskState);
   await resetLatestAgentRunLog(task.taskId, {
     channel: 'lark',
     entrypoint: 'lark_message',
