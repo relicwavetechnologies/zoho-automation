@@ -34,11 +34,13 @@ const updateDepartmentConfigSchema = z.object({
 const createRoleSchema = z.object({
   name: z.string().min(1).max(120),
   slug: z.string().min(1).max(120),
+  zohoReadScope: z.enum(['personalized', 'show_all']).optional(),
 });
 
 const updateRoleSchema = z.object({
   name: z.string().min(1).max(120),
   isDefault: z.boolean().optional(),
+  zohoReadScope: z.enum(['personalized', 'show_all']).optional(),
 });
 
 const upsertMembershipSchema = z.object({

@@ -9,12 +9,14 @@ import type { ZohoSourceType } from '../../integrations/zoho/zoho-provider.adapt
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
 import { zohoGatewayService } from '../../integrations/zoho/zoho-gateway.service';
 import { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } from '../../support/runtime-controls';
-import { zohoRoleAccessService, type ZohoScopeMode } from '../../tools/zoho-role-access.service';
+import type { ZohoScopeMode } from '../../tools/zoho-role-access.service';
 import { logger } from '../../../utils/logger';
 
 const DEFAULT_RESULT_LIMIT = 3;
 const MAX_ALL_RESULT_LIMIT = 25;
 const SYNTHESIS_MODEL_TARGET = 'mastra.synthesis' as const;
+const resolveZohoScopeMode = (scope?: unknown): ZohoScopeMode =>
+  scope === 'show_all' ? 'company_scoped' : 'email_scoped';
 
 const hasProviderCredentials = (provider: AiModelProvider): boolean => {
   if (provider === 'google') {
@@ -475,6 +477,7 @@ export class ZohoReadAgent extends BaseAgent {
     objective: string;
     requesterEmail?: string;
     requesterAiRole?: string;
+    departmentZohoReadScope?: 'personalized' | 'show_all';
     scopeMode: ZohoScopeMode;
     strictUserScopeEnabled: boolean;
   }): Promise<LiveFetchResult> {
@@ -504,6 +507,7 @@ export class ZohoReadAgent extends BaseAgent {
             companyId: input.companyId,
             requesterEmail: input.requesterEmail,
             requesterAiRole: input.requesterAiRole,
+            departmentZohoReadScope: input.departmentZohoReadScope,
           },
           query: input.objective,
           limit: intent.targetLimit,
@@ -655,11 +659,10 @@ export class ZohoReadAgent extends BaseAgent {
         companyId,
         defaultValue: true,
       });
+      const departmentZohoReadScope =
+        input.contextPacket.departmentZohoReadScope === 'show_all' ? 'show_all' : 'personalized';
       scopeMode = strictUserScopeEnabled
-        ? await zohoRoleAccessService.resolveScopeMode(
-          companyId,
-          typeof input.contextPacket.requesterAiRole === 'string' ? input.contextPacket.requesterAiRole : undefined,
-        )
+        ? resolveZohoScopeMode(departmentZohoReadScope)
         : 'company_scoped';
       const requesterEmail =
         typeof input.contextPacket.requesterEmail === 'string'
@@ -677,6 +680,7 @@ export class ZohoReadAgent extends BaseAgent {
           objective: input.objective,
           requesterEmail,
           requesterAiRole: typeof input.contextPacket.requesterAiRole === 'string' ? input.contextPacket.requesterAiRole : undefined,
+          departmentZohoReadScope,
           scopeMode,
           strictUserScopeEnabled,
         });

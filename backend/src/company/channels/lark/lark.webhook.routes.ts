@@ -18,6 +18,7 @@ import { larkUserAuthLinkRepository } from './lark-user-auth-link.repository';
 import { extractLarkMentions, inferLarkMessageType, parseLarkAttachmentKeys } from './lark-message-content';
 import { ingestLarkAttachments } from './lark-file-ingestion';
 import { larkRecentFilesStore } from './lark-recent-files.store';
+import { larkChatContextService } from './lark-chat-context.service';
 import { orangeDebug } from '../../../utils/orange-debug';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
 import {
@@ -48,11 +49,20 @@ type UpsertChannelIdentityInput = {
 
 type NormalizedLarkMessage = NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>>;
 
-type PendingThreadApprovalContext = {
-  threadId: string;
-  userId: string;
-  pendingApproval: ReturnType<typeof parseDesktopTaskState>['pendingApproval'];
-};
+type PendingApprovalContext =
+  | {
+    storageScope: 'thread';
+    threadId: string;
+    userId: string;
+    pendingApproval: ReturnType<typeof parseDesktopTaskState>['pendingApproval'];
+  }
+  | {
+    storageScope: 'group_chat';
+    contextId: string;
+    companyId: string;
+    chatId: string;
+    pendingApproval: ReturnType<typeof parseDesktopTaskState>['pendingApproval'];
+  };
 
 type LarkWebhookRouteDependencies = {
   adapter: Pick<LarkChannelAdapter, 'normalizeIncomingEvent' | 'sendMessage' | 'updateMessage' | 'downloadFile'>;
@@ -191,11 +201,35 @@ const shouldAutoContinueAfterApproval = (input: {
   return true;
 };
 
-const loadPendingLarkThreadApproval = async (input: {
+const loadPendingLarkApprovalContext = async (input: {
   companyId?: string;
   linkedUserId?: string;
-}): Promise<PendingThreadApprovalContext | null> => {
-  if (!input.companyId || !input.linkedUserId) {
+  chatId?: string;
+  chatType?: string;
+}): Promise<PendingApprovalContext | null> => {
+  if (!input.companyId) {
+    return null;
+  }
+
+  if (input.chatType === 'group' && input.chatId) {
+    const context = await larkChatContextService.load({
+      companyId: input.companyId,
+      chatId: input.chatId,
+      chatType: input.chatType,
+    });
+    if (!context.taskState.pendingApproval) {
+      return null;
+    }
+    return {
+      storageScope: 'group_chat',
+      contextId: context.id,
+      companyId: input.companyId,
+      chatId: input.chatId,
+      pendingApproval: context.taskState.pendingApproval,
+    };
+  }
+
+  if (!input.linkedUserId) {
     return null;
   }
 
@@ -207,14 +241,15 @@ const loadPendingLarkThreadApproval = async (input: {
   }
 
   return {
+    storageScope: 'thread',
     threadId: thread.id,
     userId: input.linkedUserId,
     pendingApproval: taskState.pendingApproval,
   };
 };
 
-const buildStoredActionFromPendingThreadApproval = (input: {
-  pendingContext: PendingThreadApprovalContext;
+const buildStoredActionFromPendingApproval = (input: {
+  pendingContext: PendingApprovalContext;
   chatId: string;
   companyId: string;
   requesterEmail?: string;
@@ -235,23 +270,46 @@ const buildStoredActionFromPendingThreadApproval = (input: {
     status: 'pending',
     taskId: '',
     _chatId: input.chatId,
-    _threadId: input.pendingContext.threadId,
+    ...(input.pendingContext.storageScope === 'thread'
+      ? { _threadId: input.pendingContext.threadId }
+      : { _groupChatContextId: input.pendingContext.contextId }),
     _channel: 'lark',
     payload: pendingApproval?.payload ?? {},
     metadata: {
       companyId: input.companyId,
-      userId: input.pendingContext.userId,
+      ...(input.pendingContext.storageScope === 'thread'
+        ? { userId: input.pendingContext.userId }
+        : { chatId: input.pendingContext.chatId }),
       requesterEmail: input.requesterEmail,
       requesterAiRole: input.requesterAiRole,
     },
   };
 };
 
-const persistPendingApprovalResultToThread = async (input: {
-  pendingContext: PendingThreadApprovalContext | null;
+const persistPendingApprovalResult = async (input: {
+  pendingContext: PendingApprovalContext | null;
   actionResult: { kind: string; ok: boolean; summary: string; payload?: Record<string, unknown> };
 }) => {
   if (!input.pendingContext) {
+    return;
+  }
+
+  if (input.pendingContext.storageScope === 'group_chat') {
+    const context = await larkChatContextService.load({
+      companyId: input.pendingContext.companyId,
+      chatId: input.pendingContext.chatId,
+      chatType: 'group',
+    });
+    const nextTaskState = applyActionResultToTaskState({
+      taskState: context.taskState,
+      actionResult: input.actionResult,
+    });
+    await larkChatContextService.updateMemory({
+      companyId: input.pendingContext.companyId,
+      chatId: input.pendingContext.chatId,
+      chatType: 'group',
+      taskState: nextTaskState,
+    });
     return;
   }
 
@@ -1049,31 +1107,6 @@ export const createLarkWebhookEventHandler = (
       });
       const textHash = buildLarkTextHash(normalized.text);
 
-      if (parsed.kind === 'event_callback_message' && normalized.chatType === 'group' && mentions.length === 0) {
-        dependencies.log.info('lark.webhook.event.ignored', {
-          requestId,
-          reason: 'group_message_without_mention',
-          eventType: parsed.eventType,
-          eventId: parsed.eventId,
-          larkTenantKey,
-          companyId: scopedCompanyId ?? undefined,
-          messageId: normalized.messageId,
-          chatId: normalized.chatId,
-          chatType: normalized.chatType,
-        });
-        return res.status(202).json({
-          success: true,
-          message: 'Lark group message ignored because the bot was not mentioned',
-          data: {
-            reason: 'group_message_without_mention',
-            eventType: parsed.eventType,
-            eventId: parsed.eventId,
-            messageId: normalized.messageId,
-            chatId: normalized.chatId,
-          },
-        });
-      }
-
       if (parsed.kind === 'event_callback_message') {
         const messageAgeMs = readMessageAgeMs(normalized.timestamp);
         const maxAcceptedAgeMs = config.LARK_WEBHOOK_MAX_SKEW_SECONDS * 1000;
@@ -1371,6 +1404,73 @@ export const createLarkWebhookEventHandler = (
       const memoryCommand = parsed.kind === 'event_callback_message'
         ? parseLarkMemoryCommand(tracedMessageBase.text)
         : null;
+      const shouldStoreGroupContextMessage =
+        parsed.kind === 'event_callback_message'
+        && tracedMessageBase.chatType === 'group'
+        && Boolean(scopedCompanyId)
+        && (msgType === 'text' || msgType === 'post')
+        && !isLarkCommandMenuCommand(tracedMessageBase.text)
+        && !isLarkInterruptCommand(tracedMessageBase.text)
+        && !workflowCommand
+        && !memoryCommand
+        && !isLarkClearContextCommand(tracedMessageBase.text);
+
+      if (shouldStoreGroupContextMessage) {
+        try {
+          await larkChatContextService.appendMessage({
+            companyId: scopedCompanyId!,
+            chatId: tracedMessageBase.chatId,
+            chatType: tracedMessageBase.chatType,
+            messageId: tracedMessageBase.messageId,
+            role: 'user',
+            content: tracedMessageBase.text,
+            metadata: {
+              userId: tracedMessageBase.userId,
+              requesterEmail,
+              larkOpenId: tracedMessageBase.trace?.larkOpenId,
+              larkUserId: tracedMessageBase.trace?.larkUserId,
+              mentionCount: mentions.length,
+            },
+          });
+        } catch (error) {
+          dependencies.log.warn('lark.chat_context.append_failed', {
+            ...buildIngressTraceMeta({
+              requestId,
+              message: tracedMessageBase,
+              eventId: parsed.eventId,
+              textHash,
+              larkTenantKey,
+              companyId: scopedCompanyId ?? undefined,
+            }),
+            error: error instanceof Error ? error.message : 'unknown_error',
+          });
+        }
+      }
+
+      if (parsed.kind === 'event_callback_message' && tracedMessageBase.chatType === 'group' && mentions.length === 0) {
+        dependencies.log.info('lark.webhook.event.ignored', {
+          requestId,
+          reason: 'group_message_without_mention',
+          eventType: parsed.eventType,
+          eventId: parsed.eventId,
+          larkTenantKey,
+          companyId: scopedCompanyId ?? undefined,
+          messageId: tracedMessageBase.messageId,
+          chatId: tracedMessageBase.chatId,
+          chatType: tracedMessageBase.chatType,
+        });
+        return res.status(202).json({
+          success: true,
+          message: 'Lark group message stored in shared chat context but not executed because the bot was not mentioned',
+          data: {
+            reason: 'group_message_without_mention',
+            eventType: parsed.eventType,
+            eventId: parsed.eventId,
+            messageId: tracedMessageBase.messageId,
+            chatId: tracedMessageBase.chatId,
+          },
+        });
+      }
 
       if (parsed.kind === 'event_callback_message' && memoryCommand) {
         if (!scopedCompanyId || !linkedUserId) {
@@ -1612,7 +1712,24 @@ export const createLarkWebhookEventHandler = (
 
       if (parsed.kind === 'event_callback_message' && isLarkClearContextCommand(tracedMessageBase.text)) {
         try {
-          if (scopedCompanyId && linkedUserId) {
+          if (scopedCompanyId && tracedMessageBase.chatType === 'group') {
+            await larkChatContextService.clear({
+              companyId: scopedCompanyId,
+              chatId: tracedMessageBase.chatId,
+            });
+            conversationMemoryStore.clearConversation(`lark-chat:${tracedMessageBase.chatId}`);
+            dependencies.log.info('lark.chat_context.cleared', {
+              ...buildIngressTraceMeta({
+                requestId,
+                message: tracedMessageBase,
+                eventId: parsed.eventId,
+                textHash,
+                larkTenantKey,
+                companyId: scopedCompanyId,
+              }),
+              mode: 'shared_group_context_cleared',
+            });
+          } else if (scopedCompanyId && linkedUserId) {
             const rotated = await desktopThreadsService.clearLarkLifetimeThreadContext(
               linkedUserId,
               scopedCompanyId,
@@ -1783,14 +1900,16 @@ export const createLarkWebhookEventHandler = (
       const hitlDecision = cardHitlDecision ?? textHitlDecision;
       if (hitlDecision) {
         const pendingThreadApprovalContext = scopedCompanyId && linkedUserId
-          ? await loadPendingLarkThreadApproval({
+          ? await loadPendingLarkApprovalContext({
             companyId: scopedCompanyId,
             linkedUserId,
+            chatId: tracedMessage.chatId,
+            chatType: tracedMessage.chatType,
           })
           : null;
         const storedAction = await dependencies.getStoredHitlAction(hitlDecision.actionId);
         const fallbackStoredAction = !storedAction && implicitTextHitlDecision && pendingThreadApprovalContext
-          ? buildStoredActionFromPendingThreadApproval({
+          ? buildStoredActionFromPendingApproval({
             pendingContext: pendingThreadApprovalContext,
             chatId: tracedMessage.chatId,
             companyId: scopedCompanyId!,
@@ -1814,7 +1933,7 @@ export const createLarkWebhookEventHandler = (
             executionSummary = executionResult.summary;
             executionOk = executionResult.ok;
             executionPayload = executionResult.payload;
-            await persistPendingApprovalResultToThread({
+            await persistPendingApprovalResult({
               pendingContext: pendingThreadApprovalContext,
               actionResult: {
                 kind: executionResult.kind ?? 'tool_action',
@@ -1851,7 +1970,7 @@ export const createLarkWebhookEventHandler = (
           } catch (error) {
             executionSummary = error instanceof Error ? error.message : 'Stored approval action execution failed';
             executionOk = false;
-            await persistPendingApprovalResultToThread({
+            await persistPendingApprovalResult({
               pendingContext: pendingThreadApprovalContext,
               actionResult: {
                 kind: executionKind ?? 'tool_action',
@@ -1886,7 +2005,7 @@ export const createLarkWebhookEventHandler = (
           executionKind = 'tool_action';
           executionOk = false;
           executionSummary = `User rejected ${typeof approvalAction?.summary === 'string' ? approvalAction.summary : hitlDecision.actionId}`;
-          await persistPendingApprovalResultToThread({
+          await persistPendingApprovalResult({
             pendingContext: pendingThreadApprovalContext,
             actionResult: {
               kind: 'tool_action',

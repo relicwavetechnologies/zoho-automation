@@ -314,7 +314,6 @@ class MemoryContextService {
         const redis = cacheRedisConnection.getClient();
         const cached = parseProfile(await redis.get(redisProfileKey(input.companyId, input.userId)));
         if (cached !== undefined) {
-          await redis.expire(redisProfileKey(input.companyId, input.userId), toRedisTtlSeconds(MEMORY_ROUTING_USER_TTL_MS));
           return cached;
         }
         const profileRow = await prisma.userMemoryProfile.findUnique({
@@ -345,7 +344,6 @@ class MemoryContextService {
         const redis = cacheRedisConnection.getClient();
         const cached = parseActiveItems(await redis.get(redisActiveRowsKey(input)));
         if (cached !== undefined) {
-          await redis.expire(redisActiveRowsKey(input), toRedisTtlSeconds(MEMORY_ROUTING_THREAD_TTL_MS));
           return cached;
         }
         const rows = await prisma.userMemoryItem.findMany({
@@ -485,7 +483,6 @@ class MemoryContextService {
       });
       const cachedContext = parsePromptContext(await redis.get(redisKey));
       if (cachedContext !== undefined) {
-        await redis.expire(redisKey, toRedisTtlSeconds(MEMORY_ROUTING_SHORT_TTL_MS));
         return cachedContext;
       }
 

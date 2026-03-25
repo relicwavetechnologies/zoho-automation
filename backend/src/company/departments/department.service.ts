@@ -25,6 +25,8 @@ export type UserDepartmentSummary = {
   canManage: boolean;
 };
 
+export type DepartmentZohoReadScope = 'personalized' | 'show_all';
+
 export type DepartmentCandidateSummary = {
   channelIdentityId: string;
   userId?: string;
@@ -43,6 +45,7 @@ export type ResolvedDepartmentRuntime = {
   departmentId?: string;
   departmentName?: string;
   departmentRoleSlug?: string;
+  departmentZohoReadScope?: DepartmentZohoReadScope;
   systemPrompt?: string;
   skillsMarkdown?: string;
   allowedToolIds: string[];
@@ -139,6 +142,9 @@ const buildCaseInsensitiveEmailClauses = (emails: string[]) =>
         mode: 'insensitive' as const,
       },
     }));
+
+const normalizeZohoReadScope = (value: unknown): DepartmentZohoReadScope =>
+  value === 'show_all' ? 'show_all' : 'personalized';
 
 class DepartmentService {
   private async resolveDepartmentCompanyId(departmentId: string, fallbackCompanyId?: string): Promise<string> {
@@ -416,6 +422,7 @@ class DepartmentService {
       departmentId: membership.department.id,
       departmentName: membership.department.name,
       departmentRoleSlug: membership.role.slug,
+      departmentZohoReadScope: normalizeZohoReadScope((membership.role as Record<string, unknown>).zohoReadScope),
       systemPrompt: membership.department.agentConfig?.systemPrompt ?? undefined,
       skillsMarkdown: membership.department.agentConfig?.skillsMarkdown ?? undefined,
       allowedToolIds,
@@ -622,6 +629,7 @@ class DepartmentService {
         slug: role.slug,
         isSystem: role.isSystem,
         isDefault: role.isDefault,
+        zohoReadScope: normalizeZohoReadScope((role as Record<string, unknown>).zohoReadScope),
         createdAt: role.createdAt.toISOString(),
         updatedAt: role.updatedAt.toISOString(),
       })),
@@ -976,6 +984,7 @@ class DepartmentService {
   async createDepartmentRole(session: DepartmentAdminSession, departmentId: string, input: {
     name: string;
     slug: string;
+    zohoReadScope?: DepartmentZohoReadScope;
   }) {
     await this.assertDepartmentAccess(session, departmentId);
     const slug = normalizeRoleSlug(input.slug);
@@ -989,12 +998,14 @@ class DepartmentService {
         slug,
         isSystem: false,
         isDefault: false,
+        zohoReadScope: normalizeZohoReadScope(input.zohoReadScope),
       },
     });
     return {
       id: role.id,
       name: role.name,
       slug: role.slug,
+      zohoReadScope: normalizeZohoReadScope((role as Record<string, unknown>).zohoReadScope),
     };
   }
 
@@ -1021,7 +1032,7 @@ class DepartmentService {
     session: DepartmentAdminSession,
     departmentId: string,
     roleId: string,
-    input: { name: string; isDefault?: boolean },
+    input: { name: string; isDefault?: boolean; zohoReadScope?: DepartmentZohoReadScope },
   ) {
     await this.assertDepartmentAccess(session, departmentId);
     const existing = await prisma.departmentRole.findFirst({
@@ -1049,6 +1060,9 @@ class DepartmentService {
         data: {
           name: nextName,
           ...(input.isDefault !== undefined ? { isDefault: input.isDefault } : {}),
+          ...(input.zohoReadScope !== undefined
+            ? { zohoReadScope: normalizeZohoReadScope(input.zohoReadScope) }
+            : {}),
         },
       });
     });
@@ -1058,6 +1072,7 @@ class DepartmentService {
       name: updated.name,
       slug: updated.slug,
       isDefault: updated.isDefault,
+      zohoReadScope: normalizeZohoReadScope((updated as Record<string, unknown>).zohoReadScope),
     };
   }
 

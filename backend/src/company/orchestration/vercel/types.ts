@@ -114,6 +114,7 @@ export type VercelRuntimeRequestContext = {
   departmentId?: string;
   departmentName?: string;
   departmentRoleSlug?: string;
+  departmentZohoReadScope?: 'personalized' | 'show_all';
   larkTenantKey?: string;
   larkOpenId?: string;
   larkUserId?: string;

@@ -752,6 +752,7 @@ const buildZohoGatewayRequester = (runtime: VercelRuntimeRequestContext): Record
   companyId: runtime.companyId,
   requesterEmail: runtime.requesterEmail,
   requesterAiRole: runtime.requesterAiRole,
+  departmentZohoReadScope: runtime.departmentZohoReadScope,
 });
 
 const buildBooksMutationAuthorizationTarget = (input: {
@@ -1561,6 +1562,7 @@ const buildAgentInvokeInput = (
     userId: runtime.userId,
     requesterEmail: runtime.requesterEmail,
     requesterAiRole: runtime.requesterAiRole,
+    departmentZohoReadScope: runtime.departmentZohoReadScope,
     chatId: runtime.threadId,
     ...contextPacket,
   },
@@ -4290,6 +4292,7 @@ export const createVercelDesktopTools = (
             companyId: runtime.companyId,
             requesterEmail: runtime.requesterEmail,
             requesterAiRole: runtime.requesterAiRole,
+            departmentZohoReadScope: runtime.departmentZohoReadScope,
             domain: 'books',
           })) ?? {};
           if (scope.scopeMode === 'company_scoped') {
@@ -4378,6 +4381,7 @@ export const createVercelDesktopTools = (
               organizationId: input.organizationId?.trim(),
               requesterEmail: runtime.requesterEmail,
               requesterAiRole: runtime.requesterAiRole,
+              departmentZohoReadScope: runtime.departmentZohoReadScope,
               asOfDate: input.asOfDate?.trim(),
               limit: input.limit,
               minOverdueDays: input.minOverdueDays,
@@ -4414,6 +4418,7 @@ export const createVercelDesktopTools = (
               organizationId: input.organizationId?.trim(),
               requesterEmail: runtime.requesterEmail,
               requesterAiRole: runtime.requesterAiRole,
+              departmentZohoReadScope: runtime.departmentZohoReadScope,
               amountTolerance: input.amountTolerance,
               dateToleranceDays: input.dateToleranceDays,
               limit: input.limit,
@@ -4459,6 +4464,7 @@ export const createVercelDesktopTools = (
               organizationId: input.organizationId?.trim(),
               requesterEmail: runtime.requesterEmail,
               requesterAiRole: runtime.requesterAiRole,
+              departmentZohoReadScope: runtime.departmentZohoReadScope,
               statementRows: input.statementRows,
               vendorId: input.vendorId?.trim(),
               vendorName: input.vendorName?.trim(),
@@ -4506,6 +4512,7 @@ export const createVercelDesktopTools = (
               organizationId: input.organizationId?.trim(),
               requesterEmail: runtime.requesterEmail,
               requesterAiRole: runtime.requesterAiRole,
+              departmentZohoReadScope: runtime.departmentZohoReadScope,
               accountId: input.accountId?.trim(),
               statementRows: input.statementRows,
               amountTolerance: input.amountTolerance,
@@ -7949,16 +7956,7 @@ export const createVercelDesktopTools = (
             companyId: runtime.companyId,
             larkTenantKey: runtime.larkTenantKey,
           });
-          const { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } = loadRuntimeControls();
-          const strictUserScopeEnabled = await isCompanyControlEnabled({
-            controlKey: COMPANY_CONTROL_KEYS.zohoUserScopedReadStrictEnabled,
-            companyId,
-            defaultValue: true,
-          });
-          const scopeMode = strictUserScopeEnabled
-            ? await loadZohoRoleAccessService().resolveScopeMode(companyId, runtime.requesterAiRole)
-            : 'company_scoped';
-          if (scopeMode !== 'company_scoped') {
+          if (runtime.departmentZohoReadScope !== 'show_all') {
             return buildEnvelope({
               success: false,
               summary: 'getNote requires company-scoped Zoho CRM access.',

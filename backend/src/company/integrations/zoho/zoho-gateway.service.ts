@@ -85,6 +85,7 @@ export class ZohoGatewayService {
     companyId: string;
     requesterEmail?: string;
     requesterAiRole?: string;
+    departmentZohoReadScope?: 'personalized' | 'show_all';
     domain: ZohoDomain;
   }): Promise<ZohoGatewayPrincipalContext> {
     return zohoPrincipalResolver.resolveScopeContext(input);
@@ -103,6 +104,7 @@ export class ZohoGatewayService {
       companyId: input.requester.companyId,
       requesterEmail: input.requester.requesterEmail,
       requesterAiRole: input.requester.requesterAiRole,
+      departmentZohoReadScope: input.requester.departmentZohoReadScope,
       domain: input.domain,
     });
 
@@ -373,6 +375,7 @@ export class ZohoGatewayService {
       companyId: input.requester.companyId,
       requesterEmail: input.requester.requesterEmail,
       requesterAiRole: input.requester.requesterAiRole,
+      departmentZohoReadScope: input.requester.departmentZohoReadScope,
       domain: input.domain,
     });
 
@@ -564,6 +567,7 @@ export class ZohoGatewayService {
       companyId: input.requester.companyId,
       requesterEmail: input.requester.requesterEmail,
       requesterAiRole: input.requester.requesterAiRole,
+      departmentZohoReadScope: input.requester.departmentZohoReadScope,
       domain: input.domain,
     });
     if (principal.scopeMode === 'company_scoped') {

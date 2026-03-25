@@ -31,7 +31,6 @@ class ToolAccessCache {
       const parsed = JSON.parse(cached) as unknown;
       if (!Array.isArray(parsed)) return null;
       const values = parsed.filter((value): value is string => typeof value === 'string');
-      await redis.expire(allowedToolsKey(companyId, role), TOOL_ACCESS_CACHE_TTL_SECONDS);
       logger.info('tool_access.cache.hit', {
         companyId,
         role,

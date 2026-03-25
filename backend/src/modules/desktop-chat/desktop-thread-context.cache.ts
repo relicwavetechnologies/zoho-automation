@@ -94,7 +94,6 @@ class DesktopThreadContextCache {
         userId: input.userId,
         messageCount: cached.messages.length,
       }, { sampleRate: 0.05 });
-      await redis.expire(key, DESKTOP_THREAD_CONTEXT_TTL_SECONDS);
       return cached;
     }
 

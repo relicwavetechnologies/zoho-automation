@@ -675,6 +675,7 @@ model DepartmentRole {
   slug        String
   isSystem    Boolean  @default(false)
   isDefault   Boolean  @default(false)
+  zohoReadScope String @default("personalized")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   memberships DepartmentMembership[]
@@ -938,6 +939,27 @@ model DesktopThread {
   @@index([userId, companyId, channel, updatedAt])
   @@index([departmentId, channel, updatedAt])
   @@unique([companyId, userId, channel, canonicalThreadKey])
+}
+
+model LarkChatContext {
+  id                String   @id @default(uuid())
+  companyId         String
+  company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  chatId            String
+  channel           String   @default("lark")
+  chatType          String?
+  summaryJson       Json?
+  summaryUpdatedAt  DateTime?
+  taskStateJson     Json?
+  taskStateUpdatedAt DateTime?
+  recentMessagesJson Json?
+  sourceMessageCount Int     @default(0)
+  lastMessageAt     DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([companyId, channel, chatId])
+  @@index([companyId, channel, updatedAt])
 }
 
 model DesktopMessage {

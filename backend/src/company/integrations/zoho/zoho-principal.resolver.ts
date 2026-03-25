@@ -1,5 +1,4 @@
 import { logger } from '../../../utils/logger';
-import { zohoRoleAccessService } from '../../tools/zoho-role-access.service';
 import { normalizeEmail, extractNormalizedEmails } from './zoho-email-scope';
 import { zohoBooksClient } from './zoho-books.client';
 import type { ZohoDomain, ZohoGatewayPrincipalContext, ZohoGatewayScopeMode } from './zoho-gateway.types';
@@ -19,27 +18,39 @@ const asString = (value: unknown): string | undefined =>
 const readContactId = (record: Record<string, unknown>): string | undefined =>
   asString(record.contact_id) ?? asString(record.id);
 
-const cacheKeyFor = (input: { companyId: string; requesterEmail?: string; requesterAiRole?: string; domain: ZohoDomain }) =>
-  [input.companyId, input.domain, input.requesterAiRole ?? '', normalizeEmail(input.requesterEmail) ?? ''].join(':');
+const cacheKeyFor = (input: {
+  companyId: string;
+  requesterEmail?: string;
+  requesterAiRole?: string;
+  departmentZohoReadScope?: 'personalized' | 'show_all';
+  domain: ZohoDomain;
+}) =>
+  [
+    input.companyId,
+    input.domain,
+    input.requesterAiRole ?? '',
+    input.departmentZohoReadScope ?? 'personalized',
+    normalizeEmail(input.requesterEmail) ?? '',
+  ].join(':');
 
-const toGatewayScopeMode = (value: 'email_scoped' | 'company_scoped'): ZohoGatewayScopeMode =>
-  value === 'company_scoped' ? 'company_scoped' : 'self_scoped';
+const resolveGatewayScopeMode = (scope?: 'personalized' | 'show_all'): ZohoGatewayScopeMode =>
+  scope === 'show_all' ? 'company_scoped' : 'self_scoped';
 
 export class ZohoPrincipalResolver {
   async resolveScopeContext(input: {
     companyId: string;
     requesterEmail?: string;
     requesterAiRole?: string;
+    departmentZohoReadScope?: 'personalized' | 'show_all';
     domain: ZohoDomain;
   }): Promise<ZohoGatewayPrincipalContext> {
-    const scopeMode = toGatewayScopeMode(
-      await zohoRoleAccessService.resolveScopeMode(input.companyId, input.requesterAiRole),
-    );
+    const scopeMode = resolveGatewayScopeMode(input.departmentZohoReadScope);
     const normalizedRequesterEmail = normalizeEmail(input.requesterEmail);
     const base: ZohoGatewayPrincipalContext = {
       companyId: input.companyId,
       requesterEmail: input.requesterEmail,
       requesterAiRole: input.requesterAiRole,
+      departmentZohoReadScope: input.departmentZohoReadScope,
       normalizedRequesterEmail,
       domain: input.domain,
       scopeMode,

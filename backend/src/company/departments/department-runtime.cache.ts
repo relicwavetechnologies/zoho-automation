@@ -7,6 +7,7 @@ type CachedDepartmentRuntime = {
   departmentId?: string;
   departmentName?: string;
   departmentRoleSlug?: string;
+  departmentZohoReadScope?: 'personalized' | 'show_all';
   systemPrompt?: string;
   skillsMarkdown?: string;
   allowedToolIds: string[];
@@ -57,7 +58,6 @@ class DepartmentRuntimeCache {
     if (!cached) return null;
     try {
       const parsed = JSON.parse(cached) as CachedDepartmentRuntime;
-      await redis.expire(key, DEPARTMENT_RUNTIME_TTL_SECONDS);
       logger.info('department_runtime.cache.hit', {
         companyId: input.companyId,
         userId: input.userId,

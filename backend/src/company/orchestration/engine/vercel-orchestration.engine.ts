@@ -3,6 +3,7 @@ import { generateText, stepCountIs, type ModelMessage } from 'ai';
 import config from '../../../config';
 import type { ChannelAction } from '../../channels/base/channel-adapter';
 import { resolveChannelAdapter } from '../../channels';
+import { larkChatContextService } from '../../channels/lark/lark-chat-context.service';
 import { departmentService } from '../../departments/department.service';
 import type {
   AgentResultDTO,
@@ -76,6 +77,7 @@ const larkConversationHydrationVersions = new Map<string, string>();
 
 const buildConversationKey = (message: NormalizedIncomingMessageDTO): string => `${message.channel}:${message.chatId}`;
 const buildPersistentLarkConversationKey = (threadId: string): string => `lark-thread:${threadId}`;
+const buildSharedLarkConversationKey = (chatId: string): string => `lark-chat:${chatId}`;
 const buildSourceArtifactEntriesFromAttachments = (
   attachments: AttachedFileRef[],
 ): Array<{
@@ -602,6 +604,22 @@ const persistLarkThreadMemory = async (input: {
   });
 };
 
+const persistLarkSharedChatMemory = async (input: {
+  companyId: string;
+  chatId: string;
+  chatType?: string;
+  summary?: DesktopThreadSummary | null;
+  taskState?: DesktopTaskState | null;
+}) => {
+  await larkChatContextService.updateMemory({
+    companyId: input.companyId,
+    chatId: input.chatId,
+    chatType: input.chatType,
+    summary: input.summary,
+    taskState: input.taskState,
+  });
+};
+
 const getLocalDateString = (offsetDays = 0): string => {
   const base = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -1058,6 +1076,7 @@ const resolveRuntimeContext = async (
   let departmentId: string | undefined;
   let departmentName: string | undefined;
   let departmentRoleSlug: string | undefined;
+  let departmentZohoReadScope: 'personalized' | 'show_all' | undefined;
   let departmentSystemPrompt: string | undefined;
   let departmentSkillsMarkdown: string | undefined;
   let allowedToolIds = fallbackAllowedToolIds;
@@ -1081,6 +1100,7 @@ const resolveRuntimeContext = async (
     departmentId = resolved.departmentId;
     departmentName = resolved.departmentName;
     departmentRoleSlug = resolved.departmentRoleSlug;
+    departmentZohoReadScope = resolved.departmentZohoReadScope;
     departmentSystemPrompt = resolved.systemPrompt;
     departmentSkillsMarkdown = resolved.skillsMarkdown;
     allowedToolIds = resolved.allowedToolIds;
@@ -1100,6 +1120,7 @@ const resolveRuntimeContext = async (
     departmentId,
     departmentName,
     departmentRoleSlug,
+    departmentZohoReadScope,
     larkTenantKey: message.trace?.larkTenantKey,
     larkOpenId: message.trace?.larkOpenId,
     larkUserId: message.trace?.larkUserId,
@@ -1140,11 +1161,22 @@ const executeLarkVercelTask = async (
   const adapter = resolveChannelAdapter('lark');
   const companyId = message.trace?.companyId;
   const linkedUserId = message.trace?.linkedUserId;
-  const persistentThread = companyId && linkedUserId
+  const isSharedGroupChat = Boolean(companyId && message.chatType === 'group' && message.chatId);
+  const sharedChatContext = isSharedGroupChat && companyId
+    ? await larkChatContextService.load({
+      companyId,
+      chatId: message.chatId,
+      chatType: message.chatType,
+    })
+    : null;
+  const persistentThread = !isSharedGroupChat && companyId && linkedUserId
     ? await desktopThreadsService.findOrCreateLarkLifetimeThread(linkedUserId, companyId)
     : null;
+  const contextStorageId = persistentThread?.id ?? sharedChatContext?.id;
   const conversationKey = persistentThread
     ? buildPersistentLarkConversationKey(persistentThread.id)
+    : sharedChatContext
+      ? buildSharedLarkConversationKey(message.chatId)
     : buildConversationKey(message);
   const statusHistory: string[] = [];
   let currentStatusPhase: 'received' | 'preparing' | 'planning' | 'tool_running' | 'tool_done' | 'analyzing' | 'approval' | 'failed' = 'received';
@@ -1236,17 +1268,57 @@ const executeLarkVercelTask = async (
       text: message.text,
       chatId: message.chatId,
     });
+  } else if (sharedChatContext && companyId) {
+    activeThreadSummary = sharedChatContext.summary;
+    activeTaskState = sharedChatContext.taskState;
+    const grounding = await resolveLarkGroundingAttachments({
+      companyId,
+      message: message.text,
+      currentAttachedFiles: currentAttachments,
+      taskState: activeTaskState,
+    });
+    activeTaskState = grounding.taskState;
+    groundingAttachments = grounding.attachments;
+    const existingUserMessage = sharedChatContext.recentMessages.find((entry) => entry.id === message.messageId);
+    if (existingUserMessage) {
+      persistedUserMessageId = existingUserMessage.id;
+    } else {
+      const storedMessage = await larkChatContextService.appendMessage({
+        companyId,
+        chatId: message.chatId,
+        chatType: message.chatType,
+        messageId: message.messageId,
+        role: 'user',
+        content: message.text,
+        metadata: {
+          userId: message.userId,
+          requesterEmail: message.trace?.requesterEmail,
+          larkOpenId: message.trace?.larkOpenId,
+          larkUserId: message.trace?.larkUserId,
+        },
+      });
+      persistedUserMessageId = storedMessage?.id ?? message.messageId;
+    }
+    maybeStoreLarkConversationTurn({
+      companyId,
+      userId: linkedUserId,
+      conversationKey,
+      sourceId: persistedUserMessageId ?? message.messageId,
+      role: 'user',
+      text: message.text,
+      chatId: message.chatId,
+    });
   } else {
     conversationMemoryStore.addUserMessage(conversationKey, message.messageId, message.text);
   }
 
-  const runtime = await resolveRuntimeContext(task, message, persistentThread?.id, activeTaskState);
+  const runtime = await resolveRuntimeContext(task, message, contextStorageId, activeTaskState);
   runtime.attachedFiles = groundingAttachments.length > 0 ? groundingAttachments : runtime.attachedFiles;
   await resetLatestAgentRunLog(task.taskId, {
     channel: 'lark',
     entrypoint: 'lark_message',
     taskId: task.taskId,
-    threadId: persistentThread?.id ?? message.chatId,
+    threadId: contextStorageId ?? message.chatId,
     companyId: runtime.companyId,
     userId: linkedUserId ?? null,
     message: message.text,
@@ -1280,14 +1352,166 @@ const executeLarkVercelTask = async (
         content: entry.content,
       })) as Array<ModelMessage & { id?: string }>;
     })()
+    : sharedChatContext && companyId
+      ? await (async () => {
+        const latestSharedContext = await larkChatContextService.load({
+          companyId,
+          chatId: message.chatId,
+          chatType: message.chatType,
+        });
+        const recentMessages = latestSharedContext.recentMessages.slice(-LARK_THREAD_CONTEXT_MESSAGE_LIMIT);
+        const hydrationVersion = `${latestSharedContext.summary.updatedAt ?? 'none'}:${recentMessages[recentMessages.length - 1]?.id ?? 'empty'}`;
+        if (larkConversationHydrationVersions.get(conversationKey) !== hydrationVersion) {
+          for (const entry of recentMessages) {
+            if (entry.role === 'user') {
+              conversationMemoryStore.addUserMessage(conversationKey, entry.id, entry.content);
+            } else {
+              conversationMemoryStore.addAssistantMessage(conversationKey, entry.id, entry.content);
+              if (entry.metadata) {
+                hydrateConversationRefsFromMetadata(conversationKey, entry.metadata);
+              }
+            }
+          }
+          larkConversationHydrationVersions.set(conversationKey, hydrationVersion);
+        }
+        return recentMessages.map((entry) => ({
+          id: entry.id,
+          role: entry.role,
+          content: entry.content,
+        })) as Array<ModelMessage & { id?: string }>;
+      })()
     : conversationMemoryStore.getContextMessages(conversationKey).map((entry) => ({
       role: entry.role,
       content: entry.content,
     })) as Array<ModelMessage & { id?: string }>;
+  const persistAssistantTurn = async (input: {
+    content: string;
+    statusMessageId?: string | null;
+    pendingApproval?: PendingApprovalAction | null;
+  }) => {
+    if (sharedChatContext && companyId) {
+      const conversationRefs = buildPersistedConversationRefs(conversationKey);
+      const storedMessage = await larkChatContextService.appendMessage({
+        companyId,
+        chatId: message.chatId,
+        chatType: message.chatType,
+        messageId: input.statusMessageId ?? undefined,
+        role: 'assistant',
+        content: input.content,
+        metadata: {
+          channel: 'lark',
+          lark: {
+            chatId: message.chatId,
+            outboundMessageId: input.statusMessageId ?? null,
+            statusMessageId: input.statusMessageId ?? null,
+            correlationId: task.taskId,
+          },
+          ...(input.pendingApproval
+            ? { pendingApproval: { kind: input.pendingApproval.kind, approvalId: input.pendingApproval.kind === 'tool_action' ? input.pendingApproval.approvalId : null } }
+            : {}),
+          ...(conversationRefs ? { conversationRefs } : {}),
+        },
+      });
+      maybeStoreLarkConversationTurn({
+        companyId: runtime.companyId,
+        userId: linkedUserId,
+        conversationKey,
+        sourceId: storedMessage?.id ?? input.statusMessageId ?? task.taskId,
+        role: 'assistant',
+        text: input.content,
+        chatId: message.chatId,
+      });
+      return;
+    }
+    if (persistentThread) {
+      const conversationRefs = buildPersistedConversationRefs(conversationKey);
+      const assistantMessage = await desktopThreadsService.addOwnedThreadMessage(
+        persistentThread.id,
+        linkedUserId,
+        'assistant',
+        input.content,
+        {
+          channel: 'lark',
+          lark: {
+            chatId: message.chatId,
+            outboundMessageId: input.statusMessageId ?? null,
+            statusMessageId: input.statusMessageId ?? null,
+            correlationId: task.taskId,
+          },
+          ...(input.pendingApproval
+            ? { pendingApproval: { kind: input.pendingApproval.kind, approvalId: input.pendingApproval.kind === 'tool_action' ? input.pendingApproval.approvalId : null } }
+            : {}),
+          ...(conversationRefs ? { conversationRefs } : {}),
+        },
+        {
+          requiredChannel: 'lark',
+          contextLimit: LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
+        },
+      );
+      maybeStoreLarkConversationTurn({
+        companyId: runtime.companyId,
+        userId: linkedUserId,
+        conversationKey,
+        sourceId: assistantMessage.id,
+        role: 'assistant',
+        text: input.content,
+        chatId: message.chatId,
+      });
+    }
+  };
+  const persistConversationMemorySnapshot = async (assistantText: string) => {
+    const refreshedSummary = await refreshDesktopThreadSummary({
+      messages: [
+        ...contextMessages.map((entry) => ({
+          role: entry.role === 'assistant' ? 'assistant' : 'user',
+          content: flattenModelContent(entry.content),
+        })),
+        {
+          role: 'assistant',
+          content: assistantText,
+        },
+      ],
+      taskState: activeTaskState,
+      currentSummary: activeThreadSummary,
+    });
+    if (sharedChatContext && companyId) {
+      await persistLarkSharedChatMemory({
+        companyId,
+        chatId: message.chatId,
+        chatType: message.chatType,
+        summary: refreshedSummary,
+        taskState: activeTaskState,
+      });
+      activeThreadSummary = refreshedSummary;
+      return;
+    }
+    if (persistentThread) {
+      await persistLarkThreadMemory({
+        threadId: persistentThread.id,
+        userId: linkedUserId,
+        summary: refreshedSummary,
+        taskState: activeTaskState,
+      });
+      await memoryService.recordTaskStateSnapshot({
+        companyId: runtime.companyId,
+        userId: linkedUserId,
+        channelOrigin: 'lark',
+        threadId: persistentThread.id,
+        conversationKey,
+        activeObjective: activeTaskState.activeObjective,
+        completedMutations: activeTaskState.completedMutations.slice(-6).map((mutation) => ({
+          module: mutation.module,
+          summary: mutation.summary,
+          ok: mutation.ok,
+        })),
+      });
+      activeThreadSummary = refreshedSummary;
+    }
+  };
 
   const childRoute = await runDesktopChildRouter({
     executionId: task.taskId,
-    threadId: persistentThread?.id ?? message.chatId,
+    threadId: contextStorageId ?? message.chatId,
     message: message.text,
     workspace: runtime.workspace,
     approvalPolicySummary: runtime.desktopApprovalPolicySummary,
@@ -1320,69 +1544,11 @@ const executeLarkVercelTask = async (
     await statusCoordinator.replace(reply, []);
     const statusMessageId = statusCoordinator.getStatusMessageId();
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, reply);
-    if (persistentThread) {
-      const assistantMessage = await desktopThreadsService.addOwnedThreadMessage(
-        persistentThread.id,
-        linkedUserId,
-        'assistant',
-        reply,
-        {
-          channel: 'lark',
-          lark: {
-            chatId: message.chatId,
-            outboundMessageId: statusMessageId ?? null,
-            statusMessageId: statusMessageId ?? null,
-            correlationId: task.taskId,
-          },
-        },
-        {
-          requiredChannel: 'lark',
-          contextLimit: LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
-        },
-      );
-      maybeStoreLarkConversationTurn({
-        companyId: runtime.companyId,
-        userId: linkedUserId,
-        conversationKey,
-        sourceId: assistantMessage.id,
-        role: 'assistant',
-        text: reply,
-        chatId: message.chatId,
-      });
-      const refreshedSummary = await refreshDesktopThreadSummary({
-        messages: [
-          ...contextMessages.map((entry) => ({
-            role: entry.role === 'assistant' ? 'assistant' : 'user',
-            content: flattenModelContent(entry.content),
-          })),
-          {
-            role: 'assistant',
-            content: reply,
-          },
-        ],
-        taskState: activeTaskState,
-        currentSummary: activeThreadSummary,
-      });
-      await persistLarkThreadMemory({
-        threadId: persistentThread.id,
-        userId: linkedUserId,
-        summary: refreshedSummary,
-        taskState: activeTaskState,
-      });
-      await memoryService.recordTaskStateSnapshot({
-        companyId: runtime.companyId,
-        userId: linkedUserId,
-        channelOrigin: 'lark',
-        threadId: persistentThread.id,
-        conversationKey,
-        activeObjective: activeTaskState.activeObjective,
-        completedMutations: activeTaskState.completedMutations.slice(-6).map((mutation) => ({
-          module: mutation.module,
-          summary: mutation.summary,
-          ok: mutation.ok,
-        })),
-      });
-    }
+    await persistAssistantTurn({
+      content: reply,
+      statusMessageId: statusMessageId ?? null,
+    });
+    await persistConversationMemorySnapshot(reply);
     if (linkedUserId) {
       const childRouterPrompt = [
         'Lark child router handled this turn directly.',
@@ -1398,7 +1564,7 @@ const executeLarkVercelTask = async (
         modelId: childRouterModel.effectiveModelId,
         provider: childRouterModel.effectiveProvider,
         channel: 'lark',
-        threadId: persistentThread?.id,
+        threadId: contextStorageId,
         estimatedInputTokens,
         estimatedOutputTokens,
         actualInputTokens: estimatedInputTokens,
@@ -1410,7 +1576,7 @@ const executeLarkVercelTask = async (
     await appendLatestAgentRunLog(task.taskId, 'run.completed', {
       channel: 'lark',
       route: 'fast_reply',
-      threadId: persistentThread?.id ?? message.chatId,
+      threadId: contextStorageId ?? message.chatId,
       finalText: reply,
     });
 
@@ -1422,7 +1588,7 @@ const executeLarkVercelTask = async (
       agentResults: [],
       runtimeMeta: {
         engine: 'vercel',
-        threadId: persistentThread?.id,
+        threadId: contextStorageId,
         node: 'child_router.fast_reply',
         stepHistory: task.plan,
       },
@@ -1441,7 +1607,7 @@ const executeLarkVercelTask = async (
   const toolSelection = await resolveRunScopedToolSelection({
     companyId: runtime.companyId,
     userId: linkedUserId,
-    threadId: persistentThread?.id,
+    threadId: contextStorageId,
     conversationKey,
     latestUserMessage: message.text,
     allowedToolIds: runtime.allowedToolIds,
@@ -1457,7 +1623,7 @@ const executeLarkVercelTask = async (
   });
   logger.info('vercel.tool_selection.resolved', {
     taskId: task.taskId,
-    threadId: persistentThread?.id ?? message.chatId,
+    threadId: contextStorageId ?? message.chatId,
     allowedToolIds: runtime.allowedToolIds,
     runExposedToolIds: toolSelection.runExposedToolIds,
     plannerCandidateToolIds: toolSelection.plannerCandidateToolIds,
@@ -1469,7 +1635,7 @@ const executeLarkVercelTask = async (
   });
   await appendLatestAgentRunLog(task.taskId, 'tool_selection.resolved', {
     channel: 'lark',
-    threadId: persistentThread?.id ?? message.chatId,
+    threadId: contextStorageId ?? message.chatId,
     allowedToolIds: runtime.allowedToolIds,
     runExposedToolIds: toolSelection.runExposedToolIds,
     plannerCandidateToolIds: toolSelection.plannerCandidateToolIds,
@@ -1495,73 +1661,15 @@ const executeLarkVercelTask = async (
     await statusCoordinator.replace(clarificationText, []);
     const statusMessageId = statusCoordinator.getStatusMessageId();
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, clarificationText);
-    if (persistentThread) {
-      const assistantMessage = await desktopThreadsService.addOwnedThreadMessage(
-        persistentThread.id,
-        linkedUserId,
-        'assistant',
-        clarificationText,
-        {
-          channel: 'lark',
-          lark: {
-            chatId: message.chatId,
-            outboundMessageId: statusMessageId ?? null,
-            statusMessageId: statusMessageId ?? null,
-            correlationId: task.taskId,
-          },
-        },
-        {
-          requiredChannel: 'lark',
-          contextLimit: LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
-        },
-      );
-      maybeStoreLarkConversationTurn({
-        companyId: runtime.companyId,
-        userId: linkedUserId,
-        conversationKey,
-        sourceId: assistantMessage.id,
-        role: 'assistant',
-        text: clarificationText,
-        chatId: message.chatId,
-      });
-      const refreshedSummary = await refreshDesktopThreadSummary({
-        messages: [
-          ...contextMessages.map((entry) => ({
-            role: entry.role === 'assistant' ? 'assistant' : 'user',
-            content: flattenModelContent(entry.content),
-          })),
-          {
-            role: 'assistant',
-            content: clarificationText,
-          },
-        ],
-        taskState: activeTaskState,
-        currentSummary: activeThreadSummary,
-      });
-      await persistLarkThreadMemory({
-        threadId: persistentThread.id,
-        userId: linkedUserId,
-        summary: refreshedSummary,
-        taskState: activeTaskState,
-      });
-      await memoryService.recordTaskStateSnapshot({
-        companyId: runtime.companyId,
-        userId: linkedUserId,
-        channelOrigin: 'lark',
-        threadId: persistentThread.id,
-        conversationKey,
-        activeObjective: activeTaskState.activeObjective,
-        completedMutations: activeTaskState.completedMutations.slice(-6).map((mutation) => ({
-          module: mutation.module,
-          summary: mutation.summary,
-          ok: mutation.ok,
-        })),
-      });
-    }
+    await persistAssistantTurn({
+      content: clarificationText,
+      statusMessageId: statusMessageId ?? null,
+    });
+    await persistConversationMemorySnapshot(clarificationText);
     await appendLatestAgentRunLog(task.taskId, 'run.completed', {
       channel: 'lark',
       route: childRoute.route,
-      threadId: persistentThread?.id ?? message.chatId,
+      threadId: contextStorageId ?? message.chatId,
       finalText: clarificationText,
       pendingApproval: null,
       stepCount: 0,
@@ -1575,7 +1683,7 @@ const executeLarkVercelTask = async (
       agentResults: [],
       runtimeMeta: {
         engine: 'vercel',
-        threadId: persistentThread?.id,
+        threadId: contextStorageId,
         node: 'planner.clarification',
         stepHistory: task.plan,
       },
@@ -1589,7 +1697,7 @@ const executeLarkVercelTask = async (
         activityId: _activityId,
         title,
         channel: 'lark',
-        threadId: persistentThread?.id ?? message.chatId,
+        threadId: contextStorageId ?? message.chatId,
       });
       statusHistory.push(`Started ${title}`);
       await updateStatus('tool_running', `Using ${title}.`);
@@ -1606,7 +1714,7 @@ const executeLarkVercelTask = async (
         title,
         output,
         channel: 'lark',
-        threadId: persistentThread?.id ?? message.chatId,
+        threadId: contextStorageId ?? message.chatId,
       });
       const summary = summarizeText(output.summary, 180) ?? output.summary;
       statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${title}: ${summary}`);
@@ -1623,7 +1731,7 @@ const executeLarkVercelTask = async (
   const memoryPromptContext = await memoryService.getPromptContext({
     companyId: runtime.companyId,
     userId: linkedUserId,
-    threadId: persistentThread?.id,
+    threadId: contextStorageId,
     conversationKey,
     queryText: message.text,
     contextClass,
@@ -1659,7 +1767,7 @@ const executeLarkVercelTask = async (
   });
   logger.info('lark.context.summary', {
     taskId: task.taskId,
-    threadId: persistentThread?.id ?? message.chatId,
+    threadId: contextStorageId ?? message.chatId,
     contextClass,
     modelId: budget.modelId,
     usableContextBudget: budget.usableContextBudget,
@@ -1676,7 +1784,7 @@ const executeLarkVercelTask = async (
     compactionTier: historySelection.compactionTier,
   });
   await appendLatestAgentRunLog(task.taskId, 'lark.context.summary', {
-    threadId: persistentThread?.id ?? message.chatId,
+    threadId: contextStorageId ?? message.chatId,
     contextClass,
     modelId: budget.modelId,
     usableContextBudget: budget.usableContextBudget,
@@ -1701,7 +1809,7 @@ const executeLarkVercelTask = async (
       requesterUserId: runtime.userId,
       requesterAiRole: runtime.requesterAiRole,
     });
-    if (persistentThread && persistedUserMessageId) {
+    if ((persistentThread || sharedChatContext) && persistedUserMessageId) {
       let replacedCurrentMessage = false;
       inputMessages = historySelection.messages.map((entry, index) => {
         const shouldReplace = index === historySelection.messages.length - 1 && entry.id === persistedUserMessageId;
@@ -1725,10 +1833,10 @@ const executeLarkVercelTask = async (
       ];
     }
   } else if (message.text.trim()) {
-    const hasCurrentUserTurn = persistentThread
+    const hasCurrentUserTurn = (persistentThread || sharedChatContext)
       ? inputMessages.some((entry) => entry.id === persistedUserMessageId)
       : false;
-    if (!persistentThread || !hasCurrentUserTurn) {
+    if ((!persistentThread && !sharedChatContext) || !hasCurrentUserTurn) {
       inputMessages = [
         ...inputMessages.map(({ role, content }) => ({ role, content })),
         { role: 'user', content: message.text },
@@ -1742,7 +1850,7 @@ const executeLarkVercelTask = async (
       : [{ role: 'user', content: message.text }];
     await appendLatestAgentRunLog(task.taskId, 'llm.context', {
       phase: 'lark_generate',
-      threadId: persistentThread?.id ?? message.chatId,
+      threadId: contextStorageId ?? message.chatId,
       systemPrompt,
       messages: primaryMessages.map((entry, index) => ({
         index,
@@ -1869,7 +1977,7 @@ const executeLarkVercelTask = async (
         modelId: resolvedModel.effectiveModelId,
         provider: resolvedModel.effectiveProvider,
         channel: 'lark',
-        threadId: persistentThread?.id,
+        threadId: contextStorageId,
         estimatedInputTokens,
         estimatedOutputTokens,
         actualInputTokens: estimatedInputTokens,
@@ -1880,39 +1988,11 @@ const executeLarkVercelTask = async (
     });
     }
 
-    if (persistentThread) {
-      const conversationRefs = buildPersistedConversationRefs(conversationKey);
-      const assistantMessage = await desktopThreadsService.addOwnedThreadMessage(
-        persistentThread.id,
-        linkedUserId,
-        'assistant',
-        finalText,
-        {
-          channel: 'lark',
-          lark: {
-            chatId: message.chatId,
-            outboundMessageId: statusMessageId ?? null,
-            statusMessageId: statusMessageId ?? null,
-            correlationId: task.taskId,
-          },
-          ...(pendingApproval ? { pendingApproval: { kind: pendingApproval.kind, approvalId: pendingApproval.kind === 'tool_action' ? pendingApproval.approvalId : null } } : {}),
-          ...(conversationRefs ? { conversationRefs } : {}),
-        },
-        {
-          requiredChannel: 'lark',
-          contextLimit: LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
-        },
-      );
-      maybeStoreLarkConversationTurn({
-        companyId: runtime.companyId,
-        userId: linkedUserId,
-        conversationKey,
-        sourceId: assistantMessage.id,
-        role: 'assistant',
-        text: finalText,
-        chatId: message.chatId,
-      });
-    }
+    await persistAssistantTurn({
+      content: finalText,
+      statusMessageId: statusMessageId ?? null,
+      pendingApproval,
+    });
 
     const agentResults = mapToolStepsToAgentResults(steps).map((entry) => ({
       ...entry,
@@ -1930,47 +2010,12 @@ const executeLarkVercelTask = async (
         });
       }
     }
-    if (persistentThread) {
-      const refreshedSummary = await refreshDesktopThreadSummary({
-        messages: [
-          ...contextMessages.map((entry) => ({
-            role: entry.role === 'assistant' ? 'assistant' : 'user',
-            content: flattenModelContent(entry.content),
-          })),
-          {
-            role: 'assistant',
-            content: finalText,
-          },
-        ],
-        taskState: activeTaskState,
-        currentSummary: activeThreadSummary,
-      });
-      await persistLarkThreadMemory({
-        threadId: persistentThread.id,
-        userId: linkedUserId,
-        summary: refreshedSummary,
-        taskState: activeTaskState,
-      });
-      await memoryService.recordTaskStateSnapshot({
-        companyId: runtime.companyId,
-        userId: linkedUserId,
-        channelOrigin: 'lark',
-        threadId: persistentThread.id,
-        conversationKey,
-        activeObjective: activeTaskState.activeObjective,
-        completedMutations: activeTaskState.completedMutations.slice(-6).map((mutation) => ({
-          module: mutation.module,
-          summary: mutation.summary,
-          ok: mutation.ok,
-        })),
-      });
-      activeThreadSummary = refreshedSummary;
-    }
+    await persistConversationMemorySnapshot(finalText);
     await memoryService.recordToolSelectionOutcome({
       companyId: runtime.companyId,
       userId: linkedUserId,
       channelOrigin: 'lark',
-      threadId: persistentThread?.id,
+      threadId: contextStorageId,
       conversationKey,
       latestUserMessage: message.text,
       childRoute: {
@@ -1990,7 +2035,7 @@ const executeLarkVercelTask = async (
     await appendLatestAgentRunLog(task.taskId, pendingApproval ? 'run.waiting_for_approval' : 'run.completed', {
       channel: 'lark',
       route: childRoute.route,
-      threadId: persistentThread?.id ?? message.chatId,
+      threadId: contextStorageId ?? message.chatId,
       finalText,
       pendingApproval: pendingApproval
         ? {
@@ -2009,7 +2054,7 @@ const executeLarkVercelTask = async (
       agentResults,
       runtimeMeta: {
         engine: 'vercel',
-        threadId: persistentThread?.id,
+        threadId: contextStorageId,
         node: pendingApproval ? 'control.requested' : 'synthesis.complete',
         stepHistory: task.plan,
       },
@@ -2018,7 +2063,7 @@ const executeLarkVercelTask = async (
     const errorMessage = error instanceof Error ? error.message : 'Vercel Lark runtime failed.';
     await appendLatestAgentRunLog(task.taskId, 'run.failed', {
       channel: 'lark',
-      threadId: persistentThread?.id ?? message.chatId,
+      threadId: contextStorageId ?? message.chatId,
       error: errorMessage,
     });
     statusHistory.push(`Failed: ${errorMessage}`);

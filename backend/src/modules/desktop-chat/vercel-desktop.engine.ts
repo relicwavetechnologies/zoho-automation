@@ -2448,6 +2448,7 @@ const resolveDepartmentRuntime = async (
   allowedActionsByTool?: Record<string, import('../../company/tools/tool-action-groups').ToolActionGroup[]>;
   departmentName?: string;
   departmentRoleSlug?: string;
+  departmentZohoReadScope?: 'personalized' | 'show_all';
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
 }> => {
@@ -2469,6 +2470,7 @@ const resolveDepartmentRuntime = async (
     allowedActionsByTool: resolved.allowedActionsByTool,
     departmentName: resolved.departmentName,
     departmentRoleSlug: resolved.departmentRoleSlug,
+    departmentZohoReadScope: resolved.departmentZohoReadScope,
     departmentSystemPrompt: resolved.systemPrompt,
     departmentSkillsMarkdown: resolved.skillsMarkdown,
   };
@@ -2922,6 +2924,7 @@ export const executeAutomatedDesktopTurn = async (input: {
       departmentId: departmentRuntime.threadDepartmentId,
       departmentName: departmentRuntime.departmentName,
       departmentRoleSlug: departmentRuntime.departmentRoleSlug,
+      departmentZohoReadScope: departmentRuntime.departmentZohoReadScope,
       larkTenantKey: input.session.larkTenantKey ?? undefined,
       larkOpenId: input.session.larkOpenId ?? undefined,
       larkUserId: input.session.larkUserId ?? undefined,

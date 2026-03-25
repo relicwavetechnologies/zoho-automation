@@ -1024,7 +1024,7 @@ export const applyActionResultToTaskState = (input: {
   return next;
 };
 
-const buildDeterministicSummary = (input: {
+export const buildDeterministicThreadSummary = (input: {
   messages: ThreadMessageLike[];
   taskState: DesktopTaskState;
   currentSummary: DesktopThreadSummary;
@@ -1119,7 +1119,7 @@ export const refreshDesktopThreadSummary = async (input: {
   taskState: DesktopTaskState;
   currentSummary: DesktopThreadSummary;
 }): Promise<DesktopThreadSummary> => {
-  const deterministic = buildDeterministicSummary(input);
+  const deterministic = buildDeterministicThreadSummary(input);
   if (!shouldRefreshDesktopThreadSummary({
     messages: input.messages,
     currentSummary: input.currentSummary,

@@ -19,11 +19,20 @@ type RedisAvailabilityConfig = {
   skip?: (req: Request) => boolean;
 };
 
+type RedisHealthSnapshot = {
+  ok: boolean;
+  error?: string;
+  expiresAt: number;
+};
+
 type RateLimitBucket = {
   timestamps: number[];
 };
 
 const rateLimitState = new Map<string, RateLimitBucket>();
+const redisHealthSnapshots = new Map<string, RedisHealthSnapshot>();
+const REDIS_HEALTH_OK_TTL_MS = 10_000;
+const REDIS_HEALTH_FAIL_TTL_MS = 2_000;
 
 const readRequestId = (req: Request): string =>
   ((req as Request & { requestId?: string }).requestId ?? 'missing_request_id');
@@ -96,8 +105,32 @@ export const createRedisAvailabilityMiddleware = (config: RedisAvailabilityConfi
       next();
       return;
     }
+    const now = Date.now();
+    const cached = redisHealthSnapshots.get(config.name);
+    if (cached && cached.expiresAt > now) {
+      if (cached.ok) {
+        next();
+        return;
+      }
+      logger.warn('http.redis.degraded', {
+        guard: config.name,
+        path: req.originalUrl || req.url,
+        requestId: readRequestId(req),
+        error: cached.error ?? 'redis_unavailable',
+        cacheHit: true,
+      });
+      res
+        .status(config.statusCode ?? 503)
+        .json(ApiResponse.error(config.message ?? 'This service is temporarily unavailable while runtime infrastructure recovers.'));
+      return;
+    }
     const { redisConnection } = await import('../company/queue/runtime/redis.connection');
     const health = await redisConnection.health(400);
+    redisHealthSnapshots.set(config.name, {
+      ok: health.ok,
+      error: health.error,
+      expiresAt: now + (health.ok ? REDIS_HEALTH_OK_TTL_MS : REDIS_HEALTH_FAIL_TTL_MS),
+    });
     if (health.ok) {
       next();
       return;
