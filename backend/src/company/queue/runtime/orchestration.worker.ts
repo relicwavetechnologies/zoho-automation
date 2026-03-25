@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Job, Worker } from 'bullmq';
 
 import config from '../../../config';
@@ -18,9 +19,12 @@ import {
 } from './orchestration.queue';
 import { pushDeadLetterRecord } from './dead-letter.queue';
 import { QueueTaskTimeoutError, withTaskTimeout } from './queue-safety';
-import { redisConnection } from './redis.connection';
+import { redisConnection, stateRedisConnection } from './redis.connection';
 
 const userLocks = new Map<string, Promise<void>>();
+const CONVERSATION_LOCK_TTL_MS = config.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS + 15_000;
+const CONVERSATION_LOCK_WAIT_MS = 30_000;
+const CONVERSATION_LOCK_RETRY_MS = 400;
 
 const runPerUserDeterministically = async (userId: string, fn: () => Promise<void>): Promise<void> => {
   const previous = userLocks.get(userId) ?? Promise.resolve();
@@ -68,6 +72,48 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
 };
 
 const buildExecutionId = (taskId: string, requestId?: string): string => requestId?.trim() || taskId;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const buildConversationLockKey = (job: Job<OrchestrationJobData>): string =>
+  `orchestration:conversation-lock:${job.data.message.channel}:${job.data.message.chatId}`;
+
+const acquireConversationLock = async (job: Job<OrchestrationJobData>): Promise<(() => Promise<void>) | null> => {
+  const client = stateRedisConnection.getClient();
+  const key = buildConversationLockKey(job);
+  const token = randomUUID();
+  const deadline = Date.now() + CONVERSATION_LOCK_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    const acquired = await client.set(key, token, 'PX', CONVERSATION_LOCK_TTL_MS, 'NX');
+    if (acquired === 'OK') {
+      return async () => {
+        try {
+          const current = await client.get(key);
+          if (current === token) {
+            await client.del(key);
+          }
+        } catch (error) {
+          logger.warn('queue.conversation_lock.release_failed', {
+            taskId: job.data.taskId,
+            messageId: job.data.message.messageId,
+            chatId: job.data.message.chatId,
+            jobId: job.id,
+            error: error instanceof Error ? error.message : 'unknown_error',
+          });
+        }
+      };
+    }
+    await sleep(CONVERSATION_LOCK_RETRY_MS);
+  }
+
+  logger.warn('queue.conversation_lock.wait_timeout', {
+    taskId: job.data.taskId,
+    messageId: job.data.message.messageId,
+    chatId: job.data.message.chatId,
+    jobId: job.id,
+    waitMs: CONVERSATION_LOCK_WAIT_MS,
+  });
+  return null;
+};
 
 const startLarkExecutionRun = async (input: {
   executionId: string;
@@ -487,35 +533,46 @@ export const startOrchestrationWorker = (): Worker<OrchestrationJobData, void, t
         return;
       }
 
-      await runPerUserDeterministically(job.data.message.userId, async () => {
-        try {
-          await runOrchestrationJobWithSafety(job);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown orchestration worker failure';
-          if (message.includes('Task cancelled via control signal')) {
-            runtimeTaskStore.update(job.data.taskId, { status: 'cancelled' });
-            return;
-          }
+      const releaseConversationLock = await acquireConversationLock(job);
+      if (!releaseConversationLock) {
+        runtimeTaskStore.update(job.data.taskId, { status: 'pending' });
+        await job.moveToDelayed(Date.now() + 2_000, job.token ?? '');
+        return;
+      }
 
-          runtimeTaskStore.update(job.data.taskId, { status: 'failed' });
-          if (error instanceof QueueTaskTimeoutError) {
-            logger.error('queue.worker.timeout', {
+      try {
+        await runPerUserDeterministically(job.data.message.userId, async () => {
+          try {
+            await runOrchestrationJobWithSafety(job);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown orchestration worker failure';
+            if (message.includes('Task cancelled via control signal')) {
+              runtimeTaskStore.update(job.data.taskId, { status: 'cancelled' });
+              return;
+            }
+
+            runtimeTaskStore.update(job.data.taskId, { status: 'failed' });
+            if (error instanceof QueueTaskTimeoutError) {
+              logger.error('queue.worker.timeout', {
+                taskId: job.data.taskId,
+                messageId: job.data.message.messageId,
+                channel: job.data.message.channel,
+                requestId: job.data.message.trace?.requestId,
+                jobId: job.id,
+                timeoutMs: error.timeoutMs,
+              });
+            }
+            logger.error('orchestration.task.error', {
               taskId: job.data.taskId,
               messageId: job.data.message.messageId,
-              channel: job.data.message.channel,
-              requestId: job.data.message.trace?.requestId,
-              jobId: job.id,
-              timeoutMs: error.timeoutMs,
+              classifiedError: classifyRuntimeError(error),
             });
+            throw error;
           }
-          logger.error('orchestration.task.error', {
-            taskId: job.data.taskId,
-            messageId: job.data.message.messageId,
-            classifiedError: classifyRuntimeError(error),
-          });
-          throw error;
-        }
-      });
+        });
+      } finally {
+        await releaseConversationLock();
+      }
     },
     buildWorkerOptions(),
   );

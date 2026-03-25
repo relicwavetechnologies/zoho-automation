@@ -174,6 +174,22 @@ const buildApprovalContinuationText = (input: {
   ].filter(Boolean).join('\n');
 };
 
+const shouldAutoContinueAfterApproval = (input: {
+  approvalAction: Record<string, unknown>;
+  executionOk?: boolean;
+}): boolean => {
+  if (!input.executionOk) {
+    return true;
+  }
+  const actionGroup = typeof input.approvalAction.actionGroup === 'string'
+    ? input.approvalAction.actionGroup.trim().toLowerCase()
+    : '';
+  if (actionGroup === 'send') {
+    return false;
+  }
+  return true;
+};
+
 const loadPendingLarkThreadApproval = async (input: {
   companyId?: string;
   linkedUserId?: string;
@@ -1622,26 +1638,31 @@ export const createLarkWebhookEventHandler = (
                 payload: executionResult.payload,
               },
             });
-            const continuationText = buildApprovalContinuationText({
-              kind: executionResult.kind,
-              ok: executionResult.ok,
-              summary: executionSummary,
-              actionSummary: typeof approvalAction.summary === 'string' ? approvalAction.summary : undefined,
-              payload: executionResult.payload,
-            });
-            resumedTaskId = await continueAfterApproval({
-              dependencies,
-              taskId: typeof approvalAction.taskId === 'string' ? approvalAction.taskId : undefined,
-              tracedMessage,
-              requestId,
-              sourceActionId: hitlDecision.actionId,
-              sourceMessageId: tracedMessage.messageId,
-              continuationText,
-              parsedKind: parsed.kind,
-              executionSummary,
+            if (shouldAutoContinueAfterApproval({
+              approvalAction,
               executionOk: executionResult.ok,
-              executionPayload: executionResult.payload,
-            });
+            })) {
+              const continuationText = buildApprovalContinuationText({
+                kind: executionResult.kind,
+                ok: executionResult.ok,
+                summary: executionSummary,
+                actionSummary: typeof approvalAction.summary === 'string' ? approvalAction.summary : undefined,
+                payload: executionResult.payload,
+              });
+              resumedTaskId = await continueAfterApproval({
+                dependencies,
+                taskId: typeof approvalAction.taskId === 'string' ? approvalAction.taskId : undefined,
+                tracedMessage,
+                requestId,
+                sourceActionId: hitlDecision.actionId,
+                sourceMessageId: tracedMessage.messageId,
+                continuationText,
+                parsedKind: parsed.kind,
+                executionSummary,
+                executionOk: executionResult.ok,
+                executionPayload: executionResult.payload,
+              });
+            }
           } catch (error) {
             executionSummary = error instanceof Error ? error.message : 'Stored approval action execution failed';
             executionOk = false;
