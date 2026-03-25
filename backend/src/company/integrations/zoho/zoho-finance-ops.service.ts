@@ -1,4 +1,4 @@
-import { zohoBooksClient } from './zoho-books.client';
+import { zohoGatewayService } from './zoho-gateway.service';
 
 type StatementRow = {
   rowId?: string;
@@ -261,9 +261,46 @@ const scoreStatementRowToRecord = (
 };
 
 export class ZohoFinanceOpsService {
+  private async listCompanyScopedBooksRecords(input: {
+    companyId: string;
+    organizationId?: string;
+    requesterEmail?: string;
+    requesterAiRole?: string;
+    module: 'invoices' | 'customerpayments' | 'banktransactions' | 'bills' | 'vendorpayments';
+    filters?: Record<string, unknown>;
+    query?: string;
+    limit?: number;
+  }): Promise<{ organizationId?: string; records: Record<string, unknown>[]; raw?: Record<string, unknown> }> {
+    const auth = await zohoGatewayService.listAuthorizedRecords({
+      domain: 'books',
+      module: input.module,
+      requester: {
+        companyId: input.companyId,
+        requesterEmail: input.requesterEmail,
+        requesterAiRole: input.requesterAiRole,
+      },
+      organizationId: input.organizationId,
+      filters: input.filters,
+      query: input.query,
+      limit: input.limit,
+    });
+
+    if (!auth.allowed) {
+      throw new Error(auth.denialReason ?? `You are not allowed to read Zoho Books ${input.module}.`);
+    }
+
+    return {
+      organizationId: auth.organizationId,
+      records: Array.isArray(auth.payload?.records) ? auth.payload.records : [],
+      raw: auth.payload?.raw,
+    };
+  }
+
   async buildOverdueReport(input: {
     companyId: string;
     organizationId?: string;
+    requesterEmail?: string;
+    requesterAiRole?: string;
     asOfDate?: string;
     limit?: number;
     minOverdueDays?: number;
@@ -271,17 +308,19 @@ export class ZohoFinanceOpsService {
     const asOfDate = parseDate(input.asOfDate) ?? new Date();
     const limit = Math.max(1, Math.min(200, input.limit ?? 100));
     const minOverdueDays = Math.max(0, input.minOverdueDays ?? 1);
-    const result = await zohoBooksClient.listRecords({
+    const result = await this.listCompanyScopedBooksRecords({
       companyId: input.companyId,
-      moduleName: 'invoices',
       organizationId: input.organizationId,
+      requesterEmail: input.requesterEmail,
+      requesterAiRole: input.requesterAiRole,
+      module: 'invoices',
       limit,
       filters: {
         status: 'overdue',
       },
     });
 
-    const invoices = result.items
+    const invoices = result.records
       .map((invoice) => {
         const dueDate = parseDate(asString(invoice.due_date));
         const overdueDays = diffInDays(asOfDate, dueDate) ?? 0;
@@ -353,6 +392,8 @@ export class ZohoFinanceOpsService {
   async mapCustomerPayments(input: {
     companyId: string;
     organizationId?: string;
+    requesterEmail?: string;
+    requesterAiRole?: string;
     customerId?: string;
     amountTolerance?: number;
     dateToleranceDays?: number;
@@ -363,29 +404,33 @@ export class ZohoFinanceOpsService {
     const limit = Math.max(1, Math.min(200, input.limit ?? 100));
 
     const [paymentsResult, invoicesResult] = await Promise.all([
-      zohoBooksClient.listRecords({
+      this.listCompanyScopedBooksRecords({
         companyId: input.companyId,
-        moduleName: 'customerpayments',
         organizationId: input.organizationId,
+        requesterEmail: input.requesterEmail,
+        requesterAiRole: input.requesterAiRole,
+        module: 'customerpayments',
         limit,
         filters: input.customerId ? { customer_id: input.customerId } : undefined,
       }),
-      zohoBooksClient.listRecords({
+      this.listCompanyScopedBooksRecords({
         companyId: input.companyId,
-        moduleName: 'invoices',
         organizationId: input.organizationId,
+        requesterEmail: input.requesterEmail,
+        requesterAiRole: input.requesterAiRole,
+        module: 'invoices',
         limit,
         filters: input.customerId ? { customer_id: input.customerId } : undefined,
       }),
     ]);
 
-    const openInvoices = invoicesResult.items.filter((invoice) => readBalance(invoice) > 0);
+    const openInvoices = invoicesResult.records.filter((invoice) => readBalance(invoice) > 0);
     const usedInvoiceIds = new Set<string>();
     const exactMatches: Array<Record<string, unknown>> = [];
     const probableMatches: Array<Record<string, unknown>> = [];
     const unmatchedPayments: Array<Record<string, unknown>> = [];
 
-    for (const payment of paymentsResult.items) {
+    for (const payment of paymentsResult.records) {
       const paymentId = asString(payment.payment_id) ?? asString(payment.id);
       const ranked = openInvoices
         .filter((invoice) => {
@@ -462,6 +507,8 @@ export class ZohoFinanceOpsService {
   async reconcileBankClosing(input: {
     companyId: string;
     organizationId?: string;
+    requesterEmail?: string;
+    requesterAiRole?: string;
     accountId?: string;
     statementRows: StatementRow[];
     amountTolerance?: number;
@@ -471,16 +518,18 @@ export class ZohoFinanceOpsService {
     const amountTolerance = Math.max(0.01, input.amountTolerance ?? 1);
     const dateToleranceDays = Math.max(1, input.dateToleranceDays ?? 3);
     const limit = Math.max(1, Math.min(200, input.limit ?? Math.max(50, input.statementRows.length * 2)));
-    const result = await zohoBooksClient.listRecords({
+    const result = await this.listCompanyScopedBooksRecords({
       companyId: input.companyId,
-      moduleName: 'banktransactions',
       organizationId: input.organizationId,
+      requesterEmail: input.requesterEmail,
+      requesterAiRole: input.requesterAiRole,
+      module: 'banktransactions',
       limit,
       filters: input.accountId ? { account_id: input.accountId } : undefined,
     });
 
     const unmatchedTransactions = new Map<string, Record<string, unknown>>();
-    for (const transaction of result.items) {
+    for (const transaction of result.records) {
       const id = readBankTransactionId(transaction);
       if (id) {
         unmatchedTransactions.set(id, transaction);
@@ -553,6 +602,8 @@ export class ZohoFinanceOpsService {
   async reconcileVendorStatement(input: {
     companyId: string;
     organizationId?: string;
+    requesterEmail?: string;
+    requesterAiRole?: string;
     statementRows: StatementRow[];
     vendorId?: string;
     vendorName?: string;
@@ -565,29 +616,33 @@ export class ZohoFinanceOpsService {
     const limit = Math.max(1, Math.min(200, input.limit ?? Math.max(50, input.statementRows.length * 2)));
 
     const [billsResult, vendorPaymentsResult] = await Promise.all([
-      zohoBooksClient.listRecords({
+      this.listCompanyScopedBooksRecords({
         companyId: input.companyId,
-        moduleName: 'bills',
         organizationId: input.organizationId,
+        requesterEmail: input.requesterEmail,
+        requesterAiRole: input.requesterAiRole,
+        module: 'bills',
         limit,
         filters: input.vendorId ? { vendor_id: input.vendorId } : undefined,
       }),
-      zohoBooksClient.listRecords({
+      this.listCompanyScopedBooksRecords({
         companyId: input.companyId,
-        moduleName: 'vendorpayments',
         organizationId: input.organizationId,
+        requesterEmail: input.requesterEmail,
+        requesterAiRole: input.requesterAiRole,
+        module: 'vendorpayments',
         limit,
         filters: input.vendorId ? { vendor_id: input.vendorId } : undefined,
       }),
     ]);
 
     const availableBills = new Map<string, Record<string, unknown>>();
-    for (const bill of billsResult.items) {
+    for (const bill of billsResult.records) {
       const id = asString(bill.bill_id) ?? asString(bill.id);
       if (id) availableBills.set(id, bill);
     }
     const availablePayments = new Map<string, Record<string, unknown>>();
-    for (const payment of vendorPaymentsResult.items) {
+    for (const payment of vendorPaymentsResult.records) {
       const id = asString(payment.vendor_payment_id) ?? asString(payment.id);
       if (id) availablePayments.set(id, payment);
     }

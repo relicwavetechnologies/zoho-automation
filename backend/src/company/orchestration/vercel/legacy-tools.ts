@@ -296,6 +296,14 @@ const loadZohoFinanceOpsService = (): {
   reconcileBankClosing: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
 } => loadModuleExport('../../integrations/zoho/zoho-finance-ops.service', 'zohoFinanceOpsService');
 
+const loadZohoGatewayService = (): {
+  resolveScopeContext: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  listAuthorizedRecords: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  getAuthorizedRecord: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  getAuthorizedChildResource: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  executeAuthorizedMutation: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+} => loadModuleExport('../../integrations/zoho/zoho-gateway.service', 'zohoGatewayService');
+
 const workflowAttachedFileSchema = z.object({
   fileAssetId: z.string().min(1),
   cloudinaryUrl: z.string().url(),
@@ -693,6 +701,202 @@ const buildEnvelope = (input: {
   ...(input.retryable !== undefined ? { retryable: input.retryable } : {}),
   ...(input.userAction ? { userAction: input.userAction } : {}),
   ...(input.pendingApprovalAction ? { pendingApprovalAction: input.pendingApprovalAction } : {}),
+});
+
+const buildZohoGatewayDeniedEnvelope = (
+  authResult: Record<string, unknown>,
+  fallbackSummary: string,
+): VercelToolEnvelope => {
+  const denialReason = asString(authResult.denialReason);
+  const moduleName = asString(authResult.module);
+  const principal = asRecord(authResult.principal);
+  const requesterEmail = asString(principal?.normalizedRequesterEmail) ?? asString(principal?.requesterEmail);
+
+  if (denialReason === 'books_principal_not_resolved') {
+    const summary = requesterEmail
+      ? `No Zoho Books contact matched requester email ${requesterEmail}, so I cannot safely read ${moduleName ?? 'Zoho Books'} data in self-scoped mode.`
+      : `No requester email was available to match a Zoho Books contact, so I cannot safely read ${moduleName ?? 'Zoho Books'} data in self-scoped mode.`;
+    return buildEnvelope({
+      success: false,
+      summary,
+      errorKind: 'missing_input',
+      retryable: false,
+      userAction: 'Ask the user to confirm the exact Zoho Books contact email or request company-scoped access. Do not retry with company-wide Zoho Books fallbacks.',
+      fullPayload: {
+        denialReason,
+        module: moduleName,
+        requesterEmail,
+      },
+    });
+  }
+
+  if (denialReason === 'missing_requester_email') {
+    return buildEnvelope({
+      success: false,
+      summary: 'Requester email is missing, so self-scoped Zoho access cannot be resolved safely.',
+      errorKind: 'missing_input',
+      retryable: false,
+      userAction: 'Ask for or recover the requester email before retrying. Do not fall back to company-wide Zoho access.',
+      fullPayload: {
+        denialReason,
+        module: moduleName,
+      },
+    });
+  }
+
+  if (denialReason === 'books_module_requires_company_scope') {
+    return buildEnvelope({
+      success: false,
+      summary: `${moduleName ?? 'This Zoho Books module'} requires company-scoped Zoho Books access and cannot be read in self-scoped mode.`,
+      errorKind: 'permission',
+      retryable: false,
+      userAction: 'Tell the user that this Zoho Books module is finance/company scoped. Do not retry with broader read fallbacks.',
+      fullPayload: {
+        denialReason,
+        module: moduleName,
+      },
+    });
+  }
+
+  return buildEnvelope({
+    success: false,
+    summary: denialReason ?? fallbackSummary,
+    errorKind: inferErrorKind(denialReason ?? fallbackSummary),
+    retryable: false,
+    fullPayload: denialReason
+      ? {
+        denialReason,
+        module: moduleName,
+      }
+      : undefined,
+  });
+};
+
+const buildZohoGatewayRequester = (runtime: VercelRuntimeRequestContext): Record<string, unknown> => ({
+  companyId: runtime.companyId,
+  requesterEmail: runtime.requesterEmail,
+  requesterAiRole: runtime.requesterAiRole,
+});
+
+const buildBooksMutationAuthorizationTarget = (input: {
+  operation: string;
+  moduleName?: string;
+  recordId?: string;
+  accountId?: string;
+  transactionId?: string;
+  invoiceId?: string;
+  estimateId?: string;
+  creditNoteId?: string;
+  salesOrderId?: string;
+  purchaseOrderId?: string;
+  billId?: string;
+  contactId?: string;
+  vendorPaymentId?: string;
+  organizationId?: string;
+}): Record<string, unknown> => {
+  let module = input.moduleName;
+  let recordId = input.recordId;
+
+  if (['activateBankAccount', 'deactivateBankAccount', 'importBankStatement'].includes(input.operation)) {
+    module = 'bankaccounts';
+    recordId = input.accountId;
+  } else if ([
+    'matchBankTransaction',
+    'unmatchBankTransaction',
+    'excludeBankTransaction',
+    'restoreBankTransaction',
+    'uncategorizeBankTransaction',
+    'categorizeBankTransaction',
+    'categorizeBankTransactionAsExpense',
+    'categorizeBankTransactionAsVendorPayment',
+    'categorizeBankTransactionAsCustomerPayment',
+    'categorizeBankTransactionAsCreditNoteRefund',
+  ].includes(input.operation)) {
+    module = 'banktransactions';
+    recordId = input.transactionId;
+  } else if ([
+    'emailInvoice',
+    'remindInvoice',
+    'enableInvoicePaymentReminder',
+    'disableInvoicePaymentReminder',
+    'writeOffInvoice',
+    'cancelInvoiceWriteOff',
+    'markInvoiceSent',
+    'voidInvoice',
+    'markInvoiceDraft',
+    'submitInvoice',
+    'approveInvoice',
+  ].includes(input.operation)) {
+    module = 'invoices';
+    recordId = input.invoiceId;
+  } else if ([
+    'emailEstimate',
+    'markEstimateSent',
+    'acceptEstimate',
+    'declineEstimate',
+    'submitEstimate',
+    'approveEstimate',
+  ].includes(input.operation)) {
+    module = 'estimates';
+    recordId = input.estimateId;
+  } else if (['emailCreditNote', 'openCreditNote', 'voidCreditNote', 'refundCreditNote'].includes(input.operation)) {
+    module = 'creditnotes';
+    recordId = input.creditNoteId;
+  } else if ([
+    'emailSalesOrder',
+    'openSalesOrder',
+    'voidSalesOrder',
+    'submitSalesOrder',
+    'approveSalesOrder',
+    'createInvoiceFromSalesOrder',
+  ].includes(input.operation)) {
+    module = 'salesorders';
+    recordId = input.salesOrderId;
+  } else if ([
+    'emailPurchaseOrder',
+    'openPurchaseOrder',
+    'billPurchaseOrder',
+    'cancelPurchaseOrder',
+    'rejectPurchaseOrder',
+    'submitPurchaseOrder',
+    'approvePurchaseOrder',
+  ].includes(input.operation)) {
+    module = 'purchaseorders';
+    recordId = input.purchaseOrderId;
+  } else if (['voidBill', 'openBill', 'submitBill', 'approveBill'].includes(input.operation)) {
+    module = 'bills';
+    recordId = input.billId;
+  } else if ([
+    'emailContact',
+    'emailContactStatement',
+    'enableContactPaymentReminder',
+    'disableContactPaymentReminder',
+  ].includes(input.operation)) {
+    module = 'contacts';
+    recordId = input.contactId;
+  } else if (input.operation === 'emailVendorPayment') {
+    module = 'vendorpayments';
+    recordId = input.vendorPaymentId;
+  }
+
+  return {
+    domain: 'books',
+    module,
+    operation: input.operation,
+    recordId,
+    organizationId: input.organizationId,
+  };
+};
+
+const buildCrmMutationAuthorizationTarget = (input: {
+  operation: string;
+  moduleName?: string;
+  recordId?: string;
+}): Record<string, unknown> => ({
+  domain: 'crm',
+  module: input.moduleName,
+  operation: input.operation,
+  recordId: input.recordId,
 });
 
 const getAllowedActionGroups = (runtime: VercelRuntimeRequestContext, toolId: string): ToolActionGroup[] => {
@@ -4102,8 +4306,31 @@ export const createVercelDesktopTools = (
         if (readPermissionError) {
           return readPermissionError;
         }
+        const zohoGateway = loadZohoGatewayService();
+        const gatewayRequester = buildZohoGatewayRequester(runtime);
+        const requireBooksCompanyScope = async (operation: string): Promise<VercelToolEnvelope | null> => {
+          const scope = asRecord(await zohoGateway.resolveScopeContext({
+            companyId: runtime.companyId,
+            requesterEmail: runtime.requesterEmail,
+            requesterAiRole: runtime.requesterAiRole,
+            domain: 'books',
+          })) ?? {};
+          if (scope.scopeMode === 'company_scoped') {
+            return null;
+          }
+          return buildEnvelope({
+            success: false,
+            summary: `${operation} requires company-scoped Zoho Books access.`,
+            errorKind: 'permission',
+            retryable: false,
+          });
+        };
 
         if (input.operation === 'listOrganizations') {
+          const companyScopeError = await requireBooksCompanyScope('listOrganizations');
+          if (companyScopeError) {
+            return companyScopeError;
+          }
           try {
             const organizations = await loadZohoBooksClient().listOrganizations({
               companyId: runtime.companyId,
@@ -4164,10 +4391,16 @@ export const createVercelDesktopTools = (
         }
 
         if (input.operation === 'buildOverdueReport') {
+          const companyScopeError = await requireBooksCompanyScope('buildOverdueReport');
+          if (companyScopeError) {
+            return companyScopeError;
+          }
           try {
             const report = await loadZohoFinanceOpsService().buildOverdueReport({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
+              requesterEmail: runtime.requesterEmail,
+              requesterAiRole: runtime.requesterAiRole,
               asOfDate: input.asOfDate?.trim(),
               limit: input.limit,
               minOverdueDays: input.minOverdueDays,
@@ -4194,10 +4427,16 @@ export const createVercelDesktopTools = (
         }
 
         if (input.operation === 'mapCustomerPayments') {
+          const companyScopeError = await requireBooksCompanyScope('mapCustomerPayments');
+          if (companyScopeError) {
+            return companyScopeError;
+          }
           try {
             const mapping = await loadZohoFinanceOpsService().mapCustomerPayments({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
+              requesterEmail: runtime.requesterEmail,
+              requesterAiRole: runtime.requesterAiRole,
               amountTolerance: input.amountTolerance,
               dateToleranceDays: input.dateToleranceDays,
               limit: input.limit,
@@ -4233,10 +4472,16 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          const companyScopeError = await requireBooksCompanyScope('reconcileVendorStatement');
+          if (companyScopeError) {
+            return companyScopeError;
+          }
           try {
             const reconciliation = await loadZohoFinanceOpsService().reconcileVendorStatement({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
+              requesterEmail: runtime.requesterEmail,
+              requesterAiRole: runtime.requesterAiRole,
               statementRows: input.statementRows,
               vendorId: input.vendorId?.trim(),
               vendorName: input.vendorName?.trim(),
@@ -4274,10 +4519,16 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          const companyScopeError = await requireBooksCompanyScope('reconcileBankClosing');
+          if (companyScopeError) {
+            return companyScopeError;
+          }
           try {
             const reconciliation = await loadZohoFinanceOpsService().reconcileBankClosing({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
+              requesterEmail: runtime.requesterEmail,
+              requesterAiRole: runtime.requesterAiRole,
               accountId: input.accountId?.trim(),
               statementRows: input.statementRows,
               amountTolerance: input.amountTolerance,
@@ -4314,6 +4565,10 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          const companyScopeError = await requireBooksCompanyScope('getLastImportedStatement');
+          if (companyScopeError) {
+            return companyScopeError;
+          }
           try {
             const result = await loadZohoBooksClient().getLastImportedBankStatement({
               companyId: runtime.companyId,
@@ -4348,6 +4603,10 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
               retryable: false,
             });
+          }
+          const companyScopeError = await requireBooksCompanyScope('getMatchingBankTransactions');
+          if (companyScopeError) {
+            return companyScopeError;
           }
           try {
             const result = await loadZohoBooksClient().getMatchingBankTransactions({
@@ -4385,6 +4644,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await zohoGateway.getAuthorizedChildResource({
+              domain: 'books',
+              module: 'invoices',
+              recordId: invoiceId,
+              childType: 'email_content',
+              requester: gatewayRequester,
+              organizationId: input.organizationId?.trim(),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, 'You are not allowed to access this invoice email content.');
+            }
             const result = await loadZohoBooksClient().getInvoiceEmailContent({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
@@ -4420,6 +4690,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await zohoGateway.getAuthorizedChildResource({
+              domain: 'books',
+              module: 'invoices',
+              recordId: invoiceId,
+              childType: 'payment_reminder_content',
+              requester: gatewayRequester,
+              organizationId: input.organizationId?.trim(),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, 'You are not allowed to access this invoice reminder content.');
+            }
             const result = await loadZohoBooksClient().getInvoicePaymentReminderContent({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
@@ -4455,6 +4736,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await zohoGateway.getAuthorizedChildResource({
+              domain: 'books',
+              module: 'estimates',
+              recordId: estimateId,
+              childType: 'email_content',
+              requester: gatewayRequester,
+              organizationId: input.organizationId?.trim(),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, 'You are not allowed to access this estimate email content.');
+            }
             const result = await loadZohoBooksClient().getEstimateEmailContent({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
@@ -4490,6 +4782,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await zohoGateway.getAuthorizedChildResource({
+              domain: 'books',
+              module: 'creditnotes',
+              recordId: creditNoteId,
+              childType: 'email_content',
+              requester: gatewayRequester,
+              organizationId: input.organizationId?.trim(),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, 'You are not allowed to access this credit note email content.');
+            }
             const result = await loadZohoBooksClient().getCreditNoteEmailContent({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
@@ -4525,6 +4828,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await zohoGateway.getAuthorizedChildResource({
+              domain: 'books',
+              module: 'salesorders',
+              recordId: salesOrderId,
+              childType: 'email_content',
+              requester: gatewayRequester,
+              organizationId: input.organizationId?.trim(),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, 'You are not allowed to access this sales order email content.');
+            }
             const result = await loadZohoBooksClient().getSalesOrderEmailContent({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
@@ -4558,6 +4872,10 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
               retryable: false,
             });
+          }
+          const companyScopeError = await requireBooksCompanyScope('getPurchaseOrderEmailContent');
+          if (companyScopeError) {
+            return companyScopeError;
           }
           try {
             const result = await loadZohoBooksClient().getPurchaseOrderEmailContent({
@@ -4593,6 +4911,10 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
               retryable: false,
             });
+          }
+          const companyScopeError = await requireBooksCompanyScope('listTemplates');
+          if (companyScopeError) {
+            return companyScopeError;
           }
           try {
             const result = await loadZohoBooksClient().listTemplates?.({
@@ -4630,6 +4952,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await zohoGateway.getAuthorizedChildResource({
+              domain: 'books',
+              module: moduleName,
+              recordId,
+              childType: 'attachments',
+              requester: gatewayRequester,
+              organizationId: input.organizationId?.trim(),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, 'You are not allowed to access this Zoho Books attachment.');
+            }
             const result = await loadZohoBooksClient().getAttachment?.({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
@@ -4669,6 +5002,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await zohoGateway.getAuthorizedChildResource({
+              domain: 'books',
+              module: moduleName,
+              recordId,
+              childType: 'record_document',
+              requester: gatewayRequester,
+              organizationId: input.organizationId?.trim(),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, 'You are not allowed to access this Zoho Books document.');
+            }
             const result = await loadZohoBooksClient().getRecordDocument?.({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
@@ -4710,6 +5054,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await zohoGateway.getAuthorizedChildResource({
+              domain: 'books',
+              module: 'contacts',
+              recordId: contactId,
+              childType: 'statement_email_content',
+              requester: gatewayRequester,
+              organizationId: input.organizationId?.trim(),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, 'You are not allowed to access this contact statement email content.');
+            }
             const result = await loadZohoBooksClient().getContactStatementEmailContent({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
@@ -4743,6 +5098,10 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
               retryable: false,
             });
+          }
+          const companyScopeError = await requireBooksCompanyScope('getVendorPaymentEmailContent');
+          if (companyScopeError) {
+            return companyScopeError;
           }
           try {
             const result = await loadZohoBooksClient().getVendorPaymentEmailContent({
@@ -4780,6 +5139,17 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await zohoGateway.getAuthorizedChildResource({
+              domain: 'books',
+              module: moduleName,
+              recordId,
+              childType: 'comments',
+              requester: gatewayRequester,
+              organizationId: input.organizationId?.trim(),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, 'You are not allowed to access these Zoho Books comments.');
+            }
             const result = await loadZohoBooksClient().listComments({
               companyId: runtime.companyId,
               organizationId: input.organizationId?.trim(),
@@ -4815,6 +5185,10 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
               retryable: false,
             });
+          }
+          const companyScopeError = await requireBooksCompanyScope('getReport');
+          if (companyScopeError) {
+            return companyScopeError;
           }
           try {
             const result = await loadZohoBooksClient().getReport({
@@ -4853,21 +5227,28 @@ export const createVercelDesktopTools = (
             });
           }
           try {
-            const result = await loadZohoBooksClient().getRecord({
-              companyId: runtime.companyId,
-              moduleName,
+            const auth = asRecord(await zohoGateway.getAuthorizedRecord({
+              domain: 'books',
+              module: moduleName,
               recordId,
+              requester: gatewayRequester,
               organizationId: input.organizationId?.trim(),
-            });
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, `You are not allowed to access Zoho Books ${moduleName} ${recordId}.`);
+            }
             return buildEnvelope({
               success: true,
               summary: `Fetched Zoho Books ${moduleName} record ${recordId}.`,
               keyData: {
                 module: moduleName,
                 recordId,
-                organizationId: result.organizationId,
+                organizationId: asString(auth.organizationId),
               },
-              fullPayload: result.payload,
+              fullPayload: {
+                organizationId: asString(auth.organizationId),
+                record: asRecord(auth.payload) ?? {},
+              },
               citations: [{
                 id: `books-${moduleName}-${recordId}`,
                 title: `${moduleName}:${recordId}`,
@@ -4888,57 +5269,66 @@ export const createVercelDesktopTools = (
         }
 
         try {
-          const result = await loadZohoBooksClient().listRecords({
-            companyId: runtime.companyId,
-            moduleName,
+          const auth = asRecord(await zohoGateway.listAuthorizedRecords({
+            domain: 'books',
+            module: moduleName,
+            requester: gatewayRequester,
             organizationId: input.organizationId?.trim(),
             filters: input.filters,
             limit: input.limit,
             query: input.query?.trim(),
-          });
+          })) ?? {};
+          if (auth.allowed !== true) {
+            return buildZohoGatewayDeniedEnvelope(auth, `You are not allowed to read Zoho Books ${moduleName}.`);
+          }
+          const resultPayload = asRecord(auth.payload) ?? {};
+          const resultItems = asArray(resultPayload.records)
+            .map((entry) => asRecord(entry))
+            .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+          const organizationId = asString(auth.organizationId);
 
           if (input.operation === 'summarizeModule') {
-            const statusCounts = result.items.reduce<Record<string, number>>((acc, item) => {
+            const statusCounts = resultItems.reduce<Record<string, number>>((acc, item) => {
               const status = asString(item.status) ?? 'unknown';
               acc[status] = (acc[status] ?? 0) + 1;
               return acc;
             }, {});
             return buildEnvelope({
               success: true,
-              summary: result.items.length > 0
-                ? `Summarized ${result.items.length} Zoho Books ${moduleName} record(s).`
+              summary: resultItems.length > 0
+                ? `Summarized ${resultItems.length} Zoho Books ${moduleName} record(s).`
                 : `No Zoho Books ${moduleName} records matched the current filters.`,
               keyData: {
                 module: moduleName,
-                organizationId: result.organizationId,
-                recordCount: result.items.length,
+                organizationId,
+                recordCount: resultItems.length,
                 statusCounts,
               },
               fullPayload: {
-                organizationId: result.organizationId,
+                organizationId,
                 statusCounts,
-                records: result.items,
-                raw: result.payload,
+                records: resultItems,
+                raw: asRecord(resultPayload.raw),
               },
             });
           }
 
           return buildEnvelope({
             success: true,
-            summary: result.items.length > 0
-              ? `Found ${result.items.length} Zoho Books ${moduleName} record(s).`
+            summary: resultItems.length > 0
+              ? `Found ${resultItems.length} Zoho Books ${moduleName} record(s).`
               : `No Zoho Books ${moduleName} records matched the current filters.`,
             keyData: {
               module: moduleName,
-              organizationId: result.organizationId,
-              recordCount: result.items.length,
+              organizationId,
+              recordCount: resultItems.length,
             },
             fullPayload: {
-              organizationId: result.organizationId,
-              records: result.items,
-              raw: result.payload,
+              organizationId,
+              records: resultItems,
+              raw: asRecord(resultPayload.raw),
             },
-            citations: result.items.flatMap((record, index) => {
+            citations: resultItems.flatMap((record, index) => {
               const recordId =
                 asString(record.contact_id)
                 ?? asString(record.vendor_payment_id)
@@ -5370,6 +5760,32 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+        }
+
+        const booksMutationAuth = asRecord(await loadZohoGatewayService().executeAuthorizedMutation({
+          ...buildBooksMutationAuthorizationTarget({
+            operation: input.operation,
+            moduleName,
+            recordId,
+            accountId: input.accountId?.trim(),
+            transactionId: input.transactionId?.trim(),
+            invoiceId,
+            estimateId,
+            creditNoteId,
+            salesOrderId,
+            purchaseOrderId,
+            billId,
+            contactId,
+            vendorPaymentId,
+            organizationId: input.organizationId?.trim(),
+          }),
+          requester: buildZohoGatewayRequester(runtime),
+        })) ?? {};
+        if (booksMutationAuth.allowed !== true) {
+          return buildZohoGatewayDeniedEnvelope(
+            booksMutationAuth,
+            `You are not allowed to mutate Zoho Books ${moduleName ?? input.operation}.`,
+          );
         }
 
         let subject =
@@ -7030,38 +7446,52 @@ export const createVercelDesktopTools = (
             });
           }
           try {
-            const companyId = await loadCompanyContextResolver().resolveCompanyId({
-              companyId: runtime.companyId,
-              larkTenantKey: runtime.larkTenantKey,
-            });
-            const { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } = loadRuntimeControls();
-            const strictUserScopeEnabled = await isCompanyControlEnabled({
-              controlKey: COMPANY_CONTROL_KEYS.zohoUserScopedReadStrictEnabled,
-              companyId,
-              defaultValue: true,
-            });
-            const scopeMode = strictUserScopeEnabled
-              ? await loadZohoRoleAccessService().resolveScopeMode(companyId, runtime.requesterAiRole)
-              : 'company_scoped';
-            const matches = await loadZohoRetrievalService().query({
-              companyId,
-              requesterUserId: runtime.userId,
-              requesterEmail: runtime.requesterEmail,
-              scopeMode,
-              strictUserScopeEnabled,
-              text: input.query.trim(),
-              limit: 5,
-            });
-            const normalizedMatches = matches.map((entry) => {
-              const record = asRecord(entry) ?? {};
-              const payload = asRecord(record.payload) ?? {};
-              return {
-                type: asString(record.sourceType),
-                id: asString(record.sourceId),
-                score: typeof record.score === 'number' ? record.score : undefined,
-                data: payload,
-              };
-            });
+            const zohoGateway = loadZohoGatewayService();
+            const requester = buildZohoGatewayRequester(runtime);
+            const modules = crmModuleName
+              ? [crmModuleName]
+              : ['Leads', 'Contacts', 'Accounts', 'Deals', 'Cases'];
+            const normalizedMatches: Array<{
+              type?: string;
+              id?: string;
+              score?: number;
+              data: Record<string, unknown>;
+            }> = [];
+            let denialReason: string | undefined;
+
+            for (const moduleName of modules) {
+              const auth = asRecord(await zohoGateway.listAuthorizedRecords({
+                domain: 'crm',
+                module: moduleName,
+                requester,
+                filters: input.filters,
+                query: input.query.trim(),
+                limit: 5,
+              })) ?? {};
+              if (auth.allowed !== true) {
+                denialReason = asString(auth.denialReason) ?? denialReason;
+                continue;
+              }
+              const records = asArray(asRecord(auth.payload)?.records)
+                .map((entry) => asRecord(entry))
+                .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+              for (const record of records) {
+                normalizedMatches.push({
+                  type: moduleName,
+                  id: asString(record.id),
+                  data: record,
+                });
+                if (normalizedMatches.length >= 5) {
+                  break;
+                }
+              }
+              if (normalizedMatches.length >= 5) {
+                break;
+              }
+            }
+            if (normalizedMatches.length === 0 && denialReason) {
+              return buildZohoGatewayDeniedEnvelope({ denialReason }, 'You are not allowed to search Zoho CRM records.');
+            }
             const citations = normalizedMatches.flatMap((entry, index) => {
               const sourceType = entry.type;
               const sourceId = entry.id;
@@ -7084,8 +7514,6 @@ export const createVercelDesktopTools = (
                 recordType: normalizedMatches[0]?.type ?? input.module,
               },
               fullPayload: {
-                companyId,
-                scopeMode,
                 records: normalizedMatches,
               },
               citations,
@@ -7114,24 +7542,14 @@ export const createVercelDesktopTools = (
             });
           }
           try {
-            const record = sourceType
-              ? await loadZohoDataClient().fetchRecordBySource({
-                companyId: runtime.companyId,
-                sourceType,
-                sourceId: input.recordId.trim(),
-              })
-              : await loadZohoDataClient().getModuleRecord({
-                companyId: runtime.companyId,
-                moduleName: crmModuleName,
-                recordId: input.recordId.trim(),
-              });
-            if (!record) {
-              return buildEnvelope({
-                success: false,
-                summary: `No Zoho record was found for ${input.module} ${input.recordId.trim()}.`,
-                errorKind: 'validation',
-                retryable: false,
-              });
+            const auth = asRecord(await loadZohoGatewayService().getAuthorizedRecord({
+              domain: 'crm',
+              module: crmModuleName,
+              recordId: input.recordId.trim(),
+              requester: buildZohoGatewayRequester(runtime),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, `You are not allowed to access Zoho ${crmModuleName} ${input.recordId.trim()}.`);
             }
             return buildEnvelope({
               success: true,
@@ -7141,7 +7559,7 @@ export const createVercelDesktopTools = (
                 recordType: sourceType ?? crmModuleName,
               },
               fullPayload: {
-                record,
+                record: asRecord(auth.payload) ?? {},
               },
               citations: [{
                 id: `zoho-record-${input.recordId.trim()}`,
@@ -7175,6 +7593,16 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await loadZohoGatewayService().getAuthorizedChildResource({
+              domain: 'crm',
+              module: crmModuleName,
+              recordId: input.recordId.trim(),
+              childType: 'notes',
+              requester: buildZohoGatewayRequester(runtime),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, `You are not allowed to access notes for ${crmModuleName} ${input.recordId.trim()}.`);
+            }
             const notes = sourceType
               ? await loadZohoDataClient().listNotes?.({
                 companyId: runtime.companyId,
@@ -7220,6 +7648,27 @@ export const createVercelDesktopTools = (
               success: false,
               summary: 'getNote requires noteId.',
               errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          const companyId = await loadCompanyContextResolver().resolveCompanyId({
+            companyId: runtime.companyId,
+            larkTenantKey: runtime.larkTenantKey,
+          });
+          const { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } = loadRuntimeControls();
+          const strictUserScopeEnabled = await isCompanyControlEnabled({
+            controlKey: COMPANY_CONTROL_KEYS.zohoUserScopedReadStrictEnabled,
+            companyId,
+            defaultValue: true,
+          });
+          const scopeMode = strictUserScopeEnabled
+            ? await loadZohoRoleAccessService().resolveScopeMode(companyId, runtime.requesterAiRole)
+            : 'company_scoped';
+          if (scopeMode !== 'company_scoped') {
+            return buildEnvelope({
+              success: false,
+              summary: 'getNote requires company-scoped Zoho CRM access.',
+              errorKind: 'permission',
               retryable: false,
             });
           }
@@ -7270,6 +7719,16 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await loadZohoGatewayService().getAuthorizedChildResource({
+              domain: 'crm',
+              module: crmModuleName,
+              recordId: input.recordId.trim(),
+              childType: 'attachments',
+              requester: buildZohoGatewayRequester(runtime),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, `You are not allowed to access attachments for ${crmModuleName} ${input.recordId.trim()}.`);
+            }
             const attachments = sourceType
               ? await loadZohoDataClient().listAttachments?.({
                 companyId: runtime.companyId,
@@ -7319,6 +7778,16 @@ export const createVercelDesktopTools = (
             });
           }
           try {
+            const auth = asRecord(await loadZohoGatewayService().getAuthorizedChildResource({
+              domain: 'crm',
+              module: crmModuleName,
+              recordId: input.recordId.trim(),
+              childType: 'attachment_content',
+              requester: buildZohoGatewayRequester(runtime),
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, `You are not allowed to access attachment content for ${crmModuleName} ${input.recordId.trim()}.`);
+            }
             const attachment = sourceType
               ? await loadZohoDataClient().getAttachmentContent?.({
                 companyId: runtime.companyId,
@@ -7413,16 +7882,20 @@ export const createVercelDesktopTools = (
             });
           }
           try {
-            const records = await loadZohoDataClient().listModuleRecords({
-              companyId: runtime.companyId,
-              moduleName: crmModuleName,
-              perPage: 50,
+            const auth = asRecord(await loadZohoGatewayService().listAuthorizedRecords({
+              domain: 'crm',
+              module: crmModuleName,
+              requester: buildZohoGatewayRequester(runtime),
               filters: input.filters,
-            });
-            const query = input.query?.trim().toLowerCase();
-            const filtered = query
-              ? records.filter((record) => JSON.stringify(record).toLowerCase().includes(query))
-              : records;
+              query: input.query?.trim(),
+              limit: 50,
+            })) ?? {};
+            if (auth.allowed !== true) {
+              return buildZohoGatewayDeniedEnvelope(auth, `You are not allowed to read Zoho ${crmModuleName}.`);
+            }
+            const filtered = asArray(asRecord(auth.payload)?.records)
+              .map((entry) => asRecord(entry))
+              .filter((entry): entry is Record<string, unknown> => Boolean(entry));
             if (input.operation === 'summarizePipeline') {
               const statusCounts = filtered.reduce<Record<string, number>>((acc, record) => {
                 const status = asString(record.Stage) ?? asString(record.stage) ?? asString(record.Status) ?? asString(record.status) ?? 'unknown';
@@ -7545,6 +8018,20 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
               retryable: false,
             });
+          }
+          const crmMutationAuth = asRecord(await loadZohoGatewayService().executeAuthorizedMutation({
+            ...buildCrmMutationAuthorizationTarget({
+              operation: input.operation,
+              moduleName: crmModuleName,
+              recordId: input.recordId?.trim(),
+            }),
+            requester: buildZohoGatewayRequester(runtime),
+          })) ?? {};
+          if (crmMutationAuth.allowed !== true) {
+            return buildZohoGatewayDeniedEnvelope(
+              crmMutationAuth,
+              `You are not allowed to mutate Zoho ${crmModuleName ?? input.module?.trim() ?? input.operation}.`,
+            );
           }
           const subject =
             input.operation === 'createRecord'

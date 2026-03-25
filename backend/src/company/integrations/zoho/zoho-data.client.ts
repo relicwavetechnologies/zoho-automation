@@ -200,6 +200,37 @@ const readLookupTarget = (field: Record<string, unknown>): string | undefined =>
 const isSafeLookupTargetForEmail = (value: string): boolean =>
   /(users?|contacts?|leads?)/i.test(value);
 
+const SAFE_COQL_FIELD_PATTERN = /^[A-Za-z][A-Za-z0-9_.]*$/;
+
+const toCoqlLiteral = (value: unknown): string | undefined => {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return `'${escapeCoqlLiteral(value.trim())}'`;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  return undefined;
+};
+
+const buildCoqlFilterCriteria = (filters?: Record<string, unknown>): string[] => {
+  if (!filters) {
+    return [];
+  }
+
+  const clauses: string[] = [];
+  for (const [field, rawValue] of Object.entries(filters)) {
+    if (!SAFE_COQL_FIELD_PATTERN.test(field)) {
+      continue;
+    }
+    const literal = toCoqlLiteral(rawValue);
+    if (!literal) {
+      continue;
+    }
+    clauses.push(`${field} = ${literal}`);
+  }
+  return clauses;
+};
+
 const buildEmailPredicatesFromFields = (fields: Array<Record<string, unknown>>): string[] => {
   const predicates = new Set<string>();
 
@@ -383,6 +414,7 @@ export class ZohoDataClient {
     maxPages: number;
     sortBy?: 'Created_Time' | 'Modified_Time';
     sortOrder?: 'asc' | 'desc';
+    filters?: Record<string, unknown>;
   }): Promise<Array<{ sourceType: ZohoSourceType; sourceId: string; payload: Record<string, unknown> }>> {
     const environment = input.environment ?? 'prod';
     const moduleDef = ensureModule(input.sourceType);
@@ -413,6 +445,7 @@ export class ZohoDataClient {
     const perPage = Math.max(1, Math.min(50, Math.max(10, input.limit * 2)));
     const sortBy = input.sortBy ?? 'Modified_Time';
     const sortOrder = input.sortOrder ?? 'desc';
+    const filterClauses = buildCoqlFilterCriteria(input.filters);
     let lastPredicateError: ZohoIntegrationError | null = null;
     let anyPredicateSucceeded = false;
 
@@ -421,7 +454,9 @@ export class ZohoDataClient {
         const offset = (page - 1) * perPage;
         const selectQuery =
           `select id from ${moduleDef.moduleName} where ` +
-          `${emailPath} = '${escapeCoqlLiteral(normalizedRequesterEmail)}' ` +
+          `(${emailPath} = '${escapeCoqlLiteral(normalizedRequesterEmail)}'` +
+          (filterClauses.length > 0 ? ` and ${filterClauses.join(' and ')}` : '') +
+          `) ` +
           `order by ${sortBy} ${sortOrder} limit ${offset}, ${perPage}`;
 
         let coql: ZohoCoqlResponse;
@@ -578,6 +613,77 @@ export class ZohoDataClient {
       method: 'GET',
     });
     return response.data?.[0] ?? null;
+  }
+
+  async hasUserScopedModuleRecordAccess(input: {
+    companyId: string;
+    environment?: string;
+    moduleName: string;
+    recordId: string;
+    requesterEmail: string;
+  }): Promise<boolean> {
+    const environment = input.environment ?? 'prod';
+    const moduleName = ensureModuleName(input.moduleName);
+    const normalizedRequesterEmail = normalizeEmail(input.requesterEmail);
+    if (!normalizedRequesterEmail) {
+      throw new ZohoIntegrationError({
+        message: 'Requester email is required for strict user-scoped Zoho reads',
+        code: 'auth_failed',
+        retriable: false,
+      });
+    }
+
+    const emailPaths = await this.resolveModuleEmailPredicates({
+      companyId: input.companyId,
+      environment,
+      moduleName,
+    });
+    if (emailPaths.length === 0) {
+      throw new ZohoIntegrationError({
+        message: `Strict user scope cannot be enforced for module ${moduleName}: no safe email fields found`,
+        code: 'schema_mismatch',
+        retriable: false,
+      });
+    }
+
+    for (const emailPath of emailPaths) {
+      const selectQuery =
+        `select id from ${moduleName} where ` +
+        `(id = '${escapeCoqlLiteral(input.recordId.trim())}' and ${emailPath} = '${escapeCoqlLiteral(normalizedRequesterEmail)}') ` +
+        'limit 0, 1';
+      try {
+        const coql = await this.requestWithRefresh<ZohoCoqlResponse>({
+          companyId: input.companyId,
+          environment,
+          path: '/crm/v8/coql',
+          method: 'POST',
+          body: { select_query: selectQuery },
+        });
+        const matched = (coql.data ?? [])
+          .map((row) => coerceString(row.id))
+          .filter((id): id is string => Boolean(id))
+          .includes(input.recordId.trim());
+        if (matched) {
+          return true;
+        }
+      } catch (error) {
+        if (!(error instanceof ZohoIntegrationError)) {
+          throw error;
+        }
+        logger.warn('zoho.user_scope.record_access_check_failed', {
+          companyId: input.companyId,
+          environment,
+          moduleName,
+          recordId: input.recordId,
+          emailPath,
+          code: error.code,
+          statusCode: error.statusCode,
+          reason: error.message,
+        });
+      }
+    }
+
+    return false;
   }
 
   async createModuleRecord(input: {

@@ -5,6 +5,11 @@ export * from './zoho-token.crypto';
 export * from './zoho-token.service';
 export * from './zoho-http.client';
 export * from './zoho.errors';
+export * from './zoho-gateway.service';
+export * from './zoho-gateway.types';
+export * from './zoho-principal.resolver';
+export * from './zoho-crm-scope.compiler';
+export * from './zoho-books-scope.compiler';
 export type {
   ZohoProviderMode,
   ZohoProviderContext,

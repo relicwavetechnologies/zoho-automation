@@ -5,11 +5,9 @@ import type { AgentInvokeInputDTO } from '../../contracts';
 import { aiModelControlService, type AiControlTargetKey, type AiModelProvider } from '../../ai-models';
 import { CompanyContextResolutionError, companyContextResolver, zohoRetrievalService } from '../support';
 import { BaseAgent } from '../base';
-import { resolveZohoProvider } from '../../integrations/zoho/zoho-provider.resolver';
 import type { ZohoSourceType } from '../../integrations/zoho/zoho-provider.adapter';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
-import { zohoDataClient } from '../../integrations/zoho/zoho-data.client';
-import { normalizeEmail } from '../../integrations/zoho/zoho-email-scope';
+import { zohoGatewayService } from '../../integrations/zoho/zoho-gateway.service';
 import { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } from '../../support/runtime-controls';
 import { zohoRoleAccessService, type ZohoScopeMode } from '../../tools/zoho-role-access.service';
 import { logger } from '../../../utils/logger';
@@ -476,6 +474,7 @@ export class ZohoReadAgent extends BaseAgent {
     taskId: string;
     objective: string;
     requesterEmail?: string;
+    requesterAiRole?: string;
     scopeMode: ZohoScopeMode;
     strictUserScopeEnabled: boolean;
   }): Promise<LiveFetchResult> {
@@ -487,7 +486,7 @@ export class ZohoReadAgent extends BaseAgent {
     logger.debug('zoho.agent.live_fetch.start', {
       taskId: input.taskId,
       companyId: input.companyId,
-      mode: 'rest',
+      mode: 'gateway',
       sourceTypes: intent.preferredSourceTypes,
       createdAfter: intent.createdAfter?.toISOString(),
       pageSize: intent.pageSize,
@@ -496,138 +495,35 @@ export class ZohoReadAgent extends BaseAgent {
       scopeMode: input.scopeMode,
     });
 
-    if (input.scopeMode === 'email_scoped' && input.strictUserScopeEnabled) {
-      const requesterEmail = normalizeEmail(input.requesterEmail);
-      if (!requesterEmail) {
-        return {
-          status: 'blocked',
-          records: [],
-          sourceRefs: [],
-          fallbackUsed: false,
-          degraded: true,
-          partial: false,
-          scopeMode: input.scopeMode,
-          reasonCode: 'strict_scope_missing_requester_email',
-          reasonMessage: 'No records returned: your Zoho access requires a verified email scope for this request.',
-          moduleFailures: [],
-        };
-      }
-
-      const provider = await resolveZohoProvider({ companyId: input.companyId });
-
-      for (const sourceType of intent.preferredSourceTypes) {
-        let scopedRecords: Array<{ sourceType: ZohoSourceType; sourceId: string; payload: Record<string, unknown> }>;
-        try {
-          scopedRecords = await zohoDataClient.fetchUserScopedRecords({
-            companyId: input.companyId,
-            environment: provider.environment,
-            sourceType,
-            requesterEmail,
-            limit: intent.targetLimit,
-            maxPages: intent.maxPages,
-            sortBy: intent.sortBy,
-            sortOrder: intent.sortOrder,
-          });
-        } catch (error) {
-          moduleFailures.push(buildModuleFailure(sourceType, error));
-          continue;
-        }
-
-        for (const record of scopedRecords) {
-          if (!matchesTimeFilter(record, intent.createdAfter)) {
-            continue;
-          }
-          const key = `${record.sourceType}:${record.sourceId}`;
-          if (seen.has(key)) {
-            continue;
-          }
-          seen.add(key);
-          records.push(record);
-          if (records.length >= intent.targetLimit) {
-            break;
-          }
-        }
-
-        if (records.length >= intent.targetLimit) {
-          break;
-        }
-      }
-
-      return {
-        status:
-          records.length > 0
-            ? moduleFailures.length > 0 ? 'partial' : 'success'
-            : moduleFailures.length > 0 ? 'blocked' : 'empty',
-        records,
-        sourceRefs: buildLiveSourceRefs(records),
-        fallbackUsed: false,
-        degraded: moduleFailures.length > 0,
-        partial: records.length > 0 && moduleFailures.length > 0,
-        scopeMode: input.scopeMode,
-        reasonCode:
-          records.length === 0 && moduleFailures.length > 0
-            ? 'strict_scope_unenforceable_module'
-            : records.length === 0
-              ? 'strict_scope_no_matching_records'
-              : undefined,
-        reasonMessage:
-          records.length === 0 && moduleFailures.length > 0
-            ? `No records returned because email-scoped access could not be fully enforced: ${summarizeModuleFailures(moduleFailures)}.`
-            : records.length === 0
-              ? 'No email-scoped Zoho records matched this query.'
-              : moduleFailures.length > 0
-                ? `Returned available Zoho records, but some modules could not be fully checked: ${summarizeModuleFailures(moduleFailures)}.`
-                : undefined,
-        moduleFailures,
-      };
-    }
-
-    const provider = await resolveZohoProvider({ companyId: input.companyId });
-
     for (const sourceType of intent.preferredSourceTypes) {
-      let cursor: string | undefined;
-      let pagesFetched = 0;
-
-      while (pagesFetched < intent.maxPages && records.length < intent.targetLimit) {
-        let page;
-        try {
-          page = await provider.adapter.fetchHistoricalPage({
-            context: {
-              companyId: input.companyId,
-              environment: provider.environment,
-              connectionId: provider.connectionId,
-            },
-            cursor,
-            pageSize: intent.pageSize,
-            sourceType,
-            sortBy: intent.sortBy,
-            sortOrder: intent.sortOrder,
-          });
-        } catch (error) {
-          moduleFailures.push(buildModuleFailure(sourceType, error));
+      try {
+        const auth = await zohoGatewayService.listAuthorizedRecords({
+          domain: 'crm',
+          module: SOURCE_MODULE_LABELS[sourceType],
+          requester: {
+            companyId: input.companyId,
+            requesterEmail: input.requesterEmail,
+            requesterAiRole: input.requesterAiRole,
+          },
+          query: input.objective,
+          limit: intent.targetLimit,
+        });
+        if (!auth.allowed) {
+          moduleFailures.push(buildModuleFailure(sourceType, new ZohoIntegrationError({
+            message: auth.denialReason ?? 'Zoho gateway denied access',
+            code: 'auth_failed',
+            retriable: false,
+          })));
           break;
         }
-        pagesFetched += 1;
-        if (page.warnings?.length) {
-          for (const warning of page.warnings) {
-            moduleFailures.push({
-              sourceType: warning.sourceType,
-              moduleName: warning.moduleName,
-              reasonCode: warning.code,
-              reasonMessage: warning.message,
-              statusCode: warning.statusCode,
-            });
-          }
-        }
-
-        const pageRecords = page.records.map((record) => ({
-          sourceType: record.sourceType,
-          sourceId: record.sourceId,
-          payload: record.payload,
+        const pageRecords = (auth.payload?.records ?? []).map((record) => ({
+          sourceType,
+          sourceId: String(record.id ?? ''),
+          payload: record,
         })) as LiveRecord[];
 
         for (const record of pageRecords) {
-          if (!matchesTimeFilter(record, intent.createdAfter)) {
+          if (!record.sourceId || !matchesTimeFilter(record, intent.createdAfter)) {
             continue;
           }
           const key = `${record.sourceType}:${record.sourceId}`;
@@ -640,18 +536,11 @@ export class ZohoReadAgent extends BaseAgent {
             break;
           }
         }
-
-        const encounteredOlderRecord =
-          Boolean(intent.createdAfter)
-          && pageRecords.some((record) => {
-            const timestamp = getRecordTimestamp(record);
-            return timestamp !== null && timestamp < intent.createdAfter!.getTime();
-          });
-
-        if (!page.nextCursor || encounteredOlderRecord || records.length >= intent.targetLimit) {
-          break;
-        }
-        cursor = page.nextCursor;
+      } catch (error) {
+        moduleFailures.push(buildModuleFailure(sourceType, error));
+      }
+      if (records.length >= intent.targetLimit) {
+        break;
       }
     }
 
@@ -659,7 +548,9 @@ export class ZohoReadAgent extends BaseAgent {
       status:
         records.length > 0
           ? moduleFailures.length > 0 ? 'partial' : 'success'
-          : moduleFailures.length > 0 ? 'degraded' : 'empty',
+          : moduleFailures.length > 0
+            ? input.scopeMode === 'email_scoped' && input.strictUserScopeEnabled ? 'blocked' : 'degraded'
+            : 'empty',
       records,
       sourceRefs: buildLiveSourceRefs(records),
       fallbackUsed: false,
@@ -668,13 +559,17 @@ export class ZohoReadAgent extends BaseAgent {
       scopeMode: input.scopeMode,
       reasonCode:
         records.length === 0 && moduleFailures.length > 0
-          ? 'company_scope_partial_failure'
+          ? input.scopeMode === 'email_scoped' && input.strictUserScopeEnabled
+            ? 'strict_scope_unenforceable_module'
+            : 'company_scope_partial_failure'
           : undefined,
       reasonMessage:
         records.length === 0 && moduleFailures.length > 0
-          ? `No records returned because Zoho modules could not be queried cleanly: ${summarizeModuleFailures(moduleFailures)}.`
+          ? input.scopeMode === 'email_scoped' && input.strictUserScopeEnabled
+            ? `No records returned because email-scoped access could not be fully enforced: ${summarizeModuleFailures(moduleFailures)}.`
+            : `No records returned because Zoho modules could not be queried cleanly: ${summarizeModuleFailures(moduleFailures)}.`
           : moduleFailures.length > 0
-            ? `Returned available Zoho records, but some company-scoped modules failed: ${summarizeModuleFailures(moduleFailures)}.`
+            ? `Returned available Zoho records, but some modules could not be fully checked: ${summarizeModuleFailures(moduleFailures)}.`
             : undefined,
       moduleFailures,
     };
@@ -781,6 +676,7 @@ export class ZohoReadAgent extends BaseAgent {
           taskId: input.taskId,
           objective: input.objective,
           requesterEmail,
+          requesterAiRole: typeof input.contextPacket.requesterAiRole === 'string' ? input.contextPacket.requesterAiRole : undefined,
           scopeMode,
           strictUserScopeEnabled,
         });
