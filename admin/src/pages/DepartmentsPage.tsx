@@ -43,6 +43,7 @@ type DepartmentRole = {
   slug: string
   isSystem: boolean
   isDefault: boolean
+  zohoReadScope: 'personalized' | 'show_all'
   createdAt: string
   updatedAt: string
 }
@@ -183,6 +184,7 @@ export const DepartmentsPage = () => {
   const [newDepartmentDescription, setNewDepartmentDescription] = useState('')
   const [newRoleName, setNewRoleName] = useState('')
   const [newRoleSlug, setNewRoleSlug] = useState('')
+  const [newRoleZohoReadScope, setNewRoleZohoReadScope] = useState<'personalized' | 'show_all'>('personalized')
   const [membershipUserId, setMembershipUserId] = useState('')
   const [membershipRoleId, setMembershipRoleId] = useState('')
   const [memberSearch, setMemberSearch] = useState('')
@@ -190,6 +192,7 @@ export const DepartmentsPage = () => {
   const [candidateResults, setCandidateResults] = useState<DepartmentCandidate[]>([])
   const [searchingCandidates, setSearchingCandidates] = useState(false)
   const [pendingPermissionKey, setPendingPermissionKey] = useState<string | null>(null)
+  const [pendingRoleScopeId, setPendingRoleScopeId] = useState<string | null>(null)
   const [overrideUserId, setOverrideUserId] = useState('')
   const [overrideToolId, setOverrideToolId] = useState('')
   const [overrideActionGroup, setOverrideActionGroup] = useState('read')
@@ -471,12 +474,17 @@ export const DepartmentsPage = () => {
     if (!token || !selectedDepartmentId || !newRoleName.trim() || !newRoleSlug.trim()) return
     await api.post(
       `/api/admin/departments/${selectedDepartmentId}/roles`,
-      { name: newRoleName.trim(), slug: newRoleSlug.trim() },
+      {
+        name: newRoleName.trim(),
+        slug: newRoleSlug.trim(),
+        zohoReadScope: newRoleZohoReadScope,
+      },
       token,
     )
     toast({ title: 'Role created' })
     setNewRoleName('')
     setNewRoleSlug('')
+    setNewRoleZohoReadScope('personalized')
     await refreshDetail()
   }
 
@@ -620,6 +628,26 @@ export const DepartmentsPage = () => {
     )
     toast({ title: 'Default department role updated' })
     await refreshDetail()
+  }
+
+  const updateRoleZohoReadScope = async (
+    roleId: string,
+    roleName: string,
+    zohoReadScope: 'personalized' | 'show_all',
+  ) => {
+    if (!token || !selectedDepartmentId) return
+    setPendingRoleScopeId(roleId)
+    try {
+      await api.put(
+        `/api/admin/departments/${selectedDepartmentId}/roles/${roleId}`,
+        { name: roleName, zohoReadScope },
+        token,
+      )
+      toast({ title: `Zoho scope updated to ${zohoReadScope === 'show_all' ? 'Show All' : 'Personalized'}` })
+      await refreshDetail()
+    } finally {
+      setPendingRoleScopeId(null)
+    }
   }
 
   return (
@@ -864,7 +892,7 @@ export const DepartmentsPage = () => {
                                 <Badge variant="outline" className="text-[10px] font-bold uppercase">{detail.roles.length} Total</Badge>
                               </div>
                               
-                              <div className="grid gap-4 md:grid-cols-[1fr_1fr_auto] p-4 bg-secondary/10 border border-border/30 rounded-xl">
+                              <div className="grid gap-4 md:grid-cols-[1fr_1fr_180px_auto] p-4 bg-secondary/10 border border-border/30 rounded-xl">
                                 <div className="space-y-1.5">
                                   <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Role Name</label>
                                   <Input
@@ -883,6 +911,21 @@ export const DepartmentsPage = () => {
                                     className="bg-background border-border/50 h-9 text-sm font-mono"
                                   />
                                 </div>
+                                <div className="space-y-1.5">
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Zoho Read Scope</label>
+                                  <Select
+                                    value={newRoleZohoReadScope}
+                                    onValueChange={(value: 'personalized' | 'show_all') => setNewRoleZohoReadScope(value)}
+                                  >
+                                    <SelectTrigger className="bg-background border-border/50 h-9 text-sm">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="personalized">Personalized</SelectItem>
+                                      <SelectItem value="show_all">Show All</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
                                 <div className="flex items-end">
                                   <Button onClick={() => void createRole()} variant="outline" className="h-9 px-4 text-xs font-bold uppercase tracking-wider">
                                     <Plus className="h-3.5 w-3.5 mr-2" />
@@ -891,23 +934,55 @@ export const DepartmentsPage = () => {
                                 </div>
                               </div>
 
+                              <div className="rounded-xl border border-border/30 bg-secondary/5 p-4 text-xs text-muted-foreground">
+                                <span className="font-semibold text-foreground">Personalized</span> passes requester-based Zoho filters.{' '}
+                                <span className="font-semibold text-foreground">Show All</span> allows company-scoped Zoho reads for that department role.
+                              </div>
+
                               <div className="grid gap-3">
                                 {detail.roles.map((role) => (
                                   <div key={role.id} className="group flex items-center justify-between p-4 rounded-xl border border-border/30 bg-background hover:border-border/60 transition-colors">
-                                    <div className="flex items-center gap-3">
+                                    <div className="flex items-center gap-3 min-w-0">
                                       <div className="h-8 w-8 rounded-lg bg-secondary/50 flex items-center justify-center">
                                         <Shield className="h-4 w-4 text-muted-foreground" />
                                       </div>
-                                      <div>
+                                      <div className="min-w-0">
                                         <div className="text-sm font-bold text-foreground flex items-center gap-2">
                                           {role.name}
                                           {role.isDefault && <Badge variant="secondary" className="text-[9px] h-4 font-bold uppercase">Default</Badge>}
                                           {role.isSystem && <Badge variant="outline" className="text-[9px] h-4 font-bold uppercase">System</Badge>}
                                         </div>
                                         <div className="text-xs font-mono text-muted-foreground">{role.slug}</div>
+                                        <div className="mt-2 flex items-center gap-2">
+                                          <Badge
+                                            variant={role.zohoReadScope === 'show_all' ? 'outline' : 'secondary'}
+                                            className={cn(
+                                              "text-[9px] h-5 font-bold uppercase tracking-wider",
+                                              role.zohoReadScope === 'show_all'
+                                                ? "border-amber-500/30 text-amber-600 bg-amber-500/5"
+                                                : "bg-sky-500/10 text-sky-700"
+                                            )}
+                                          >
+                                            Zoho: {role.zohoReadScope === 'show_all' ? 'Show All' : 'Personalized'}
+                                          </Badge>
+                                        </div>
                                       </div>
                                     </div>
-                                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <div className="flex items-center gap-3">
+                                      <Select
+                                        value={role.zohoReadScope}
+                                        onValueChange={(value: 'personalized' | 'show_all') => void updateRoleZohoReadScope(role.id, role.name, value)}
+                                        disabled={pendingRoleScopeId === role.id}
+                                      >
+                                        <SelectTrigger className="w-[160px] h-9 text-xs bg-background border-border/50 focus:ring-primary/20">
+                                          <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          <SelectItem value="personalized">Personalized</SelectItem>
+                                          <SelectItem value="show_all">Show All</SelectItem>
+                                        </SelectContent>
+                                      </Select>
+                                      <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                       {!role.isDefault && (
                                         <Button
                                           variant="ghost"
@@ -928,6 +1003,7 @@ export const DepartmentsPage = () => {
                                           <Trash2 className="h-3.5 w-3.5" />
                                         </Button>
                                       )}
+                                      </div>
                                     </div>
                                   </div>
                                 ))}

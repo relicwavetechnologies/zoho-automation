@@ -123,6 +123,8 @@ const buildEgressTraceMeta = (input: {
 const DEFAULT_LARK_CARD_TITLE = 'Divo AI';
 const DEFAULT_LARK_CARD_TAG = 'Finance';
 const MAX_LARK_CARD_SUMMARY_LENGTH = 160;
+const MAX_LARK_MARKDOWN_ELEMENT_LENGTH = 1200;
+const MAX_LARK_CARD_ELEMENT_COUNT = 30;
 
 const normalizeLarkMarkdown = (value: string): string =>
   value
@@ -199,6 +201,79 @@ const buildLarkMarkdownElementV2 = (content: string, options?: {
   ...(options?.margin ? { margin: options.margin } : {}),
 });
 
+const splitLarkMarkdownIntoElements = (content: string): string[] => {
+  const normalized = normalizeLarkMarkdown(content);
+  if (!normalized) {
+    return ['No content available.'];
+  }
+
+  const blocks = normalized
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  if (blocks.length === 0) {
+    return [normalized];
+  }
+
+  const chunks: string[] = [];
+  let current = '';
+  for (const block of blocks) {
+    const candidate = current ? `${current}\n\n${block}` : block;
+    if (candidate.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      chunks.push(current);
+      current = '';
+    }
+
+    if (block.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+      current = block;
+      continue;
+    }
+
+    const lines = block.split('\n');
+    let lineChunk = '';
+    for (const line of lines) {
+      const nextLineChunk = lineChunk ? `${lineChunk}\n${line}` : line;
+      if (nextLineChunk.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+        lineChunk = nextLineChunk;
+        continue;
+      }
+      if (lineChunk) {
+        chunks.push(lineChunk);
+      }
+      if (line.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+        lineChunk = line;
+        continue;
+      }
+      for (let offset = 0; offset < line.length; offset += MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+        chunks.push(line.slice(offset, offset + MAX_LARK_MARKDOWN_ELEMENT_LENGTH));
+      }
+      lineChunk = '';
+    }
+    if (lineChunk) {
+      current = lineChunk;
+    }
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  if (chunks.length <= MAX_LARK_CARD_ELEMENT_COUNT) {
+    return chunks;
+  }
+
+  const kept = chunks.slice(0, MAX_LARK_CARD_ELEMENT_COUNT - 1);
+  const overflowText = chunks.slice(MAX_LARK_CARD_ELEMENT_COUNT - 1).join('\n\n');
+  kept.push(`${overflowText.slice(0, MAX_LARK_MARKDOWN_ELEMENT_LENGTH - 32)}\n\n_Continued in follow-up if needed._`);
+  return kept;
+};
+
 const buildLarkButtonElementV2 = (action: ChannelAction, index: number): Record<string, unknown> => ({
   tag: 'button',
   element_id: `action_${index + 1}`,
@@ -224,9 +299,11 @@ const buildLarkButtonElementV2 = (action: ChannelAction, index: number): Record<
 const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<string, unknown> => {
   const { title, body } = extractTitleAndBodyFromMarkdown(text);
   const normalizedBody = normalizeLarkMarkdown(body);
-  const elements: Array<Record<string, unknown>> = [
-    buildLarkMarkdownElementV2(normalizedBody, { textSize: 'normal' }),
-  ];
+  const elements: Array<Record<string, unknown>> = splitLarkMarkdownIntoElements(normalizedBody).map((chunk, index) =>
+    buildLarkMarkdownElementV2(chunk, {
+      textSize: 'normal',
+      ...(index === 0 ? {} : { margin: '8px 0 0 0' }),
+    }));
 
   if (actions && actions.length > 0) {
     elements.push(
@@ -429,6 +506,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       format,
       requestPath,
       textLength: input.text.length,
+      contentLength: typeof body.content === 'string' ? body.content.length : 0,
     });
     orangeDebug('lark.egress.send.start', {
       chatId: input.chatId,
@@ -509,6 +587,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
       format,
       textLength: input.text.length,
+      contentLength:
+        format === 'text'
+          ? JSON.stringify({ text: input.text }).length
+          : JSON.stringify(buildLarkCardContent(input.text, input.actions)).length,
     });
     orangeDebug('lark.egress.update.start', {
       messageId: input.messageId,
