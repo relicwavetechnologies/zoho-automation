@@ -39,7 +39,7 @@ class MemoryService {
         userId: input.userId,
         drafts,
       });
-      memoryContextService.invalidateCache({
+      await memoryContextService.invalidateCache({
         companyId: input.companyId,
         userId: input.userId,
         threadId: input.threadId,
@@ -83,7 +83,7 @@ class MemoryService {
         userId: input.userId,
         drafts,
       });
-      memoryContextService.invalidateCache({
+      await memoryContextService.invalidateCache({
         companyId: input.companyId,
         userId: input.userId,
         threadId: input.threadId,
@@ -184,13 +184,13 @@ class MemoryService {
     }
   }
 
-  invalidateCache(input: {
+  async invalidateCache(input: {
     companyId: string;
     userId: string;
     threadId?: string;
     conversationKey?: string;
-  }): void {
-    memoryContextService.invalidateCache(input);
+  }): Promise<void> {
+    await memoryContextService.invalidateCache(input);
   }
 
   async listForUser(input: { companyId: string; userId: string }): Promise<{
@@ -283,7 +283,7 @@ class MemoryService {
       companyId: input.companyId,
       userId: input.userId,
     });
-    memoryContextService.invalidateCache({
+    await memoryContextService.invalidateCache({
       companyId: input.companyId,
       userId: input.userId,
     });
@@ -319,7 +319,7 @@ class MemoryService {
         userId: input.userId,
       },
     });
-    memoryContextService.invalidateCache({
+    await memoryContextService.invalidateCache({
       companyId: input.companyId,
       userId: input.userId,
     });

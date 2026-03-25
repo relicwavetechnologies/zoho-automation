@@ -48,6 +48,7 @@ const normalizeWhitespace = (value: string): string => value.trim().toLowerCase(
 const normalizePhrase = (value: string): string =>
   normalizeWhitespace(
     value
+      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' email_address ')
       .replace(/\b(show|fetch|pull|list)\b/g, 'get')
       .replace(/\bmail\b/g, 'email')
       .replace(/\bquote\b/g, 'estimate')
@@ -303,6 +304,13 @@ const deriveToolFamily = (toolId: string): string => {
   return toolId;
 };
 
+const isGenericHelperTool = (toolId: string): boolean =>
+  toolId === 'skill-search'
+  || toolId === 'document-ocr-read'
+  || toolId === 'search-documents'
+  || toolId === 'search-read'
+  || toolId === 'search-agent';
+
 const EXECUTION_TOOL_ID_CANDIDATES: Record<string, string[]> = {
   booksRead: ['zoho-books-read', 'zoho-books-agent'],
   booksWrite: ['zoho-books-write', 'zoho-books-agent'],
@@ -480,7 +488,13 @@ class ToolRoutingService {
           matchedBy,
         } satisfies ToolRoutingPriorMatch;
       })
-      .filter((item) => item.score >= 40)
+      .filter((item) => {
+        const candidateDomain = item.canonicalIntentKey.split(':')[0] ?? 'unknown';
+        if (item.matchedBy === 'phrase_overlap' && candidateDomain !== intent.domain) {
+          return false;
+        }
+        return item.score >= 40;
+      })
       .sort((left, right) => {
         if (right.score !== left.score) {
           return right.score - left.score;
@@ -540,8 +554,10 @@ class ToolRoutingService {
     const primaryOutcome = successful[successful.length - 1]!;
     const candidateToolIds = EXECUTION_TOOL_ID_CANDIDATES[primaryOutcome.toolName] ?? [];
     const chosenToolId = (
-      (input.plannerChosenToolId && candidateToolIds.includes(input.plannerChosenToolId) ? input.plannerChosenToolId : null)
+      (input.plannerChosenToolId && !isGenericHelperTool(input.plannerChosenToolId) ? input.plannerChosenToolId : null)
+      ?? candidateToolIds.find((toolId) => input.runExposedToolIds?.includes(toolId) && !isGenericHelperTool(toolId))
       ?? candidateToolIds.find((toolId) => input.runExposedToolIds?.includes(toolId))
+      ?? candidateToolIds.find((toolId) => !isGenericHelperTool(toolId))
       ?? candidateToolIds[0]
       ?? input.plannerChosenToolId
     );
@@ -657,7 +673,7 @@ class ToolRoutingService {
       }
     }
 
-    memoryContextService.invalidateCache({
+    await memoryContextService.invalidateCache({
       companyId: input.companyId,
       userId: input.userId,
       threadId: input.threadId,

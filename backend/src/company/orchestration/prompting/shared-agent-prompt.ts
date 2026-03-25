@@ -207,6 +207,8 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
       allowedToolIds: input.runExposedToolIds ?? input.allowedToolIds,
       allowedActionsByTool: input.allowedActionsByTool,
     }),
+    'Do not claim you lack access to an entire product area like Lark, Zoho, or Gmail unless that product is absent from both the full allowed tool set and the run-exposed tool set for this run.',
+    'If the current run-exposed tool set is narrower than the full allowed tool set, describe that as the current tool selection for this request, not as a permanent session capability limit.',
     'For specialized or complex workflows, first search relevant skills with the skillSearch tool, read the chosen skill, and then proceed with the task.',
     'If a request might be about reusable workflow creation, recurring scheduling, save-for-later behavior, or the right scheduling/calendar route is unclear, search skills before guessing.',
     'If the user asks about prior conversation facts, personal preferences, or things they told you before, first use thread context and retrieved conversation memory. Do not call business tools like Zoho, Lark Base, Google Drive, or coding just to answer a personal-memory question unless the user explicitly asks for those systems.',

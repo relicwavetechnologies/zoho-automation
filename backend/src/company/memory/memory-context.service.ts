@@ -1,5 +1,9 @@
+import { createHash } from 'crypto';
+
 import { personalVectorMemoryService, type PersonalMemoryMatch } from '../integrations/vector';
+import { cacheRedisConnection } from '../queue/runtime/redis.connection';
 import { prisma } from '../../utils/prisma';
+import { logger } from '../../utils/logger';
 import {
   buildBehaviorProfileSummary,
   formatKindLabel,
@@ -18,29 +22,22 @@ type TimedPromiseCacheEntry<T> = {
   promise: Promise<T>;
 };
 
-type ProfileRow = Awaited<ReturnType<typeof prisma.userMemoryProfile.findUnique>>;
-
-type ActiveMemoryRow = {
-  id: string;
-  kind: string;
-  scope: string;
-  subjectKey: string;
-  summary: string;
-  valueJson: unknown;
-  confidence: number;
-  status: string;
-  source: string;
-  threadId: string | null;
-  conversationKey: string | null;
-  lastSeenAt: Date;
-  lastConfirmedAt: Date | null;
-  staleAfterAt: Date | null;
-  updatedAt: Date;
+type SerializedFlatUserMemoryItem = Omit<FlatUserMemoryItem, 'lastSeenAt' | 'lastConfirmedAt' | 'staleAfterAt' | 'updatedAt'> & {
+  lastSeenAt: string;
+  lastConfirmedAt?: string | null;
+  staleAfterAt?: string | null;
+  updatedAt: string;
 };
 
-const profileCache = new Map<string, TimedPromiseCacheEntry<ProfileRow>>();
-const activeRowsCache = new Map<string, TimedPromiseCacheEntry<ActiveMemoryRow[]>>();
+type SerializedPromptContext = Omit<MemoryPromptContext, 'behaviorProfile'> & {
+  behaviorProfile: UserBehaviorProfile | null;
+};
+
+const profileCache = new Map<string, TimedPromiseCacheEntry<UserBehaviorProfile | null>>();
+const activeRowsCache = new Map<string, TimedPromiseCacheEntry<FlatUserMemoryItem[]>>();
 const promptContextCache = new Map<string, TimedPromiseCacheEntry<MemoryPromptContext>>();
+const MEMORY_CACHE_VERSION = 'v1';
+const toRedisTtlSeconds = (ttlMs: number): number => Math.max(1, Math.ceil(ttlMs / 1000));
 
 const isPersonalMemoryQuestion = (value: string | null | undefined): boolean =>
   /\b(do you know|do you remember|remember|recall|what(?:'s| is) my|my (?:fav|favorite|favourite|preferred)|favorite|favourite|preferred|preference|about me|my name|my email)\b/i.test(value ?? '');
@@ -169,6 +166,137 @@ const buildPromptContextCacheKey = (input: {
 }): string =>
   `${buildActiveRowsCacheKey(input)}:${input.contextClass}:${input.queryText.trim().toLowerCase()}`;
 
+const redisProfileKey = (companyId: string, userId: string): string =>
+  `company:${companyId}:memory:${MEMORY_CACHE_VERSION}:user:${userId}:profile`;
+
+const redisActiveRowsKey = (input: {
+  companyId: string;
+  userId: string;
+  threadId?: string;
+  conversationKey?: string;
+}): string =>
+  `company:${input.companyId}:memory:${MEMORY_CACHE_VERSION}:user:${input.userId}:active:${input.threadId ?? 'none'}:${input.conversationKey ?? 'none'}`;
+
+const redisPromptContextKey = (input: {
+  companyId: string;
+  userId: string;
+  threadId?: string;
+  conversationKey?: string;
+  queryText: string;
+  contextClass: DurableMemoryContextClass;
+}): string =>
+  `company:${input.companyId}:memory:${MEMORY_CACHE_VERSION}:user:${input.userId}:prompt:${input.threadId ?? 'none'}:${input.conversationKey ?? 'none'}:${input.contextClass}:${createHash('sha1').update(input.queryText.trim().toLowerCase()).digest('hex').slice(0, 16)}`;
+
+const parseProfile = (serialized: string | null): UserBehaviorProfile | null | undefined => {
+  if (serialized === null) {
+    return undefined;
+  }
+  if (serialized === 'null') {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(serialized) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    const record = parsed as Record<string, unknown>;
+    return {
+      preferredReplyLength: typeof record.preferredReplyLength === 'string' ? record.preferredReplyLength as UserBehaviorProfile['preferredReplyLength'] : undefined,
+      preferredTone: typeof record.preferredTone === 'string' ? record.preferredTone as UserBehaviorProfile['preferredTone'] : undefined,
+      preferredFormatting: typeof record.preferredFormatting === 'string' ? record.preferredFormatting as UserBehaviorProfile['preferredFormatting'] : undefined,
+      updatedFromMemoryItemId: typeof record.updatedFromMemoryItemId === 'string' ? record.updatedFromMemoryItemId : null,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const serializeFlatItem = (item: FlatUserMemoryItem): SerializedFlatUserMemoryItem => ({
+  ...item,
+  lastSeenAt: item.lastSeenAt.toISOString(),
+  lastConfirmedAt: item.lastConfirmedAt?.toISOString() ?? null,
+  staleAfterAt: item.staleAfterAt?.toISOString() ?? null,
+  updatedAt: item.updatedAt.toISOString(),
+});
+
+const deserializeFlatItem = (item: SerializedFlatUserMemoryItem): FlatUserMemoryItem => ({
+  ...item,
+  lastSeenAt: new Date(item.lastSeenAt),
+  lastConfirmedAt: item.lastConfirmedAt ? new Date(item.lastConfirmedAt) : null,
+  staleAfterAt: item.staleAfterAt ? new Date(item.staleAfterAt) : null,
+  updatedAt: new Date(item.updatedAt),
+});
+
+const parseActiveItems = (serialized: string | null): FlatUserMemoryItem[] | undefined => {
+  if (serialized === null) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(serialized) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.flatMap((value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return [];
+      }
+      return [deserializeFlatItem(value as SerializedFlatUserMemoryItem)];
+    });
+  } catch {
+    return [];
+  }
+};
+
+const parsePromptContext = (serialized: string | null): MemoryPromptContext | undefined => {
+  if (serialized === null) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(serialized) as SerializedPromptContext;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {
+        behaviorProfile: null,
+        behaviorProfileContext: null,
+        durableTaskContext: [],
+        durableTaskContextText: null,
+        relevantMemoryFacts: [],
+        relevantMemoryFactsText: null,
+      };
+    }
+    return {
+      behaviorProfile: parsed.behaviorProfile ?? null,
+      behaviorProfileContext: typeof parsed.behaviorProfileContext === 'string' ? parsed.behaviorProfileContext : null,
+      durableTaskContext: Array.isArray(parsed.durableTaskContext) ? parsed.durableTaskContext.filter((value): value is string => typeof value === 'string') : [],
+      durableTaskContextText: typeof parsed.durableTaskContextText === 'string' ? parsed.durableTaskContextText : null,
+      relevantMemoryFacts: Array.isArray(parsed.relevantMemoryFacts) ? parsed.relevantMemoryFacts.filter((value): value is string => typeof value === 'string') : [],
+      relevantMemoryFactsText: typeof parsed.relevantMemoryFactsText === 'string' ? parsed.relevantMemoryFactsText : null,
+    };
+  } catch {
+    return {
+      behaviorProfile: null,
+      behaviorProfileContext: null,
+      durableTaskContext: [],
+      durableTaskContextText: null,
+      relevantMemoryFacts: [],
+      relevantMemoryFactsText: null,
+    };
+  }
+};
+
+const invalidateByPattern = async (pattern: string): Promise<number> => {
+  const redis = cacheRedisConnection.getClient();
+  let cursor = '0';
+  let deleted = 0;
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+    cursor = nextCursor;
+    if (keys.length > 0) {
+      deleted += await redis.del(...keys);
+    }
+  } while (cursor !== '0');
+  return deleted;
+};
+
 class MemoryContextService {
   async getActiveMemoryState(input: {
     companyId: string;
@@ -176,23 +304,51 @@ class MemoryContextService {
     threadId?: string;
     conversationKey?: string;
   }): Promise<{
-    profileRow: ProfileRow;
+    profile: UserBehaviorProfile | null;
     activeItems: FlatUserMemoryItem[];
   }> {
     const profileCacheKey = buildProfileCacheKey(input.companyId, input.userId);
     const activeRowsCacheKey = buildActiveRowsCacheKey(input);
-    const [profileRow, activeRows] = await Promise.all([
-      getCachedPromiseValue(profileCache, profileCacheKey, MEMORY_ROUTING_USER_TTL_MS, () =>
-        prisma.userMemoryProfile.findUnique({
+    const [profile, activeItems] = await Promise.all([
+      getCachedPromiseValue(profileCache, profileCacheKey, MEMORY_ROUTING_USER_TTL_MS, async () => {
+        const redis = cacheRedisConnection.getClient();
+        const cached = parseProfile(await redis.get(redisProfileKey(input.companyId, input.userId)));
+        if (cached !== undefined) {
+          await redis.expire(redisProfileKey(input.companyId, input.userId), toRedisTtlSeconds(MEMORY_ROUTING_USER_TTL_MS));
+          return cached;
+        }
+        const profileRow = await prisma.userMemoryProfile.findUnique({
           where: {
             companyId_userId: {
               companyId: input.companyId,
               userId: input.userId,
             },
           },
-        })),
-      getCachedPromiseValue(activeRowsCache, activeRowsCacheKey, MEMORY_ROUTING_THREAD_TTL_MS, () =>
-        prisma.userMemoryItem.findMany({
+        });
+        const profile: UserBehaviorProfile | null = profileRow
+          ? {
+            preferredReplyLength: profileRow.preferredReplyLength ?? undefined,
+            preferredTone: profileRow.preferredTone ?? undefined,
+            preferredFormatting: profileRow.preferredFormatting ?? undefined,
+            updatedFromMemoryItemId: profileRow.updatedFromMemoryItemId ?? null,
+          }
+          : null;
+        await redis.set(
+          redisProfileKey(input.companyId, input.userId),
+          JSON.stringify(profile),
+          'EX',
+          toRedisTtlSeconds(MEMORY_ROUTING_USER_TTL_MS),
+        );
+        return profile;
+      }),
+      getCachedPromiseValue(activeRowsCache, activeRowsCacheKey, MEMORY_ROUTING_THREAD_TTL_MS, async () => {
+        const redis = cacheRedisConnection.getClient();
+        const cached = parseActiveItems(await redis.get(redisActiveRowsKey(input)));
+        if (cached !== undefined) {
+          await redis.expire(redisActiveRowsKey(input), toRedisTtlSeconds(MEMORY_ROUTING_THREAD_TTL_MS));
+          return cached;
+        }
+        const rows = await prisma.userMemoryItem.findMany({
           where: {
             companyId: input.companyId,
             userId: input.userId,
@@ -229,20 +385,28 @@ class MemoryContextService {
             staleAfterAt: true,
             updatedAt: true,
           },
-        })),
+        });
+        await redis.set(
+          redisActiveRowsKey(input),
+          JSON.stringify(rows.map((row) => serializeFlatItem(mapMemoryItem(row)))),
+          'EX',
+          toRedisTtlSeconds(MEMORY_ROUTING_THREAD_TTL_MS),
+        );
+        return rows.map(mapMemoryItem);
+      }),
     ]);
     return {
-      profileRow,
-      activeItems: activeRows.map(mapMemoryItem),
+      profile,
+      activeItems,
     };
   }
 
-  invalidateCache(input: {
+  async invalidateCache(input: {
     companyId: string;
     userId: string;
     threadId?: string;
     conversationKey?: string;
-  }): void {
+  }): Promise<void> {
     const profilePrefix = buildProfileCacheKey(input.companyId, input.userId);
     profileCache.delete(profilePrefix);
     const activePrefix = buildActiveRowsCacheKey(input);
@@ -268,6 +432,18 @@ class MemoryContextService {
         }
       }
     }
+    const deleted = await Promise.all([
+      cacheRedisConnection.getClient().del(redisProfileKey(input.companyId, input.userId)),
+      invalidateByPattern(`company:${input.companyId}:memory:${MEMORY_CACHE_VERSION}:user:${input.userId}:active:*`),
+      invalidateByPattern(`company:${input.companyId}:memory:${MEMORY_CACHE_VERSION}:user:${input.userId}:prompt:*`),
+    ]);
+    logger.info('memory.cache.invalidated', {
+      companyId: input.companyId,
+      userId: input.userId,
+      threadId: input.threadId ?? null,
+      conversationKey: input.conversationKey ?? null,
+      deleted: deleted.reduce((sum, value) => sum + (typeof value === 'number' ? value : 0), 0),
+    }, { sampleRate: 0.1 });
   }
 
   async buildPromptContext(input: {
@@ -298,21 +474,28 @@ class MemoryContextService {
       contextClass: input.contextClass,
     });
     return getCachedPromiseValue(promptContextCache, promptContextCacheKey, MEMORY_ROUTING_SHORT_TTL_MS, async () => {
-      const { profileRow, activeItems } = await this.getActiveMemoryState({
+      const redis = cacheRedisConnection.getClient();
+      const redisKey = redisPromptContextKey({
+        companyId: input.companyId,
+        userId: input.userId!,
+        threadId: input.threadId,
+        conversationKey: input.conversationKey,
+        queryText: input.queryText,
+        contextClass: input.contextClass,
+      });
+      const cachedContext = parsePromptContext(await redis.get(redisKey));
+      if (cachedContext !== undefined) {
+        await redis.expire(redisKey, toRedisTtlSeconds(MEMORY_ROUTING_SHORT_TTL_MS));
+        return cachedContext;
+      }
+
+      const { profile, activeItems } = await this.getActiveMemoryState({
         companyId: input.companyId,
         userId: input.userId!,
         threadId: input.threadId,
         conversationKey: input.conversationKey,
       });
-
-      const behaviorProfile: UserBehaviorProfile | null = profileRow
-        ? {
-          preferredReplyLength: profileRow.preferredReplyLength ?? undefined,
-          preferredTone: profileRow.preferredTone ?? undefined,
-          preferredFormatting: profileRow.preferredFormatting ?? undefined,
-          updatedFromMemoryItemId: profileRow.updatedFromMemoryItemId ?? null,
-        }
-        : null;
+      const behaviorProfile = profile;
 
       const durableTaskItems = activeItems.filter((item) =>
         item.kind === 'ongoing_task'
@@ -347,7 +530,7 @@ class MemoryContextService {
 
       const behaviorSummary = buildBehaviorProfileSummary(behaviorProfile);
 
-      return {
+      const promptContext = {
         behaviorProfile,
         behaviorProfileContext: behaviorSummary
           ? `Resolved user behavior profile: ${behaviorSummary}. This should shape the response from the start unless the latest user message overrides it.`
@@ -357,6 +540,13 @@ class MemoryContextService {
         relevantMemoryFacts,
         relevantMemoryFactsText: relevantMemoryFacts.length > 0 ? relevantMemoryFacts.map((entry) => `- ${entry}`).join('\n') : null,
       };
+      await redis.set(
+        redisKey,
+        JSON.stringify(promptContext),
+        'EX',
+        toRedisTtlSeconds(MEMORY_ROUTING_SHORT_TTL_MS),
+      );
+      return promptContext;
     });
   }
 

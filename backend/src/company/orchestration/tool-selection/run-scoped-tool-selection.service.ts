@@ -34,7 +34,7 @@ const plannerDecisionSchema = z.object({
   chosenToolId: z.string().min(1).max(80).optional(),
   chosenOperationClass: z.enum(['read', 'write', 'send', 'inspect', 'schedule', 'search']).optional(),
   candidateToolIds: z.array(z.string().min(1).max(80)).max(8).optional(),
-  sourceOfTruthReason: z.string().min(1).max(300),
+  sourceOfTruthReason: z.string().min(1).max(1200),
   missingFields: z.array(z.string().min(1).max(120)).max(8).optional(),
   shouldAskClarification: z.boolean().optional(),
   clarificationQuestion: z.string().max(300).optional(),
@@ -348,6 +348,7 @@ export const resolveRunScopedToolSelection = async (input: {
     hasWorkspace: input.workspaceAvailable,
     hasArtifacts: input.hasActiveArtifacts,
   });
+  const suggestedAllowedToolIds = chooseSuggestedAllowed(allowed, input.childRoute?.suggestedToolIds);
   const { priors: learnedPriors } = await memoryService.findRoutingPriors({
     companyId: input.companyId,
     userId: input.userId,
@@ -362,6 +363,7 @@ export const resolveRunScopedToolSelection = async (input: {
   const learnedToolIds = uniq(learnedPriors.map((prior) => prior.toolId));
   const primaryBundle = uniq([
     ...learnedToolIds,
+    ...suggestedAllowedToolIds,
     ...buildPrimaryBundle({
       allowed,
       domain: inferredDomain,
