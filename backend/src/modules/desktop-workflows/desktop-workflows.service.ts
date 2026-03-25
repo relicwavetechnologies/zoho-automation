@@ -17,6 +17,7 @@ import {
 } from '../../company/scheduled-workflows/contracts';
 import { resolveChannelAdapter } from '../../company/channels/channel-adapter.registry';
 import { larkUserAuthLinkRepository } from '../../company/channels/lark/lark-user-auth-link.repository';
+import { resolveLarkPeople } from '../../company/orchestration/vercel/lark-helpers';
 import { getSupportedToolActionGroups } from '../../company/tools/tool-action-groups';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { TOOL_REGISTRY } from '../../company/tools/tool-registry';
@@ -89,6 +90,11 @@ const workflowIntentBlueprintSchema = z.object({
   outputPlan: z.object({
     finalDeliverable: z.string().trim().max(400).optional(),
     successCriteria: z.string().trim().max(600).optional(),
+  }).strict().optional(),
+  notificationPlan: z.object({
+    channel: z.literal('lark_dm'),
+    recipientQueries: z.array(z.string().trim().min(1).max(120)).min(1).max(10),
+    messageTemplate: z.string().trim().min(1).max(2000),
   }).strict().optional(),
   stepInstructions: z.object({
     retrieval: z.string().trim().max(1600).optional(),
@@ -216,6 +222,11 @@ const WORKFLOW_PLANNING_TIMEOUT_MS = 15000;
 const readString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 
+const readStringArray = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).map((entry) => entry.trim())
+    : [];
+
 const readRecord = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 
@@ -229,6 +240,47 @@ const sanitizeIdentifier = (value: string, fallback: string): string => {
     .replace(/^_+|_+$/g, '')
     .slice(0, 80);
   return normalized || fallback;
+};
+
+const looksLikeLarkDmIntent = (value: string): boolean =>
+  includesAny(value, [
+    'lark dm',
+    'direct message',
+    'send dm',
+    'dm me',
+    'message me',
+    'message him',
+    'message her',
+    'message them',
+    'ping me',
+    'ping him',
+    'ping her',
+    'ping them',
+  ]);
+
+const extractHeuristicNotificationPlan = (
+  userIntent: string,
+): z.infer<NonNullable<typeof workflowIntentBlueprintSchema.shape.notificationPlan>> | undefined => {
+  if (!looksLikeLarkDmIntent(userIntent) || !includesAny(userIntent, ['send', 'dm', 'message', 'ping'])) {
+    return undefined;
+  }
+
+  const recipientSection = userIntent.match(/\b(?:to|for)\s+(.+)$/i)?.[1];
+  const recipientQueries = (recipientSection
+    ? recipientSection
+      .split(/\s*(?:,| and )\s*/i)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+    : [])
+    .slice(0, 10);
+  const messageTemplate = userIntent.match(/\bsend\s+(.+?)\s+(?:to|for|in)\b/i)?.[1]?.trim()
+    || 'Scheduled Lark direct message.';
+
+  return {
+    channel: 'lark_dm',
+    recipientQueries: recipientQueries.length > 0 ? recipientQueries : ['me'],
+    messageTemplate,
+  };
 };
 
 const titleFromIdentifier = (value: string): string =>
@@ -473,6 +525,7 @@ const buildCompilerPrompt = (input: {
     'Use document-ocr-read only as fallback when indexed retrieval is unavailable or insufficient.',
     'For CSV or task-table jobs, describe the units of work as rows/tasks and the execution policy as sequential unless the user clearly asks for parallelism.',
     'If work items imply writes or sends, tell runtime to route each item to the appropriate approved tool family based on item content and to honor approvals when required.',
+    'If the workflow must send Lark direct messages, populate notificationPlan with channel=lark_dm, the intended recipientQueries, and the exact messageTemplate to send. Recipient queries may include "me".',
     'Only deliver to these destination ids: ' + allowedDestinationIds,
     'Keep compilerNotes short and practical.',
     '',
@@ -493,6 +546,7 @@ const buildCompilerPrompt = (input: {
     '- sources: list the main source artifacts and the unit of work',
     '- executionPolicy: state ordering, per-item routing, approval sensitivity, and completion reporting',
     '- outputPlan: describe the final deliverable and success criteria',
+    '- notificationPlan: only when the workflow should send Lark DMs; include recipientQueries and messageTemplate',
     '- stepInstructions: write concrete instructions for retrieval, extraction, execution, summary, and delivery',
   ].join('\n');
 };
@@ -529,6 +583,7 @@ const buildAuthoringPrompt = (input: {
     'Prefer indexed company document retrieval with search-documents first, then OCR/document-read as fallback.',
     'For CSV or task-table workflows, keep the unit of work as rows/tasks and keep execution sequential unless the user says otherwise.',
     'Do not regress a file-backed operational workflow into generic analyze-only instructions.',
+    'If the workflow should message teammates on Lark, preserve the notification plan with concrete recipient queries and a concrete message template.',
     '',
     `Workflow name: ${input.workflowName}`,
     `Latest user brief: ${input.latestIntent}`,
@@ -1192,6 +1247,9 @@ const buildHeuristicBlueprint = (input: {
         ? 'All work items are processed in order and the final report reflects completed, blocked, and failed items.'
         : 'The workflow completes its intended task and delivers a concise result.',
     },
+    ...(extractHeuristicNotificationPlan(input.userIntent)
+      ? { notificationPlan: extractHeuristicNotificationPlan(input.userIntent) }
+      : {}),
     stepInstructions: {
       retrieval: input.referenceContext?.trim()
         ? buildReferenceRetrievalInstructions(input.referenceContext.trim())
@@ -1275,8 +1333,120 @@ const buildReusableWorkflowBrief = (input: {
     );
   }
 
+  if (input.blueprint.notificationPlan) {
+    sections.push(
+      '',
+      'Lark notifications:',
+      `- Send Lark DMs to: ${input.blueprint.notificationPlan.recipientQueries.join(', ')}`,
+      `- Message template: ${input.blueprint.notificationPlan.messageTemplate}`,
+    );
+  }
+
   return sections.join('\n');
 };
+
+const isLarkMessageNode = (node: z.infer<typeof scheduledWorkflowSpecSchema>['nodes'][number]): boolean =>
+  node.capability?.toolId === 'lark-message-write'
+  && node.capability?.actionGroup === 'send'
+  && node.capability?.operation === 'sendDm';
+
+const formatLarkRecipientLabel = (person: {
+  displayName?: string;
+  email?: string;
+  externalUserId?: string;
+  larkOpenId?: string;
+}): string => {
+  const openId = person.larkOpenId ?? person.externalUserId ?? 'unknown';
+  return `${person.displayName ?? person.email ?? person.externalUserId ?? openId} (${openId})`;
+};
+
+const bindWorkflowLarkRecipients = async (input: {
+  session: MemberSessionDTO;
+  workflowSpec: z.infer<typeof scheduledWorkflowSpecSchema>;
+}): Promise<z.infer<typeof scheduledWorkflowSpecSchema>> => {
+  const nextNodes = await Promise.all(input.workflowSpec.nodes.map(async (node) => {
+    if (!isLarkMessageNode(node)) {
+      return node;
+    }
+
+    const toolArguments = readRecord(node.toolArguments) ?? {};
+    const recipientQueries = readStringArray(toolArguments.recipientQueries);
+    const existingRecipientOpenIds = readStringArray(toolArguments.recipientOpenIds);
+    const messageTemplate = readString(toolArguments.messageTemplate) ?? readString(node.instructions);
+
+    if (recipientQueries.length === 0 && existingRecipientOpenIds.length === 0) {
+      throw new HttpException(400, `Workflow step "${node.title}" is missing Lark recipients.`);
+    }
+    if (!messageTemplate) {
+      throw new HttpException(400, `Workflow step "${node.title}" is missing a Lark DM message template.`);
+    }
+
+    const resolved = recipientQueries.length > 0
+      ? await resolveLarkPeople({
+        companyId: input.session.companyId,
+        appUserId: input.session.userId,
+        requestLarkOpenId: input.session.larkOpenId,
+        assigneeNames: recipientQueries,
+      })
+      : { people: [], unresolved: [], ambiguous: [] };
+    if (resolved.unresolved.length > 0) {
+      throw new HttpException(
+        400,
+        `Workflow step "${node.title}" has unresolved Lark recipients: ${resolved.unresolved.join(', ')}.`,
+      );
+    }
+    if (resolved.ambiguous.length > 0) {
+      const ambiguous = resolved.ambiguous
+        .map((entry) => `${entry.query} -> ${entry.matches.map((person) => formatLarkRecipientLabel(person)).join(', ')}`)
+        .join('; ');
+      throw new HttpException(
+        400,
+        `Workflow step "${node.title}" has ambiguous Lark recipients: ${ambiguous}.`,
+      );
+    }
+
+    const recipientOpenIds = Array.from(new Set([
+      ...existingRecipientOpenIds,
+      ...resolved.people.map((person) => person.larkOpenId ?? person.externalUserId).filter((value): value is string => Boolean(value)),
+    ]));
+    const personByOpenId = new Map(resolved.people.map((person) => [
+      person.larkOpenId ?? person.externalUserId,
+      person,
+    ]));
+    const recipientLabels = recipientOpenIds.map((openId) => {
+      const person = personByOpenId.get(openId);
+      return person ? formatLarkRecipientLabel(person) : openId;
+    });
+
+    return {
+      ...node,
+      toolArguments: {
+        ...toolArguments,
+        recipientQueries,
+        recipientOpenIds,
+        recipientLabels,
+        messageTemplate,
+        skipConfirmation: true,
+      },
+    };
+  }));
+
+  return scheduledWorkflowSpecSchema.parse({
+    ...input.workflowSpec,
+    nodes: nextNodes,
+  });
+};
+
+const summarizeWorkflowLarkRecipients = (
+  workflowSpec: z.infer<typeof scheduledWorkflowSpecSchema>,
+): string[] => workflowSpec.nodes.flatMap((node) => {
+  if (!isLarkMessageNode(node)) {
+    return [];
+  }
+  const toolArguments = readRecord(node.toolArguments) ?? {};
+  const labels = readStringArray(toolArguments.recipientLabels);
+  return labels.length > 0 ? [`${node.title}: ${labels.join(', ')}`] : [];
+});
 
 const assembleWorkflowSpecFromBlueprint = (input: {
   blueprint: z.infer<typeof workflowIntentBlueprintSchema>;
@@ -1433,6 +1603,31 @@ const assembleWorkflowSpecFromBlueprint = (input: {
     });
   }
 
+  if (input.blueprint.notificationPlan?.channel === 'lark_dm') {
+    addNode({
+      id: 'send_lark_dms',
+      kind: 'send',
+      title: 'Send Lark direct messages',
+      instructions: truncateText(
+        `Send the prepared Lark direct message to the saved recipients. Message template: ${input.blueprint.notificationPlan.messageTemplate}`,
+        4000,
+      ),
+      inputs: [nodes[nodes.length - 1]!.id],
+      outputKey: 'lark_dm_results',
+      expectedOutput: 'A direct-message delivery result for each saved Lark recipient.',
+      capability: {
+        toolId: 'lark-message-write',
+        actionGroup: 'send',
+        operation: 'sendDm',
+      },
+      toolArguments: {
+        recipientQueries: input.blueprint.notificationPlan.recipientQueries,
+        messageTemplate: input.blueprint.notificationPlan.messageTemplate,
+        skipConfirmation: true,
+      },
+    });
+  }
+
   addNode({
     id: 'deliver_result',
     kind: 'deliver',
@@ -1463,6 +1658,7 @@ const assembleWorkflowSpecFromBlueprint = (input: {
 const buildApprovalGrant = (
   session: MemberSessionDTO,
   capabilitySummary: ScheduledWorkflowCapabilitySummary,
+  workflowSpec?: z.infer<typeof scheduledWorkflowSpecSchema>,
 ): Record<string, unknown> => ({
   version: 'v1',
   approvedByUserId: session.userId,
@@ -1474,6 +1670,14 @@ const buildApprovalGrant = (
     operations: capabilitySummary.operationsByTool[toolId] ?? [],
   })),
   approvedDestinationIds: capabilitySummary.expectedDestinationIds,
+  ...(workflowSpec
+    ? (() => {
+      const recipientSummary = summarizeWorkflowLarkRecipients(workflowSpec);
+      return recipientSummary.length > 0
+        ? { notes: `Approved Lark DM recipients: ${recipientSummary.join(' | ')}` }
+        : {};
+    })()
+    : {}),
 });
 
 const parseWorkflowRow = (row: {
@@ -1835,6 +2039,11 @@ class DesktopWorkflowsService {
         referenceContext: input.latestReferenceContext,
       });
     }
+
+    workflowSpec = await bindWorkflowLarkRecipients({
+      session: input.session,
+      workflowSpec,
+    });
 
     const aiDraft = buildReusableWorkflowBrief({
       userIntent: input.latestIntent,
@@ -2242,12 +2451,15 @@ class DesktopWorkflowsService {
     const compileIntent = nextIntent.trim() || 'Draft workflow pending author input.';
     const nextSchedule = input.schedule ?? parsed.schedule;
     const nextOutputConfig = input.outputConfig ?? parsed.outputConfig;
-    const nextWorkflowSpec = input.workflowSpec
+    const nextWorkflowSpec = await bindWorkflowLarkRecipients({
+      session,
+      workflowSpec: input.workflowSpec
       ? reconcileWorkflowSpecDestinations(
         scheduledWorkflowSpecSchema.parse({ ...input.workflowSpec, name: nextName }),
         nextOutputConfig,
       )
-      : parsed.workflowSpec;
+      : parsed.workflowSpec,
+    });
     const nextCompiled = compileScheduledWorkflowDefinition({
       userIntent: compileIntent,
       workflowSpec: nextWorkflowSpec,
@@ -2308,11 +2520,14 @@ class DesktopWorkflowsService {
     }
 
     const normalizedOutputConfig = scheduledWorkflowOutputConfigSchema.parse(input.outputConfig);
-    const workflowSpec = reconcileWorkflowSpecDestinations(scheduledWorkflowSpecSchema.parse({
+    const workflowSpec = await bindWorkflowLarkRecipients({
+      session,
+      workflowSpec: reconcileWorkflowSpecDestinations(scheduledWorkflowSpecSchema.parse({
       ...input.workflowSpec,
       name: input.name,
-    }), normalizedOutputConfig);
-    const { capabilitySummary } = compileScheduledWorkflowDefinition({
+    }), normalizedOutputConfig),
+    });
+    const { capabilitySummary, compiledPrompt } = compileScheduledWorkflowDefinition({
       userIntent: input.userIntent,
       workflowSpec,
       schedule: input.schedule,
@@ -2367,7 +2582,7 @@ class DesktopWorkflowsService {
           userIntent: input.userIntent,
           aiDraft: input.aiDraft?.trim() || null,
           workflowSpecJson: workflowSpec,
-          compiledPrompt: input.compiledPrompt.trim(),
+          compiledPrompt: compiledPrompt.trim(),
           capabilitySummaryJson: capabilitySummary,
           timezone: input.schedule.timezone,
           scheduleType: input.schedule.type,
@@ -2375,7 +2590,7 @@ class DesktopWorkflowsService {
           scheduleEnabled,
           nextRunAt,
           outputConfigJson: outputConfig,
-          approvalGrantJson: buildApprovalGrant(session, capabilitySummary),
+          approvalGrantJson: buildApprovalGrant(session, capabilitySummary, workflowSpec),
           publishedAt: new Date(),
           archivedAt: null,
           pausedAt: null,
@@ -2398,7 +2613,7 @@ class DesktopWorkflowsService {
           userIntent: input.userIntent,
           aiDraft: input.aiDraft?.trim() || null,
           workflowSpecJson: workflowSpec,
-          compiledPrompt: input.compiledPrompt.trim(),
+          compiledPrompt: compiledPrompt.trim(),
           capabilitySummaryJson: capabilitySummary,
           timezone: input.schedule.timezone,
           scheduleType: input.schedule.type,
@@ -2406,7 +2621,7 @@ class DesktopWorkflowsService {
           scheduleEnabled,
           nextRunAt,
           outputConfigJson: outputConfig,
-          approvalGrantJson: buildApprovalGrant(session, capabilitySummary),
+          approvalGrantJson: buildApprovalGrant(session, capabilitySummary, workflowSpec),
           publishedAt: new Date(),
         },
         select: {

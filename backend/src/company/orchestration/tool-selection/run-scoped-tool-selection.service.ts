@@ -182,6 +182,13 @@ const buildPrimaryBundle = (input: {
           ...chooseFirstAllowed(input.allowed, ['lark-task-read', 'lark-task-agent']),
           ...chooseFirstAllowed(input.allowed, ['lark-task-write', 'lark-task-agent']),
         ]);
+    case 'lark_message':
+      return input.operationClass === 'send' || /\b(dm|direct message|message|ping)\b/.test(larkHintText)
+        ? uniq([
+          ...chooseFirstAllowed(input.allowed, ['lark-message-read']),
+          ...chooseFirstAllowed(input.allowed, ['lark-message-write']),
+        ])
+        : chooseFirstAllowed(input.allowed, ['lark-message-read']);
     case 'lark_doc':
       return input.operationClass === 'read' || input.operationClass === 'inspect'
         ? chooseFirstAllowed(input.allowed, ['lark-doc-agent'])
@@ -208,6 +215,12 @@ const buildPrimaryBundle = (input: {
     case 'lark':
       if (suggestedAllowedToolIds.length > 0) {
         return suggestedAllowedToolIds.slice(0, 3);
+      }
+      if (/\b(dm|direct message|message|ping)\b/.test(larkHintText)) {
+        return uniq([
+          ...chooseFirstAllowed(input.allowed, ['lark-message-read']),
+          ...chooseFirstAllowed(input.allowed, ['lark-message-write']),
+        ]).slice(0, 3);
       }
       if (/\b(base|bitable|table|tables|record|records|field|fields|view|views)\b/.test(larkHintText)) {
         return chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent']);

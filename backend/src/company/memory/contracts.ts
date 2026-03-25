@@ -59,6 +59,7 @@ export type ToolRoutingDomain =
   | 'google_calendar'
   | 'lark_base'
   | 'lark_task'
+  | 'lark_message'
   | 'lark_doc'
   | 'lark_calendar'
   | 'lark_approval'

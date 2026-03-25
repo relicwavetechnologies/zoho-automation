@@ -3,6 +3,8 @@ import { Buffer } from 'buffer';
 import { companyGoogleAuthLinkRepository } from '../../channels/google/company-google-auth-link.repository';
 import { googleOAuthService } from '../../channels/google/google-oauth.service';
 import { googleUserAuthLinkRepository } from '../../channels/google/google-user-auth-link.repository';
+import { larkMessagingService } from '../../channels/lark/lark-messaging.service';
+import { LarkRuntimeClientError } from '../../channels/lark/lark-runtime-client';
 import { departmentService } from '../../departments/department.service';
 import { formatZohoGatewayDeniedMessage } from '../../integrations/zoho/zoho-gateway-denials';
 import { zohoGatewayService } from '../../integrations/zoho/zoho-gateway.service';
@@ -754,6 +756,64 @@ const executeGoogleCalendarAction = async (action: HydratedStoredHitlAction): Pr
   }
 
   throw new Error(`Unsupported Google Calendar approval operation: ${operation}`);
+};
+
+const executeLarkMessageAction = async (action: HydratedStoredHitlAction): Promise<ActionExecutionResult> => {
+  const payload = action.payload ?? {};
+  const metadata = action.metadata ?? {};
+  const operation = asString(payload.operation);
+  if (operation !== 'sendDm') {
+    throw new Error(`Unsupported Lark messaging operation: ${operation ?? 'unknown'}`);
+  }
+
+  const companyId = asString(metadata.companyId);
+  const userId = asString(metadata.userId);
+  const message = asString(payload.message);
+  const recipientOpenIds = asStringArray(payload.recipientOpenIds);
+  const recipientLabels = asStringArray(payload.recipientLabels);
+  const larkTenantKey = asString(metadata.larkTenantKey);
+  const credentialMode = asString(metadata.authProvider) === 'lark' ? 'user_linked' as const : 'tenant' as const;
+
+  if (!companyId || !userId) {
+    throw new Error('Stored Lark messaging action is missing execution identity metadata');
+  }
+  if (!message) {
+    throw new Error('Stored Lark messaging action is missing message');
+  }
+  if (recipientOpenIds.length === 0) {
+    throw new Error('Stored Lark messaging action is missing recipientOpenIds');
+  }
+
+  const sendWithAuth = async (mode: 'tenant' | 'user_linked') =>
+    Promise.all(recipientOpenIds.map((recipientOpenId) =>
+      larkMessagingService.sendDirectTextMessage({
+        companyId,
+        larkTenantKey,
+        appUserId: userId,
+        credentialMode: mode,
+        recipientOpenId,
+        text: message,
+      })));
+
+  let deliveries: Array<Record<string, unknown>>;
+  try {
+    deliveries = await sendWithAuth(credentialMode);
+  } catch (error) {
+    if (credentialMode !== 'user_linked' || !(error instanceof LarkRuntimeClientError)) {
+      throw error;
+    }
+    deliveries = await sendWithAuth('tenant');
+  }
+
+  return {
+    ok: true,
+    summary: `Sent ${deliveries.length} Lark DM(s)${recipientLabels.length > 0 ? ` to ${recipientLabels.join(', ')}` : ''}.`,
+    payload: {
+      recipientOpenIds,
+      recipientLabels,
+      deliveries,
+    },
+  };
 };
 
 const moduleNameToSourceType = (moduleName: string): ZohoSourceType => {
@@ -2079,6 +2139,8 @@ export const executeStoredRemoteToolAction = async (action: HydratedStoredHitlAc
       return executeGoogleDriveAction(action);
     case 'google-calendar':
       return executeGoogleCalendarAction(action);
+    case 'lark-message-write':
+      return executeLarkMessageAction(action);
     case 'zoho-write':
       return executeZohoAction(action);
     case 'zoho-books-write':

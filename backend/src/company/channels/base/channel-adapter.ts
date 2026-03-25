@@ -20,6 +20,8 @@ export type ChannelOutboundMessage = {
   chatId: string;
   text: string;
   correlationId?: string;
+  /** Delivery format for the outbound payload. Defaults to "interactive". */
+  format?: 'interactive' | 'text';
   /** Optional interactive buttons to attach to the message card. */
   actions?: ChannelAction[];
 };
@@ -28,6 +30,8 @@ export type ChannelUpdateMessage = {
   messageId: string;
   text: string;
   correlationId?: string;
+  /** Delivery format for the outbound payload. Defaults to "interactive". */
+  format?: 'interactive' | 'text';
   /** Optional interactive buttons to attach to the updated card. Pass empty array to remove. */
   actions?: ChannelAction[];
 };

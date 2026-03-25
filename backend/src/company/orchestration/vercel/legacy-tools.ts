@@ -85,6 +85,17 @@ const loadLarkApprovalsService = (): {
   createInstance: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
 } => loadModuleExport('../../channels/lark/lark-approvals.service', 'larkApprovalsService');
 
+const loadLarkMessagingService = (): {
+  sendDirectTextMessage: (input: {
+    companyId?: string;
+    larkTenantKey?: string;
+    appUserId?: string;
+    credentialMode?: 'tenant' | 'user_linked';
+    recipientOpenId: string;
+    text: string;
+  }) => Promise<Record<string, unknown>>;
+} => loadModuleExport('../../channels/lark/lark-messaging.service', 'larkMessagingService');
+
 const loadLarkBaseService = (): {
   listApps: (input: Record<string, unknown>) => Promise<{ items: Array<Record<string, unknown>>; pageToken?: string; hasMore: boolean }>;
   listTables: (input: Record<string, unknown>) => Promise<{ items: Array<Record<string, unknown>>; pageToken?: string; hasMore: boolean }>;
@@ -109,6 +120,16 @@ const loadResolveLarkTaskAssignees = (): ((input: Record<string, unknown>) => Pr
 
 const loadListLarkTaskAssignablePeople = (): ((input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>) =>
   loadModuleExport('./lark-helpers', 'listLarkTaskAssignablePeople');
+
+const loadResolveLarkPeople = (): ((input: Record<string, unknown>) => Promise<{
+  people: Array<Record<string, unknown>>;
+  unresolved: string[];
+  ambiguous: Array<{ query: string; matches: Array<Record<string, unknown>> }>;
+}>) =>
+  loadModuleExport('./lark-helpers', 'resolveLarkPeople');
+
+const loadListLarkPeople = (): ((input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>) =>
+  loadModuleExport('./lark-helpers', 'listLarkPeople');
 
 const loadNormalizeLarkTimestamp = (): ((value?: string, timeZone?: string) => string | undefined) =>
   loadModuleExport('./lark-helpers', 'normalizeLarkTimestamp');
@@ -1971,6 +1992,7 @@ const VERCEL_TOOL_PERMISSION_IDS: Record<string, string[]> = {
   booksWrite: ['zoho-books-write', 'zoho-books-agent'],
   outreach: ['read-outreach-publishers', 'outreach-agent'],
   larkTask: ['lark-task-read', 'lark-task-write', 'lark-task-agent'],
+  larkMessage: ['lark-message-read', 'lark-message-write'],
   larkCalendar: ['lark-calendar-list', 'lark-calendar-read', 'lark-calendar-write', 'lark-calendar-agent'],
   larkMeeting: ['lark-meeting-read', 'lark-meeting-agent'],
   larkApproval: ['lark-approval-read', 'lark-approval-write', 'lark-approval-agent'],
@@ -6012,6 +6034,266 @@ export const createVercelDesktopTools = (
             contentType: input.contentType?.trim(),
             contentBase64: input.contentBase64?.trim(),
             body,
+          },
+        });
+      }),
+    }),
+
+    larkMessage: tool({
+      description: 'Lark messaging tool for teammate lookup, recipient resolution, and direct-message sends.',
+      inputSchema: z.object({
+        operation: z.enum(['searchUsers', 'resolveRecipients', 'sendDm']),
+        query: z.string().optional(),
+        recipientNames: z.array(z.string()).optional(),
+        recipientOpenIds: z.array(z.string()).optional(),
+        assignToMe: z.boolean().optional(),
+        message: z.string().optional(),
+        skipConfirmation: z.boolean().optional(),
+      }),
+      execute: async (input) => withLifecycle(hooks, 'larkMessage', 'Running Lark messaging workflow', async () => {
+        const formatPersonLabel = (person: Record<string, unknown>): string =>
+          asString(person.displayName)
+          ?? asString(person.email)
+          ?? asString(person.externalUserId)
+          ?? asString(person.larkOpenId)
+          ?? 'Unknown teammate';
+        const formatPersonStableId = (person: Record<string, unknown>): string =>
+          asString(person.larkOpenId)
+          ?? asString(person.externalUserId)
+          ?? asString(person.larkUserId)
+          ?? 'unknown';
+        const dedupePeople = (people: Array<Record<string, unknown>>): Array<Record<string, unknown>> => {
+          const seen = new Set<string>();
+          return people.filter((person) => {
+            const key = formatPersonStableId(person);
+            if (!key || seen.has(key)) {
+              return false;
+            }
+            seen.add(key);
+            return true;
+          });
+        };
+        const allPeople = async (): Promise<Array<Record<string, unknown>>> =>
+          loadListLarkPeople()({
+            companyId: runtime.companyId,
+            appUserId: runtime.userId,
+            requestLarkOpenId: runtime.larkOpenId,
+          });
+        const resolvePeople = async (): Promise<{
+          people: Array<Record<string, unknown>>;
+          unresolved: string[];
+          ambiguous: Array<{ query: string; matches: Array<Record<string, unknown>> }>;
+        }> => loadResolveLarkPeople()({
+          companyId: runtime.companyId,
+          appUserId: runtime.userId,
+          requestLarkOpenId: runtime.larkOpenId,
+          assigneeNames: input.recipientNames,
+          assignToMe: input.assignToMe,
+        });
+        const findPeopleByOpenIds = async (recipientOpenIds: string[]): Promise<Array<Record<string, unknown>>> => {
+          if (recipientOpenIds.length === 0) {
+            return [];
+          }
+          const people = await allPeople();
+          const wanted = new Set(recipientOpenIds.map((value) => value.trim()).filter(Boolean));
+          return people.filter((person) => wanted.has(formatPersonStableId(person)));
+        };
+
+        if (input.operation === 'searchUsers') {
+          const permissionError = ensureActionPermission(runtime, 'lark-message-read', 'read');
+          if (permissionError) {
+            return permissionError;
+          }
+          const people = await allPeople();
+          const normalizedQuery = input.query?.trim().toLowerCase();
+          const filtered = normalizedQuery
+            ? people.filter((person) => [
+              asString(person.displayName),
+              asString(person.email),
+              asString(person.externalUserId),
+              asString(person.larkOpenId),
+              asString(person.larkUserId),
+            ].some((value) => value?.toLowerCase().includes(normalizedQuery)))
+            : people;
+          return buildEnvelope({
+            success: true,
+            summary: filtered.length > 0
+              ? `Found ${filtered.length} Lark teammate(s).`
+              : 'No Lark teammates matched the request.',
+            keyData: {
+              people: filtered,
+            },
+            fullPayload: {
+              people: filtered,
+            },
+          });
+        }
+
+        if (input.operation === 'resolveRecipients') {
+          const permissionError = ensureActionPermission(runtime, 'lark-message-read', 'read');
+          if (permissionError) {
+            return permissionError;
+          }
+          const resolved = await resolvePeople();
+          return buildEnvelope({
+            success: resolved.unresolved.length === 0 && resolved.ambiguous.length === 0,
+            summary:
+              resolved.unresolved.length === 0 && resolved.ambiguous.length === 0
+                ? `Resolved ${resolved.people.length} Lark recipient(s).`
+                : resolved.ambiguous.length > 0
+                  ? `Recipient resolution is ambiguous for ${resolved.ambiguous.map((entry) => `"${entry.query}"`).join(', ')}.`
+                  : `No Lark teammate matched ${resolved.unresolved.map((entry) => `"${entry}"`).join(', ')}.`,
+            errorKind:
+              resolved.unresolved.length > 0 || resolved.ambiguous.length > 0
+                ? 'validation'
+                : undefined,
+            retryable: false,
+            userAction:
+              resolved.ambiguous.length > 0
+                ? 'Please tell me which teammate you mean.'
+                : resolved.unresolved.length > 0
+                  ? 'Please provide a more specific teammate name, email, or Lark ID.'
+                  : undefined,
+            keyData: {
+              resolved: resolved.people.map((person) => ({
+                label: formatPersonLabel(person),
+                openId: formatPersonStableId(person),
+              })),
+              ambiguous: resolved.ambiguous.map((entry) => ({
+                query: entry.query,
+                matches: entry.matches.map((person) => ({
+                  label: formatPersonLabel(person),
+                  openId: formatPersonStableId(person),
+                })),
+              })),
+              unresolved: resolved.unresolved,
+            },
+            fullPayload: {
+              resolved,
+            },
+          });
+        }
+
+        const sendPermissionError = ensureActionPermission(runtime, 'lark-message-write', 'send');
+        if (sendPermissionError) {
+          return sendPermissionError;
+        }
+        const message = input.message?.trim();
+        if (!message) {
+          return buildEnvelope({
+            success: false,
+            summary: 'Lark DM send requires a message body.',
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+
+        const directRecipientOpenIds = uniqueDefinedStrings(input.recipientOpenIds ?? []);
+        const resolvedRecipients = (input.recipientNames?.length ?? 0) > 0 || input.assignToMe
+          ? await resolvePeople()
+          : { people: [], unresolved: [], ambiguous: [] as Array<{ query: string; matches: Array<Record<string, unknown>> }> };
+        if (resolvedRecipients.unresolved.length > 0) {
+          return buildEnvelope({
+            success: false,
+            summary: `No Lark teammate matched ${resolvedRecipients.unresolved.map((entry) => `"${entry}"`).join(', ')}.`,
+            errorKind: 'validation',
+            retryable: false,
+            userAction: 'Please provide a more specific teammate name, email, or Lark ID.',
+          });
+        }
+        if (resolvedRecipients.ambiguous.length > 0) {
+          const first = resolvedRecipients.ambiguous[0]!;
+          const options = first.matches
+            .map((person) => `${formatPersonLabel(person)} (${formatPersonStableId(person)})`)
+            .join(', ');
+          return buildEnvelope({
+            success: false,
+            summary: `"${first.query}" matched multiple Lark teammates (${options}). Please be more specific.`,
+            errorKind: 'validation',
+            retryable: false,
+            userAction: 'Please tell me which teammate you mean.',
+            keyData: {
+              ambiguous: resolvedRecipients.ambiguous,
+            },
+          });
+        }
+
+        const directRecipients = await findPeopleByOpenIds(directRecipientOpenIds);
+        const resolvedPeople = dedupePeople([
+          ...directRecipients,
+          ...resolvedRecipients.people,
+        ]);
+        const recipientOpenIds = uniqueDefinedStrings([
+          ...directRecipientOpenIds,
+          ...resolvedPeople.map((person) => formatPersonStableId(person)),
+        ]);
+        if (recipientOpenIds.length === 0) {
+          return buildEnvelope({
+            success: false,
+            summary: 'Please tell me who should receive the Lark DM.',
+            errorKind: 'missing_input',
+            retryable: false,
+          });
+        }
+
+        const recipientLabels = recipientOpenIds.map((openId) => {
+          const match = resolvedPeople.find((person) => formatPersonStableId(person) === openId);
+          return match ? `${formatPersonLabel(match)} (${openId})` : openId;
+        });
+        const summary = `Approval required to send ${recipientOpenIds.length} Lark DM(s) to ${recipientLabels.join(', ')}.`;
+        const preview = message.length > 180 ? `${message.slice(0, 177)}...` : message;
+
+        if (input.skipConfirmation) {
+          if (directRecipientOpenIds.length === 0) {
+            return buildEnvelope({
+              success: false,
+              summary: 'Workflow-driven Lark DM sends require fixed recipient open IDs.',
+              errorKind: 'validation',
+              retryable: false,
+            });
+          }
+          const larkMessagingService = loadLarkMessagingService();
+          const deliveries = await Promise.all(recipientOpenIds.map((recipientOpenId) =>
+            withLarkTenantFallback(runtime, (auth) => larkMessagingService.sendDirectTextMessage({
+              ...(auth as {
+                companyId?: string;
+                larkTenantKey?: string;
+                appUserId?: string;
+                credentialMode?: 'tenant' | 'user_linked';
+              }),
+              recipientOpenId,
+              text: message,
+            })),
+          ));
+          return buildEnvelope({
+            success: true,
+            summary: `Sent ${deliveries.length} Lark DM(s) to ${recipientLabels.join(', ')}.`,
+            keyData: {
+              recipients: recipientLabels,
+            },
+            fullPayload: {
+              recipients: recipientLabels,
+              recipientOpenIds,
+              deliveries,
+              preview,
+            },
+          });
+        }
+
+        return createPendingRemoteApproval({
+          runtime,
+          toolId: 'lark-message-write',
+          actionGroup: 'send',
+          operation: 'sendDm',
+          summary,
+          subject: `Send Lark DM to ${recipientLabels.join(', ')}`,
+          explanation: `Send this Lark DM message: "${preview}"`,
+          payload: {
+            operation: 'sendDm',
+            recipientOpenIds,
+            recipientLabels,
+            message,
+            skipConfirmation: false,
           },
         });
       }),

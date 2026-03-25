@@ -1,7 +1,7 @@
 import { channelIdentityRepository } from '../../channels/channel-identity.repository';
 import { larkUserAuthLinkRepository } from '../../channels/lark/lark-user-auth-link.repository';
 
-export type VercelLarkTaskAssignablePerson = {
+export type VercelLarkPerson = {
   channelIdentityId: string;
   displayName?: string;
   email?: string;
@@ -24,9 +24,9 @@ type ResolveAssigneesInput = ListAssignablePeopleInput & {
 };
 
 export type ResolveAssigneesResult = {
-  people: VercelLarkTaskAssignablePerson[];
+  people: VercelLarkPerson[];
   unresolved: string[];
-  ambiguous: Array<{ query: string; matches: VercelLarkTaskAssignablePerson[] }>;
+  ambiguous: Array<{ query: string; matches: VercelLarkPerson[] }>;
 };
 
 const ISO_WITH_TIMEZONE_PATTERN = /(z|[+-]\d{2}:\d{2})$/i;
@@ -40,18 +40,28 @@ const normalize = (value?: string | null): string | undefined => {
   return trimmed.length > 0 ? trimmed : undefined;
 };
 
-const toSearchTokens = (person: VercelLarkTaskAssignablePerson): string[] =>
-  [
-    normalize(person.displayName),
-    normalize(person.email),
-    normalize(person.externalUserId),
-    normalize(person.larkOpenId),
-    normalize(person.larkUserId),
-  ].filter((value): value is string => Boolean(value)).map((value) => value.toLowerCase());
+const normalizeDirectoryToken = (value?: string | null): string | undefined => {
+  const normalized = normalize(value)
+    ?.toLowerCase()
+    .replace(/\b(mr|mrs|ms|sir|maam|madam)\b/g, ' ')
+    .replace(/[^a-z0-9@._+-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized ? normalized : undefined;
+};
 
-export const listLarkTaskAssignablePeople = async (
+const toSearchTokens = (person: VercelLarkPerson): string[] =>
+  [
+    normalizeDirectoryToken(person.displayName),
+    normalizeDirectoryToken(person.email),
+    normalizeDirectoryToken(person.externalUserId),
+    normalizeDirectoryToken(person.larkOpenId),
+    normalizeDirectoryToken(person.larkUserId),
+  ].filter((value): value is string => Boolean(value));
+
+export const listLarkPeople = async (
   input: ListAssignablePeopleInput,
-): Promise<VercelLarkTaskAssignablePerson[]> => {
+): Promise<VercelLarkPerson[]> => {
   if (!input.companyId.trim()) {
     return [];
   }
@@ -83,9 +93,9 @@ export const listLarkTaskAssignablePeople = async (
     });
 };
 
-const dedupePeople = (people: VercelLarkTaskAssignablePerson[]): VercelLarkTaskAssignablePerson[] => {
+const dedupePeople = (people: VercelLarkPerson[]): VercelLarkPerson[] => {
   const seen = new Set<string>();
-  const result: VercelLarkTaskAssignablePerson[] = [];
+  const result: VercelLarkPerson[] = [];
 
   for (const person of people) {
     const key = person.larkOpenId ?? person.externalUserId;
@@ -99,11 +109,26 @@ const dedupePeople = (people: VercelLarkTaskAssignablePerson[]): VercelLarkTaskA
   return result;
 };
 
-const resolveSingleAssignee = (
+const tokenOverlapScore = (left: string, right: string): number => {
+  const leftTokens = new Set(left.split(' ').filter(Boolean));
+  const rightTokens = right.split(' ').filter(Boolean);
+  if (leftTokens.size === 0 || rightTokens.length === 0) {
+    return 0;
+  }
+  let overlap = 0;
+  for (const token of rightTokens) {
+    if (leftTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+  return overlap / Math.max(leftTokens.size, rightTokens.length);
+};
+
+export const resolveLarkPersonFromDirectory = (
   query: string,
-  people: VercelLarkTaskAssignablePerson[],
-): { match?: VercelLarkTaskAssignablePerson; ambiguous?: VercelLarkTaskAssignablePerson[] } => {
-  const normalizedQuery = query.trim().toLowerCase();
+  people: VercelLarkPerson[],
+): { match?: VercelLarkPerson; ambiguous?: VercelLarkPerson[] } => {
+  const normalizedQuery = normalizeDirectoryToken(query);
   if (!normalizedQuery) {
     return {};
   }
@@ -126,19 +151,42 @@ const resolveSingleAssignee = (
     return { ambiguous: partialMatches.slice(0, 5) };
   }
 
+  const fuzzyMatches = people
+    .map((person) => ({
+      person,
+      score: Math.max(...toSearchTokens(person).map((token) => tokenOverlapScore(token, normalizedQuery)), 0),
+    }))
+    .filter((entry) => entry.score >= 0.5)
+    .sort((left, right) => right.score - left.score);
+  if (fuzzyMatches.length === 1) {
+    return { match: fuzzyMatches[0]!.person };
+  }
+  if (fuzzyMatches.length > 1) {
+    const bestScore = fuzzyMatches[0]!.score;
+    const closeMatches = fuzzyMatches
+      .filter((entry) => entry.score >= bestScore - 0.1)
+      .map((entry) => entry.person)
+      .slice(0, 5);
+    if (closeMatches.length === 1) {
+      return { match: closeMatches[0] };
+    }
+    return { ambiguous: closeMatches };
+  }
+
   return {};
 };
 
-export const resolveLarkTaskAssignees = async (
-  input: ResolveAssigneesInput,
-): Promise<ResolveAssigneesResult> => {
-  const people = await listLarkTaskAssignablePeople(input);
-  const resolved: VercelLarkTaskAssignablePerson[] = [];
+export const resolveLarkPeopleFromDirectory = (input: {
+  people: VercelLarkPerson[];
+  assigneeNames?: string[];
+  assignToMe?: boolean;
+}): ResolveAssigneesResult => {
+  const resolved: VercelLarkPerson[] = [];
   const unresolved: string[] = [];
-  const ambiguous: Array<{ query: string; matches: VercelLarkTaskAssignablePerson[] }> = [];
+  const ambiguous: Array<{ query: string; matches: VercelLarkPerson[] }> = [];
 
   if (input.assignToMe) {
-    const currentUser = people.find((person) => person.isCurrentUser);
+    const currentUser = input.people.find((person) => person.isCurrentUser);
     if (currentUser) {
       resolved.push(currentUser);
     } else {
@@ -152,7 +200,7 @@ export const resolveLarkTaskAssignees = async (
       continue;
     }
     if (['me', 'myself', 'self'].includes(query.toLowerCase())) {
-      const currentUser = people.find((person) => person.isCurrentUser);
+      const currentUser = input.people.find((person) => person.isCurrentUser);
       if (currentUser) {
         resolved.push(currentUser);
       } else {
@@ -160,7 +208,7 @@ export const resolveLarkTaskAssignees = async (
       }
       continue;
     }
-    const result = resolveSingleAssignee(query, people);
+    const result = resolveLarkPersonFromDirectory(query, input.people);
     if (result.match) {
       resolved.push(result.match);
       continue;
@@ -178,6 +226,23 @@ export const resolveLarkTaskAssignees = async (
     ambiguous,
   };
 };
+
+export const resolveLarkPeople = async (
+  input: ResolveAssigneesInput,
+): Promise<ResolveAssigneesResult> => {
+  const people = await listLarkPeople(input);
+  return resolveLarkPeopleFromDirectory({
+    people,
+    assigneeNames: input.assigneeNames,
+    assignToMe: input.assignToMe,
+  });
+};
+
+export type VercelLarkTaskAssignablePerson = VercelLarkPerson;
+
+export const listLarkTaskAssignablePeople = listLarkPeople;
+
+export const resolveLarkTaskAssignees = resolveLarkPeople;
 
 const getTimeZoneOffsetMs = (timeZone: string, date: Date): number => {
   const formatter = new Intl.DateTimeFormat('en-US', {

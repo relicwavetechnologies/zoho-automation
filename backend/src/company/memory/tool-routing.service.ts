@@ -51,6 +51,8 @@ const normalizePhrase = (value: string): string =>
       .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' email_address ')
       .replace(/\b(show|fetch|pull|list)\b/g, 'get')
       .replace(/\bmail\b/g, 'email')
+      .replace(/\bdm\b/g, 'direct message')
+      .replace(/\bping\b/g, 'direct message')
       .replace(/\bquote\b/g, 'estimate')
       .replace(/\bbitable\b/g, 'base table')
       .replace(/\brecords?\b/g, 'record')
@@ -140,6 +142,9 @@ const detectDomain = (text: string, hasWorkspace: boolean, hasArtifacts: boolean
   if (/\b(base table|bitable|table|record|field|view)\b/.test(text)) {
     return 'lark_base';
   }
+  if (/\b(lark dm|lark direct message|direct message|send dm|message me|message him|message her|message them|ping me|ping him|ping her|ping them)\b/.test(text)) {
+    return 'lark_message';
+  }
   if (/\b(task|assignee|todo|due date)\b/.test(text)) {
     return 'lark_task';
   }
@@ -189,6 +194,8 @@ const detectEntity = (domain: ToolRoutingDomain, text: string): string => {
       if (/\bview\b/.test(text)) return 'views';
       if (/\btable\b/.test(text)) return 'tables';
       return 'records';
+    case 'lark_message':
+      return 'messages';
     case 'lark_task':
       return 'tasks';
     case 'lark_doc':
@@ -288,6 +295,7 @@ const deriveToolFamily = (toolId: string): string => {
   if (toolId.startsWith('zoho')) return 'zoho_crm';
   if (toolId.startsWith('lark-base')) return 'lark_base';
   if (toolId.startsWith('lark-task')) return 'lark_task';
+  if (toolId.startsWith('lark-message')) return 'lark_message';
   if (toolId.startsWith('lark-calendar')) return 'lark_calendar';
   if (toolId.startsWith('lark-approval')) return 'lark_approval';
   if (toolId.startsWith('lark-meeting')) return 'lark_meeting';
@@ -332,6 +340,7 @@ const EXECUTION_TOOL_ID_CANDIDATES: Record<string, string[]> = {
   webSearch: ['search-read', 'search-agent'],
   docSearch: ['search-documents'],
   larkTask: ['lark-task-read', 'lark-task-write', 'lark-task-agent'],
+  larkMessage: ['lark-message-read', 'lark-message-write'],
   larkCalendar: ['lark-calendar-list', 'lark-calendar-read', 'lark-calendar-write', 'lark-calendar-agent'],
   larkMeeting: ['lark-meeting-read', 'lark-meeting-agent'],
   larkApproval: ['lark-approval-read', 'lark-approval-write', 'lark-approval-agent'],
@@ -360,6 +369,7 @@ const EXECUTION_TOOL_OPERATION: Partial<Record<string, ToolRoutingOperationClass
   webSearch: 'search',
   docSearch: 'search',
   larkTask: 'write',
+  larkMessage: 'send',
   larkCalendar: 'schedule',
   larkMeeting: 'read',
   larkApproval: 'write',

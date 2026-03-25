@@ -2,6 +2,7 @@ import type { VercelRuntimeRequestContext, VercelRuntimeToolHooks } from '../typ
 import { buildDocumentTools } from './families/documents';
 import { buildGoogleTools } from './families/google';
 import { buildLarkCollabTools } from './families/lark-collab';
+import { buildLarkMessagingTools } from './families/lark-messaging';
 import { buildLarkTaskTools } from './families/lark-task';
 import { buildOutreachTools } from './families/outreach';
 import { buildRepoCodingTools } from './families/repo-coding';
@@ -26,6 +27,7 @@ export const createVercelDesktopTools = (
   ...buildGoogleTools(runtime, hooks),
   ...buildZohoBooksTools(runtime, hooks),
   ...buildLarkTaskTools(runtime, hooks),
+  ...buildLarkMessagingTools(runtime, hooks),
   ...buildLarkCollabTools(runtime, hooks),
   ...buildZohoCrmTools(runtime, hooks),
   ...buildOutreachTools(runtime, hooks),

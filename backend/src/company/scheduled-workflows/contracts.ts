@@ -71,6 +71,7 @@ export const scheduledWorkflowNodeSchema = z.object({
   outputKey: identifierSchema.optional(),
   expectedOutput: shortTextSchema.optional(),
   capability: capabilityRefSchema.optional(),
+  toolArguments: z.record(z.unknown()).optional(),
   retryPolicy: retryPolicySchema.optional(),
   destinationIds: z.array(identifierSchema).min(1).max(10).optional(),
   approvalJustification: z.string().trim().min(1).max(1000).optional(),
@@ -141,6 +142,14 @@ export const scheduledWorkflowNodeSchema = z.object({
       code: z.ZodIssueCode.custom,
       message: 'approvalJustification is only valid on requireApproval nodes.',
       path: ['approvalJustification'],
+    });
+  }
+
+  if (node.toolArguments && !node.capability) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'toolArguments require a capability reference.',
+      path: ['toolArguments'],
     });
   }
 });
@@ -560,6 +569,9 @@ export const compileScheduledWorkflowDefinition = (
       lines.push(
         `   Capability: ${node.capability.toolId}.${node.capability.actionGroup} (${node.capability.operation})`,
       );
+    }
+    if (node.toolArguments) {
+      lines.push(`   Tool arguments: ${stableStringify(node.toolArguments)}`);
     }
     if (node.kind === 'branch' && node.branches) {
       lines.push(`   Branches: ${node.branches.map((branch) => `${branch.label} when ${branch.when}`).join(' | ')}`);

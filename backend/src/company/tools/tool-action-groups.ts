@@ -35,6 +35,8 @@ const TOOL_ACTION_GROUPS: Record<string, ToolActionGroup[]> = {
   'lark-task-read': ['read'],
   'lark-task-write': ['create', 'update', 'delete'],
   'lark-task-agent': ['read', 'create', 'update', 'delete'],
+  'lark-message-read': ['read'],
+  'lark-message-write': ['send'],
   'lark-calendar-list': ['read'],
   'lark-calendar-read': ['read'],
   'lark-calendar-write': ['create', 'update', 'delete'],

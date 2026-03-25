@@ -71,6 +71,11 @@ const baseDefinition = {
           actionGroup: 'send' as const,
           operation: 'ops.digest.send',
         },
+        toolArguments: {
+          recipientOpenIds: ['ou_123'],
+          recipientLabels: ['Anish Suman (ou_123)'],
+          messageTemplate: 'Support digest ready.',
+        },
       },
       {
         id: 'deliver-history',
@@ -112,8 +117,20 @@ test('compileScheduledWorkflowDefinition emits a controlled prompt', () => {
 
   assert.match(compiledPrompt, /Workflow: Support Escalation Digest/);
   assert.match(compiledPrompt, /Capability: search-read.read \(support\.escalations\.search\)/);
+  assert.match(compiledPrompt, /Tool arguments: \{"messageTemplate":"Support digest ready\."/);
   assert.match(compiledPrompt, /Deliver to: desktop-inbox:desktop_inbox, ops-lark:lark_chat/);
   assert.equal(capabilitySummary.requiresPublishApproval, true);
+});
+
+test('scheduled workflow definition accepts structured tool arguments on capability nodes', () => {
+  const parsed = scheduledWorkflowDefinitionSchema.parse(baseDefinition);
+  const sendNode = parsed.workflowSpec.nodes.find((node) => node.id === 'send-lark');
+
+  assert.deepEqual(sendNode?.toolArguments, {
+    recipientOpenIds: ['ou_123'],
+    recipientLabels: ['Anish Suman (ou_123)'],
+    messageTemplate: 'Support digest ready.',
+  });
 });
 
 test('definition validation rejects unknown delivery destinations', () => {
