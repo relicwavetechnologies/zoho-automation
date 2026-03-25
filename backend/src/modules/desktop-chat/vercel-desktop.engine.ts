@@ -243,6 +243,8 @@ const truncateString = (value: unknown, maxLength: number): string | undefined =
   return trimmed.length > maxLength ? trimmed.slice(0, maxLength) : trimmed;
 };
 
+const CHILD_ROUTER_FAST_REPLY_MAX_LENGTH = 4000;
+
 const sanitizeChildRouteCandidate = (value: unknown): unknown => {
   const normalized = normalizeChildRouteResponse(value);
   if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) {
@@ -252,7 +254,9 @@ const sanitizeChildRouteCandidate = (value: unknown): unknown => {
   const route = typeof record.route === 'string' ? record.route.trim() : undefined;
   return {
     ...(route ? { route } : {}),
-    ...(truncateString(record.reply, 600) ? { reply: truncateString(record.reply, 600) } : {}),
+    ...(truncateString(record.reply, CHILD_ROUTER_FAST_REPLY_MAX_LENGTH)
+      ? { reply: truncateString(record.reply, CHILD_ROUTER_FAST_REPLY_MAX_LENGTH) }
+      : {}),
     ...(truncateString(record.acknowledgement, 400)
       ? { acknowledgement: truncateString(record.acknowledgement, 400) }
       : {}),
@@ -451,7 +455,7 @@ const resolveWorkflowInvocationMessage = async (input: {
 
 const desktopChildRouteSchema = z.object({
   route: z.enum(['fast_reply', 'direct_execute', 'handoff']),
-  reply: z.string().min(1).max(600).optional(),
+  reply: z.string().min(1).max(CHILD_ROUTER_FAST_REPLY_MAX_LENGTH).optional(),
   acknowledgement: z.string().min(1).max(400).optional(),
   reason: z.string().min(1).max(200).optional(),
   normalizedIntent: z.string().min(1).max(400).optional(),

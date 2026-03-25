@@ -201,6 +201,55 @@ const buildLarkMarkdownElementV2 = (content: string, options?: {
   ...(options?.margin ? { margin: options.margin } : {}),
 });
 
+const MARKDOWN_TABLE_SEPARATOR_PATTERN = /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/;
+
+const isMarkdownTableBlock = (block: string): boolean => {
+  const lines = block
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.length >= 3
+    && lines[0]!.includes('|')
+    && MARKDOWN_TABLE_SEPARATOR_PATTERN.test(lines[1]!);
+};
+
+const splitMarkdownTableBlock = (block: string): string[] => {
+  const lines = block
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 3) {
+    return [block];
+  }
+
+  const [header, separator, ...rows] = lines;
+  const prefix = `${header}\n${separator}`;
+  if (prefix.length >= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+    return [block];
+  }
+
+  const chunks: string[] = [];
+  let current = prefix;
+  for (const row of rows) {
+    const candidate = `${current}\n${row}`;
+    if (candidate.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+      current = candidate;
+      continue;
+    }
+
+    chunks.push(current);
+    current = `${prefix}\n${row}`;
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks;
+};
+
 const splitLarkMarkdownIntoElements = (content: string): string[] => {
   const normalized = normalizeLarkMarkdown(content);
   if (!normalized) {
@@ -219,6 +268,15 @@ const splitLarkMarkdownIntoElements = (content: string): string[] => {
   const chunks: string[] = [];
   let current = '';
   for (const block of blocks) {
+    if (isMarkdownTableBlock(block)) {
+      if (current) {
+        chunks.push(current);
+        current = '';
+      }
+      chunks.push(...splitMarkdownTableBlock(block));
+      continue;
+    }
+
     const candidate = current ? `${current}\n\n${block}` : block;
     if (candidate.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
       current = candidate;
