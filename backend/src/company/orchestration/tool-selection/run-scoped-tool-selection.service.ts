@@ -1,23 +1,14 @@
 import { generateText } from 'ai';
 import { z } from 'zod';
 
+import { memoryService, normalizeToolRoutingIntent, type ToolRoutingDomain, type ToolRoutingOperationClass, type ToolRoutingPriorMatch } from '../../memory';
 import { logger } from '../../../utils/logger';
 import { resolveVercelChildRouterModel } from '../vercel/model-factory';
 import { TOOL_REGISTRY_MAP } from '../../tools/tool-registry';
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
 
-type OperationClass = 'read' | 'write' | 'send' | 'inspect' | 'schedule' | 'search';
-type IntentDomain =
-  | 'zoho_books'
-  | 'zoho_crm'
-  | 'gmail'
-  | 'google_drive'
-  | 'google_calendar'
-  | 'lark'
-  | 'workspace'
-  | 'document_inspection'
-  | 'web_search'
-  | 'unknown';
+type OperationClass = ToolRoutingOperationClass;
+type IntentDomain = ToolRoutingDomain;
 
 type ChildRouteHints = {
   normalizedIntent?: string | null;
@@ -83,6 +74,35 @@ const chooseSuggestedAllowed = (allowed: Set<string>, suggestedToolIds?: string[
 const isAffirmationFollowUp = (message: string): boolean =>
   /^(yes|yeah|yep|ok|okay|sure|go ahead|continue|proceed|try again|do it)\b/.test(asLower(message));
 
+const summarizeLearnedPriors = (priors: ToolRoutingPriorMatch[]): string[] =>
+  priors.slice(0, 3).map((prior) =>
+    `${prior.toolId} via ${prior.matchedBy} (${prior.scope}, confidence ${prior.confidenceScore.toFixed(2)})`);
+
+const canBypassPlannerWithLearnedPrior = (input: {
+  prior?: ToolRoutingPriorMatch;
+  inferredOperationClass: OperationClass;
+  inferredDomain: IntentDomain;
+  primaryBundle: string[];
+  latestUserMessage: string;
+}): boolean => {
+  const prior = input.prior;
+  if (!prior) return false;
+  if (input.inferredOperationClass !== 'read' && input.inferredOperationClass !== 'inspect' && input.inferredOperationClass !== 'search') {
+    return false;
+  }
+  if (['unknown', 'lark'].includes(input.inferredDomain)) {
+    return false;
+  }
+  if (/\b(send|email|create|make|update|delete|edit|assign|approve)\b/.test(asLower(input.latestUserMessage))) {
+    return false;
+  }
+  if (!input.primaryBundle.includes(prior.toolId)) {
+    return false;
+  }
+  return prior.confidenceScore >= 0.88
+    && (prior.matchedBy === 'exact_canonical' || prior.matchedBy === 'thread_continuation' || prior.matchedBy === 'base_intent');
+};
+
 const inferOperationClass = (message: string): OperationClass => {
   const text = asLower(message);
   if (/\b(send|email|mail|draft|reply|forward)\b/.test(text)) return 'send';
@@ -99,44 +119,12 @@ const inferIntentDomain = (input: {
   hasWorkspace: boolean;
   hasArtifacts: boolean;
 }): IntentDomain => {
-  const text = asLower(input.message);
-  const normalizedIntent = asLower(input.childRoute?.normalizedIntent);
-  const joined = `${text}\n${normalizedIntent}`;
-
-  if (/\b(invoice|invoices|estimate|estimates|credit note|creditnote|sales order|salesorder|bill|bills|vendor payment|customer payment|zoho books)\b/.test(joined)) {
-    return 'zoho_books';
-  }
-  if (/\b(lead|leads|contact|contacts|deal|deals|case|cases|zoho crm|crm)\b/.test(joined)) {
-    return 'zoho_crm';
-  }
-  if (/\b(gmail|inbox|draft email|send by gmail|mail via gmail)\b/.test(joined)) {
-    return 'gmail';
-  }
-  if (/\b(google drive|drive file|drive folder)\b/.test(joined)) {
-    return 'google_drive';
-  }
-  if (/\b(google calendar)\b/.test(joined)) {
-    return 'google_calendar';
-  }
-  if (/\b(task|tasks|lark doc|lark docs|calendar event|lark calendar|meeting|bitable|base table|lark)\b/.test(joined)) {
-    return 'lark';
-  }
-  if (/\b(button|screenshot|image|attachment|pdf|csv|document|file|message)\b/.test(joined) && input.hasArtifacts) {
-    return 'document_inspection';
-  }
-  if (/\b(repo|repository|workspace|folder|file path|terminal|command|script|code)\b/.test(joined) && input.hasWorkspace) {
-    return 'workspace';
-  }
-  if (/\b(web|internet|online|site|latest|up to date|up-to-date)\b/.test(joined)) {
-    return 'web_search';
-  }
-  if (input.hasArtifacts && /\b(this|that|same file|same attachment)\b/.test(joined)) {
-    return 'document_inspection';
-  }
-  if (input.hasWorkspace && /\b(this repo|this workspace)\b/.test(joined)) {
-    return 'workspace';
-  }
-  return 'unknown';
+  return normalizeToolRoutingIntent({
+    latestUserMessage: input.message,
+    childRoute: input.childRoute,
+    hasWorkspace: input.hasWorkspace,
+    hasArtifacts: input.hasArtifacts,
+  }).domain;
 };
 
 const buildPrimaryBundle = (input: {
@@ -180,52 +168,52 @@ const buildPrimaryBundle = (input: {
       return chooseFirstAllowed(input.allowed, ['google-drive']);
     case 'google_calendar':
       return chooseFirstAllowed(input.allowed, ['google-calendar']);
+    case 'lark_base':
+      return input.operationClass === 'read' || input.operationClass === 'inspect'
+        ? chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent'])
+        : uniq([
+          ...chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent']),
+          ...chooseFirstAllowed(input.allowed, ['lark-base-write', 'lark-base-agent']),
+        ]);
+    case 'lark_task':
+      return input.operationClass === 'read' || input.operationClass === 'inspect'
+        ? chooseFirstAllowed(input.allowed, ['lark-task-read', 'lark-task-agent'])
+        : uniq([
+          ...chooseFirstAllowed(input.allowed, ['lark-task-read', 'lark-task-agent']),
+          ...chooseFirstAllowed(input.allowed, ['lark-task-write', 'lark-task-agent']),
+        ]);
+    case 'lark_doc':
+      return input.operationClass === 'read' || input.operationClass === 'inspect'
+        ? chooseFirstAllowed(input.allowed, ['lark-doc-agent'])
+        : uniq([
+          ...chooseFirstAllowed(input.allowed, ['lark-doc-agent']),
+          ...chooseFirstAllowed(input.allowed, ['create-lark-doc', 'edit-lark-doc']),
+        ]);
+    case 'lark_calendar':
+      return input.operationClass === 'read' || input.operationClass === 'inspect'
+        ? chooseFirstAllowed(input.allowed, ['lark-calendar-read', 'lark-calendar-list', 'lark-calendar-agent'])
+        : uniq([
+          ...chooseFirstAllowed(input.allowed, ['lark-calendar-read', 'lark-calendar-list', 'lark-calendar-agent']),
+          ...chooseFirstAllowed(input.allowed, ['lark-calendar-write', 'lark-calendar-agent']),
+        ]);
+    case 'lark_approval':
+      return input.operationClass === 'read' || input.operationClass === 'inspect'
+        ? chooseFirstAllowed(input.allowed, ['lark-approval-read', 'lark-approval-agent'])
+        : uniq([
+          ...chooseFirstAllowed(input.allowed, ['lark-approval-read', 'lark-approval-agent']),
+          ...chooseFirstAllowed(input.allowed, ['lark-approval-write', 'lark-approval-agent']),
+        ]);
+    case 'lark_meeting':
+      return chooseFirstAllowed(input.allowed, ['lark-meeting-read', 'lark-meeting-agent']);
     case 'lark':
       if (suggestedAllowedToolIds.length > 0) {
         return suggestedAllowedToolIds.slice(0, 3);
       }
       if (/\b(base|bitable|table|tables|record|records|field|fields|view|views)\b/.test(larkHintText)) {
-        return input.operationClass === 'read' || input.operationClass === 'inspect'
-          ? chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent'])
-          : uniq([
-            ...chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent']),
-            ...chooseFirstAllowed(input.allowed, ['lark-base-write', 'lark-base-agent']),
-          ]);
+        return chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent']);
       }
       if (/\b(task|tasks|assignee|assign|due date|todo)\b/.test(larkHintText)) {
-        return input.operationClass === 'read' || input.operationClass === 'inspect'
-          ? chooseFirstAllowed(input.allowed, ['lark-task-read', 'lark-task-agent'])
-          : uniq([
-            ...chooseFirstAllowed(input.allowed, ['lark-task-read', 'lark-task-agent']),
-            ...chooseFirstAllowed(input.allowed, ['lark-task-write', 'lark-task-agent']),
-          ]);
-      }
-      if (/\b(doc|docs|document|writeup|report|note|notes)\b/.test(larkHintText)) {
-        return input.operationClass === 'read' || input.operationClass === 'inspect'
-          ? chooseFirstAllowed(input.allowed, ['lark-doc-agent'])
-          : uniq([
-            ...chooseFirstAllowed(input.allowed, ['lark-doc-agent']),
-            ...chooseFirstAllowed(input.allowed, ['create-lark-doc', 'edit-lark-doc']),
-          ]);
-      }
-      if (/\b(calendar|event|schedule)\b/.test(larkHintText)) {
-        return input.operationClass === 'read' || input.operationClass === 'inspect'
-          ? chooseFirstAllowed(input.allowed, ['lark-calendar-read', 'lark-calendar-list', 'lark-calendar-agent'])
-          : uniq([
-            ...chooseFirstAllowed(input.allowed, ['lark-calendar-read', 'lark-calendar-list', 'lark-calendar-agent']),
-            ...chooseFirstAllowed(input.allowed, ['lark-calendar-write', 'lark-calendar-agent']),
-          ]);
-      }
-      if (/\b(approval|approvals)\b/.test(larkHintText)) {
-        return input.operationClass === 'read' || input.operationClass === 'inspect'
-          ? chooseFirstAllowed(input.allowed, ['lark-approval-read', 'lark-approval-agent'])
-          : uniq([
-            ...chooseFirstAllowed(input.allowed, ['lark-approval-read', 'lark-approval-agent']),
-            ...chooseFirstAllowed(input.allowed, ['lark-approval-write', 'lark-approval-agent']),
-          ]);
-      }
-      if (/\b(meeting|minutes)\b/.test(larkHintText)) {
-        return chooseFirstAllowed(input.allowed, ['lark-meeting-read', 'lark-meeting-agent']);
+        return chooseFirstAllowed(input.allowed, ['lark-task-read', 'lark-task-agent']);
       }
       return uniq([
         ...chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent']),
@@ -275,6 +263,7 @@ const buildPlannerPrompt = (input: {
   inferredOperationClass: OperationClass;
   runExposedToolIds: string[];
   childRoute?: ChildRouteHints;
+  learnedPriorSummary?: string[];
 }): string => [
   'Choose the best run-scoped tool subset for this request.',
   'Return JSON only.',
@@ -287,6 +276,9 @@ const buildPlannerPrompt = (input: {
   `Selection reason: ${input.selectionReason}`,
   input.childRoute?.normalizedIntent ? `Child normalized intent: ${input.childRoute.normalizedIntent}` : '',
   input.childRoute?.reason ? `Child route reason: ${input.childRoute.reason}` : '',
+  input.learnedPriorSummary && input.learnedPriorSummary.length > 0
+    ? `Learned routing priors:\n${input.learnedPriorSummary.map((entry) => `- ${entry}`).join('\n')}`
+    : '',
   'Run-exposed tool ids:',
   describeTools(input.runExposedToolIds),
   'Planner output schema:',
@@ -331,6 +323,10 @@ const validatePlannerDecision = (input: {
 };
 
 export const resolveRunScopedToolSelection = async (input: {
+  companyId: string;
+  userId?: string | null;
+  threadId?: string;
+  conversationKey?: string;
   latestUserMessage: string;
   allowedToolIds: string[];
   allowedActionsByTool?: Record<string, ToolActionGroup[]>;
@@ -352,21 +348,37 @@ export const resolveRunScopedToolSelection = async (input: {
     hasWorkspace: input.workspaceAvailable,
     hasArtifacts: input.hasActiveArtifacts,
   });
-  const primaryBundle = buildPrimaryBundle({
-    allowed,
-    domain: inferredDomain,
-    operationClass: inferredOperationClass,
-    hasArtifacts: input.hasActiveArtifacts,
+  const { priors: learnedPriors } = await memoryService.findRoutingPriors({
+    companyId: input.companyId,
+    userId: input.userId,
+    threadId: input.threadId,
+    conversationKey: input.conversationKey,
+    allowedToolIds: input.allowedToolIds,
     latestUserMessage: input.latestUserMessage,
     childRoute: input.childRoute,
+    hasWorkspace: input.workspaceAvailable,
+    hasArtifacts: input.hasActiveArtifacts,
   });
+  const learnedToolIds = uniq(learnedPriors.map((prior) => prior.toolId));
+  const primaryBundle = uniq([
+    ...learnedToolIds,
+    ...buildPrimaryBundle({
+      allowed,
+      domain: inferredDomain,
+      operationClass: inferredOperationClass,
+      hasArtifacts: input.hasActiveArtifacts,
+      latestUserMessage: input.latestUserMessage,
+      childRoute: input.childRoute,
+    }),
+  ]);
   const fallbackBundle = buildFallbackBundle({
     allowed,
     domain: inferredDomain,
     hasArtifacts: input.hasActiveArtifacts,
   });
+  const learnedSummary = summarizeLearnedPriors(learnedPriors);
   const selectionReason = primaryBundle.length > 0
-    ? `Primary domain ${inferredDomain} with operation ${inferredOperationClass}.`
+    ? `Primary domain ${inferredDomain} with operation ${inferredOperationClass}.${learnedSummary.length > 0 ? ` Learned routing priors favored ${learnedSummary.join('; ')}.` : ''}`
     : `No safe primary domain could be resolved from the latest message; preserving only core and fallback tools.`;
 
   const initialSelection: RunScopedToolSelection = {
@@ -386,6 +398,21 @@ export const resolveRunScopedToolSelection = async (input: {
     };
   }
 
+  const strongestPrior = learnedPriors[0];
+  if (canBypassPlannerWithLearnedPrior({
+    prior: strongestPrior,
+    inferredOperationClass,
+    inferredDomain,
+    primaryBundle,
+    latestUserMessage: input.latestUserMessage,
+  })) {
+    return {
+      ...initialSelection,
+      plannerChosenToolId: strongestPrior?.toolId,
+      plannerChosenOperationClass: strongestPrior?.operationClass ?? inferredOperationClass,
+    };
+  }
+
   try {
     const model = await resolveVercelChildRouterModel();
     const result = await generateText({
@@ -398,6 +425,7 @@ export const resolveRunScopedToolSelection = async (input: {
         inferredOperationClass,
         runExposedToolIds: initialSelection.runExposedToolIds,
         childRoute: input.childRoute,
+        learnedPriorSummary: learnedSummary,
       }),
       temperature: 0,
       providerOptions: {

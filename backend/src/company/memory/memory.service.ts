@@ -10,6 +10,7 @@ import {
   type UserMemoryChannelOrigin,
 } from './contracts';
 import { memoryExtractionService } from './memory-extraction.service';
+import { toolRoutingService, type ToolRoutingExecutionOutcome, type ToolRoutingPriorMatch } from './tool-routing.service';
 
 class MemoryService {
   async recordUserTurn(input: {
@@ -37,6 +38,12 @@ class MemoryService {
         companyId: input.companyId,
         userId: input.userId,
         drafts,
+      });
+      memoryContextService.invalidateCache({
+        companyId: input.companyId,
+        userId: input.userId,
+        threadId: input.threadId,
+        conversationKey: input.conversationKey,
       });
     } catch (error) {
       logger.warn('memory.user_turn.record.failed', {
@@ -76,6 +83,12 @@ class MemoryService {
         userId: input.userId,
         drafts,
       });
+      memoryContextService.invalidateCache({
+        companyId: input.companyId,
+        userId: input.userId,
+        threadId: input.threadId,
+        conversationKey: input.conversationKey,
+      });
     } catch (error) {
       logger.warn('memory.task_state.record.failed', {
         companyId: input.companyId,
@@ -95,6 +108,89 @@ class MemoryService {
     contextClass: DurableMemoryContextClass;
   }): Promise<MemoryPromptContext> {
     return memoryContextService.buildPromptContext(input);
+  }
+
+  async findRoutingPriors(input: {
+    companyId: string;
+    userId?: string | null;
+    threadId?: string;
+    conversationKey?: string;
+    allowedToolIds?: string[];
+    latestUserMessage: string;
+    childRoute?: {
+      normalizedIntent?: string | null;
+      reason?: string | null;
+      suggestedToolIds?: string[];
+      suggestedActions?: string[];
+    };
+    hasWorkspace?: boolean;
+    hasArtifacts?: boolean;
+  }): Promise<{
+    intent: Awaited<ReturnType<typeof toolRoutingService.findRoutingPriors>>['intent'] | null;
+    priors: ToolRoutingPriorMatch[];
+  }> {
+    if (!input.userId) {
+      return {
+        intent: null,
+        priors: [],
+      };
+    }
+    return toolRoutingService.findRoutingPriors({
+      companyId: input.companyId,
+      userId: input.userId,
+      threadId: input.threadId,
+      conversationKey: input.conversationKey,
+      allowedToolIds: input.allowedToolIds,
+      latestUserMessage: input.latestUserMessage,
+      childRoute: input.childRoute,
+      hasWorkspace: input.hasWorkspace,
+      hasArtifacts: input.hasArtifacts,
+    });
+  }
+
+  async recordToolSelectionOutcome(input: {
+    companyId: string;
+    userId?: string | null;
+    channelOrigin: UserMemoryChannelOrigin;
+    threadId?: string;
+    conversationKey?: string;
+    latestUserMessage: string;
+    childRoute?: {
+      normalizedIntent?: string | null;
+      reason?: string | null;
+      suggestedToolIds?: string[];
+      suggestedActions?: string[];
+    };
+    hasWorkspace?: boolean;
+    hasArtifacts?: boolean;
+    plannerChosenToolId?: string;
+    plannerChosenOperationClass?: string;
+    runExposedToolIds?: string[];
+    selectionReason?: string;
+    toolResults: ToolRoutingExecutionOutcome[];
+  }): Promise<void> {
+    if (!input.userId) {
+      return;
+    }
+    try {
+      await toolRoutingService.recordToolSelectionOutcome(input);
+    } catch (error) {
+      logger.warn('memory.tool_routing.record.failed', {
+        companyId: input.companyId,
+        userId: input.userId,
+        channelOrigin: input.channelOrigin,
+        error: error instanceof Error ? error.message : 'unknown',
+      });
+    }
+  }
+
+  invalidateCache(input: {
+    companyId: string;
+    userId: string;
+    threadId?: string;
+    conversationKey?: string;
+  }): void {
+    memoryContextService.invalidateCache(input);
   }
 
   async listForUser(input: { companyId: string; userId: string }): Promise<{
@@ -187,6 +283,10 @@ class MemoryService {
       companyId: input.companyId,
       userId: input.userId,
     });
+    memoryContextService.invalidateCache({
+      companyId: input.companyId,
+      userId: input.userId,
+    });
     return true;
   }
 
@@ -218,6 +318,10 @@ class MemoryService {
         companyId: input.companyId,
         userId: input.userId,
       },
+    });
+    memoryContextService.invalidateCache({
+      companyId: input.companyId,
+      userId: input.userId,
     });
   }
 }

@@ -1439,6 +1439,10 @@ const executeLarkVercelTask = async (
   );
 
   const toolSelection = await resolveRunScopedToolSelection({
+    companyId: runtime.companyId,
+    userId: linkedUserId,
+    threadId: persistentThread?.id,
+    conversationKey,
     latestUserMessage: message.text,
     allowedToolIds: runtime.allowedToolIds,
     allowedActionsByTool: runtime.allowedActionsByTool,
@@ -1485,6 +1489,7 @@ const executeLarkVercelTask = async (
     plannerChosenToolId: toolSelection.plannerChosenToolId,
     plannerChosenOperationClass: toolSelection.plannerChosenOperationClass,
   };
+  const executedToolOutcomes: Array<{ toolName: string; success: boolean; pendingApproval?: boolean }> = [];
   if (toolSelection.clarificationQuestion?.trim()) {
     const clarificationText = toolSelection.clarificationQuestion.trim();
     await statusCoordinator.replace(clarificationText, []);
@@ -1590,6 +1595,11 @@ const executeLarkVercelTask = async (
       await updateStatus('tool_running', `Using ${title}.`);
     },
     onToolFinish: async (toolName, _activityId, title, output) => {
+      executedToolOutcomes.push({
+        toolName,
+        success: output.success,
+        pendingApproval: Boolean(output.pendingApprovalAction),
+      });
       await appendLatestAgentRunLog(task.taskId, 'tool.finish', {
         toolName,
         activityId: _activityId,
@@ -1956,6 +1966,27 @@ const executeLarkVercelTask = async (
       });
       activeThreadSummary = refreshedSummary;
     }
+    await memoryService.recordToolSelectionOutcome({
+      companyId: runtime.companyId,
+      userId: linkedUserId,
+      channelOrigin: 'lark',
+      threadId: persistentThread?.id,
+      conversationKey,
+      latestUserMessage: message.text,
+      childRoute: {
+        normalizedIntent: childRoute.normalizedIntent,
+        reason: childRoute.reason,
+        suggestedToolIds: childRoute.suggestedToolIds,
+        suggestedActions: childRoute.suggestedActions,
+      },
+      hasWorkspace: Boolean(runtime.workspace),
+      hasArtifacts: groundingAttachments.length > 0 || activeTaskState.activeSourceArtifacts.length > 0,
+      plannerChosenToolId: effectiveRuntime.plannerChosenToolId,
+      plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
+      runExposedToolIds: effectiveRuntime.runExposedToolIds,
+      selectionReason: effectiveRuntime.toolSelectionReason,
+      toolResults: executedToolOutcomes,
+    });
     await appendLatestAgentRunLog(task.taskId, pendingApproval ? 'run.waiting_for_approval' : 'run.completed', {
       channel: 'lark',
       route: childRoute.route,

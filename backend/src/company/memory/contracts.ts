@@ -3,6 +3,12 @@ export const MEMORY_ARCHIVE_CAP = 1500;
 export const MEMORY_STYLE_SLOT_CAP = 1;
 export const MEMORY_IDENTITY_SLOT_CAP = 1;
 export const MEMORY_TASK_STALE_DAYS = 14;
+export const MEMORY_ROUTING_THREAD_PINNED_CAP = 12;
+export const MEMORY_ROUTING_USER_GLOBAL_CAP = 80;
+export const MEMORY_ROUTING_SHORT_TTL_MS = 10_000;
+export const MEMORY_ROUTING_THREAD_TTL_MS = 15_000;
+export const MEMORY_ROUTING_USER_TTL_MS = 60_000;
+export const MEMORY_ROUTING_PHRASE_EXAMPLE_CAP = 8;
 
 export const USER_MEMORY_KINDS = [
   'identity',
@@ -12,6 +18,7 @@ export const USER_MEMORY_KINDS = [
   'ongoing_task',
   'project',
   'decision',
+  'tool_routing',
 ] as const;
 
 export const USER_MEMORY_SCOPES = ['user_global', 'thread_pinned'] as const;
@@ -42,6 +49,53 @@ export type UserBehaviorProfile = {
   preferredTone?: UserMemoryTone;
   preferredFormatting?: UserMemoryFormatting;
   updatedFromMemoryItemId?: string | null;
+};
+
+export type ToolRoutingDomain =
+  | 'zoho_books'
+  | 'zoho_crm'
+  | 'gmail'
+  | 'google_drive'
+  | 'google_calendar'
+  | 'lark_base'
+  | 'lark_task'
+  | 'lark_doc'
+  | 'lark_calendar'
+  | 'lark_approval'
+  | 'lark_meeting'
+  | 'lark'
+  | 'workspace'
+  | 'document_inspection'
+  | 'web_search'
+  | 'unknown';
+
+export type ToolRoutingScopeHint = 'self' | 'company' | 'unspecified';
+export type ToolRoutingFollowUpClass = 'affirmation' | 'continuation' | 'retry' | 'fresh_request';
+export type ToolRoutingOperationClass = 'read' | 'write' | 'send' | 'inspect' | 'schedule' | 'search';
+
+export type ToolRoutingIntent = {
+  domain: ToolRoutingDomain;
+  operationClass: ToolRoutingOperationClass;
+  entity: string;
+  scopeHint: ToolRoutingScopeHint;
+  followUpClass: ToolRoutingFollowUpClass;
+  canonicalIntentKey: string;
+  subjectKey: string;
+  normalizedQuery: string;
+};
+
+export type ToolRoutingMemoryValue = {
+  toolId: string;
+  toolFamily: string;
+  operationClass: ToolRoutingOperationClass;
+  canonicalIntentKey: string;
+  phraseExamples: string[];
+  successCount: number;
+  failureCount: number;
+  correctionCount: number;
+  clarificationCount: number;
+  lastToolSelectionReason?: string;
+  confidenceScore: number;
 };
 
 export type ExtractedMemoryDraft = {
@@ -125,6 +179,8 @@ export const formatKindLabel = (kind: UserMemoryKind): string => {
       return 'Project';
     case 'decision':
       return 'Decision';
+    case 'tool_routing':
+      return 'Tool routing';
     default:
       return kind;
   }

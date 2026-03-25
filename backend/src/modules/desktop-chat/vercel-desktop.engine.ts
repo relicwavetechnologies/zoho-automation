@@ -2380,6 +2380,10 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
   validationFailureReason?: string;
 }> => {
   const selection = await resolveRunScopedToolSelection({
+    companyId: input.runtime.companyId,
+    userId: input.runtime.userId,
+    threadId: input.threadId,
+    conversationKey: buildConversationKey(input.threadId),
     latestUserMessage: input.latestUserMessage,
     allowedToolIds: input.runtime.allowedToolIds,
     allowedActionsByTool: input.runtime.allowedActionsByTool,
@@ -3762,6 +3766,7 @@ export class VercelDesktopEngine {
         resolvedUserReferences: resolvedUserContext.resolvedReferences,
       });
 
+      const executedToolOutcomes: Array<{ toolName: string; success: boolean; pendingApproval?: boolean }> = [];
       const result = await runVercelStreamLoop({
         runtime: effectiveRuntime,
         system: contextAssembly.systemPrompt,
@@ -3815,6 +3820,11 @@ export class VercelDesktopEngine {
           });
         },
         onToolFinish: async (toolName, activityId, title, output) => {
+          executedToolOutcomes.push({
+            toolName,
+            success: output.success,
+            pendingApproval: Boolean(output.pendingApprovalAction),
+          });
           activeTaskState = updateTaskStateFromToolEnvelope({
             taskState: activeTaskState,
             toolName,
@@ -4059,6 +4069,29 @@ export class VercelDesktopEngine {
             summary: mutation.summary,
             ok: mutation.ok,
           })),
+        });
+        await memoryService.recordToolSelectionOutcome({
+          companyId: session.companyId,
+          userId: session.userId,
+          channelOrigin: 'desktop',
+          threadId,
+          conversationKey: buildConversationKey(threadId),
+          latestUserMessage: effectivePromptMessage,
+          childRoute: childRoute
+            ? {
+              normalizedIntent: childRoute.normalizedIntent,
+              reason: childRoute.reason,
+              suggestedToolIds: childRoute.suggestedToolIds,
+              suggestedActions: childRoute.suggestedActions,
+            }
+            : undefined,
+          hasWorkspace: Boolean(workspace),
+          hasArtifacts: activeAttachments.length > 0 || activeTaskState.activeSourceArtifacts.length > 0,
+          plannerChosenToolId: effectiveRuntime.plannerChosenToolId,
+          plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
+          runExposedToolIds: effectiveRuntime.runExposedToolIds,
+          selectionReason: effectiveRuntime.toolSelectionReason,
+          toolResults: executedToolOutcomes,
         });
       });
       runInBackground(`record-token-usage:${executionId}`, async () => {

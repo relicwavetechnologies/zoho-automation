@@ -5,3 +5,4 @@ export * from './memory-extraction.service';
 export * from './memory-ranking.service';
 export * from './memory-retention.service';
 export * from './memory.service';
+export * from './tool-routing.service';

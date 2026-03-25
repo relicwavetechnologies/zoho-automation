@@ -56,6 +56,7 @@ enum UserMemoryKind {
   ongoing_task
   project
   decision
+  tool_routing
 }
 
 enum UserMemoryScope {
