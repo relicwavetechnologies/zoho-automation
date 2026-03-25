@@ -4,6 +4,7 @@ import { companyGoogleAuthLinkRepository } from '../../channels/google/company-g
 import { googleOAuthService } from '../../channels/google/google-oauth.service';
 import { googleUserAuthLinkRepository } from '../../channels/google/google-user-auth-link.repository';
 import { departmentService } from '../../departments/department.service';
+import { formatZohoGatewayDeniedMessage } from '../../integrations/zoho/zoho-gateway-denials';
 import { zohoGatewayService } from '../../integrations/zoho/zoho-gateway.service';
 import { zohoBooksClient, type ZohoBooksModule } from '../../integrations/zoho/zoho-books.client';
 import { zohoDataClient, type ZohoSourceType } from '../../integrations/zoho/zoho-data.client';
@@ -99,7 +100,7 @@ const resolveZohoBooksRecordIdentifier = async (input: {
     limit: 20,
   });
   if (!auth.allowed) {
-    throw new Error(auth.denialReason ?? `You are not allowed to read Zoho Books ${input.moduleName}.`);
+    throw new Error(formatZohoGatewayDeniedMessage(auth, `You are not allowed to read Zoho Books ${input.moduleName}.`).summary);
   }
   const records = Array.isArray(auth.payload?.records) ? auth.payload.records : [];
 
@@ -258,7 +259,7 @@ const authorizeZohoMutationOrThrow = async (input: {
     requester: buildZohoGatewayRequester(input.metadata),
   });
   if (!auth.allowed) {
-    throw new Error(auth.denialReason ?? `You are not allowed to mutate Zoho ${input.module ?? input.operation}.`);
+    throw new Error(formatZohoGatewayDeniedMessage(auth, `You are not allowed to mutate Zoho ${input.module ?? input.operation}.`).summary);
   }
 };
 

@@ -381,10 +381,7 @@ class DepartmentService {
       return DEFAULT_MEMBER_TOOL_IDS.has(toolId);
     };
 
-    const fallbackAllowed = new Set(input.fallbackAllowedToolIds);
     const resolveActionAllowed = (toolId: string, actionGroup: ToolActionGroup): boolean => {
-      if (!fallbackAllowed.has(toolId)) return false;
-
       const overrideRows = overrideMap.get(toolId);
       if (overrideRows?.has(actionGroup)) {
         return overrideRows.get(actionGroup) as boolean;

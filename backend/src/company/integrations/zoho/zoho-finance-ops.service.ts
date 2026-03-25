@@ -1,3 +1,4 @@
+import { formatZohoGatewayDeniedMessage } from './zoho-gateway-denials';
 import { zohoGatewayService } from './zoho-gateway.service';
 
 type StatementRow = {
@@ -286,7 +287,7 @@ export class ZohoFinanceOpsService {
     });
 
     if (!auth.allowed) {
-      throw new Error(auth.denialReason ?? `You are not allowed to read Zoho Books ${input.module}.`);
+      throw new Error(formatZohoGatewayDeniedMessage(auth, `You are not allowed to read Zoho Books ${input.module}.`).summary);
     }
 
     return {

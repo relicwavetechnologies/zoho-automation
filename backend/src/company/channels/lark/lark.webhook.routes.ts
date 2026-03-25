@@ -31,6 +31,7 @@ import type { MemberSessionDTO } from '../../../modules/member-auth/member-auth.
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import { LarkStatusCoordinator } from '../../orchestration/engine/lark-status.coordinator';
 import { runtimeTaskStore } from '../../orchestration/runtime-task.store';
+import { memoryService } from '../../memory';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
 type WebhookVerificationFailureReason = Exclude<LarkWebhookVerificationResult['reason'], undefined>;
@@ -355,6 +356,27 @@ const parseLarkWorkflowCommand = (
   return null;
 };
 
+const parseLarkMemoryCommand = (
+  text: string,
+): { kind: 'list' | 'help' | 'clear' } | { kind: 'forget'; reference: string } | null => {
+  const trimmed = text.trim();
+  const normalized = trimmed.toLowerCase();
+  if (normalized === '/memory') {
+    return { kind: 'list' };
+  }
+  if (normalized === '/memory help') {
+    return { kind: 'help' };
+  }
+  if (normalized === '/memory clear') {
+    return { kind: 'clear' };
+  }
+  if (normalized.startsWith('/memory forget ')) {
+    const reference = trimmed.slice('/memory forget '.length).trim();
+    return reference ? { kind: 'forget', reference } : { kind: 'help' };
+  }
+  return null;
+};
+
 const isLarkCommandMenuCommand = (text: string): boolean => {
   const normalized = text.trim().toLowerCase();
   return normalized === '/'
@@ -379,7 +401,42 @@ const buildLarkCommandMenuText = (): string => [
   '',
   '/workflows <id-or-name>',
   'Same as /workflow <id-or-name>.',
+  '',
+  '/memory',
+  'List durable personal memories for your linked account.',
+  '',
+  '/memory forget <number-or-id>',
+  'Forget one stored memory item.',
+  '',
+  '/memory clear',
+  'Clear all durable personal memories for your linked account.',
 ].join('\n');
+
+const buildLarkMemoryHelpText = (): string => [
+  'Memory commands:',
+  '',
+  '/memory',
+  'List your active durable memories.',
+  '',
+  '/memory forget <number-or-id>',
+  'Forget one memory from the latest list order or by exact id.',
+  '',
+  '/memory clear',
+  'Clear all durable personal memories.',
+].join('\n');
+
+const formatLarkMemoryListText = (items: Array<{ id: string; kindLabel: string; summary: string }>): string => {
+  if (items.length === 0) {
+    return 'No durable personal memories are stored yet.';
+  }
+  return [
+    `Active memories (${items.length}):`,
+    '',
+    ...items.slice(0, 20).map((item, index) => `${index + 1}. [${item.kindLabel}] ${item.summary} (${item.id})`),
+    '',
+    'Use /memory forget <number-or-id> to remove one item.',
+  ].join('\n');
+};
 
 const buildLarkWorkflowSession = (input: {
   userId: string;
@@ -1283,6 +1340,106 @@ export const createLarkWebhookEventHandler = (
       const workflowCommand = parsed.kind === 'event_callback_message'
         ? parseLarkWorkflowCommand(tracedMessageBase.text)
         : null;
+      const memoryCommand = parsed.kind === 'event_callback_message'
+        ? parseLarkMemoryCommand(tracedMessageBase.text)
+        : null;
+
+      if (parsed.kind === 'event_callback_message' && memoryCommand) {
+        if (!scopedCompanyId || !linkedUserId) {
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessageBase.chatId,
+            text: 'Memory commands need a linked desktop account for this Lark user. Link your account first, then retry.',
+            correlationId: requestId,
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Memory command handled without linked account',
+          });
+        }
+
+        if (memoryCommand.kind === 'help') {
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessageBase.chatId,
+            text: buildLarkMemoryHelpText(),
+            correlationId: requestId,
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Memory help command handled',
+          });
+        }
+
+        if (memoryCommand.kind === 'clear') {
+          await memoryService.clearUserMemory({
+            companyId: scopedCompanyId,
+            userId: linkedUserId,
+          });
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessageBase.chatId,
+            text: 'Cleared durable personal memories for your linked account.',
+            correlationId: requestId,
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Memory clear command handled',
+          });
+        }
+
+        const listed = await memoryService.listForUser({
+          companyId: scopedCompanyId,
+          userId: linkedUserId,
+        });
+
+        if (memoryCommand.kind === 'list') {
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessageBase.chatId,
+            text: formatLarkMemoryListText(listed.items.map((item) => ({
+              id: item.id,
+              kindLabel: item.kindLabel,
+              summary: item.summary,
+            }))),
+            correlationId: requestId,
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Memory list command handled',
+            data: { count: listed.items.length },
+          });
+        }
+
+        const reference = memoryCommand.reference.trim();
+        const byIndex = Number.parseInt(reference, 10);
+        const target = Number.isFinite(byIndex) && byIndex >= 1 && byIndex <= listed.items.length
+          ? listed.items[byIndex - 1]
+          : listed.items.find((item) => item.id === reference);
+        if (!target) {
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessageBase.chatId,
+            text: `No active memory matched "${reference}". Use /memory to list current entries.`,
+            correlationId: requestId,
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Memory forget command handled with no match',
+          });
+        }
+
+        await memoryService.forgetMemory({
+          companyId: scopedCompanyId,
+          userId: linkedUserId,
+          memoryId: target.id,
+        });
+        await dependencies.adapter.sendMessage({
+          chatId: tracedMessageBase.chatId,
+          text: `Forgot memory: ${target.summary}`,
+          correlationId: requestId,
+        });
+        return res.status(202).json({
+          success: true,
+          message: 'Memory forget command handled',
+          data: { memoryId: target.id },
+        });
+      }
 
       if (parsed.kind === 'event_callback_message' && workflowCommand) {
         if (!scopedCompanyId || !linkedUserId) {

@@ -25,6 +25,7 @@ import {
   inspectRepository,
   retrieveRepositoryFile,
 } from './repo-tool';
+import { formatZohoGatewayDeniedMessage } from '../../integrations/zoho/zoho-gateway-denials';
 
 type LarkOperationalConfigLike = {
   findByCompanyId: (companyId: string) => Promise<{
@@ -709,60 +710,14 @@ const buildZohoGatewayDeniedEnvelope = (
 ): VercelToolEnvelope => {
   const denialReason = asString(authResult.denialReason);
   const moduleName = asString(authResult.module);
-  const principal = asRecord(authResult.principal);
-  const requesterEmail = asString(principal?.normalizedRequesterEmail) ?? asString(principal?.requesterEmail);
-
-  if (denialReason === 'books_principal_not_resolved') {
-    const summary = requesterEmail
-      ? `No Zoho Books contact matched requester email ${requesterEmail}, so I cannot safely read ${moduleName ?? 'Zoho Books'} data in self-scoped mode.`
-      : `No requester email was available to match a Zoho Books contact, so I cannot safely read ${moduleName ?? 'Zoho Books'} data in self-scoped mode.`;
-    return buildEnvelope({
-      success: false,
-      summary,
-      errorKind: 'missing_input',
-      retryable: false,
-      userAction: 'Ask the user to confirm the exact Zoho Books contact email or request company-scoped access. Do not retry with company-wide Zoho Books fallbacks.',
-      fullPayload: {
-        denialReason,
-        module: moduleName,
-        requesterEmail,
-      },
-    });
-  }
-
-  if (denialReason === 'missing_requester_email') {
-    return buildEnvelope({
-      success: false,
-      summary: 'Requester email is missing, so self-scoped Zoho access cannot be resolved safely.',
-      errorKind: 'missing_input',
-      retryable: false,
-      userAction: 'Ask for or recover the requester email before retrying. Do not fall back to company-wide Zoho access.',
-      fullPayload: {
-        denialReason,
-        module: moduleName,
-      },
-    });
-  }
-
-  if (denialReason === 'books_module_requires_company_scope') {
-    return buildEnvelope({
-      success: false,
-      summary: `${moduleName ?? 'This Zoho Books module'} requires company-scoped Zoho Books access and cannot be read in self-scoped mode.`,
-      errorKind: 'permission',
-      retryable: false,
-      userAction: 'Tell the user that this Zoho Books module is finance/company scoped. Do not retry with broader read fallbacks.',
-      fullPayload: {
-        denialReason,
-        module: moduleName,
-      },
-    });
-  }
+  const formatted = formatZohoGatewayDeniedMessage(authResult, fallbackSummary);
 
   return buildEnvelope({
     success: false,
-    summary: denialReason ?? fallbackSummary,
-    errorKind: inferErrorKind(denialReason ?? fallbackSummary),
+    summary: formatted.summary,
+    errorKind: formatted.errorKind,
     retryable: false,
+    ...(formatted.userAction ? { userAction: formatted.userAction } : {}),
     fullPayload: denialReason
       ? {
         denialReason,
@@ -2028,7 +1983,7 @@ const isVercelToolAllowed = (runtime: VercelRuntimeRequestContext, toolName: str
   if (!requiredIds || requiredIds.length === 0) {
     return false;
   }
-  const allowed = new Set(runtime.allowedToolIds);
+  const allowed = new Set(runtime.runExposedToolIds ?? runtime.allowedToolIds);
   return requiredIds.some((toolId) => allowed.has(toolId));
 };
 
@@ -6197,6 +6152,13 @@ export const createVercelDesktopTools = (
             return `${asString(item.taskId) ?? ''} ${asString(item.summary) ?? ''}`.toLowerCase().includes(normalizedQuery);
           });
         };
+        const normalizeTaskSummary = (value?: string | null): string =>
+          (value ?? '')
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
         const rememberTask = (task: Record<string, unknown>) => {
           const taskId = asString(task.taskId) ?? asString(task.task_id);
           if (!taskId) return;
@@ -6557,14 +6519,64 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
-          const task = await larkTasksService.createTask({
+          if (!assigneeChangeRequested) {
+            return buildEnvelope({
+              success: false,
+              summary: 'Lark task create requires an assignee. Tell me whether this task is for you or name the teammate who should own it.',
+              errorKind: 'missing_input',
+              retryable: false,
+              userAction: 'Please tell me whether this task is for you or who it should be assigned to.',
+            });
+          }
+          const requestedSummary = normalizeTaskSummary(input.summary);
+          const visibleTasks = await listVisibleTasks(tasklistId);
+          const existingTask = visibleTasks.find((item) =>
+            requestedSummary.length > 0
+            && normalizeTaskSummary(asString(item.summary)) === requestedSummary
+            && taskIsOpen(item),
+          );
+          if (existingTask) {
+            let task = existingTask;
+            let assigneeSyncSummary: string | null = null;
+            const existingTaskGuid = asString(existingTask.taskGuid) ?? asString(existingTask.task_guid) ?? asString(existingTask.guid);
+            if (existingTaskGuid && assigneeChangeRequested) {
+              const assigneeSync = await syncTaskAssignees({
+                taskGuid: existingTaskGuid,
+                desiredAssigneeIds,
+              });
+              task = assigneeSync.task;
+              assigneeSyncSummary = assigneeSync.addedIds.length > 0 || assigneeSync.removedIds.length > 0
+                ? `assignees +${assigneeSync.addedIds.length}/-${assigneeSync.removedIds.length}`
+                : 'assignees unchanged';
+            }
+            rememberTask(task);
+            return buildEnvelope({
+              success: true,
+              summary: `Reused existing Lark task: ${asString(task.summary) ?? asString(task.taskId) ?? 'task'}${assigneeSyncSummary ? ` (${assigneeSyncSummary})` : ''}.`,
+              keyData: { task, deduped: true },
+              fullPayload: { task, deduped: true },
+            });
+          }
+          let task = await larkTasksService.createTask({
             ...getLarkAuthInput(runtime),
             body: baseBody,
           });
+          let assigneeSyncSummary: string | null = null;
+          const createdTaskGuid = asString(task.taskGuid) ?? asString(task.task_guid) ?? asString(task.guid);
+          if (createdTaskGuid && assigneeChangeRequested) {
+            const assigneeSync = await syncTaskAssignees({
+              taskGuid: createdTaskGuid,
+              desiredAssigneeIds,
+            });
+            task = assigneeSync.task;
+            assigneeSyncSummary = assigneeSync.addedIds.length > 0 || assigneeSync.removedIds.length > 0
+              ? `assignees +${assigneeSync.addedIds.length}/-${assigneeSync.removedIds.length}`
+              : 'assignees unchanged';
+          }
           rememberTask(task);
           return buildEnvelope({
             success: true,
-            summary: `Created Lark task: ${asString(task.summary) ?? asString(task.taskId) ?? 'task'}.`,
+            summary: `Created Lark task: ${asString(task.summary) ?? asString(task.taskId) ?? 'task'}${assigneeSyncSummary ? ` (${assigneeSyncSummary})` : ''}.`,
             keyData: { task },
             fullPayload: { task },
           });
@@ -8195,6 +8207,11 @@ export const createVercelDesktopTools = (
     executionId: runtime.executionId,
     requesterAiRole: runtime.requesterAiRole,
     allowedToolIds: runtime.allowedToolIds,
+    runExposedToolIds: runtime.runExposedToolIds ?? runtime.allowedToolIds,
+    plannerCandidateToolIds: runtime.plannerCandidateToolIds ?? [],
+    plannerChosenToolId: runtime.plannerChosenToolId ?? null,
+    plannerChosenOperationClass: runtime.plannerChosenOperationClass ?? null,
+    toolSelectionReason: runtime.toolSelectionReason ?? null,
     exposedTools: filteredEntries.map(([toolName]) => toolName),
   });
 

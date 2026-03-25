@@ -14,6 +14,7 @@ type CachedDepartmentRuntime = {
 };
 
 const DEPARTMENT_RUNTIME_TTL_SECONDS = 60 * 5;
+const DEPARTMENT_RUNTIME_CACHE_VERSION = 'v2';
 
 const fallbackHash = (fallbackAllowedToolIds: string[]): string =>
   createHash('sha1')
@@ -27,7 +28,7 @@ const runtimeKey = (input: {
   departmentId: string;
   fallbackAllowedToolIds: string[];
 }) =>
-  `company:${input.companyId}:department_runtime:department:${input.departmentId}:user:${input.userId}:fallback:${fallbackHash(input.fallbackAllowedToolIds)}`;
+  `company:${input.companyId}:department_runtime:${DEPARTMENT_RUNTIME_CACHE_VERSION}:department:${input.departmentId}:user:${input.userId}:fallback:${fallbackHash(input.fallbackAllowedToolIds)}`;
 
 const invalidateByPattern = async (pattern: string): Promise<number> => {
   const redis = cacheRedisConnection.getClient();

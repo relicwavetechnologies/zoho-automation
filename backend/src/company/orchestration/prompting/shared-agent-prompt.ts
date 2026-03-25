@@ -154,6 +154,11 @@ export type SharedAgentPromptInput = {
   workspaceAvailability?: WorkspacePromptAvailability;
   latestActionResult?: { kind: string; ok: boolean; summary: string };
   allowedToolIds?: string[];
+  runExposedToolIds?: string[];
+  plannerCandidateToolIds?: string[];
+  toolSelectionReason?: string;
+  plannerChosenToolId?: string;
+  plannerChosenOperationClass?: string;
   allowedActionsByTool?: Record<string, ToolActionGroup[]>;
   departmentName?: string;
   departmentRoleSlug?: string;
@@ -167,6 +172,9 @@ export type SharedAgentPromptInput = {
   taskStateContext?: string | null;
   conversationRefsContext?: string | null;
   conversationRetrievalSnippets?: string[];
+  behaviorProfileContext?: string | null;
+  durableMemoryContext?: string | null;
+  relevantMemoryFactsContext?: string | null;
   resolvedUserReferences?: string[];
   routerAcknowledgement?: string;
   childRouteHints?: SharedChildRouteHints;
@@ -196,12 +204,16 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
     }),
     'Allowed tool catalog for this run:',
     buildAllowedToolCatalog({
-      allowedToolIds: input.allowedToolIds,
+      allowedToolIds: input.runExposedToolIds ?? input.allowedToolIds,
       allowedActionsByTool: input.allowedActionsByTool,
     }),
     'For specialized or complex workflows, first search relevant skills with the skillSearch tool, read the chosen skill, and then proceed with the task.',
     'If a request might be about reusable workflow creation, recurring scheduling, save-for-later behavior, or the right scheduling/calendar route is unclear, search skills before guessing.',
     'If the user asks about prior conversation facts, personal preferences, or things they told you before, first use thread context and retrieved conversation memory. Do not call business tools like Zoho, Lark Base, Google Drive, or coding just to answer a personal-memory question unless the user explicitly asks for those systems.',
+    'Durable memory has two roles: behavior profile and factual/task recall.',
+    'Resolved user behavior profile is binding from the start of the run unless the latest live user message overrides it.',
+    'Durable factual/task memory is advisory only. Prefer the latest live user request, then explicit thread-local context, then durable memory, then defaults.',
+    'Fresh tool results, uploaded documents, OCR, CRM reads, or other current system-of-record evidence override contradictory durable memory.',
     'When a local action result is available, use that result as the source of truth for the next step instead of repeating the same command or rereading the same file without a concrete reason.',
     'Do not repeat a successful local command, file read, or file write unless you explicitly need a different verification step or the user asked to retry.',
     'After an approved local action finishes, prefer verifyResult or the next logically required step over restarting the whole plan.',
@@ -238,6 +250,16 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
 
   if (input.contextClass) {
     parts.push(`Context assembly class: ${sanitizePromptLiteral(input.contextClass)}.`);
+  }
+
+  if (input.toolSelectionReason?.trim()) {
+    parts.push(`Run-scoped tool selection reason: ${sanitizePromptLiteral(input.toolSelectionReason)}.`);
+  }
+  if (input.plannerCandidateToolIds && input.plannerCandidateToolIds.length > 0) {
+    parts.push(`Planner candidate tool ids for this run: ${input.plannerCandidateToolIds.map((toolId) => sanitizePromptLiteral(toolId)).join(', ')}.`);
+  }
+  if (input.plannerChosenToolId?.trim()) {
+    parts.push(`Planner selected primary tool: ${sanitizePromptLiteral(input.plannerChosenToolId)}${input.plannerChosenOperationClass?.trim() ? ` (${sanitizePromptLiteral(input.plannerChosenOperationClass)})` : ''}.`);
   }
 
   const requesterContext = buildRequesterIdentityContext({
@@ -324,6 +346,27 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
         maxChars: 3_500,
       })
       : '',
+    input.behaviorProfileContext
+      ? wrapUntrustedPromptDataBlock({
+        label: 'Resolved user behavior profile',
+        text: input.behaviorProfileContext,
+        maxChars: 1_000,
+      })
+      : '',
+    input.durableMemoryContext
+      ? wrapUntrustedPromptDataBlock({
+        label: 'Durable task and fact memory',
+        text: input.durableMemoryContext,
+        maxChars: 2_500,
+      })
+      : '',
+    input.relevantMemoryFactsContext
+      ? wrapUntrustedPromptDataBlock({
+        label: 'Relevant durable and recalled memory facts',
+        text: input.relevantMemoryFactsContext,
+        maxChars: 3_000,
+      })
+      : '',
     input.resolvedUserReferences && input.resolvedUserReferences.length > 0
       ? wrapUntrustedPromptDataBlock({
         label: 'Deterministic reference resolution',
@@ -363,6 +406,9 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
 
   if (input.resolvedUserReferences && input.resolvedUserReferences.length > 0) {
     parts.push('Use deterministic reference resolution as the source of truth unless the user explicitly asks to refresh from the system of record.');
+  }
+  if (input.behaviorProfileContext?.trim()) {
+    parts.push('Follow the resolved behavior profile from the first step of reasoning unless the latest user message explicitly overrides it.');
   }
   if (input.routerAcknowledgement?.trim()) {
     parts.push('Do not repeat the prior intake acknowledgement verbatim. Continue from it and focus on execution.');

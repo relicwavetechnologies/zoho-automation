@@ -48,6 +48,56 @@ enum ScheduledWorkflowRunStatus {
   blocked
 }
 
+enum UserMemoryKind {
+  identity
+  response_style
+  preference
+  constraint
+  ongoing_task
+  project
+  decision
+}
+
+enum UserMemoryScope {
+  user_global
+  thread_pinned
+}
+
+enum UserMemoryStatus {
+  active
+  archived
+  forgotten
+  superseded
+}
+
+enum UserMemorySource {
+  user_explicit
+  assistant_compacted
+  tool_result
+}
+
+enum UserMemoryChannelOrigin {
+  desktop
+  lark
+}
+
+enum UserMemoryReplyLength {
+  short
+  balanced
+  detailed
+}
+
+enum UserMemoryTone {
+  neutral
+  warm
+  direct
+}
+
+enum UserMemoryFormatting {
+  paragraphs
+  bullets
+}
+
 model User {
   id               String            @id @default(uuid())
   email            String            @unique
@@ -70,6 +120,8 @@ model User {
   executionRuns    ExecutionRun[]
   larkAuthLinks    LarkUserAuthLink[]
   googleAuthLinks  GoogleUserAuthLink[]
+  memoryItems      UserMemoryItem[]
+  memoryProfiles   UserMemoryProfile[]
 }
 
 model Company {
@@ -105,6 +157,54 @@ model Company {
   googleAuthLinks  GoogleUserAuthLink[]
   googleWorkspaceAuth CompanyGoogleAuthLink?
   fileAssets       FileAsset[]
+  userMemoryItems  UserMemoryItem[]
+  userMemoryProfiles UserMemoryProfile[]
+}
+
+model UserMemoryItem {
+  id              String                  @id @default(uuid())
+  companyId       String
+  company         Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind            UserMemoryKind
+  scope           UserMemoryScope
+  channelOrigin   UserMemoryChannelOrigin
+  threadId        String?
+  conversationKey String?
+  subjectKey      String
+  summary         String
+  valueJson       Json
+  confidence      Float
+  status          UserMemoryStatus        @default(active)
+  source          UserMemorySource
+  firstSeenAt     DateTime
+  lastSeenAt      DateTime
+  lastConfirmedAt DateTime?
+  staleAfterAt    DateTime?
+  supersededById  String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  @@index([companyId, userId, status, kind, updatedAt])
+  @@index([companyId, userId, subjectKey, status])
+  @@index([companyId, userId, status, scope, threadId, conversationKey])
+}
+
+model UserMemoryProfile {
+  id                     String                 @id @default(uuid())
+  companyId              String
+  company                Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId                 String
+  user                   User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  preferredReplyLength   UserMemoryReplyLength?
+  preferredTone          UserMemoryTone?
+  preferredFormatting    UserMemoryFormatting?
+  updatedFromMemoryItemId String?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+  @@unique([companyId, userId])
 }
 
 model AdminMembership {

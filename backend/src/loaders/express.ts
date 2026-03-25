@@ -15,6 +15,7 @@ import exampleRoutes from '../modules/example/example.routes';
 import rbacRoutes from '../modules/rbac/rbac.routes';
 import userRoutes from '../modules/user/user.routes';
 import memberAuthRoutes from '../modules/member-auth/member-auth.routes';
+import memberMemoryRoutes from '../modules/member-memory/member-memory.routes';
 import desktopAuthRoutes from '../modules/desktop-auth/desktop-auth.routes';
 import desktopThreadsRoutes from '../modules/desktop-threads/desktop-threads.routes';
 import desktopChatRoutes from '../modules/desktop-chat/desktop-chat.routes';
@@ -73,6 +74,7 @@ const expressLoader = async (app: Application): Promise<void> => {
   app.use('/api/admin/company', companyAdminRoutes);
   app.use('/api/onboarding', companyOnboardingRoutes);
   app.use('/api/member/auth', memberAuthRoutes);
+  app.use('/api/member/memory', memberMemoryRoutes);
   app.use('/api/desktop/auth', desktopAuthRoutes);
   app.use('/api/desktop/threads', desktopThreadsRoutes);
   app.use('/api/desktop/chat', desktopChatRoutes);

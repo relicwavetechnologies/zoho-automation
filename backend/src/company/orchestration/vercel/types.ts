@@ -154,6 +154,12 @@ export type VercelRuntimeRequestContext = {
     summary: string;
   };
   allowedToolIds: string[];
+  runExposedToolIds?: string[];
+  plannerCandidateToolIds?: string[];
+  toolSelectionReason?: string;
+  toolSelectionFallbackNeeded?: boolean;
+  plannerChosenToolId?: string;
+  plannerChosenOperationClass?: string;
   allowedActionsByTool?: Record<string, ToolActionGroup[]>;
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
