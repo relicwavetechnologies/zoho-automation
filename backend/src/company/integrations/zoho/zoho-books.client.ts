@@ -122,6 +122,44 @@ const toPrimitiveString = (value: unknown): string | undefined => {
   return undefined;
 };
 
+const summarizeZohoBooksBody = (body: Record<string, unknown> | FormData | undefined): Record<string, unknown> | undefined => {
+  if (!body) {
+    return undefined;
+  }
+  if (body instanceof FormData) {
+    const entries = Array.from(body.keys());
+    return {
+      bodyType: 'form-data',
+      bodyKeys: entries,
+    };
+  }
+  return {
+    bodyType: 'json',
+    bodyKeys: Object.keys(body),
+  };
+};
+
+const extractZohoBooksPathAudit = (path: string): {
+  moduleName?: string;
+  recordId?: string;
+  action?: string;
+} => {
+  const [pathname] = path.split('?');
+  const segments = pathname.split('/').filter(Boolean);
+  const booksIndex = segments.indexOf('v3');
+  if (booksIndex === -1) {
+    return {};
+  }
+  const moduleName = segments[booksIndex + 1];
+  const recordId = segments[booksIndex + 2];
+  const action = segments[booksIndex + 3];
+  return {
+    moduleName,
+    recordId,
+    action,
+  };
+};
+
 const extractListItems = (moduleName: ZohoBooksModule, payload: ZohoBooksResponse): Record<string, unknown>[] =>
   asArrayOfRecords(payload[BOOKS_MODULE_KEYS[moduleName].listKey]);
 
@@ -1409,6 +1447,23 @@ export class ZohoBooksClient {
       body: input.body,
     });
 
+    if (input.method !== 'GET') {
+      const audit = extractZohoBooksPathAudit(input.path);
+      logger.info('zoho.books.request.success', {
+        companyId: input.companyId,
+        environment,
+        organizationId,
+        method: input.method,
+        path: input.path,
+        moduleName: audit.moduleName,
+        recordId: audit.recordId,
+        action: audit.action,
+        responseCode: asString(payload.code) ?? payload.code,
+        responseMessage: asString(payload.message),
+        ...summarizeZohoBooksBody(input.body),
+      });
+    }
+
     return {
       organizationId,
       payload,
@@ -1437,6 +1492,23 @@ export class ZohoBooksClient {
       method: input.method,
       body: input.body,
     });
+
+    if (input.method !== 'GET') {
+      const audit = extractZohoBooksPathAudit(input.path);
+      logger.info('zoho.books.request.success', {
+        companyId: input.companyId,
+        environment,
+        organizationId,
+        method: input.method,
+        path: input.path,
+        moduleName: audit.moduleName,
+        recordId: audit.recordId,
+        action: audit.action,
+        responseCode: payload.status,
+        responseMessage: payload.contentType,
+        ...summarizeZohoBooksBody(input.body),
+      });
+    }
 
     return {
       organizationId,

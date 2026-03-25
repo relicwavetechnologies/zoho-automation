@@ -60,6 +60,7 @@ import {
   buildTaskStateContext,
   buildThreadSummaryContext,
   createEmptyTaskState,
+  filterThreadMessagesForContext,
   markDesktopSourceArtifactsUsed,
   parseDesktopTaskState,
   parseDesktopThreadSummary,
@@ -545,6 +546,19 @@ const isReferentialFollowup = (value: string | null | undefined): boolean =>
 const isPersonalMemoryQuestion = (value: string | null | undefined): boolean =>
   /\b(do you know|do you remember|remember|recall|what(?:'s| is) my|my (?:fav|favorite|favourite|preferred)|favorite|favourite|preferred|preference|about me|my name|my email)\b/i.test(value ?? '');
 
+const isWorkflowLikeRequest = (value: string | null | undefined): boolean =>
+  /\b(workflow|prompt|schedule|scheduled|every day|every week|every month|recurring|save (?:this|it) for later|make (?:this|it) reusable)\b/i.test(value ?? '');
+
+const hasSpecificWorkflowReference = (value: string | null | undefined): boolean => {
+  const text = value?.trim() ?? '';
+  if (!text) return false;
+  return /\b(this workflow|that workflow|current workflow)\b/i.test(text)
+    || /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(text)
+    || /\b(?:workflow named|workflow called|named workflow|called workflow)\b/i.test(text)
+    || /"[^"]{2,120}"/.test(text)
+    || /'[^']{2,120}'/.test(text);
+};
+
 const expandConversationMemoryQuery = (value: string): string => {
   const normalized = value
     .replace(/\bfav\b/gi, 'favorite')
@@ -720,8 +734,9 @@ export const buildChildRouterPrompt = (input: {
   taskState?: DesktopTaskState;
   threadSummary?: DesktopThreadSummary;
 }): string => {
-  const historyBlock = input.history.length > 0
-    ? input.history
+  const filteredHistory = filterThreadMessagesForContext(input.history);
+  const historyBlock = filteredHistory.length > 0
+    ? filteredHistory
       .slice(-6)
       .map((entry, index) => `${index + 1}. ${entry.role.toUpperCase()}: ${entry.content}`)
       .join('\n')
@@ -769,6 +784,10 @@ export const buildChildRouterPrompt = (input: {
     '- If a workspace is active and the user asks you to create, delete, move, rename, organize, modify, scaffold, or inspect local files or folders, do not answer with a manual workaround unless no workspace is available. Route to direct_execute or handoff so the main executor can use the coding tool.',
     '- Use the allowed tool catalog to suggest the best next tool ids or skill query. Prefer concrete allowed tools over vague guesses.',
     '- If the right tool path is unclear, suggest skillSearch first and provide a concise suggestedSkillQuery.',
+    '- Do not assume an existing saved workflow satisfies a new scheduling or reusable-workflow request unless the user explicitly names that workflow, gives its id, or clearly says to edit/update the current one.',
+    '- If the user asks to schedule "a workflow" or describes a recurring process without naming an existing saved workflow, prefer workflow planning/creation or a clarification question over claiming an older saved workflow already covers it.',
+    '- Use workflow listing and existing-workflow reuse only when the user is explicitly asking about saved workflows or references a specific saved workflow by name/id.',
+    '- If older history or thread summary conflicts with the latest user message, the latest user message wins.',
     '- For fast_reply, fill reply and keep it short.',
     '- For direct_execute, always fill acknowledgement and keep it short, concrete, and action-oriented.',
     '- For handoff, always fill acknowledgement and keep it short, concrete, and action-oriented.',
@@ -2064,9 +2083,14 @@ const buildAdaptiveHistoryMessages = (input: {
   const selected: typeof input.history.messages = [];
   let used = 0;
   let compactionTier = 1;
-  const recent = input.history.messages.slice(-40).filter((message) =>
-    lowValueFilter ? !isLightweightChatTurn(message.content) : true,
-  );
+  const recent = input.history.messages
+    .slice(-40)
+    .filter((message) => {
+      if (lowValueFilter && isLightweightChatTurn(message.content)) {
+        return false;
+      }
+      return filterThreadMessagesForContext([message]).length > 0;
+    });
 
   for (let index = recent.length - 1; index >= 0; index -= 1) {
     const message = recent[index]!;
@@ -2264,6 +2288,9 @@ const buildSystemPrompt = (input: {
     'Do not refer to Mastra, LangGraph, workflows, or internal orchestration.',
     'If the user describes a repeatable process, wants to make it reusable, wants to save it for later, asks to schedule it, asks to list saved prompts/workflows, or asks to run a saved workflow, prefer the dedicated workflow authoring tools over ad hoc execution.',
     'If a workflow authoring tool returns missing_input, ask the user exactly for that missing detail instead of guessing.',
+    'Do not assume an existing saved workflow satisfies a new scheduling or reusable-workflow request unless the user explicitly names that workflow, gives its id, or clearly says to edit/update the current one.',
+    'If the user asks to schedule "a workflow" or describes a recurring process without naming an existing saved workflow, treat it as planning/creation work: gather missing details, plan it, or ask a clarification question instead of claiming an old workflow already covers it.',
+    'Use workflow listing and existing-workflow reuse only when the user is explicitly asking about saved workflows or references a specific saved workflow by name/id.',
     ...buildWorkspaceAwarePromptSections({
       workspace: input.workspace,
       approvalPolicySummary: input.approvalPolicySummary,
@@ -2345,6 +2372,19 @@ const buildSystemPrompt = (input: {
   }
   if (input.departmentSkillsMarkdown?.trim()) {
     parts.push('Legacy department skills fallback context (use skillSearch for the structured skill flow first):', input.departmentSkillsMarkdown.trim());
+  }
+  if (input.latestUserMessage?.trim()) {
+    parts.push(
+      `Latest live user request: ${input.latestUserMessage.trim()}`,
+      'If older history, thread summary, or prior assistant conclusions conflict with the latest live user request, the latest live user request wins.',
+    );
+  }
+  if (isWorkflowLikeRequest(input.latestUserMessage) && !hasSpecificWorkflowReference(input.latestUserMessage)) {
+    parts.push(
+      'Current turn note: this is a fresh workflow planning/scheduling request, not a confirmed reference to a specific saved workflow.',
+      'Do not satisfy this turn by reusing or describing an older saved workflow unless a tool lookup confirms the exact match and the user clearly agrees that it is the same workflow.',
+      'If required schedule, destination, or workflow-definition details are missing, ask for them or use workflow planning tools to gather them.',
+    );
   }
   if (shouldRecommendSkillFirst(input.latestUserMessage)) {
     parts.push(
@@ -2866,6 +2906,7 @@ export const executeAutomatedDesktopTurn = async (input: {
       larkUserId: input.session.larkUserId ?? undefined,
       authProvider: input.session.authProvider,
       mode,
+      taskState: threadMemory.taskState,
       dateScope: inferDateScope(resolvedUserContext.message),
       allowedToolIds: departmentRuntime.allowedToolIds,
       allowedActionsByTool: departmentRuntime.allowedActionsByTool,
@@ -3304,10 +3345,10 @@ export class VercelDesktopEngine {
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
         taskState: activeTaskState,
         threadSummary: activeThreadSummary,
-        history: preRouterHistory.messages.slice(-6).map((entry) => ({
+        history: filterThreadMessagesForContext(preRouterHistory.messages.map((entry) => ({
           role: entry.role === 'assistant' ? 'assistant' : 'user',
           content: entry.content,
-        })),
+        }))).slice(-6),
       });
 
       const userMessage = await desktopThreadsService.addMessage(
@@ -3345,10 +3386,10 @@ export class VercelDesktopEngine {
           workspace,
           requesterName: session.name,
           requesterEmail: session.email,
-          history: preRouterHistory.messages.slice(-6).map((entry) => ({
+          history: filterThreadMessagesForContext(preRouterHistory.messages.map((entry) => ({
             role: entry.role === 'assistant' ? 'assistant' : 'user',
             content: entry.content,
-          })),
+          }))).slice(-6),
         });
         logger.info('vercel.child_router.fast_reply', {
           executionId,
@@ -3478,6 +3519,7 @@ export class VercelDesktopEngine {
         larkUserId: session.larkUserId ?? undefined,
         authProvider: session.authProvider,
         mode,
+        taskState: activeTaskState,
         workspace,
         desktopApprovalPolicySummary: approvalPolicySummary,
         dateScope: inferDateScope(effectivePromptMessage),
@@ -4037,6 +4079,7 @@ export class VercelDesktopEngine {
         larkUserId: session.larkUserId ?? undefined,
         authProvider: session.authProvider,
         mode,
+        taskState: activeTaskState,
         workspace,
         desktopApprovalPolicySummary: approvalPolicySummary,
         dateScope: inferDateScope(resolvedUserContext.message || message),
@@ -4502,6 +4545,7 @@ export class VercelDesktopEngine {
         larkUserId: session.larkUserId ?? undefined,
         authProvider: session.authProvider,
         mode,
+        taskState: activeTaskState,
         workspace,
         desktopApprovalPolicySummary: approvalPolicySummary,
         dateScope: inferDateScope(resolvedUserContext.message || message),

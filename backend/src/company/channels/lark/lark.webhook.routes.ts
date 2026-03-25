@@ -20,6 +20,10 @@ import { ingestLarkAttachments } from './lark-file-ingestion';
 import { larkRecentFilesStore } from './lark-recent-files.store';
 import { orangeDebug } from '../../../utils/orange-debug';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
+import {
+  applyActionResultToTaskState,
+  parseDesktopTaskState,
+} from '../../../modules/desktop-chat/desktop-thread-memory';
 import { desktopWorkflowsService } from '../../../modules/desktop-workflows/desktop-workflows.service';
 import { conversationMemoryStore } from '../../state/conversation';
 import { createRateLimitMiddleware, createRedisAvailabilityMiddleware } from '../../../middlewares/rate-limit.middleware';
@@ -39,6 +43,14 @@ type UpsertChannelIdentityInput = {
   companyId: string;
   larkOpenId?: string;
   larkUserId?: string;
+};
+
+type NormalizedLarkMessage = NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>>;
+
+type PendingThreadApprovalContext = {
+  threadId: string;
+  userId: string;
+  pendingApproval: ReturnType<typeof parseDesktopTaskState>['pendingApproval'];
 };
 
 type LarkWebhookRouteDependencies = {
@@ -160,6 +172,145 @@ const buildApprovalContinuationText = (input: {
       ? 'Do not repeat the same successful action unless a different verification or follow-up step is required.'
       : 'Use the failure details above to choose a different next step or a corrected retry.',
   ].filter(Boolean).join('\n');
+};
+
+const shouldAutoContinueAfterApproval = (input: {
+  approvalAction: Record<string, unknown>;
+  executionOk?: boolean;
+}): boolean => {
+  if (!input.executionOk) {
+    return true;
+  }
+  const actionGroup = typeof input.approvalAction.actionGroup === 'string'
+    ? input.approvalAction.actionGroup.trim().toLowerCase()
+    : '';
+  if (actionGroup === 'send') {
+    return false;
+  }
+  return true;
+};
+
+const loadPendingLarkThreadApproval = async (input: {
+  companyId?: string;
+  linkedUserId?: string;
+}): Promise<PendingThreadApprovalContext | null> => {
+  if (!input.companyId || !input.linkedUserId) {
+    return null;
+  }
+
+  const thread = await desktopThreadsService.findOrCreateLarkLifetimeThread(input.linkedUserId, input.companyId);
+  const meta = await desktopThreadsService.getThreadMeta(thread.id, input.linkedUserId);
+  const taskState = parseDesktopTaskState((meta as Record<string, unknown>).taskStateJson);
+  if (!taskState.pendingApproval) {
+    return null;
+  }
+
+  return {
+    threadId: thread.id,
+    userId: input.linkedUserId,
+    pendingApproval: taskState.pendingApproval,
+  };
+};
+
+const buildStoredActionFromPendingThreadApproval = (input: {
+  pendingContext: PendingThreadApprovalContext;
+  chatId: string;
+  companyId: string;
+  requesterEmail?: string;
+  requesterAiRole: string;
+}): Record<string, unknown> => {
+  const now = new Date().toISOString();
+  const pendingApproval = input.pendingContext.pendingApproval;
+  return {
+    actionId: pendingApproval?.approvalId ?? randomUUID(),
+    actionType: 'tool_action',
+    summary: pendingApproval?.summary ?? 'Approval pending',
+    toolId: pendingApproval?.toolId ?? 'unknown-tool',
+    actionGroup: pendingApproval?.actionGroup ?? 'execute',
+    channel: 'lark',
+    subject: pendingApproval?.subject ?? '',
+    requestedAt: pendingApproval?.updatedAt ?? now,
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    status: 'pending',
+    taskId: '',
+    _chatId: input.chatId,
+    _threadId: input.pendingContext.threadId,
+    _channel: 'lark',
+    payload: pendingApproval?.payload ?? {},
+    metadata: {
+      companyId: input.companyId,
+      userId: input.pendingContext.userId,
+      requesterEmail: input.requesterEmail,
+      requesterAiRole: input.requesterAiRole,
+    },
+  };
+};
+
+const persistPendingApprovalResultToThread = async (input: {
+  pendingContext: PendingThreadApprovalContext | null;
+  actionResult: { kind: string; ok: boolean; summary: string; payload?: Record<string, unknown> };
+}) => {
+  if (!input.pendingContext) {
+    return;
+  }
+
+  const meta = await desktopThreadsService.getThreadMeta(input.pendingContext.threadId, input.pendingContext.userId);
+  const taskState = parseDesktopTaskState((meta as Record<string, unknown>).taskStateJson);
+  const nextTaskState = applyActionResultToTaskState({
+    taskState,
+    actionResult: input.actionResult,
+  });
+  await desktopThreadsService.updateOwnedThreadMemory(
+    input.pendingContext.threadId,
+    input.pendingContext.userId,
+    { taskStateJson: nextTaskState as unknown as Record<string, unknown> },
+  );
+};
+
+const continueAfterApproval = async (input: {
+  dependencies: Pick<LarkWebhookRouteDependencies, 'enqueueTask' | 'requeueTask'>;
+  taskId?: string;
+  tracedMessage: NormalizedLarkMessage;
+  requestId: string;
+  sourceActionId: string;
+  sourceMessageId: string;
+  continuationText: string;
+  parsedKind: LarkIngressParseResult['kind'];
+  executionSummary?: string;
+  executionOk?: boolean;
+  executionPayload?: Record<string, unknown>;
+}): Promise<string> => {
+  const continuationMessage: NormalizedLarkMessage = {
+    ...input.tracedMessage,
+    messageId: randomUUID(),
+    timestamp: new Date().toISOString(),
+    text: input.continuationText,
+    rawEvent: {
+      kind: 'hitl_approval_continuation',
+      sourceActionId: input.sourceActionId,
+      sourceMessageId: input.sourceMessageId,
+      executionSummary: input.executionSummary,
+      executionOk: input.executionOk,
+      executionPayload: input.executionPayload,
+    },
+    trace: {
+      ...input.tracedMessage.trace,
+      requestId: input.requestId,
+      receivedAt: new Date().toISOString(),
+      textHash: buildLarkTextHash(input.continuationText),
+      statusMessageId: input.parsedKind === 'event_callback_card_action'
+        ? input.tracedMessage.messageId
+        : input.tracedMessage.trace?.statusMessageId,
+    },
+  };
+
+  if (input.taskId?.trim()) {
+    await input.dependencies.requeueTask(input.taskId, continuationMessage);
+    return input.taskId;
+  }
+
+  const enqueued = await input.dependencies.enqueueTask(continuationMessage);
+  return enqueued.taskId;
 };
 
 const parseHitlDecision = (text: string): { actionId: string; decision: 'confirmed' | 'cancelled' } | null => {
@@ -1446,89 +1597,118 @@ export const createLarkWebhookEventHandler = (
         : null;
       const hitlDecision = cardHitlDecision ?? textHitlDecision;
       if (hitlDecision) {
+        const pendingThreadApprovalContext = scopedCompanyId && linkedUserId
+          ? await loadPendingLarkThreadApproval({
+            companyId: scopedCompanyId,
+            linkedUserId,
+          })
+          : null;
         const storedAction = await dependencies.getStoredHitlAction(hitlDecision.actionId);
-        const resolved = await dependencies.resolveHitlAction(hitlDecision.actionId, hitlDecision.decision);
+        const fallbackStoredAction = !storedAction && implicitTextHitlDecision && pendingThreadApprovalContext
+          ? buildStoredActionFromPendingThreadApproval({
+            pendingContext: pendingThreadApprovalContext,
+            chatId: tracedMessage.chatId,
+            companyId: scopedCompanyId!,
+            requesterEmail,
+            requesterAiRole: userRole,
+          })
+          : null;
+        const approvalAction = storedAction ?? fallbackStoredAction;
+        const resolved = storedAction
+          ? await dependencies.resolveHitlAction(hitlDecision.actionId, hitlDecision.decision)
+          : Boolean(fallbackStoredAction);
         let executionSummary: string | undefined;
         let executionOk: boolean | undefined;
         let executionPayload: Record<string, unknown> | undefined;
         let executionKind: string | undefined;
         let resumedTaskId: string | undefined;
-        if (resolved && hitlDecision.decision === 'confirmed' && storedAction) {
+        if (resolved && hitlDecision.decision === 'confirmed' && approvalAction) {
           try {
-            const executionResult = await dependencies.executeStoredHitlAction(storedAction);
+            const executionResult = await dependencies.executeStoredHitlAction(approvalAction);
             executionKind = executionResult.kind;
             executionSummary = executionResult.summary;
             executionOk = executionResult.ok;
             executionPayload = executionResult.payload;
-            if (typeof storedAction.taskId === 'string' && storedAction.taskId.trim()) {
+            await persistPendingApprovalResultToThread({
+              pendingContext: pendingThreadApprovalContext,
+              actionResult: {
+                kind: executionResult.kind ?? 'tool_action',
+                ok: executionResult.ok,
+                summary: executionResult.summary,
+                payload: executionResult.payload,
+              },
+            });
+            if (shouldAutoContinueAfterApproval({
+              approvalAction,
+              executionOk: executionResult.ok,
+            })) {
               const continuationText = buildApprovalContinuationText({
                 kind: executionResult.kind,
                 ok: executionResult.ok,
                 summary: executionSummary,
-                actionSummary: typeof storedAction.summary === 'string' ? storedAction.summary : undefined,
+                actionSummary: typeof approvalAction.summary === 'string' ? approvalAction.summary : undefined,
                 payload: executionResult.payload,
               });
-              await dependencies.requeueTask(storedAction.taskId, {
-                ...tracedMessage,
-                messageId: randomUUID(),
-                timestamp: new Date().toISOString(),
-                text: continuationText,
-                rawEvent: {
-                  kind: 'hitl_approval_continuation',
-                  sourceActionId: hitlDecision.actionId,
-                  sourceMessageId: tracedMessage.messageId,
-                  executionSummary,
-                  executionPayload: executionResult.payload,
-                },
-                trace: {
-                  ...tracedMessage.trace,
-                  requestId,
-                  receivedAt: new Date().toISOString(),
-                  textHash: buildLarkTextHash(continuationText),
-                  statusMessageId: parsed.kind === 'event_callback_card_action'
-                    ? tracedMessage.messageId
-                    : tracedMessage.trace?.statusMessageId,
-                },
+              resumedTaskId = await continueAfterApproval({
+                dependencies,
+                taskId: typeof approvalAction.taskId === 'string' ? approvalAction.taskId : undefined,
+                tracedMessage,
+                requestId,
+                sourceActionId: hitlDecision.actionId,
+                sourceMessageId: tracedMessage.messageId,
+                continuationText,
+                parsedKind: parsed.kind,
+                executionSummary,
+                executionOk: executionResult.ok,
+                executionPayload: executionResult.payload,
               });
-              resumedTaskId = storedAction.taskId;
             }
           } catch (error) {
             executionSummary = error instanceof Error ? error.message : 'Stored approval action execution failed';
             executionOk = false;
-            if (typeof storedAction.taskId === 'string' && storedAction.taskId.trim()) {
-              const continuationText = buildApprovalContinuationText({
-                kind: executionKind,
+            await persistPendingApprovalResultToThread({
+              pendingContext: pendingThreadApprovalContext,
+              actionResult: {
+                kind: executionKind ?? 'tool_action',
                 ok: false,
                 summary: executionSummary,
-                actionSummary: typeof storedAction.summary === 'string' ? storedAction.summary : undefined,
                 payload: executionPayload,
-              });
-              await dependencies.requeueTask(storedAction.taskId, {
-                ...tracedMessage,
-                messageId: randomUUID(),
-                timestamp: new Date().toISOString(),
-                text: continuationText,
-                rawEvent: {
-                  kind: 'hitl_approval_continuation',
-                  sourceActionId: hitlDecision.actionId,
-                  sourceMessageId: tracedMessage.messageId,
-                  executionSummary,
-                  executionOk: false,
-                  executionPayload,
-                },
-                trace: {
-                  ...tracedMessage.trace,
-                  requestId,
-                  receivedAt: new Date().toISOString(),
-                  textHash: buildLarkTextHash(continuationText),
-                  statusMessageId: parsed.kind === 'event_callback_card_action'
-                    ? tracedMessage.messageId
-                    : tracedMessage.trace?.statusMessageId,
-                },
-              });
-              resumedTaskId = storedAction.taskId;
-            }
+              },
+            });
+            const continuationText = buildApprovalContinuationText({
+              kind: executionKind,
+              ok: false,
+              summary: executionSummary,
+              actionSummary: typeof approvalAction.summary === 'string' ? approvalAction.summary : undefined,
+              payload: executionPayload,
+            });
+            resumedTaskId = await continueAfterApproval({
+              dependencies,
+              taskId: typeof approvalAction.taskId === 'string' ? approvalAction.taskId : undefined,
+              tracedMessage,
+              requestId,
+              sourceActionId: hitlDecision.actionId,
+              sourceMessageId: tracedMessage.messageId,
+              continuationText,
+              parsedKind: parsed.kind,
+              executionSummary,
+              executionOk: false,
+              executionPayload,
+            });
           }
+        }
+        if (resolved && hitlDecision.decision === 'cancelled') {
+          executionKind = 'tool_action';
+          executionOk = false;
+          executionSummary = `User rejected ${typeof approvalAction?.summary === 'string' ? approvalAction.summary : hitlDecision.actionId}`;
+          await persistPendingApprovalResultToThread({
+            pendingContext: pendingThreadApprovalContext,
+            actionResult: {
+              kind: 'tool_action',
+              ok: false,
+              summary: executionSummary,
+            },
+          });
         }
         dependencies.log.info('lark.webhook.hitl.decision', {
           ...buildIngressTraceMeta({
@@ -1549,12 +1729,12 @@ export const createLarkWebhookEventHandler = (
         const responseText = !resolved
           ? `Approval action ${hitlDecision.actionId} is not pending or was not found.`
           : hitlDecision.decision === 'cancelled'
-            ? `Rejected request.\n\n${storedAction && typeof storedAction.summary === 'string' ? storedAction.summary : hitlDecision.actionId}`
+            ? `Rejected request.\n\n${approvalAction && typeof approvalAction.summary === 'string' ? approvalAction.summary : hitlDecision.actionId}`
             : resumedTaskId
-              ? `Approved and continuing.\n\n${executionSummary ?? storedAction?.summary ?? hitlDecision.actionId}`
+              ? `Approved and continuing.\n\n${executionSummary ?? approvalAction?.summary ?? hitlDecision.actionId}`
               : executionOk
-                ? `Approved and executed.\n\n${executionSummary ?? storedAction?.summary ?? hitlDecision.actionId}`
-                : `Approval was recorded, but execution failed.\n\n${executionSummary ?? storedAction?.summary ?? hitlDecision.actionId}`;
+                ? `Approved and executed.\n\n${executionSummary ?? approvalAction?.summary ?? hitlDecision.actionId}`
+                : `Approval was recorded, but execution failed.\n\n${executionSummary ?? approvalAction?.summary ?? hitlDecision.actionId}`;
         if (parsed.kind === 'event_callback_card_action') {
           await dependencies.adapter.updateMessage({
             messageId: tracedMessage.messageId,

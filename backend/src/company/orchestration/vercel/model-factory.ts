@@ -6,9 +6,9 @@ const googleClient = createGoogleGenerativeAI({
   apiKey: config.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || undefined,
 });
 
-const VERCEL_MODELS: Record<'fast' | 'high', { modelId: string; thinkingLevel: 'low' | 'medium' }> = {
+const VERCEL_MODELS: Record<'fast' | 'high', { modelId: string; thinkingLevel: 'low' | 'medium' | 'high' }> = {
   fast: { modelId: 'gemini-3.1-flash-lite-preview', thinkingLevel: 'low' },
-  high: { modelId: 'gemini-3.1-flash-lite-preview', thinkingLevel: 'medium' },
+  high: { modelId: 'gemini-3.1-flash-lite-preview', thinkingLevel: 'high' },
 };
 
 export const resolveVercelLanguageModel = async (

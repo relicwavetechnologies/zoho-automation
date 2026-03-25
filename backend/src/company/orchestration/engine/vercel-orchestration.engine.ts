@@ -29,11 +29,15 @@ import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-
 import { DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT } from '../../../modules/desktop-chat/desktop-thread-context.cache';
 import {
   buildTaskStateContext,
+  filterThreadMessagesForContext,
   buildThreadSummaryContext,
   createEmptyTaskState,
+  markDesktopSourceArtifactsUsed,
   parseDesktopTaskState,
   parseDesktopThreadSummary,
   refreshDesktopThreadSummary,
+  selectDesktopSourceArtifacts,
+  upsertDesktopSourceArtifacts,
   updateTaskStateFromToolEnvelope,
   type DesktopTaskState,
   type DesktopThreadSummary,
@@ -43,8 +47,10 @@ import { LarkStatusCoordinator } from './lark-status.coordinator';
 import { aiTokenUsageService } from '../../ai-usage/ai-token-usage.service';
 import { estimateTokens } from '../../../utils/token-estimator';
 import { AI_MODEL_CATALOG_MAP } from '../../ai-models';
+import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../integrations/vector';
 import { desktopWsGateway } from '../../../modules/desktop-live/desktop-ws.gateway';
 import { appendLatestAgentRunLog, resetLatestAgentRunLog } from '../../../utils/latest-agent-run-log';
+import { prisma } from '../../../utils/prisma';
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
 const LARK_BLOCKED_TOOL_IDS = new Set<string>();
@@ -68,11 +74,37 @@ const larkConversationHydrationVersions = new Map<string, string>();
 
 const buildConversationKey = (message: NormalizedIncomingMessageDTO): string => `${message.channel}:${message.chatId}`;
 const buildPersistentLarkConversationKey = (threadId: string): string => `lark-thread:${threadId}`;
+const buildSourceArtifactEntriesFromAttachments = (
+  attachments: AttachedFileRef[],
+): Array<{
+  fileAssetId: string;
+  fileName: string;
+  sourceType: 'uploaded_file';
+}> =>
+  attachments.map((file) => ({
+    fileAssetId: file.fileAssetId,
+    fileName: file.fileName,
+    sourceType: 'uploaded_file' as const,
+  }));
 
 const summarizeText = (value: string | null | undefined, limit = 280): string | null => {
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const isPersonalMemoryQuestion = (value: string | null | undefined): boolean =>
+  /\b(do you know|do you remember|remember|recall|what(?:'s| is) my|my (?:fav|favorite|favourite|preferred)|favorite|favourite|preferred|preference|about me|my name|my email)\b/i.test(value ?? '');
+
+const expandConversationMemoryQuery = (value: string): string => {
+  const normalized = value
+    .replace(/\bfav\b/gi, 'favorite')
+    .replace(/\blang\b/gi, 'language')
+    .replace(/\bpref\b/gi, 'preference');
+  if (normalized === value) {
+    return value;
+  }
+  return `${value}\n${normalized}`;
 };
 
 const isProviderInvalidArgumentError = (error: unknown): boolean => {
@@ -168,6 +200,263 @@ const isReferentialFollowup = (value: string | null | undefined): boolean =>
 const isLightweightChatTurn = (value: string | null | undefined): boolean =>
   /^(hi|hello|hey|thanks|thank you|ok|okay|cool|great|nice|yes|no)[.! ]*$/i.test((value ?? '').trim());
 
+const summarizeConversationMatches = (
+  matches: PersonalMemoryMatch[],
+  maxCount: number,
+): string[] =>
+  matches
+    .slice(0, maxCount)
+    .map((match) => summarizeText(match.content, 320))
+    .filter((entry): entry is string => Boolean(entry));
+
+const dedupeConversationSnippets = (input: {
+  snippets: string[];
+  threadSummary?: DesktopThreadSummary;
+  taskState?: DesktopTaskState;
+}): string[] => {
+  const summaryText = input.threadSummary ? JSON.stringify(input.threadSummary) : '';
+  const taskStateText = input.taskState ? JSON.stringify(input.taskState) : '';
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const snippet of input.snippets) {
+    const normalized = snippet.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    if (summaryText.includes(normalized) || taskStateText.includes(normalized)) continue;
+    seen.add(normalized);
+    deduped.push(normalized);
+  }
+  return deduped;
+};
+
+const maybeStoreLarkConversationTurn = (input: {
+  companyId: string;
+  userId?: string;
+  conversationKey: string;
+  sourceId: string;
+  role: 'user' | 'assistant';
+  text: string;
+  chatId: string;
+}): void => {
+  if (!input.userId || !input.text.trim()) {
+    return;
+  }
+  void personalVectorMemoryService.storeChatTurn({
+    companyId: input.companyId,
+    requesterUserId: input.userId,
+    conversationKey: input.conversationKey,
+    sourceId: input.sourceId,
+    role: input.role,
+    text: input.text,
+    channel: 'lark',
+    chatId: input.chatId,
+  }).catch((error) => {
+    logger.warn('lark.conversation_vector.store.failed', {
+      conversationKey: input.conversationKey,
+      sourceId: input.sourceId,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+  });
+};
+
+const queryLarkConversationMemoryWithFallback = async (input: {
+  companyId: string;
+  userId: string;
+  conversationKey: string;
+  queryText: string;
+  limit: number;
+  isMemoryQuestion: boolean;
+}): Promise<{
+  matches: PersonalMemoryMatch[];
+  scope: 'conversation' | 'global_personal';
+}> => {
+  const scopedMatches = await personalVectorMemoryService.query({
+    companyId: input.companyId,
+    requesterUserId: input.userId,
+    conversationKey: input.conversationKey,
+    text: input.isMemoryQuestion ? expandConversationMemoryQuery(input.queryText) : input.queryText,
+    limit: input.limit,
+  });
+  if (scopedMatches.length > 0 || !input.isMemoryQuestion) {
+    return {
+      matches: scopedMatches,
+      scope: 'conversation',
+    };
+  }
+
+  const globalMatches = await personalVectorMemoryService.query({
+    companyId: input.companyId,
+    requesterUserId: input.userId,
+    text: expandConversationMemoryQuery(input.queryText),
+    limit: input.limit,
+  });
+
+  return {
+    matches: globalMatches,
+    scope: 'global_personal',
+  };
+};
+
+const retrieveLarkConversationMemory = async (input: {
+  companyId: string;
+  userId?: string;
+  conversationKey: string;
+  queryText: string;
+  contextClass: LarkContextClass;
+  threadSummary: DesktopThreadSummary;
+  taskState: DesktopTaskState;
+}): Promise<string[]> => {
+  const isMemoryQuestion = isPersonalMemoryQuestion(input.queryText);
+  if (
+    !input.userId
+    || (input.contextClass === 'lightweight_chat' && !isMemoryQuestion)
+    || !input.queryText.trim()
+    || (!isReferentialFollowup(input.queryText)
+      && !isMemoryQuestion
+      && input.contextClass !== 'long_running_task'
+      && input.contextClass !== 'document_grounded_followup')
+  ) {
+    return [];
+  }
+
+  const limit = isMemoryQuestion ? 6 : input.contextClass === 'document_grounded_followup' ? 6 : 4;
+  try {
+    logger.info('lark.context.conversation_retrieval.start', {
+      conversationKey: input.conversationKey,
+      contextClass: input.contextClass,
+      isMemoryQuestion,
+      queryLength: input.queryText.trim().length,
+      limit,
+    }, { sampleRate: 0.1 });
+    const { matches, scope } = await queryLarkConversationMemoryWithFallback({
+      companyId: input.companyId,
+      userId: input.userId,
+      conversationKey: input.conversationKey,
+      queryText: input.queryText,
+      limit,
+      isMemoryQuestion,
+    });
+    const snippets = dedupeConversationSnippets({
+      snippets: summarizeConversationMatches(matches, limit),
+      threadSummary: input.threadSummary,
+      taskState: input.taskState,
+    });
+    logger.info('lark.context.conversation_retrieval.completed', {
+      conversationKey: input.conversationKey,
+      contextClass: input.contextClass,
+      isMemoryQuestion,
+      scope,
+      matchCount: matches.length,
+      snippetCount: snippets.length,
+      topScores: matches.slice(0, 3).map((match) => Number(match.score.toFixed(4))),
+    }, { sampleRate: 0.1 });
+    return snippets;
+  } catch (error) {
+    logger.warn('lark.context.conversation_retrieval.failed', {
+      conversationKey: input.conversationKey,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return [];
+  }
+};
+
+const hydrateAttachedFilesForArtifacts = async (input: {
+  companyId: string;
+  artifacts: Array<{ fileAssetId: string }>;
+}): Promise<AttachedFileRef[]> => {
+  if (input.artifacts.length === 0) {
+    return [];
+  }
+
+  const fileAssetIds = Array.from(new Set(input.artifacts.map((artifact) => artifact.fileAssetId)));
+  const assets = await prisma.fileAsset.findMany({
+    where: {
+      companyId: input.companyId,
+      id: { in: fileAssetIds },
+    },
+    select: {
+      id: true,
+      fileName: true,
+      mimeType: true,
+      cloudinaryUrl: true,
+    },
+  });
+
+  const byId = new Map(assets.map((asset) => [asset.id, asset]));
+  return fileAssetIds.flatMap((fileAssetId) => {
+    const asset = byId.get(fileAssetId);
+    if (!asset?.cloudinaryUrl || !asset.mimeType) {
+      return [];
+    }
+    return [{
+      fileAssetId: asset.id,
+      fileName: asset.fileName,
+      mimeType: asset.mimeType,
+      cloudinaryUrl: asset.cloudinaryUrl,
+    }];
+  });
+};
+
+const resolveLarkGroundingAttachments = async (input: {
+  companyId: string;
+  message?: string;
+  currentAttachedFiles: AttachedFileRef[];
+  taskState: DesktopTaskState;
+}): Promise<{
+  attachments: AttachedFileRef[];
+  taskState: DesktopTaskState;
+  source: 'current' | 'artifact' | 'none';
+}> => {
+  let nextTaskState = input.taskState;
+
+  if (input.currentAttachedFiles.length > 0) {
+    nextTaskState = upsertDesktopSourceArtifacts({
+      taskState: nextTaskState,
+      artifacts: buildSourceArtifactEntriesFromAttachments(input.currentAttachedFiles),
+    });
+  }
+
+  const artifactCandidates = input.currentAttachedFiles.length === 0
+    ? selectDesktopSourceArtifacts({
+      taskState: nextTaskState,
+      message: input.message,
+    })
+    : [];
+
+  const artifactAttachments = artifactCandidates.length > 0
+    ? await hydrateAttachedFilesForArtifacts({
+      companyId: input.companyId,
+      artifacts: artifactCandidates,
+    })
+    : [];
+
+  if (artifactAttachments.length > 0) {
+    nextTaskState = markDesktopSourceArtifactsUsed({
+      taskState: nextTaskState,
+      fileAssetIds: artifactAttachments.map((file) => file.fileAssetId),
+    });
+  }
+
+  const merged = new Map<string, AttachedFileRef>();
+  for (const file of input.currentAttachedFiles) {
+    merged.set(file.fileAssetId, file);
+  }
+  for (const file of artifactAttachments) {
+    if (!merged.has(file.fileAssetId)) {
+      merged.set(file.fileAssetId, file);
+    }
+  }
+
+  return {
+    attachments: Array.from(merged.values()),
+    taskState: nextTaskState,
+    source: input.currentAttachedFiles.length > 0
+      ? 'current'
+      : artifactAttachments.length > 0
+        ? 'artifact'
+        : 'none',
+  };
+};
+
 const chooseLarkContextClass = (input: {
   latestUserMessage?: string;
   taskState: DesktopTaskState;
@@ -248,9 +537,15 @@ const buildAdaptiveLarkHistoryMessages = (input: {
   const selected: Array<ModelMessage & { id?: string }> = [];
   let used = 0;
   let compactionTier = 1;
-  const recent = input.messages.slice(-60).filter((message) =>
-    lowValueFilter ? !isLightweightChatTurn(flattenModelContent(message.content)) : true,
-  );
+  const recent = input.messages
+    .slice(-60)
+    .filter((message) => {
+      const flattened = flattenModelContent(message.content);
+      if (lowValueFilter && isLightweightChatTurn(flattened)) {
+        return false;
+      }
+      return filterThreadMessagesForContext([{ role: message.role, content: flattened }]).length > 0;
+    });
 
   for (let index = recent.length - 1; index >= 0; index -= 1) {
     const message = recent[index]!;
@@ -318,6 +613,19 @@ const inferDateScope = (message?: string): string | undefined => {
   if (lowered.includes('yesterday')) return getLocalDateString(-1);
   if (lowered.includes('today')) return getLocalDateString(0);
   return undefined;
+};
+
+const isWorkflowLikeRequest = (value: string | null | undefined): boolean =>
+  /\b(workflow|prompt|schedule|scheduled|every day|every week|every month|recurring|save (?:this|it) for later|make (?:this|it) reusable)\b/i.test(value ?? '');
+
+const hasSpecificWorkflowReference = (value: string | null | undefined): boolean => {
+  const text = value?.trim() ?? '';
+  if (!text) return false;
+  return /\b(this workflow|that workflow|current workflow)\b/i.test(text)
+    || /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(text)
+    || /\b(?:workflow named|workflow called|named workflow|called workflow)\b/i.test(text)
+    || /"[^"]{2,120}"/.test(text)
+    || /'[^']{2,120}'/.test(text);
 };
 
 const buildConversationRefsContext = (conversationKey: string): string | null => {
@@ -440,6 +748,7 @@ const buildSystemPrompt = (input: {
   hasAttachedFiles?: boolean;
   threadSummary?: DesktopThreadSummary;
   taskState?: DesktopTaskState;
+  conversationRetrievalSnippets?: string[];
 }) => {
   const retrievalGuidance = input.latestUserMessage?.trim()
     ? retrievalOrchestratorService.buildPromptGuidance({
@@ -453,6 +762,9 @@ const buildSystemPrompt = (input: {
     'Do not refer to Mastra, LangGraph, workflows, or internal orchestration.',
     'If the user describes a repeatable process, wants to save it for later, wants to make it reusable, asks to schedule it, asks to list saved prompts/workflows, or asks to run a saved workflow, prefer the dedicated workflow authoring tools over ad hoc execution.',
     'If a workflow authoring tool returns missing_input, ask the user exactly for that missing detail instead of guessing.',
+    'Do not assume an existing saved workflow satisfies a new scheduling or reusable-workflow request unless the user explicitly names that workflow, gives its id, or clearly says to edit/update the current one.',
+    'If the user asks to schedule "a workflow" or describes a recurring process without naming an existing saved workflow, treat it as planning/creation work: gather missing details, plan it, or ask a clarification question instead of claiming an old workflow already covers it.',
+    'Use workflow listing and existing-workflow reuse only when the user is explicitly asking about saved workflows or references a specific saved workflow by name/id.',
     ...buildWorkspaceAwarePromptSections({
       workspace: input.runtime.workspace,
       approvalPolicySummary: input.runtime.desktopApprovalPolicySummary,
@@ -481,6 +793,19 @@ const buildSystemPrompt = (input: {
   if (input.runtime.dateScope) {
     parts.push(`Inferred date scope: ${input.runtime.dateScope}.`);
   }
+  if (input.latestUserMessage?.trim()) {
+    parts.push(
+      `Latest live user request: ${input.latestUserMessage.trim()}`,
+      'If older history, thread summary, or prior assistant conclusions conflict with the latest live user request, the latest live user request wins.',
+    );
+  }
+  if (isWorkflowLikeRequest(input.latestUserMessage) && !hasSpecificWorkflowReference(input.latestUserMessage)) {
+    parts.push(
+      'Current turn note: this is a fresh workflow planning/scheduling request, not a confirmed reference to a specific saved workflow.',
+      'Do not satisfy this turn by reusing or describing an older saved workflow unless a tool lookup confirms the exact match and the user clearly agrees that it is the same workflow.',
+      'If required schedule, destination, or workflow-definition details are missing, ask for them or use workflow planning tools to gather them.',
+    );
+  }
   const threadSummaryContext = input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null;
   if (threadSummaryContext) {
     parts.push(threadSummaryContext);
@@ -489,9 +814,21 @@ const buildSystemPrompt = (input: {
   if (taskStateContext) {
     parts.push(taskStateContext);
   }
+  if ((input.taskState?.activeSourceArtifacts.length ?? 0) > 0) {
+    parts.push(
+      'This thread has active source artifacts from uploaded/company documents.',
+      'For follow-up requests like "next task", "continue", or "pick the next one", treat those source artifacts as the default grounding context.',
+    );
+  }
   const refsContext = buildConversationRefsContext(input.conversationKey);
   if (refsContext) {
     parts.push(refsContext);
+  }
+  if (input.conversationRetrievalSnippets && input.conversationRetrievalSnippets.length > 0) {
+    parts.push(
+      'Retrieved conversation memory:',
+      ...input.conversationRetrievalSnippets.map((entry) => `- ${entry}`),
+    );
   }
   if (input.routerAcknowledgement?.trim()) {
     parts.push(
@@ -725,6 +1062,7 @@ const resolveRuntimeContext = async (
   task: OrchestrationTaskDTO,
   message: NormalizedIncomingMessageDTO,
   persistentThreadId?: string,
+  taskState?: DesktopTaskState,
 ): Promise<VercelRuntimeRequestContext> => {
   const companyId = message.trace?.companyId;
   if (!companyId) {
@@ -770,6 +1108,7 @@ const resolveRuntimeContext = async (
     channel: 'lark',
     threadId: persistentThreadId ?? buildConversationKey(message),
     chatId: message.chatId,
+    attachedFiles: message.attachedFiles,
     executionId: task.taskId,
     companyId,
     userId: linkedUserId,
@@ -783,6 +1122,7 @@ const resolveRuntimeContext = async (
     larkUserId: message.trace?.larkUserId,
     authProvider: 'lark',
     mode: LARK_VERCEL_MODE,
+    taskState,
     workspace: activeWorkspace
       ? {
           name: activeWorkspace.name,
@@ -855,6 +1195,8 @@ const executeLarkVercelTask = async (
   await updateStatus('preparing');
   statusCoordinator.startHeartbeat(() => renderCurrentStatus(true));
 
+  const currentAttachments = (message.attachedFiles ?? []) as AttachedFileRef[];
+  let groundingAttachments = currentAttachments;
   let persistedUserMessageId: string | undefined;
   let activeThreadSummary = parseDesktopThreadSummary(null);
   let activeTaskState = createEmptyTaskState();
@@ -862,6 +1204,14 @@ const executeLarkVercelTask = async (
     const threadMemory = await loadLarkThreadMemory(persistentThread.id, linkedUserId);
     activeThreadSummary = threadMemory.summary;
     activeTaskState = threadMemory.taskState;
+    const grounding = await resolveLarkGroundingAttachments({
+      companyId,
+      message: message.text,
+      currentAttachedFiles: currentAttachments,
+      taskState: activeTaskState,
+    });
+    activeTaskState = grounding.taskState;
+    groundingAttachments = grounding.attachments;
     const userMessage = await desktopThreadsService.addOwnedThreadMessage(
       persistentThread.id,
       linkedUserId,
@@ -887,11 +1237,21 @@ const executeLarkVercelTask = async (
       },
     );
     persistedUserMessageId = userMessage.id;
+    maybeStoreLarkConversationTurn({
+      companyId,
+      userId: linkedUserId,
+      conversationKey,
+      sourceId: userMessage.id,
+      role: 'user',
+      text: message.text,
+      chatId: message.chatId,
+    });
   } else {
     conversationMemoryStore.addUserMessage(conversationKey, message.messageId, message.text);
   }
 
-  const runtime = await resolveRuntimeContext(task, message, persistentThread?.id);
+  const runtime = await resolveRuntimeContext(task, message, persistentThread?.id, activeTaskState);
+  runtime.attachedFiles = groundingAttachments.length > 0 ? groundingAttachments : runtime.attachedFiles;
   await resetLatestAgentRunLog(task.taskId, {
     channel: 'lark',
     entrypoint: 'lark_message',
@@ -949,10 +1309,10 @@ const executeLarkVercelTask = async (
     departmentSkillsMarkdown: runtime.departmentSkillsMarkdown,
     taskState: activeTaskState,
     threadSummary: activeThreadSummary,
-    history: contextMessages.slice(-6).map((entry) => ({
+    history: filterThreadMessagesForContext(contextMessages.map((entry) => ({
       role: entry.role === 'assistant' ? 'assistant' : 'user',
       content: typeof entry.content === 'string' ? entry.content : flattenModelContent(entry.content),
-    })),
+    }))).slice(-6),
     requesterEmail: message.trace?.requesterEmail,
   });
 
@@ -963,7 +1323,7 @@ const executeLarkVercelTask = async (
     const statusMessageId = statusCoordinator.getStatusMessageId();
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, reply);
     if (persistentThread) {
-      await desktopThreadsService.addOwnedThreadMessage(
+      const assistantMessage = await desktopThreadsService.addOwnedThreadMessage(
         persistentThread.id,
         linkedUserId,
         'assistant',
@@ -982,6 +1342,15 @@ const executeLarkVercelTask = async (
           contextLimit: LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
         },
       );
+      maybeStoreLarkConversationTurn({
+        companyId: runtime.companyId,
+        userId: linkedUserId,
+        conversationKey,
+        sourceId: assistantMessage.id,
+        role: 'assistant',
+        text: reply,
+        chatId: message.chatId,
+      });
       const refreshedSummary = await refreshDesktopThreadSummary({
         messages: [
           ...contextMessages.map((entry) => ({
@@ -1084,7 +1453,6 @@ const executeLarkVercelTask = async (
       await updateStatus('tool_done', `${title}: ${summary}`);
     },
   });
-  const currentAttachments = (message.attachedFiles ?? []) as AttachedFileRef[];
   const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
   const contextClass = chooseLarkContextClass({
     latestUserMessage: message.text,
@@ -1092,15 +1460,25 @@ const executeLarkVercelTask = async (
     threadSummary: activeThreadSummary,
     historyMessageCount: contextMessages.length,
   });
+  const conversationSnippets = await retrieveLarkConversationMemory({
+    companyId: runtime.companyId,
+    userId: linkedUserId,
+    conversationKey,
+    queryText: message.text,
+    contextClass,
+    threadSummary: activeThreadSummary,
+    taskState: activeTaskState,
+  });
   const systemPrompt = buildSystemPrompt({
     conversationKey,
     runtime,
     routerAcknowledgement,
     childRouteHints: childRoute,
     latestUserMessage: message.text,
-    hasAttachedFiles: currentAttachments.length > 0,
+    hasAttachedFiles: groundingAttachments.length > 0,
     threadSummary: activeThreadSummary,
     taskState: activeTaskState,
+    conversationRetrievalSnippets: conversationSnippets,
   });
   const budget = resolveLarkContextBudget({
     resolvedModel,
@@ -1109,7 +1487,7 @@ const executeLarkVercelTask = async (
   const reservedTokens =
     estimateTokens(systemPrompt)
     + estimateTokens(message.text)
-    + (currentAttachments.length > 0 ? 8_000 : 1_500);
+    + (groundingAttachments.length > 0 ? 8_000 : 1_500);
   const historySelection = buildAdaptiveLarkHistoryMessages({
     messages: contextMessages,
     targetBudgetTokens: budget.targetContextBudget,
@@ -1124,6 +1502,8 @@ const executeLarkVercelTask = async (
     usableContextBudget: budget.usableContextBudget,
     targetContextBudget: budget.targetContextBudget,
     includedRawMessageCount: historySelection.includedRawMessageCount,
+    includedConversationRetrievalCount: conversationSnippets.length,
+    includedSourceArtifactCount: groundingAttachments.length,
     includedThreadSummary: activeThreadSummary.sourceMessageCount > 0,
     includedTaskState:
       activeTaskState.completedMutations.length > 0
@@ -1139,6 +1519,8 @@ const executeLarkVercelTask = async (
     usableContextBudget: budget.usableContextBudget,
     targetContextBudget: budget.targetContextBudget,
     includedRawMessageCount: historySelection.includedRawMessageCount,
+    includedConversationRetrievalCount: conversationSnippets.length,
+    includedSourceArtifactCount: groundingAttachments.length,
     includedThreadSummary: activeThreadSummary.sourceMessageCount > 0,
     includedTaskState:
       activeTaskState.completedMutations.length > 0
@@ -1148,10 +1530,10 @@ const executeLarkVercelTask = async (
     compactionTier: historySelection.compactionTier,
   });
   let inputMessages = historySelection.messages.map(({ role, content, id }) => ({ role, content, id })) as Array<ModelMessage & { id?: string }>;
-  if (currentAttachments.length > 0) {
+  if (groundingAttachments.length > 0) {
     const visionParts = await buildVisionContent({
       userMessage: message.text,
-      attachedFiles: currentAttachments,
+      attachedFiles: groundingAttachments,
       companyId: runtime.companyId,
       requesterUserId: runtime.userId,
       requesterAiRole: runtime.requesterAiRole,
@@ -1331,7 +1713,7 @@ const executeLarkVercelTask = async (
 
     if (persistentThread) {
       const conversationRefs = buildPersistedConversationRefs(conversationKey);
-      await desktopThreadsService.addOwnedThreadMessage(
+      const assistantMessage = await desktopThreadsService.addOwnedThreadMessage(
         persistentThread.id,
         linkedUserId,
         'assistant',
@@ -1352,6 +1734,15 @@ const executeLarkVercelTask = async (
           contextLimit: LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
         },
       );
+      maybeStoreLarkConversationTurn({
+        companyId: runtime.companyId,
+        userId: linkedUserId,
+        conversationKey,
+        sourceId: assistantMessage.id,
+        role: 'assistant',
+        text: finalText,
+        chatId: message.chatId,
+      });
     }
 
     const agentResults = mapToolStepsToAgentResults(steps).map((entry) => ({
