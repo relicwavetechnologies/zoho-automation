@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import type { Prisma } from '../../../generated/prisma';
 import { qdrantAdapter, vectorDocumentRepository } from '../../integrations/vector';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
-import { extractNormalizedEmails } from '../../integrations/zoho/zoho-email-scope';
+import { extractCrmRelationEmails } from '../../integrations/zoho/zoho-relation-rules';
 import { resolveZohoProvider } from '../../integrations/zoho/zoho-provider.resolver';
 import { embeddingService } from '../../integrations/embedding';
 import { buildCanonicalZohoChunks } from '../../integrations/vector';
@@ -116,13 +116,13 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
         reason: 'missing_upstream_payload',
       };
 
-    const referenceEmails = extractNormalizedEmails(basePayload);
+    const relationEmails = extractCrmRelationEmails(parsed.sourceType, basePayload);
     const chunks = buildCanonicalZohoChunks({
       companyId: job.companyId,
       sourceType: parsed.sourceType,
       sourceId: parsed.sourceId,
       payload: basePayload,
-      referenceEmails,
+      relationEmails,
       connectionId: job.connectionId,
     });
     const embeddings = await embeddingService.embedDocuments(
@@ -141,7 +141,7 @@ const processDeltaJob = async (jobId: string): Promise<void> => {
       chunkText: chunk.chunkText,
       contentHash: hashContent(chunk.chunkText),
       visibility: chunk.visibility,
-      referenceEmails,
+      relationEmails,
       payload: {
         ...chunk.payload,
         _chunk: chunk.chunkText,

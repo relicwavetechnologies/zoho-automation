@@ -1,5 +1,5 @@
 import { aiRoleService, type AiRoleDTO } from './ai-role.service';
-import { ZohoRoleAccessRepository, zohoRoleAccessRepository } from './zoho-role-access.repository';
+import { zohoUserAccessExceptionService } from './zoho-user-access-exception.service';
 
 export type ZohoScopeMode = 'email_scoped' | 'company_scoped';
 
@@ -8,18 +8,11 @@ export type ZohoRoleAccessMatrixRow = AiRoleDTO & {
 };
 
 export class ZohoRoleAccessService {
-  constructor(private readonly repo: ZohoRoleAccessRepository = zohoRoleAccessRepository) {}
-
   async getMatrix(companyId: string): Promise<ZohoRoleAccessMatrixRow[]> {
-    const [roles, stored] = await Promise.all([
-      aiRoleService.listRoles(companyId),
-      this.repo.getForCompany(companyId),
-    ]);
-    const storedMap = new Map(stored.map((row) => [row.role, row.companyScopedRead]));
-
+    const roles = await aiRoleService.listRoles(companyId);
     return roles.map((role) => ({
       ...role,
-      companyScopedRead: storedMap.get(role.slug) ?? false,
+      companyScopedRead: false,
     }));
   }
 
@@ -34,19 +27,20 @@ export class ZohoRoleAccessService {
     if (!validRoleSlugs.includes(normalizedRole)) {
       throw new Error(`Unknown AI role: ${normalizedRole}`);
     }
-
-    return this.repo.upsert(companyId, normalizedRole, companyScopedRead, actorId);
+    return {
+      companyId,
+      role: normalizedRole,
+      companyScopedRead,
+      updatedBy: actorId ?? 'system',
+    };
   }
 
-  async resolveScopeMode(companyId: string, requesterAiRole?: string): Promise<ZohoScopeMode> {
-    const normalizedRole = requesterAiRole?.trim().toUpperCase();
-    if (!normalizedRole) {
+  async resolveScopeMode(companyId: string, requesterUserId?: string): Promise<ZohoScopeMode> {
+    if (!requesterUserId) {
       return 'email_scoped';
     }
-
-    const matrix = await this.getMatrix(companyId);
-    const role = matrix.find((entry) => entry.slug === normalizedRole);
-    return role?.companyScopedRead ? 'company_scoped' : 'email_scoped';
+    const activeException = await zohoUserAccessExceptionService.resolveActiveException(companyId, requesterUserId);
+    return activeException?.bypassRelationScope ? 'company_scoped' : 'email_scoped';
   }
 }
 

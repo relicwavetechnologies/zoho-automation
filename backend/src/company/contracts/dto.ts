@@ -147,7 +147,7 @@ export type VectorUpsertDTO = {
   visibility?: 'personal' | 'shared' | 'public';
   ownerUserId?: string;
   conversationKey?: string;
-  referenceEmails?: string[];
+  relationEmails?: string[];
   fileAssetId?: string;
   allowedRoles?: string[];
   payload: Record<string, unknown>;

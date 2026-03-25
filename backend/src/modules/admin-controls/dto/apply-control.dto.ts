@@ -4,7 +4,6 @@ export const ADMIN_CONTROL_KEYS = [
   'zoho.integration.enabled',
   'runtime.historical_sync.enabled',
   'runtime.delta_sync.enabled',
-  'zoho.user_scoped_read.strict_enabled',
 ] as const;
 
 export const applyControlSchema = z.object({

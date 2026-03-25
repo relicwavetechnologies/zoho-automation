@@ -580,17 +580,25 @@ type DesktopWsGatewayLike = {
 const loadDesktopWsGateway = (): DesktopWsGatewayLike =>
   loadModuleExport<DesktopWsGatewayLike>('../../../modules/desktop-live/desktop-ws.gateway', 'desktopWsGateway');
 
-const loadZohoRoleAccessService = (): {
-  resolveScopeMode: (companyId: string, requesterAiRole?: string) => Promise<'email_scoped' | 'company_scoped'>;
-} => loadModuleExport('../../tools/zoho-role-access.service', 'zohoRoleAccessService');
+const loadZohoRelationAccessService = (): {
+  resolveActorScope: (input: Record<string, unknown>) => Promise<{
+    companyId: string;
+    userId?: string;
+    requesterEmail?: string;
+    normalizedRequesterEmail?: string;
+    bypassRelationScope: boolean;
+    scopeMode: 'email_scoped' | 'company_scoped';
+  }>;
+  assertReadableCrmRecord: (input: Record<string, unknown>) => Promise<{ allowed: boolean; reasonCode?: string; reasonMessage?: string }>;
+  filterReadableCrmRecords: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+  assertReadableBooksRecord: (input: Record<string, unknown>) => Promise<{ allowed: boolean; reasonCode?: string; reasonMessage?: string }>;
+  filterReadableBooksRecords: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+  classifyDeniedAttempt: (input: Record<string, unknown>) => 'cross_user_target' | 'bulk_request' | undefined;
+} => loadModuleExport('../../integrations/zoho/zoho-relation-access.service', 'zohoRelationAccessService');
 
-const loadRuntimeControls = (): {
-  COMPANY_CONTROL_KEYS: { zohoUserScopedReadStrictEnabled: string };
-  isCompanyControlEnabled: (input: Record<string, unknown>) => Promise<boolean>;
-} => require('../../support/runtime-controls') as {
-  COMPANY_CONTROL_KEYS: { zohoUserScopedReadStrictEnabled: string };
-  isCompanyControlEnabled: (input: Record<string, unknown>) => Promise<boolean>;
-};
+const loadZohoSecurityAlertService = (): {
+  maybeAlert: (input: Record<string, unknown>) => Promise<void>;
+} => loadModuleExport('../../integrations/zoho/zoho-security-alert.service', 'zohoSecurityAlertService');
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -694,6 +702,105 @@ const buildEnvelope = (input: {
   ...(input.userAction ? { userAction: input.userAction } : {}),
   ...(input.pendingApprovalAction ? { pendingApprovalAction: input.pendingApprovalAction } : {}),
 });
+
+type ZohoActorScopeLike = {
+  companyId: string;
+  userId?: string;
+  requesterEmail?: string;
+  normalizedRequesterEmail?: string;
+  bypassRelationScope: boolean;
+  scopeMode: 'email_scoped' | 'company_scoped';
+};
+
+const resolveZohoActorScope = async (
+  runtime: VercelRuntimeRequestContext,
+): Promise<ZohoActorScopeLike> =>
+  loadZohoRelationAccessService().resolveActorScope({
+    companyId: runtime.companyId,
+    userId: runtime.userId,
+    requesterEmail: runtime.requesterEmail,
+  });
+
+const sanitizeZohoPreview = (value: unknown): string | undefined => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed.slice(0, 240) : undefined;
+  }
+  if (value && typeof value === 'object') {
+    const serialized = JSON.stringify(value);
+    return serialized.length > 0 ? serialized.slice(0, 240) : undefined;
+  }
+  return undefined;
+};
+
+const maybeAlertZohoDenied = async (input: {
+  runtime: VercelRuntimeRequestContext;
+  actor: ZohoActorScopeLike;
+  operation: string;
+  reasonCode: string;
+  module?: string;
+  targetId?: string;
+  preview?: unknown;
+}): Promise<void> => {
+  const alertReason = loadZohoRelationAccessService().classifyDeniedAttempt({
+    reasonCode: input.reasonCode,
+    operation: input.operation,
+    targetId: input.targetId,
+  });
+  if (!alertReason) {
+    return;
+  }
+  await loadZohoSecurityAlertService().maybeAlert({
+    companyId: input.runtime.companyId,
+    actorId: input.runtime.userId,
+    requesterLabel: input.runtime.requesterEmail ?? input.runtime.userId,
+    reason: alertReason,
+    operation: input.operation,
+    module: input.module,
+    targetId: input.targetId,
+    preview: sanitizeZohoPreview(input.preview),
+  });
+};
+
+const buildZohoDeniedEnvelope = async (input: {
+  runtime: VercelRuntimeRequestContext;
+  actor: ZohoActorScopeLike;
+  operation: string;
+  reasonCode: string;
+  reasonMessage?: string;
+  module?: string;
+  targetId?: string;
+  preview?: unknown;
+}): Promise<VercelToolEnvelope> => {
+  await maybeAlertZohoDenied(input);
+  return buildEnvelope({
+    success: false,
+    summary: input.reasonMessage ?? 'Access denied: the requested Zoho data is outside your allowed relation scope.',
+    errorKind: 'permission',
+    retryable: false,
+  });
+};
+
+const getZohoRecordSourceType = (moduleName?: string): string | undefined => {
+  const normalized = moduleName?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  return normalizeZohoSourceType(normalized) ?? normalizeZohoCrmModuleName(normalized);
+};
+
+const getZohoNoteParent = (note: Record<string, unknown>): { recordId?: string; module?: string } => {
+  const parent = asRecord(note.Parent_Id) ?? asRecord(note.parent) ?? asRecord(note.parent_id);
+  const parentModule =
+    asString(asRecord(parent?.module)?.api_name)
+    ?? asString(asRecord(parent?.module)?.module)
+    ?? asString(parent?.module_name)
+    ?? asString(note.se_module);
+  return {
+    recordId: asString(parent?.id) ?? asString(note.Parent_Id),
+    module: parentModule,
+  };
+};
 
 const getAllowedActionGroups = (runtime: VercelRuntimeRequestContext, toolId: string): ToolActionGroup[] => {
   const explicit = runtime.allowedActionsByTool?.[toolId];
@@ -4099,11 +4206,21 @@ export const createVercelDesktopTools = (
           'read',
           'booksRead',
         );
+        const booksActor = await resolveZohoActorScope(runtime);
         if (readPermissionError) {
           return readPermissionError;
         }
 
         if (input.operation === 'listOrganizations') {
+          if (booksActor.scopeMode !== 'company_scoped') {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: 'bulk_request',
+              reasonMessage: 'Access denied: Zoho Books organizations are only available to explicit exception users.',
+            });
+          }
           try {
             const organizations = await loadZohoBooksClient().listOrganizations({
               companyId: runtime.companyId,
@@ -4164,6 +4281,16 @@ export const createVercelDesktopTools = (
         }
 
         if (input.operation === 'buildOverdueReport') {
+          if (booksActor.scopeMode !== 'company_scoped') {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: 'bulk_request',
+              reasonMessage: 'Access denied: company-wide overdue reports are only available to explicit exception users.',
+              preview: input,
+            });
+          }
           try {
             const report = await loadZohoFinanceOpsService().buildOverdueReport({
               companyId: runtime.companyId,
@@ -4194,6 +4321,16 @@ export const createVercelDesktopTools = (
         }
 
         if (input.operation === 'mapCustomerPayments') {
+          if (booksActor.scopeMode !== 'company_scoped') {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: 'bulk_request',
+              reasonMessage: 'Access denied: cross-customer payment mapping is only available to explicit exception users.',
+              preview: input,
+            });
+          }
           try {
             const mapping = await loadZohoFinanceOpsService().mapCustomerPayments({
               companyId: runtime.companyId,
@@ -4231,6 +4368,16 @@ export const createVercelDesktopTools = (
               summary: 'reconcileVendorStatement requires statementRows.',
               errorKind: 'missing_input',
               retryable: false,
+            });
+          }
+          if (booksActor.scopeMode !== 'company_scoped') {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: 'bulk_request',
+              reasonMessage: 'Access denied: vendor statement reconciliation is only available to explicit exception users.',
+              preview: input,
             });
           }
           try {
@@ -4274,6 +4421,16 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          if (booksActor.scopeMode !== 'company_scoped') {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: 'bulk_request',
+              reasonMessage: 'Access denied: bank closing reconciliation is only available to explicit exception users.',
+              preview: input,
+            });
+          }
           try {
             const reconciliation = await loadZohoFinanceOpsService().reconcileBankClosing({
               companyId: runtime.companyId,
@@ -4314,6 +4471,16 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          if (booksActor.scopeMode !== 'company_scoped') {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: 'bulk_request',
+              reasonMessage: 'Access denied: bank statements are only available to explicit exception users.',
+              targetId: input.accountId.trim(),
+            });
+          }
           try {
             const result = await loadZohoBooksClient().getLastImportedBankStatement({
               companyId: runtime.companyId,
@@ -4347,6 +4514,16 @@ export const createVercelDesktopTools = (
               summary: 'getMatchingBankTransactions requires transactionId.',
               errorKind: 'missing_input',
               retryable: false,
+            });
+          }
+          if (booksActor.scopeMode !== 'company_scoped') {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: 'bulk_request',
+              reasonMessage: 'Access denied: bank transaction matching is only available to explicit exception users.',
+              targetId: input.transactionId.trim(),
             });
           }
           try {
@@ -4384,6 +4561,23 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          const invoiceAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+            actor: booksActor,
+            moduleName: 'invoices',
+            recordId: input.invoiceId.trim(),
+            organizationId: input.organizationId?.trim(),
+          });
+          if (!invoiceAccess.allowed) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: invoiceAccess.reasonCode ?? 'relation_not_proven',
+              reasonMessage: invoiceAccess.reasonMessage,
+              module: 'invoices',
+              targetId: input.invoiceId.trim(),
+            });
+          }
           try {
             const result = await loadZohoBooksClient().getInvoiceEmailContent({
               companyId: runtime.companyId,
@@ -4417,6 +4611,23 @@ export const createVercelDesktopTools = (
               summary: 'getInvoicePaymentReminderContent requires invoiceId.',
               errorKind: 'missing_input',
               retryable: false,
+            });
+          }
+          const invoiceReminderAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+            actor: booksActor,
+            moduleName: 'invoices',
+            recordId: input.invoiceId.trim(),
+            organizationId: input.organizationId?.trim(),
+          });
+          if (!invoiceReminderAccess.allowed) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: invoiceReminderAccess.reasonCode ?? 'relation_not_proven',
+              reasonMessage: invoiceReminderAccess.reasonMessage,
+              module: 'invoices',
+              targetId: input.invoiceId.trim(),
             });
           }
           try {
@@ -4454,6 +4665,23 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          const estimateAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+            actor: booksActor,
+            moduleName: 'estimates',
+            recordId: input.estimateId.trim(),
+            organizationId: input.organizationId?.trim(),
+          });
+          if (!estimateAccess.allowed) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: estimateAccess.reasonCode ?? 'relation_not_proven',
+              reasonMessage: estimateAccess.reasonMessage,
+              module: 'estimates',
+              targetId: input.estimateId.trim(),
+            });
+          }
           try {
             const result = await loadZohoBooksClient().getEstimateEmailContent({
               companyId: runtime.companyId,
@@ -4487,6 +4715,23 @@ export const createVercelDesktopTools = (
               summary: 'getCreditNoteEmailContent requires creditNoteId.',
               errorKind: 'missing_input',
               retryable: false,
+            });
+          }
+          const creditNoteAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+            actor: booksActor,
+            moduleName: 'creditnotes',
+            recordId: input.creditNoteId.trim(),
+            organizationId: input.organizationId?.trim(),
+          });
+          if (!creditNoteAccess.allowed) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: creditNoteAccess.reasonCode ?? 'relation_not_proven',
+              reasonMessage: creditNoteAccess.reasonMessage,
+              module: 'creditnotes',
+              targetId: input.creditNoteId.trim(),
             });
           }
           try {
@@ -4524,6 +4769,23 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          const salesOrderAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+            actor: booksActor,
+            moduleName: 'salesorders',
+            recordId: input.salesOrderId.trim(),
+            organizationId: input.organizationId?.trim(),
+          });
+          if (!salesOrderAccess.allowed) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: salesOrderAccess.reasonCode ?? 'relation_not_proven',
+              reasonMessage: salesOrderAccess.reasonMessage,
+              module: 'salesorders',
+              targetId: input.salesOrderId.trim(),
+            });
+          }
           try {
             const result = await loadZohoBooksClient().getSalesOrderEmailContent({
               companyId: runtime.companyId,
@@ -4557,6 +4819,23 @@ export const createVercelDesktopTools = (
               summary: 'getPurchaseOrderEmailContent requires purchaseOrderId.',
               errorKind: 'missing_input',
               retryable: false,
+            });
+          }
+          const purchaseOrderAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+            actor: booksActor,
+            moduleName: 'purchaseorders',
+            recordId: input.purchaseOrderId.trim(),
+            organizationId: input.organizationId?.trim(),
+          });
+          if (!purchaseOrderAccess.allowed) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: purchaseOrderAccess.reasonCode ?? 'relation_not_proven',
+              reasonMessage: purchaseOrderAccess.reasonMessage,
+              module: 'purchaseorders',
+              targetId: input.purchaseOrderId.trim(),
             });
           }
           try {
@@ -4629,6 +4908,23 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          const attachmentAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+            actor: booksActor,
+            moduleName,
+            recordId: input.recordId.trim(),
+            organizationId: input.organizationId?.trim(),
+          });
+          if (!attachmentAccess.allowed) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: attachmentAccess.reasonCode ?? 'relation_not_proven',
+              reasonMessage: attachmentAccess.reasonMessage,
+              module: moduleName,
+              targetId: input.recordId.trim(),
+            });
+          }
           try {
             const result = await loadZohoBooksClient().getAttachment?.({
               companyId: runtime.companyId,
@@ -4666,6 +4962,23 @@ export const createVercelDesktopTools = (
               summary: 'getRecordDocument requires a supported module and recordId.',
               errorKind: 'missing_input',
               retryable: false,
+            });
+          }
+          const documentAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+            actor: booksActor,
+            moduleName,
+            recordId: input.recordId.trim(),
+            organizationId: input.organizationId?.trim(),
+          });
+          if (!documentAccess.allowed) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: documentAccess.reasonCode ?? 'relation_not_proven',
+              reasonMessage: documentAccess.reasonMessage,
+              module: moduleName,
+              targetId: input.recordId.trim(),
             });
           }
           try {
@@ -4709,6 +5022,23 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          const contactStatementAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+            actor: booksActor,
+            moduleName: 'contacts',
+            recordId: input.contactId.trim(),
+            organizationId: input.organizationId?.trim(),
+          });
+          if (!contactStatementAccess.allowed) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: contactStatementAccess.reasonCode ?? 'relation_not_proven',
+              reasonMessage: contactStatementAccess.reasonMessage,
+              module: 'contacts',
+              targetId: input.contactId.trim(),
+            });
+          }
           try {
             const result = await loadZohoBooksClient().getContactStatementEmailContent({
               companyId: runtime.companyId,
@@ -4742,6 +5072,23 @@ export const createVercelDesktopTools = (
               summary: 'getVendorPaymentEmailContent requires vendorPaymentId.',
               errorKind: 'missing_input',
               retryable: false,
+            });
+          }
+          const vendorPaymentAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+            actor: booksActor,
+            moduleName: 'vendorpayments',
+            recordId: input.vendorPaymentId.trim(),
+            organizationId: input.organizationId?.trim(),
+          });
+          if (!vendorPaymentAccess.allowed) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: vendorPaymentAccess.reasonCode ?? 'relation_not_proven',
+              reasonMessage: vendorPaymentAccess.reasonMessage,
+              module: 'vendorpayments',
+              targetId: input.vendorPaymentId.trim(),
             });
           }
           try {
@@ -4779,6 +5126,23 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          const commentsAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+            actor: booksActor,
+            moduleName,
+            recordId: input.recordId.trim(),
+            organizationId: input.organizationId?.trim(),
+          });
+          if (!commentsAccess.allowed) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: commentsAccess.reasonCode ?? 'relation_not_proven',
+              reasonMessage: commentsAccess.reasonMessage,
+              module: moduleName,
+              targetId: input.recordId.trim(),
+            });
+          }
           try {
             const result = await loadZohoBooksClient().listComments({
               companyId: runtime.companyId,
@@ -4814,6 +5178,17 @@ export const createVercelDesktopTools = (
               summary: 'getReport requires reportName.',
               errorKind: 'missing_input',
               retryable: false,
+            });
+          }
+          if (booksActor.scopeMode !== 'company_scoped') {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: 'bulk_request',
+              reasonMessage: 'Access denied: Zoho Books reports are only available to explicit exception users.',
+              targetId: input.reportName.trim(),
+              preview: input.filters,
             });
           }
           try {
@@ -4859,6 +5234,24 @@ export const createVercelDesktopTools = (
               recordId,
               organizationId: input.organizationId?.trim(),
             });
+            const recordAccess = await loadZohoRelationAccessService().assertReadableBooksRecord({
+              actor: booksActor,
+              moduleName,
+              recordId: input.recordId.trim(),
+              record: result.record,
+              organizationId: result.organizationId,
+            });
+            if (!recordAccess.allowed) {
+              return buildZohoDeniedEnvelope({
+                runtime,
+                actor: booksActor,
+                operation: input.operation,
+                reasonCode: recordAccess.reasonCode ?? 'relation_not_proven',
+                reasonMessage: recordAccess.reasonMessage,
+                module: moduleName,
+                targetId: input.recordId.trim(),
+              });
+            }
             return buildEnvelope({
               success: true,
               summary: `Fetched Zoho Books ${moduleName} record ${recordId}.`,
@@ -4888,6 +5281,16 @@ export const createVercelDesktopTools = (
         }
 
         try {
+          if (booksActor.scopeMode !== 'company_scoped' && (moduleName === 'bankaccounts' || moduleName === 'banktransactions')) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: booksActor,
+              operation: input.operation,
+              reasonCode: 'bulk_request',
+              reasonMessage: `Access denied: ${moduleName} is only available to explicit exception users.`,
+              module: moduleName,
+            });
+          }
           const result = await loadZohoBooksClient().listRecords({
             companyId: runtime.companyId,
             moduleName,
@@ -4896,28 +5299,34 @@ export const createVercelDesktopTools = (
             limit: input.limit,
             query: input.query?.trim(),
           });
+          const readableItems = await loadZohoRelationAccessService().filterReadableBooksRecords({
+            actor: booksActor,
+            moduleName,
+            records: result.items,
+            organizationId: result.organizationId,
+          });
 
           if (input.operation === 'summarizeModule') {
-            const statusCounts = result.items.reduce<Record<string, number>>((acc, item) => {
+            const statusCounts = readableItems.reduce<Record<string, number>>((acc, item) => {
               const status = asString(item.status) ?? 'unknown';
               acc[status] = (acc[status] ?? 0) + 1;
               return acc;
             }, {});
             return buildEnvelope({
               success: true,
-              summary: result.items.length > 0
-                ? `Summarized ${result.items.length} Zoho Books ${moduleName} record(s).`
+              summary: readableItems.length > 0
+                ? `Summarized ${readableItems.length} Zoho Books ${moduleName} record(s).`
                 : `No Zoho Books ${moduleName} records matched the current filters.`,
               keyData: {
                 module: moduleName,
                 organizationId: result.organizationId,
-                recordCount: result.items.length,
+                recordCount: readableItems.length,
                 statusCounts,
               },
               fullPayload: {
                 organizationId: result.organizationId,
                 statusCounts,
-                records: result.items,
+                records: readableItems,
                 raw: result.payload,
               },
             });
@@ -4925,20 +5334,20 @@ export const createVercelDesktopTools = (
 
           return buildEnvelope({
             success: true,
-            summary: result.items.length > 0
-              ? `Found ${result.items.length} Zoho Books ${moduleName} record(s).`
+            summary: readableItems.length > 0
+              ? `Found ${readableItems.length} Zoho Books ${moduleName} record(s).`
               : `No Zoho Books ${moduleName} records matched the current filters.`,
             keyData: {
               module: moduleName,
               organizationId: result.organizationId,
-              recordCount: result.items.length,
+              recordCount: readableItems.length,
             },
             fullPayload: {
               organizationId: result.organizationId,
-              records: result.items,
+              records: readableItems,
               raw: result.payload,
             },
-            citations: result.items.flatMap((record, index) => {
+            citations: readableItems.flatMap((record, index) => {
               const recordId =
                 asString(record.contact_id)
                 ?? asString(record.vendor_payment_id)
@@ -7016,6 +7425,7 @@ export const createVercelDesktopTools = (
         );
         const sourceType = normalizeZohoSourceType(input.module);
         const crmModuleName = normalizeZohoCrmModuleName(input.module);
+        const zohoActor = await resolveZohoActorScope(runtime);
 
         if (input.operation === 'searchContext') {
           if (readPermissionError) {
@@ -7034,21 +7444,12 @@ export const createVercelDesktopTools = (
               companyId: runtime.companyId,
               larkTenantKey: runtime.larkTenantKey,
             });
-            const { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } = loadRuntimeControls();
-            const strictUserScopeEnabled = await isCompanyControlEnabled({
-              controlKey: COMPANY_CONTROL_KEYS.zohoUserScopedReadStrictEnabled,
-              companyId,
-              defaultValue: true,
-            });
-            const scopeMode = strictUserScopeEnabled
-              ? await loadZohoRoleAccessService().resolveScopeMode(companyId, runtime.requesterAiRole)
-              : 'company_scoped';
             const matches = await loadZohoRetrievalService().query({
               companyId,
               requesterUserId: runtime.userId,
               requesterEmail: runtime.requesterEmail,
-              scopeMode,
-              strictUserScopeEnabled,
+              scopeMode: zohoActor.scopeMode,
+              strictUserScopeEnabled: true,
               text: input.query.trim(),
               limit: 5,
             });
@@ -7085,7 +7486,7 @@ export const createVercelDesktopTools = (
               },
               fullPayload: {
                 companyId,
-                scopeMode,
+                scopeMode: zohoActor.scopeMode,
                 records: normalizedMatches,
               },
               citations,
@@ -7113,6 +7514,17 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          if (!sourceType) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: zohoActor,
+              operation: input.operation,
+              reasonCode: 'module_not_relation_mapped',
+              reasonMessage: `Access denied: ${input.module?.trim() ?? 'This CRM module'} is not relation-scoped for end users.`,
+              module: input.module?.trim(),
+              targetId: input.recordId?.trim(),
+            });
+          }
           try {
             const record = sourceType
               ? await loadZohoDataClient().fetchRecordBySource({
@@ -7131,6 +7543,23 @@ export const createVercelDesktopTools = (
                 summary: `No Zoho record was found for ${input.module} ${input.recordId.trim()}.`,
                 errorKind: 'validation',
                 retryable: false,
+              });
+            }
+            const access = await loadZohoRelationAccessService().assertReadableCrmRecord({
+              actor: zohoActor,
+              sourceType,
+              recordId: input.recordId.trim(),
+              record,
+            });
+            if (!access.allowed) {
+              return buildZohoDeniedEnvelope({
+                runtime,
+                actor: zohoActor,
+                operation: input.operation,
+                reasonCode: access.reasonCode ?? 'relation_not_proven',
+                reasonMessage: access.reasonMessage,
+                module: input.module?.trim(),
+                targetId: input.recordId.trim(),
               });
             }
             return buildEnvelope({
@@ -7174,7 +7603,34 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          if (!sourceType) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: zohoActor,
+              operation: input.operation,
+              reasonCode: 'module_not_relation_mapped',
+              reasonMessage: `Access denied: ${input.module?.trim() ?? 'This CRM module'} is not relation-scoped for end users.`,
+              module: input.module?.trim(),
+              targetId: input.recordId?.trim(),
+            });
+          }
           try {
+            const parentAccess = await loadZohoRelationAccessService().assertReadableCrmRecord({
+              actor: zohoActor,
+              sourceType,
+              recordId: input.recordId.trim(),
+            });
+            if (!parentAccess.allowed) {
+              return buildZohoDeniedEnvelope({
+                runtime,
+                actor: zohoActor,
+                operation: input.operation,
+                reasonCode: parentAccess.reasonCode ?? 'relation_not_proven',
+                reasonMessage: parentAccess.reasonMessage,
+                module: input.module?.trim(),
+                targetId: input.recordId.trim(),
+              });
+            }
             const notes = sourceType
               ? await loadZohoDataClient().listNotes?.({
                 companyId: runtime.companyId,
@@ -7236,6 +7692,36 @@ export const createVercelDesktopTools = (
                 retryable: false,
               });
             }
+            const parent = getZohoNoteParent(note);
+            const parentSourceType = getZohoRecordSourceType(parent.module);
+            if (!parentSourceType || !parent.recordId) {
+              return buildZohoDeniedEnvelope({
+                runtime,
+                actor: zohoActor,
+                operation: input.operation,
+                reasonCode: 'module_not_relation_mapped',
+                reasonMessage: 'Access denied: the note parent is not relation-scoped for end users.',
+                targetId: input.noteId.trim(),
+                preview: note,
+              });
+            }
+            const access = await loadZohoRelationAccessService().assertReadableCrmRecord({
+              actor: zohoActor,
+              sourceType: parentSourceType as 'zoho_lead' | 'zoho_contact' | 'zoho_account' | 'zoho_deal' | 'zoho_ticket',
+              recordId: parent.recordId,
+            });
+            if (!access.allowed) {
+              return buildZohoDeniedEnvelope({
+                runtime,
+                actor: zohoActor,
+                operation: input.operation,
+                reasonCode: access.reasonCode ?? 'relation_not_proven',
+                reasonMessage: access.reasonMessage,
+                module: parent.module,
+                targetId: input.noteId.trim(),
+                preview: note,
+              });
+            }
             return buildEnvelope({
               success: true,
               summary: `Fetched Zoho note ${input.noteId.trim()}.`,
@@ -7269,7 +7755,34 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          if (!sourceType) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: zohoActor,
+              operation: input.operation,
+              reasonCode: 'module_not_relation_mapped',
+              reasonMessage: `Access denied: ${input.module?.trim() ?? 'This CRM module'} is not relation-scoped for end users.`,
+              module: input.module?.trim(),
+              targetId: input.recordId?.trim(),
+            });
+          }
           try {
+            const parentAccess = await loadZohoRelationAccessService().assertReadableCrmRecord({
+              actor: zohoActor,
+              sourceType,
+              recordId: input.recordId.trim(),
+            });
+            if (!parentAccess.allowed) {
+              return buildZohoDeniedEnvelope({
+                runtime,
+                actor: zohoActor,
+                operation: input.operation,
+                reasonCode: parentAccess.reasonCode ?? 'relation_not_proven',
+                reasonMessage: parentAccess.reasonMessage,
+                module: input.module?.trim(),
+                targetId: input.recordId.trim(),
+              });
+            }
             const attachments = sourceType
               ? await loadZohoDataClient().listAttachments?.({
                 companyId: runtime.companyId,
@@ -7318,7 +7831,34 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          if (!sourceType) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: zohoActor,
+              operation: input.operation,
+              reasonCode: 'module_not_relation_mapped',
+              reasonMessage: `Access denied: ${input.module?.trim() ?? 'This CRM module'} is not relation-scoped for end users.`,
+              module: input.module?.trim(),
+              targetId: input.recordId?.trim() ?? input.attachmentId?.trim(),
+            });
+          }
           try {
+            const parentAccess = await loadZohoRelationAccessService().assertReadableCrmRecord({
+              actor: zohoActor,
+              sourceType,
+              recordId: input.recordId.trim(),
+            });
+            if (!parentAccess.allowed) {
+              return buildZohoDeniedEnvelope({
+                runtime,
+                actor: zohoActor,
+                operation: input.operation,
+                reasonCode: parentAccess.reasonCode ?? 'relation_not_proven',
+                reasonMessage: parentAccess.reasonMessage,
+                module: input.module?.trim(),
+                targetId: input.attachmentId?.trim() ?? input.recordId.trim(),
+              });
+            }
             const attachment = sourceType
               ? await loadZohoDataClient().getAttachmentContent?.({
                 companyId: runtime.companyId,
@@ -7412,6 +7952,17 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
+          if (!sourceType) {
+            return buildZohoDeniedEnvelope({
+              runtime,
+              actor: zohoActor,
+              operation: input.operation,
+              reasonCode: 'module_not_relation_mapped',
+              reasonMessage: `Access denied: ${crmModuleName} is not relation-scoped for end users.`,
+              module: crmModuleName,
+              preview: input.filters,
+            });
+          }
           try {
             const records = await loadZohoDataClient().listModuleRecords({
               companyId: runtime.companyId,
@@ -7419,10 +7970,15 @@ export const createVercelDesktopTools = (
               perPage: 50,
               filters: input.filters,
             });
+            const readableRecords = await loadZohoRelationAccessService().filterReadableCrmRecords({
+              actor: zohoActor,
+              sourceType,
+              records,
+            });
             const query = input.query?.trim().toLowerCase();
             const filtered = query
-              ? records.filter((record) => JSON.stringify(record).toLowerCase().includes(query))
-              : records;
+              ? readableRecords.filter((record) => JSON.stringify(record).toLowerCase().includes(query))
+              : readableRecords;
             if (input.operation === 'summarizePipeline') {
               const statusCounts = filtered.reduce<Record<string, number>>((acc, record) => {
                 const status = asString(record.Stage) ?? asString(record.stage) ?? asString(record.Status) ?? asString(record.status) ?? 'unknown';

@@ -6,7 +6,7 @@ import {
 } from '../../integrations/vector';
 import { googleRankingService } from '../../integrations/search';
 import { logger } from '../../../utils/logger';
-import { normalizeEmail, payloadReferencesEmail } from '../../integrations/zoho/zoho-email-scope';
+import { normalizeEmail } from '../../integrations/zoho/zoho-email-scope';
 import type { ZohoScopeMode } from '../../tools/zoho-role-access.service';
 
 export type ZohoRetrievalItem = {
@@ -77,7 +77,10 @@ export class ZohoRetrievalService {
       const safeMatches =
         enforceEmailScope && normalizedRequesterEmail
           ? matches.filter((match) =>
-              payloadReferencesEmail(match.payload, normalizedRequesterEmail),
+              Array.isArray(match.payload.relationEmails)
+              && match.payload.relationEmails.some(
+                (value) => typeof value === 'string' && value.trim().toLowerCase() === normalizedRequesterEmail,
+              ),
             )
           : matches;
       const reranked = await googleRankingService.rerank(

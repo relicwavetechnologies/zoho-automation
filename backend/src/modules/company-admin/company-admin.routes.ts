@@ -182,21 +182,26 @@ router.get(
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.getToolPermissions),
 );
-router.get(
-  '/zoho-role-access',
-  requireRbacAction('onboarding.manage'),
-  asyncHandler(companyAdminController.getZohoRoleAccessMatrix),
-);
+	router.get(
+	  '/zoho-access-exceptions',
+	  requireRbacAction('onboarding.manage'),
+	  asyncHandler(companyAdminController.listZohoAccessExceptions),
+	);
 router.put(
   '/tool-permissions/:toolId/:role',
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.updateToolPermission),
 );
-router.put(
-  '/zoho-role-access/:role',
-  requireRbacAction('onboarding.manage'),
-  asyncHandler(companyAdminController.updateZohoRoleAccess),
-);
+	router.post(
+	  '/zoho-access-exceptions',
+	  requireRbacAction('onboarding.manage'),
+	  asyncHandler(companyAdminController.createZohoAccessException),
+	);
+	router.delete(
+	  '/zoho-access-exceptions/:exceptionId',
+	  requireRbacAction('onboarding.manage'),
+	  asyncHandler(companyAdminController.deleteZohoAccessException),
+	);
 router.put(
   '/channel-identities/:identityId/ai-role',
   requireRbacAction('onboarding.manage'),

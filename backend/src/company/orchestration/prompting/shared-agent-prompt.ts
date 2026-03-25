@@ -149,6 +149,7 @@ type SharedChildRouteHints = {
 export type SharedAgentPromptInput = {
   runtimeLabel: string;
   conversationKey: string;
+  trustedContextSections?: string[];
   workspace?: { name: string; path: string };
   approvalPolicySummary?: string;
   workspaceAvailability?: WorkspacePromptAvailability;
@@ -246,6 +247,9 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
   });
   if (requesterContext) {
     parts.push(requesterContext);
+  }
+  if (input.trustedContextSections && input.trustedContextSections.length > 0) {
+    parts.push(...input.trustedContextSections.map((entry) => sanitizePromptMultiline(entry)).filter(Boolean));
   }
 
   if (input.dateScope) {

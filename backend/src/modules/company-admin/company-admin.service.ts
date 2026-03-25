@@ -30,7 +30,7 @@ import {
 import { CreateInviteDto } from './dto/create-invite.dto';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { aiRoleService } from '../../company/tools/ai-role.service';
-import { zohoRoleAccessService } from '../../company/tools/zoho-role-access.service';
+import { zohoUserAccessExceptionService } from '../../company/tools/zoho-user-access-exception.service';
 import { knowledgeShareService } from '../../company/knowledge-share/knowledge-share.service';
 import { prisma } from '../../utils/prisma';
 import { qdrantAdapter, vectorDocumentRepository } from '../../company/integrations/vector';
@@ -944,6 +944,27 @@ export class CompanyAdminService extends BaseService {
   async listChannelIdentities(session: SessionScope, companyId?: string, channel?: string) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
     const rows = await channelIdentityRepository.listByCompany(scopedCompanyId, channel);
+    const normalizedEmails = [...new Set(rows
+      .map((row) => row.email?.trim().toLowerCase())
+      .filter((value): value is string => Boolean(value)))];
+    const users = normalizedEmails.length > 0
+      ? await prisma.user.findMany({
+        where: {
+          OR: normalizedEmails.map((email) => ({
+            email: {
+              equals: email,
+              mode: 'insensitive',
+            },
+          })),
+        },
+        select: { id: true, email: true },
+      })
+      : [];
+    const userIdByEmail = new Map(
+      users
+        .map((row) => [row.email.trim().toLowerCase(), row.id] as const)
+        .filter((entry): entry is readonly [string, string] => Boolean(entry[0] && entry[1])),
+    );
     return rows.map((row) => ({
       id: row.id,
       companyId: row.companyId,
@@ -959,6 +980,7 @@ export class CompanyAdminService extends BaseService {
       aiRoleSource: row.aiRoleSource,
       syncedAiRole: row.syncedAiRole ?? undefined,
       syncedFromLarkRole: row.syncedFromLarkRole ?? undefined,
+      linkedUserId: row.email ? userIdByEmail.get(row.email.trim().toLowerCase()) : undefined,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     }));
@@ -969,9 +991,9 @@ export class CompanyAdminService extends BaseService {
     return toolPermissionService.getMatrix(scopedCompanyId);
   }
 
-  async getZohoRoleAccessMatrix(session: SessionScope, companyId?: string) {
+  async listZohoAccessExceptions(session: SessionScope, companyId?: string) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
-    return zohoRoleAccessService.getMatrix(scopedCompanyId);
+    return zohoUserAccessExceptionService.listByCompany(scopedCompanyId);
   }
 
   async updateToolPermission(
@@ -1004,30 +1026,59 @@ export class CompanyAdminService extends BaseService {
     return result;
   }
 
-  async updateZohoRoleAccess(
+  async createZohoAccessException(
     session: SessionScope,
-    role: string,
-    companyScopedRead: boolean,
+    input: {
+      userId?: string;
+      channelIdentityId?: string;
+      bypassRelationScope?: boolean;
+      reason?: string;
+      expiresAt?: string;
+    },
     companyId?: string,
   ) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
-    const normalizedRole = role.trim().toUpperCase().replace(/\s+/g, '_');
-    const validRoleSlugs = await aiRoleService.getRoleSlugs(scopedCompanyId);
-    if (!validRoleSlugs.includes(normalizedRole)) {
-      throw new HttpException(404, `Unknown AI role: ${normalizedRole}`);
-    }
-    const result = await zohoRoleAccessService.updateRoleAccess(
-      scopedCompanyId,
-      normalizedRole,
-      companyScopedRead,
-      session.userId,
-    );
+    const result = await zohoUserAccessExceptionService.upsert({
+      companyId: scopedCompanyId,
+      userId: input.userId,
+      channelIdentityId: input.channelIdentityId,
+      bypassRelationScope: input.bypassRelationScope,
+      reason: input.reason,
+      expiresAt: input.expiresAt,
+      actorId: session.userId,
+    });
     await auditService.recordLog({
       actorId: session.userId,
       companyId: scopedCompanyId,
-      action: 'zoho.role_access.update',
+      action: 'zoho.access_exception.upsert',
       outcome: 'success',
-      metadata: { role: normalizedRole, companyScopedRead },
+      metadata: {
+        exceptionId: result.id,
+        userId: result.userId,
+        channelIdentityId: result.channelIdentityId,
+        bypassRelationScope: result.bypassRelationScope,
+        expiresAt: result.expiresAt ?? null,
+      },
+    });
+    return result;
+  }
+
+  async deleteZohoAccessException(
+    session: SessionScope,
+    exceptionId: string,
+    companyId?: string,
+  ) {
+    const scopedCompanyId = resolveCompanyScope(session, companyId);
+    const result = await zohoUserAccessExceptionService.delete(exceptionId, scopedCompanyId);
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'zoho.access_exception.delete',
+      outcome: 'success',
+      metadata: {
+        exceptionId: result.id,
+        userId: result.userId,
+      },
     });
     return result;
   }

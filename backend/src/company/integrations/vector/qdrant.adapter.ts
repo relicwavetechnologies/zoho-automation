@@ -210,7 +210,7 @@ const buildSearchFilter = (query: VectorSearchQuery): Record<string, unknown> =>
 
   if (query.enforceEmailMatch && typeof query.requesterEmail === 'string' && query.requesterEmail) {
     must.push({
-      key: 'referenceEmails',
+      key: 'relationEmails',
       match: { any: [query.requesterEmail.trim().toLowerCase()] },
     });
   }
@@ -399,7 +399,7 @@ export class QdrantAdapter implements VectorStoreAdapter {
       { fieldName: 'fileAssetId', fieldSchema: 'keyword' },
       { fieldName: 'visibility', fieldSchema: 'keyword' },
       { fieldName: 'ownerUserId', fieldSchema: 'keyword' },
-      { fieldName: 'referenceEmails', fieldSchema: 'keyword' },
+      { fieldName: 'relationEmails', fieldSchema: 'keyword' },
       { fieldName: 'conversationKey', fieldSchema: 'keyword' },
       { fieldName: 'allowedRoles', fieldSchema: 'keyword' },
       { fieldName: 'embeddingSchemaVersion', fieldSchema: 'keyword' },
@@ -507,8 +507,8 @@ export class QdrantAdapter implements VectorStoreAdapter {
       conversationKey: record.conversationKey,
       payload: {
         ...record.payload,
-        ...(Array.isArray(record.referenceEmails)
-          ? { referenceEmails: record.referenceEmails }
+        ...(Array.isArray(record.relationEmails)
+          ? { relationEmails: record.relationEmails }
           : {}),
         ...(record.connectionId ? { connectionId: record.connectionId } : {}),
         ...(record.fileAssetId ? { fileAssetId: record.fileAssetId } : {}),
