@@ -267,6 +267,7 @@ export class ZohoFinanceOpsService {
     organizationId?: string;
     requesterEmail?: string;
     requesterAiRole?: string;
+    departmentZohoReadScope?: 'personalized' | 'show_all';
     module: 'invoices' | 'customerpayments' | 'banktransactions' | 'bills' | 'vendorpayments';
     filters?: Record<string, unknown>;
     query?: string;
@@ -279,6 +280,7 @@ export class ZohoFinanceOpsService {
         companyId: input.companyId,
         requesterEmail: input.requesterEmail,
         requesterAiRole: input.requesterAiRole,
+        departmentZohoReadScope: input.departmentZohoReadScope,
       },
       organizationId: input.organizationId,
       filters: input.filters,
@@ -302,6 +304,7 @@ export class ZohoFinanceOpsService {
     organizationId?: string;
     requesterEmail?: string;
     requesterAiRole?: string;
+    departmentZohoReadScope?: 'personalized' | 'show_all';
     asOfDate?: string;
     limit?: number;
     minOverdueDays?: number;
@@ -314,6 +317,7 @@ export class ZohoFinanceOpsService {
       organizationId: input.organizationId,
       requesterEmail: input.requesterEmail,
       requesterAiRole: input.requesterAiRole,
+      departmentZohoReadScope: input.departmentZohoReadScope,
       module: 'invoices',
       limit,
       filters: {
@@ -395,6 +399,7 @@ export class ZohoFinanceOpsService {
     organizationId?: string;
     requesterEmail?: string;
     requesterAiRole?: string;
+    departmentZohoReadScope?: 'personalized' | 'show_all';
     customerId?: string;
     amountTolerance?: number;
     dateToleranceDays?: number;
@@ -410,6 +415,7 @@ export class ZohoFinanceOpsService {
         organizationId: input.organizationId,
         requesterEmail: input.requesterEmail,
         requesterAiRole: input.requesterAiRole,
+        departmentZohoReadScope: input.departmentZohoReadScope,
         module: 'customerpayments',
         limit,
         filters: input.customerId ? { customer_id: input.customerId } : undefined,
@@ -419,6 +425,7 @@ export class ZohoFinanceOpsService {
         organizationId: input.organizationId,
         requesterEmail: input.requesterEmail,
         requesterAiRole: input.requesterAiRole,
+        departmentZohoReadScope: input.departmentZohoReadScope,
         module: 'invoices',
         limit,
         filters: input.customerId ? { customer_id: input.customerId } : undefined,
@@ -510,6 +517,7 @@ export class ZohoFinanceOpsService {
     organizationId?: string;
     requesterEmail?: string;
     requesterAiRole?: string;
+    departmentZohoReadScope?: 'personalized' | 'show_all';
     accountId?: string;
     statementRows: StatementRow[];
     amountTolerance?: number;
@@ -524,6 +532,7 @@ export class ZohoFinanceOpsService {
       organizationId: input.organizationId,
       requesterEmail: input.requesterEmail,
       requesterAiRole: input.requesterAiRole,
+      departmentZohoReadScope: input.departmentZohoReadScope,
       module: 'banktransactions',
       limit,
       filters: input.accountId ? { account_id: input.accountId } : undefined,
@@ -605,6 +614,7 @@ export class ZohoFinanceOpsService {
     organizationId?: string;
     requesterEmail?: string;
     requesterAiRole?: string;
+    departmentZohoReadScope?: 'personalized' | 'show_all';
     statementRows: StatementRow[];
     vendorId?: string;
     vendorName?: string;
@@ -622,6 +632,7 @@ export class ZohoFinanceOpsService {
         organizationId: input.organizationId,
         requesterEmail: input.requesterEmail,
         requesterAiRole: input.requesterAiRole,
+        departmentZohoReadScope: input.departmentZohoReadScope,
         module: 'bills',
         limit,
         filters: input.vendorId ? { vendor_id: input.vendorId } : undefined,
@@ -631,6 +642,7 @@ export class ZohoFinanceOpsService {
         organizationId: input.organizationId,
         requesterEmail: input.requesterEmail,
         requesterAiRole: input.requesterAiRole,
+        departmentZohoReadScope: input.departmentZohoReadScope,
         module: 'vendorpayments',
         limit,
         filters: input.vendorId ? { vendor_id: input.vendorId } : undefined,

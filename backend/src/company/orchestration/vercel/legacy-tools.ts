@@ -610,10 +610,6 @@ type DesktopWsGatewayLike = {
 const loadDesktopWsGateway = (): DesktopWsGatewayLike =>
   loadModuleExport<DesktopWsGatewayLike>('../../../modules/desktop-live/desktop-ws.gateway', 'desktopWsGateway');
 
-const loadZohoRoleAccessService = (): {
-  resolveScopeMode: (companyId: string, requesterAiRole?: string) => Promise<'email_scoped' | 'company_scoped'>;
-} => loadModuleExport('../../tools/zoho-role-access.service', 'zohoRoleAccessService');
-
 const loadRuntimeControls = (): {
   COMPANY_CONTROL_KEYS: { zohoUserScopedReadStrictEnabled: string };
   isCompanyControlEnabled: (input: Record<string, unknown>) => Promise<boolean>;

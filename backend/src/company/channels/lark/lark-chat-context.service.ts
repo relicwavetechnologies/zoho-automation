@@ -5,7 +5,6 @@ import { prisma } from '../../../utils/prisma';
 import { logger } from '../../../utils/logger';
 import {
   buildDeterministicThreadSummary,
-  createEmptyTaskState,
   filterThreadMessagesForContext,
   parseDesktopTaskState,
   parseDesktopThreadSummary,
