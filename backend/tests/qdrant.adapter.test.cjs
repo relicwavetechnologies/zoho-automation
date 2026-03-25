@@ -182,7 +182,7 @@ test('QdrantAdapter.search adds requester email payload filter when strict user 
         const must = Array.isArray(body.prefetch[0].filter.must)
           ? body.prefetch[0].filter.must
           : [];
-        const emailClause = must.find((clause) => clause?.key === 'referenceEmails');
+        const emailClause = must.find((clause) => clause?.key === 'relationEmails');
         assert.ok(emailClause);
         assert.deepEqual(emailClause.match.any, ['owner@example.com']);
 

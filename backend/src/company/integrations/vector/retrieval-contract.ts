@@ -36,7 +36,7 @@ export type CanonicalRetrievalChunk = {
   sourceUpdatedAt?: string;
   visibility: 'personal' | 'shared' | 'public';
   allowedRoles?: string[];
-  referenceEmails?: string[];
+  relationEmails?: string[];
   conversationKey?: string;
   ownerUserId?: string;
   fileAssetId?: string;

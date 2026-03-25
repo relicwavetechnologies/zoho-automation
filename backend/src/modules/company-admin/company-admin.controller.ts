@@ -537,14 +537,14 @@ class CompanyAdminController extends BaseController {
     return res.json(ApiResponse.success(result, 'Tool permissions loaded'));
   };
 
-  getZohoRoleAccessMatrix = async (req: Request, res: Response) => {
+  listZohoAccessExceptions = async (req: Request, res: Response) => {
     const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
     const session = this.readSession(req);
     if (!session) {
       return res.status(401).json({ success: false, message: 'Admin session required' });
     }
-    const result = await this.service.getZohoRoleAccessMatrix(session, companyId);
-    return res.json(ApiResponse.success(result, 'Zoho role access loaded'));
+    const result = await this.service.listZohoAccessExceptions(session, companyId);
+    return res.json(ApiResponse.success(result, 'Zoho access exceptions loaded'));
   };
 
   updateToolPermission = async (req: Request, res: Response) => {
@@ -562,19 +562,51 @@ class CompanyAdminController extends BaseController {
     return res.json(ApiResponse.success(result, 'Tool permission updated'));
   };
 
-  updateZohoRoleAccess = async (req: Request, res: Response) => {
-    const { role } = req.params;
-    const { companyScopedRead } = req.body;
+  createZohoAccessException = async (req: Request, res: Response) => {
+    const {
+      userId,
+      channelIdentityId,
+      bypassRelationScope,
+      reason,
+      expiresAt,
+    } = req.body ?? {};
     const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
     const session = this.readSession(req);
     if (!session) {
       return res.status(401).json({ success: false, message: 'Admin session required' });
     }
-    if (typeof companyScopedRead !== 'boolean') {
-      return res.status(400).json({ success: false, message: '`companyScopedRead` must be a boolean' });
+    if (typeof userId !== 'string' && typeof channelIdentityId !== 'string') {
+      return res.status(400).json({ success: false, message: '`userId` or `channelIdentityId` is required' });
     }
-    const result = await this.service.updateZohoRoleAccess(session, role, companyScopedRead, companyId);
-    return res.json(ApiResponse.success(result, 'Zoho role access updated'));
+    if (bypassRelationScope !== undefined && typeof bypassRelationScope !== 'boolean') {
+      return res.status(400).json({ success: false, message: '`bypassRelationScope` must be a boolean when provided' });
+    }
+    if (expiresAt !== undefined && typeof expiresAt !== 'string') {
+      return res.status(400).json({ success: false, message: '`expiresAt` must be an ISO string when provided' });
+    }
+    const result = await this.service.createZohoAccessException(
+      session,
+      {
+        userId: typeof userId === 'string' ? userId : undefined,
+        channelIdentityId: typeof channelIdentityId === 'string' ? channelIdentityId : undefined,
+        bypassRelationScope: typeof bypassRelationScope === 'boolean' ? bypassRelationScope : true,
+        reason: typeof reason === 'string' ? reason : undefined,
+        expiresAt: typeof expiresAt === 'string' ? expiresAt : undefined,
+      },
+      companyId,
+    );
+    return res.json(ApiResponse.success(result, 'Zoho access exception saved'));
+  };
+
+  deleteZohoAccessException = async (req: Request, res: Response) => {
+    const { exceptionId } = req.params;
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.deleteZohoAccessException(session, exceptionId, companyId);
+    return res.json(ApiResponse.success(result, 'Zoho access exception deleted'));
   };
 
   setLarkUserRole = async (req: Request, res: Response) => {

@@ -9,9 +9,10 @@ import { resolveZohoProvider } from '../../integrations/zoho/zoho-provider.resol
 import type { ZohoSourceType } from '../../integrations/zoho/zoho-provider.adapter';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
 import { zohoDataClient } from '../../integrations/zoho/zoho-data.client';
+import { zohoRelationAccessService, type ZohoActorScope } from '../../integrations/zoho/zoho-relation-access.service';
+import { zohoSecurityAlertService } from '../../integrations/zoho/zoho-security-alert.service';
 import { normalizeEmail } from '../../integrations/zoho/zoho-email-scope';
-import { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } from '../../support/runtime-controls';
-import { zohoRoleAccessService, type ZohoScopeMode } from '../../tools/zoho-role-access.service';
+import type { ZohoScopeMode } from '../../tools/zoho-role-access.service';
 import { logger } from '../../../utils/logger';
 
 const DEFAULT_RESULT_LIMIT = 3;
@@ -200,6 +201,22 @@ const inferSourceTypes = (objective: string): ZohoSourceType[] => {
   return preferred.length > 0
     ? [...new Set(preferred)]
     : ['zoho_lead', 'zoho_account', 'zoho_deal', 'zoho_contact', 'zoho_ticket'];
+};
+
+const looksLikeBulkObjective = (objective: string): boolean => {
+  const text = normalizeText(objective);
+  return containsAny(text, [
+    'all ',
+    'everyone',
+    'entire company',
+    'whole company',
+    'all deals',
+    'all contacts',
+    'all leads',
+    'all accounts',
+    'all cases',
+    'pipeline',
+  ]);
 };
 
 const inferCreatedAfter = (objective: string): Date | undefined => {
@@ -475,9 +492,7 @@ export class ZohoReadAgent extends BaseAgent {
     companyId: string;
     taskId: string;
     objective: string;
-    requesterEmail?: string;
-    scopeMode: ZohoScopeMode;
-    strictUserScopeEnabled: boolean;
+    actor: ZohoActorScope;
   }): Promise<LiveFetchResult> {
     const intent = buildQueryIntent(input.objective);
     const records: LiveRecord[] = [];
@@ -492,12 +507,12 @@ export class ZohoReadAgent extends BaseAgent {
       createdAfter: intent.createdAfter?.toISOString(),
       pageSize: intent.pageSize,
       maxPages: intent.maxPages,
-      strictUserScopeEnabled: input.strictUserScopeEnabled,
-      scopeMode: input.scopeMode,
+      strictUserScopeEnabled: true,
+      scopeMode: input.actor.scopeMode,
     });
 
-    if (input.scopeMode === 'email_scoped' && input.strictUserScopeEnabled) {
-      const requesterEmail = normalizeEmail(input.requesterEmail);
+    if (input.actor.scopeMode === 'email_scoped') {
+      const requesterEmail = normalizeEmail(input.actor.requesterEmail);
       if (!requesterEmail) {
         return {
           status: 'blocked',
@@ -506,80 +521,12 @@ export class ZohoReadAgent extends BaseAgent {
           fallbackUsed: false,
           degraded: true,
           partial: false,
-          scopeMode: input.scopeMode,
-          reasonCode: 'strict_scope_missing_requester_email',
+          scopeMode: input.actor.scopeMode,
+          reasonCode: 'missing_requester_email',
           reasonMessage: 'No records returned: your Zoho access requires a verified email scope for this request.',
           moduleFailures: [],
         };
       }
-
-      const provider = await resolveZohoProvider({ companyId: input.companyId });
-
-      for (const sourceType of intent.preferredSourceTypes) {
-        let scopedRecords: Array<{ sourceType: ZohoSourceType; sourceId: string; payload: Record<string, unknown> }>;
-        try {
-          scopedRecords = await zohoDataClient.fetchUserScopedRecords({
-            companyId: input.companyId,
-            environment: provider.environment,
-            sourceType,
-            requesterEmail,
-            limit: intent.targetLimit,
-            maxPages: intent.maxPages,
-            sortBy: intent.sortBy,
-            sortOrder: intent.sortOrder,
-          });
-        } catch (error) {
-          moduleFailures.push(buildModuleFailure(sourceType, error));
-          continue;
-        }
-
-        for (const record of scopedRecords) {
-          if (!matchesTimeFilter(record, intent.createdAfter)) {
-            continue;
-          }
-          const key = `${record.sourceType}:${record.sourceId}`;
-          if (seen.has(key)) {
-            continue;
-          }
-          seen.add(key);
-          records.push(record);
-          if (records.length >= intent.targetLimit) {
-            break;
-          }
-        }
-
-        if (records.length >= intent.targetLimit) {
-          break;
-        }
-      }
-
-      return {
-        status:
-          records.length > 0
-            ? moduleFailures.length > 0 ? 'partial' : 'success'
-            : moduleFailures.length > 0 ? 'blocked' : 'empty',
-        records,
-        sourceRefs: buildLiveSourceRefs(records),
-        fallbackUsed: false,
-        degraded: moduleFailures.length > 0,
-        partial: records.length > 0 && moduleFailures.length > 0,
-        scopeMode: input.scopeMode,
-        reasonCode:
-          records.length === 0 && moduleFailures.length > 0
-            ? 'strict_scope_unenforceable_module'
-            : records.length === 0
-              ? 'strict_scope_no_matching_records'
-              : undefined,
-        reasonMessage:
-          records.length === 0 && moduleFailures.length > 0
-            ? `No records returned because email-scoped access could not be fully enforced: ${summarizeModuleFailures(moduleFailures)}.`
-            : records.length === 0
-              ? 'No email-scoped Zoho records matched this query.'
-              : moduleFailures.length > 0
-                ? `Returned available Zoho records, but some modules could not be fully checked: ${summarizeModuleFailures(moduleFailures)}.`
-                : undefined,
-        moduleFailures,
-      };
     }
 
     const provider = await resolveZohoProvider({ companyId: input.companyId });
@@ -620,11 +567,21 @@ export class ZohoReadAgent extends BaseAgent {
           }
         }
 
-        const pageRecords = page.records.map((record) => ({
+        let pageRecords = page.records.map((record) => ({
           sourceType: record.sourceType,
           sourceId: record.sourceId,
           payload: record.payload,
         })) as LiveRecord[];
+        if (input.actor.scopeMode === 'email_scoped') {
+          const filtered = await zohoRelationAccessService.filterReadableCrmRecords({
+            actor: input.actor,
+            sourceType,
+            records: pageRecords.map((record) => record.payload),
+            environment: provider.environment,
+          });
+          pageRecords = pageRecords.filter((record) =>
+            filtered.some((candidate) => candidate === record.payload || candidate.id === record.payload.id));
+        }
 
         for (const record of pageRecords) {
           if (!matchesTimeFilter(record, intent.createdAfter)) {
@@ -665,14 +622,18 @@ export class ZohoReadAgent extends BaseAgent {
       fallbackUsed: false,
       degraded: moduleFailures.length > 0,
       partial: records.length > 0 && moduleFailures.length > 0,
-      scopeMode: input.scopeMode,
+      scopeMode: input.actor.scopeMode,
       reasonCode:
         records.length === 0 && moduleFailures.length > 0
           ? 'company_scope_partial_failure'
+          : records.length === 0 && input.actor.scopeMode === 'email_scoped'
+            ? 'relation_not_proven'
           : undefined,
       reasonMessage:
         records.length === 0 && moduleFailures.length > 0
           ? `No records returned because Zoho modules could not be queried cleanly: ${summarizeModuleFailures(moduleFailures)}.`
+          : records.length === 0 && input.actor.scopeMode === 'email_scoped'
+            ? 'No relation-scoped Zoho records matched this query.'
           : moduleFailures.length > 0
             ? `Returned available Zoho records, but some company-scoped modules failed: ${summarizeModuleFailures(moduleFailures)}.`
             : undefined,
@@ -741,7 +702,6 @@ export class ZohoReadAgent extends BaseAgent {
     const startedAt = Date.now();
     let apiCalls = 0;
     let resolvedCompanyId: string | undefined;
-    let strictUserScopeEnabled = true;
     let scopeMode: ZohoScopeMode = 'email_scoped';
 
     try {
@@ -755,74 +715,63 @@ export class ZohoReadAgent extends BaseAgent {
       });
       resolvedCompanyId = companyId;
       apiCalls++;
-      strictUserScopeEnabled = await isCompanyControlEnabled({
-        controlKey: COMPANY_CONTROL_KEYS.zohoUserScopedReadStrictEnabled,
+      const actor = await zohoRelationAccessService.resolveActorScope({
         companyId,
-        defaultValue: true,
+        userId:
+          typeof input.contextPacket.userId === 'string' && input.contextPacket.userId.trim()
+            ? input.contextPacket.userId.trim()
+            : typeof input.contextPacket.linkedUserId === 'string' && input.contextPacket.linkedUserId.trim()
+              ? input.contextPacket.linkedUserId.trim()
+              : undefined,
+        requesterEmail:
+          typeof input.contextPacket.requesterEmail === 'string'
+            ? input.contextPacket.requesterEmail.trim()
+            : undefined,
       });
-      scopeMode = strictUserScopeEnabled
-        ? await zohoRoleAccessService.resolveScopeMode(
-          companyId,
-          typeof input.contextPacket.requesterAiRole === 'string' ? input.contextPacket.requesterAiRole : undefined,
-        )
-        : 'company_scoped';
+      scopeMode = actor.scopeMode;
       const requesterEmail =
         typeof input.contextPacket.requesterEmail === 'string'
           ? input.contextPacket.requesterEmail.trim()
           : '';
 
-      let liveRecords: LiveRecord[] = [];
-      let liveSourceRefs: SourceRef[] = [];
-      let liveResult: LiveFetchResult | null = null;
+      const live = await this.fetchLiveRecords({
+        companyId,
+        taskId: input.taskId,
+        objective: input.objective,
+        actor,
+      });
+      const liveResult = live;
+      const liveRecords: LiveRecord[] = live.records;
+      const liveSourceRefs: SourceRef[] = live.sourceRefs;
+      apiCalls += 2;
 
-      try {
-        const live = await this.fetchLiveRecords({
+      logger.debug('zoho.agent.live_fetch.complete', {
+        taskId: input.taskId,
+        companyId,
+        mode: 'rest',
+        sourceTypes: intent.preferredSourceTypes,
+        scopeMode,
+        status: live.status,
+        recordCount: liveRecords.length,
+        moduleFailureCount: live.moduleFailures.length,
+        degraded: live.degraded,
+        reasonCode: live.reasonCode,
+        reasonMessage: live.reasonMessage,
+      });
+
+      if (
+        actor.scopeMode === 'email_scoped'
+        && looksLikeBulkObjective(input.objective)
+        && liveRecords.length === 0
+      ) {
+        await zohoSecurityAlertService.maybeAlert({
           companyId,
-          taskId: input.taskId,
-          objective: input.objective,
-          requesterEmail,
-          scopeMode,
-          strictUserScopeEnabled,
+          actorId: actor.userId ?? input.taskId,
+          requesterLabel: requesterEmail || actor.userId,
+          reason: 'bulk_request',
+          operation: 'zoho-read',
+          preview: input.objective,
         });
-        liveResult = live;
-        liveRecords = live.records;
-        liveSourceRefs = live.sourceRefs;
-        apiCalls += 2;
-
-        logger.debug('zoho.agent.live_fetch.complete', {
-          taskId: input.taskId,
-          companyId,
-          mode: 'rest',
-          sourceTypes: intent.preferredSourceTypes,
-          scopeMode,
-          status: live.status,
-          recordCount: liveRecords.length,
-          moduleFailureCount: live.moduleFailures.length,
-          degraded: live.degraded,
-          reasonCode: live.reasonCode,
-          reasonMessage: live.reasonMessage,
-        });
-      } catch (error) {
-        const isRateLimited =
-          error instanceof ZohoIntegrationError
-          && error.code === 'rate_limited';
-        const logMeta = {
-          taskId: input.taskId,
-          companyId,
-          code: error instanceof ZohoIntegrationError ? error.code : undefined,
-          statusCode: error instanceof ZohoIntegrationError ? error.statusCode : undefined,
-          reason: error instanceof Error ? error.message : 'unknown_error',
-        };
-        if (isRateLimited) {
-          logger.error('zoho.agent.live_fetch.rate_limited', logMeta);
-        } else {
-          logger.warn('zoho.agent.live_fetch.failed', logMeta);
-        }
-        throw error;
-      }
-
-      if (!liveResult) {
-        throw new Error('Live Zoho result was not computed');
       }
 
       if (liveRecords.length === 0) {
@@ -865,7 +814,7 @@ export class ZohoReadAgent extends BaseAgent {
             requesterUserId,
             requesterEmail,
             scopeMode,
-            strictUserScopeEnabled,
+            strictUserScopeEnabled: true,
             text: input.objective,
             limit: retrievalLimit,
             sourceTypes: intent.preferredSourceTypes,

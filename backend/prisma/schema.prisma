@@ -70,6 +70,9 @@ model User {
   executionRuns    ExecutionRun[]
   larkAuthLinks    LarkUserAuthLink[]
   googleAuthLinks  GoogleUserAuthLink[]
+  zohoAccessExceptions ZohoUserAccessException[] @relation("ZohoAccessExceptionUser")
+  zohoAccessExceptionsCreated ZohoUserAccessException[] @relation("ZohoAccessExceptionCreatedBy")
+  zohoAccessExceptionsUpdated ZohoUserAccessException[] @relation("ZohoAccessExceptionUpdatedBy")
 }
 
 model Company {
@@ -105,6 +108,7 @@ model Company {
   googleAuthLinks  GoogleUserAuthLink[]
   googleWorkspaceAuth CompanyGoogleAuthLink?
   fileAssets       FileAsset[]
+  zohoAccessExceptions ZohoUserAccessException[]
 }
 
 model AdminMembership {
@@ -470,6 +474,26 @@ model AuditLog {
   @@index([companyId, createdAt])
   @@index([actorId, createdAt])
   @@index([action, createdAt])
+}
+
+model ZohoUserAccessException {
+  id                 String   @id @default(uuid())
+  companyId          String
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User     @relation("ZohoAccessExceptionUser", fields: [userId], references: [id], onDelete: Cascade)
+  bypassRelationScope Boolean @default(true)
+  reason             String?
+  expiresAt          DateTime?
+  createdBy          String
+  createdByUser      User     @relation("ZohoAccessExceptionCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  updatedBy          String
+  updatedByUser      User     @relation("ZohoAccessExceptionUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([companyId, userId, expiresAt])
+  @@unique([companyId, userId])
 }
 
 model AdminControlState {

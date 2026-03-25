@@ -297,7 +297,7 @@ export const buildCanonicalZohoChunks = (input: {
   payload: Record<string, unknown>;
   companyId: string;
   visibility?: VectorUpsertDTO['visibility'];
-  referenceEmails?: string[];
+  relationEmails?: string[];
   connectionId?: string;
 }): CanonicalRetrievalChunk[] => {
   const title = buildZohoTitle(input.sourceType, input.payload);
@@ -325,7 +325,7 @@ export const buildCanonicalZohoChunks = (input: {
     chunkTokenCount: estimateTokenCount(content),
     sourceUpdatedAt,
     visibility: input.visibility ?? 'shared',
-    referenceEmails: input.referenceEmails,
+    relationEmails: input.relationEmails,
     retrievalProfile: 'zoho',
     embeddingSchemaVersion: ACTIVE_EMBEDDING_SCHEMA_VERSION,
     payload: {
@@ -336,7 +336,7 @@ export const buildCanonicalZohoChunks = (input: {
       text: content,
       citationTitle: title,
       recordType: input.sourceType,
-      referenceEmails: input.referenceEmails ?? [],
+      relationEmails: input.relationEmails ?? [],
       embeddingSchemaVersion: ACTIVE_EMBEDDING_SCHEMA_VERSION,
       retrievalProfile: 'zoho',
       connectionId: input.connectionId,
