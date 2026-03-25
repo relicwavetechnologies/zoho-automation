@@ -6,6 +6,13 @@ const readString = (value: unknown): string | undefined => {
   return trimmed.length > 0 ? trimmed : undefined;
 };
 
+export type LarkMention = {
+  id?: string;
+  name?: string;
+};
+
+const PLACEHOLDER_MENTION_RE = /@_user_\d+\b/gi;
+
 const collectTextFragments = (value: unknown): string[] => {
   if (typeof value === 'string') {
     const trimmed = value.trim();
@@ -35,6 +42,39 @@ const collectTextFragments = (value: unknown): string[] => {
   }
 
   return Object.values(record).flatMap((entry) => collectTextFragments(entry));
+};
+
+const collectMentions = (value: unknown): LarkMention[] => {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectMentions(entry));
+  }
+
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  const record = value as Record<string, unknown>;
+  const mentions: LarkMention[] = [];
+
+  if (record.tag === 'at') {
+    const id =
+      readString(record.open_id)
+      ?? readString(record.user_id)
+      ?? readString(record.union_id)
+      ?? readString(record.id);
+    const name = readString(record.user_name) ?? readString(record.name) ?? readString(record.text);
+    mentions.push({ ...(id ? { id } : {}), ...(name ? { name } : {}) });
+  }
+
+  return [
+    ...mentions,
+    ...Object.values(record).flatMap((entry) => collectMentions(entry)),
+  ];
+};
+
+const extractPlaceholderMentions = (value: string): LarkMention[] => {
+  const matches = value.match(PLACEHOLDER_MENTION_RE) ?? [];
+  return matches.map((match) => ({ name: match }));
 };
 
 const collectPostBodies = (parsed: Record<string, unknown>): unknown[] => {
@@ -164,6 +204,23 @@ export const parseLarkMessageContent = (content: unknown, msgType?: string): str
       return '[User attached media]';
     }
     return raw;
+  }
+};
+
+export const extractLarkMentions = (content: unknown): LarkMention[] => {
+  const raw = readString(content);
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return [
+      ...collectMentions(parsed),
+      ...extractPlaceholderMentions(readString(parsed.text) ?? raw),
+    ];
+  } catch {
+    return extractPlaceholderMentions(raw);
   }
 };
 

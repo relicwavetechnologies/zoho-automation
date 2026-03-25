@@ -200,6 +200,85 @@ const asString = (value: unknown): string | undefined =>
 const summarizeText = (value: string, maxLength = 220): string =>
   value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 
+const GOAL_STOP_WORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'for',
+  'from',
+  'get',
+  'i',
+  'in',
+  'it',
+  'me',
+  'my',
+  'of',
+  'on',
+  'please',
+  'show',
+  'the',
+  'this',
+  'to',
+  'with',
+  'you',
+]);
+
+const normalizeGoalText = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/\b(show|fetch|pull|list)\b/g, 'get')
+    .replace(/\btasks?\b/g, 'task')
+    .replace(/\binvoices?\b/g, 'invoice')
+    .replace(/\bestimates?\b/g, 'estimate')
+    .replace(/\brecords?\b/g, 'record')
+    .replace(/\btables?\b/g, 'table')
+    .replace(/\s+/g, ' ');
+
+const tokenizeGoal = (value: string): string[] =>
+  normalizeGoalText(value)
+    .split(/[^a-z0-9]+/g)
+    .filter((token) => token.length >= 2 && !GOAL_STOP_WORDS.has(token));
+
+const goalsAreTopicallyRelated = (left?: string, right?: string): boolean => {
+  if (!left?.trim() || !right?.trim()) {
+    return false;
+  }
+  const leftTokens = new Set(tokenizeGoal(left));
+  const rightTokens = new Set(tokenizeGoal(right));
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return normalizeGoalText(left) === normalizeGoalText(right);
+  }
+  let overlap = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+  return overlap > 0;
+};
+
+const buildFocusedRecentGoals = (recentUserGoals: string[], latestGoal?: string): string[] => {
+  if (recentUserGoals.length === 0) {
+    return [];
+  }
+  const anchor = latestGoal?.trim() || recentUserGoals[recentUserGoals.length - 1]!;
+  const cluster: string[] = [];
+  for (let index = recentUserGoals.length - 1; index >= 0; index -= 1) {
+    const goal = recentUserGoals[index]!;
+    if (cluster.length === 0) {
+      cluster.unshift(goal);
+      continue;
+    }
+    if (goalsAreTopicallyRelated(goal, anchor) || goalsAreTopicallyRelated(goal, cluster[0])) {
+      cluster.unshift(goal);
+      continue;
+    }
+    break;
+  }
+  return cluster.slice(-4);
+};
+
 export const parseDesktopThreadSummary = (value: unknown): DesktopThreadSummary => {
   const record = asRecord(value);
   if (!record) {
@@ -951,7 +1030,6 @@ const buildDeterministicSummary = (input: {
   currentSummary: DesktopThreadSummary;
 }): DesktopThreadSummary => {
   const filteredMessages = filterThreadMessagesForContext(input.messages);
-  const olderMessages = filteredMessages.slice(0, -THREAD_SUMMARY_RECENT_WINDOW_MESSAGE_COUNT);
   const recentUserGoals = filteredMessages
     .filter((message) => message.role === 'user')
     .map((message) => summarizeText(message.content.trim(), 180))
@@ -972,13 +1050,19 @@ const buildDeterministicSummary = (input: {
     ?? input.currentSummary.latestUserGoal
     ?? input.taskState.activeObjective
     ?? input.currentSummary.latestObjective;
+  const focusedRecentGoals = buildFocusedRecentGoals(
+    recentUserGoals,
+    input.taskState.activeObjective ?? latestUserGoal,
+  );
   const pendingApprovals = input.taskState.pendingApproval ? [summarizeText(input.taskState.pendingApproval.summary, 180)] : [];
   const constraints = mergeUnique(
     input.currentSummary.constraints,
     input.taskState.activeSourceArtifacts.slice(0, 4).map((artifact) => `Active source artifact: ${artifact.fileName}`),
     8,
   );
-  const userGoals = mergeUnique(input.currentSummary.userGoals, recentUserGoals, 8);
+  const userGoals = focusedRecentGoals.length > 0
+    ? mergeUnique([], focusedRecentGoals, 8)
+    : mergeUnique(input.currentSummary.userGoals, recentUserGoals, 8);
   const completedWrites = mergeUnique(
     input.currentSummary.completedWrites,
     input.taskState.completedMutations.filter((mutation) => mutation.ok).slice(-6).map((mutation) => summarizeText(mutation.summary, 180)),
@@ -1096,17 +1180,35 @@ export const refreshDesktopThreadSummary = async (input: {
       },
     });
 
+    const mergedLatestObjective = deterministic.latestObjective;
+    const mergedLatestUserGoal = deterministic.latestUserGoal;
+    const mergedUserGoals = deterministic.userGoals;
+    const mergedActiveEntities = result.object.activeEntities.length > 0 ? result.object.activeEntities : deterministic.activeEntities;
+    const mergedResolvedReferences = result.object.resolvedReferences.length > 0 ? result.object.resolvedReferences : deterministic.resolvedReferences;
+    const mergedCompletedActions = result.object.completedActions.length > 0 ? result.object.completedActions : deterministic.completedActions;
+    const mergedCompletedWrites = result.object.completedWrites.length > 0 ? result.object.completedWrites : deterministic.completedWrites;
+    const mergedPendingApprovals = result.object.pendingApprovals.length > 0 ? result.object.pendingApprovals : deterministic.pendingApprovals;
+    const mergedConstraints = result.object.constraints.length > 0 ? result.object.constraints : deterministic.constraints;
+
     return {
-      summary: result.object.summary ?? deterministic.summary,
-      latestObjective: result.object.latestObjective ?? deterministic.latestObjective,
-      latestUserGoal: result.object.latestUserGoal ?? deterministic.latestUserGoal,
-      userGoals: result.object.userGoals.length > 0 ? result.object.userGoals : deterministic.userGoals,
-      activeEntities: result.object.activeEntities.length > 0 ? result.object.activeEntities : deterministic.activeEntities,
-      resolvedReferences: result.object.resolvedReferences.length > 0 ? result.object.resolvedReferences : deterministic.resolvedReferences,
-      completedActions: result.object.completedActions.length > 0 ? result.object.completedActions : deterministic.completedActions,
-      completedWrites: result.object.completedWrites.length > 0 ? result.object.completedWrites : deterministic.completedWrites,
-      pendingApprovals: result.object.pendingApprovals.length > 0 ? result.object.pendingApprovals : deterministic.pendingApprovals,
-      constraints: result.object.constraints.length > 0 ? result.object.constraints : deterministic.constraints,
+      summary: buildDeterministicNarrativeSummary({
+        latestObjective: mergedLatestObjective,
+        latestUserGoal: mergedLatestUserGoal,
+        userGoals: mergedUserGoals,
+        activeEntities: mergedActiveEntities,
+        completedActions: mergedCompletedActions,
+        pendingApprovals: mergedPendingApprovals,
+        constraints: mergedConstraints,
+      }) ?? deterministic.summary ?? result.object.summary,
+      latestObjective: mergedLatestObjective,
+      latestUserGoal: mergedLatestUserGoal,
+      userGoals: mergedUserGoals,
+      activeEntities: mergedActiveEntities,
+      resolvedReferences: mergedResolvedReferences,
+      completedActions: mergedCompletedActions,
+      completedWrites: mergedCompletedWrites,
+      pendingApprovals: mergedPendingApprovals,
+      constraints: mergedConstraints,
       sourceMessageCount: input.messages.length,
       updatedAt: new Date().toISOString(),
     };

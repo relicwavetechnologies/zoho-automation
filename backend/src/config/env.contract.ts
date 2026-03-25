@@ -33,6 +33,7 @@ export type ValidatedEnv = {
   ORCHESTRATION_QUEUE_LOCK_DURATION_MS: number;
   ORCHESTRATION_QUEUE_STALLED_INTERVAL_MS: number;
   ORCHESTRATION_QUEUE_MAX_STALLED_COUNT: number;
+  DESKTOP_WORKFLOW_DUE_PROCESSOR_POLL_INTERVAL_MS: number;
   HITL_TIMEOUT_SECONDS: number;
   CHECKPOINT_TTL_SECONDS: number;
   RETRY_MAX_ATTEMPTS: number;
@@ -546,6 +547,13 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       value: readString(parsedRaw.ORCHESTRATION_QUEUE_MAX_STALLED_COUNT, '1'),
       defaultValue: 1,
       min: 0,
+      issues,
+    }),
+    DESKTOP_WORKFLOW_DUE_PROCESSOR_POLL_INTERVAL_MS: parseInteger({
+      key: 'DESKTOP_WORKFLOW_DUE_PROCESSOR_POLL_INTERVAL_MS',
+      value: readString(parsedRaw.DESKTOP_WORKFLOW_DUE_PROCESSOR_POLL_INTERVAL_MS, '900000'),
+      defaultValue: 900000,
+      min: 60000,
       issues,
     }),
     HITL_TIMEOUT_SECONDS: parseInteger({

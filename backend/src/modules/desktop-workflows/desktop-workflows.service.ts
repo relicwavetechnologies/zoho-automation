@@ -947,7 +947,20 @@ const isScheduledWorkflowTableMissing = (error: unknown): boolean =>
   && error instanceof Error
   && error.message.includes('ScheduledWorkflow');
 
-const isDatabaseUnavailable = (error: unknown): boolean => readPrismaErrorCode(error) === 'P1001';
+const isDatabaseUnavailable = (error: unknown): boolean => {
+  const prismaCode = readPrismaErrorCode(error);
+  if (prismaCode === 'P1001' || prismaCode === 'P2024') {
+    return true;
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return error.message.includes('connection pool')
+    || error.message.includes('Timed out fetching a new connection from the connection pool')
+    || error.message.includes("Can't reach database server");
+};
+
+const DUE_PROCESSOR_POLL_INTERVAL_MS = config.DESKTOP_WORKFLOW_DUE_PROCESSOR_POLL_INTERVAL_MS;
 
 const toWorkflowMessages = (
   rows: Array<{ id: string; role: string; content: string; createdAt: Date; metadata?: unknown }>,
@@ -2707,7 +2720,7 @@ class DesktopWorkflowsService {
       void this.processDueWorkflows().catch((error) => {
         this.handleDueProcessorFailure(error);
       });
-    }, 30_000);
+    }, DUE_PROCESSOR_POLL_INTERVAL_MS);
   }
 
   stopDueProcessor(): void {

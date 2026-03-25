@@ -15,7 +15,7 @@ import { buildLarkTextHash, buildLarkTraceMeta } from './lark-observability';
 import { emitRuntimeTrace } from '../../observability';
 import { larkWorkspaceConfigRepository } from './lark-workspace-config.repository';
 import { larkUserAuthLinkRepository } from './lark-user-auth-link.repository';
-import { inferLarkMessageType, parseLarkAttachmentKeys } from './lark-message-content';
+import { extractLarkMentions, inferLarkMessageType, parseLarkAttachmentKeys } from './lark-message-content';
 import { ingestLarkAttachments } from './lark-file-ingestion';
 import { larkRecentFilesStore } from './lark-recent-files.store';
 import { orangeDebug } from '../../../utils/orange-debug';
@@ -1018,6 +1018,7 @@ export const createLarkWebhookEventHandler = (
       });
       const msgId = normalized.messageId;
       const attachmentKeys = parseLarkAttachmentKeys(msgContent, msgType);
+      const mentions = extractLarkMentions(msgContent);
       orangeDebug('lark.ingress.normalized', {
         requestId,
         eventId: parsed.eventId,
@@ -1027,6 +1028,7 @@ export const createLarkWebhookEventHandler = (
         userId: normalized.userId,
         textPreview: normalized.text.slice(0, 120),
         attachmentKeyCount: attachmentKeys.length,
+        mentionCount: mentions.length,
       });
 
       dependencies.log.info('lark.webhook.message.normalized', {
@@ -1043,8 +1045,34 @@ export const createLarkWebhookEventHandler = (
         messageAgeMs: readMessageAgeMs(normalized.timestamp),
         textPreview: normalized.text.slice(0, 120),
         textLength: normalized.text.length,
+        mentionCount: mentions.length,
       });
       const textHash = buildLarkTextHash(normalized.text);
+
+      if (parsed.kind === 'event_callback_message' && normalized.chatType === 'group' && mentions.length === 0) {
+        dependencies.log.info('lark.webhook.event.ignored', {
+          requestId,
+          reason: 'group_message_without_mention',
+          eventType: parsed.eventType,
+          eventId: parsed.eventId,
+          larkTenantKey,
+          companyId: scopedCompanyId ?? undefined,
+          messageId: normalized.messageId,
+          chatId: normalized.chatId,
+          chatType: normalized.chatType,
+        });
+        return res.status(202).json({
+          success: true,
+          message: 'Lark group message ignored because the bot was not mentioned',
+          data: {
+            reason: 'group_message_without_mention',
+            eventType: parsed.eventType,
+            eventId: parsed.eventId,
+            messageId: normalized.messageId,
+            chatId: normalized.chatId,
+          },
+        });
+      }
 
       if (parsed.kind === 'event_callback_message') {
         const messageAgeMs = readMessageAgeMs(normalized.timestamp);
