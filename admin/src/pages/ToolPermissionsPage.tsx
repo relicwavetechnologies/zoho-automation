@@ -15,26 +15,14 @@ type ToolRow = {
   engines: ('mastra' | 'langgraph')[];
   permissions: Record<string, boolean>;
 };
-type ZohoAccessExceptionRow = {
-  id: string;
-  userId: string;
-  userName?: string;
-  userEmail?: string;
-  channelIdentityId?: string;
-  channelDisplayName?: string;
-  channelEmail?: string;
-  bypassRelationScope: boolean;
-  reason?: string;
-  expiresAt?: string;
-  createdAt: string;
-  updatedAt: string;
+type ZohoRoleAccessRow = AiRole & {
+  companyScopedRead: boolean;
 };
 type ChannelIdentity = {
   id: string;
   externalUserId: string;
   displayName?: string;
   email?: string;
-  linkedUserId?: string;
   channel: string;
   aiRole: string;
   aiRoleSource: 'sync' | 'manual';
@@ -123,17 +111,13 @@ export default function ToolPermissionsPage() {
 
   const [roles, setRoles] = useState<AiRole[]>([]);
   const [tools, setTools] = useState<ToolRow[]>([]);
-  const [zohoAccessExceptions, setZohoAccessExceptions] = useState<ZohoAccessExceptionRow[]>([]);
+  const [zohoRoleAccess, setZohoRoleAccess] = useState<ZohoRoleAccessRow[]>([]);
   const [users, setUsers] = useState<ChannelIdentity[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [newRoleSlug, setNewRoleSlug] = useState('');
   const [newRoleLabel, setNewRoleLabel] = useState('');
   const [creatingRole, setCreatingRole] = useState(false);
-  const [newExceptionChannelIdentityId, setNewExceptionChannelIdentityId] = useState('');
-  const [newExceptionReason, setNewExceptionReason] = useState('');
-  const [newExceptionExpiresAt, setNewExceptionExpiresAt] = useState('');
-  const [savingException, setSavingException] = useState(false);
 
   // ── Data ────────────────────────────────────────────────────────────────────
 
@@ -156,19 +140,19 @@ export default function ToolPermissionsPage() {
     setUsers(data ?? []);
   }, [token]);
 
-  const loadZohoAccessExceptions = useCallback(async () => {
+  const loadZohoRoleAccess = useCallback(async () => {
     if (!token) return;
-    const data = await api.get<ZohoAccessExceptionRow[]>(
-      '/api/admin/company/zoho-access-exceptions',
+    const data = await api.get<ZohoRoleAccessRow[]>(
+      '/api/admin/company/zoho-role-access',
       token,
     );
-    setZohoAccessExceptions(data ?? []);
+    setZohoRoleAccess(data ?? []);
   }, [token]);
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([loadMatrix(), loadUsers(), loadZohoAccessExceptions()]).finally(() => setLoading(false));
-  }, [loadMatrix, loadUsers, loadZohoAccessExceptions]);
+    Promise.all([loadMatrix(), loadUsers(), loadZohoRoleAccess()]).finally(() => setLoading(false));
+  }, [loadMatrix, loadUsers, loadZohoRoleAccess]);
 
   // ── Handlers ────────────────────────────────────────────────────────────────
 
@@ -209,7 +193,7 @@ export default function ToolPermissionsPage() {
       );
       setNewRoleSlug('');
       setNewRoleLabel('');
-      await Promise.all([loadMatrix(), loadZohoAccessExceptions()]);
+      await Promise.all([loadMatrix(), loadZohoRoleAccess()]);
       toast({ title: 'Role created' });
     } catch {
       // api util shows error toast
@@ -223,7 +207,7 @@ export default function ToolPermissionsPage() {
     if (role.isBuiltIn) return;
     try {
       await api.delete(`/api/admin/company/ai-roles/${role.id}`, {}, token);
-      await Promise.all([loadMatrix(), loadZohoAccessExceptions()]);
+      await Promise.all([loadMatrix(), loadZohoRoleAccess()]);
       toast({ title: 'Role deleted' });
     } catch {
       // api util shows error toast
@@ -256,41 +240,26 @@ export default function ToolPermissionsPage() {
     }
   };
 
-  const handleCreateZohoException = async () => {
+  const handleZohoScopeToggle = async (roleSlug: string, newVal: boolean) => {
     if (!token) return;
-    if (!newExceptionChannelIdentityId) return;
-    setSavingException(true);
+    setZohoRoleAccess((prev) =>
+      prev.map((row) =>
+        row.slug === roleSlug ? { ...row, companyScopedRead: newVal } : row,
+      ),
+    );
     try {
-      await api.post(
-        '/api/admin/company/zoho-access-exceptions',
-        {
-          channelIdentityId: newExceptionChannelIdentityId,
-          bypassRelationScope: true,
-          reason: newExceptionReason.trim() || undefined,
-          expiresAt: newExceptionExpiresAt ? new Date(newExceptionExpiresAt).toISOString() : undefined,
-        },
+      await api.put(
+        `/api/admin/company/zoho-role-access/${roleSlug}`,
+        { companyScopedRead: newVal },
         token,
       );
-      setNewExceptionChannelIdentityId('');
-      setNewExceptionReason('');
-      setNewExceptionExpiresAt('');
-      await loadZohoAccessExceptions();
-      toast({ title: 'Zoho access exception saved' });
+      toast({ title: 'Zoho data scope updated' });
     } catch {
-      // api util shows error toast
-    } finally {
-      setSavingException(false);
-    }
-  };
-
-  const handleDeleteZohoException = async (exceptionId: string) => {
-    if (!token) return;
-    try {
-      await api.delete(`/api/admin/company/zoho-access-exceptions/${exceptionId}`, {}, token);
-      await loadZohoAccessExceptions();
-      toast({ title: 'Zoho access exception revoked' });
-    } catch {
-      await loadZohoAccessExceptions();
+      setZohoRoleAccess((prev) =>
+        prev.map((row) =>
+          row.slug === roleSlug ? { ...row, companyScopedRead: !newVal } : row,
+        ),
+      );
     }
   };
 
@@ -305,13 +274,6 @@ export default function ToolPermissionsPage() {
   }
 
   const groups = groupByCategory(tools);
-  const exceptionCandidates = users
-    .filter((user) => user.linkedUserId)
-    .sort((left, right) =>
-      (left.displayName ?? left.email ?? left.externalUserId).localeCompare(
-        right.displayName ?? right.email ?? right.externalUserId,
-      ),
-    );
   const tabs: { id: Tab; label: string }[] = [
     { id: 'permissions', label: 'Tool Permissions' },
     { id: 'roles', label: 'Manage Roles' },
@@ -351,85 +313,30 @@ export default function ToolPermissionsPage() {
         <div className="space-y-4">
           <div className="rounded-lg border border-[#1a1a1a] bg-[#111] p-5 shadow-md shadow-black/20">
             <div className="mb-4">
-              <h2 className="text-sm font-semibold text-zinc-200">Zoho Access Exceptions</h2>
+              <h2 className="text-sm font-semibold text-zinc-200">Zoho Data Scope</h2>
               <p className="mt-1 text-xs text-zinc-500">
-                Human Zoho access is relation-scoped by default. Use explicit per-user exceptions
-                only when someone legitimately needs broader company data.
+                Email-scoped Zoho access stays default. Enable company-scoped reads only for roles
+                that should see the full workspace CRM data.
               </p>
             </div>
-            <div className="grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,1.5fr)_auto]">
-              <div>
-                <label className="mb-1 block text-xs text-zinc-500">User</label>
-                <select
-                  value={newExceptionChannelIdentityId}
-                  onChange={(e) => setNewExceptionChannelIdentityId(e.target.value)}
-                  className="w-full rounded-md border border-[#1a1a1a] bg-[#0a0a0a] px-3 py-2 text-sm text-zinc-200 focus:border-indigo-500 focus:outline-none"
-                >
-                  <option value="">Select a linked Lark user</option>
-                  {exceptionCandidates.map((user) => (
-                    <option key={user.id} value={user.id}>
-                      {(user.displayName ?? user.email ?? user.externalUserId)} {user.email ? `(${user.email})` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-zinc-500">Reason</label>
-                <input
-                  value={newExceptionReason}
-                  onChange={(e) => setNewExceptionReason(e.target.value)}
-                  placeholder="Why this user needs broader Zoho access"
-                  className="w-full rounded-md border border-[#1a1a1a] bg-[#0a0a0a] px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:border-indigo-500 focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-zinc-500">Expires At</label>
-                <input
-                  type="datetime-local"
-                  value={newExceptionExpiresAt}
-                  onChange={(e) => setNewExceptionExpiresAt(e.target.value)}
-                  className="w-full rounded-md border border-[#1a1a1a] bg-[#0a0a0a] px-3 py-2 text-sm text-zinc-200 focus:border-indigo-500 focus:outline-none"
-                />
-              </div>
-              <div className="flex items-end">
-                <button
-                  type="button"
-                  onClick={handleCreateZohoException}
-                  disabled={!newExceptionChannelIdentityId || savingException}
-                  className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-zinc-700"
-                >
-                  Grant
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-4 space-y-3">
-              {zohoAccessExceptions.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-[#1a1a1a] bg-[#0a0a0a] px-4 py-5 text-sm text-zinc-500">
-                  No Zoho exceptions are active.
-                </div>
-              ) : zohoAccessExceptions.map((exception) => (
+            <div className="space-y-3">
+              {zohoRoleAccess.map((row) => (
                 <div
-                  key={exception.id}
-                  className="flex flex-col gap-3 rounded-lg border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3 md:flex-row md:items-center md:justify-between"
+                  key={row.slug}
+                  className="flex items-center justify-between rounded-lg border border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3"
                 >
                   <div>
-                    <div className="text-sm font-medium text-zinc-200">
-                      {exception.userName ?? exception.channelDisplayName ?? exception.userEmail ?? exception.userId}
-                    </div>
-                    <div className="mt-1 text-xs text-zinc-500">
-                      {exception.userEmail ?? exception.channelEmail ?? 'No email'}
-                      {exception.reason ? ` • ${exception.reason}` : ''}
-                      {exception.expiresAt ? ` • Expires ${new Date(exception.expiresAt).toLocaleString()}` : ' • No expiry'}
+                    <RoleBadge slug={row.slug} label={row.displayName} />
+                    <div className="mt-1 text-xs text-zinc-600">
+                      {row.companyScopedRead
+                        ? 'Reads Zoho data with company scope across live reads and search.'
+                        : 'Reads only Zoho data that matches the requester email scope.'}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteZohoException(exception.id)}
-                    className="rounded-md border border-red-900 bg-red-950 px-3 py-1.5 text-sm font-medium text-red-300 transition hover:bg-red-900/70"
-                  >
-                    Revoke
-                  </button>
+                  <Toggle
+                    checked={row.companyScopedRead}
+                    onChange={(v) => handleZohoScopeToggle(row.slug, v)}
+                  />
                 </div>
               ))}
             </div>

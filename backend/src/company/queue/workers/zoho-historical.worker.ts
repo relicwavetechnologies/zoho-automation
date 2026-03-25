@@ -4,7 +4,7 @@ import type { Prisma } from '../../../generated/prisma';
 import type { VectorUpsertDTO } from '../../contracts';
 import { zohoHistoricalAdapter } from '../../integrations/zoho/zoho-historical.adapter';
 import { ZohoIntegrationError } from '../../integrations/zoho/zoho.errors';
-import { extractCrmRelationEmails } from '../../integrations/zoho/zoho-relation-rules';
+import { extractNormalizedEmails } from '../../integrations/zoho/zoho-email-scope';
 import { embeddingService } from '../../integrations/embedding';
 import {
   buildCanonicalZohoChunks,
@@ -81,12 +81,12 @@ const mapToVectorRecords = async (input: {
   sourceId: string;
   payload: Record<string, unknown>;
 }): Promise<Array<QdrantUpsertInput & { embedding: number[] }>> => {
-  const relationEmails = extractCrmRelationEmails(input.sourceType, input.payload);
+  const referenceEmails = extractNormalizedEmails(input.payload);
   const chunks = buildCanonicalZohoChunks({
     companyId: input.companyId,
     sourceType: input.sourceType,
     sourceId: input.sourceId,
-    relationEmails,
+    referenceEmails,
     connectionId: input.connectionId,
     payload: input.payload,
   });
@@ -107,7 +107,7 @@ const mapToVectorRecords = async (input: {
     chunkText: chunk.chunkText,
     contentHash: hashContent(chunk.chunkText),
     visibility: chunk.visibility,
-    relationEmails,
+    referenceEmails,
     payload: {
       ...chunk.payload,
       _chunk: chunk.chunkText,

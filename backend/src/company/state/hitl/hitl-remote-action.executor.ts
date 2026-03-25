@@ -6,8 +6,6 @@ import { googleUserAuthLinkRepository } from '../../channels/google/google-user-
 import { departmentService } from '../../departments/department.service';
 import { zohoBooksClient, type ZohoBooksModule } from '../../integrations/zoho/zoho-books.client';
 import { zohoDataClient, type ZohoSourceType } from '../../integrations/zoho/zoho-data.client';
-import { zohoRelationAccessService, type ZohoActorScope } from '../../integrations/zoho/zoho-relation-access.service';
-import { zohoSecurityAlertService } from '../../integrations/zoho/zoho-security-alert.service';
 import { isSupportedToolActionGroup, type ToolActionGroup } from '../../tools/tool-action-groups';
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import { logger } from '../../../utils/logger';
@@ -149,71 +147,6 @@ const loadRuntimeMetadata = (action: HydratedStoredHitlAction): StoredRuntimeMet
     departmentId: asString(metadata.departmentId),
     departmentName: asString(metadata.departmentName),
     departmentRoleSlug: asString(metadata.departmentRoleSlug),
-  };
-};
-
-const sanitizeZohoPreview = (value: unknown): string | undefined => {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed ? trimmed.slice(0, 240) : undefined;
-  }
-  if (value && typeof value === 'object') {
-    const serialized = JSON.stringify(value);
-    return serialized.length > 0 ? serialized.slice(0, 240) : undefined;
-  }
-  return undefined;
-};
-
-const resolveZohoActorScope = async (metadata: StoredRuntimeMetadata): Promise<ZohoActorScope> =>
-  zohoRelationAccessService.resolveActorScope({
-    companyId: metadata.companyId,
-    userId: metadata.userId,
-    requesterEmail: metadata.requesterEmail,
-  });
-
-const enforceZohoAccessDecision = async (input: {
-  metadata: StoredRuntimeMetadata;
-  operation: string;
-  decision: { allowed: boolean; reasonCode?: string; reasonMessage?: string };
-  module?: string;
-  targetId?: string;
-  preview?: unknown;
-}): Promise<void> => {
-  if (input.decision.allowed) {
-    return;
-  }
-  const alertReason = input.decision.reasonCode
-    ? zohoRelationAccessService.classifyDeniedAttempt({
-      reasonCode: input.decision.reasonCode,
-      operation: input.operation,
-      targetId: input.targetId,
-    })
-    : undefined;
-  if (alertReason) {
-    await zohoSecurityAlertService.maybeAlert({
-      companyId: input.metadata.companyId,
-      actorId: input.metadata.userId,
-      requesterLabel: input.metadata.requesterEmail ?? input.metadata.userId,
-      reason: alertReason,
-      operation: input.operation,
-      module: input.module,
-      targetId: input.targetId,
-      preview: sanitizeZohoPreview(input.preview),
-    });
-  }
-  throw new Error(input.decision.reasonMessage ?? 'Access denied: the target is outside the requester relation scope.');
-};
-
-const getZohoNoteParent = (note: Record<string, unknown>): { moduleName?: string; recordId?: string } => {
-  const parent = asRecord(note.Parent_Id) ?? asRecord(note.parent) ?? asRecord(note.parent_id);
-  const moduleName =
-    asString(asRecord(parent?.module)?.api_name)
-    ?? asString(asRecord(parent?.module)?.module)
-    ?? asString(parent?.module_name)
-    ?? asString(note.se_module);
-  return {
-    moduleName,
-    recordId: asString(parent?.id) ?? asString(note.Parent_Id),
   };
 };
 
@@ -730,17 +663,6 @@ const moduleNameToBooksModule = (moduleName: string): ZohoBooksModule => {
   throw new Error(`Unsupported Zoho Books module for mutation: ${moduleName}`);
 };
 
-const tryModuleNameToSourceType = (moduleName?: string): ZohoSourceType | undefined => {
-  if (!moduleName) {
-    return undefined;
-  }
-  try {
-    return moduleNameToSourceType(moduleName);
-  } catch {
-    return undefined;
-  }
-};
-
 const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<ActionExecutionResult> => {
   const payload = action.payload ?? {};
   const operation = asString(payload.operation);
@@ -758,45 +680,11 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
   if (needsModule && !moduleName) {
     throw new Error('Stored Zoho action is missing module');
   }
-  const sourceType = tryModuleNameToSourceType(moduleName);
+  const sourceType = moduleName ? moduleNameToSourceType(moduleName) : undefined;
   const crmModuleName = moduleName ? moduleNameToCrmModule(moduleName) : undefined;
   const metadata = loadRuntimeMetadata(action);
-  const actor = await resolveZohoActorScope(metadata);
-
-  const ensureMappedCrmModule = async (targetId?: string, preview?: unknown): Promise<void> => {
-    if (!sourceType && !actor.bypassRelationScope) {
-      await enforceZohoAccessDecision({
-        metadata,
-        operation,
-        decision: {
-          allowed: false,
-          reasonCode: 'module_not_relation_mapped',
-          reasonMessage: `Access denied: ${moduleName ?? 'This CRM module'} is not relation-scoped for end users.`,
-        },
-        module: moduleName,
-        targetId,
-        preview,
-      });
-    }
-  };
 
   if (operation === 'createRecord') {
-    await ensureMappedCrmModule(undefined, payload.fields);
-    if (sourceType) {
-      await enforceZohoAccessDecision({
-        metadata,
-        operation,
-        decision: await zohoRelationAccessService.assertWritableTarget({
-          actor,
-          domain: 'crm',
-          operation,
-          sourceType,
-          fields: asRecord(payload.fields) ?? {},
-        }),
-        module: moduleName,
-        preview: payload.fields,
-      });
-    }
     const result = sourceType
       ? await zohoDataClient.createRecord({
         companyId: metadata.companyId,
@@ -821,23 +709,6 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     const recordId = asString(payload.recordId);
     if (!recordId) {
       throw new Error('Stored Zoho update action is missing recordId');
-    }
-    await ensureMappedCrmModule(recordId, payload.fields);
-    if (sourceType) {
-      await enforceZohoAccessDecision({
-        metadata,
-        operation,
-        decision: await zohoRelationAccessService.assertWritableTarget({
-          actor,
-          domain: 'crm',
-          operation,
-          sourceType,
-          recordId,
-        }),
-        module: moduleName,
-        targetId: recordId,
-        preview: payload.fields,
-      });
     }
     const result = sourceType
       ? await zohoDataClient.updateRecord({
@@ -866,22 +737,6 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     if (!recordId) {
       throw new Error('Stored Zoho delete action is missing recordId');
     }
-    await ensureMappedCrmModule(recordId);
-    if (sourceType) {
-      await enforceZohoAccessDecision({
-        metadata,
-        operation,
-        decision: await zohoRelationAccessService.assertWritableTarget({
-          actor,
-          domain: 'crm',
-          operation,
-          sourceType,
-          recordId,
-        }),
-        module: moduleName,
-        targetId: recordId,
-      });
-    }
     if (sourceType) {
       await zohoDataClient.deleteRecord({
         companyId: metadata.companyId,
@@ -906,23 +761,6 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     const recordId = asString(payload.recordId);
     if (!recordId) {
       throw new Error('Stored Zoho createNote action is missing recordId');
-    }
-    await ensureMappedCrmModule(recordId, payload.fields);
-    if (sourceType) {
-      await enforceZohoAccessDecision({
-        metadata,
-        operation,
-        decision: await zohoRelationAccessService.assertWritableTarget({
-          actor,
-          domain: 'crm',
-          operation,
-          sourceType,
-          recordId,
-        }),
-        module: moduleName,
-        targetId: recordId,
-        preview: payload.fields,
-      });
     }
     const result = sourceType
       ? await zohoDataClient.createNote({
@@ -949,39 +787,6 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     if (!noteId) {
       throw new Error('Stored Zoho updateNote action is missing noteId');
     }
-    const existingNote = await zohoDataClient.getNote({
-      companyId: metadata.companyId,
-      noteId,
-    });
-    const parent = existingNote ? getZohoNoteParent(existingNote) : {};
-    const parentSourceType = tryModuleNameToSourceType(parent.moduleName);
-    if (!parentSourceType || !parent.recordId) {
-      await enforceZohoAccessDecision({
-        metadata,
-        operation,
-        decision: {
-          allowed: false,
-          reasonCode: 'module_not_relation_mapped',
-          reasonMessage: 'Access denied: the note parent is not relation-scoped for end users.',
-        },
-        targetId: noteId,
-        preview: existingNote ?? payload.fields,
-      });
-    }
-    await enforceZohoAccessDecision({
-      metadata,
-      operation,
-      decision: await zohoRelationAccessService.assertWritableTarget({
-        actor,
-        domain: 'crm',
-        operation,
-        sourceType: parentSourceType,
-        recordId: parent.recordId,
-      }),
-      module: parent.moduleName,
-      targetId: noteId,
-      preview: payload.fields,
-    });
     const result = await zohoDataClient.updateNote({
       companyId: metadata.companyId,
       noteId,
@@ -999,39 +804,6 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     if (!noteId) {
       throw new Error('Stored Zoho deleteNote action is missing noteId');
     }
-    const existingNote = await zohoDataClient.getNote({
-      companyId: metadata.companyId,
-      noteId,
-    });
-    const parent = existingNote ? getZohoNoteParent(existingNote) : {};
-    const parentSourceType = tryModuleNameToSourceType(parent.moduleName);
-    if (!parentSourceType || !parent.recordId) {
-      await enforceZohoAccessDecision({
-        metadata,
-        operation,
-        decision: {
-          allowed: false,
-          reasonCode: 'module_not_relation_mapped',
-          reasonMessage: 'Access denied: the note parent is not relation-scoped for end users.',
-        },
-        targetId: noteId,
-        preview: existingNote,
-      });
-    }
-    await enforceZohoAccessDecision({
-      metadata,
-      operation,
-      decision: await zohoRelationAccessService.assertWritableTarget({
-        actor,
-        domain: 'crm',
-        operation,
-        sourceType: parentSourceType,
-        recordId: parent.recordId,
-      }),
-      module: parent.moduleName,
-      targetId: noteId,
-      preview: existingNote,
-    });
     await zohoDataClient.deleteNote({
       companyId: metadata.companyId,
       noteId,
@@ -1047,23 +819,6 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     const recordId = asString(payload.recordId);
     if (!recordId) {
       throw new Error('Stored Zoho uploadAttachment action is missing recordId');
-    }
-    await ensureMappedCrmModule(recordId, payload);
-    if (sourceType) {
-      await enforceZohoAccessDecision({
-        metadata,
-        operation,
-        decision: await zohoRelationAccessService.assertWritableTarget({
-          actor,
-          domain: 'crm',
-          operation,
-          sourceType,
-          recordId,
-        }),
-        module: moduleName,
-        targetId: recordId,
-        preview: payload,
-      });
     }
     const result = sourceType
       ? await zohoDataClient.uploadAttachment({
@@ -1096,23 +851,6 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     const attachmentId = asString(payload.attachmentId);
     if (!recordId || !attachmentId) {
       throw new Error('Stored Zoho deleteAttachment action is missing recordId or attachmentId');
-    }
-    await ensureMappedCrmModule(recordId, payload);
-    if (sourceType) {
-      await enforceZohoAccessDecision({
-        metadata,
-        operation,
-        decision: await zohoRelationAccessService.assertWritableTarget({
-          actor,
-          domain: 'crm',
-          operation,
-          sourceType,
-          recordId,
-        }),
-        module: moduleName,
-        targetId: attachmentId,
-        preview: payload,
-      });
     }
     if (sourceType) {
       await zohoDataClient.deleteAttachment({
@@ -1153,57 +891,8 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
   const booksModule = moduleName ? moduleNameToBooksModule(moduleName) : undefined;
   const metadata = loadRuntimeMetadata(action);
   const organizationId = asString(payload.organizationId);
-  const actor = await resolveZohoActorScope(metadata);
-
-  const enforceBooksTarget = async (input: {
-    moduleName: ZohoBooksModule;
-    recordId?: string;
-    fields?: Record<string, unknown>;
-    targetId?: string;
-    preview?: unknown;
-  }): Promise<void> => {
-    await enforceZohoAccessDecision({
-      metadata,
-      operation,
-      decision: await zohoRelationAccessService.assertWritableTarget({
-        actor,
-        domain: 'books',
-        operation,
-        moduleName: input.moduleName,
-        recordId: input.recordId,
-        organizationId,
-        fields: input.fields,
-      }),
-      module: input.moduleName,
-      targetId: input.targetId ?? input.recordId,
-      preview: input.preview ?? input.fields,
-    });
-  };
-
-  const enforceBulkBooksOperation = async (targetId?: string, preview?: unknown): Promise<void> => {
-    if (actor.bypassRelationScope) {
-      return;
-    }
-    await enforceZohoAccessDecision({
-      metadata,
-      operation,
-      decision: {
-        allowed: false,
-        reasonCode: 'bulk_request',
-        reasonMessage: 'Access denied: this Zoho Books action requires an explicit per-user exception.',
-      },
-      module: booksModule,
-      targetId,
-      preview,
-    });
-  };
 
   if (operation === 'createRecord') {
-    await enforceBooksTarget({
-      moduleName: booksModule!,
-      fields: asRecord(payload.body) ?? {},
-      preview: payload.body,
-    });
     const result = await zohoBooksClient.createRecord({
       companyId: metadata.companyId,
       moduleName: booksModule!,
@@ -1222,12 +911,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!recordId) {
       throw new Error('Stored Zoho Books update action is missing recordId');
     }
-    await enforceBooksTarget({
-      moduleName: booksModule!,
-      recordId,
-      targetId: recordId,
-      preview: payload.body,
-    });
     const result = await zohoBooksClient.updateRecord({
       companyId: metadata.companyId,
       moduleName: booksModule!,
@@ -1247,11 +930,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!recordId) {
       throw new Error('Stored Zoho Books delete action is missing recordId');
     }
-    await enforceBooksTarget({
-      moduleName: booksModule!,
-      recordId,
-      targetId: recordId,
-    });
     const result = await zohoBooksClient.deleteRecord({
       companyId: metadata.companyId,
       moduleName: booksModule!,
@@ -1266,7 +944,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
   }
 
   if (operation === 'importBankStatement') {
-    await enforceBulkBooksOperation(asString(payload.accountId), payload.body);
     const result = await zohoBooksClient.importBankStatement({
       companyId: metadata.companyId,
       organizationId,
@@ -1284,7 +961,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!accountId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing accountId`);
     }
-    await enforceBulkBooksOperation(accountId);
     const result = await zohoBooksClient.setBankAccountStatus({
       companyId: metadata.companyId,
       organizationId,
@@ -1303,7 +979,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!transactionId) {
       throw new Error('Stored Zoho Books matchBankTransaction action is missing transactionId');
     }
-    await enforceBulkBooksOperation(transactionId, payload.body);
     const result = await zohoBooksClient.matchBankTransaction({
       companyId: metadata.companyId,
       organizationId,
@@ -1322,7 +997,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!transactionId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing transactionId`);
     }
-    await enforceBulkBooksOperation(transactionId, payload.body);
     const body = asRecord(payload.body);
     const result = operation === 'unmatchBankTransaction'
       ? await zohoBooksClient.unmatchBankTransaction({
@@ -1376,7 +1050,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!transactionId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing transactionId`);
     }
-    await enforceBulkBooksOperation(transactionId, payload.body);
     const category =
       operation === 'categorizeBankTransaction'
         ? 'general'
@@ -1415,12 +1088,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
       moduleName: 'invoices',
       identifier: invoiceIdentifier,
     });
-    await enforceBooksTarget({
-      moduleName: 'invoices',
-      recordId: invoiceId,
-      targetId: invoiceId,
-      preview: payload.body,
-    });
     const result = operation === 'emailInvoice'
       ? await zohoBooksClient.emailInvoice({
         companyId: metadata.companyId,
@@ -1452,11 +1119,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
       moduleName: 'invoices',
       identifier: invoiceIdentifier,
     });
-    await enforceBooksTarget({
-      moduleName: 'invoices',
-      recordId: invoiceId,
-      targetId: invoiceId,
-    });
     const result = await zohoBooksClient.setInvoicePaymentReminderEnabled({
       companyId: metadata.companyId,
       organizationId,
@@ -1480,12 +1142,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
       organizationId,
       moduleName: 'invoices',
       identifier: invoiceIdentifier,
-    });
-    await enforceBooksTarget({
-      moduleName: 'invoices',
-      recordId: invoiceId,
-      targetId: invoiceId,
-      preview: payload.body,
     });
     const result = operation === 'writeOffInvoice'
       ? await zohoBooksClient.writeOffInvoice({
@@ -1517,12 +1173,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
       organizationId,
       moduleName: 'invoices',
       identifier: invoiceIdentifier,
-    });
-    await enforceBooksTarget({
-      moduleName: 'invoices',
-      recordId: invoiceId,
-      targetId: invoiceId,
-      preview: payload.body,
     });
     const result = await zohoBooksClient.transitionInvoice({
       companyId: metadata.companyId,
@@ -1561,12 +1211,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!estimateId) {
       throw new Error('Stored Zoho Books emailEstimate action is missing estimateId');
     }
-    await enforceBooksTarget({
-      moduleName: 'estimates',
-      recordId: estimateId,
-      targetId: estimateId,
-      preview: payload.body,
-    });
     const result = await zohoBooksClient.emailEstimate({
       companyId: metadata.companyId,
       organizationId,
@@ -1585,11 +1229,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!contactId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing contactId`);
     }
-    await enforceBooksTarget({
-      moduleName: 'contacts',
-      recordId: contactId,
-      targetId: contactId,
-    });
     const result = await zohoBooksClient.setContactPaymentReminderEnabled({
       companyId: metadata.companyId,
       organizationId,
@@ -1608,12 +1247,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!estimateId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing estimateId`);
     }
-    await enforceBooksTarget({
-      moduleName: 'estimates',
-      recordId: estimateId,
-      targetId: estimateId,
-      preview: payload.body,
-    });
     const result = await zohoBooksClient.transitionEstimate({
       companyId: metadata.companyId,
       organizationId,
@@ -1651,12 +1284,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!creditNoteId) {
       throw new Error('Stored Zoho Books emailCreditNote action is missing creditNoteId');
     }
-    await enforceBooksTarget({
-      moduleName: 'creditnotes',
-      recordId: creditNoteId,
-      targetId: creditNoteId,
-      preview: payload.body,
-    });
     const result = await zohoBooksClient.emailCreditNote({
       companyId: metadata.companyId,
       organizationId,
@@ -1675,12 +1302,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!creditNoteId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing creditNoteId`);
     }
-    await enforceBooksTarget({
-      moduleName: 'creditnotes',
-      recordId: creditNoteId,
-      targetId: creditNoteId,
-      preview: payload.body,
-    });
     const result = await zohoBooksClient.transitionCreditNote({
       companyId: metadata.companyId,
       organizationId,
@@ -1700,12 +1321,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!creditNoteId) {
       throw new Error('Stored Zoho Books refundCreditNote action is missing creditNoteId');
     }
-    await enforceBooksTarget({
-      moduleName: 'creditnotes',
-      recordId: creditNoteId,
-      targetId: creditNoteId,
-      preview: payload.body,
-    });
     const result = await zohoBooksClient.refundCreditNote({
       companyId: metadata.companyId,
       organizationId,
@@ -1724,12 +1339,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!salesOrderId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing salesOrderId`);
     }
-    await enforceBooksTarget({
-      moduleName: 'salesorders',
-      recordId: salesOrderId,
-      targetId: salesOrderId,
-      preview: payload.body,
-    });
     const result = operation === 'emailSalesOrder'
       ? await zohoBooksClient.emailSalesOrder({
         companyId: metadata.companyId,
@@ -1781,12 +1390,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!purchaseOrderId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing purchaseOrderId`);
     }
-    await enforceBooksTarget({
-      moduleName: 'purchaseorders',
-      recordId: purchaseOrderId,
-      targetId: purchaseOrderId,
-      preview: payload.body,
-    });
     const result = operation === 'emailPurchaseOrder'
       ? await zohoBooksClient.emailPurchaseOrder({
         companyId: metadata.companyId,
@@ -1841,12 +1444,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if ((operation === 'updateBooksComment' || operation === 'deleteBooksComment') && !commentId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing commentId`);
     }
-    await enforceBooksTarget({
-      moduleName: booksModule,
-      recordId,
-      targetId: commentId ?? recordId,
-      preview: payload.body,
-    });
     const result = operation === 'addBooksComment'
       ? await zohoBooksClient.addComment({
         companyId: metadata.companyId,
@@ -1889,12 +1486,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!booksModule || !recordId || !templateId) {
       throw new Error('Stored Zoho Books applyBooksTemplate action is missing module, recordId, or templateId');
     }
-    await enforceBooksTarget({
-      moduleName: booksModule,
-      recordId,
-      targetId: recordId,
-      preview: { templateId },
-    });
     const result = await zohoBooksClient.applyTemplate({
       companyId: metadata.companyId,
       organizationId,
@@ -1916,12 +1507,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!booksModule || !recordId || !fileName || !contentBase64) {
       throw new Error('Stored Zoho Books uploadBooksAttachment action is missing module, recordId, fileName, or contentBase64');
     }
-    await enforceBooksTarget({
-      moduleName: booksModule,
-      recordId,
-      targetId: recordId,
-      preview: payload,
-    });
     const result = await zohoBooksClient.uploadAttachment({
       companyId: metadata.companyId,
       organizationId,
@@ -1943,11 +1528,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!booksModule || !recordId) {
       throw new Error('Stored Zoho Books deleteBooksAttachment action is missing module or recordId');
     }
-    await enforceBooksTarget({
-      moduleName: booksModule,
-      recordId,
-      targetId: recordId,
-    });
     const result = await zohoBooksClient.deleteAttachment({
       companyId: metadata.companyId,
       organizationId,
@@ -1966,12 +1546,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!billId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing billId`);
     }
-    await enforceBooksTarget({
-      moduleName: 'bills',
-      recordId: billId,
-      targetId: billId,
-      preview: payload.body,
-    });
     const result = await zohoBooksClient.transitionBill({
       companyId: metadata.companyId,
       organizationId,
@@ -2005,12 +1579,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!contactId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing contactId`);
     }
-    await enforceBooksTarget({
-      moduleName: 'contacts',
-      recordId: contactId,
-      targetId: contactId,
-      preview: payload.body,
-    });
     const result = operation === 'emailContact'
       ? await zohoBooksClient.emailContact({
         companyId: metadata.companyId,
@@ -2036,12 +1604,6 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     if (!vendorPaymentId) {
       throw new Error('Stored Zoho Books emailVendorPayment action is missing vendorPaymentId');
     }
-    await enforceBooksTarget({
-      moduleName: 'vendorpayments',
-      recordId: vendorPaymentId,
-      targetId: vendorPaymentId,
-      preview: payload.body,
-    });
     const result = await zohoBooksClient.emailVendorPayment({
       companyId: metadata.companyId,
       organizationId,

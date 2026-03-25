@@ -39,11 +39,6 @@ import { prisma } from '../../utils/prisma';
 import { aiTokenUsageService } from '../../company/ai-usage/ai-token-usage.service';
 import { AI_MODEL_CATALOG_MAP, type AiModelCatalogEntry } from '../../company/ai-models';
 import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../company/integrations/vector';
-import {
-  buildUserPersonalizationPromptSections,
-  retrieveUserPersonalizationMemory,
-  type ResolvedUserPersonalization,
-} from '../../company/integrations/vector/user-personalization';
 import { retrievalOrchestratorService } from '../../company/retrieval';
 import { estimateTokens, getTokenBudget } from '../../utils/token-estimator';
 import {
@@ -725,7 +720,6 @@ export const buildChildRouterPrompt = (input: {
   departmentSkillsMarkdown?: string;
   taskState?: DesktopTaskState;
   threadSummary?: DesktopThreadSummary;
-  userPersonalization?: ResolvedUserPersonalization;
 }): string => {
   const filteredHistory = filterThreadMessagesForContext(input.history);
   const historyBlock = filteredHistory.length > 0
@@ -751,7 +745,6 @@ export const buildChildRouterPrompt = (input: {
   });
   const threadSummaryBlock = summarizeChildRouterThreadSummary(input.threadSummary);
   const taskStateBlock = summarizeChildRouterTaskState(input.taskState);
-  const personalizationSections = buildUserPersonalizationPromptSections(input.userPersonalization);
 
   return [
     'Classify and enrich this chat turn for a two-tier assistant runtime.',
@@ -804,7 +797,6 @@ export const buildChildRouterPrompt = (input: {
     threadSummaryBlock,
     'Task state:',
     taskStateBlock,
-    ...personalizationSections,
     'Retrieved conversation memory:',
     retrievedMemoryBlock,
     'Recent conversation:',
@@ -817,7 +809,6 @@ export const buildChildRouterPrompt = (input: {
 export const runDesktopChildRouter = async (input: {
   executionId: string;
   threadId: string;
-  conversationKey?: string;
   message: string;
   workspace?: { name: string; path: string };
   approvalPolicySummary?: string;
@@ -845,18 +836,9 @@ export const runDesktopChildRouter = async (input: {
     const retrievedMemorySnippets = await retrieveConversationMemoryForChildRouter({
       executionId: input.executionId,
       threadId: input.threadId,
-      conversationKey: input.conversationKey,
       message: input.message,
       companyId: input.companyId,
       userId: input.userId,
-    });
-    const userPersonalization = await retrieveUserPersonalizationMemory({
-      companyId: input.companyId,
-      userId: input.userId,
-      conversationKey: input.conversationKey ?? buildConversationKey(input.threadId),
-      latestUserMessage: input.message,
-      limit: 6,
-      logPrefix: 'vercel.child_router.personalization',
     });
     const model = await resolveVercelChildRouterModel();
     await appendLatestAgentRunLog(input.executionId, 'child_router.start', {
@@ -879,7 +861,6 @@ export const runDesktopChildRouter = async (input: {
       prompt: buildChildRouterPrompt({
         ...input,
         retrievedMemorySnippets,
-        userPersonalization,
       }),
     });
     const result = await runWithModelCircuitBreaker(model.effectiveProvider, 'child_router', () => generateText({
@@ -888,7 +869,6 @@ export const runDesktopChildRouter = async (input: {
       prompt: buildChildRouterPrompt({
         ...input,
         retrievedMemorySnippets,
-        userPersonalization,
       }),
       temperature: 0,
       providerOptions: {
@@ -914,7 +894,6 @@ export const runDesktopChildRouter = async (input: {
       route: parsedRoute.route,
       reason: parsedRoute.reason ?? null,
       retrievedMemorySnippetCount: retrievedMemorySnippets.length,
-      responsePreferenceCount: userPersonalization.responsePreferenceLines.length,
     });
     if (parsedRoute.route === 'fast_reply' && isPersonalMemoryQuestion(input.message)) {
       if (retrievedMemorySnippets.length === 0) {
@@ -974,7 +953,6 @@ export const runDesktopChildRouter = async (input: {
 const retrieveConversationMemoryForChildRouter = async (input: {
   executionId: string;
   threadId: string;
-  conversationKey?: string;
   message: string;
   companyId?: string;
   userId?: string;
@@ -1000,7 +978,6 @@ const retrieveConversationMemoryForChildRouter = async (input: {
       companyId: input.companyId,
       userId: input.userId,
       threadId: input.threadId,
-      conversationKey: input.conversationKey,
       queryText: input.message,
       limit,
       isMemoryQuestion,
@@ -1829,7 +1806,6 @@ const queryConversationMemoryWithFallback = async (input: {
   companyId: string;
   userId: string;
   threadId: string;
-  conversationKey?: string;
   queryText: string;
   limit: number;
   isMemoryQuestion: boolean;
@@ -1838,11 +1814,10 @@ const queryConversationMemoryWithFallback = async (input: {
   matches: PersonalMemoryMatch[];
   scope: 'conversation' | 'global_personal';
 }> => {
-  const conversationKey = input.conversationKey ?? buildConversationKey(input.threadId);
   const scopedMatches = await personalVectorMemoryService.query({
     companyId: input.companyId,
     requesterUserId: input.userId,
-    conversationKey,
+    conversationKey: buildConversationKey(input.threadId),
     text: input.isMemoryQuestion ? expandConversationMemoryQuery(input.queryText) : input.queryText,
     limit: input.limit,
   });
@@ -2131,7 +2106,6 @@ const buildDesktopContextAssembly = async (input: {
   historyMessages: ModelMessage[];
   contextClass: DesktopContextClass;
   conversationSnippets: string[];
-  userPersonalization: ResolvedUserPersonalization;
   metrics: DesktopContextAssemblyMetrics;
 }> => {
   const resolvedModel = await resolveVercelLanguageModel(input.mode);
@@ -2149,14 +2123,6 @@ const buildDesktopContextAssembly = async (input: {
     contextClass,
     threadSummary: input.threadSummary,
     taskState: input.taskState,
-  });
-  const userPersonalization = await retrieveUserPersonalizationMemory({
-    companyId: input.session.companyId,
-    userId: input.session.userId,
-    conversationKey: buildConversationKey(input.threadId),
-    latestUserMessage: input.latestUserMessage,
-    limit: 6,
-    logPrefix: 'desktop.personalization',
   });
   const systemPrompt = buildSystemPrompt({
     threadId: input.threadId,
@@ -2177,7 +2143,6 @@ const buildDesktopContextAssembly = async (input: {
     threadSummary: input.threadSummary,
     taskState: input.taskState,
     conversationRetrievalSnippets: conversationSnippets,
-    userPersonalization,
     contextClass,
     hasAttachedFiles: input.activeAttachments.length > 0,
   });
@@ -2239,7 +2204,6 @@ const buildDesktopContextAssembly = async (input: {
     historyMessages,
     contextClass,
     conversationSnippets,
-    userPersonalization,
     metrics,
   };
 };
@@ -2263,7 +2227,6 @@ const buildSystemPrompt = (input: {
   threadSummary?: DesktopThreadSummary;
   taskState?: DesktopTaskState;
   conversationRetrievalSnippets?: string[];
-  userPersonalization?: ResolvedUserPersonalization;
   contextClass?: DesktopContextClass;
   hasAttachedFiles?: boolean;
 }) => {
@@ -2274,7 +2237,6 @@ const buildSystemPrompt = (input: {
       hasAttachments: input.hasAttachedFiles,
     })
     : [];
-  const personalizationSections = buildUserPersonalizationPromptSections(input.userPersonalization);
   const continuationHint = buildContinuationHint(input.latestUserMessage);
   const conversationRetrievalSnippets = continuationHint
     ? [...(input.conversationRetrievalSnippets ?? []), continuationHint]
@@ -2282,7 +2244,6 @@ const buildSystemPrompt = (input: {
   return buildSharedAgentSystemPrompt({
     runtimeLabel: 'You are the Vercel AI SDK desktop runtime for a tool-using assistant.',
     conversationKey: buildConversationKey(input.threadId),
-    trustedContextSections: personalizationSections,
     workspace: input.workspace,
     approvalPolicySummary: input.approvalPolicySummary,
     workspaceAvailability: input.workspace ? 'available' : 'unknown',

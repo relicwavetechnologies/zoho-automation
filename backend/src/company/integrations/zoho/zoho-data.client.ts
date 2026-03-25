@@ -2,6 +2,7 @@ import { Buffer } from 'buffer';
 
 import { logger } from '../../../utils/logger';
 import { ZohoIntegrationError } from './zoho.errors';
+import { normalizeEmail, payloadReferencesEmail } from './zoho-email-scope';
 import { zohoHttpClient, ZohoHttpClient, type ZohoRawResponse } from './zoho-http.client';
 import { zohoTokenService, ZohoTokenService } from './zoho-token.service';
 
@@ -383,33 +384,124 @@ export class ZohoDataClient {
     sortBy?: 'Created_Time' | 'Modified_Time';
     sortOrder?: 'asc' | 'desc';
   }): Promise<Array<{ sourceType: ZohoSourceType; sourceId: string; payload: Record<string, unknown> }>> {
-    logger.warn('zoho.fetch_user_scoped_records.disabled', {
-      companyId: input.companyId,
-      sourceType: input.sourceType,
-    });
-    throw new ZohoIntegrationError({
-      message: 'fetchUserScopedRecords is disabled. Use zohoRelationAccessService for strict relation-scoped access.',
-      code: 'schema_mismatch',
-      retriable: false,
-    });
-  }
-
-  async queryCoqlRows(input: {
-    companyId: string;
-    environment?: string;
-    selectQuery: string;
-  }): Promise<Array<Record<string, unknown>>> {
     const environment = input.environment ?? 'prod';
-    const response = await this.requestWithRefresh<ZohoCoqlResponse>({
+    const moduleDef = ensureModule(input.sourceType);
+    const normalizedRequesterEmail = normalizeEmail(input.requesterEmail);
+    if (!normalizedRequesterEmail) {
+      throw new ZohoIntegrationError({
+        message: 'Requester email is required for strict user-scoped Zoho reads',
+        code: 'auth_failed',
+        retriable: false,
+      });
+    }
+
+    const emailPaths = await this.resolveModuleEmailPredicates({
       companyId: input.companyId,
       environment,
-      path: '/crm/v8/coql',
-      method: 'POST',
-      body: {
-        select_query: input.selectQuery,
-      },
+      moduleName: moduleDef.moduleName,
     });
-    return response.data ?? [];
+    if (emailPaths.length === 0) {
+      throw new ZohoIntegrationError({
+        message: `Strict user scope cannot be enforced for module ${moduleDef.moduleName}: no safe email fields found`,
+        code: 'schema_mismatch',
+        retriable: false,
+      });
+    }
+
+    const records: Array<{ sourceType: ZohoSourceType; sourceId: string; payload: Record<string, unknown> }> = [];
+    const seenSourceIds = new Set<string>();
+    const perPage = Math.max(1, Math.min(50, Math.max(10, input.limit * 2)));
+    const sortBy = input.sortBy ?? 'Modified_Time';
+    const sortOrder = input.sortOrder ?? 'desc';
+    let lastPredicateError: ZohoIntegrationError | null = null;
+    let anyPredicateSucceeded = false;
+
+    for (const emailPath of emailPaths) {
+      for (let page = 1; page <= Math.max(1, input.maxPages) && records.length < input.limit; page += 1) {
+        const offset = (page - 1) * perPage;
+        const selectQuery =
+          `select id from ${moduleDef.moduleName} where ` +
+          `${emailPath} = '${escapeCoqlLiteral(normalizedRequesterEmail)}' ` +
+          `order by ${sortBy} ${sortOrder} limit ${offset}, ${perPage}`;
+
+        let coql: ZohoCoqlResponse;
+        try {
+          coql = await this.requestWithRefresh<ZohoCoqlResponse>({
+            companyId: input.companyId,
+            environment,
+            path: '/crm/v8/coql',
+            method: 'POST',
+            body: { select_query: selectQuery },
+          });
+          anyPredicateSucceeded = true;
+        } catch (error) {
+          if (error instanceof ZohoIntegrationError) {
+            lastPredicateError = error;
+            logger.warn('zoho.user_scope.predicate_failed', {
+              companyId: input.companyId,
+              environment,
+              moduleName: moduleDef.moduleName,
+              sourceType: input.sourceType,
+              emailPath,
+              code: error.code,
+              statusCode: error.statusCode,
+              reason: error.message,
+            });
+            break;
+          }
+          throw error;
+        }
+
+        const ids = (coql.data ?? [])
+          .map((row) => coerceString(row.id))
+          .filter((id): id is string => Boolean(id));
+
+        if (ids.length === 0) {
+          break;
+        }
+
+        for (const sourceId of ids) {
+          if (records.length >= input.limit || seenSourceIds.has(sourceId)) {
+            continue;
+          }
+
+          const payload = await this.fetchRecordBySource({
+            companyId: input.companyId,
+            environment,
+            sourceType: input.sourceType,
+            sourceId,
+          });
+          if (!payload) {
+            continue;
+          }
+          if (!payloadReferencesEmail(payload, normalizedRequesterEmail)) {
+            continue;
+          }
+
+          seenSourceIds.add(sourceId);
+          records.push({
+            sourceType: input.sourceType,
+            sourceId,
+            payload,
+          });
+        }
+
+        if (ids.length < perPage) {
+          break;
+        }
+      }
+    }
+
+    if (!anyPredicateSucceeded && lastPredicateError) {
+      throw new ZohoIntegrationError({
+        message: `Strict user scope could not query module ${moduleDef.moduleName}: ${lastPredicateError.message}`,
+        code: lastPredicateError.code,
+        retriable: lastPredicateError.retriable,
+        statusCode: lastPredicateError.statusCode,
+      });
+    }
+
+    return records;
   }
 
   async createRecord(input: {

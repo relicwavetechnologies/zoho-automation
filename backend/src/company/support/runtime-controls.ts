@@ -13,10 +13,6 @@ export const isCompanyControlEnabled = async (input: {
   companyId?: string;
   defaultValue?: boolean;
 }): Promise<boolean> => {
-  if (input.controlKey === COMPANY_CONTROL_KEYS.zohoUserScopedReadStrictEnabled) {
-    return true;
-  }
-
   const fallback = input.defaultValue ?? COMPANY_CONTROL_DEFAULTS[input.controlKey] ?? false;
 
   const companyScoped = input.companyId
