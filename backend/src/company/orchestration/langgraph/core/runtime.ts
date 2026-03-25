@@ -51,9 +51,7 @@ export const buildReadOnlyRuntimeContext = (input: {
     throw new Error('Graph runtime requires a requester user id.');
   }
 
-  const allowedToolIds = input.state.permissions.allowedToolIds.filter(
-    (toolId) => !input.state.permissions.blockedToolIds.includes(toolId),
-  );
+  const allowedToolIds = input.state.permissions.allowedToolIds;
 
   return {
     channel: input.state.run.channel,
@@ -144,8 +142,6 @@ export const buildResearchSystemPrompt = (input: {
     ? `Retrieval portfolio plan: ${input.retrieval.portfolioPlan.steps.map((step) => `${step.need}:${step.strategy}${step.required ? ':required' : ':optional'}`).join(' | ')}.`
     : '',
   ...(input.retrieval.systemDirectives ?? []),
-  input.state.prompt.departmentPrompt ? `Department instructions:\n${input.state.prompt.departmentPrompt}` : '',
-  input.state.prompt.skillsMarkdown ? `Skills context:\n${input.state.prompt.skillsMarkdown}` : '',
   input.additionalInstructions?.trim() ? input.additionalInstructions.trim() : '',
 ].filter(Boolean).join('\n\n');
 

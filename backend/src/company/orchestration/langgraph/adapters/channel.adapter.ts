@@ -2,7 +2,6 @@ import type { RuntimeChannel } from '../runtime.types';
 
 export interface RuntimeChannelAdapter {
   readonly channel: RuntimeChannel;
-  getBlockedToolIds(): string[];
   buildStatusPayload(input: {
     runId: string;
     conversationId: string;
@@ -22,4 +21,3 @@ export interface RuntimeChannelAdapter {
     dedupeKey: string;
   }): Record<string, unknown>;
 }
-

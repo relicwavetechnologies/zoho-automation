@@ -3,10 +3,6 @@ import type { RuntimeChannelAdapter } from './channel.adapter';
 export class DesktopRuntimeAdapter implements RuntimeChannelAdapter {
   readonly channel = 'desktop' as const;
 
-  getBlockedToolIds(): string[] {
-    return [];
-  }
-
   buildStatusPayload(input: {
     runId: string;
     conversationId: string;
@@ -54,4 +50,3 @@ export class DesktopRuntimeAdapter implements RuntimeChannelAdapter {
 }
 
 export const desktopRuntimeAdapter = new DesktopRuntimeAdapter();
-

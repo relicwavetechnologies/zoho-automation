@@ -7,8 +7,8 @@ import { z } from 'zod';
 import { ApiResponse } from '../../core/api-response';
 import config from '../../config';
 import { resolveVercelChildRouterModel, resolveVercelLanguageModel } from '../../company/orchestration/vercel/model-factory';
+import { buildSharedAgentSystemPrompt } from '../../company/orchestration/prompting/shared-agent-prompt';
 import { createVercelDesktopTools } from '../../company/orchestration/vercel/tools';
-import { buildWorkspaceAwarePromptSections } from '../../company/orchestration/vercel/workspace-aware-prompt';
 import {
   scheduledWorkflowCapabilitySummarySchema,
   scheduledWorkflowScheduleConfigSchema,
@@ -546,19 +546,6 @@ const isReferentialFollowup = (value: string | null | undefined): boolean =>
 const isPersonalMemoryQuestion = (value: string | null | undefined): boolean =>
   /\b(do you know|do you remember|remember|recall|what(?:'s| is) my|my (?:fav|favorite|favourite|preferred)|favorite|favourite|preferred|preference|about me|my name|my email)\b/i.test(value ?? '');
 
-const isWorkflowLikeRequest = (value: string | null | undefined): boolean =>
-  /\b(workflow|prompt|schedule|scheduled|every day|every week|every month|recurring|save (?:this|it) for later|make (?:this|it) reusable)\b/i.test(value ?? '');
-
-const hasSpecificWorkflowReference = (value: string | null | undefined): boolean => {
-  const text = value?.trim() ?? '';
-  if (!text) return false;
-  return /\b(this workflow|that workflow|current workflow)\b/i.test(text)
-    || /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(text)
-    || /\b(?:workflow named|workflow called|named workflow|called workflow)\b/i.test(text)
-    || /"[^"]{2,120}"/.test(text)
-    || /'[^']{2,120}'/.test(text);
-};
-
 const expandConversationMemoryQuery = (value: string): string => {
   const normalized = value
     .replace(/\bfav\b/gi, 'favorite')
@@ -784,6 +771,9 @@ export const buildChildRouterPrompt = (input: {
     '- If a workspace is active and the user asks you to create, delete, move, rename, organize, modify, scaffold, or inspect local files or folders, do not answer with a manual workaround unless no workspace is available. Route to direct_execute or handoff so the main executor can use the coding tool.',
     '- Use the allowed tool catalog to suggest the best next tool ids or skill query. Prefer concrete allowed tools over vague guesses.',
     '- If the right tool path is unclear, suggest skillSearch first and provide a concise suggestedSkillQuery.',
+    '- If the latest user message asks what is shown in an existing message, screenshot, attachment, button, or link, prefer inspection/extraction tools over mutation tools.',
+    '- Do not suggest sending, drafting, or updating an email or document just to inspect what an existing button, link, or message contains.',
+    '- If task state or active source artifacts indicate an uploaded screenshot/file is active and the user asks about "this message", "this image", "this button", or "this attachment", suggest document-ocr-read first.',
     '- Do not assume an existing saved workflow satisfies a new scheduling or reusable-workflow request unless the user explicitly names that workflow, gives its id, or clearly says to edit/update the current one.',
     '- If the user asks to schedule "a workflow" or describes a recurring process without naming an existing saved workflow, prefer workflow planning/creation or a clarification question over claiming an older saved workflow already covers it.',
     '- Use workflow listing and existing-workflow reuse only when the user is explicitly asking about saved workflows or references a specific saved workflow by name/id.',
@@ -1154,17 +1144,6 @@ const inferDateScope = (message?: string): string | undefined => {
   return undefined;
 };
 
-const getLocalDateContext = (): string => {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: LOCAL_TIME_ZONE,
-    weekday: 'long',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  return formatter.format(new Date());
-};
-
 const getLocalDateTimeContext = (): string => {
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone: LOCAL_TIME_ZONE,
@@ -1198,29 +1177,6 @@ const buildRequesterIdentityContext = (input: {
     ...lines,
     '- Use this only when it helps with personalization or disambiguation.',
   ].join('\n');
-};
-
-const shouldRecommendSkillFirst = (message?: string): boolean => {
-  const lowered = message?.trim().toLowerCase();
-  if (!lowered) return false;
-
-  const obviousDirectReadPatterns = [
-    /\b(show|get|list|what are|what is|which)\b.*\b(tasks|task|meetings|calendar|events|emails|docs)\b/,
-    /\bsearch\b.*\b(web|internet|online)\b/,
-  ];
-  if (obviousDirectReadPatterns.some((pattern) => pattern.test(lowered))) {
-    return false;
-  }
-
-  const uncertainWorkflowSignals = [
-    /\b(schedule|book|create|set up|setup|arrange)\b.*\b(meeting|event|calendar|invite)\b/,
-    /\b(send|submit|share|follow up|follow-up|approve|approval|reconcile|prepare|draft)\b/,
-    /\bzoho\b|\blark\b|\bgoogle\b/,
-    /\bworkflow\b|\bprocess\b|\boperation\b/,
-    /\bthen\b|\band then\b|\balso\b/,
-  ];
-
-  return uncertainWorkflowSignals.some((pattern) => pattern.test(lowered));
 };
 
 const isBareContinuationMessage = (message?: string): boolean => {
@@ -2275,174 +2231,45 @@ const buildSystemPrompt = (input: {
   hasAttachedFiles?: boolean;
 }) => {
   const latestMessage = input.latestUserMessage?.trim() ?? '';
-  const shouldPrioritizeInternalDocs = /\b(uploaded|upload|company doc|company docs|internal doc|internal docs|document|documents|file|files|csv|pdf|sheet|spreadsheet|assignment)\b/i.test(latestMessage);
   const retrievalGuidance = latestMessage
     ? retrievalOrchestratorService.buildPromptGuidance({
       messageText: latestMessage,
       hasAttachments: input.hasAttachedFiles,
     })
     : [];
-  const parts = [
-    'You are the Vercel AI SDK desktop runtime for a tool-using assistant.',
-    'Use the available comprehensive tools directly.',
-    'Do not refer to Mastra, LangGraph, workflows, or internal orchestration.',
-    'If the user describes a repeatable process, wants to make it reusable, wants to save it for later, asks to schedule it, asks to list saved prompts/workflows, or asks to run a saved workflow, prefer the dedicated workflow authoring tools over ad hoc execution.',
-    'If a workflow authoring tool returns missing_input, ask the user exactly for that missing detail instead of guessing.',
-    'Do not assume an existing saved workflow satisfies a new scheduling or reusable-workflow request unless the user explicitly names that workflow, gives its id, or clearly says to edit/update the current one.',
-    'If the user asks to schedule "a workflow" or describes a recurring process without naming an existing saved workflow, treat it as planning/creation work: gather missing details, plan it, or ask a clarification question instead of claiming an old workflow already covers it.',
-    'Use workflow listing and existing-workflow reuse only when the user is explicitly asking about saved workflows or references a specific saved workflow by name/id.',
-    ...buildWorkspaceAwarePromptSections({
-      workspace: input.workspace,
-      approvalPolicySummary: input.approvalPolicySummary,
-      latestActionResult: input.latestActionResult,
-      availability: input.workspace ? 'available' : 'unknown',
-    }),
-    'For uploaded files or internal company documents, prioritize the internal document tools before any workspace, Google Drive, local filesystem, or remote repository search.',
-    'Use internal indexed document search when you need retrieval or matching against company documents. Use OCR/direct uploaded-file reading when you need the exact uploaded file contents. Both of these internal document paths come before workspace, Drive, or repo inspection.',
-    'Do not inspect the workspace, local filesystem, Google Drive, or remote repositories to find an uploaded/company document unless the internal document tools failed or the user explicitly asked for those other sources.',
-    'For specialized or complex workflows, first search relevant skills with the skillSearch tool, read the chosen skill, and then proceed with the task.',
-    'If a request might be about reusable workflow creation, recurring scheduling, save-for-later behavior, or the right scheduling/calendar route is unclear, search skills before guessing.',
-    'If the user asks about prior conversation facts, personal preferences, or things they told you before, first use thread context and retrieved conversation memory. Do not call business tools like Zoho, Lark Base, Google Drive, or coding just to answer a personal-memory question unless the user explicitly asks for those systems.',
-    'When a local action result is available, use that result as the source of truth for the next step instead of repeating the same command or rereading the same file without a concrete reason.',
-    'Do not repeat a successful local command, file read, or file write unless you explicitly need a different verification step or the user asked to retry.',
-    'After an approved local action finishes, prefer verifyResult or the next logically required step over restarting the whole plan.',
-  ];
-  if (input.workspace) {
-    parts.push(
-      `Open workspace name: ${input.workspace.name}.`,
-      `Open workspace root: ${input.workspace.path}.`,
-      'References like "this repo" or "this workspace" refer to that local root.',
-    );
-  }
-  if (shouldPrioritizeInternalDocs) {
-    parts.push(
-      'Document retrieval priority for this request:',
-      '1. Use the internal document tools first: indexed company-document search and OCR/direct uploaded-file reading.',
-      '2. Choose indexed search for retrieval/matching and OCR/direct file reading for exact file extraction when needed.',
-      '3. Only after those internal document paths fail, consider workspace files, Google Drive, or repo sources, unless the user explicitly asked for those sources.',
-    );
-  }
-  if ((input.taskState?.activeSourceArtifacts.length ?? 0) > 0) {
-    parts.push(
-      'This thread has active source artifacts from uploaded/company documents.',
-      'For follow-up requests like "next task", "continue", or "pick the next one", treat those source artifacts as the default grounding context.',
-      'Do not search Google Drive, the workspace, local filesystem, or remote repos for a previously uploaded/company file unless artifact retrieval produced no relevant match or the user explicitly asked for those sources.',
-    );
-  }
-  if (input.contextClass) {
-    parts.push(`Context assembly class: ${input.contextClass}.`);
-  }
-  if (input.childRouteHints) {
-    parts.push(
-      'Child router guidance for this turn:',
-      JSON.stringify({
-        route: input.childRouteHints.route,
-        reason: input.childRouteHints.reason ?? null,
-        normalizedIntent: input.childRouteHints.normalizedIntent ?? null,
-        suggestedToolIds: input.childRouteHints.suggestedToolIds ?? [],
-        suggestedSkillQuery: input.childRouteHints.suggestedSkillQuery ?? null,
-        suggestedActions: input.childRouteHints.suggestedActions ?? [],
-      }),
-      'Use these hints to choose the correct next tools when they fit the request and available permissions.',
-    );
-  }
-  if (retrievalGuidance.length > 0) {
-    parts.push('Retrieval portfolio guidance for this request:', ...retrievalGuidance);
-  }
-  parts.push(`Local date context: ${getLocalDateContext()} (${LOCAL_TIME_ZONE}).`);
-  parts.push(`Current local date/time: ${getLocalDateTimeContext()} (${LOCAL_TIME_ZONE}).`);
-  const requesterContext = buildRequesterIdentityContext({
+  const continuationHint = buildContinuationHint(input.latestUserMessage);
+  const conversationRetrievalSnippets = continuationHint
+    ? [...(input.conversationRetrievalSnippets ?? []), continuationHint]
+    : input.conversationRetrievalSnippets;
+  return buildSharedAgentSystemPrompt({
+    runtimeLabel: 'You are the Vercel AI SDK desktop runtime for a tool-using assistant.',
+    conversationKey: buildConversationKey(input.threadId),
+    workspace: input.workspace,
+    approvalPolicySummary: input.approvalPolicySummary,
+    workspaceAvailability: input.workspace ? 'available' : 'unknown',
+    latestActionResult: input.latestActionResult,
+    allowedToolIds: input.allowedToolIds,
+    allowedActionsByTool: input.allowedActionsByTool,
+    departmentName: input.departmentName,
+    departmentRoleSlug: input.departmentRoleSlug,
+    departmentSystemPrompt: input.departmentSystemPrompt,
+    departmentSkillsMarkdown: input.departmentSkillsMarkdown,
+    dateScope: input.dateScope,
+    latestUserMessage: input.latestUserMessage,
     requesterName: input.requesterName,
     requesterEmail: input.requesterEmail,
+    threadSummaryContext: input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null,
+    taskStateContext: input.taskState ? buildTaskStateContext(input.taskState) : null,
+    conversationRefsContext: buildConversationRefsContext(buildConversationKey(input.threadId)),
+    conversationRetrievalSnippets,
+    resolvedUserReferences: input.resolvedUserReferences,
+    routerAcknowledgement: input.routerAcknowledgement,
+    childRouteHints: input.childRouteHints,
+    retrievalGuidance,
+    contextClass: input.contextClass,
+    hasAttachedFiles: input.hasAttachedFiles,
+    hasActiveSourceArtifacts: (input.taskState?.activeSourceArtifacts.length ?? 0) > 0,
   });
-  if (requesterContext) {
-    parts.push(requesterContext);
-  }
-  if (input.dateScope) {
-    parts.push(`Inferred date scope: ${input.dateScope}.`);
-  }
-  if (input.departmentName) {
-    parts.push(`Active department: ${input.departmentName}.`);
-  }
-  if (input.departmentRoleSlug) {
-    parts.push(`Requester department role: ${input.departmentRoleSlug}.`);
-  }
-  if (input.departmentSystemPrompt?.trim()) {
-    parts.push('Department instructions:', input.departmentSystemPrompt.trim());
-  }
-  if (input.departmentSkillsMarkdown?.trim()) {
-    parts.push('Legacy department skills fallback context (use skillSearch for the structured skill flow first):', input.departmentSkillsMarkdown.trim());
-  }
-  if (input.latestUserMessage?.trim()) {
-    parts.push(
-      `Latest live user request: ${input.latestUserMessage.trim()}`,
-      'If older history, thread summary, or prior assistant conclusions conflict with the latest live user request, the latest live user request wins.',
-    );
-  }
-  if (isWorkflowLikeRequest(input.latestUserMessage) && !hasSpecificWorkflowReference(input.latestUserMessage)) {
-    parts.push(
-      'Current turn note: this is a fresh workflow planning/scheduling request, not a confirmed reference to a specific saved workflow.',
-      'Do not satisfy this turn by reusing or describing an older saved workflow unless a tool lookup confirms the exact match and the user clearly agrees that it is the same workflow.',
-      'If required schedule, destination, or workflow-definition details are missing, ask for them or use workflow planning tools to gather them.',
-    );
-  }
-  if (shouldRecommendSkillFirst(input.latestUserMessage)) {
-    parts.push(
-      'Skill-first routing is recommended for this request.',
-      'If the correct operational tool path is not obvious, first call skillSearch.searchSkills with a precise workflow query.',
-      'If a relevant skill appears, immediately call skillSearch.readSkill and use that skill as the guide for choosing the real tool.',
-      'Do not guess a workflow/tool route when a skill can clarify it.',
-      'Once a relevant skill is loaded in this turn, do not keep re-searching skills unless the first one is clearly irrelevant.',
-    );
-  }
-  const conversationRefsContext = buildConversationRefsContext(buildConversationKey(input.threadId));
-  if (conversationRefsContext) {
-    parts.push(conversationRefsContext);
-  }
-  const threadSummaryContext = input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null;
-  if (threadSummaryContext) {
-    parts.push(threadSummaryContext);
-  }
-  const taskStateContext = input.taskState ? buildTaskStateContext(input.taskState) : null;
-  if (taskStateContext) {
-    parts.push(taskStateContext);
-  }
-  if (input.resolvedUserReferences && input.resolvedUserReferences.length > 0) {
-    parts.push(
-      'Deterministic reference resolution:',
-      ...input.resolvedUserReferences.map((entry) => `- ${entry}`),
-      'Use these resolved identifiers as the source of truth unless the user explicitly asks to refresh from the system of record.',
-    );
-  }
-  if (input.conversationRetrievalSnippets && input.conversationRetrievalSnippets.length > 0) {
-    parts.push(
-      'Retrieved conversation memory:',
-      ...input.conversationRetrievalSnippets.map((entry) => `- ${entry}`),
-    );
-  }
-  if (input.latestActionResult) {
-    parts.push(
-      'Latest approved local action result:',
-      `- kind: ${input.latestActionResult.kind}`,
-      `- ok: ${String(input.latestActionResult.ok)}`,
-      `- summary: ${input.latestActionResult.summary}`,
-      input.latestActionResult.ok
-        ? '- guidance: do not repeat this same action unless a new verification or different follow-up step is necessary.'
-        : '- guidance: adapt to the failure details above; do not blindly retry the identical step unless the error indicates a transient issue.',
-    );
-  }
-  const continuationHint = buildContinuationHint(input.latestUserMessage);
-  if (continuationHint) {
-    parts.push(continuationHint);
-  }
-  if (input.routerAcknowledgement?.trim()) {
-    parts.push(
-      `The user has already seen this short intake acknowledgement: "${input.routerAcknowledgement.trim()}"`,
-      'Do not repeat that acknowledgement verbatim. Continue from it and focus on execution.',
-    );
-  }
-  parts.push(`Conversation key: ${buildConversationKey(input.threadId)}.`);
-  return parts.join('\n');
 };
 
 const resolveDepartmentRuntime = async (

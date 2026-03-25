@@ -430,6 +430,57 @@ const extractBooksRecordLabel = (moduleName: string, record: Record<string, unkn
   return undefined;
 };
 
+const extractBooksEntityFromActionPayload = (input: {
+  payload?: Record<string, unknown>;
+  fallbackModule?: string;
+  updatedAt: string;
+}): DesktopEntityRef | null => {
+  const payload = asRecord(input.payload);
+  if (!payload) {
+    return null;
+  }
+
+  const nestedCandidates: Array<[string, Record<string, unknown> | null]> = [
+    ['invoices', asRecord(payload.invoice)],
+    ['estimates', asRecord(payload.estimate)],
+    ['contacts', asRecord(payload.contact)],
+    ['bills', asRecord(payload.bill)],
+    ['salesorders', asRecord(payload.salesorder)],
+    ['purchaseorders', asRecord(payload.purchaseorder)],
+  ];
+
+  for (const [moduleName, record] of nestedCandidates) {
+    if (!record) {
+      continue;
+    }
+    const recordId = extractBooksRecordId(moduleName, record);
+    if (!recordId) {
+      continue;
+    }
+    return {
+      module: moduleName,
+      recordId,
+      label: extractBooksRecordLabel(moduleName, record),
+      updatedAt: input.updatedAt,
+    };
+  }
+
+  const fallbackModule = asString(input.fallbackModule);
+  if (!fallbackModule) {
+    return null;
+  }
+  const fallbackRecordId = extractBooksRecordId(fallbackModule, payload);
+  if (!fallbackRecordId) {
+    return null;
+  }
+  return {
+    module: fallbackModule,
+    recordId: fallbackRecordId,
+    label: extractBooksRecordLabel(fallbackModule, payload),
+    updatedAt: input.updatedAt,
+  };
+};
+
 const buildWorkingSet = (moduleName: string, organizationId: string | undefined, items: Record<string, unknown>[]): DesktopWorkingSet => {
   const now = new Date().toISOString();
   const labelsByRecordId: Record<string, string> = {};
@@ -855,28 +906,38 @@ export const applyActionResultToTaskState = (input: {
   };
 
   if (actionResult.kind === 'tool_action' && next.pendingApproval) {
+    const resolvedBooksEntity = extractBooksEntityFromActionPayload({
+      payload: actionResult.payload,
+      fallbackModule: next.pendingApproval.module,
+      updatedAt: now,
+    });
+    const mutationModule = resolvedBooksEntity?.module ?? next.pendingApproval.module;
+    const mutationRecordId = resolvedBooksEntity?.recordId ?? next.pendingApproval.recordId;
     next.completedMutations = [
       ...next.completedMutations,
       {
         operation: next.pendingApproval.operation,
-        module: next.pendingApproval.module,
-        recordId: next.pendingApproval.recordId,
+        module: mutationModule,
+        recordId: mutationRecordId,
         summary: summarizeText(actionResult.summary, 280),
         ok: actionResult.ok,
         updatedAt: now,
       },
     ].slice(-12);
 
-    if (actionResult.ok && next.pendingApproval.module && next.pendingApproval.recordId) {
-      const entity: DesktopEntityRef = {
-        module: next.pendingApproval.module,
-        recordId: next.pendingApproval.recordId,
-        label: next.currentEntity?.recordId === next.pendingApproval.recordId ? next.currentEntity.label : undefined,
+    if (actionResult.ok && mutationModule && mutationRecordId) {
+      const entity: DesktopEntityRef = resolvedBooksEntity ?? {
+        module: mutationModule,
+        recordId: mutationRecordId,
+        label: next.currentEntity?.recordId === mutationRecordId ? next.currentEntity.label : undefined,
         updatedAt: now,
       };
       next.currentEntity = entity;
-      next.lastFetchedByModule[next.pendingApproval.module] = entity;
-      next.aliases[next.pendingApproval.recordId] = entity;
+      next.lastFetchedByModule[mutationModule] = entity;
+      next.aliases[mutationRecordId] = entity;
+      if (entity.label) {
+        next.aliases[entity.label.toLowerCase()] = entity;
+      }
     }
     next.pendingApproval = null;
   }

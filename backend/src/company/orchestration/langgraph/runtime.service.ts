@@ -134,9 +134,7 @@ export class RuntimeService {
         departmentRoleSlug: context.department.departmentRoleSlug,
         departmentPrompt: context.department.departmentPrompt,
         skillsMarkdown: context.department.skillsMarkdown,
-        channelInstructions: input.channel === 'desktop'
-          ? 'Desktop runtime adapter active.'
-          : 'Lark runtime adapter active.',
+        channelInstructions: 'Channel delivery is handled by the runtime adapter. Keep reasoning and capability assumptions parity-aligned across Desktop and Lark.',
         dateScope: context.dateScope,
       },
       history: {

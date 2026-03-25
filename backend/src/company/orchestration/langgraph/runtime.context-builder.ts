@@ -1,9 +1,7 @@
 import { departmentService } from '../../departments/department.service';
 import { toolPermissionService } from '../../tools/tool-permission.service';
+import { buildSharedAgentSystemPrompt } from '../prompting/shared-agent-prompt';
 import { runtimeConversationRepository } from './runtime-conversation.repository';
-import type { RuntimeChannelAdapter } from './adapters/channel.adapter';
-import { desktopRuntimeAdapter } from './adapters/desktop.adapter';
-import { larkRuntimeAdapter } from './adapters/lark.adapter';
 import type {
   RuntimeActor,
   RuntimeChannel,
@@ -11,13 +9,6 @@ import type {
   RuntimeModelMessage,
   RuntimePermissions,
 } from './runtime.types';
-
-const BASE_SYSTEM_PROMPT = [
-  'You are the LangGraph runtime core for a tool-using assistant.',
-  'Keep shared runtime behavior channel-agnostic and route presentation concerns through adapters.',
-  'Only describe tool results that were actually persisted or returned.',
-  'Treat stored approvals as first-class runtime state rather than conversational suggestions.',
-].join('\n');
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
 
@@ -71,9 +62,6 @@ const messageContent = (input: {
   return content ?? null;
 };
 
-const getAdapter = (channel: RuntimeChannel): RuntimeChannelAdapter =>
-  channel === 'desktop' ? desktopRuntimeAdapter : larkRuntimeAdapter;
-
 const buildSystemPrompt = (input: {
   departmentName?: string;
   departmentRoleSlug?: string;
@@ -81,27 +69,10 @@ const buildSystemPrompt = (input: {
   skillsMarkdown?: string;
   dateScope?: string;
   refs: RuntimeConversationRefs;
+  allowedToolIds: string[];
+  allowedActionsByTool: Record<string, Array<'read' | 'create' | 'update' | 'delete' | 'send' | 'execute'>>;
   conversationKey: string;
-  channelInstructions: string;
 }) => {
-  const parts = [BASE_SYSTEM_PROMPT, input.channelInstructions];
-
-  if (input.departmentName) {
-    parts.push(`Active department: ${input.departmentName}.`);
-  }
-  if (input.departmentRoleSlug) {
-    parts.push(`Requester department role: ${input.departmentRoleSlug}.`);
-  }
-  if (input.departmentPrompt?.trim()) {
-    parts.push('Department instructions:', input.departmentPrompt.trim());
-  }
-  if (input.skillsMarkdown?.trim()) {
-    parts.push('Skills fallback context:', input.skillsMarkdown.trim());
-  }
-  if (input.dateScope) {
-    parts.push(`Inferred date scope: ${input.dateScope}.`);
-  }
-
   const refLines: string[] = [];
   if (input.refs.latestLarkTask) {
     refLines.push(`Latest Lark task: ${JSON.stringify(input.refs.latestLarkTask)}`);
@@ -112,12 +83,18 @@ const buildSystemPrompt = (input: {
   if (input.refs.latestLarkCalendarEvent) {
     refLines.push(`Latest Lark event: ${JSON.stringify(input.refs.latestLarkCalendarEvent)}`);
   }
-  if (refLines.length > 0) {
-    parts.push('Conversation refs:', ...refLines);
-  }
-
-  parts.push(`Conversation key: ${input.conversationKey}.`);
-  return parts.join('\n');
+  return buildSharedAgentSystemPrompt({
+    runtimeLabel: 'You are the LangGraph runtime core for a tool-using assistant.',
+    conversationKey: input.conversationKey,
+    allowedToolIds: input.allowedToolIds,
+    allowedActionsByTool: input.allowedActionsByTool,
+    departmentName: input.departmentName,
+    departmentRoleSlug: input.departmentRoleSlug,
+    departmentSystemPrompt: input.departmentPrompt,
+    departmentSkillsMarkdown: input.skillsMarkdown,
+    dateScope: input.dateScope,
+    conversationRefsContext: refLines.length > 0 ? ['Conversation refs:', ...refLines].join('\n') : null,
+  });
 };
 
 export type RuntimeContextBuildResult = {
@@ -185,10 +162,6 @@ export class RuntimeContextBuilder {
       allowedActionsByTool = resolved.allowedActionsByTool ?? {};
     }
 
-    const adapter = getAdapter(input.channel);
-    const channelInstructions = input.channel === 'desktop'
-      ? 'Desktop channel: rich traces and coding/workspace affordances may be available through the adapter.'
-      : 'Lark channel: keep status concise, avoid coding/workspace actions, and assume in-place status updates.';
     const refs = readConversationRefs(conversation.refsJson);
     const dateScope = inferRuntimeDateScope(input.incomingText);
     const systemPrompt = buildSystemPrompt({
@@ -199,7 +172,8 @@ export class RuntimeContextBuilder {
       dateScope,
       refs,
       conversationKey: input.conversationKey,
-      channelInstructions,
+      allowedToolIds,
+      allowedActionsByTool,
     });
 
     const modelMessages: RuntimeModelMessage[] = [];
@@ -226,7 +200,6 @@ export class RuntimeContextBuilder {
       permissions: {
         allowedToolIds,
         allowedActionsByTool,
-        blockedToolIds: adapter.getBlockedToolIds(),
       },
       department: {
         departmentId,
@@ -242,4 +215,3 @@ export class RuntimeContextBuilder {
 }
 
 export const runtimeContextBuilder = new RuntimeContextBuilder();
-

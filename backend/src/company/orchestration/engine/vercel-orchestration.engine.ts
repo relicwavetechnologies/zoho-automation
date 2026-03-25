@@ -14,8 +14,8 @@ import { toolPermissionService } from '../../tools/tool-permission.service';
 import { retrievalOrchestratorService } from '../../retrieval';
 import { logger } from '../../../utils/logger';
 import { resolveVercelChildRouterModel, resolveVercelLanguageModel } from '../vercel/model-factory';
+import { buildSharedAgentSystemPrompt } from '../prompting/shared-agent-prompt';
 import { createVercelDesktopTools } from '../vercel/tools';
-import { buildWorkspaceAwarePromptSections } from '../vercel/workspace-aware-prompt';
 import { CircuitBreakerOpenError, runWithCircuitBreaker } from '../../observability/circuit-breaker';
 import type {
   PendingApprovalAction,
@@ -615,19 +615,6 @@ const inferDateScope = (message?: string): string | undefined => {
   return undefined;
 };
 
-const isWorkflowLikeRequest = (value: string | null | undefined): boolean =>
-  /\b(workflow|prompt|schedule|scheduled|every day|every week|every month|recurring|save (?:this|it) for later|make (?:this|it) reusable)\b/i.test(value ?? '');
-
-const hasSpecificWorkflowReference = (value: string | null | undefined): boolean => {
-  const text = value?.trim() ?? '';
-  if (!text) return false;
-  return /\b(this workflow|that workflow|current workflow)\b/i.test(text)
-    || /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(text)
-    || /\b(?:workflow named|workflow called|named workflow|called workflow)\b/i.test(text)
-    || /"[^"]{2,120}"/.test(text)
-    || /'[^']{2,120}'/.test(text);
-};
-
 const buildConversationRefsContext = (conversationKey: string): string | null => {
   const latestDoc = conversationMemoryStore.getLatestLarkDoc(conversationKey);
   const latestEvent = conversationMemoryStore.getLatestLarkCalendarEvent(conversationKey);
@@ -756,105 +743,31 @@ const buildSystemPrompt = (input: {
       hasAttachments: input.hasAttachedFiles,
     })
     : [];
-  const parts = [
-    'You are the Vercel AI SDK runtime for a tool-using assistant.',
-    'Use the available comprehensive tools directly.',
-    'Do not refer to Mastra, LangGraph, workflows, or internal orchestration.',
-    'If the user describes a repeatable process, wants to save it for later, wants to make it reusable, asks to schedule it, asks to list saved prompts/workflows, or asks to run a saved workflow, prefer the dedicated workflow authoring tools over ad hoc execution.',
-    'If a workflow authoring tool returns missing_input, ask the user exactly for that missing detail instead of guessing.',
-    'Do not assume an existing saved workflow satisfies a new scheduling or reusable-workflow request unless the user explicitly names that workflow, gives its id, or clearly says to edit/update the current one.',
-    'If the user asks to schedule "a workflow" or describes a recurring process without naming an existing saved workflow, treat it as planning/creation work: gather missing details, plan it, or ask a clarification question instead of claiming an old workflow already covers it.',
-    'Use workflow listing and existing-workflow reuse only when the user is explicitly asking about saved workflows or references a specific saved workflow by name/id.',
-    ...buildWorkspaceAwarePromptSections({
-      workspace: input.runtime.workspace,
-      approvalPolicySummary: input.runtime.desktopApprovalPolicySummary,
-      latestActionResult: input.runtime.latestActionResult,
-      availability: input.runtime.desktopExecutionAvailability ?? (input.runtime.workspace ? 'available' : 'unknown'),
-    }),
-    'For specialized or complex workflows, first search relevant skills with the skillSearch tool, read the chosen skill, and then proceed with the task.',
-    'If a request might be about reusable workflow creation, recurring scheduling, save-for-later behavior, or the right scheduling/calendar route is unclear, search skills before guessing.',
-  ];
-
-  if (input.runtime.departmentName) {
-    parts.push(`Active department: ${input.runtime.departmentName}.`);
-  }
-  if (input.runtime.departmentRoleSlug) {
-    parts.push(`Requester department role: ${input.runtime.departmentRoleSlug}.`);
-  }
-  if (input.runtime.departmentSystemPrompt?.trim()) {
-    parts.push('Department instructions:', input.runtime.departmentSystemPrompt.trim());
-  }
-  if (input.runtime.departmentSkillsMarkdown?.trim()) {
-    parts.push(
-      'Legacy department skills fallback context (use skillSearch for the structured skill flow first):',
-      input.runtime.departmentSkillsMarkdown.trim(),
-    );
-  }
-  if (input.runtime.dateScope) {
-    parts.push(`Inferred date scope: ${input.runtime.dateScope}.`);
-  }
-  if (input.latestUserMessage?.trim()) {
-    parts.push(
-      `Latest live user request: ${input.latestUserMessage.trim()}`,
-      'If older history, thread summary, or prior assistant conclusions conflict with the latest live user request, the latest live user request wins.',
-    );
-  }
-  if (isWorkflowLikeRequest(input.latestUserMessage) && !hasSpecificWorkflowReference(input.latestUserMessage)) {
-    parts.push(
-      'Current turn note: this is a fresh workflow planning/scheduling request, not a confirmed reference to a specific saved workflow.',
-      'Do not satisfy this turn by reusing or describing an older saved workflow unless a tool lookup confirms the exact match and the user clearly agrees that it is the same workflow.',
-      'If required schedule, destination, or workflow-definition details are missing, ask for them or use workflow planning tools to gather them.',
-    );
-  }
-  const threadSummaryContext = input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null;
-  if (threadSummaryContext) {
-    parts.push(threadSummaryContext);
-  }
-  const taskStateContext = input.taskState ? buildTaskStateContext(input.taskState) : null;
-  if (taskStateContext) {
-    parts.push(taskStateContext);
-  }
-  if ((input.taskState?.activeSourceArtifacts.length ?? 0) > 0) {
-    parts.push(
-      'This thread has active source artifacts from uploaded/company documents.',
-      'For follow-up requests like "next task", "continue", or "pick the next one", treat those source artifacts as the default grounding context.',
-    );
-  }
-  const refsContext = buildConversationRefsContext(input.conversationKey);
-  if (refsContext) {
-    parts.push(refsContext);
-  }
-  if (input.conversationRetrievalSnippets && input.conversationRetrievalSnippets.length > 0) {
-    parts.push(
-      'Retrieved conversation memory:',
-      ...input.conversationRetrievalSnippets.map((entry) => `- ${entry}`),
-    );
-  }
-  if (input.routerAcknowledgement?.trim()) {
-    parts.push(
-      `The user has already seen this short intake acknowledgement: "${input.routerAcknowledgement.trim()}"`,
-      'Do not repeat that acknowledgement verbatim. Continue from it and focus on execution.',
-    );
-  }
-  if (input.childRouteHints) {
-    parts.push(
-      'Child router guidance for this turn:',
-      JSON.stringify({
-        route: input.childRouteHints.route,
-        reason: input.childRouteHints.reason ?? null,
-        normalizedIntent: input.childRouteHints.normalizedIntent ?? null,
-        suggestedToolIds: input.childRouteHints.suggestedToolIds ?? [],
-        suggestedSkillQuery: input.childRouteHints.suggestedSkillQuery ?? null,
-        suggestedActions: input.childRouteHints.suggestedActions ?? [],
-      }),
-      'Use these hints to choose the correct next tools when they fit the request and available permissions.',
-    );
-  }
-  if (retrievalGuidance.length > 0) {
-    parts.push('Retrieval portfolio guidance for this request:', ...retrievalGuidance);
-  }
-  parts.push(`Conversation key: ${input.conversationKey}.`);
-  return parts.join('\n');
+  return buildSharedAgentSystemPrompt({
+    runtimeLabel: 'You are the Vercel AI SDK runtime for a tool-using assistant.',
+    conversationKey: input.conversationKey,
+    workspace: input.runtime.workspace,
+    approvalPolicySummary: input.runtime.desktopApprovalPolicySummary,
+    workspaceAvailability: input.runtime.desktopExecutionAvailability ?? (input.runtime.workspace ? 'available' : 'unknown'),
+    latestActionResult: input.runtime.latestActionResult,
+    allowedToolIds: input.runtime.allowedToolIds,
+    allowedActionsByTool: input.runtime.allowedActionsByTool,
+    departmentName: input.runtime.departmentName,
+    departmentRoleSlug: input.runtime.departmentRoleSlug,
+    departmentSystemPrompt: input.runtime.departmentSystemPrompt,
+    departmentSkillsMarkdown: input.runtime.departmentSkillsMarkdown,
+    dateScope: input.runtime.dateScope,
+    latestUserMessage: input.latestUserMessage,
+    threadSummaryContext: input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null,
+    taskStateContext: input.taskState ? buildTaskStateContext(input.taskState) : null,
+    conversationRefsContext: buildConversationRefsContext(input.conversationKey),
+    conversationRetrievalSnippets: input.conversationRetrievalSnippets,
+    routerAcknowledgement: input.routerAcknowledgement,
+    childRouteHints: input.childRouteHints,
+    retrievalGuidance,
+    hasAttachedFiles: input.hasAttachedFiles,
+    hasActiveSourceArtifacts: (input.taskState?.activeSourceArtifacts.length ?? 0) > 0,
+  });
 };
 
 const findPendingApproval = (
@@ -1132,6 +1045,13 @@ const resolveRuntimeContext = async (
     desktopExecutionAvailability: desktopAvailability.status,
     desktopApprovalPolicySummary: desktopWsGateway.getPolicySummary(linkedUserId, companyId),
     dateScope: inferDateScope(message.text),
+    latestActionResult: taskState?.latestActionResult
+      ? {
+          kind: taskState.latestActionResult.kind,
+          ok: taskState.latestActionResult.ok,
+          summary: taskState.latestActionResult.summary,
+        }
+      : undefined,
     allowedToolIds: allowedToolIds.filter((toolId) => !LARK_BLOCKED_TOOL_IDS.has(toolId)),
     allowedActionsByTool: allowedActionsByTool
       ? Object.fromEntries(

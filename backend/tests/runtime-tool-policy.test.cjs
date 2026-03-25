@@ -10,8 +10,6 @@ test('runtime tool policy allows read tool when tool and action are permitted', 
     actionGroup: 'read',
     allowedToolIds: ['search-read'],
     allowedActionsByTool: { 'search-read': ['read'] },
-    blockedToolIds: [],
-    channel: 'lark',
     engineMode: 'primary',
   });
 
@@ -26,8 +24,6 @@ test('runtime tool policy blocks mutating actions in shadow mode', () => {
     actionGroup: 'execute',
     allowedToolIds: ['coding'],
     allowedActionsByTool: { coding: ['read', 'execute'] },
-    blockedToolIds: [],
-    channel: 'desktop',
     engineMode: 'shadow',
   });
 
@@ -42,12 +38,9 @@ test('runtime tool policy requires approval for mutating primary actions', () =>
     actionGroup: 'update',
     allowedToolIds: ['coding'],
     allowedActionsByTool: { coding: ['read', 'update'] },
-    blockedToolIds: [],
-    channel: 'desktop',
     engineMode: 'primary',
   });
 
   assert.equal(result.allowed, true);
   assert.equal(result.requiresApproval, true);
 });
-

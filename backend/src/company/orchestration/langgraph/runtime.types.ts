@@ -99,7 +99,6 @@ export type RuntimeDiagnostics = {
 export type RuntimePermissions = {
   allowedToolIds: string[];
   allowedActionsByTool: Record<string, ToolActionGroup[]>;
-  blockedToolIds: string[];
 };
 
 export type RuntimeClassificationResult = {

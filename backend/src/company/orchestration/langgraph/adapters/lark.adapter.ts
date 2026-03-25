@@ -3,10 +3,6 @@ import type { RuntimeChannelAdapter } from './channel.adapter';
 export class LarkRuntimeAdapter implements RuntimeChannelAdapter {
   readonly channel = 'lark' as const;
 
-  getBlockedToolIds(): string[] {
-    return ['coding'];
-  }
-
   buildStatusPayload(input: {
     runId: string;
     conversationId: string;
@@ -57,4 +53,3 @@ export class LarkRuntimeAdapter implements RuntimeChannelAdapter {
 }
 
 export const larkRuntimeAdapter = new LarkRuntimeAdapter();
-

@@ -1,13 +1,10 @@
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
-import type { RuntimeChannel } from './runtime.types';
 
 export type RuntimeToolAuthorizationInput = {
   toolId: string;
   actionGroup: ToolActionGroup;
   allowedToolIds: string[];
   allowedActionsByTool: Record<string, ToolActionGroup[]>;
-  blockedToolIds: string[];
-  channel: RuntimeChannel;
   engineMode?: 'primary' | 'shadow';
 };
 
@@ -21,14 +18,6 @@ const MUTATING_ACTION_GROUPS = new Set<ToolActionGroup>(['create', 'update', 'de
 
 export class RuntimeToolPolicy {
   authorize(input: RuntimeToolAuthorizationInput): RuntimeToolAuthorizationResult {
-    if (input.blockedToolIds.includes(input.toolId)) {
-      return {
-        allowed: false,
-        requiresApproval: false,
-        failureReason: `Tool "${input.toolId}" is blocked for channel ${input.channel}.`,
-      };
-    }
-
     if (!input.allowedToolIds.includes(input.toolId)) {
       return {
         allowed: false,
@@ -62,4 +51,3 @@ export class RuntimeToolPolicy {
 }
 
 export const runtimeToolPolicy = new RuntimeToolPolicy();
-
