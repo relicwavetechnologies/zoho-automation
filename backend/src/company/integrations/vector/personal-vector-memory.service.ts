@@ -18,6 +18,7 @@ export type PersonalMemoryMatch = {
   role?: string;
   conversationKey?: string;
   documentKey?: string;
+  memoryKind?: string;
 };
 
 const PERSONAL_VECTOR_QUERY_CACHE_TTL_MS = 20_000;
@@ -141,22 +142,26 @@ class PersonalVectorMemoryService {
               ?.rerankScore ?? right.score;
           return rightScore - leftScore;
         })
-        .map((match) => ({
-          sourceId: match.sourceId,
-          score: match.score,
-          documentKey: match.documentKey,
-          content:
+      .map((match) => ({
+        sourceId: match.sourceId,
+        score: match.score,
+        documentKey: match.documentKey,
+        content:
             typeof match.payload._chunk === 'string'
               ? match.payload._chunk
               : typeof match.payload.text === 'string'
                 ? match.payload.text
                 : '',
           role: typeof match.payload.role === 'string' ? match.payload.role : undefined,
-          conversationKey:
-            typeof match.payload.conversationKey === 'string'
-              ? match.payload.conversationKey
-              : undefined,
-        }))
+        conversationKey:
+          typeof match.payload.conversationKey === 'string'
+            ? match.payload.conversationKey
+            : undefined,
+        memoryKind:
+          typeof match.payload.memoryKind === 'string'
+            ? match.payload.memoryKind
+            : undefined,
+      }))
         .filter((match) => match.content.length > 0);
 
       logger.info('personal.vector.query.completed', {

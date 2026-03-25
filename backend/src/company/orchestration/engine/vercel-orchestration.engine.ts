@@ -48,6 +48,10 @@ import { aiTokenUsageService } from '../../ai-usage/ai-token-usage.service';
 import { estimateTokens } from '../../../utils/token-estimator';
 import { AI_MODEL_CATALOG_MAP } from '../../ai-models';
 import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../integrations/vector';
+import {
+  buildUserPersonalizationPromptSections,
+  retrieveUserPersonalizationMemory,
+} from '../../integrations/vector/user-personalization';
 import { desktopWsGateway } from '../../../modules/desktop-live/desktop-ws.gateway';
 import { appendLatestAgentRunLog, resetLatestAgentRunLog } from '../../../utils/latest-agent-run-log';
 import { prisma } from '../../../utils/prisma';
@@ -155,6 +159,17 @@ const sanitizeMessagesForProviderRetry = (messages: ModelMessage[], latestUserMe
   return [...trimmedHistory, { role: 'user', content: latestUser }];
 };
 
+const runInBackground = (label: string, task: () => Promise<void>): void => {
+  queueMicrotask(() => {
+    void task().catch((error) => {
+      logger.warn('vercel.lark.background_task.failed', {
+        label,
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
+    });
+  });
+};
+
 const runWithModelCircuitBreaker = async <T>(
   provider: string,
   operation: string,
@@ -240,21 +255,25 @@ const maybeStoreLarkConversationTurn = (input: {
   if (!input.userId || !input.text.trim()) {
     return;
   }
-  void personalVectorMemoryService.storeChatTurn({
-    companyId: input.companyId,
-    requesterUserId: input.userId,
-    conversationKey: input.conversationKey,
-    sourceId: input.sourceId,
-    role: input.role,
-    text: input.text,
-    channel: 'lark',
-    chatId: input.chatId,
-  }).catch((error) => {
-    logger.warn('lark.conversation_vector.store.failed', {
-      conversationKey: input.conversationKey,
-      sourceId: input.sourceId,
-      error: error instanceof Error ? error.message : 'unknown',
-    });
+  runInBackground(`lark-personal-vector-store:${input.sourceId}`, async () => {
+    try {
+      await personalVectorMemoryService.storeChatTurn({
+        companyId: input.companyId,
+        requesterUserId: input.userId,
+        conversationKey: input.conversationKey,
+        sourceId: input.sourceId,
+        role: input.role,
+        text: input.text,
+        channel: 'lark',
+        chatId: input.chatId,
+      });
+    } catch (error) {
+      logger.warn('lark.conversation_vector.store.failed', {
+        conversationKey: input.conversationKey,
+        sourceId: input.sourceId,
+        error: error instanceof Error ? error.message : 'unknown',
+      });
+    }
   });
 };
 
@@ -749,6 +768,7 @@ const buildSystemPrompt = (input: {
   threadSummary?: DesktopThreadSummary;
   taskState?: DesktopTaskState;
   conversationRetrievalSnippets?: string[];
+  userPersonalizationSections?: string[];
 }) => {
   const retrievalGuidance = input.latestUserMessage?.trim()
     ? retrievalOrchestratorService.buildPromptGuidance({
@@ -792,6 +812,9 @@ const buildSystemPrompt = (input: {
   }
   if (input.runtime.dateScope) {
     parts.push(`Inferred date scope: ${input.runtime.dateScope}.`);
+  }
+  if (input.userPersonalizationSections && input.userPersonalizationSections.length > 0) {
+    parts.push(...input.userPersonalizationSections);
   }
   if (input.latestUserMessage?.trim()) {
     parts.push(
@@ -1298,6 +1321,7 @@ const executeLarkVercelTask = async (
   const childRoute = await runDesktopChildRouter({
     executionId: task.taskId,
     threadId: persistentThread?.id ?? message.chatId,
+    conversationKey,
     message: message.text,
     workspace: runtime.workspace,
     approvalPolicySummary: runtime.desktopApprovalPolicySummary,
@@ -1469,6 +1493,14 @@ const executeLarkVercelTask = async (
     threadSummary: activeThreadSummary,
     taskState: activeTaskState,
   });
+  const userPersonalization = await retrieveUserPersonalizationMemory({
+    companyId: runtime.companyId,
+    userId: linkedUserId ?? undefined,
+    conversationKey,
+    latestUserMessage: message.text,
+    limit: 6,
+    logPrefix: 'lark.personalization',
+  });
   const systemPrompt = buildSystemPrompt({
     conversationKey,
     runtime,
@@ -1479,6 +1511,7 @@ const executeLarkVercelTask = async (
     threadSummary: activeThreadSummary,
     taskState: activeTaskState,
     conversationRetrievalSnippets: conversationSnippets,
+    userPersonalizationSections: buildUserPersonalizationPromptSections(userPersonalization),
   });
   const budget = resolveLarkContextBudget({
     resolvedModel,
@@ -1572,7 +1605,6 @@ const executeLarkVercelTask = async (
       ];
     }
   }
-
   try {
     const primaryMessages = inputMessages.length > 0
       ? inputMessages
@@ -1734,15 +1766,17 @@ const executeLarkVercelTask = async (
           contextLimit: LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
         },
       );
-      maybeStoreLarkConversationTurn({
-        companyId: runtime.companyId,
-        userId: linkedUserId,
-        conversationKey,
-        sourceId: assistantMessage.id,
-        role: 'assistant',
-        text: finalText,
-        chatId: message.chatId,
-      });
+      if (!pendingApproval) {
+        maybeStoreLarkConversationTurn({
+          companyId: runtime.companyId,
+          userId: linkedUserId,
+          conversationKey,
+          sourceId: assistantMessage.id,
+          role: 'assistant',
+          text: finalText,
+          chatId: message.chatId,
+        });
+      }
     }
 
     const agentResults = mapToolStepsToAgentResults(steps).map((entry) => ({
