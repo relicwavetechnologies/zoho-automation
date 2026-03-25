@@ -375,16 +375,27 @@ const retrieveLarkConversationMemory = async (input: {
 const hydrateAttachedFilesForArtifacts = async (input: {
   companyId: string;
   artifacts: Array<{ fileAssetId: string }>;
+  requesterUserId?: string;
+  requesterAiRole?: string;
 }): Promise<AttachedFileRef[]> => {
   if (input.artifacts.length === 0) {
     return [];
   }
 
   const fileAssetIds = Array.from(new Set(input.artifacts.map((artifact) => artifact.fileAssetId)));
+  const isAdmin = input.requesterAiRole === 'COMPANY_ADMIN' || input.requesterAiRole === 'SUPER_ADMIN';
   const assets = await prisma.fileAsset.findMany({
     where: {
       companyId: input.companyId,
       id: { in: fileAssetIds },
+      ...(!isAdmin && input.requesterUserId
+        ? {
+          OR: [
+            { uploaderUserId: input.requesterUserId },
+            { accessPolicies: { some: { aiRole: input.requesterAiRole, canRead: true } } },
+          ],
+        }
+        : {}),
     },
     select: {
       id: true,
@@ -414,6 +425,8 @@ const resolveLarkGroundingAttachments = async (input: {
   message?: string;
   currentAttachedFiles: AttachedFileRef[];
   taskState: DesktopTaskState;
+  requesterUserId?: string;
+  requesterAiRole?: string;
 }): Promise<{
   attachments: AttachedFileRef[];
   taskState: DesktopTaskState;
@@ -439,6 +452,8 @@ const resolveLarkGroundingAttachments = async (input: {
     ? await hydrateAttachedFilesForArtifacts({
       companyId: input.companyId,
       artifacts: artifactCandidates,
+      requesterUserId: input.requesterUserId,
+      requesterAiRole: input.requesterAiRole,
     })
     : [];
 
@@ -1188,6 +1203,8 @@ const executeLarkVercelTask = async (
     chatId: message.chatId,
     correlationId: task.taskId,
     initialStatusMessageId: message.trace?.statusMessageId,
+    replyToMessageId: message.trace?.replyToMessageId ?? message.messageId,
+    replyInThread: message.chatType === 'group',
   });
   const renderCurrentStatus = (heartbeat = false): { text: string; actions?: ChannelAction[] } => ({
     text: buildLarkStatusText({
@@ -1231,6 +1248,8 @@ const executeLarkVercelTask = async (
       message: message.text,
       currentAttachedFiles: currentAttachments,
       taskState: activeTaskState,
+      requesterUserId: linkedUserId ?? message.userId,
+      requesterAiRole: message.trace?.userRole ?? 'MEMBER',
     });
     activeTaskState = grounding.taskState;
     groundingAttachments = grounding.attachments;
@@ -1276,6 +1295,8 @@ const executeLarkVercelTask = async (
       message: message.text,
       currentAttachedFiles: currentAttachments,
       taskState: activeTaskState,
+      requesterUserId: linkedUserId ?? message.userId,
+      requesterAiRole: message.trace?.userRole ?? 'MEMBER',
     });
     activeTaskState = grounding.taskState;
     groundingAttachments = grounding.attachments;

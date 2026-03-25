@@ -23,7 +23,9 @@ import { orangeDebug } from '../../../utils/orange-debug';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
 import {
   applyActionResultToTaskState,
+  createEmptyTaskState,
   parseDesktopTaskState,
+  upsertDesktopSourceArtifacts,
 } from '../../../modules/desktop-chat/desktop-thread-memory';
 import { desktopWorkflowsService } from '../../../modules/desktop-workflows/desktop-workflows.service';
 import { conversationMemoryStore } from '../../state/conversation';
@@ -48,6 +50,19 @@ type UpsertChannelIdentityInput = {
 };
 
 type NormalizedLarkMessage = NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>>;
+
+const buildSourceArtifactEntriesFromNormalizedFiles = (
+  files: NonNullable<NormalizedIncomingMessageDTO['attachedFiles']>,
+): Array<{
+  fileAssetId: string;
+  fileName: string;
+  sourceType: 'uploaded_file';
+}> =>
+  files.map((file) => ({
+    fileAssetId: file.fileAssetId,
+    fileName: file.fileName,
+    sourceType: 'uploaded_file' as const,
+  }));
 
 type PendingApprovalContext =
   | {
@@ -1243,8 +1258,70 @@ export const createLarkWebhookEventHandler = (
           linkedUserId,
           userRole,
           requesterEmail,
+          replyToMessageId: normalized.messageId,
         },
       };
+      const sendLarkReply = async (input: {
+        text: string;
+        format?: 'interactive' | 'text';
+      }) => dependencies.adapter.sendMessage({
+        chatId: tracedMessageBase.chatId,
+        text: input.text,
+        format: input.format,
+        correlationId: requestId,
+        replyToMessageId: tracedMessageBase.messageId,
+        replyInThread: tracedMessageBase.chatType === 'group',
+      });
+
+      let attachedFiles = normalized.attachedFiles ?? [];
+
+      if (attachmentKeys.length > 0 && scopedCompanyId && normalized.userId) {
+        const effectiveUploaderId = linkedUserId ?? channelIdentityId ?? normalized.userId;
+        const allowedRoles = Array.from(new Set([
+          userRole || 'MEMBER',
+          'COMPANY_ADMIN',
+          'SUPER_ADMIN',
+        ]));
+        try {
+          const ingested = await ingestLarkAttachments({
+            messageId: msgId,
+            chatId: normalized.chatId,
+            attachmentKeys,
+            adapter: dependencies.adapter,
+            companyId: scopedCompanyId,
+            uploaderUserId: effectiveUploaderId,
+            allowedRoles,
+          });
+          if (ingested.length > 0) {
+            attachedFiles = [...attachedFiles, ...ingested];
+            orangeDebug('lark.ingress.attachments.ingested', {
+              requestId,
+              eventId: parsed.eventId,
+              messageId: msgId,
+              chatId: normalized.chatId,
+              linkedUserId: linkedUserId ?? null,
+              effectiveUploaderId,
+              fileAssetIds: ingested.map((file) => file.fileAssetId),
+              allowedRoles,
+            });
+            dependencies.log.info('lark.file.ingestion.completed', {
+              requestId,
+              messageId: msgId,
+              fileCount: ingested.length,
+              fileAssetIds: ingested.map((f) => f.fileAssetId),
+              linkedUserId: linkedUserId ?? null,
+              effectiveUploaderId,
+              allowedRoles,
+            });
+          }
+        } catch (fileErr) {
+          dependencies.log.warn('lark.file.ingestion.batch_failed', {
+            requestId,
+            messageId: msgId,
+            error: fileErr instanceof Error ? fileErr.message : 'unknown_error',
+          });
+        }
+      }
 
       const primaryIdempotency = buildPrimaryIngressIdempotencyKey({
         channel: tracedMessageBase.channel,
@@ -1352,11 +1429,7 @@ export const createLarkWebhookEventHandler = (
       }
 
       if (parsed.kind === 'event_callback_message' && isLarkCommandMenuCommand(tracedMessageBase.text)) {
-        await dependencies.adapter.sendMessage({
-          chatId: tracedMessageBase.chatId,
-          text: buildLarkCommandMenuText(),
-          correlationId: requestId,
-        });
+        await sendLarkReply({ text: buildLarkCommandMenuText() });
         return res.status(202).json({
           success: true,
           message: 'Command menu handled',
@@ -1367,11 +1440,7 @@ export const createLarkWebhookEventHandler = (
         const { orchestrationRuntime } = require('../../queue/runtime') as typeof import('../../queue/runtime');
         const conversationState = runtimeTaskStore.getConversationExecutionState('lark', tracedMessageBase.chatId);
         if (!conversationState.runningTask) {
-          await dependencies.adapter.sendMessage({
-            chatId: tracedMessageBase.chatId,
-            text: 'No active run is currently executing in this Lark chat.',
-            correlationId: requestId,
-          });
+          await sendLarkReply({ text: 'No active run is currently executing in this Lark chat.' });
           return res.status(202).json({
             success: true,
             message: 'Interrupt command handled with no active run',
@@ -1379,15 +1448,13 @@ export const createLarkWebhookEventHandler = (
         }
 
         await orchestrationRuntime.control(conversationState.runningTask.taskId, 'cancelled');
-        await dependencies.adapter.sendMessage({
-          chatId: tracedMessageBase.chatId,
+        await sendLarkReply({
           text: [
             'Interrupt requested.',
             '',
             `Stopped active task ${conversationState.runningTask.taskId}.`,
             'Any queued message in this chat will continue after cancellation settles.',
           ].join('\n'),
-          correlationId: requestId,
         });
         return res.status(202).json({
           success: true,
@@ -1408,7 +1475,7 @@ export const createLarkWebhookEventHandler = (
         parsed.kind === 'event_callback_message'
         && tracedMessageBase.chatType === 'group'
         && Boolean(scopedCompanyId)
-        && (msgType === 'text' || msgType === 'post')
+        && (msgType === 'text' || msgType === 'post' || attachedFiles.length > 0)
         && !isLarkCommandMenuCommand(tracedMessageBase.text)
         && !isLarkInterruptCommand(tracedMessageBase.text)
         && !workflowCommand
@@ -1430,8 +1497,25 @@ export const createLarkWebhookEventHandler = (
               larkOpenId: tracedMessageBase.trace?.larkOpenId,
               larkUserId: tracedMessageBase.trace?.larkUserId,
               mentionCount: mentions.length,
+              attachedFiles: attachedFiles.length > 0 ? attachedFiles : undefined,
             },
           });
+          if (attachedFiles.length > 0 && scopedCompanyId) {
+            const context = await larkChatContextService.load({
+              companyId: scopedCompanyId,
+              chatId: tracedMessageBase.chatId,
+              chatType: tracedMessageBase.chatType,
+            });
+            await larkChatContextService.updateMemory({
+              companyId: scopedCompanyId,
+              chatId: tracedMessageBase.chatId,
+              chatType: tracedMessageBase.chatType,
+              taskState: upsertDesktopSourceArtifacts({
+                taskState: context.taskState ?? createEmptyTaskState(),
+                artifacts: buildSourceArtifactEntriesFromNormalizedFiles(attachedFiles),
+              }),
+            });
+          }
         } catch (error) {
           dependencies.log.warn('lark.chat_context.append_failed', {
             ...buildIngressTraceMeta({
@@ -1474,11 +1558,7 @@ export const createLarkWebhookEventHandler = (
 
       if (parsed.kind === 'event_callback_message' && memoryCommand) {
         if (!scopedCompanyId || !linkedUserId) {
-          await dependencies.adapter.sendMessage({
-            chatId: tracedMessageBase.chatId,
-            text: 'Memory commands need a linked desktop account for this Lark user. Link your account first, then retry.',
-            correlationId: requestId,
-          });
+          await sendLarkReply({ text: 'Memory commands need a linked desktop account for this Lark user. Link your account first, then retry.' });
           return res.status(202).json({
             success: true,
             message: 'Memory command handled without linked account',
@@ -1486,11 +1566,7 @@ export const createLarkWebhookEventHandler = (
         }
 
         if (memoryCommand.kind === 'help') {
-          await dependencies.adapter.sendMessage({
-            chatId: tracedMessageBase.chatId,
-            text: buildLarkMemoryHelpText(),
-            correlationId: requestId,
-          });
+          await sendLarkReply({ text: buildLarkMemoryHelpText() });
           return res.status(202).json({
             success: true,
             message: 'Memory help command handled',
@@ -1502,11 +1578,7 @@ export const createLarkWebhookEventHandler = (
             companyId: scopedCompanyId,
             userId: linkedUserId,
           });
-          await dependencies.adapter.sendMessage({
-            chatId: tracedMessageBase.chatId,
-            text: 'Cleared durable personal memories for your linked account.',
-            correlationId: requestId,
-          });
+          await sendLarkReply({ text: 'Cleared durable personal memories for your linked account.' });
           return res.status(202).json({
             success: true,
             message: 'Memory clear command handled',
@@ -1519,14 +1591,12 @@ export const createLarkWebhookEventHandler = (
         });
 
         if (memoryCommand.kind === 'list') {
-          await dependencies.adapter.sendMessage({
-            chatId: tracedMessageBase.chatId,
+          await sendLarkReply({
             text: formatLarkMemoryListText(listed.items.map((item) => ({
               id: item.id,
               kindLabel: item.kindLabel,
               summary: item.summary,
             }))),
-            correlationId: requestId,
           });
           return res.status(202).json({
             success: true,
@@ -1541,11 +1611,7 @@ export const createLarkWebhookEventHandler = (
           ? listed.items[byIndex - 1]
           : listed.items.find((item) => item.id === reference);
         if (!target) {
-          await dependencies.adapter.sendMessage({
-            chatId: tracedMessageBase.chatId,
-            text: `No active memory matched "${reference}". Use /memory to list current entries.`,
-            correlationId: requestId,
-          });
+          await sendLarkReply({ text: `No active memory matched "${reference}". Use /memory to list current entries.` });
           return res.status(202).json({
             success: true,
             message: 'Memory forget command handled with no match',
@@ -1557,11 +1623,7 @@ export const createLarkWebhookEventHandler = (
           userId: linkedUserId,
           memoryId: target.id,
         });
-        await dependencies.adapter.sendMessage({
-          chatId: tracedMessageBase.chatId,
-          text: `Forgot memory: ${target.summary}`,
-          correlationId: requestId,
-        });
+        await sendLarkReply({ text: `Forgot memory: ${target.summary}` });
         return res.status(202).json({
           success: true,
           message: 'Memory forget command handled',
@@ -1571,11 +1633,7 @@ export const createLarkWebhookEventHandler = (
 
       if (parsed.kind === 'event_callback_message' && workflowCommand) {
         if (!scopedCompanyId || !linkedUserId) {
-          await dependencies.adapter.sendMessage({
-            chatId: tracedMessageBase.chatId,
-            text: 'Workflow commands need a linked desktop account for this Lark user. Link your account first, then retry.',
-            correlationId: requestId,
-          });
+          await sendLarkReply({ text: 'Workflow commands need a linked desktop account for this Lark user. Link your account first, then retry.' });
           return res.status(202).json({
             success: true,
             message: 'Workflow command handled without linked account',
@@ -1597,6 +1655,8 @@ export const createLarkWebhookEventHandler = (
             adapter: dependencies.adapter,
             chatId: tracedMessageBase.chatId,
             correlationId: requestId,
+            replyToMessageId: tracedMessageBase.messageId,
+            replyInThread: tracedMessageBase.chatType === 'group',
           });
           const workflowToolsAllowed = await toolPermissionService.isAllowed(
             scopedCompanyId,
@@ -1698,11 +1758,7 @@ export const createLarkWebhookEventHandler = (
             command: tracedMessageBase.text,
             error: error instanceof Error ? error.message : 'unknown_error',
           });
-          await dependencies.adapter.sendMessage({
-            chatId: tracedMessageBase.chatId,
-            text: `Workflow command failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            correlationId: requestId,
-          });
+          await sendLarkReply({ text: `Workflow command failed: ${error instanceof Error ? error.message : 'Unknown error'}` });
           return res.status(202).json({
             success: true,
             message: 'Workflow command failed gracefully',
@@ -1762,15 +1818,13 @@ export const createLarkWebhookEventHandler = (
             });
           }
 
-          await dependencies.adapter.sendMessage({
-            chatId: tracedMessageBase.chatId,
+          await sendLarkReply({
             text: [
               'Started a fresh chat context.',
               '',
               'Previous Lark chat context will not be used for the next turns.',
               'Stored memories and vectors were kept.',
             ].join('\n'),
-            correlationId: requestId,
           });
 
           return res.status(202).json({
@@ -1796,58 +1850,6 @@ export const createLarkWebhookEventHandler = (
             error: error instanceof Error ? error.message : 'unknown_error',
           });
           throw error;
-        }
-      }
-
-      // ── File/Image Ingestion (runs AFTER linkedUserId resolution and idempotency) ─────────
-      // This prevents duplicate webhook deliveries from creating duplicate FileAsset rows.
-      let attachedFiles = normalized.attachedFiles ?? [];
-
-      if (attachmentKeys.length > 0 && scopedCompanyId && normalized.userId) {
-        const effectiveUploaderId = linkedUserId ?? channelIdentityId ?? normalized.userId;
-        const allowedRoles = Array.from(new Set([
-          userRole || 'MEMBER',
-          'COMPANY_ADMIN',
-          'SUPER_ADMIN',
-        ]));
-        try {
-          const ingested = await ingestLarkAttachments({
-            messageId: msgId,
-            chatId: normalized.chatId,
-            attachmentKeys,
-            adapter: dependencies.adapter,
-            companyId: scopedCompanyId,
-            uploaderUserId: effectiveUploaderId,
-            allowedRoles,
-          });
-          if (ingested.length > 0) {
-            attachedFiles = [...attachedFiles, ...ingested];
-            orangeDebug('lark.ingress.attachments.ingested', {
-              requestId,
-              eventId: parsed.eventId,
-              messageId: msgId,
-              chatId: normalized.chatId,
-              linkedUserId: linkedUserId ?? null,
-              effectiveUploaderId,
-              fileAssetIds: ingested.map((file) => file.fileAssetId),
-              allowedRoles,
-            });
-            dependencies.log.info('lark.file.ingestion.completed', {
-              requestId,
-              messageId: msgId,
-              fileCount: ingested.length,
-              fileAssetIds: ingested.map((f) => f.fileAssetId),
-              linkedUserId: linkedUserId ?? null,
-              effectiveUploaderId,
-              allowedRoles,
-            });
-          }
-        } catch (fileErr) {
-          dependencies.log.warn('lark.file.ingestion.batch_failed', {
-            requestId,
-            messageId: msgId,
-            error: fileErr instanceof Error ? fileErr.message : 'unknown_error',
-          });
         }
       }
 

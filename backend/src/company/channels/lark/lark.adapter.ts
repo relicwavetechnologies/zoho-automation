@@ -544,11 +544,15 @@ export class LarkChannelAdapter implements ChannelAdapter {
     // Lark open_id values start with "ou_"; chat IDs start with "oc_".
     // When targeting a user directly (DM), switch the receive_id_type accordingly.
     const receiveIdType = input.chatId.startsWith('ou_') ? 'open_id' : 'chat_id';
-    const requestPath = `/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`;
+    const isReply = Boolean(input.replyToMessageId?.trim());
+    const requestPath = isReply
+      ? `/open-apis/im/v1/messages/${input.replyToMessageId!.trim()}/reply`
+      : `/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`;
     const format = input.format ?? 'interactive';
     const body = {
-      receive_id: input.chatId,
+      ...(isReply ? {} : { receive_id: input.chatId }),
       msg_type: format === 'text' ? 'text' : 'interactive',
+      ...(isReply ? { reply_in_thread: input.replyInThread ?? true } : {}),
       content: JSON.stringify(
         format === 'text'
           ? { text: input.text }
@@ -561,6 +565,8 @@ export class LarkChannelAdapter implements ChannelAdapter {
         correlationId: input.correlationId,
       }),
       receiveIdType,
+      replyToMessageId: input.replyToMessageId ?? null,
+      replyInThread: isReply ? (input.replyInThread ?? true) : null,
       format,
       requestPath,
       textLength: input.text.length,

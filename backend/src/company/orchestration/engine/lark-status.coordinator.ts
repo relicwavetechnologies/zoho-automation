@@ -19,6 +19,8 @@ type LarkStatusCoordinatorInput = {
   chatId: string;
   correlationId?: string;
   initialStatusMessageId?: string;
+  replyToMessageId?: string;
+  replyInThread?: boolean;
   minUpdateIntervalMs?: number;
   heartbeatIntervalMs?: number;
 };
@@ -35,6 +37,8 @@ export class LarkStatusCoordinator {
   private readonly adapter: Pick<ChannelAdapter, 'sendMessage' | 'updateMessage'>;
   private readonly chatId: string;
   private readonly correlationId?: string;
+  private readonly replyToMessageId?: string;
+  private readonly replyInThread?: boolean;
   private readonly minUpdateIntervalMs: number;
   private readonly heartbeatIntervalMs: number;
 
@@ -54,6 +58,8 @@ export class LarkStatusCoordinator {
     this.chatId = input.chatId;
     this.correlationId = input.correlationId;
     this.statusMessageId = input.initialStatusMessageId;
+    this.replyToMessageId = input.replyToMessageId;
+    this.replyInThread = input.replyInThread;
     this.minUpdateIntervalMs = input.minUpdateIntervalMs ?? DEFAULT_MIN_UPDATE_INTERVAL_MS;
     this.heartbeatIntervalMs = input.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   }
@@ -169,6 +175,8 @@ export class LarkStatusCoordinator {
         text: renderable.text,
         actions: renderable.actions,
         correlationId: this.correlationId,
+        replyToMessageId: this.replyToMessageId,
+        replyInThread: this.replyInThread,
       });
 
     this.captureOutboundState(renderable, outbound, terminal);

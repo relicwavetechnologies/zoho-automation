@@ -22,6 +22,10 @@ export type ChannelOutboundMessage = {
   correlationId?: string;
   /** Delivery format for the outbound payload. Defaults to "interactive". */
   format?: 'interactive' | 'text';
+  /** Optional source message to reply to when the channel supports anchored replies. */
+  replyToMessageId?: string;
+  /** When replying in channels with threads, prefer thread-style reply placement. */
+  replyInThread?: boolean;
   /** Optional interactive buttons to attach to the message card. */
   actions?: ChannelAction[];
 };
