@@ -7126,6 +7126,20 @@ export const createVercelDesktopTools = (
         const effectiveDateScope = input.dateScope ?? runtime.dateScope;
         const latestUserMessage = runtime.latestUserMessage?.trim() ?? '';
         const authInput = getLarkAuthInput(runtime);
+        const extractAttendeeNamesFromMessage = (message: string): string[] => {
+          if (!message) return [];
+          const attendeeBlock =
+            message.match(/\battendees?\s+(.+?)(?=\s*(?:$| at\b| on\b| tomorrow\b| today\b))/i)?.[1]
+            ?? message.match(/\bwith\s+(.+?)(?=\s*(?:$| at\b| on\b| tomorrow\b| today\b))/i)?.[1]
+            ?? '';
+          if (!attendeeBlock) return [];
+          return attendeeBlock
+            .split(/,|\band\b/gi)
+            .map((value) => value.trim())
+            .filter((value) =>
+              value.length > 0
+              && !/^(me|myself|us|ourselves|our team)$/i.test(value));
+        };
         const extractCalendarSummaryFromMessage = (message: string): string | undefined => {
           if (!message) return undefined;
           const quoted = message.match(/['"]([^'"]{3,120})['"]/);
@@ -7150,6 +7164,13 @@ export const createVercelDesktopTools = (
           }
           return undefined;
         };
+        const resolvedAttendeeNames = (input.attendeeNames?.length ? input.attendeeNames : extractAttendeeNamesFromMessage(latestUserMessage))
+          .map((value) => value.trim())
+          .filter(Boolean);
+        const resolvedIncludeMe = input.includeMe ?? /\b(me|myself|us|our calendars?|our calendar)\b/i.test(latestUserMessage);
+        const attendeeAwareScheduling =
+          input.operation === 'scheduleMeeting'
+          || (input.operation === 'createEvent' && (resolvedAttendeeNames.length > 0 || Boolean(input.attendeeIds?.length)));
         const resolvedSummary = input.summary?.trim() || extractCalendarSummaryFromMessage(latestUserMessage);
         const resolvedStartTimeInput = input.startTime ?? (
           (input.operation === 'createEvent' || input.operation === 'scheduleMeeting' || input.operation === 'listAvailability')
@@ -7215,8 +7236,8 @@ export const createVercelDesktopTools = (
             companyId: runtime.companyId,
             appUserId: runtime.userId,
             requestLarkOpenId: runtime.larkOpenId,
-            assigneeNames: input.attendeeNames,
-            assignToMe: input.includeMe,
+            assigneeNames: resolvedAttendeeNames,
+            assignToMe: resolvedIncludeMe,
           });
           const desiredIds = uniqueDefinedStrings([
             ...(resolved.people.map((person) => asString(asRecord(person)?.larkOpenId) ?? asString(asRecord(person)?.externalUserId))),
@@ -7324,7 +7345,7 @@ export const createVercelDesktopTools = (
             fullPayload: { ...result, items: events },
           });
         }
-        if (input.operation === 'listAvailability' || input.operation === 'scheduleMeeting') {
+        if (input.operation === 'listAvailability' || attendeeAwareScheduling) {
           const resolvedAttendees = await resolveAttendees();
           if (resolvedAttendees.unresolved.length > 0) {
             return buildEnvelope({
@@ -7364,7 +7385,7 @@ export const createVercelDesktopTools = (
               : undefined);
           const defaultMeetingDurationMinutes = 30;
           const effectiveDurationMinutes = inferredDurationMinutes
-            ?? (input.operation === 'scheduleMeeting' && explicitStartRfc3339 ? defaultMeetingDurationMinutes : undefined);
+            ?? (attendeeAwareScheduling && explicitStartRfc3339 ? defaultMeetingDurationMinutes : undefined);
           const inferredExactEndRfc3339 = (!explicitEndRfc3339 && explicitStartRfc3339 && effectiveDurationMinutes)
             ? new Date(Date.parse(explicitStartRfc3339) + (effectiveDurationMinutes * 60_000)).toISOString()
             : explicitEndRfc3339;
@@ -7372,7 +7393,7 @@ export const createVercelDesktopTools = (
           const searchStartTime = input.searchStartTime ?? resolvedStartTimeInput ?? effectiveDateScope;
           const searchEndTime = input.searchEndTime
             ?? input.endTime
-            ?? (input.operation === 'scheduleMeeting' && explicitStartRfc3339
+            ?? (attendeeAwareScheduling && explicitStartRfc3339
               ? inferredExactEndRfc3339 ?? new Date(Date.parse(explicitStartRfc3339) + (defaultMeetingDurationMinutes * 60_000)).toISOString()
               : undefined);
           const searchStartRfc3339 = input.searchStartTime ? toRfc3339(input.searchStartTime) : (explicitStartRfc3339 ?? toRfc3339(searchStartTime));
@@ -7529,7 +7550,7 @@ export const createVercelDesktopTools = (
           conversationMemoryStore.addLarkCalendarEvent(conversationKey, {
             eventId: asString(event.eventId) ?? '',
             calendarId: resolvedCalendarId,
-            summary: asString(event.summary) ?? input.summary,
+            summary: asString(event.summary) ?? resolvedSummary,
             startTime: asString(event.startTime) ?? formatEpoch(chosenSlot.startMs),
             endTime: asString(event.endTime) ?? formatEpoch(chosenSlot.endMs),
             url: asString(event.url),
