@@ -13,8 +13,8 @@ import type { LarkWebhookEnvelope } from './lark.types';
 import { buildLarkTraceMeta } from './lark-observability';
 import { larkTenantTokenService, LarkTenantTokenService } from './lark-tenant-token.service';
 import { emitRuntimeTrace } from '../../observability';
-import type { LarkAttachmentKey } from './lark-message-content';
-import { inferLarkMessageType, parseLarkAttachmentKeys, parseLarkMessageContent } from './lark-message-content';
+import type { LarkAttachmentKey, LarkMention } from './lark-message-content';
+import { extractLarkMentionsFromMessage, inferLarkMessageType, parseLarkAttachmentKeys, parseLarkMessageContent } from './lark-message-content';
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (typeof value !== 'object' || value === null) {
@@ -105,6 +105,7 @@ export type LarkFetchedMessage = {
   msgType: 'text' | 'post' | 'image' | 'file' | 'media';
   content: string;
   text: string;
+  mentions: LarkMention[];
   attachmentKeys: LarkAttachmentKey[];
 };
 
@@ -987,6 +988,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
         msgType,
         content,
         text: parseLarkMessageContent(content, msgType),
+        mentions: extractLarkMentionsFromMessage({
+          content,
+          rawMentions: (message as Record<string, unknown>).mentions,
+        }),
         attachmentKeys: parseLarkAttachmentKeys(content, msgType),
       };
     } catch (error) {

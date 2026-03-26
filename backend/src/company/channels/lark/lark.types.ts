@@ -53,6 +53,7 @@ export type LarkWebhookEnvelope = {
       chat_type?: 'p2p' | 'group' | string;
       create_time?: string;
       content?: string;
+      mentions?: Array<Record<string, unknown>>;
     };
   };
   action?: {

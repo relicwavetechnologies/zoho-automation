@@ -290,6 +290,12 @@ const textDirectlyMentionsDivo = (text: string): boolean => {
   return LARK_BOT_ALIASES.some((alias) => new RegExp(`(^|\\s)@${alias.replace(/\s+/g, '\\s+')}(?=\\s|$)`, 'i').test(normalized));
 };
 
+const mentionHasStructuredIdentity = (mention: LarkMention): boolean =>
+  Boolean(
+    mention.id?.trim()
+    || (mention.name && !/^@?_user_\d+$/i.test(mention.name.trim())),
+  );
+
 type PrimaryIngressIdempotencyKey = {
   keyType: IngressIdempotencyKeyType;
   key: string;
@@ -1300,7 +1306,7 @@ export const createLarkWebhookEventHandler = (
       });
       const msgId = normalized.messageId;
       const attachmentKeys = parseLarkAttachmentKeys(msgContent, msgType);
-      const mentions = extractLarkMentionsFromMessage({
+      let mentions = extractLarkMentionsFromMessage({
         content: msgContent,
         rawMentions: {
           mentions: rawMessage?.mentions,
@@ -1308,6 +1314,40 @@ export const createLarkWebhookEventHandler = (
           atUsers: rawMessage?.at_users,
         },
       });
+      const hasPlaceholderMentions = /@_user_\d+\b/i.test(normalized.text);
+      if (hasPlaceholderMentions && !mentions.some((mention) => mentionHasStructuredIdentity(mention))) {
+        try {
+          const fetchedMessage = await dependencies.adapter.getMessage({ messageId: normalized.messageId });
+          if (fetchedMessage?.mentions.length) {
+            const mergedMentions = [
+              ...mentions,
+              ...fetchedMessage.mentions,
+            ];
+            const seen = new Set<string>();
+            mentions = mergedMentions.filter((mention) => {
+              const key = `${mention.id ?? ''}|${mention.token ?? ''}|${mention.name ?? ''}`;
+              if (!key.trim() || seen.has(key)) {
+                return false;
+              }
+              seen.add(key);
+              return true;
+            });
+            dependencies.log.debug('lark.webhook.message.mentions_fetched', {
+              requestId,
+              eventId: parsed.eventId,
+              messageId: normalized.messageId,
+              mentionCount: mentions.length,
+            });
+          }
+        } catch (error) {
+          dependencies.log.warn('lark.webhook.message.mentions_fetch_failed', {
+            requestId,
+            eventId: parsed.eventId,
+            messageId: normalized.messageId,
+            error: error instanceof Error ? error.message : 'unknown_error',
+          });
+        }
+      }
       orangeDebug('lark.ingress.normalized', {
         requestId,
         eventId: parsed.eventId,
