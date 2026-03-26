@@ -62,6 +62,14 @@ const LARK_THREAD_CONTEXT_MESSAGE_LIMIT = DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT;
 const LARK_CONTEXT_TARGET_RATIO = 0.6;
 const LARK_LIGHT_CONTEXT_TARGET_RATIO = 0.12;
 const LARK_NORMAL_CONTEXT_TARGET_RATIO = 0.28;
+const LARK_CHILD_ROUTER_HISTORY_TOKEN_BUDGET = 8_000;
+const LARK_CHILD_ROUTER_HISTORY_MAX_MESSAGES = 16;
+const LARK_LIGHTWEIGHT_RAW_HISTORY_TOKEN_BUDGET = 6_000;
+const LARK_NORMAL_RAW_HISTORY_TOKEN_BUDGET = 40_000;
+const LARK_LONG_RUNNING_RAW_HISTORY_TOKEN_BUDGET = 80_000;
+const LARK_LIGHTWEIGHT_RAW_HISTORY_MAX_MESSAGES = 12;
+const LARK_NORMAL_RAW_HISTORY_MAX_MESSAGES = 60;
+const LARK_LONG_RUNNING_RAW_HISTORY_MAX_MESSAGES = 120;
 const LARK_STATUS_HEARTBEAT_MESSAGES = [
   'Still working on this.',
   'Still gathering the right details.',
@@ -195,6 +203,28 @@ const flattenModelContent = (content: ModelMessage['content'] | string | undefin
 
 const estimateMessageTokens = (messages: ModelMessage[]): number =>
   messages.reduce((sum, message) => sum + estimateTokens(flattenModelContent(message.content)), 0);
+
+const takeRecentMessagesByTokenBudget = <T extends { content: ModelMessage['content'] | string; role: string }>(input: {
+  messages: T[];
+  tokenBudget: number;
+  maxMessages: number;
+}): T[] => {
+  const selected: T[] = [];
+  let usedTokens = 0;
+  for (let index = input.messages.length - 1; index >= 0; index -= 1) {
+    const message = input.messages[index]!;
+    const estimatedTokens = estimateTokens(flattenModelContent(message.content));
+    if (
+      selected.length >= input.maxMessages
+      || (selected.length > 0 && usedTokens + estimatedTokens > input.tokenBudget)
+    ) {
+      break;
+    }
+    selected.unshift(message);
+    usedTokens += estimatedTokens;
+  }
+  return selected;
+};
 
 type LarkContextClass = 'lightweight_chat' | 'normal_work' | 'long_running_task' | 'document_grounded_followup';
 
@@ -567,16 +597,21 @@ const buildAdaptiveLarkHistoryMessages = (input: {
   compactionTier: number;
 } => {
   const maxMessages = input.contextClass === 'lightweight_chat'
-    ? 8
+    ? LARK_LIGHTWEIGHT_RAW_HISTORY_MAX_MESSAGES
     : input.contextClass === 'normal_work'
-      ? 16
-      : 32;
+      ? LARK_NORMAL_RAW_HISTORY_MAX_MESSAGES
+      : LARK_LONG_RUNNING_RAW_HISTORY_MAX_MESSAGES;
+  const rawHistoryTokenBudget = input.contextClass === 'lightweight_chat'
+    ? LARK_LIGHTWEIGHT_RAW_HISTORY_TOKEN_BUDGET
+    : input.contextClass === 'normal_work'
+      ? LARK_NORMAL_RAW_HISTORY_TOKEN_BUDGET
+      : LARK_LONG_RUNNING_RAW_HISTORY_TOKEN_BUDGET;
   const lowValueFilter = input.contextClass !== 'lightweight_chat';
   const selected: Array<ModelMessage & { id?: string }> = [];
   let used = 0;
   let compactionTier = 1;
   const recent = input.messages
-    .slice(-60)
+    .slice(-Math.max(LARK_LONG_RUNNING_RAW_HISTORY_MAX_MESSAGES, LARK_THREAD_CONTEXT_MESSAGE_LIMIT))
     .filter((message) => {
       const flattened = flattenModelContent(message.content);
       if (lowValueFilter && isLightweightChatTurn(flattened)) {
@@ -590,6 +625,7 @@ const buildAdaptiveLarkHistoryMessages = (input: {
     const estimated = estimateTokens(flattenModelContent(message.content));
     if (
       selected.length >= maxMessages
+      || (selected.length > 0 && used + estimated > rawHistoryTokenBudget)
       || used + estimated + input.reservedTokens > input.targetBudgetTokens
     ) {
       compactionTier = Math.max(compactionTier, 4);
@@ -1556,10 +1592,14 @@ const executeLarkVercelTask = async (
     departmentSkillsMarkdown: runtime.departmentSkillsMarkdown,
     taskState: activeTaskState,
     threadSummary: activeThreadSummary,
-    history: filterThreadMessagesForContext(contextMessages.map((entry) => ({
-      role: entry.role === 'assistant' ? 'assistant' : 'user',
-      content: typeof entry.content === 'string' ? entry.content : flattenModelContent(entry.content),
-    }))).slice(-6),
+    history: takeRecentMessagesByTokenBudget({
+      messages: filterThreadMessagesForContext(contextMessages.map((entry) => ({
+        role: entry.role === 'assistant' ? 'assistant' : 'user',
+        content: typeof entry.content === 'string' ? entry.content : flattenModelContent(entry.content),
+      }))),
+      tokenBudget: LARK_CHILD_ROUTER_HISTORY_TOKEN_BUDGET,
+      maxMessages: LARK_CHILD_ROUTER_HISTORY_MAX_MESSAGES,
+    }),
     requesterEmail: message.trace?.requesterEmail,
   });
 

@@ -3,17 +3,19 @@ import { randomUUID } from 'crypto';
 import { Prisma } from '../../../generated/prisma';
 import { prisma } from '../../../utils/prisma';
 import { logger } from '../../../utils/logger';
+import { estimateTokens } from '../../../utils/token-estimator';
 import {
-  buildDeterministicThreadSummary,
   filterThreadMessagesForContext,
   parseDesktopTaskState,
   parseDesktopThreadSummary,
+  refreshDesktopThreadSummary,
   type DesktopTaskState,
   type DesktopThreadSummary,
 } from '../../../modules/desktop-chat/desktop-thread-memory';
 
-const LARK_CHAT_SUMMARY_THRESHOLD = 40;
-const LARK_CHAT_RECENT_MESSAGE_LIMIT = 20;
+const LARK_CHAT_RECENT_MESSAGE_MIN_LIMIT = 40;
+const LARK_CHAT_RECENT_MESSAGE_MAX_LIMIT = 200;
+const LARK_CHAT_RECENT_MESSAGE_TOKEN_BUDGET = 80_000;
 
 type StoredChatMessage = {
   id: string;
@@ -59,6 +61,47 @@ const toThreadMessages = (messages: StoredChatMessage[]) =>
     role: message.role,
     content: message.content,
   }));
+
+const estimateStoredMessageTokens = (message: StoredChatMessage): number =>
+  estimateTokens(message.content) + 24;
+
+const partitionRecentMessages = (messages: StoredChatMessage[]): {
+  compactedChunk: StoredChatMessage[];
+  retainedMessages: StoredChatMessage[];
+  retainedTokenCount: number;
+} => {
+  if (messages.length <= LARK_CHAT_RECENT_MESSAGE_MIN_LIMIT) {
+    return {
+      compactedChunk: [],
+      retainedMessages: messages.slice(-LARK_CHAT_RECENT_MESSAGE_MAX_LIMIT),
+      retainedTokenCount: messages.reduce((sum, message) => sum + estimateStoredMessageTokens(message), 0),
+    };
+  }
+
+  const retained: StoredChatMessage[] = [];
+  let usedTokens = 0;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    const estimatedTokens = estimateStoredMessageTokens(message);
+    const shouldRetain =
+      retained.length < LARK_CHAT_RECENT_MESSAGE_MIN_LIMIT
+      || (usedTokens + estimatedTokens <= LARK_CHAT_RECENT_MESSAGE_TOKEN_BUDGET
+        && retained.length < LARK_CHAT_RECENT_MESSAGE_MAX_LIMIT);
+    if (!shouldRetain) {
+      break;
+    }
+    retained.unshift(message);
+    usedTokens += estimatedTokens;
+  }
+
+  const compactedChunk = messages.slice(0, Math.max(0, messages.length - retained.length));
+  return {
+    compactedChunk,
+    retainedMessages: retained,
+    retainedTokenCount: usedTokens,
+  };
+};
 
 export class LarkChatContextService {
   async getOrCreate(input: {
@@ -141,15 +184,16 @@ export class LarkChatContextService {
     };
     const nextMessages = [...existingMessages, nextMessage];
     let compactedSummary = currentSummary;
-    let retainedMessages = nextMessages;
+    const {
+      compactedChunk,
+      retainedMessages,
+      retainedTokenCount,
+    } = partitionRecentMessages(nextMessages);
 
-    if (nextMessages.length > LARK_CHAT_SUMMARY_THRESHOLD) {
-      const compactedChunk = nextMessages.slice(0, nextMessages.length - LARK_CHAT_RECENT_MESSAGE_LIMIT);
-      retainedMessages = nextMessages.slice(-LARK_CHAT_RECENT_MESSAGE_LIMIT);
-      compactedSummary = buildDeterministicThreadSummary({
+    if (compactedChunk.length > 0) {
+      compactedSummary = await refreshDesktopThreadSummary({
         messages: [
           ...toThreadMessages(compactedChunk),
-          ...(currentSummary.summary ? [{ role: 'assistant' as const, content: currentSummary.summary }] : []),
         ],
         taskState: currentTaskState,
         currentSummary,
@@ -178,7 +222,9 @@ export class LarkChatContextService {
       chatId: input.chatId,
       role: input.role,
       sourceMessageCount: context.sourceMessageCount + 1,
+      compactedMessageCount: compactedChunk.length,
       retainedMessageCount: retainedMessages.length,
+      retainedTokenCount,
     });
 
     return nextMessage;
@@ -247,7 +293,7 @@ export class LarkChatContextService {
     const filteredContents = new Set(filtered.map((message) => `${message.role}:${message.content}`));
     const recentMessages = context.recentMessages.filter((message) =>
       filteredContents.has(`${message.role}:${message.content}`));
-    return recentMessages.slice(-(input.limit ?? LARK_CHAT_RECENT_MESSAGE_LIMIT));
+    return input.limit ? recentMessages.slice(-input.limit) : recentMessages;
   }
 }
 
