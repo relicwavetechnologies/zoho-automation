@@ -1936,7 +1936,9 @@ const getLarkAuthInput = (runtime: VercelRuntimeRequestContext) => {
   return authInput;
 };
 
-const getLarkTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+const LARK_LOCAL_TIME_ZONE = 'Asia/Kolkata';
+
+const getLarkTimeZone = (): string => LARK_LOCAL_TIME_ZONE;
 
 const withLarkTenantFallback = async <T>(
   runtime: VercelRuntimeRequestContext,
