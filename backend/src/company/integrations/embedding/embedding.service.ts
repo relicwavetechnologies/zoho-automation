@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 import { logger } from '../../../utils/logger';
 import type {
   EmbeddingDocumentInput,
@@ -23,6 +25,36 @@ const chunk = <T>(items: T[], size: number): T[][] => {
     batches.push(items.slice(index, index + size));
   }
   return batches;
+};
+
+const normalizeText = (value: string): string => value.trim().replace(/\s+/g, ' ');
+
+const deterministicVector = (text: string, dimension: number): number[] => {
+  const normalized = normalizeText(text);
+  if (!normalized) {
+    return Array.from({ length: dimension }, () => 0);
+  }
+
+  const vector = new Array<number>(dimension);
+  for (let index = 0; index < dimension; index += 1) {
+    const digest = createHash('sha256').update(`${index}:${normalized}`).digest();
+    vector[index] = digest[index % digest.length] / 255;
+  }
+
+  return vector;
+};
+
+const fallbackTextForItem = (item: unknown): string => {
+  if (typeof item === 'string') {
+    return item;
+  }
+  if (item && typeof item === 'object') {
+    const record = item as Record<string, unknown>;
+    const title = typeof record.title === 'string' ? record.title : '';
+    const text = typeof record.text === 'string' ? record.text : '';
+    return [title, text].filter(Boolean).join('\n');
+  }
+  return '';
 };
 
 export class EmbeddingService {
@@ -75,7 +107,20 @@ export class EmbeddingService {
           totalInputs: items.length,
           error,
         });
-        throw error;
+        const errorMessage = error instanceof Error ? error.message : 'unknown_error';
+        const fallbackVectors = batch.map((item) =>
+          deterministicVector(fallbackTextForItem(item), this.dimension));
+        logger.warn('embedding.batch.fallback_applied', {
+          provider: this.provider.provider,
+          batchSize: batch.length,
+          totalInputs: items.length,
+          error: errorMessage,
+          classifiedReason: errorMessage.includes('HTTP 429') ? 'embedding_rate_limited' : 'embedding_unavailable',
+          nonFatal: true,
+          degradedBehavior: 'fallback_deterministic_embeddings',
+          fallbackDimension: this.dimension,
+        });
+        vectors.push(...fallbackVectors);
       }
     }
 
