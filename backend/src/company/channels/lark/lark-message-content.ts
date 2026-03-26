@@ -9,9 +9,12 @@ const readString = (value: unknown): string | undefined => {
 export type LarkMention = {
   id?: string;
   name?: string;
+  token?: string;
 };
 
 const PLACEHOLDER_MENTION_RE = /@_user_\d+\b/gi;
+const isPlaceholderMention = (value: string | undefined): boolean =>
+  typeof value === 'string' && /^@_user_\d+$/i.test(value.trim());
 
 const collectTextFragments = (value: unknown): string[] => {
   if (typeof value === 'string') {
@@ -63,7 +66,8 @@ const collectMentions = (value: unknown): LarkMention[] => {
       ?? readString(record.union_id)
       ?? readString(record.id);
     const name = readString(record.user_name) ?? readString(record.name) ?? readString(record.text);
-    mentions.push({ ...(id ? { id } : {}), ...(name ? { name } : {}) });
+    const token = isPlaceholderMention(name) ? name : undefined;
+    mentions.push({ ...(id ? { id } : {}), ...(name ? { name } : {}), ...(token ? { token } : {}) });
   }
 
   return [
@@ -74,7 +78,43 @@ const collectMentions = (value: unknown): LarkMention[] => {
 
 const extractPlaceholderMentions = (value: string): LarkMention[] => {
   const matches = value.match(PLACEHOLDER_MENTION_RE) ?? [];
-  return matches.map((match) => ({ name: match }));
+  return matches.map((match) => ({ name: match, token: match }));
+};
+
+const collectRawMentions = (value: unknown): LarkMention[] => {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectRawMentions(entry));
+  }
+
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  const record = value as Record<string, unknown>;
+  const id =
+    readString(record.open_id)
+    ?? readString(record.openId)
+    ?? readString(record.user_id)
+    ?? readString(record.userId)
+    ?? readString(record.union_id)
+    ?? readString(record.id)
+    ?? readString(record.key);
+  const name =
+    readString(record.user_name)
+    ?? readString(record.userName)
+    ?? readString(record.name)
+    ?? readString(record.display_name)
+    ?? readString(record.displayName)
+    ?? readString(record.text);
+  const token =
+    readString(record.key)
+    ?? (isPlaceholderMention(name) ? name : undefined);
+
+  const current = id || name ? [{ ...(id ? { id } : {}), ...(name ? { name } : {}), ...(token ? { token } : {}) }] : [];
+  return [
+    ...current,
+    ...Object.values(record).flatMap((entry) => collectRawMentions(entry)),
+  ];
 };
 
 const collectPostBodies = (parsed: Record<string, unknown>): unknown[] => {
@@ -222,6 +262,54 @@ export const extractLarkMentions = (content: unknown): LarkMention[] => {
   } catch {
     return extractPlaceholderMentions(raw);
   }
+};
+
+export const extractLarkMentionsFromMessage = (input: {
+  content: unknown;
+  rawMentions?: unknown;
+}): LarkMention[] => {
+  const mentions = [
+    ...extractLarkMentions(input.content),
+    ...collectRawMentions(input.rawMentions),
+  ];
+  const seen = new Set<string>();
+  return mentions.filter((mention) => {
+    const key = `${mention.id ?? ''}|${mention.token ?? ''}|${mention.name ?? ''}`;
+    if (!key.trim() || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+};
+
+export const replaceLarkMentionTokens = (input: {
+  text: string;
+  mentions: LarkMention[];
+  resolveDisplayName: (mention: LarkMention) => string | null | undefined;
+}): string => {
+  if (!input.text.trim() || input.mentions.length === 0) {
+    return input.text;
+  }
+
+  const mentionsByToken = new Map<string, LarkMention[]>();
+  for (const mention of input.mentions) {
+    const token = mention.token?.trim();
+    if (!token) continue;
+    const bucket = mentionsByToken.get(token) ?? [];
+    bucket.push(mention);
+    mentionsByToken.set(token, bucket);
+  }
+
+  return input.text.replace(PLACEHOLDER_MENTION_RE, (match) => {
+    const bucket = mentionsByToken.get(match);
+    const mention = bucket?.shift();
+    const resolvedName = mention ? input.resolveDisplayName(mention) : null;
+    if (!resolvedName) {
+      return match;
+    }
+    return resolvedName.startsWith('@') ? resolvedName : `@${resolvedName}`;
+  });
 };
 
 export type LarkAttachmentKey = {

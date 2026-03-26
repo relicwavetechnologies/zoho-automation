@@ -15,7 +15,7 @@ import { buildLarkTextHash, buildLarkTraceMeta } from './lark-observability';
 import { emitRuntimeTrace } from '../../observability';
 import { larkWorkspaceConfigRepository } from './lark-workspace-config.repository';
 import { larkUserAuthLinkRepository } from './lark-user-auth-link.repository';
-import { extractLarkMentions, inferLarkMessageType, parseLarkAttachmentKeys } from './lark-message-content';
+import { extractLarkMentionsFromMessage, inferLarkMessageType, parseLarkAttachmentKeys, replaceLarkMentionTokens, type LarkMention } from './lark-message-content';
 import { ingestLarkAttachments } from './lark-file-ingestion';
 import { larkRecentFilesStore } from './lark-recent-files.store';
 import { larkChatContextService } from './lark-chat-context.service';
@@ -115,6 +115,13 @@ type LarkWebhookRouteDependencies = {
     larkOpenId?: string | null;
     larkUserId?: string | null;
   }) => Promise<string | null>;
+  listLarkChannelIdentities: (companyId: string) => Promise<Array<{
+    externalUserId: string;
+    displayName?: string | null;
+    larkOpenId?: string | null;
+    larkUserId?: string | null;
+    email?: string | null;
+  }>>;
 };
 
 const parseAttachedFilesFromUnknown = (
@@ -170,6 +177,117 @@ const buildReferencedMessageSupplement = (input: {
     '[Referenced message]',
     referenced,
   ].join('\n');
+};
+
+type CachedLarkMentionDirectory = {
+  expiresAt: number;
+  byId: Map<string, { displayName?: string | null; email?: string | null }>;
+  byName: Map<string, { displayName?: string | null; email?: string | null }>;
+};
+
+const larkMentionDirectoryCache = new Map<string, CachedLarkMentionDirectory>();
+const LARK_MENTION_DIRECTORY_TTL_MS = 60_000;
+const LARK_BOT_ALIASES = ['divo', 'divo ai'];
+
+const normalizeMentionLookupKey = (value: string | null | undefined): string => {
+  const trimmed = value?.trim().toLowerCase() ?? '';
+  if (!trimmed) {
+    return '';
+  }
+  return trimmed
+    .replace(/^@+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const buildLarkMentionDirectory = (rows: Array<{
+  externalUserId: string;
+  displayName?: string | null;
+  larkOpenId?: string | null;
+  larkUserId?: string | null;
+  email?: string | null;
+}>): CachedLarkMentionDirectory => {
+  const byId = new Map<string, { displayName?: string | null; email?: string | null }>();
+  const byName = new Map<string, { displayName?: string | null; email?: string | null }>();
+
+  for (const row of rows) {
+    const payload = {
+      displayName: row.displayName ?? null,
+      email: row.email ?? null,
+    };
+    for (const id of [row.externalUserId, row.larkOpenId ?? undefined, row.larkUserId ?? undefined]) {
+      const normalized = normalizeMentionLookupKey(id);
+      if (normalized) {
+        byId.set(normalized, payload);
+      }
+    }
+    for (const name of [row.displayName ?? undefined, row.email ?? undefined]) {
+      const normalized = normalizeMentionLookupKey(name);
+      if (normalized) {
+        byName.set(normalized, payload);
+      }
+    }
+  }
+
+  return {
+    expiresAt: Date.now() + LARK_MENTION_DIRECTORY_TTL_MS,
+    byId,
+    byName,
+  };
+};
+
+const getCachedLarkMentionDirectory = async (
+  companyId: string,
+  dependencies: Pick<LarkWebhookRouteDependencies, 'listLarkChannelIdentities'>,
+): Promise<CachedLarkMentionDirectory> => {
+  const cached = larkMentionDirectoryCache.get(companyId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached;
+  }
+
+  const directory = buildLarkMentionDirectory(await dependencies.listLarkChannelIdentities(companyId));
+  larkMentionDirectoryCache.set(companyId, directory);
+  return directory;
+};
+
+const resolveLarkMentionDisplayName = (mention: LarkMention, directory?: CachedLarkMentionDirectory | null): string | null => {
+  const id = normalizeMentionLookupKey(mention.id);
+  if (directory && id) {
+    const matched = directory.byId.get(id);
+    if (matched?.displayName) {
+      return matched.displayName;
+    }
+  }
+
+  const rawName = normalizeMentionLookupKey(mention.name);
+  if (directory && rawName) {
+    const matched = directory.byName.get(rawName) ?? directory.byId.get(rawName);
+    if (matched?.displayName) {
+      return matched.displayName;
+    }
+  }
+
+  if (mention.name && !/^@?_user_\d+$/i.test(mention.name.trim())) {
+    return mention.name.replace(/^@+/, '').trim();
+  }
+  return null;
+};
+
+const isDivoMention = (mention: LarkMention, directory?: CachedLarkMentionDirectory | null): boolean => {
+  const resolved = normalizeMentionLookupKey(resolveLarkMentionDisplayName(mention, directory));
+  if (resolved && LARK_BOT_ALIASES.includes(resolved)) {
+    return true;
+  }
+  const raw = normalizeMentionLookupKey(mention.name);
+  return Boolean(raw && LARK_BOT_ALIASES.includes(raw));
+};
+
+const textDirectlyMentionsDivo = (text: string): boolean => {
+  const normalized = normalizeMentionLookupKey(text);
+  if (!normalized) {
+    return false;
+  }
+  return LARK_BOT_ALIASES.some((alias) => new RegExp(`(^|\\s)@${alias.replace(/\s+/g, '\\s+')}(?=\\s|$)`, 'i').test(normalized));
 };
 
 type PrimaryIngressIdempotencyKey = {
@@ -948,6 +1066,18 @@ const defaultUpsertChannelIdentity: LarkWebhookRouteDependencies['upsertChannelI
 const defaultResolveLinkedUserId: LarkWebhookRouteDependencies['resolveLinkedUserId'] = async (input) =>
   larkUserAuthLinkRepository.findLinkedUserId(input);
 
+const defaultListLarkChannelIdentities: LarkWebhookRouteDependencies['listLarkChannelIdentities'] = async (companyId) => {
+  const { channelIdentityRepository } = require('../channel-identity.repository') as typeof import('../channel-identity.repository');
+  const rows = await channelIdentityRepository.listByCompany(companyId, 'lark');
+  return rows.map((row) => ({
+    externalUserId: row.externalUserId,
+    displayName: row.displayName ?? null,
+    larkOpenId: row.larkOpenId ?? null,
+    larkUserId: row.larkUserId ?? null,
+    email: row.email ?? null,
+  }));
+};
+
 const createDefaultDependencies = (): LarkWebhookRouteDependencies => ({
   adapter: new LarkChannelAdapter(),
   log: logger,
@@ -964,6 +1094,7 @@ const createDefaultDependencies = (): LarkWebhookRouteDependencies => ({
   resolveWorkspaceVerificationConfig: defaultResolveWorkspaceVerificationConfig,
   upsertChannelIdentity: defaultUpsertChannelIdentity,
   resolveLinkedUserId: defaultResolveLinkedUserId,
+  listLarkChannelIdentities: defaultListLarkChannelIdentities,
 });
 
 const isMetadataParseResult = (
@@ -1169,7 +1300,14 @@ export const createLarkWebhookEventHandler = (
       });
       const msgId = normalized.messageId;
       const attachmentKeys = parseLarkAttachmentKeys(msgContent, msgType);
-      const mentions = extractLarkMentions(msgContent);
+      const mentions = extractLarkMentionsFromMessage({
+        content: msgContent,
+        rawMentions: {
+          mentions: rawMessage?.mentions,
+          userMentions: rawMessage?.user_mentions,
+          atUsers: rawMessage?.at_users,
+        },
+      });
       orangeDebug('lark.ingress.normalized', {
         requestId,
         eventId: parsed.eventId,
@@ -1198,8 +1336,6 @@ export const createLarkWebhookEventHandler = (
         textLength: normalized.text.length,
         mentionCount: mentions.length,
       });
-      const textHash = buildLarkTextHash(normalized.text);
-
       if (parsed.kind === 'event_callback_message') {
         const messageAgeMs = readMessageAgeMs(normalized.timestamp);
         const maxAcceptedAgeMs = config.LARK_WEBHOOK_MAX_SKEW_SECONDS * 1000;
@@ -1236,6 +1372,10 @@ export const createLarkWebhookEventHandler = (
       let channelIdentityId: string | undefined;
       let requesterEmail: string | undefined;
       let userRole = 'MEMBER';
+      let mentionDirectory: CachedLarkMentionDirectory | null = null;
+      let resolvedText = normalized.text;
+      let botMentioned = false;
+      let resolvedMentionNames: string[] = [];
       // linkedUserId bridges the Lark channel identity to the user's internal Desktop account.
       // When set, the orchestration engine will use this as the ownerUserId in Qdrant so that
       // personal vector memory is shared across both channels for the same person.
@@ -1321,8 +1461,46 @@ export const createLarkWebhookEventHandler = (
         }
       }
 
+      if (scopedCompanyId) {
+        try {
+          mentionDirectory = await getCachedLarkMentionDirectory(scopedCompanyId, dependencies);
+          resolvedText = replaceLarkMentionTokens({
+            text: normalized.text,
+            mentions,
+            resolveDisplayName: (mention) => resolveLarkMentionDisplayName(mention, mentionDirectory),
+          });
+        } catch (error) {
+          dependencies.log.warn('lark.mention_directory.resolve_failed', {
+            requestId,
+            companyId: scopedCompanyId,
+            error: error instanceof Error ? error.message : 'unknown_error',
+          });
+        }
+      }
+
+      resolvedMentionNames = mentions
+        .map((mention) => resolveLarkMentionDisplayName(mention, mentionDirectory))
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      botMentioned = mentions.some((mention) => isDivoMention(mention, mentionDirectory))
+        || textDirectlyMentionsDivo(resolvedText);
+
+      dependencies.log.info('lark.webhook.message.mentions_resolved', {
+        requestId,
+        eventId: parsed.eventId,
+        companyId: scopedCompanyId ?? undefined,
+        messageId: normalized.messageId,
+        chatId: normalized.chatId,
+        mentionCount: mentions.length,
+        botMentioned,
+        resolvedMentionNames,
+        textPreview: resolvedText.slice(0, 120),
+      });
+
+      const textHash = buildLarkTextHash(resolvedText);
+
       const tracedMessageBase: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>> = {
         ...normalized,
+        text: resolvedText,
         trace: {
           ...(normalized.trace ?? {}),
           requestId,
@@ -1578,6 +1756,8 @@ export const createLarkWebhookEventHandler = (
               larkUserId: tracedMessageBase.trace?.larkUserId,
               referencedMessageId: tracedMessageBase.trace?.referencedMessageId,
               mentionCount: mentions.length,
+              botMentioned,
+              resolvedMentions: resolvedMentionNames.length > 0 ? resolvedMentionNames : undefined,
               attachedFiles: attachedFiles.length > 0 ? attachedFiles : undefined,
             },
           });
@@ -1612,10 +1792,10 @@ export const createLarkWebhookEventHandler = (
         }
       }
 
-      if (parsed.kind === 'event_callback_message' && tracedMessageBase.chatType === 'group' && mentions.length === 0) {
+      if (parsed.kind === 'event_callback_message' && tracedMessageBase.chatType === 'group' && !botMentioned) {
         dependencies.log.info('lark.webhook.event.ignored', {
           requestId,
-          reason: 'group_message_without_mention',
+          reason: 'group_message_without_bot_mention',
           eventType: parsed.eventType,
           eventId: parsed.eventId,
           larkTenantKey,
@@ -1623,12 +1803,14 @@ export const createLarkWebhookEventHandler = (
           messageId: tracedMessageBase.messageId,
           chatId: tracedMessageBase.chatId,
           chatType: tracedMessageBase.chatType,
+          mentionCount: mentions.length,
+          resolvedMentionNames,
         });
         return res.status(202).json({
           success: true,
           message: 'Lark group message stored in shared chat context but not executed because the bot was not mentioned',
           data: {
-            reason: 'group_message_without_mention',
+            reason: 'group_message_without_bot_mention',
             eventType: parsed.eventType,
             eventId: parsed.eventId,
             messageId: tracedMessageBase.messageId,
