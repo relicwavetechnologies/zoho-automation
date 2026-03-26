@@ -1154,6 +1154,89 @@ type RuntimeFileReference = {
   updatedAtMs: number;
 };
 
+const FILE_LOOKUP_STOP_WORDS = new Set([
+  'a',
+  'an',
+  'the',
+  'this',
+  'that',
+  'these',
+  'those',
+  'file',
+  'files',
+  'doc',
+  'docs',
+  'document',
+  'documents',
+  'pdf',
+  'uploaded',
+  'upload',
+  'shared',
+  'above',
+  'latest',
+  'recent',
+]);
+
+const normalizeFileLookupText = (value?: string): string =>
+  (value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const tokenizeFileLookupText = (value?: string): string[] =>
+  normalizeFileLookupText(value)
+    .split(' ')
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0 && !FILE_LOOKUP_STOP_WORDS.has(token));
+
+const scoreRuntimeFileMatch = (file: RuntimeFileReference, query: string): number => {
+  const normalizedQuery = normalizeFileLookupText(query);
+  const normalizedName = normalizeFileLookupText(file.fileName);
+  if (!normalizedQuery || !normalizedName) {
+    return 0;
+  }
+  if (normalizedName === normalizedQuery) {
+    return 1;
+  }
+  if (normalizedName.includes(normalizedQuery)) {
+    return 0.95;
+  }
+  if (normalizedQuery.includes(normalizedName)) {
+    return 0.9;
+  }
+
+  const queryTokens = tokenizeFileLookupText(query);
+  const nameTokens = tokenizeFileLookupText(file.fileName);
+  if (queryTokens.length === 0 || nameTokens.length === 0) {
+    return 0;
+  }
+
+  const exactMatches = queryTokens.filter((token) => nameTokens.includes(token)).length;
+  const partialMatches = queryTokens.filter((token) =>
+    nameTokens.some((nameToken) => nameToken.includes(token) || token.includes(nameToken))
+  ).length;
+
+  const exactScore = exactMatches / queryTokens.length;
+  const partialScore = partialMatches / queryTokens.length;
+  const recencyBoost = Math.min(0.05, Math.max(0, (file.updatedAtMs - Date.now() + 7 * 24 * 60 * 60 * 1000) / (7 * 24 * 60 * 60 * 1000)) * 0.05);
+  return Math.max(exactScore * 0.8 + partialScore * 0.15 + recencyBoost, 0);
+};
+
+const resolveFuzzyRuntimeFileMatch = (
+  files: RuntimeFileReference[],
+  query: string,
+): RuntimeFileReference | null => {
+  const ranked = files
+    .map((file) => ({ file, score: scoreRuntimeFileMatch(file, query) }))
+    .filter((entry) => entry.score >= 0.45)
+    .sort((left, right) =>
+      right.score - left.score
+      || right.file.updatedAtMs - left.file.updatedAtMs
+    );
+  return ranked[0]?.file ?? null;
+};
+
 const buildRuntimeFileRecord = (entry: Record<string, unknown>): RuntimeFileReference => ({
   fileAssetId: asString(entry.id) ?? '',
   fileName: asString(entry.fileName) ?? 'file',
@@ -1440,6 +1523,7 @@ const resolveRuntimeFile = async (
   if (normalizedName) {
     return mergedFiles.find((file) => file.fileName.trim().toLowerCase() === normalizedName)
       ?? mergedFiles.find((file) => file.fileName.trim().toLowerCase().includes(normalizedName))
+      ?? resolveFuzzyRuntimeFileMatch(mergedFiles, normalizedName)
       ?? null;
   }
 

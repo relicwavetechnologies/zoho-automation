@@ -80,7 +80,7 @@ type PendingApprovalContext =
   };
 
 type LarkWebhookRouteDependencies = {
-  adapter: Pick<LarkChannelAdapter, 'normalizeIncomingEvent' | 'sendMessage' | 'updateMessage' | 'downloadFile'>;
+  adapter: Pick<LarkChannelAdapter, 'normalizeIncomingEvent' | 'sendMessage' | 'updateMessage' | 'downloadFile' | 'getMessage'>;
   log: Pick<typeof logger, 'debug' | 'info' | 'warn' | 'error' | 'success'>;
   verifyRequest: typeof verifyLarkWebhookRequest;
   parsePayload: typeof parseLarkIngressPayload;
@@ -113,6 +113,61 @@ type LarkWebhookRouteDependencies = {
     larkOpenId?: string | null;
     larkUserId?: string | null;
   }) => Promise<string | null>;
+};
+
+const parseAttachedFilesFromUnknown = (
+  value: unknown,
+): NonNullable<NormalizedIncomingMessageDTO['attachedFiles']> => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    const fileAssetId = typeof record.fileAssetId === 'string' ? record.fileAssetId.trim() : '';
+    const cloudinaryUrl = typeof record.cloudinaryUrl === 'string' ? record.cloudinaryUrl.trim() : '';
+    const mimeType = typeof record.mimeType === 'string' ? record.mimeType.trim() : '';
+    const fileName = typeof record.fileName === 'string' ? record.fileName.trim() : '';
+    if (!fileAssetId || !cloudinaryUrl || !mimeType || !fileName) {
+      return [];
+    }
+    return [{ fileAssetId, cloudinaryUrl, mimeType, fileName }];
+  });
+};
+
+const dedupeAttachedFiles = (
+  files: NonNullable<NormalizedIncomingMessageDTO['attachedFiles']>,
+): NonNullable<NormalizedIncomingMessageDTO['attachedFiles']> => {
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    const key = file.fileAssetId.trim();
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+};
+
+const buildReferencedMessageSupplement = (input: {
+  currentText: string;
+  referencedText?: string;
+}): string => {
+  const referenced = input.referencedText?.trim();
+  if (!referenced) {
+    return input.currentText;
+  }
+  if (input.currentText.includes(referenced)) {
+    return input.currentText;
+  }
+  return [
+    input.currentText,
+    '',
+    '[Referenced message]',
+    referenced,
+  ].join('\n');
 };
 
 type PrimaryIngressIdempotencyKey = {
@@ -1274,14 +1329,14 @@ export const createLarkWebhookEventHandler = (
       });
 
       let attachedFiles = normalized.attachedFiles ?? [];
+      const effectiveUploaderId = linkedUserId ?? channelIdentityId ?? normalized.userId;
+      const allowedRoles = Array.from(new Set([
+        userRole || 'MEMBER',
+        'COMPANY_ADMIN',
+        'SUPER_ADMIN',
+      ]));
 
       if (attachmentKeys.length > 0 && scopedCompanyId && normalized.userId) {
-        const effectiveUploaderId = linkedUserId ?? channelIdentityId ?? normalized.userId;
-        const allowedRoles = Array.from(new Set([
-          userRole || 'MEMBER',
-          'COMPANY_ADMIN',
-          'SUPER_ADMIN',
-        ]));
         try {
           const ingested = await ingestLarkAttachments({
             messageId: msgId,
@@ -1496,6 +1551,7 @@ export const createLarkWebhookEventHandler = (
               requesterEmail,
               larkOpenId: tracedMessageBase.trace?.larkOpenId,
               larkUserId: tracedMessageBase.trace?.larkUserId,
+              referencedMessageId: tracedMessageBase.trace?.referencedMessageId,
               mentionCount: mentions.length,
               attachedFiles: attachedFiles.length > 0 ? attachedFiles : undefined,
             },
@@ -1877,8 +1933,105 @@ export const createLarkWebhookEventHandler = (
         }
       }
 
+      let referencedMessageText: string | undefined;
+      const referencedMessageId = normalized.trace?.referencedMessageId?.trim();
+      if (parsed.kind === 'event_callback_message' && referencedMessageId) {
+        let referencedAttachedFiles: NonNullable<NormalizedIncomingMessageDTO['attachedFiles']> = [];
+
+        if (scopedCompanyId && tracedMessageBase.chatType === 'group') {
+          try {
+            const context = await larkChatContextService.load({
+              companyId: scopedCompanyId,
+              chatId: tracedMessageBase.chatId,
+              chatType: tracedMessageBase.chatType,
+            });
+            const referencedMessage = [...context.recentMessages]
+              .reverse()
+              .find((message) => message.id === referencedMessageId);
+            if (referencedMessage) {
+              referencedMessageText = referencedMessage.content.trim() || undefined;
+              referencedAttachedFiles = parseAttachedFilesFromUnknown(referencedMessage.metadata?.attachedFiles);
+            }
+          } catch (error) {
+            dependencies.log.warn('lark.referenced_message.context_lookup_failed', {
+              ...buildIngressTraceMeta({
+                requestId,
+                message: tracedMessageBase,
+                eventId: parsed.eventId,
+                textHash,
+                larkTenantKey,
+                companyId: scopedCompanyId ?? undefined,
+              }),
+              referencedMessageId,
+              error: error instanceof Error ? error.message : 'unknown_error',
+            });
+          }
+        }
+
+        if ((referencedAttachedFiles.length === 0 && !referencedMessageText) || tracedMessageBase.chatType !== 'group') {
+          try {
+            const referencedMessage = await dependencies.adapter.getMessage({
+              messageId: referencedMessageId,
+            });
+            if (referencedMessage) {
+              const fetchedReferenceText = referencedMessage.text.trim();
+              referencedMessageText = referencedMessageText ?? (fetchedReferenceText || undefined);
+              if (referencedAttachedFiles.length === 0 && referencedMessage.attachmentKeys.length > 0 && scopedCompanyId) {
+                referencedAttachedFiles = await ingestLarkAttachments({
+                  messageId: referencedMessage.messageId,
+                  chatId: normalized.chatId,
+                  attachmentKeys: referencedMessage.attachmentKeys,
+                  adapter: dependencies.adapter,
+                  companyId: scopedCompanyId,
+                  uploaderUserId: effectiveUploaderId,
+                  allowedRoles,
+                });
+              }
+            }
+          } catch (error) {
+            dependencies.log.warn('lark.referenced_message.fetch_failed', {
+              ...buildIngressTraceMeta({
+                requestId,
+                message: tracedMessageBase,
+                eventId: parsed.eventId,
+                textHash,
+                larkTenantKey,
+                companyId: scopedCompanyId ?? undefined,
+              }),
+              referencedMessageId,
+              error: error instanceof Error ? error.message : 'unknown_error',
+            });
+          }
+        }
+
+        if (referencedAttachedFiles.length > 0) {
+          attachedFiles = dedupeAttachedFiles([...attachedFiles, ...referencedAttachedFiles]);
+        }
+
+        if (referencedMessageText || referencedAttachedFiles.length > 0) {
+          dependencies.log.info('lark.ingress.referenced_message_resolved', {
+            ...buildIngressTraceMeta({
+              requestId,
+              message: tracedMessageBase,
+              eventId: parsed.eventId,
+              textHash,
+              larkTenantKey,
+              companyId: scopedCompanyId ?? undefined,
+            }),
+            referencedMessageId,
+            referencedTextLength: referencedMessageText?.length ?? 0,
+            referencedFileCount: referencedAttachedFiles.length,
+            referencedFileAssetIds: referencedAttachedFiles.map((file) => file.fileAssetId),
+          });
+        }
+      }
+
       const tracedMessage: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>> = {
         ...tracedMessageBase,
+        text: buildReferencedMessageSupplement({
+          currentText: tracedMessageBase.text,
+          referencedText: referencedMessageText,
+        }),
         attachedFiles: attachedFiles.length > 0 ? attachedFiles : undefined,
       };
 

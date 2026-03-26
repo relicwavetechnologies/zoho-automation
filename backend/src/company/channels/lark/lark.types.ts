@@ -45,7 +45,10 @@ export type LarkWebhookEnvelope = {
     };
     message?: {
       msg_type?: string;
+      message_type?: string;
       message_id?: string;
+      root_id?: string;
+      parent_id?: string;
       chat_id?: string;
       chat_type?: 'p2p' | 'group' | string;
       create_time?: string;

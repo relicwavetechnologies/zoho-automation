@@ -44,6 +44,8 @@ export type NormalizedIncomingMessageDTO = {
     statusMessageId?: string;
     /** Original inbound message id to anchor reply-style bot responses when supported. */
     replyToMessageId?: string;
+    /** Referenced inbound message id when the user replies to or quotes an earlier message. */
+    referencedMessageId?: string;
   };
 };
 

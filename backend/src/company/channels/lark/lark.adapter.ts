@@ -13,7 +13,8 @@ import type { LarkWebhookEnvelope } from './lark.types';
 import { buildLarkTraceMeta } from './lark-observability';
 import { larkTenantTokenService, LarkTenantTokenService } from './lark-tenant-token.service';
 import { emitRuntimeTrace } from '../../observability';
-import { inferLarkMessageType, parseLarkMessageContent } from './lark-message-content';
+import type { LarkAttachmentKey } from './lark-message-content';
+import { inferLarkMessageType, parseLarkAttachmentKeys, parseLarkMessageContent } from './lark-message-content';
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (typeof value !== 'object' || value === null) {
@@ -69,6 +70,42 @@ const toIsoTimestamp = (source?: string): string => {
   }
 
   return new Date().toISOString();
+};
+
+const readReferencedMessageId = (message: Record<string, unknown>): string | undefined =>
+  readString(message.parent_id)
+  ?? readString(message.root_id);
+
+const readFirstRecord = (value: unknown): Record<string, unknown> | null => {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const record = asRecord(entry);
+      if (record) {
+        return record;
+      }
+    }
+  }
+  return asRecord(value);
+};
+
+const extractFetchedMessageRecord = (payload: Record<string, unknown>): Record<string, unknown> | null => {
+  const data = asRecord(payload.data);
+  if (!data) return null;
+  return (
+    asRecord(data.message)
+    ?? readFirstRecord(data.items)
+    ?? asRecord(data.item)
+    ?? asRecord(data)
+  );
+};
+
+export type LarkFetchedMessage = {
+  messageId: string;
+  chatId?: string;
+  msgType: 'text' | 'post' | 'image' | 'file' | 'media';
+  content: string;
+  text: string;
+  attachmentKeys: LarkAttachmentKey[];
 };
 
 const buildApiErrorResult = (input: {
@@ -516,6 +553,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       altMsgType: readString((message as Record<string, unknown>).message_type),
       content: message.content,
     });
+    const referencedMessageId = readReferencedMessageId(message as Record<string, unknown>);
 
     if (!userId || !chatId || !messageId) {
       return null;
@@ -534,6 +572,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
         larkTenantKey: readTenantKey(envelope),
         larkOpenId,
         larkUserId,
+        referencedMessageId,
       },
     };
 
@@ -897,6 +936,61 @@ export class LarkChannelAdapter implements ChannelAdapter {
       return { buffer: Buffer.from(arrayBuffer), contentType };
     } catch (error) {
       logger.warn('lark.file.download.error', { messageId: input.messageId, fileKey: input.fileKey, error });
+      return null;
+    }
+  }
+
+  public async getMessage(input: {
+    messageId: string;
+  }): Promise<LarkFetchedMessage | null> {
+    let token: string;
+    try {
+      token = await this.tokenService.getAccessToken();
+    } catch (error) {
+      logger.warn('lark.message.fetch.token_failed', { messageId: input.messageId, error });
+      return null;
+    }
+
+    const url = `${this.apiBaseUrl}/open-apis/im/v1/messages/${input.messageId}`;
+    try {
+      const response = await this.fetchImpl(url, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        logger.warn('lark.message.fetch.failed', {
+          messageId: input.messageId,
+          status: response.status,
+          statusText: response.statusText,
+        });
+        return null;
+      }
+
+      const payload = asRecord(await response.json()) ?? {};
+      const message = extractFetchedMessageRecord(payload);
+      if (!message) {
+        logger.warn('lark.message.fetch.empty', { messageId: input.messageId });
+        return null;
+      }
+
+      const content = readString(message.content) ?? '';
+      const msgType = inferLarkMessageType({
+        msgType: readString(message.msg_type),
+        altMsgType: readString(message.message_type),
+        content,
+      });
+
+      return {
+        messageId: readString(message.message_id) ?? input.messageId,
+        chatId: readString(message.chat_id),
+        msgType,
+        content,
+        text: parseLarkMessageContent(content, msgType),
+        attachmentKeys: parseLarkAttachmentKeys(content, msgType),
+      };
+    } catch (error) {
+      logger.warn('lark.message.fetch.error', { messageId: input.messageId, error });
       return null;
     }
   }
