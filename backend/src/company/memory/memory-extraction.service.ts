@@ -29,6 +29,19 @@ const buildBaseDraft = (
 const stripTrailingPunctuation = (value: string): string =>
   value.trim().replace(/[.?!,;:]+$/g, '').trim();
 
+const isVaguePreferenceText = (value: string): boolean => {
+  const normalized = stripTrailingPunctuation(value)
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  if (!normalized) {
+    return true;
+  }
+  return /^(this|that|it|same)\b/.test(normalized)
+    || /\b(this|that|same)\s+(timing|time|one)\b/.test(normalized)
+    || /\btiming only\b/.test(normalized)
+    || /\bthis only\b/.test(normalized);
+};
+
 const isTrivialObjectiveText = (value: string): boolean => {
   const normalized = value
     .trim()
@@ -148,19 +161,41 @@ class MemoryExtractionService {
       }));
     }
 
-    const preferMatch = text.match(/\b(?:i prefer|i like)\s+(.{3,120})/i);
-    if (preferMatch?.[1]) {
-      const value = summarizeMemoryText(stripTrailingPunctuation(preferMatch[1]));
+    if (
+      /\b(?:ist|india standard time|asia\/kolkata|kolkata(?:\s+time(?:zone|ing)?)?|local timezone|local time|utc)\b/i.test(text)
+      && /\b(?:prefer|remember|normalize|adjust|use|schedule|timing|timezone|time)\b/i.test(text)
+    ) {
       drafts.push(buildBaseDraft(input, {
         kind: 'preference',
         scope: 'user_global',
-        subjectKey: normalizeMemorySubjectKey(value),
-        summary: `User preference: ${value}.`,
-        valueJson: { value },
-        confidence: 0.84,
+        subjectKey: 'timezone_preference_asia_kolkata',
+        summary: 'User prefers scheduling and time references in Asia/Kolkata (IST).',
+        valueJson: {
+          timezone: 'Asia/Kolkata',
+          timezoneLabel: 'IST',
+          appliesTo: ['calendar', 'scheduling', 'time_parsing', 'time_display'],
+        },
+        confidence: 0.97,
         source: 'user_explicit',
         lastConfirmedAt: now,
       }));
+    }
+
+    const preferMatch = text.match(/\b(?:i prefer|i like)\s+(.{3,120})/i);
+    if (preferMatch?.[1]) {
+      const value = summarizeMemoryText(stripTrailingPunctuation(preferMatch[1]));
+      if (!isVaguePreferenceText(value)) {
+        drafts.push(buildBaseDraft(input, {
+          kind: 'preference',
+          scope: 'user_global',
+          subjectKey: normalizeMemorySubjectKey(value),
+          summary: `User preference: ${value}.`,
+          valueJson: { value },
+          confidence: 0.84,
+          source: 'user_explicit',
+          lastConfirmedAt: now,
+        }));
+      }
     }
 
     const favoriteMatch = text.match(/\bmy (favorite|favourite)\s+([a-z ]{2,30})\s+is\s+(.{2,80})/i);
