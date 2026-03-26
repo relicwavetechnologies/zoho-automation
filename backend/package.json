@@ -18,6 +18,7 @@
     "prisma:push": "prisma db push",
     "memory:inspect:routing": "tsx scripts/inspect-routing-memory.ts",
     "memory:reset:routing": "tsx scripts/reset-routing-memory.ts",
+    "executions:cleanup": "tsx scripts/cleanup-execution-history.ts",
     "harness:lark:routing": "tsx scripts/run-lark-routing-harness.ts",
     "admin:bootstrap:default": "prisma generate && node scripts/bootstrap-super-admin.cjs",
     "lark:token": "node scripts/generate-lark-tenant-token.cjs",

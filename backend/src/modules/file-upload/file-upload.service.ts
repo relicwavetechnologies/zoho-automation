@@ -144,6 +144,7 @@ export class FileUploadService {
     companyId: string;
     requesterUserId: string;
     requesterAiRole: string;
+    requesterEmail?: string;
     isAdmin?: boolean;
   }) {
     orangeDebug('file.drawer.query.start', {
@@ -160,6 +161,9 @@ export class FileUploadService {
           : {
             OR: [
               { uploaderUserId: input.requesterUserId },
+              ...(input.requesterEmail?.trim()
+                ? [{ uploader: { email: input.requesterEmail.trim() } }]
+                : []),
               { accessPolicies: { some: { aiRole: input.requesterAiRole, canRead: true } } },
             ],
           }),

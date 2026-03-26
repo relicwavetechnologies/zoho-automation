@@ -123,6 +123,14 @@ const loadResolveLarkTaskAssignees = (): ((input: Record<string, unknown>) => Pr
 const loadListLarkTaskAssignablePeople = (): ((input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>) =>
   loadModuleExport('./lark-helpers', 'listLarkTaskAssignablePeople');
 
+const loadCanonicalizeLarkPersonIds = (): ((input: Record<string, unknown>) => Promise<{
+  people: Array<Record<string, unknown>>;
+  resolvedIds: string[];
+  unresolvedIds: string[];
+  ambiguousIds: Array<{ query: string; matches: Array<Record<string, unknown>> }>;
+}>) =>
+  loadModuleExport('./lark-helpers', 'canonicalizeLarkPersonIds');
+
 const loadResolveLarkPeople = (): ((input: Record<string, unknown>) => Promise<{
   people: Array<Record<string, unknown>>;
   unresolved: string[];
@@ -1239,6 +1247,24 @@ const resolveFuzzyRuntimeFileMatch = (
   return ranked[0]?.file ?? null;
 };
 
+const rankRuntimeFileMatches = (
+  files: RuntimeFileReference[],
+  query?: string,
+): RuntimeFileReference[] => {
+  const normalizedQuery = query?.trim();
+  if (!normalizedQuery) {
+    return files.slice().sort((left, right) => right.updatedAtMs - left.updatedAtMs);
+  }
+  return files
+    .map((file) => ({ file, score: scoreRuntimeFileMatch(file, normalizedQuery) }))
+    .filter((entry) => entry.score >= 0.2)
+    .sort((left, right) =>
+      right.score - left.score
+      || right.file.updatedAtMs - left.file.updatedAtMs
+    )
+    .map((entry) => entry.file);
+};
+
 const buildRuntimeFileRecord = (entry: Record<string, unknown>): RuntimeFileReference => ({
   fileAssetId: asString(entry.id) ?? '',
   fileName: asString(entry.fileName) ?? 'file',
@@ -1489,6 +1515,7 @@ const listVisibleRuntimeFiles = async (runtime: VercelRuntimeRequestContext): Pr
     companyId: runtime.companyId,
     requesterUserId: runtime.userId,
     requesterAiRole: runtime.requesterAiRole,
+    requesterEmail: runtime.requesterEmail,
     isAdmin: runtime.requesterAiRole === 'COMPANY_ADMIN' || runtime.requesterAiRole === 'SUPER_ADMIN',
   });
 
@@ -2276,18 +2303,21 @@ export const createVercelDesktopTools = (
         operation: z.enum(['listFiles', 'extractText']),
         fileAssetId: z.string().optional(),
         fileName: z.string().optional(),
+        query: z.string().optional(),
         limit: z.number().int().min(1).max(25).optional(),
       }),
       execute: async (input) => withLifecycle(hooks, 'documentOcrRead', 'Running document OCR', async () => {
         const conversationKey = buildConversationKey(runtime.threadId);
         if (input.operation === 'listFiles') {
           const files = await listVisibleRuntimeFiles(runtime);
-          const limited = files.slice(0, input.limit ?? 10);
+          const limited = rankRuntimeFileMatches(files, input.query ?? input.fileName).slice(0, input.limit ?? 10);
           return buildEnvelope({
             success: true,
             summary: limited.length > 0
-              ? `Found ${limited.length} accessible uploaded file(s).`
-              : 'No accessible uploaded files were found.',
+              ? `Found ${limited.length} accessible uploaded file(s)${input.query?.trim() ? ` matching "${input.query.trim()}"` : ''}.`
+              : input.query?.trim()
+                ? `No accessible uploaded files matched "${input.query.trim()}".`
+                : 'No accessible uploaded files were found.',
             keyData: {
               fileAssetIds: limited.map((file) => file.fileAssetId),
             },
@@ -2299,11 +2329,21 @@ export const createVercelDesktopTools = (
 
         const file = await resolveRuntimeFile(runtime, input);
         if (!file) {
+          const candidates = rankRuntimeFileMatches(await listVisibleRuntimeFiles(runtime), input.fileName).slice(0, 5);
           return buildEnvelope({
             success: false,
-            summary: 'No matching uploaded file was found. Provide fileAssetId or fileName, or upload a document first.',
+            summary: candidates.length > 0
+              ? `No exact uploaded file match was found. Closest visible files: ${candidates.map((candidate) => candidate.fileName).join(', ')}.`
+              : 'No matching uploaded file was found. Provide fileAssetId or fileName, or upload a document first.',
             errorKind: 'missing_input',
             retryable: false,
+            ...(candidates.length > 0
+              ? {
+                fullPayload: {
+                  candidates,
+                },
+              }
+              : {}),
           });
         }
 
@@ -6693,15 +6733,23 @@ export const createVercelDesktopTools = (
               ].some((value) => value?.toLowerCase().includes(normalizedQuery));
             })
             : people;
+          const enriched = filtered.map((person) => {
+            const record = asRecord(person) ?? {};
+            const assigneeId = asString(record.larkOpenId) ?? asString(record.externalUserId);
+            return {
+              ...record,
+              ...(assigneeId ? { assigneeId } : {}),
+            };
+          });
           return buildEnvelope({
             success: true,
-            summary: filtered.length > 0
-              ? `Found ${filtered.length} assignable Lark teammate(s).`
+            summary: enriched.length > 0
+              ? `Found ${enriched.length} assignable Lark teammate(s).`
               : 'No assignable Lark teammates matched the request.',
             keyData: {
-              people: filtered,
+              people: enriched,
             },
-            fullPayload: { people: filtered },
+            fullPayload: { people: enriched },
           });
         }
 
@@ -6810,6 +6858,14 @@ export const createVercelDesktopTools = (
             assignToMe: input.assignToMe,
           })
           : null;
+        const canonicalizedAssigneeIds = (input.assigneeIds?.length ?? 0) > 0
+          ? await loadCanonicalizeLarkPersonIds()({
+            companyId: runtime.companyId,
+            appUserId: runtime.userId,
+            requestLarkOpenId: runtime.larkOpenId,
+            assigneeIds: input.assigneeIds,
+          })
+          : null;
         if (resolvedAssignees?.unresolved.length) {
           return buildEnvelope({
             success: false,
@@ -6827,6 +6883,27 @@ export const createVercelDesktopTools = (
           return buildEnvelope({
             success: false,
             summary: `"${first.query}" matched multiple teammates (${options}). Please be more specific.`,
+            errorKind: 'validation',
+            retryable: false,
+          });
+        }
+        if (canonicalizedAssigneeIds?.unresolvedIds.length) {
+          return buildEnvelope({
+            success: false,
+            summary: `No assignable teammate matched id ${canonicalizedAssigneeIds.unresolvedIds.map((value) => `"${value}"`).join(', ')}.`,
+            errorKind: 'validation',
+            retryable: false,
+          });
+        }
+        if (canonicalizedAssigneeIds?.ambiguousIds.length) {
+          const first = canonicalizedAssigneeIds.ambiguousIds[0];
+          const options = first.matches
+            .map((person) => asString(asRecord(person)?.displayName) ?? asString(asRecord(person)?.email) ?? asString(asRecord(person)?.externalUserId))
+            .filter((value): value is string => Boolean(value))
+            .join(', ');
+          return buildEnvelope({
+            success: false,
+            summary: `Assignee id "${first.query}" matched multiple teammates (${options}). Please be more specific.`,
             errorKind: 'validation',
             retryable: false,
           });
@@ -6862,9 +6939,14 @@ export const createVercelDesktopTools = (
         }).filter((person) => typeof person.id === 'string');
         const desiredAssigneeIds = uniqueDefinedStrings([
           ...resolvedMembers.map((person) => person.id),
-          ...(input.assigneeIds ?? []),
+          ...(canonicalizedAssigneeIds?.resolvedIds ?? []),
         ]);
         const assigneeChangeRequested = desiredAssigneeIds.length > 0;
+        const desiredAssigneeMembers = desiredAssigneeIds.map((id) => ({
+          id,
+          role: 'assignee',
+          type: 'user',
+        }));
 
         const baseBody: Record<string, unknown> = {
           ...(tasklistId ? { tasklist_id: tasklistId } : {}),
@@ -6877,8 +6959,6 @@ export const createVercelDesktopTools = (
           ...(input.extra ? { extra: input.extra } : {}),
           ...(input.customFields ? { custom_fields: input.customFields } : {}),
           ...(input.repeatRule ? { repeat_rule: input.repeatRule } : {}),
-          ...(resolvedMembers.length > 0 ? { members: resolvedMembers } : {}),
-          ...(resolvedMembers.length === 0 && input.assigneeIds && input.assigneeIds.length > 0 ? { assignee_ids: input.assigneeIds } : {}),
         };
 
         if (input.operation === 'create') {
@@ -6930,7 +7010,10 @@ export const createVercelDesktopTools = (
           }
           let task = await larkTasksService.createTask({
             ...getLarkAuthInput(runtime),
-            body: baseBody,
+            body: {
+              ...baseBody,
+              ...(desiredAssigneeMembers.length > 0 ? { members: desiredAssigneeMembers } : {}),
+            },
           });
           let assigneeSyncSummary: string | null = null;
           const createdTaskGuid = asString(task.taskGuid) ?? asString(task.task_guid) ?? asString(task.guid);
@@ -7136,7 +7219,7 @@ export const createVercelDesktopTools = (
         let resolvedCalendarId = input.calendarId?.trim() || defaults?.defaultCalendarId || latestEvent?.calendarId;
         if (!resolvedCalendarId && input.calendarName?.trim()) {
           const lookup = await calendarService.listCalendars({
-            ...getLarkAuthInput(runtime),
+            ...authInput,
             pageSize: 50,
           });
           const candidates = lookup.items.filter((item) =>
@@ -7176,7 +7259,7 @@ export const createVercelDesktopTools = (
         }
         if (input.operation === 'listEvents' || input.operation === 'getEvent') {
           const result = await calendarService.listEvents({
-            ...getLarkAuthInput(runtime),
+            ...authInput,
             calendarId: resolvedCalendarId,
             pageSize: 100,
             startTime: normalizeLarkTimestamp(input.startTime ?? effectiveDateScope, timeZone),
@@ -7242,16 +7325,33 @@ export const createVercelDesktopTools = (
             });
           }
 
+          const explicitStartRfc3339 = toRfc3339(input.startTime);
+          const explicitEndRfc3339 = toRfc3339(input.endTime);
+          const inferredDurationMinutes = input.durationMinutes
+            ?? (explicitStartRfc3339 && explicitEndRfc3339
+              ? Math.max(1, Math.round((Date.parse(explicitEndRfc3339) - Date.parse(explicitStartRfc3339)) / 60_000))
+              : undefined);
+          const defaultMeetingDurationMinutes = 30;
+          const effectiveDurationMinutes = inferredDurationMinutes
+            ?? (input.operation === 'scheduleMeeting' && explicitStartRfc3339 ? defaultMeetingDurationMinutes : undefined);
+          const inferredExactEndRfc3339 = (!explicitEndRfc3339 && explicitStartRfc3339 && effectiveDurationMinutes)
+            ? new Date(Date.parse(explicitStartRfc3339) + (effectiveDurationMinutes * 60_000)).toISOString()
+            : explicitEndRfc3339;
+
           const searchStartTime = input.searchStartTime ?? input.startTime ?? effectiveDateScope;
-          const searchEndTime = input.searchEndTime ?? input.endTime;
-          const searchStartRfc3339 = toRfc3339(searchStartTime);
-          const searchEndRfc3339 = toRfc3339(searchEndTime);
+          const searchEndTime = input.searchEndTime
+            ?? input.endTime
+            ?? (input.operation === 'scheduleMeeting' && explicitStartRfc3339
+              ? inferredExactEndRfc3339 ?? new Date(Date.parse(explicitStartRfc3339) + (defaultMeetingDurationMinutes * 60_000)).toISOString()
+              : undefined);
+          const searchStartRfc3339 = input.searchStartTime ? toRfc3339(input.searchStartTime) : (explicitStartRfc3339 ?? toRfc3339(searchStartTime));
+          const searchEndRfc3339 = input.searchEndTime ? toRfc3339(input.searchEndTime) : (toRfc3339(searchEndTime) ?? inferredExactEndRfc3339);
           if (!searchStartRfc3339 || !searchEndRfc3339) {
             return buildEnvelope({
               success: false,
               summary: input.operation === 'listAvailability'
                 ? 'Availability lookup requires searchStartTime and searchEndTime.'
-                : 'Scheduling a meeting requires a search window. Provide searchStartTime and searchEndTime, or explicit startTime and endTime.',
+                : 'Scheduling a meeting requires a concrete start time, or a search window. Provide startTime, or searchStartTime and searchEndTime.',
               errorKind: 'missing_input',
               retryable: false,
             });
@@ -7320,12 +7420,7 @@ export const createVercelDesktopTools = (
             });
           }
 
-          const explicitStartRfc3339 = toRfc3339(input.startTime);
-          const explicitEndRfc3339 = toRfc3339(input.endTime);
-          const durationMinutes = input.durationMinutes
-            ?? (explicitStartRfc3339 && explicitEndRfc3339
-              ? Math.max(1, Math.round((Date.parse(explicitEndRfc3339) - Date.parse(explicitStartRfc3339)) / 60_000))
-              : undefined);
+          const durationMinutes = effectiveDurationMinutes;
           if (!input.summary?.trim()) {
             return buildEnvelope({
               success: false,
@@ -7334,19 +7429,19 @@ export const createVercelDesktopTools = (
               retryable: false,
             });
           }
-          if (!durationMinutes && !(explicitStartRfc3339 && explicitEndRfc3339)) {
+          if (!durationMinutes && !(explicitStartRfc3339 && inferredExactEndRfc3339)) {
             return buildEnvelope({
               success: false,
-              summary: 'Meeting scheduling requires either explicit startTime and endTime, or durationMinutes plus a search window.',
+              summary: 'Meeting scheduling requires a concrete startTime, or durationMinutes plus a search window.',
               errorKind: 'missing_input',
               retryable: false,
             });
           }
 
-          const chosenSlot = explicitStartRfc3339 && explicitEndRfc3339
+          const chosenSlot = explicitStartRfc3339
             ? {
               startMs: Date.parse(explicitStartRfc3339),
-              endMs: Date.parse(explicitEndRfc3339),
+              endMs: Date.parse(inferredExactEndRfc3339 as string),
             }
             : findEarliestCommonSlot({
               windowStartMs,
@@ -7440,7 +7535,7 @@ export const createVercelDesktopTools = (
         }
         if (input.operation === 'deleteEvent') {
           await calendarService.deleteEvent({
-            ...getLarkAuthInput(runtime),
+            ...authInput,
             calendarId: resolvedCalendarId,
             eventId: resolvedEventId as string,
           });
@@ -7468,12 +7563,12 @@ export const createVercelDesktopTools = (
         };
         const event = input.operation === 'createEvent'
           ? await calendarService.createEvent({
-            ...getLarkAuthInput(runtime),
+            ...authInput,
             calendarId: resolvedCalendarId,
             body,
           })
           : await calendarService.updateEvent({
-            ...getLarkAuthInput(runtime),
+            ...authInput,
             calendarId: resolvedCalendarId,
             eventId: resolvedEventId as string,
             body,

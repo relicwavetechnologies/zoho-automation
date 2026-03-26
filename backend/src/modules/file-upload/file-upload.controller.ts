@@ -11,6 +11,12 @@ import { toolPermissionService } from '../../company/tools/tool-permission.servi
 import { knowledgeShareService } from '../../company/knowledge-share/knowledge-share.service';
 import { prisma } from '../../utils/prisma';
 import { orangeDebug } from '../../utils/orange-debug';
+import {
+  inferFileVisibilityScope,
+  normalizeFileVisibilityScope,
+  resolveAllowedRolesForVisibilityScope,
+  resolveUploaderRoleForCompany,
+} from './file-visibility-scope';
 
 type MemberRequest = Request & { memberSession?: MemberSessionDTO };
 
@@ -43,10 +49,21 @@ class FileUploadController extends BaseController {
 
     const rawRoles = typeof req.body?.allowedRoles === 'string'
       ? req.body.allowedRoles.split(',').map((r: string) => r.trim()).filter(Boolean)
+      : Array.isArray(req.body?.allowedRoles)
+        ? req.body.allowedRoles.filter((role: unknown): role is string => typeof role === 'string').map((role: string) => role.trim()).filter(Boolean)
       : [];
 
-    // Default: file is accessible only to uploader's role and above
-    const allowedRoles = rawRoles.length > 0 ? rawRoles : [requesterAiRole ?? 'MEMBER'];
+    const visibilityScope = normalizeFileVisibilityScope(req.body?.visibilityScope) ?? (rawRoles.length > 0 ? 'custom' : 'personal');
+    const allowedRoles = await resolveAllowedRolesForVisibilityScope({
+      companyId: session.companyId,
+      visibilityScope,
+      uploaderRole: requesterAiRole ?? 'MEMBER',
+      explicitRoles: rawRoles,
+    });
+
+    if (visibilityScope === 'custom' && allowedRoles.length === 0) {
+      throw new HttpException(400, 'Custom visibility requires at least one valid allowed role');
+    }
 
     const result = await fileUploadService.upload({
       buffer: req.file.buffer,
@@ -59,7 +76,11 @@ class FileUploadController extends BaseController {
       allowedRoles,
     });
 
-    res.json(ApiResponse.success(result, 'File uploaded and queued for ingestion'));
+    res.json(ApiResponse.success({
+      ...result,
+      visibilityScope,
+      allowedRoles,
+    }, 'File uploaded and queued for ingestion'));
   };
 
   /**
@@ -83,8 +104,35 @@ class FileUploadController extends BaseController {
       companyId: session.companyId,
       requesterUserId: session.userId,
       requesterAiRole,
+      requesterEmail: typeof session.email === 'string' ? session.email : undefined,
       isAdmin,
     });
+    const allRoleSlugs = await resolveAllowedRolesForVisibilityScope({
+      companyId: session.companyId,
+      visibilityScope: 'company',
+      uploaderRole: requesterAiRole,
+    });
+    const uploaderIds = Array.from(new Set(files.map((file) => file.uploaderUserId)));
+    const memberships = uploaderIds.length > 0
+      ? await prisma.adminMembership.findMany({
+        where: {
+          companyId: session.companyId,
+          userId: { in: uploaderIds },
+          isActive: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          userId: true,
+          role: true,
+        },
+      })
+      : [];
+    const uploaderRoleByUserId = new Map<string, string>();
+    for (const membership of memberships) {
+      if (!uploaderRoleByUserId.has(membership.userId)) {
+        uploaderRoleByUserId.set(membership.userId, membership.role);
+      }
+    }
     const conversationKeys = files.map((file) => `file:${file.id}`);
     const shareRows = conversationKeys.length > 0
       ? await prisma.vectorShareRequest.findMany({
@@ -118,8 +166,17 @@ class FileUploadController extends BaseController {
     res.json(ApiResponse.success({
       files: files.map((file) => {
         const share = latestShareByConversationKey.get(`file:${file.id}`);
+        const allowedRoles = file.accessPolicies.filter((policy) => policy.canRead).map((policy) => policy.aiRole);
+        const uploaderRole = uploaderRoleByUserId.get(file.uploaderUserId) ?? 'MEMBER';
         return {
           ...file,
+          allowedRoles,
+          uploaderRole,
+          visibilityScope: inferFileVisibilityScope({
+            uploaderRole,
+            allowedRoles,
+            allRoles: allRoleSlugs,
+          }),
           shareStatus: share?.status,
           shareSummary: share?.summary,
           sharedCompanyWide: share ? ['approved', 'auto_shared', 'shared_notified', 'already_shared'].includes(share.status) : false,
@@ -136,10 +193,35 @@ class FileUploadController extends BaseController {
   updatePolicy = async (req: Request, res: Response): Promise<void> => {
     const session = this.session(req);
     const { fileAssetId } = req.params;
-    const { allowedRoles } = req.body;
-
-    if (!Array.isArray(allowedRoles) || allowedRoles.some((r: unknown) => typeof r !== 'string')) {
-      throw new HttpException(400, 'allowedRoles must be an array of strings');
+    const requestedScope = normalizeFileVisibilityScope(req.body?.visibilityScope);
+    const requestedRoles = Array.isArray(req.body?.allowedRoles)
+      ? req.body.allowedRoles.filter((role: unknown): role is string => typeof role === 'string').map((role: string) => role.trim()).filter(Boolean)
+      : [];
+    const asset = await prisma.fileAsset.findFirst({
+      where: {
+        id: fileAssetId,
+        companyId: session.companyId,
+      },
+      select: {
+        uploaderUserId: true,
+      },
+    });
+    if (!asset) {
+      throw new HttpException(404, 'File asset not found');
+    }
+    const uploaderRole = await resolveUploaderRoleForCompany({
+      companyId: session.companyId,
+      uploaderUserId: asset.uploaderUserId,
+    });
+    const visibilityScope = requestedScope ?? (requestedRoles.length > 0 ? 'custom' : 'personal');
+    const allowedRoles = await resolveAllowedRolesForVisibilityScope({
+      companyId: session.companyId,
+      visibilityScope,
+      uploaderRole,
+      explicitRoles: requestedRoles,
+    });
+    if (visibilityScope === 'custom' && allowedRoles.length === 0) {
+      throw new HttpException(400, 'Custom visibility requires at least one valid allowed role');
     }
 
     await fileUploadService.updateAccessPolicy({
@@ -149,7 +231,7 @@ class FileUploadController extends BaseController {
       updatedBy: session.userId,
     });
 
-    res.json(ApiResponse.success({ fileAssetId, allowedRoles }, 'Access policy updated'));
+    res.json(ApiResponse.success({ fileAssetId, allowedRoles, visibilityScope }, 'Access policy updated'));
   };
 
   /**

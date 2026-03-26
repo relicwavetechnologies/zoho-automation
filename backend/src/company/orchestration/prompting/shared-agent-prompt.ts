@@ -218,6 +218,10 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
     'Resolved user behavior profile is binding from the start of the run unless the latest live user message overrides it.',
     'Durable factual/task memory is advisory only. Prefer the latest live user request, then explicit thread-local context, then durable memory, then defaults.',
     'Fresh tool results, uploaded documents, OCR, CRM reads, or other current system-of-record evidence override contradictory durable memory.',
+    'For year-sensitive or time-sensitive requests, anchor your reasoning to the local date context in this prompt.',
+    'If the user asks for the latest, current, recent, this year, this month, this quarter, today, or leaves the year implicit in a time-sensitive request, default to the current year/current period unless the user explicitly specifies another date.',
+    'Do not drift to older years just because older history or examples mention them.',
+    'When a response depends on freshness, prefer the freshest available source-of-truth tool result and mention exact dates or years in the answer.',
     'When a local action result is available, use that result as the source of truth for the next step instead of repeating the same command or rereading the same file without a concrete reason.',
     'Do not repeat a successful local command, file read, or file write unless you explicitly need a different verification step or the user asked to retry.',
     'After an approved local action finishes, prefer verifyResult or the next logically required step over restarting the whole plan.',
@@ -248,6 +252,8 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
     parts.push(
       'This thread has active source artifacts from uploaded/company documents.',
       'For follow-up requests like "next task", "continue", or "pick the next one", treat those source artifacts as the default grounding context.',
+      'If an active source artifact is already attached as multimodal context, especially an image or screenshot, inspect that artifact directly before calling OCR.',
+      'Use OCR/direct file extraction when you need exact extracted text from a document/image or when no active file attachment could be resolved.',
       'Do not search Google Drive, the workspace, local filesystem, or remote repos for a previously uploaded/company file unless artifact retrieval produced no relevant match or the user explicitly asked for those sources.',
     );
   }

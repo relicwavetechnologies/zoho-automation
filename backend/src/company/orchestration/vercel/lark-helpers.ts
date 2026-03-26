@@ -29,6 +29,13 @@ export type ResolveAssigneesResult = {
   ambiguous: Array<{ query: string; matches: VercelLarkPerson[] }>;
 };
 
+export type CanonicalizeLarkIdsResult = {
+  people: VercelLarkPerson[];
+  resolvedIds: string[];
+  unresolvedIds: string[];
+  ambiguousIds: Array<{ query: string; matches: VercelLarkPerson[] }>;
+};
+
 const ISO_WITH_TIMEZONE_PATTERN = /(z|[+-]\d{2}:\d{2})$/i;
 const ISO_LOCAL_PATTERN = /^(\d{4})-(\d{2})-(\d{2})[t\s](\d{2}):(\d{2})(?::(\d{2}))?$/i;
 
@@ -108,6 +115,23 @@ const dedupePeople = (people: VercelLarkPerson[]): VercelLarkPerson[] => {
 
   return result;
 };
+
+const uniqueStrings = (values: Array<string | undefined>): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = normalize(value);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+};
+
+export const getCanonicalLarkOpenId = (person: VercelLarkPerson): string | undefined =>
+  normalize(person.larkOpenId) ?? normalize(person.externalUserId);
 
 const tokenOverlapScore = (left: string, right: string): number => {
   const leftTokens = new Set(left.split(' ').filter(Boolean));
@@ -236,6 +260,52 @@ export const resolveLarkPeople = async (
     assigneeNames: input.assigneeNames,
     assignToMe: input.assignToMe,
   });
+};
+
+export const canonicalizeLarkPersonIds = async (
+  input: ListAssignablePeopleInput & { assigneeIds?: string[] },
+): Promise<CanonicalizeLarkIdsResult> => {
+  const people = await listLarkPeople(input);
+  const resolvedIds: string[] = [];
+  const unresolvedIds: string[] = [];
+  const ambiguousIds: Array<{ query: string; matches: VercelLarkPerson[] }> = [];
+
+  for (const rawValue of input.assigneeIds ?? []) {
+    const query = normalize(rawValue);
+    if (!query) {
+      continue;
+    }
+
+    const result = resolveLarkPersonFromDirectory(query, people);
+    if (result.match) {
+      const canonicalId = getCanonicalLarkOpenId(result.match);
+      if (canonicalId) {
+        resolvedIds.push(canonicalId);
+      } else {
+        unresolvedIds.push(query);
+      }
+      continue;
+    }
+
+    if (result.ambiguous?.length) {
+      ambiguousIds.push({ query, matches: result.ambiguous });
+      continue;
+    }
+
+    if (query.startsWith('ou_')) {
+      resolvedIds.push(query);
+      continue;
+    }
+
+    unresolvedIds.push(query);
+  }
+
+  return {
+    people,
+    resolvedIds: uniqueStrings(resolvedIds),
+    unresolvedIds: uniqueStrings(unresolvedIds),
+    ambiguousIds,
+  };
 };
 
 export type VercelLarkTaskAssignablePerson = VercelLarkPerson;
