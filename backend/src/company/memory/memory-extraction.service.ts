@@ -29,6 +29,21 @@ const buildBaseDraft = (
 const stripTrailingPunctuation = (value: string): string =>
   value.trim().replace(/[.?!,;:]+$/g, '').trim();
 
+const isTrivialObjectiveText = (value: string): boolean => {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/^(@[^\s]+\s*)+/g, '')
+    .replace(/\s+/g, ' ');
+  if (!normalized) {
+    return true;
+  }
+  if (normalized.length < 8) {
+    return true;
+  }
+  return /^(ok|okay|sure|yes|no|done|continue|proceed|go on|try again|retry|thanks|thank you|cool|great|nice|thik h|thik hai|theek h|theek hai)$/i.test(normalized);
+};
+
 const parseReplyLength = (text: string): UserMemoryReplyLength | undefined => {
   if (/\b(?:brief|briefly|concise|short|one[- ]line|few words|minimal)\b/i.test(text)) {
     return 'short';
@@ -198,6 +213,9 @@ class MemoryExtractionService {
         continue;
       }
       const value = summarizeMemoryText(stripTrailingPunctuation(match[1]));
+      if (isTrivialObjectiveText(value)) {
+        continue;
+      }
       drafts.push(buildBaseDraft(input, {
         kind: 'ongoing_task',
         scope: 'thread_pinned',
@@ -256,16 +274,18 @@ class MemoryExtractionService {
 
     if (input.activeObjective?.trim()) {
       const objective = summarizeMemoryText(input.activeObjective);
-      drafts.push(buildBaseDraft(input, {
-        kind: 'ongoing_task',
-        scope: 'thread_pinned',
-        subjectKey: normalizeMemorySubjectKey(objective),
-        summary: `Ongoing task: ${objective}.`,
-        valueJson: { objective },
-        confidence: 0.76,
-        source: 'assistant_compacted',
-        staleAfterAt: addDays(now, 14),
-      }));
+      if (!isTrivialObjectiveText(objective)) {
+        drafts.push(buildBaseDraft(input, {
+          kind: 'ongoing_task',
+          scope: 'thread_pinned',
+          subjectKey: normalizeMemorySubjectKey(objective),
+          summary: `Ongoing task: ${objective}.`,
+          valueJson: { objective },
+          confidence: 0.76,
+          source: 'assistant_compacted',
+          staleAfterAt: addDays(now, 14),
+        }));
+      }
     }
 
     for (const mutation of input.completedMutations ?? []) {

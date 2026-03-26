@@ -28,6 +28,11 @@ export type ToolRoutingExecutionOutcome = {
   pendingApproval?: boolean;
 };
 
+type SuccessfulExecutionOutcome = ToolRoutingExecutionOutcome & {
+  success: true;
+  pendingApproval?: false | undefined;
+};
+
 type ParsedRoutingMemory = {
   id: string;
   scope: UserMemoryScope;
@@ -377,6 +382,104 @@ const EXECUTION_TOOL_OPERATION: Partial<Record<string, ToolRoutingOperationClass
   larkBase: 'read',
 };
 
+const choosePreferredToolIdForIntent = (input: {
+  plannerChosenToolId?: string | null;
+  primaryOutcomeToolName: string;
+  runExposedToolIds?: string[];
+  intent: ToolRoutingIntent;
+}): string | null => {
+  const runExposed = new Set(input.runExposedToolIds ?? []);
+  const candidates = EXECUTION_TOOL_ID_CANDIDATES[input.primaryOutcomeToolName] ?? [];
+  const usableCandidates = candidates.filter((toolId) => runExposed.size === 0 || runExposed.has(toolId));
+  const nonHelperCandidates = usableCandidates.filter((toolId) => !isGenericHelperTool(toolId));
+  const plannerChosen = input.plannerChosenToolId?.trim();
+  if (plannerChosen && !isGenericHelperTool(plannerChosen)) {
+    return plannerChosen;
+  }
+
+  const preferredOrderByDomain: Partial<Record<ToolRoutingDomain, Partial<Record<ToolRoutingOperationClass, string[]>>>> = {
+    lark_calendar: {
+      schedule: ['lark-calendar-agent', 'lark-calendar-write', 'lark-calendar-read', 'lark-calendar-list'],
+      write: ['lark-calendar-agent', 'lark-calendar-write', 'lark-calendar-read', 'lark-calendar-list'],
+      read: ['lark-calendar-read', 'lark-calendar-list', 'lark-calendar-agent'],
+      inspect: ['lark-calendar-read', 'lark-calendar-list', 'lark-calendar-agent'],
+    },
+    lark_task: {
+      write: ['lark-task-write', 'lark-task-agent', 'lark-task-read'],
+      read: ['lark-task-read', 'lark-task-agent', 'lark-task-write'],
+      inspect: ['lark-task-read', 'lark-task-agent', 'lark-task-write'],
+    },
+    lark_message: {
+      send: ['lark-message-write', 'lark-message-read'],
+      read: ['lark-message-read', 'lark-message-write'],
+    },
+    lark_base: {
+      write: ['lark-base-write', 'lark-base-agent', 'lark-base-read'],
+      read: ['lark-base-read', 'lark-base-agent', 'lark-base-write'],
+    },
+  };
+
+  const domainPreferred = preferredOrderByDomain[input.intent.domain]?.[input.intent.operationClass] ?? [];
+  const preferredPool = nonHelperCandidates.length > 0 ? nonHelperCandidates : usableCandidates;
+  for (const toolId of domainPreferred) {
+    if (preferredPool.includes(toolId)) {
+      return toolId;
+    }
+  }
+
+  return (
+    nonHelperCandidates[0]
+    ?? usableCandidates[0]
+    ?? candidates.find((toolId) => !isGenericHelperTool(toolId))
+    ?? candidates[0]
+    ?? plannerChosen
+    ?? null
+  );
+};
+
+const choosePrimaryOutcomeForIntent = (input: {
+  successful: SuccessfulExecutionOutcome[];
+  intent: ToolRoutingIntent;
+  plannerChosenToolId?: string | null;
+}): SuccessfulExecutionOutcome | null => {
+  const plannerChosenFamily = input.plannerChosenToolId ? deriveToolFamily(input.plannerChosenToolId) : null;
+  let best: { outcome: SuccessfulExecutionOutcome; score: number } | null = null;
+
+  for (const [index, outcome] of input.successful.entries()) {
+    const candidateToolIds = EXECUTION_TOOL_ID_CANDIDATES[outcome.toolName] ?? [];
+    const candidateFamilies = new Set(candidateToolIds.map((toolId) => deriveToolFamily(toolId)));
+    const candidateOperation = EXECUTION_TOOL_OPERATION[outcome.toolName];
+    const hasDomainMatch = candidateFamilies.has(input.intent.domain);
+    const hasOperationMatch = candidateOperation === input.intent.operationClass;
+    const hasPlannerFamilyMatch = plannerChosenFamily ? candidateFamilies.has(plannerChosenFamily) : false;
+    const nonHelperCandidates = candidateToolIds.filter((toolId) => !isGenericHelperTool(toolId));
+
+    let score = 0;
+    score += hasDomainMatch ? 120 : 0;
+    score += hasOperationMatch ? 50 : 0;
+    score += hasPlannerFamilyMatch ? 20 : 0;
+    score += nonHelperCandidates.length > 0 ? 10 : -40;
+    score += index;
+
+    if (!hasDomainMatch && candidateFamilies.size > 0 && input.intent.domain !== 'unknown') {
+      score -= 60;
+    }
+    if (!hasOperationMatch && candidateOperation && input.intent.operationClass !== candidateOperation) {
+      score -= 25;
+    }
+
+    if (!best || score > best.score) {
+      best = { outcome, score };
+    }
+  }
+
+  if (!best) {
+    return null;
+  }
+
+  return best.score >= 40 ? best.outcome : null;
+};
+
 export const normalizeToolRoutingIntent = (input: {
   latestUserMessage: string;
   childRoute?: RoutingChildRouteHints;
@@ -550,7 +653,7 @@ class ToolRoutingService {
     if (!input.userId) {
       return;
     }
-    const successful = input.toolResults.filter((result) => result.success && !result.pendingApproval);
+    const successful = input.toolResults.filter((result): result is SuccessfulExecutionOutcome => result.success && !result.pendingApproval);
     if (successful.length === 0) {
       return;
     }
@@ -561,16 +664,20 @@ class ToolRoutingService {
       hasWorkspace: input.hasWorkspace,
       hasArtifacts: input.hasArtifacts,
     });
-    const primaryOutcome = successful[successful.length - 1]!;
-    const candidateToolIds = EXECUTION_TOOL_ID_CANDIDATES[primaryOutcome.toolName] ?? [];
-    const chosenToolId = (
-      (input.plannerChosenToolId && !isGenericHelperTool(input.plannerChosenToolId) ? input.plannerChosenToolId : null)
-      ?? candidateToolIds.find((toolId) => input.runExposedToolIds?.includes(toolId) && !isGenericHelperTool(toolId))
-      ?? candidateToolIds.find((toolId) => input.runExposedToolIds?.includes(toolId))
-      ?? candidateToolIds.find((toolId) => !isGenericHelperTool(toolId))
-      ?? candidateToolIds[0]
-      ?? input.plannerChosenToolId
-    );
+    const primaryOutcome = choosePrimaryOutcomeForIntent({
+      successful,
+      intent,
+      plannerChosenToolId: input.plannerChosenToolId,
+    });
+    if (!primaryOutcome) {
+      return;
+    }
+    const chosenToolId = choosePreferredToolIdForIntent({
+      plannerChosenToolId: input.plannerChosenToolId,
+      primaryOutcomeToolName: primaryOutcome.toolName,
+      runExposedToolIds: input.runExposedToolIds,
+      intent,
+    });
     if (!chosenToolId) {
       return;
     }

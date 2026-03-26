@@ -679,14 +679,19 @@ const buildLarkMemoryHelpText = (): string => [
   'Clear all durable personal memories.',
 ].join('\n');
 
-const formatLarkMemoryListText = (items: Array<{ id: string; kindLabel: string; summary: string }>): string => {
+const formatLarkMemoryListText = (
+  items: Array<{ id: string; kindLabel: string; summary: string; scopeLabel?: string }>,
+): string => {
   if (items.length === 0) {
     return 'No durable personal memories are stored yet.';
   }
   return [
     `Active memories (${items.length}):`,
     '',
-    ...items.slice(0, 20).map((item, index) => `${index + 1}. [${item.kindLabel}] ${item.summary} (${item.id})`),
+    ...items.slice(0, 20).map((item, index) => {
+      const scopeSuffix = item.scopeLabel ? ` • ${item.scopeLabel}` : '';
+      return `${index + 1}. [${item.kindLabel}${scopeSuffix}] ${item.summary} (${item.id})`;
+    }),
     '',
     'Use /memory forget <number-or-id> to remove one item.',
   ].join('\n');
@@ -1899,6 +1904,7 @@ export const createLarkWebhookEventHandler = (
               id: item.id,
               kindLabel: item.kindLabel,
               summary: item.summary,
+              scopeLabel: item.scope === 'thread_pinned' ? 'thread' : 'global',
             }))),
           });
           return res.status(202).json({
