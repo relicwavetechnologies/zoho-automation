@@ -38,6 +38,8 @@ export type CanonicalizeLarkIdsResult = {
 
 const ISO_WITH_TIMEZONE_PATTERN = /(z|[+-]\d{2}:\d{2})$/i;
 const ISO_LOCAL_PATTERN = /^(\d{4})-(\d{2})-(\d{2})[t\s](\d{2}):(\d{2})(?::(\d{2}))?$/i;
+const TIME_ONLY_12H_PATTERN = /\b(\d{1,2})(?:(?::|\.)(\d{2}))?\s*(am|pm)\b/i;
+const TIME_ONLY_24H_PATTERN = /\b(\d{1,2})(?::|\.)(\d{2})\b/;
 
 const normalize = (value?: string | null): string | undefined => {
   if (typeof value !== 'string') {
@@ -371,6 +373,26 @@ const convertLocalDateTimeToEpochSeconds = (
   return String(Math.floor(resolvedUtc / 1000));
 };
 
+const getCurrentDatePartsInTimeZone = (timeZone: string, offsetDays = 0): {
+  year: number;
+  month: number;
+  day: number;
+} => {
+  const base = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(base);
+  const read = (type: string): number => Number(parts.find((part) => part.type === type)?.value ?? '0');
+  return {
+    year: read('year'),
+    month: read('month'),
+    day: read('day'),
+  };
+};
+
 export const normalizeLarkTimestamp = (value?: string, timeZone = 'UTC'): string | undefined => {
   if (!value) {
     return undefined;
@@ -393,6 +415,39 @@ export const normalizeLarkTimestamp = (value?: string, timeZone = 'UTC'): string
       minute: Number(minute),
       second: Number(second ?? '0'),
     }, timeZone);
+  }
+  const lowered = trimmed.toLowerCase();
+  const offsetDays = lowered.includes('tomorrow') ? 1 : lowered.includes('yesterday') ? -1 : 0;
+  const twelveHourMatch = trimmed.match(TIME_ONLY_12H_PATTERN);
+  if (twelveHourMatch) {
+    const [, hourRaw, minuteRaw, meridiemRaw] = twelveHourMatch;
+    let hour = Number(hourRaw);
+    const minute = Number(minuteRaw ?? '0');
+    const meridiem = meridiemRaw.toLowerCase();
+    if (meridiem === 'pm' && hour < 12) hour += 12;
+    if (meridiem === 'am' && hour === 12) hour = 0;
+    const date = getCurrentDatePartsInTimeZone(timeZone, offsetDays);
+    return convertLocalDateTimeToEpochSeconds({
+      ...date,
+      hour,
+      minute,
+      second: 0,
+    }, timeZone);
+  }
+  const twentyFourHourMatch = trimmed.match(TIME_ONLY_24H_PATTERN);
+  if (twentyFourHourMatch && !trimmed.match(/^\d{4}-\d{2}-\d{2}/)) {
+    const [, hourRaw, minuteRaw] = twentyFourHourMatch;
+    const hour = Number(hourRaw);
+    const minute = Number(minuteRaw);
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      const date = getCurrentDatePartsInTimeZone(timeZone, offsetDays);
+      return convertLocalDateTimeToEpochSeconds({
+        ...date,
+        hour,
+        minute,
+        second: 0,
+      }, timeZone);
+    }
   }
   const parsed = Date.parse(trimmed);
   if (Number.isFinite(parsed)) {

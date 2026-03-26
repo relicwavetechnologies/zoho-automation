@@ -111,6 +111,7 @@ export type VercelRuntimeRequestContext = {
   userId: string;
   requesterAiRole: string;
   requesterEmail?: string;
+  latestUserMessage?: string;
   departmentId?: string;
   departmentName?: string;
   departmentRoleSlug?: string;

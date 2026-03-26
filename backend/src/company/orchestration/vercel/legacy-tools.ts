@@ -7124,7 +7124,38 @@ export const createVercelDesktopTools = (
         const conversationKey = buildConversationKey(runtime.threadId);
         const latestEvent = conversationMemoryStore.getLatestLarkCalendarEvent(conversationKey);
         const effectiveDateScope = input.dateScope ?? runtime.dateScope;
+        const latestUserMessage = runtime.latestUserMessage?.trim() ?? '';
         const authInput = getLarkAuthInput(runtime);
+        const extractCalendarSummaryFromMessage = (message: string): string | undefined => {
+          if (!message) return undefined;
+          const quoted = message.match(/['"]([^'"]{3,120})['"]/);
+          if (quoted?.[1]) {
+            return quoted[1].trim();
+          }
+          const titled = message.match(/(.+?)\s+is\s+the\s+title\b/i);
+          if (titled?.[1]) {
+            return titled[1].trim().replace(/^["']|["']$/g, '');
+          }
+          const summaryAfterLabel = message.match(/\btitle\s*(?:is|:)\s*([^,\n]+)/i);
+          if (summaryAfterLabel?.[1]) {
+            return summaryAfterLabel[1].trim().replace(/^["']|["']$/g, '');
+          }
+          return undefined;
+        };
+        const extractCalendarStartTimeFromMessage = (message: string): string | undefined => {
+          if (!message) return undefined;
+          const explicitAt = message.match(/\bat\s+([^,\n]+?)(?=\s*(?:,|attendees?\b|with\b|for\b|$))/i);
+          if (explicitAt?.[1]) {
+            return explicitAt[1].trim();
+          }
+          return undefined;
+        };
+        const resolvedSummary = input.summary?.trim() || extractCalendarSummaryFromMessage(latestUserMessage);
+        const resolvedStartTimeInput = input.startTime ?? (
+          (input.operation === 'createEvent' || input.operation === 'scheduleMeeting' || input.operation === 'listAvailability')
+            ? extractCalendarStartTimeFromMessage(latestUserMessage)
+            : undefined
+        );
         const toEpochMs = (value?: string): number | null => {
           const normalized = normalizeLarkTimestamp(value, timeZone);
           if (!normalized) {
@@ -7325,7 +7356,7 @@ export const createVercelDesktopTools = (
             });
           }
 
-          const explicitStartRfc3339 = toRfc3339(input.startTime);
+          const explicitStartRfc3339 = toRfc3339(resolvedStartTimeInput);
           const explicitEndRfc3339 = toRfc3339(input.endTime);
           const inferredDurationMinutes = input.durationMinutes
             ?? (explicitStartRfc3339 && explicitEndRfc3339
@@ -7338,7 +7369,7 @@ export const createVercelDesktopTools = (
             ? new Date(Date.parse(explicitStartRfc3339) + (effectiveDurationMinutes * 60_000)).toISOString()
             : explicitEndRfc3339;
 
-          const searchStartTime = input.searchStartTime ?? input.startTime ?? effectiveDateScope;
+          const searchStartTime = input.searchStartTime ?? resolvedStartTimeInput ?? effectiveDateScope;
           const searchEndTime = input.searchEndTime
             ?? input.endTime
             ?? (input.operation === 'scheduleMeeting' && explicitStartRfc3339
@@ -7421,7 +7452,7 @@ export const createVercelDesktopTools = (
           }
 
           const durationMinutes = effectiveDurationMinutes;
-          if (!input.summary?.trim()) {
+          if (!resolvedSummary) {
             return buildEnvelope({
               success: false,
               summary: 'Meeting scheduling requires a summary/title.',
@@ -7464,7 +7495,7 @@ export const createVercelDesktopTools = (
           }
 
           const eventBody = {
-            summary: input.summary.trim(),
+            summary: resolvedSummary,
             ...(input.description?.trim() ? { description: input.description.trim() } : {}),
             start_time: { timestamp: String(Math.floor(chosenSlot.startMs / 1000)) },
             end_time: { timestamp: String(Math.floor(chosenSlot.endMs / 1000)) },
@@ -7505,7 +7536,7 @@ export const createVercelDesktopTools = (
           });
           return buildEnvelope({
             success: true,
-            summary: `Scheduled Lark meeting "${input.summary.trim()}" for ${availability.length} attendee(s).`,
+            summary: `Scheduled Lark meeting "${resolvedSummary}" for ${availability.length} attendee(s).`,
             keyData: {
               event,
               scheduledStartTime: formatEpoch(chosenSlot.startMs),
@@ -7545,7 +7576,13 @@ export const createVercelDesktopTools = (
             keyData: { event: { eventId: resolvedEventId } },
           });
         }
-        if (input.operation === 'createEvent' && (!input.summary || !(input.startTime ?? effectiveDateScope) || !input.endTime)) {
+        const inferredCreateStartTime = resolvedStartTimeInput ?? effectiveDateScope;
+        const inferredCreateEndTime = input.endTime ?? (
+          inferredCreateStartTime && normalizeLarkTimestamp(inferredCreateStartTime, timeZone)
+            ? new Date((Number(normalizeLarkTimestamp(inferredCreateStartTime, timeZone)) + (30 * 60)) * 1000).toISOString()
+            : undefined
+        );
+        if (input.operation === 'createEvent' && (!resolvedSummary || !inferredCreateStartTime || !inferredCreateEndTime)) {
           return buildEnvelope({
             success: false,
             summary: 'Lark calendar create requires summary, startTime, and endTime.',
@@ -7554,12 +7591,12 @@ export const createVercelDesktopTools = (
           });
         }
         const body = {
-          ...(input.summary ? { summary: input.summary } : {}),
+          ...(resolvedSummary ? { summary: resolvedSummary } : {}),
           ...(input.description ? { description: input.description } : {}),
-          ...(input.startTime ?? effectiveDateScope
-            ? { start_time: { timestamp: normalizeLarkTimestamp(input.startTime ?? effectiveDateScope, timeZone) } }
+          ...(inferredCreateStartTime
+            ? { start_time: { timestamp: normalizeLarkTimestamp(inferredCreateStartTime, timeZone) } }
             : {}),
-          ...(input.endTime ? { end_time: { timestamp: normalizeLarkTimestamp(input.endTime, timeZone) } } : {}),
+          ...(inferredCreateEndTime ? { end_time: { timestamp: normalizeLarkTimestamp(inferredCreateEndTime, timeZone) } } : {}),
         };
         const event = input.operation === 'createEvent'
           ? await calendarService.createEvent({
@@ -7576,7 +7613,7 @@ export const createVercelDesktopTools = (
         conversationMemoryStore.addLarkCalendarEvent(conversationKey, {
           eventId: asString(event.eventId) ?? '',
           calendarId: resolvedCalendarId,
-          summary: asString(event.summary) ?? input.summary,
+          summary: asString(event.summary) ?? resolvedSummary,
           startTime: asString(event.startTime),
           endTime: asString(event.endTime),
           url: asString(event.url),

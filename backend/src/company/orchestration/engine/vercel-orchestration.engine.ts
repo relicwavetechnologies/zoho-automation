@@ -1721,6 +1721,7 @@ const executeLarkVercelTask = async (
   });
   const effectiveRuntime: VercelRuntimeRequestContext = {
     ...runtime,
+    latestUserMessage: message.text,
     taskState: activeTaskState,
     runExposedToolIds: toolSelection.runExposedToolIds,
     plannerCandidateToolIds: toolSelection.plannerCandidateToolIds,
