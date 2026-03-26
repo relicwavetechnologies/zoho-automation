@@ -297,6 +297,7 @@ const maybeStoreLarkConversationTurn = (input: {
       userId: input.userId,
       channelOrigin: 'lark',
       conversationKey: input.conversationKey,
+      localTimeZoneHint: LOCAL_TIME_ZONE,
       text: input.text,
     });
   }

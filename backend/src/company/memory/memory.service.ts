@@ -19,6 +19,7 @@ class MemoryService {
     channelOrigin: UserMemoryChannelOrigin;
     threadId?: string;
     conversationKey?: string;
+    localTimeZoneHint?: string;
     text: string;
   }): Promise<void> {
     if (!input.userId || !input.text.trim()) {
@@ -29,6 +30,7 @@ class MemoryService {
         channelOrigin: input.channelOrigin,
         threadId: input.threadId,
         conversationKey: input.conversationKey,
+        localTimeZoneHint: input.localTimeZoneHint,
         text: input.text,
       });
       if (drafts.length === 0) {

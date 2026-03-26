@@ -1916,6 +1916,7 @@ const maybeStoreConversationTurn = (input: {
         channelOrigin: 'desktop',
         threadId: input.threadId,
         conversationKey: buildConversationKey(input.threadId),
+        localTimeZoneHint: LOCAL_TIME_ZONE,
         text: input.text,
       });
     }

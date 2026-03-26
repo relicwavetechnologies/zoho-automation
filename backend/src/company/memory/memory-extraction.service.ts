@@ -13,6 +13,7 @@ type ExtractionBaseInput = {
   channelOrigin: UserMemoryChannelOrigin;
   threadId?: string;
   conversationKey?: string;
+  localTimeZoneHint?: string;
   now?: Date;
 };
 
@@ -93,6 +94,166 @@ const parseTone = (text: string): UserMemoryTone | undefined => {
   return undefined;
 };
 
+const SUPPORTED_TIME_ZONES = typeof Intl.supportedValuesOf === 'function'
+  ? Intl.supportedValuesOf('timeZone')
+  : [];
+
+const TIME_ZONE_BY_LOWER = new Map(SUPPORTED_TIME_ZONES.map((value) => [value.toLowerCase(), value]));
+
+const escapeRegex = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const normalizeUtcOffset = (value: string): string => {
+  const cleaned = value.replace(/\s+/g, '');
+  const sign = cleaned.startsWith('-') ? '-' : '+';
+  const unsigned = cleaned.replace(/^[-+]/, '');
+  if (unsigned.includes(':')) {
+    const [hours, minutes = '00'] = unsigned.split(':');
+    return `UTC${sign}${hours.padStart(2, '0')}:${minutes.padStart(2, '0')}`;
+  }
+  if (unsigned.length > 2) {
+    const hours = unsigned.slice(0, -2);
+    const minutes = unsigned.slice(-2);
+    return `UTC${sign}${hours.padStart(2, '0')}:${minutes.padStart(2, '0')}`;
+  }
+  return `UTC${sign}${unsigned.padStart(2, '0')}:00`;
+};
+
+const resolveCanonicalTimeZone = (candidate: string): string | null => {
+  const trimmed = candidate.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const byList = TIME_ZONE_BY_LOWER.get(trimmed.toLowerCase());
+  if (byList) {
+    return byList;
+  }
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: trimmed });
+    return trimmed;
+  } catch {
+    return null;
+  }
+};
+
+type TimezonePreference = {
+  subjectKey: string;
+  summary: string;
+  valueJson: Record<string, unknown>;
+  confidence: number;
+};
+
+const hasTimezonePreferenceIntent = (text: string): boolean =>
+  /\b(?:prefer|remember|normalize|adjust|use|schedule|timing|timezone|time|convert|show)\b/i.test(text);
+
+const resolveTimezonePreference = (text: string, localTimeZoneHint?: string): TimezonePreference | null => {
+  if (!hasTimezonePreferenceIntent(text)) {
+    return null;
+  }
+
+  const ianaMatch = text.match(/\b([A-Za-z]+\/[A-Za-z_]+(?:\/[A-Za-z_]+)?)\b/);
+  if (ianaMatch?.[1]) {
+    const canonical = resolveCanonicalTimeZone(ianaMatch[1]);
+    if (canonical) {
+      return {
+        subjectKey: `timezone_preference_${normalizeMemorySubjectKey(canonical)}`,
+        summary: `User prefers scheduling and time references in ${canonical}.`,
+        valueJson: {
+          type: 'timezone',
+          timezone: canonical,
+          rawMention: ianaMatch[1],
+          appliesTo: ['calendar', 'scheduling', 'time_parsing', 'time_display'],
+        },
+        confidence: 0.97,
+      };
+    }
+  }
+
+  const cityMatches = SUPPORTED_TIME_ZONES
+    .map((zone) => {
+      const parts = zone.split('/');
+      const city = parts[parts.length - 1]?.replace(/_/g, ' ');
+      return city ? { zone, city } : null;
+    })
+    .filter((value): value is { zone: string; city: string } => Boolean(value))
+    .filter(({ city }) => new RegExp(`\\b${escapeRegex(city)}\\b`, 'i').test(text));
+  if (cityMatches.length === 1) {
+    const match = cityMatches[0];
+    return {
+      subjectKey: `timezone_preference_${normalizeMemorySubjectKey(match.zone)}`,
+      summary: `User prefers scheduling and time references in ${match.zone}.`,
+      valueJson: {
+        type: 'timezone',
+        timezone: match.zone,
+        rawMention: match.city,
+        appliesTo: ['calendar', 'scheduling', 'time_parsing', 'time_display'],
+      },
+      confidence: 0.93,
+    };
+  }
+
+  const utcOffsetMatch = text.match(/\b(?:utc|gmt)\s*([+-]\s*\d{1,2}(?::?\d{2})?)\b/i);
+  if (utcOffsetMatch?.[1]) {
+    const normalizedOffset = normalizeUtcOffset(utcOffsetMatch[1]);
+    return {
+      subjectKey: `timezone_preference_${normalizeMemorySubjectKey(normalizedOffset)}`,
+      summary: `User prefers scheduling and time references in ${normalizedOffset}.`,
+      valueJson: {
+        type: 'utc_offset',
+        utcOffset: normalizedOffset,
+        rawMention: stripTrailingPunctuation(utcOffsetMatch[0]),
+        appliesTo: ['calendar', 'scheduling', 'time_parsing', 'time_display'],
+      },
+      confidence: 0.94,
+    };
+  }
+
+  const abbreviationMatch = text.match(/\b([A-Z]{2,5})\b/);
+  if (abbreviationMatch?.[1] && /\b(?:timezone|time|timing|schedule|utc)\b/i.test(text)) {
+    const label = abbreviationMatch[1];
+    return {
+      subjectKey: `timezone_preference_${normalizeMemorySubjectKey(label)}`,
+      summary: `User prefers scheduling and time references in timezone "${label}".`,
+      valueJson: {
+        type: 'timezone_label',
+        timezoneLabel: label,
+        rawMention: label,
+        resolution: 'unresolved_label',
+        appliesTo: ['calendar', 'scheduling', 'time_parsing', 'time_display'],
+      },
+      confidence: 0.72,
+    };
+  }
+
+  if (/\b(?:local timezone|local time)\b/i.test(text)) {
+    const canonicalLocal = localTimeZoneHint ? resolveCanonicalTimeZone(localTimeZoneHint) : null;
+    if (canonicalLocal) {
+      return {
+        subjectKey: `timezone_preference_${normalizeMemorySubjectKey(canonicalLocal)}`,
+        summary: `User prefers scheduling and time references in ${canonicalLocal}.`,
+        valueJson: {
+          type: 'timezone',
+          timezone: canonicalLocal,
+          rawMention: 'local timezone',
+          appliesTo: ['calendar', 'scheduling', 'time_parsing', 'time_display'],
+        },
+        confidence: 0.9,
+      };
+    }
+    return {
+      subjectKey: 'timezone_preference_local',
+      summary: 'User prefers scheduling and time references in their local timezone.',
+      valueJson: {
+        type: 'local_timezone',
+        appliesTo: ['calendar', 'scheduling', 'time_parsing', 'time_display'],
+      },
+      confidence: 0.88,
+    };
+  }
+
+  return null;
+};
+
 class MemoryExtractionService {
   extractFromUserMessage(input: ExtractionBaseInput & { text: string }): ExtractedMemoryDraft[] {
     const text = input.text.trim();
@@ -161,21 +322,15 @@ class MemoryExtractionService {
       }));
     }
 
-    if (
-      /\b(?:ist|india standard time|asia\/kolkata|kolkata(?:\s+time(?:zone|ing)?)?|local timezone|local time|utc)\b/i.test(text)
-      && /\b(?:prefer|remember|normalize|adjust|use|schedule|timing|timezone|time)\b/i.test(text)
-    ) {
+    const timezonePreference = resolveTimezonePreference(text, input.localTimeZoneHint);
+    if (timezonePreference) {
       drafts.push(buildBaseDraft(input, {
         kind: 'preference',
         scope: 'user_global',
-        subjectKey: 'timezone_preference_asia_kolkata',
-        summary: 'User prefers scheduling and time references in Asia/Kolkata (IST).',
-        valueJson: {
-          timezone: 'Asia/Kolkata',
-          timezoneLabel: 'IST',
-          appliesTo: ['calendar', 'scheduling', 'time_parsing', 'time_display'],
-        },
-        confidence: 0.97,
+        subjectKey: timezonePreference.subjectKey,
+        summary: timezonePreference.summary,
+        valueJson: timezonePreference.valueJson,
+        confidence: timezonePreference.confidence,
         source: 'user_explicit',
         lastConfirmedAt: now,
       }));
