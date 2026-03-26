@@ -507,13 +507,31 @@ class MemoryContextService {
         limit: 6,
       }).map((item) => `${formatKindLabel(item.kind)}: ${item.summary}`);
 
-      const vectorSnippets = await this.retrieveVectorMemory({
-        companyId: input.companyId,
-        userId: input.userId!,
-        conversationKey: input.conversationKey,
-        queryText: input.queryText,
-        contextClass: input.contextClass,
-      });
+      let vectorSnippets: string[] = [];
+      try {
+        vectorSnippets = await this.retrieveVectorMemory({
+          companyId: input.companyId,
+          userId: input.userId!,
+          conversationKey: input.conversationKey,
+          queryText: input.queryText,
+          contextClass: input.contextClass,
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'unknown_error';
+        logger.warn('memory.prompt_context.vector_retrieval_failed', {
+          companyId: input.companyId,
+          userId: input.userId,
+          threadId: input.threadId ?? null,
+          conversationKey: input.conversationKey ?? null,
+          contextClass: input.contextClass,
+          queryPreview: summarizeText(input.queryText, 160),
+          error: errorMessage,
+          classifiedReason: errorMessage.includes('HTTP 429') ? 'embedding_rate_limited' : 'embedding_unavailable',
+          nonFatal: true,
+          degradedBehavior: 'continue_without_vector_memory',
+        });
+        vectorSnippets = [];
+      }
 
       const durableTaskContext = dedupeStrings(
         durableTaskItems

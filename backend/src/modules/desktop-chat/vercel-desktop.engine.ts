@@ -297,24 +297,21 @@ const isWorkflowCapabilityQuestion = (message: string): boolean => {
 const buildTaskAwareRouterAcknowledgement = (message: string): string => {
   const normalized = message.trim().replace(/\s+/g, ' ');
   if (!normalized) {
-    return 'I’ll look into this and pull together the key details for you.';
+    return 'On it.';
   }
-  const cleaned = normalized
-    .replace(/^[Pp]lease\s+/, '')
-    .replace(/^(can you|could you|would you|will you)\s+/i, '')
-    .replace(/^(help me|tell me|show me|find me|find|search for|look up|research)\s+/i, '')
-    .replace(/[?.!]+$/, '')
-    .trim();
-  const operational = cleaned
-    .replace(/\bmy\b/gi, 'your')
-    .replace(/\bme\b/gi, 'you')
-    .trim();
-  if (/^(get|list|show|check|find|pull|fetch|look up|search|read|open|review)\b/i.test(operational)) {
-    const sentence = operational.charAt(0).toLowerCase() + operational.slice(1);
-    return `I’ll ${sentence}.`;
+  if (/\b(schedule|meeting|calendar|reschedul|availability|book|slot)\b/i.test(normalized)) {
+    return 'Let me sort out the scheduling details.';
   }
-  const summary = summarizeText(cleaned || normalized, 140) ?? normalized;
-  return `I’ll help with ${summary} and pull together the key findings for you.`;
+  if (/\b(check|review|inspect|look at|what do you see|analy[sz]e|summari[sz]e|compare)\b/i.test(normalized)) {
+    return 'Let me take a closer look.';
+  }
+  if (/\b(find|search|look up|research|latest|current|status|where|which|who)\b/i.test(normalized)) {
+    return 'Let me check that.';
+  }
+  if (/\b(create|set up|draft|write|prepare|make|update|change|edit|delete|remove|send)\b/i.test(normalized)) {
+    return 'I can take care of that.';
+  }
+  return 'On it.';
 };
 
 const ensureChildRouteAcknowledgement = (
@@ -778,8 +775,8 @@ export const buildChildRouterPrompt = (input: {
     '{"route":"handoff","acknowledgement":"I’ll work through this step by step.","reason":"multi-step request","normalizedIntent":"schedule a reusable workflow","suggestedToolIds":["skillSearch","workflowPlan","workflowSchedule"],"suggestedSkillQuery":"workflow scheduling reusable prompt","suggestedActions":["search relevant skill","plan workflow","ask for missing schedule details"]}',
     'Routes:',
     '- fast_reply: greetings, thanks, chit-chat, identity/capability questions, short conversational replies that need no tools, or grounded multimodal turns that can be answered directly from the current attached image/media context without external tools.',
-    '- direct_execute: straightforward work that should go directly to the main executor. Always include a short acknowledgement the user should see immediately.',
-    '- handoff: multi-step or heavier work likely to require more than 2-3 tool calls, iteration, or planning. Always include a short acknowledgement the user should see immediately.',
+    '- direct_execute: straightforward work that should go directly to the main executor. Always include a short natural acknowledgement the user should see immediately.',
+    '- handoff: multi-step or heavier work likely to require more than 2-3 tool calls, iteration, or planning. Always include a short natural acknowledgement the user should see immediately.',
     'Rules:',
     '- Do not use tools.',
     '- If retrieved conversation memory clearly answers a personal-memory question, prefer fast_reply and answer from that memory.',
@@ -803,10 +800,12 @@ export const buildChildRouterPrompt = (input: {
     '- If the user asks for latest/current/recent/today/this year/this month/this quarter, or leaves the year implicit in a time-sensitive request, assume the current year/current period unless the user explicitly names another date.',
     '- For time-sensitive requests, avoid fast_reply from stale memory unless the current-period answer is already grounded in fresh thread context.',
     '- For fast_reply, fill reply and keep it short.',
-    '- For direct_execute, always fill acknowledgement and keep it short, concrete, and action-oriented.',
-    '- For handoff, always fill acknowledgement and keep it short, concrete, and action-oriented.',
-    '- The acknowledgement must mirror the user request in plain language, so it feels specific to what they asked.',
-    '- Good acknowledgement example: "I’ll look up the latest AI job market trends and current AI work on Upwork for you."',
+    '- For direct_execute, always fill acknowledgement and keep it short, natural, and action-oriented.',
+    '- For handoff, always fill acknowledgement and keep it short, natural, and action-oriented.',
+    '- The acknowledgement should feel specific to the request without parroting the user’s wording or mechanically mirroring the full sentence.',
+    '- Avoid formulas like "I’ll help you with...", "I’ll assist with...", or copying the request after "I’ll".',
+    '- Good acknowledgement example: "Let me check the latest AI job market trends and current AI work on Upwork."',
+    '- If a natural acknowledgement is shorter as "Let me check" or "I can set that up," prefer that over padded phrasing.',
     '- The acknowledgement is always user-visible before execution, so it must sound like one coherent assistant, not an internal router.',
     '- Avoid generic acknowledgements like "I’ll handle this in steps" unless the request itself is vague.',
     '- Do not overuse handoff for tiny requests.',
