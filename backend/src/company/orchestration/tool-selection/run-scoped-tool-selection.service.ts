@@ -391,6 +391,7 @@ export const resolveRunScopedToolSelection = async (input: {
   threadId?: string;
   conversationKey?: string;
   latestUserMessage: string;
+  enrichedQueryText?: string;
   allowedToolIds: string[];
   allowedActionsByTool?: Record<string, ToolActionGroup[]>;
   workspaceAvailable: boolean;
@@ -398,12 +399,13 @@ export const resolveRunScopedToolSelection = async (input: {
   artifactMode?: ArtifactMode;
   childRoute?: ChildRouteHints;
 }): Promise<RunScopedToolSelection> => {
+  const queryTextForInference = input.enrichedQueryText?.trim() || input.latestUserMessage;
   const allowed = new Set(input.allowedToolIds);
   const artifactMode = input.artifactMode ?? 'none';
   const allowContextOnlyAnswer = canAnswerFromGroundedContext({
     artifactMode,
     hasActiveArtifacts: input.hasActiveArtifacts,
-    latestUserMessage: input.latestUserMessage,
+    latestUserMessage: queryTextForInference,
   });
   const exposeArtifactTools =
     input.hasActiveArtifacts
@@ -414,9 +416,9 @@ export const resolveRunScopedToolSelection = async (input: {
     ...(exposeArtifactTools ? ARTIFACT_GLOBAL_IDS.filter((toolId) => allowed.has(toolId)) : []),
   ]);
 
-  const inferredOperationClass = inferOperationClass(input.latestUserMessage);
+  const inferredOperationClass = inferOperationClass(queryTextForInference);
   const inferredDomain = inferIntentDomain({
-    message: input.latestUserMessage,
+    message: queryTextForInference,
     childRoute: input.childRoute,
     hasWorkspace: input.workspaceAvailable,
     hasArtifacts: input.hasActiveArtifacts,
@@ -429,7 +431,7 @@ export const resolveRunScopedToolSelection = async (input: {
     threadId: input.threadId,
     conversationKey: input.conversationKey,
     allowedToolIds: input.allowedToolIds,
-    latestUserMessage: input.latestUserMessage,
+    latestUserMessage: queryTextForInference,
     childRoute: input.childRoute,
     hasWorkspace: input.workspaceAvailable,
     hasArtifacts: input.hasActiveArtifacts,
@@ -446,7 +448,7 @@ export const resolveRunScopedToolSelection = async (input: {
       operationClass: inferredOperationClass,
       hasArtifacts: input.hasActiveArtifacts,
       artifactMode,
-      latestUserMessage: input.latestUserMessage,
+      latestUserMessage: queryTextForInference,
       childRoute: input.childRoute,
       allowContextOnlyAnswer,
     }),
@@ -456,7 +458,7 @@ export const resolveRunScopedToolSelection = async (input: {
     domain: inferredDomain,
     hasArtifacts: input.hasActiveArtifacts,
     artifactMode,
-    latestUserMessage: input.latestUserMessage,
+    latestUserMessage: queryTextForInference,
     allowContextOnlyAnswer,
   });
   const learnedSummary = summarizeLearnedPriors(learnedPriors);
@@ -492,7 +494,7 @@ export const resolveRunScopedToolSelection = async (input: {
     inferredOperationClass,
     inferredDomain,
     primaryBundle,
-    latestUserMessage: input.latestUserMessage,
+    latestUserMessage: queryTextForInference,
     allowContextOnlyAnswer,
   })) {
     return {

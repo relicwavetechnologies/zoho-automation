@@ -51,6 +51,7 @@ import { estimateTokens } from '../../../utils/token-estimator';
 import { AI_MODEL_CATALOG_MAP } from '../../ai-models';
 import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../integrations/vector';
 import { memoryService } from '../../memory';
+import { enrichQuery, type QueryEnrichment } from '../query-enrichment.service';
 import { desktopWsGateway } from '../../../modules/desktop-live/desktop-ws.gateway';
 import { appendLatestAgentRunLog, resetLatestAgentRunLog } from '../../../utils/latest-agent-run-log';
 import { prisma } from '../../../utils/prisma';
@@ -840,6 +841,7 @@ const buildSystemPrompt = (input: {
   routerAcknowledgement?: string;
   childRouteHints?: DesktopChildRoute;
   latestUserMessage?: string;
+  queryEnrichment?: QueryEnrichment;
   hasAttachedFiles?: boolean;
   threadSummary?: DesktopThreadSummary;
   taskState?: DesktopTaskState;
@@ -850,7 +852,7 @@ const buildSystemPrompt = (input: {
 }) => {
   const retrievalGuidance = input.latestUserMessage?.trim()
     ? retrievalOrchestratorService.buildPromptGuidance({
-      messageText: input.latestUserMessage,
+      messageText: input.queryEnrichment?.cleanQuery ?? input.latestUserMessage,
       hasAttachments: input.hasAttachedFiles,
     })
     : [];
@@ -874,6 +876,14 @@ const buildSystemPrompt = (input: {
     departmentSkillsMarkdown: input.runtime.departmentSkillsMarkdown,
     dateScope: input.runtime.dateScope,
     latestUserMessage: input.latestUserMessage,
+    queryEnrichment: input.queryEnrichment
+      ? {
+        cleanQuery: input.queryEnrichment.cleanQuery,
+        retrievalQuery: input.queryEnrichment.retrievalQuery,
+        exactTerms: input.queryEnrichment.exactTerms,
+        contextHints: input.queryEnrichment.contextHints,
+      }
+      : undefined,
     threadSummaryContext: input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null,
     taskStateContext: input.taskState ? buildTaskStateContext(input.taskState) : null,
     conversationRefsContext: buildConversationRefsContext(input.conversationKey),
@@ -1381,6 +1391,12 @@ const executeLarkVercelTask = async (
 
   const runtime = await resolveRuntimeContext(task, message, contextStorageId, activeTaskState);
   runtime.attachedFiles = groundingAttachments.length > 0 ? groundingAttachments : runtime.attachedFiles;
+  const queryEnrichment = enrichQuery({
+    rawMessage: message.text,
+    attachedFiles: groundingAttachments,
+    taskState: activeTaskState,
+    threadSummary: activeThreadSummary,
+  });
   await resetLatestAgentRunLog(task.taskId, {
     channel: 'lark',
     entrypoint: 'lark_message',
@@ -1580,6 +1596,7 @@ const executeLarkVercelTask = async (
     executionId: task.taskId,
     threadId: contextStorageId ?? message.chatId,
     message: message.text,
+    queryEnrichment,
     attachedFiles: groundingAttachments,
     workspace: runtime.workspace,
     approvalPolicySummary: runtime.desktopApprovalPolicySummary,
@@ -1683,6 +1700,7 @@ const executeLarkVercelTask = async (
     threadId: contextStorageId,
     conversationKey,
     latestUserMessage: message.text,
+    enrichedQueryText: queryEnrichment.cleanQuery,
     allowedToolIds: runtime.allowedToolIds,
     allowedActionsByTool: runtime.allowedActionsByTool,
     workspaceAvailable: Boolean(runtime.workspace),
@@ -1808,16 +1826,24 @@ const executeLarkVercelTask = async (
     userId: linkedUserId,
     threadId: contextStorageId,
     conversationKey,
-    queryText: message.text,
+    queryText: queryEnrichment.retrievalQuery,
     contextClass,
   });
   const conversationSnippets = memoryPromptContext.relevantMemoryFacts;
+  const enrichedQueryWithMemory = enrichQuery({
+    rawMessage: message.text,
+    attachedFiles: groundingAttachments,
+    taskState: activeTaskState,
+    threadSummary: activeThreadSummary,
+    relevantMemoryFacts: conversationSnippets,
+  });
   const systemPrompt = buildSystemPrompt({
     conversationKey,
     runtime: effectiveRuntime,
     routerAcknowledgement,
     childRouteHints: childRoute,
     latestUserMessage: message.text,
+    queryEnrichment: enrichedQueryWithMemory,
     hasAttachedFiles: groundingAttachments.length > 0,
     threadSummary: activeThreadSummary,
     taskState: activeTaskState,

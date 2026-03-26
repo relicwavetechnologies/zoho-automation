@@ -41,6 +41,7 @@ import { aiTokenUsageService } from '../../company/ai-usage/ai-token-usage.servi
 import { AI_MODEL_CATALOG_MAP, type AiModelCatalogEntry } from '../../company/ai-models';
 import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../company/integrations/vector';
 import { memoryService } from '../../company/memory';
+import { enrichQuery, type QueryEnrichment } from '../../company/orchestration/query-enrichment.service';
 import { retrievalOrchestratorService } from '../../company/retrieval';
 import { estimateTokens, getTokenBudget } from '../../utils/token-estimator';
 import {
@@ -712,6 +713,7 @@ const recordTokenUsage = async (input: {
 export const buildChildRouterPrompt = (input: {
   message: string;
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  queryEnrichment?: QueryEnrichment;
   attachedFiles?: AttachedFileRef[];
   workspace?: { name: string; path: string };
   approvalPolicySummary?: string;
@@ -761,6 +763,16 @@ export const buildChildRouterPrompt = (input: {
     : 'No current grounded files.';
   const threadSummaryBlock = summarizeChildRouterThreadSummary(input.threadSummary);
   const taskStateBlock = summarizeChildRouterTaskState(input.taskState);
+  const enrichmentBlock = input.queryEnrichment
+    ? [
+      `Clean query: ${input.queryEnrichment.cleanQuery}`,
+      input.queryEnrichment.exactTerms.length > 0 ? `Exact terms: ${input.queryEnrichment.exactTerms.join(', ')}` : '',
+      input.queryEnrichment.contextHints.length > 0 ? `Context hints: ${input.queryEnrichment.contextHints.join(' | ')}` : '',
+      input.queryEnrichment.retrievalQueries.length > 1
+        ? `Retrieval query variants:\n${input.queryEnrichment.retrievalQueries.map((value, index) => `${index + 1}. ${value}`).join('\n')}`
+        : '',
+    ].filter(Boolean).join('\n')
+    : 'No L1 query enrichment.';
 
   return [
     'Classify and enrich this chat turn for a two-tier assistant runtime.',
@@ -824,6 +836,8 @@ export const buildChildRouterPrompt = (input: {
     relevantMemoryFactsBlock,
     'Current grounded files:',
     attachmentBlock,
+    'L1 query enrichment:',
+    enrichmentBlock,
     'Thread summary:',
     threadSummaryBlock,
     'Task state:',
@@ -841,6 +855,7 @@ export const runDesktopChildRouter = async (input: {
   executionId: string;
   threadId: string;
   message: string;
+  queryEnrichment?: QueryEnrichment;
   attachedFiles?: AttachedFileRef[];
   workspace?: { name: string; path: string };
   approvalPolicySummary?: string;
@@ -873,7 +888,7 @@ export const runDesktopChildRouter = async (input: {
         userId: input.userId,
         threadId: input.threadId,
         conversationKey: buildConversationKey(input.threadId),
-        queryText: input.message,
+        queryText: input.queryEnrichment?.retrievalQuery ?? input.message,
         contextClass: 'normal_work',
       })
       : {
@@ -2191,6 +2206,7 @@ const buildDesktopContextAssembly = async (input: {
   session: MemberSessionDTO;
   mode: 'fast' | 'high';
   latestUserMessage: string;
+  queryEnrichment?: QueryEnrichment;
   history: ThreadHistorySnapshot;
   workspace?: { name: string; path: string };
   taskState: DesktopTaskState;
@@ -2232,7 +2248,7 @@ const buildDesktopContextAssembly = async (input: {
     userId: input.session.userId,
     threadId: input.threadId,
     conversationKey: buildConversationKey(input.threadId),
-    queryText: input.latestUserMessage,
+    queryText: input.queryEnrichment?.retrievalQuery ?? input.latestUserMessage,
     contextClass,
   });
   const conversationSnippets = memoryPromptContext.relevantMemoryFacts;
@@ -2251,6 +2267,7 @@ const buildDesktopContextAssembly = async (input: {
     plannerChosenOperationClass: input.plannerChosenOperationClass,
     allowedActionsByTool: input.allowedActionsByTool,
     latestUserMessage: input.latestUserMessage,
+    queryEnrichment: input.queryEnrichment,
     resolvedUserReferences: input.resolvedUserReferences,
     routerAcknowledgement: input.routerAcknowledgement,
     childRouteHints: input.childRouteHints,
@@ -2346,6 +2363,7 @@ const buildSystemPrompt = (input: {
   plannerChosenOperationClass?: string;
   allowedActionsByTool?: Record<string, import('../../company/tools/tool-action-groups').ToolActionGroup[]>;
   latestUserMessage?: string;
+  queryEnrichment?: QueryEnrichment;
   resolvedUserReferences?: string[];
   routerAcknowledgement?: string;
   childRouteHints?: DesktopChildRoute;
@@ -2365,7 +2383,7 @@ const buildSystemPrompt = (input: {
   const latestMessage = input.latestUserMessage?.trim() ?? '';
   const retrievalGuidance = latestMessage
     ? retrievalOrchestratorService.buildPromptGuidance({
-      messageText: latestMessage,
+      messageText: input.queryEnrichment?.cleanQuery ?? latestMessage,
       hasAttachments: input.hasAttachedFiles,
     })
     : [];
@@ -2393,6 +2411,14 @@ const buildSystemPrompt = (input: {
     departmentSkillsMarkdown: input.departmentSkillsMarkdown,
     dateScope: input.dateScope,
     latestUserMessage: input.latestUserMessage,
+    queryEnrichment: input.queryEnrichment
+      ? {
+        cleanQuery: input.queryEnrichment.cleanQuery,
+        retrievalQuery: input.queryEnrichment.retrievalQuery,
+        exactTerms: input.queryEnrichment.exactTerms,
+        contextHints: input.queryEnrichment.contextHints,
+      }
+      : undefined,
     requesterName: input.requesterName,
     requesterEmail: input.requesterEmail,
     threadSummaryContext: input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null,
@@ -2416,6 +2442,7 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
   executionId: string;
   threadId: string;
   latestUserMessage: string;
+  queryEnrichment?: QueryEnrichment;
   runtime: VercelRuntimeRequestContext;
   hasActiveArtifacts: boolean;
   childRouteHints?: DesktopChildRoute;
@@ -2430,6 +2457,7 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
     threadId: input.threadId,
     conversationKey: buildConversationKey(input.threadId),
     latestUserMessage: input.latestUserMessage,
+    enrichedQueryText: input.queryEnrichment?.cleanQuery,
     allowedToolIds: input.runtime.allowedToolIds,
     allowedActionsByTool: input.runtime.allowedActionsByTool,
     workspaceAvailable: Boolean(input.runtime.workspace),
@@ -3011,6 +3039,12 @@ export const executeAutomatedDesktopTurn = async (input: {
       executionId,
       threadId: input.threadId,
       latestUserMessage: resolvedUserContext.message,
+      queryEnrichment: enrichQuery({
+        rawMessage: resolvedUserContext.message,
+        attachedFiles: grounding.attachments,
+        taskState: grounding.taskState,
+        threadSummary: threadMemory.summary,
+      }),
       runtime: {
         ...runtime,
         taskState: grounding.taskState,
@@ -3070,6 +3104,12 @@ export const executeAutomatedDesktopTurn = async (input: {
       session: input.session,
       mode,
       latestUserMessage: resolvedUserContext.message,
+      queryEnrichment: enrichQuery({
+        rawMessage: resolvedUserContext.message,
+        attachedFiles: grounding.attachments,
+        taskState: grounding.taskState,
+        threadSummary: threadMemory.summary,
+      }),
       history,
       taskState: grounding.taskState,
       threadSummary: threadMemory.summary,
@@ -3466,10 +3506,17 @@ export class VercelDesktopEngine {
       };
 
       const preRouterHistory = await hydrateConversationState(threadId, session);
+      const queryEnrichment = enrichQuery({
+        rawMessage: effectivePromptMessage,
+        attachedFiles,
+        taskState: activeTaskState,
+        threadSummary: activeThreadSummary,
+      });
       const childRoute = await runDesktopChildRouter({
         executionId,
         threadId,
         message: effectivePromptMessage,
+        queryEnrichment,
         attachedFiles,
         workspace,
         approvalPolicySummary,
@@ -3692,6 +3739,12 @@ export class VercelDesktopEngine {
         activeSourceArtifacts: activeTaskState.activeSourceArtifacts.map((artifact) => artifact.fileName),
       });
       const activeAttachments = grounding.attachments;
+      const groundedQueryEnrichment = enrichQuery({
+        rawMessage: effectivePromptMessage,
+        attachedFiles: activeAttachments,
+        taskState: activeTaskState,
+        threadSummary: activeThreadSummary,
+      });
       const {
         runtime: effectiveRuntime,
         clarificationQuestion,
@@ -3700,6 +3753,7 @@ export class VercelDesktopEngine {
         executionId,
         threadId,
         latestUserMessage: effectivePromptMessage,
+        queryEnrichment: groundedQueryEnrichment,
         runtime: {
           ...runtime,
           taskState: activeTaskState,
@@ -3765,6 +3819,7 @@ export class VercelDesktopEngine {
         session,
         mode,
         latestUserMessage: effectivePromptMessage,
+        queryEnrichment: groundedQueryEnrichment,
         history,
         workspace,
         approvalPolicySummary,
@@ -4406,6 +4461,12 @@ export class VercelDesktopEngine {
         || message
         || actionResult?.summary
         || 'Local action continuation';
+      const queryEnrichment = enrichQuery({
+        rawMessage: latestContinuationMessage,
+        attachedFiles: activeAttachments,
+        taskState: activeTaskState,
+        threadSummary: activeThreadSummary,
+      });
       const {
         runtime: effectiveRuntime,
         clarificationQuestion,
@@ -4414,6 +4475,7 @@ export class VercelDesktopEngine {
         executionId,
         threadId,
         latestUserMessage: latestContinuationMessage,
+        queryEnrichment,
         runtime: {
           ...runtime,
           taskState: activeTaskState,
@@ -4468,6 +4530,7 @@ export class VercelDesktopEngine {
         session,
         mode,
         latestUserMessage: latestContinuationMessage,
+        queryEnrichment,
         history,
         workspace,
         approvalPolicySummary,
@@ -4955,6 +5018,12 @@ export class VercelDesktopEngine {
         || message
         || actionResult?.summary
         || 'Local action continuation';
+      const queryEnrichment = enrichQuery({
+        rawMessage: latestContinuationMessage,
+        attachedFiles: activeAttachments,
+        taskState: activeTaskState,
+        threadSummary: activeThreadSummary,
+      });
       const {
         runtime: effectiveRuntime,
         clarificationQuestion,
@@ -4963,6 +5032,7 @@ export class VercelDesktopEngine {
         executionId,
         threadId,
         latestUserMessage: latestContinuationMessage,
+        queryEnrichment,
         runtime: {
           ...runtime,
           taskState: activeTaskState,
@@ -5016,6 +5086,7 @@ export class VercelDesktopEngine {
         session,
         mode,
         latestUserMessage: latestContinuationMessage,
+        queryEnrichment,
         history,
         workspace,
         approvalPolicySummary,

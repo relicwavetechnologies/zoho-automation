@@ -166,6 +166,12 @@ export type SharedAgentPromptInput = {
   departmentSkillsMarkdown?: string;
   dateScope?: string;
   latestUserMessage?: string;
+  queryEnrichment?: {
+    cleanQuery: string;
+    retrievalQuery: string;
+    exactTerms?: string[];
+    contextHints?: string[];
+  };
   requesterName?: string;
   requesterEmail?: string;
   threadSummaryContext?: string | null;
@@ -259,6 +265,21 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
       'If an active source artifact is already attached as multimodal context, especially an image or screenshot, inspect that artifact directly before calling OCR.',
       'Use OCR/direct file extraction when you need exact extracted text from a document/image or when no active file attachment could be resolved.',
       'Do not search Google Drive, the workspace, local filesystem, or remote repos for a previously uploaded/company file unless artifact retrieval produced no relevant match or the user explicitly asked for those sources.',
+    );
+  }
+
+  if (input.queryEnrichment) {
+    parts.push(
+      'L1 query enrichment:',
+      `Clean query: ${sanitizePromptLiteral(input.queryEnrichment.cleanQuery)}`,
+      `Retrieval query: ${sanitizePromptLiteral(input.queryEnrichment.retrievalQuery)}`,
+      ...(input.queryEnrichment.exactTerms && input.queryEnrichment.exactTerms.length > 0
+        ? [`Exact terms: ${sanitizePromptLiteral(input.queryEnrichment.exactTerms.join(', '))}`]
+        : []),
+      ...(input.queryEnrichment.contextHints && input.queryEnrichment.contextHints.length > 0
+        ? [`Context hints: ${sanitizePromptLiteral(input.queryEnrichment.contextHints.join(' | '))}`]
+        : []),
+      'Use the enriched query for retrieval and disambiguation, but preserve the raw user wording as the source of truth for intent.',
     );
   }
 
