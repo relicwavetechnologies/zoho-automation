@@ -30,7 +30,10 @@ export type RunScopedToolSelection = {
   validationFailureReason?: string;
 };
 
+type ArtifactMode = 'none' | 'image_only' | 'document_only' | 'mixed';
+
 const plannerDecisionSchema = z.object({
+  answerFromContextOnly: z.boolean().optional(),
   chosenToolId: z.string().min(1).max(80).optional(),
   chosenOperationClass: z.enum(['read', 'write', 'send', 'inspect', 'schedule', 'search']).optional(),
   candidateToolIds: z.array(z.string().min(1).max(80)).max(8).optional(),
@@ -84,9 +87,13 @@ const canBypassPlannerWithLearnedPrior = (input: {
   inferredDomain: IntentDomain;
   primaryBundle: string[];
   latestUserMessage: string;
+  allowContextOnlyAnswer?: boolean;
 }): boolean => {
   const prior = input.prior;
   if (!prior) return false;
+  if (input.allowContextOnlyAnswer && prior.toolId === 'document-ocr-read') {
+    return false;
+  }
   if (input.inferredOperationClass !== 'read' && input.inferredOperationClass !== 'inspect' && input.inferredOperationClass !== 'search') {
     return false;
   }
@@ -113,6 +120,22 @@ const inferOperationClass = (message: string): OperationClass => {
   return 'read';
 };
 
+const isVisualInspectionRequest = (message: string): boolean =>
+  /\b(image|img|screenshot|photo|picture|gif|what do you see|what's in this|what is in this|what is shown|what's shown|describe this|check this)\b/.test(asLower(message));
+
+const requiresExplicitExtraction = (message: string): boolean =>
+  /\b(ocr|extract text|exact text|read the text|what does it say|copy the text|transcribe|verbatim|all the text|full text)\b/.test(asLower(message));
+
+const canAnswerFromGroundedContext = (input: {
+  artifactMode?: ArtifactMode;
+  hasActiveArtifacts: boolean;
+  latestUserMessage: string;
+}): boolean =>
+  input.hasActiveArtifacts
+  && (input.artifactMode ?? 'none') === 'image_only'
+  && isVisualInspectionRequest(input.latestUserMessage)
+  && !requiresExplicitExtraction(input.latestUserMessage);
+
 const inferIntentDomain = (input: {
   message: string;
   childRoute?: ChildRouteHints;
@@ -132,8 +155,10 @@ const buildPrimaryBundle = (input: {
   domain: IntentDomain;
   operationClass: OperationClass;
   hasArtifacts: boolean;
+  artifactMode?: ArtifactMode;
   latestUserMessage: string;
   childRoute?: ChildRouteHints;
+  allowContextOnlyAnswer?: boolean;
 }): string[] => {
   const lowerMessage = asLower(input.latestUserMessage);
   const normalizedIntent = asLower(input.childRoute?.normalizedIntent);
@@ -235,6 +260,9 @@ const buildPrimaryBundle = (input: {
     case 'workspace':
       return chooseFirstAllowed(input.allowed, ['coding']);
     case 'document_inspection':
+      if (input.allowContextOnlyAnswer) {
+        return [];
+      }
       return uniq([
         ...chooseFirstAllowed(input.allowed, ['document-ocr-read']),
         ...(input.hasArtifacts ? chooseFirstAllowed(input.allowed, ['search-documents']) : []),
@@ -250,14 +278,20 @@ const buildFallbackBundle = (input: {
   allowed: Set<string>;
   domain: IntentDomain;
   hasArtifacts: boolean;
+  artifactMode?: ArtifactMode;
+  latestUserMessage: string;
+  allowContextOnlyAnswer?: boolean;
 }): string[] => {
+  const skipArtifactInspectionTools = Boolean(input.allowContextOnlyAnswer);
   if (input.domain === 'unknown') {
     return uniq([
-      ...(input.hasArtifacts ? chooseFirstAllowed(input.allowed, ['document-ocr-read', 'search-documents']) : []),
+      ...(input.hasArtifacts && !skipArtifactInspectionTools
+        ? chooseFirstAllowed(input.allowed, ['document-ocr-read', 'search-documents'])
+        : []),
       ...chooseFirstAllowed(input.allowed, ['search-read', 'search-agent']),
     ]).slice(0, 2);
   }
-  if (input.domain === 'document_inspection') {
+  if (input.domain === 'document_inspection' && !skipArtifactInspectionTools) {
     return chooseFirstAllowed(input.allowed, ['search-documents']);
   }
   return [];
@@ -274,9 +308,11 @@ const buildPlannerPrompt = (input: {
   selectionReason: string;
   inferredDomain: IntentDomain;
   inferredOperationClass: OperationClass;
+  artifactMode?: ArtifactMode;
   runExposedToolIds: string[];
   childRoute?: ChildRouteHints;
   learnedPriorSummary?: string[];
+  allowContextOnlyAnswer?: boolean;
 }): string => [
   'Choose the best run-scoped tool subset for this request.',
   'Return JSON only.',
@@ -286,6 +322,7 @@ const buildPlannerPrompt = (input: {
   `Latest user message: ${input.latestUserMessage}`,
   `Inferred domain: ${input.inferredDomain}`,
   `Inferred operation class: ${input.inferredOperationClass}`,
+  `Artifact mode: ${input.artifactMode ?? 'none'}`,
   `Selection reason: ${input.selectionReason}`,
   input.childRoute?.normalizedIntent ? `Child normalized intent: ${input.childRoute.normalizedIntent}` : '',
   input.childRoute?.reason ? `Child route reason: ${input.childRoute.reason}` : '',
@@ -295,9 +332,13 @@ const buildPlannerPrompt = (input: {
   'Run-exposed tool ids:',
   describeTools(input.runExposedToolIds),
   'Planner output schema:',
-  '{"chosenToolId":"...", "chosenOperationClass":"read|write|send|inspect|schedule|search", "candidateToolIds":["..."], "sourceOfTruthReason":"...", "missingFields":["..."], "shouldAskClarification":false, "clarificationQuestion":"..."}',
+  '{"answerFromContextOnly":false, "chosenToolId":"...", "chosenOperationClass":"read|write|send|inspect|schedule|search", "candidateToolIds":["..."], "sourceOfTruthReason":"...", "missingFields":["..."], "shouldAskClarification":false, "clarificationQuestion":"..."}',
   'If a live Zoho Books request mentions invoices, estimates, bills, payments, or Zoho Books, choose Zoho Books tools over cached context or generic search.',
-  'If the user asks what is in an image, message, button, or attachment, prefer document inspection tools.',
+  input.allowContextOnlyAnswer
+    ? 'If current grounded artifacts already provide multimodal image context for this request, set "answerFromContextOnly": true and do not choose document-ocr-read. Use OCR only when the user explicitly asked for exact extracted text.'
+    : (input.artifactMode ?? 'none') === 'image_only'
+      ? 'If active artifacts are images and the user asks what they show, prefer answering from multimodal image context. Do not choose document-ocr-read unless the user explicitly asked for exact extracted text.'
+    : 'If the user asks what is in an image, message, button, or attachment, prefer document inspection tools.',
 ].filter(Boolean).join('\n');
 
 const validatePlannerDecision = (input: {
@@ -311,6 +352,15 @@ const validatePlannerDecision = (input: {
       ...input.selection,
       clarificationQuestion: input.decision.clarificationQuestion?.trim() || 'I need one more detail before I can choose the right tool for this request.',
       validationFailureReason: 'planner_requested_clarification',
+    };
+  }
+  if (input.decision.answerFromContextOnly) {
+    return {
+      ...input.selection,
+      runExposedToolIds: uniq(input.coreToolIds),
+      plannerCandidateToolIds: uniq(input.coreToolIds),
+      plannerChosenToolId: undefined,
+      plannerChosenOperationClass: input.selection.inferredOperationClass,
     };
   }
   const chosenToolId = input.decision.chosenToolId?.trim();
@@ -345,13 +395,23 @@ export const resolveRunScopedToolSelection = async (input: {
   allowedActionsByTool?: Record<string, ToolActionGroup[]>;
   workspaceAvailable: boolean;
   hasActiveArtifacts: boolean;
+  artifactMode?: ArtifactMode;
   childRoute?: ChildRouteHints;
 }): Promise<RunScopedToolSelection> => {
   const allowed = new Set(input.allowedToolIds);
+  const artifactMode = input.artifactMode ?? 'none';
+  const allowContextOnlyAnswer = canAnswerFromGroundedContext({
+    artifactMode,
+    hasActiveArtifacts: input.hasActiveArtifacts,
+    latestUserMessage: input.latestUserMessage,
+  });
+  const exposeArtifactTools =
+    input.hasActiveArtifacts
+    && !allowContextOnlyAnswer;
   const coreToolIds = uniq([
     ...GLOBAL_ALWAYS_ON_IDS.filter((toolId) => allowed.has(toolId)),
     ...(input.workspaceAvailable ? WORKSPACE_GLOBAL_IDS.filter((toolId) => allowed.has(toolId)) : []),
-    ...(input.hasActiveArtifacts ? ARTIFACT_GLOBAL_IDS.filter((toolId) => allowed.has(toolId)) : []),
+    ...(exposeArtifactTools ? ARTIFACT_GLOBAL_IDS.filter((toolId) => allowed.has(toolId)) : []),
   ]);
 
   const inferredOperationClass = inferOperationClass(input.latestUserMessage);
@@ -361,7 +421,8 @@ export const resolveRunScopedToolSelection = async (input: {
     hasWorkspace: input.workspaceAvailable,
     hasArtifacts: input.hasActiveArtifacts,
   });
-  const suggestedAllowedToolIds = chooseSuggestedAllowed(allowed, input.childRoute?.suggestedToolIds);
+  const suggestedAllowedToolIds = chooseSuggestedAllowed(allowed, input.childRoute?.suggestedToolIds)
+    .filter((toolId) => !(allowContextOnlyAnswer && toolId === 'document-ocr-read'));
   const { priors: learnedPriors } = await memoryService.findRoutingPriors({
     companyId: input.companyId,
     userId: input.userId,
@@ -373,7 +434,9 @@ export const resolveRunScopedToolSelection = async (input: {
     hasWorkspace: input.workspaceAvailable,
     hasArtifacts: input.hasActiveArtifacts,
   });
-  const learnedToolIds = uniq(learnedPriors.map((prior) => prior.toolId));
+  const learnedToolIds = uniq(learnedPriors
+    .filter((prior) => !(allowContextOnlyAnswer && prior.toolId === 'document-ocr-read'))
+    .map((prior) => prior.toolId));
   const primaryBundle = uniq([
     ...learnedToolIds,
     ...suggestedAllowedToolIds,
@@ -382,19 +445,26 @@ export const resolveRunScopedToolSelection = async (input: {
       domain: inferredDomain,
       operationClass: inferredOperationClass,
       hasArtifacts: input.hasActiveArtifacts,
+      artifactMode,
       latestUserMessage: input.latestUserMessage,
       childRoute: input.childRoute,
+      allowContextOnlyAnswer,
     }),
   ]);
   const fallbackBundle = buildFallbackBundle({
     allowed,
     domain: inferredDomain,
     hasArtifacts: input.hasActiveArtifacts,
+    artifactMode,
+    latestUserMessage: input.latestUserMessage,
+    allowContextOnlyAnswer,
   });
   const learnedSummary = summarizeLearnedPriors(learnedPriors);
   const selectionReason = primaryBundle.length > 0
     ? `Primary domain ${inferredDomain} with operation ${inferredOperationClass}.${learnedSummary.length > 0 ? ` Learned routing priors favored ${learnedSummary.join('; ')}.` : ''}`
-    : `No safe primary domain could be resolved from the latest message; preserving only core and fallback tools.`;
+    : allowContextOnlyAnswer
+      ? 'Current grounded multimodal context appears sufficient to answer directly without document extraction tools.'
+      : 'No safe primary domain could be resolved from the latest message; preserving only core and fallback tools.';
 
   const initialSelection: RunScopedToolSelection = {
     runExposedToolIds: uniq([...coreToolIds, ...primaryBundle, ...fallbackBundle]),
@@ -406,6 +476,9 @@ export const resolveRunScopedToolSelection = async (input: {
   };
 
   if (primaryBundle.length === 0 && fallbackBundle.length === 0) {
+    if (allowContextOnlyAnswer) {
+      return initialSelection;
+    }
     return {
       ...initialSelection,
       clarificationQuestion: 'I need one more detail before I can choose the right tool for this request.',
@@ -420,6 +493,7 @@ export const resolveRunScopedToolSelection = async (input: {
     inferredDomain,
     primaryBundle,
     latestUserMessage: input.latestUserMessage,
+    allowContextOnlyAnswer,
   })) {
     return {
       ...initialSelection,
@@ -438,9 +512,11 @@ export const resolveRunScopedToolSelection = async (input: {
         selectionReason,
         inferredDomain,
         inferredOperationClass,
+        artifactMode,
         runExposedToolIds: initialSelection.runExposedToolIds,
         childRoute: input.childRoute,
         learnedPriorSummary: learnedSummary,
+        allowContextOnlyAnswer,
       }),
       temperature: 0,
       providerOptions: {

@@ -485,6 +485,16 @@ const resolveLarkGroundingAttachments = async (input: {
   };
 };
 
+const classifyArtifactMode = (attachments: AttachedFileRef[]): 'none' | 'image_only' | 'document_only' | 'mixed' => {
+  if (attachments.length === 0) {
+    return 'none';
+  }
+  const hasImages = attachments.some((file) => file.mimeType?.startsWith('image/'));
+  const hasNonImages = attachments.some((file) => !file.mimeType?.startsWith('image/'));
+  if (hasImages && hasNonImages) return 'mixed';
+  return hasImages ? 'image_only' : 'document_only';
+};
+
 const chooseLarkContextClass = (input: {
   latestUserMessage?: string;
   taskState: DesktopTaskState;
@@ -1534,10 +1544,12 @@ const executeLarkVercelTask = async (
     executionId: task.taskId,
     threadId: contextStorageId ?? message.chatId,
     message: message.text,
+    attachedFiles: groundingAttachments,
     workspace: runtime.workspace,
     approvalPolicySummary: runtime.desktopApprovalPolicySummary,
     companyId: runtime.companyId,
     userId: linkedUserId ?? undefined,
+    requesterAiRole: runtime.requesterAiRole,
     allowedToolIds: runtime.allowedToolIds,
     allowedActionsByTool: runtime.allowedActionsByTool,
     departmentSystemPrompt: runtime.departmentSystemPrompt,
@@ -1635,6 +1647,7 @@ const executeLarkVercelTask = async (
     allowedActionsByTool: runtime.allowedActionsByTool,
     workspaceAvailable: Boolean(runtime.workspace),
     hasActiveArtifacts: groundingAttachments.length > 0 || activeTaskState.activeSourceArtifacts.length > 0,
+    artifactMode: classifyArtifactMode(groundingAttachments),
     childRoute: {
       normalizedIntent: childRoute.normalizedIntent,
       reason: childRoute.reason,

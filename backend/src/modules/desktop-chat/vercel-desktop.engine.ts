@@ -715,10 +715,12 @@ const recordTokenUsage = async (input: {
 export const buildChildRouterPrompt = (input: {
   message: string;
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  attachedFiles?: AttachedFileRef[];
   workspace?: { name: string; path: string };
   approvalPolicySummary?: string;
   requesterName?: string;
   requesterEmail?: string;
+  requesterAiRole?: string;
   retrievedMemorySnippets?: string[];
   behaviorProfileContext?: string | null;
   durableMemoryContext?: string | null;
@@ -755,6 +757,11 @@ export const buildChildRouterPrompt = (input: {
     allowedToolIds: input.allowedToolIds,
     allowedActionsByTool: input.allowedActionsByTool,
   });
+  const attachmentBlock = input.attachedFiles && input.attachedFiles.length > 0
+    ? input.attachedFiles
+      .map((file, index) => `${index + 1}. ${file.fileName} (${file.mimeType})`)
+      .join('\n')
+    : 'No current grounded files.';
   const threadSummaryBlock = summarizeChildRouterThreadSummary(input.threadSummary);
   const taskStateBlock = summarizeChildRouterTaskState(input.taskState);
 
@@ -770,7 +777,7 @@ export const buildChildRouterPrompt = (input: {
     '{"route":"direct_execute","acknowledgement":"I’ll check that for you.","reason":"simple tool-backed request","normalizedIntent":"list saved workflows","suggestedToolIds":["workflowList"],"suggestedActions":["call workflowList"]}',
     '{"route":"handoff","acknowledgement":"I’ll work through this step by step.","reason":"multi-step request","normalizedIntent":"schedule a reusable workflow","suggestedToolIds":["skillSearch","workflowPlan","workflowSchedule"],"suggestedSkillQuery":"workflow scheduling reusable prompt","suggestedActions":["search relevant skill","plan workflow","ask for missing schedule details"]}',
     'Routes:',
-    '- fast_reply: greetings, thanks, chit-chat, identity/capability questions, or short conversational replies that need no tools.',
+    '- fast_reply: greetings, thanks, chit-chat, identity/capability questions, short conversational replies that need no tools, or grounded multimodal turns that can be answered directly from the current attached image/media context without external tools.',
     '- direct_execute: straightforward work that should go directly to the main executor. Always include a short acknowledgement the user should see immediately.',
     '- handoff: multi-step or heavier work likely to require more than 2-3 tool calls, iteration, or planning. Always include a short acknowledgement the user should see immediately.',
     'Rules:',
@@ -785,12 +792,16 @@ export const buildChildRouterPrompt = (input: {
     '- If the right tool path is unclear, suggest skillSearch first and provide a concise suggestedSkillQuery.',
     '- If the latest user message asks what is shown in an existing message, screenshot, attachment, button, or link, prefer inspection/extraction tools over mutation tools.',
     '- Do not suggest sending, drafting, or updating an email or document just to inspect what an existing button, link, or message contains.',
-    '- If task state or active source artifacts indicate an uploaded screenshot/file is active and the user asks about "this message", "this image", "this button", or "this attachment", suggest document-ocr-read first.',
+    '- If task state or active source artifacts indicate an uploaded image or screenshot is active and the user asks what is shown in it, prefer direct multimodal/vision inspection when that artifact can be resolved in context. Use document-ocr-read only for exact text extraction or when no active image/file artifact can be resolved.',
+    '- If current grounded image/media context is already available in this turn, even if it came from thread context rather than a same-message upload, and the user is simply asking what it shows, you may use fast_reply and answer directly from that grounded media context.',
     '- Do not assume an existing saved workflow satisfies a new scheduling or reusable-workflow request unless the user explicitly names that workflow, gives its id, or clearly says to edit/update the current one.',
     '- If the user asks to schedule "a workflow" or describes a recurring process without naming an existing saved workflow, prefer workflow planning/creation or a clarification question over claiming an older saved workflow already covers it.',
     '- Use workflow listing and existing-workflow reuse only when the user is explicitly asking about saved workflows or references a specific saved workflow by name/id.',
     '- Do not answer that a task, doc, event, or other write already exists or was already completed unless task state, thread summary, or retrieved conversation refs include a concrete record reference supporting that claim.',
     '- If older history or thread summary conflicts with the latest user message, the latest user message wins.',
+    '- Treat the current local date/time in this prompt as authoritative for ambiguous year-sensitive requests.',
+    '- If the user asks for latest/current/recent/today/this year/this month/this quarter, or leaves the year implicit in a time-sensitive request, assume the current year/current period unless the user explicitly names another date.',
+    '- For time-sensitive requests, avoid fast_reply from stale memory unless the current-period answer is already grounded in fresh thread context.',
     '- For fast_reply, fill reply and keep it short.',
     '- For direct_execute, always fill acknowledgement and keep it short, concrete, and action-oriented.',
     '- For handoff, always fill acknowledgement and keep it short, concrete, and action-oriented.',
@@ -812,6 +823,8 @@ export const buildChildRouterPrompt = (input: {
     durableMemoryBlock,
     'Relevant durable memory facts:',
     relevantMemoryFactsBlock,
+    'Current grounded files:',
+    attachmentBlock,
     'Thread summary:',
     threadSummaryBlock,
     'Task state:',
@@ -829,11 +842,13 @@ export const runDesktopChildRouter = async (input: {
   executionId: string;
   threadId: string;
   message: string;
+  attachedFiles?: AttachedFileRef[];
   workspace?: { name: string; path: string };
   approvalPolicySummary?: string;
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
   requesterName?: string;
   requesterEmail?: string;
+  requesterAiRole?: string;
   companyId?: string;
   userId?: string;
   allowedToolIds?: string[];
@@ -849,6 +864,7 @@ export const runDesktopChildRouter = async (input: {
     messagePreview: summarizeText(input.message, 200),
     historyCount: input.history.length,
     hasWorkspace: Boolean(input.workspace),
+    attachedFileCount: input.attachedFiles?.length ?? 0,
   });
 
   try {
@@ -873,6 +889,11 @@ export const runDesktopChildRouter = async (input: {
     const model = await resolveVercelChildRouterModel();
     await appendLatestAgentRunLog(input.executionId, 'child_router.start', {
       message: input.message,
+      currentAttachedFiles: (input.attachedFiles ?? []).map((file) => ({
+        fileAssetId: file.fileAssetId,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+      })),
       workspace: input.workspace ?? null,
       approvalPolicySummary: input.approvalPolicySummary ?? null,
       history: input.history,
@@ -896,16 +917,37 @@ export const runDesktopChildRouter = async (input: {
         relevantMemoryFactsContext: memoryPromptContext.relevantMemoryFactsText,
       }),
     });
+    const routerPrompt = buildChildRouterPrompt({
+      ...input,
+      retrievedMemorySnippets,
+      behaviorProfileContext: memoryPromptContext.behaviorProfileContext,
+      durableMemoryContext: memoryPromptContext.durableTaskContextText,
+      relevantMemoryFactsContext: memoryPromptContext.relevantMemoryFactsText,
+    });
+    const currentImageAttachments = (input.attachedFiles ?? []).filter((file) => file.mimeType?.startsWith('image/'));
+    const routerMessages = input.companyId && currentImageAttachments.length > 0
+      ? [{
+        role: 'user' as const,
+        content: await buildVisionContent({
+          userMessage: input.message,
+          attachedFiles: currentImageAttachments,
+          companyId: input.companyId,
+          requesterUserId: input.userId,
+          requesterAiRole: input.requesterAiRole,
+        }) as ModelMessage['content'],
+      }]
+      : undefined;
     const result = await runWithModelCircuitBreaker(model.effectiveProvider, 'child_router', () => generateText({
       model: model.model,
-      system: 'Return one valid JSON object only. No markdown, no prose, no code fences.',
-      prompt: buildChildRouterPrompt({
-        ...input,
-        retrievedMemorySnippets,
-        behaviorProfileContext: memoryPromptContext.behaviorProfileContext,
-        durableMemoryContext: memoryPromptContext.durableTaskContextText,
-        relevantMemoryFactsContext: memoryPromptContext.relevantMemoryFactsText,
-      }),
+      ...(routerMessages
+        ? {
+          system: `${routerPrompt}\n\nReturn one valid JSON object only. No markdown, no prose, no code fences.`,
+          messages: routerMessages,
+        }
+        : {
+          system: 'Return one valid JSON object only. No markdown, no prose, no code fences.',
+          prompt: routerPrompt,
+        }),
       temperature: 0,
       providerOptions: {
         google: {
@@ -3429,12 +3471,14 @@ export class VercelDesktopEngine {
         executionId,
         threadId,
         message: effectivePromptMessage,
+        attachedFiles,
         workspace,
         approvalPolicySummary,
         companyId: session.companyId,
         userId: session.userId,
         requesterName: session.name,
         requesterEmail: session.email,
+        requesterAiRole: session.role,
         allowedToolIds: departmentRuntime.allowedToolIds,
         allowedActionsByTool: departmentRuntime.allowedActionsByTool,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
