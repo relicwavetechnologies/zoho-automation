@@ -68,6 +68,8 @@ const loadLarkCalendarService = (): {
   createEvent: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   updateEvent: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
   deleteEvent: (input: Record<string, unknown>) => Promise<void>;
+  listFreebusy: (input: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+  addEventAttendees: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
 } => loadModuleExport('../../channels/lark/lark-calendar.service', 'larkCalendarService');
 
 const loadLarkMeetingsService = (): {
@@ -7010,30 +7012,111 @@ export const createVercelDesktopTools = (
     }),
 
     larkCalendar: tool({
-      description: 'Comprehensive Lark Calendar tool for day lookups and event mutations.',
+      description: 'Comprehensive Lark Calendar tool for day lookups, attendee-aware scheduling, availability checks, and event mutations.',
       inputSchema: z.object({
-        operation: z.enum(['listCalendars', 'listEvents', 'getEvent', 'createEvent', 'updateEvent', 'deleteEvent']),
+        operation: z.enum(['listCalendars', 'listEvents', 'getEvent', 'createEvent', 'updateEvent', 'deleteEvent', 'listAvailability', 'scheduleMeeting']),
         calendarId: z.string().optional(),
         calendarName: z.string().optional(),
         eventId: z.string().optional(),
         dateScope: z.string().optional(),
         startTime: z.string().optional(),
         endTime: z.string().optional(),
+        searchStartTime: z.string().optional(),
+        searchEndTime: z.string().optional(),
+        durationMinutes: z.number().int().positive().max(1440).optional(),
         summary: z.string().optional(),
         description: z.string().optional(),
+        location: z.string().optional(),
+        attendeeNames: z.array(z.string()).optional(),
+        attendeeIds: z.array(z.string()).optional(),
+        includeMe: z.boolean().optional(),
+        needNotification: z.boolean().optional(),
       }),
       execute: async (input) => withLifecycle(hooks, 'larkCalendar', 'Running Lark Calendar workflow', async () => {
         const calendarService = loadLarkCalendarService();
         const defaults = await getLarkDefaults(runtime);
         const normalizeLarkTimestamp = loadNormalizeLarkTimestamp();
+        const resolveLarkPeople = loadResolveLarkPeople();
         const timeZone = getLarkTimeZone();
         const conversationKey = buildConversationKey(runtime.threadId);
         const latestEvent = conversationMemoryStore.getLatestLarkCalendarEvent(conversationKey);
         const effectiveDateScope = input.dateScope ?? runtime.dateScope;
+        const authInput = getLarkAuthInput(runtime);
+        const toEpochMs = (value?: string): number | null => {
+          const normalized = normalizeLarkTimestamp(value, timeZone);
+          if (!normalized) {
+            return null;
+          }
+          const parsed = Number(normalized);
+          return Number.isFinite(parsed) ? parsed * 1000 : null;
+        };
+        const toRfc3339 = (value?: string): string | null => {
+          const epochMs = toEpochMs(value);
+          return epochMs ? new Date(epochMs).toISOString() : null;
+        };
+        const formatEpoch = (epochMs: number): string =>
+          new Date(epochMs).toISOString();
+        const mergeBusyIntervals = (items: Array<{ startMs: number; endMs: number }>): Array<{ startMs: number; endMs: number }> => {
+          const sorted = [...items]
+            .filter((item) => Number.isFinite(item.startMs) && Number.isFinite(item.endMs) && item.endMs > item.startMs)
+            .sort((left, right) => left.startMs - right.startMs);
+          const merged: Array<{ startMs: number; endMs: number }> = [];
+          for (const item of sorted) {
+            const last = merged[merged.length - 1];
+            if (!last || item.startMs > last.endMs) {
+              merged.push({ ...item });
+              continue;
+            }
+            last.endMs = Math.max(last.endMs, item.endMs);
+          }
+          return merged;
+        };
+        const findEarliestCommonSlot = (inputArgs: {
+          windowStartMs: number;
+          windowEndMs: number;
+          durationMinutes: number;
+          busyIntervals: Array<{ startMs: number; endMs: number }>;
+        }): { startMs: number; endMs: number } | null => {
+          const merged = mergeBusyIntervals(inputArgs.busyIntervals);
+          const durationMs = inputArgs.durationMinutes * 60_000;
+          let cursor = inputArgs.windowStartMs;
+          for (const busy of merged) {
+            if (busy.startMs - cursor >= durationMs) {
+              return { startMs: cursor, endMs: cursor + durationMs };
+            }
+            cursor = Math.max(cursor, busy.endMs);
+          }
+          if (inputArgs.windowEndMs - cursor >= durationMs) {
+            return { startMs: cursor, endMs: cursor + durationMs };
+          }
+          return null;
+        };
+        const resolveAttendees = async (): Promise<{
+          people: Array<Record<string, unknown>>;
+          unresolved: string[];
+          ambiguous: Array<{ query: string; matches: Array<Record<string, unknown>> }>;
+          desiredIds: string[];
+        }> => {
+          const resolved = await resolveLarkPeople({
+            companyId: runtime.companyId,
+            appUserId: runtime.userId,
+            requestLarkOpenId: runtime.larkOpenId,
+            assigneeNames: input.attendeeNames,
+            assignToMe: input.includeMe,
+          });
+          const desiredIds = uniqueDefinedStrings([
+            ...(resolved.people.map((person) => asString(asRecord(person)?.larkOpenId) ?? asString(asRecord(person)?.externalUserId))),
+            ...(input.attendeeIds ?? []),
+          ]);
+          return {
+            ...resolved,
+            desiredIds,
+          };
+        };
 
         if (input.operation === 'listCalendars') {
           const result = await calendarService.listCalendars({
-            ...getLarkAuthInput(runtime),
+            ...authInput,
             pageSize: 50,
           });
           const normalizedQuery = input.calendarName?.trim().toLowerCase();
@@ -7078,9 +7161,9 @@ export const createVercelDesktopTools = (
           }
           resolvedCalendarId = asString(candidates[0].calendarId);
         }
-        if (!resolvedCalendarId) {
+        if (!resolvedCalendarId && input.operation !== 'listAvailability') {
           try {
-            const primary = await calendarService.getPrimaryCalendar(getLarkAuthInput(runtime));
+            const primary = await calendarService.getPrimaryCalendar(authInput);
             resolvedCalendarId = asString(primary.calendarId);
           } catch {
             return buildEnvelope({
@@ -7125,6 +7208,225 @@ export const createVercelDesktopTools = (
               event: events[0],
             },
             fullPayload: { ...result, items: events },
+          });
+        }
+        if (input.operation === 'listAvailability' || input.operation === 'scheduleMeeting') {
+          const resolvedAttendees = await resolveAttendees();
+          if (resolvedAttendees.unresolved.length > 0) {
+            return buildEnvelope({
+              success: false,
+              summary: `No Lark teammate matched ${resolvedAttendees.unresolved.map((value) => `"${value}"`).join(', ')}.`,
+              errorKind: 'validation',
+              retryable: false,
+            });
+          }
+          if (resolvedAttendees.ambiguous.length > 0) {
+            const first = resolvedAttendees.ambiguous[0];
+            const options = first.matches
+              .map((person) => asString(asRecord(person)?.displayName) ?? asString(asRecord(person)?.email) ?? asString(asRecord(person)?.externalUserId))
+              .filter((value): value is string => Boolean(value))
+              .join(', ');
+            return buildEnvelope({
+              success: false,
+              summary: `"${first.query}" matched multiple teammates (${options}). Please be more specific.`,
+              errorKind: 'validation',
+              retryable: false,
+            });
+          }
+          if (resolvedAttendees.desiredIds.length === 0) {
+            return buildEnvelope({
+              success: false,
+              summary: 'Please tell me who should be included in the meeting.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+
+          const searchStartTime = input.searchStartTime ?? input.startTime ?? effectiveDateScope;
+          const searchEndTime = input.searchEndTime ?? input.endTime;
+          const searchStartRfc3339 = toRfc3339(searchStartTime);
+          const searchEndRfc3339 = toRfc3339(searchEndTime);
+          if (!searchStartRfc3339 || !searchEndRfc3339) {
+            return buildEnvelope({
+              success: false,
+              summary: input.operation === 'listAvailability'
+                ? 'Availability lookup requires searchStartTime and searchEndTime.'
+                : 'Scheduling a meeting requires a search window. Provide searchStartTime and searchEndTime, or explicit startTime and endTime.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          const windowStartMs = Date.parse(searchStartRfc3339);
+          const windowEndMs = Date.parse(searchEndRfc3339);
+          if (!Number.isFinite(windowStartMs) || !Number.isFinite(windowEndMs) || windowEndMs <= windowStartMs) {
+            return buildEnvelope({
+              success: false,
+              summary: 'The requested scheduling window is invalid. searchEndTime must be after searchStartTime.',
+              errorKind: 'validation',
+              retryable: false,
+            });
+          }
+
+          const freebusyByPerson = await Promise.all(resolvedAttendees.desiredIds.map(async (userId) => {
+            const busy = await withLarkTenantFallback(runtime, (auth) => calendarService.listFreebusy({
+              ...auth,
+              userId,
+              userIdType: 'open_id',
+              timeMin: searchStartRfc3339,
+              timeMax: searchEndRfc3339,
+              includeExternalCalendar: true,
+              onlyBusy: true,
+            }));
+            return {
+              userId,
+              busy,
+            };
+          }));
+
+          const busyIntervals = freebusyByPerson.flatMap((entry) =>
+            entry.busy.map((slot) => {
+              const record = asRecord(slot) ?? {};
+              return {
+                userId: entry.userId,
+                startMs: Date.parse(asString(record.startTime) ?? asString(record.start_time) ?? ''),
+                endMs: Date.parse(asString(record.endTime) ?? asString(record.end_time) ?? ''),
+              };
+            }).filter((slot) => Number.isFinite(slot.startMs) && Number.isFinite(slot.endMs)),
+          );
+
+          const availability = freebusyByPerson.map((entry) => {
+            const person = resolvedAttendees.people.find((candidate) =>
+              (asString(asRecord(candidate)?.larkOpenId) ?? asString(asRecord(candidate)?.externalUserId)) === entry.userId);
+            return {
+              userId: entry.userId,
+              displayName: asString(asRecord(person)?.displayName) ?? asString(asRecord(person)?.email) ?? entry.userId,
+              busy: entry.busy,
+            };
+          });
+
+          if (input.operation === 'listAvailability') {
+            return buildEnvelope({
+              success: true,
+              summary: `Fetched availability for ${availability.length} attendee(s).`,
+              keyData: {
+                availability,
+                window: { startTime: searchStartRfc3339, endTime: searchEndRfc3339 },
+              },
+              fullPayload: {
+                availability,
+                busyIntervals,
+                window: { startTime: searchStartRfc3339, endTime: searchEndRfc3339 },
+              },
+            });
+          }
+
+          const explicitStartRfc3339 = toRfc3339(input.startTime);
+          const explicitEndRfc3339 = toRfc3339(input.endTime);
+          const durationMinutes = input.durationMinutes
+            ?? (explicitStartRfc3339 && explicitEndRfc3339
+              ? Math.max(1, Math.round((Date.parse(explicitEndRfc3339) - Date.parse(explicitStartRfc3339)) / 60_000))
+              : undefined);
+          if (!input.summary?.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: 'Meeting scheduling requires a summary/title.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+          if (!durationMinutes && !(explicitStartRfc3339 && explicitEndRfc3339)) {
+            return buildEnvelope({
+              success: false,
+              summary: 'Meeting scheduling requires either explicit startTime and endTime, or durationMinutes plus a search window.',
+              errorKind: 'missing_input',
+              retryable: false,
+            });
+          }
+
+          const chosenSlot = explicitStartRfc3339 && explicitEndRfc3339
+            ? {
+              startMs: Date.parse(explicitStartRfc3339),
+              endMs: Date.parse(explicitEndRfc3339),
+            }
+            : findEarliestCommonSlot({
+              windowStartMs,
+              windowEndMs,
+              durationMinutes: durationMinutes as number,
+              busyIntervals,
+            });
+
+          if (!chosenSlot) {
+            return buildEnvelope({
+              success: false,
+              summary: 'No common free slot was found for the requested attendees in that time window.',
+              errorKind: 'validation',
+              retryable: false,
+              fullPayload: {
+                availability,
+                window: { startTime: searchStartRfc3339, endTime: searchEndRfc3339 },
+              },
+            });
+          }
+
+          const eventBody = {
+            summary: input.summary.trim(),
+            ...(input.description?.trim() ? { description: input.description.trim() } : {}),
+            start_time: { timestamp: String(Math.floor(chosenSlot.startMs / 1000)) },
+            end_time: { timestamp: String(Math.floor(chosenSlot.endMs / 1000)) },
+          };
+          const event = await calendarService.createEvent({
+            ...authInput,
+            calendarId: resolvedCalendarId,
+            body: eventBody,
+          });
+
+          const attendeesToAdd = resolvedAttendees.people
+            .filter((person) => !Boolean(asRecord(person)?.isCurrentUser))
+            .map((person) => ({
+              type: 'user',
+              attendee_id: asString(asRecord(person)?.larkOpenId) ?? asString(asRecord(person)?.externalUserId),
+            }))
+            .filter((item) => typeof item.attendee_id === 'string');
+
+          let attendeeResult: Record<string, unknown> | null = null;
+          if (attendeesToAdd.length > 0 && asString(event.eventId)) {
+            attendeeResult = await calendarService.addEventAttendees({
+              ...authInput,
+              calendarId: resolvedCalendarId,
+              eventId: asString(event.eventId),
+              userIdType: 'open_id',
+              needNotification: input.needNotification ?? true,
+              attendees: attendeesToAdd,
+            });
+          }
+
+          conversationMemoryStore.addLarkCalendarEvent(conversationKey, {
+            eventId: asString(event.eventId) ?? '',
+            calendarId: resolvedCalendarId,
+            summary: asString(event.summary) ?? input.summary,
+            startTime: asString(event.startTime) ?? formatEpoch(chosenSlot.startMs),
+            endTime: asString(event.endTime) ?? formatEpoch(chosenSlot.endMs),
+            url: asString(event.url),
+          });
+          return buildEnvelope({
+            success: true,
+            summary: `Scheduled Lark meeting "${input.summary.trim()}" for ${availability.length} attendee(s).`,
+            keyData: {
+              event,
+              scheduledStartTime: formatEpoch(chosenSlot.startMs),
+              scheduledEndTime: formatEpoch(chosenSlot.endMs),
+              attendees: availability,
+            },
+            fullPayload: {
+              event,
+              attendeeResult,
+              attendees: availability,
+              chosenSlot: {
+                startTime: formatEpoch(chosenSlot.startMs),
+                endTime: formatEpoch(chosenSlot.endMs),
+              },
+              window: { startTime: searchStartRfc3339, endTime: searchEndRfc3339 },
+            },
           });
         }
         const resolvedEventId = input.eventId?.trim() || latestEvent?.eventId;

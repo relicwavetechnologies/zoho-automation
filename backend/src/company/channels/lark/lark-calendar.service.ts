@@ -34,6 +34,24 @@ type MutateCalendarEventInput = LarkCalendarAuthInput & {
   body: Record<string, unknown>;
 };
 
+type ListFreebusyInput = LarkCalendarAuthInput & {
+  userId?: string;
+  roomId?: string;
+  timeMin: string;
+  timeMax: string;
+  includeExternalCalendar?: boolean;
+  onlyBusy?: boolean;
+  userIdType?: string;
+};
+
+type AddCalendarEventAttendeesInput = LarkCalendarAuthInput & {
+  calendarId: string;
+  eventId: string;
+  attendees: Array<Record<string, unknown>>;
+  needNotification?: boolean;
+  userIdType?: string;
+};
+
 export type LarkCalendarEvent = {
   eventId: string;
   summary?: string;
@@ -62,6 +80,12 @@ export type LarkListCalendarsResult = {
   items: LarkCalendarInfo[];
   pageToken?: string;
   hasMore: boolean;
+};
+
+export type LarkFreebusy = {
+  startTime: string;
+  endTime: string;
+  raw: Record<string, unknown>;
 };
 
 const readTimeField = (value: unknown): string | undefined => {
@@ -123,6 +147,23 @@ const normalizeCalendar = (value: unknown): LarkCalendarInfo | null => {
     summary: readLarkString(record.summary) ?? readLarkString(record.name),
     description: readLarkString(record.description),
     permission: readLarkString(record.permission) ?? readLarkString(record.role),
+    raw: record,
+  };
+};
+
+const normalizeFreebusy = (value: unknown): LarkFreebusy | null => {
+  const record = readLarkRecord(value);
+  if (!record) {
+    return null;
+  }
+  const startTime = readLarkString(record.start_time) ?? readLarkString(record.startTime);
+  const endTime = readLarkString(record.end_time) ?? readLarkString(record.endTime);
+  if (!startTime || !endTime) {
+    return null;
+  }
+  return {
+    startTime,
+    endTime,
     raw: record,
   };
 };
@@ -250,6 +291,56 @@ class LarkCalendarService {
       method: 'DELETE',
       path: `/open-apis/calendar/v4/calendars/${encodeURIComponent(input.calendarId)}/events/${encodeURIComponent(input.eventId)}`,
     });
+  }
+
+  async listFreebusy(input: ListFreebusyInput): Promise<LarkFreebusy[]> {
+    const { data } = await larkRuntimeClient.requestJson({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+      appUserId: input.appUserId,
+      credentialMode: input.credentialMode ?? 'tenant',
+      method: 'POST',
+      path: '/open-apis/calendar/v4/freebusy/list',
+      query: {
+        user_id_type: input.userIdType,
+      },
+      body: {
+        time_min: input.timeMin,
+        time_max: input.timeMax,
+        ...(input.userId ? { user_id: input.userId } : {}),
+        ...(input.roomId ? { room_id: input.roomId } : {}),
+        ...(input.includeExternalCalendar !== undefined ? { include_external_calendar: input.includeExternalCalendar } : {}),
+        ...(input.onlyBusy !== undefined ? { only_busy: input.onlyBusy } : {}),
+      },
+    });
+
+    const itemsSource = readLarkArray(data.freebusy_list).length > 0
+      ? readLarkArray(data.freebusy_list)
+      : readLarkArray(data.items);
+
+    return itemsSource
+      .map((item) => normalizeFreebusy(item))
+      .filter((item): item is LarkFreebusy => Boolean(item));
+  }
+
+  async addEventAttendees(input: AddCalendarEventAttendeesInput): Promise<Record<string, unknown>> {
+    const { data } = await larkRuntimeClient.requestJson({
+      companyId: input.companyId,
+      larkTenantKey: input.larkTenantKey,
+      appUserId: input.appUserId,
+      credentialMode: input.credentialMode ?? 'tenant',
+      method: 'POST',
+      path: `/open-apis/calendar/v4/calendars/${encodeURIComponent(input.calendarId)}/events/${encodeURIComponent(input.eventId)}/attendees`,
+      query: {
+        user_id_type: input.userIdType,
+      },
+      body: {
+        attendees: input.attendees,
+        ...(input.needNotification !== undefined ? { need_notification: input.needNotification } : {}),
+      },
+    });
+
+    return data;
   }
 }
 
