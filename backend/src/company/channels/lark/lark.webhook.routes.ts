@@ -35,6 +35,8 @@ import { toolPermissionService } from '../../tools/tool-permission.service';
 import { LarkStatusCoordinator } from '../../orchestration/engine/lark-status.coordinator';
 import { runtimeTaskStore } from '../../orchestration/runtime-task.store';
 import { memoryService } from '../../memory';
+import { resolveAllowedRolesForVisibilityScope } from '../../../modules/file-upload/file-visibility-scope';
+import { knowledgeShareService } from '../../knowledge-share/knowledge-share.service';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
 type WebhookVerificationFailureReason = Exclude<LarkWebhookVerificationResult['reason'], undefined>;
@@ -721,6 +723,27 @@ const parseHitlCardDecision = (value: unknown): { actionId: string; decision: 'c
   return { actionId, decision };
 };
 
+const parseKnowledgeShareCardAction = (
+  value: unknown,
+): { kind: 'decision'; requestId: string; decision: 'approve' | 'reject' } | { kind: 'revert'; requestId: string } | null => {
+  const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : null;
+  if (!record) {
+    return null;
+  }
+  const requestId = typeof record.requestId === 'string' ? record.requestId.trim() : '';
+  if (!requestId) {
+    return null;
+  }
+  if (record.decision === 'approve' || record.decision === 'reject') {
+    return {
+      kind: 'decision',
+      requestId,
+      decision: record.decision,
+    };
+  }
+  return { kind: 'revert', requestId };
+};
+
 const readMessageAgeMs = (timestamp: string): number | null => {
   const parsed = new Date(timestamp);
   if (Number.isNaN(parsed.getTime())) {
@@ -1330,53 +1353,13 @@ export const createLarkWebhookEventHandler = (
 
       let attachedFiles = normalized.attachedFiles ?? [];
       const effectiveUploaderId = linkedUserId ?? channelIdentityId ?? normalized.userId;
-      const allowedRoles = Array.from(new Set([
-        userRole || 'MEMBER',
-        'COMPANY_ADMIN',
-        'SUPER_ADMIN',
-      ]));
-
-      if (attachmentKeys.length > 0 && scopedCompanyId && normalized.userId) {
-        try {
-          const ingested = await ingestLarkAttachments({
-            messageId: msgId,
-            chatId: normalized.chatId,
-            attachmentKeys,
-            adapter: dependencies.adapter,
-            companyId: scopedCompanyId,
-            uploaderUserId: effectiveUploaderId,
-            allowedRoles,
-          });
-          if (ingested.length > 0) {
-            attachedFiles = [...attachedFiles, ...ingested];
-            orangeDebug('lark.ingress.attachments.ingested', {
-              requestId,
-              eventId: parsed.eventId,
-              messageId: msgId,
-              chatId: normalized.chatId,
-              linkedUserId: linkedUserId ?? null,
-              effectiveUploaderId,
-              fileAssetIds: ingested.map((file) => file.fileAssetId),
-              allowedRoles,
-            });
-            dependencies.log.info('lark.file.ingestion.completed', {
-              requestId,
-              messageId: msgId,
-              fileCount: ingested.length,
-              fileAssetIds: ingested.map((f) => f.fileAssetId),
-              linkedUserId: linkedUserId ?? null,
-              effectiveUploaderId,
-              allowedRoles,
-            });
-          }
-        } catch (fileErr) {
-          dependencies.log.warn('lark.file.ingestion.batch_failed', {
-            requestId,
-            messageId: msgId,
-            error: fileErr instanceof Error ? fileErr.message : 'unknown_error',
-          });
-        }
-      }
+      const allowedRoles = scopedCompanyId
+        ? await resolveAllowedRolesForVisibilityScope({
+          companyId: scopedCompanyId,
+          visibilityScope: tracedMessageBase.chatType === 'group' ? 'same_role' : 'personal',
+          uploaderRole: userRole || 'MEMBER',
+        })
+        : [];
 
       const primaryIdempotency = buildPrimaryIngressIdempotencyKey({
         channel: tracedMessageBase.channel,
@@ -1479,6 +1462,48 @@ export const createLarkWebhookEventHandler = (
               companyId: scopedCompanyId ?? undefined,
             }),
             error,
+          });
+        }
+      }
+
+      if (attachmentKeys.length > 0 && scopedCompanyId && normalized.userId) {
+        try {
+          const ingested = await ingestLarkAttachments({
+            messageId: msgId,
+            chatId: normalized.chatId,
+            attachmentKeys,
+            adapter: dependencies.adapter,
+            companyId: scopedCompanyId,
+            uploaderUserId: effectiveUploaderId,
+            allowedRoles,
+          });
+          if (ingested.length > 0) {
+            attachedFiles = [...attachedFiles, ...ingested];
+            orangeDebug('lark.ingress.attachments.ingested', {
+              requestId,
+              eventId: parsed.eventId,
+              messageId: msgId,
+              chatId: normalized.chatId,
+              linkedUserId: linkedUserId ?? null,
+              effectiveUploaderId,
+              fileAssetIds: ingested.map((file) => file.fileAssetId),
+              allowedRoles,
+            });
+            dependencies.log.info('lark.file.ingestion.completed', {
+              requestId,
+              messageId: msgId,
+              fileCount: ingested.length,
+              fileAssetIds: ingested.map((f) => f.fileAssetId),
+              linkedUserId: linkedUserId ?? null,
+              effectiveUploaderId,
+              allowedRoles,
+            });
+          }
+        } catch (fileErr) {
+          dependencies.log.warn('lark.file.ingestion.batch_failed', {
+            requestId,
+            messageId: msgId,
+            error: fileErr instanceof Error ? fileErr.message : 'unknown_error',
           });
         }
       }
@@ -2052,6 +2077,9 @@ export const createLarkWebhookEventHandler = (
       const cardHitlDecision = parsed.kind === 'event_callback_card_action'
         ? parseHitlCardDecision(parsed.actionValue)
         : null;
+      const knowledgeShareCardAction = parsed.kind === 'event_callback_card_action'
+        ? parseKnowledgeShareCardAction(parsed.actionValue)
+        : null;
       const hitlDecision = cardHitlDecision ?? textHitlDecision;
       if (hitlDecision) {
         const pendingThreadApprovalContext = scopedCompanyId && linkedUserId
@@ -2218,6 +2246,87 @@ export const createLarkWebhookEventHandler = (
             resumedTaskId,
           },
         });
+      }
+
+      if (knowledgeShareCardAction) {
+        const sendKnowledgeShareCardResponse = async (text: string) => {
+          await dependencies.adapter.updateMessage({
+            messageId: tracedMessage.messageId,
+            text,
+            actions: [],
+          });
+        };
+
+        if (!linkedUserId) {
+          await sendKnowledgeShareCardResponse(
+            'This knowledge-share action requires a linked Divo account for the reviewer.',
+          );
+          return res.status(200).json({
+            success: true,
+            message: 'Knowledge-share callback blocked: no linked reviewer account',
+            data: {
+              requestId: knowledgeShareCardAction.requestId,
+              blocked: true,
+              reason: 'missing_linked_user',
+            },
+          });
+        }
+
+        try {
+          if (knowledgeShareCardAction.kind === 'decision') {
+            const result = knowledgeShareCardAction.decision === 'approve'
+              ? await knowledgeShareService.approveRequest({
+                requestId: knowledgeShareCardAction.requestId,
+                reviewerUserId: linkedUserId,
+              })
+              : await knowledgeShareService.rejectRequest({
+                requestId: knowledgeShareCardAction.requestId,
+                reviewerUserId: linkedUserId,
+              });
+            const responseText = knowledgeShareCardAction.decision === 'approve'
+              ? `Knowledge share approved.\n\nPromoted ${result.promotedVectorCount ?? 0} vectors.`
+              : 'Knowledge share rejected.';
+            await sendKnowledgeShareCardResponse(responseText);
+            return res.status(200).json({
+              success: true,
+              message: 'Knowledge-share decision processed',
+              data: {
+                requestId: knowledgeShareCardAction.requestId,
+                status: result.status,
+                promotedVectorCount: 'promotedVectorCount' in result ? result.promotedVectorCount ?? 0 : 0,
+              },
+            });
+          }
+
+          const result = await knowledgeShareService.revertRequest({
+            requestId: knowledgeShareCardAction.requestId,
+            reviewerUserId: linkedUserId,
+          });
+          const responseText = result.status === 'reverted'
+            ? `Knowledge share reverted.\n\nRemoved ${result.revertedVectorCount ?? 0} shared vectors.`
+            : `Knowledge share was not reverted because it is already ${result.status}.`;
+          await sendKnowledgeShareCardResponse(responseText);
+          return res.status(200).json({
+            success: true,
+            message: 'Knowledge-share revert processed',
+            data: {
+              requestId: knowledgeShareCardAction.requestId,
+              status: result.status,
+              revertedVectorCount: result.revertedVectorCount ?? 0,
+            },
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Knowledge-share action failed';
+          await sendKnowledgeShareCardResponse(`Knowledge-share action failed.\n\n${message}`);
+          return res.status(200).json({
+            success: true,
+            message: 'Knowledge-share callback failed',
+            data: {
+              requestId: knowledgeShareCardAction.requestId,
+              error: message,
+            },
+          });
+        }
       }
 
       const shouldSendImmediateAck =
