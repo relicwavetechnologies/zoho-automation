@@ -717,6 +717,9 @@ const SOURCE_ARTIFACT_LIMIT = 8;
 
 const FOLLOW_UP_SOURCE_PATTERN = /\b(next task|pick the next|move on|move to next|continue|next one|what next|do the next)\b/i;
 const DOC_GROUNDED_PATTERN = /\b(document|doc|file|csv|sheet|spreadsheet|task list|assignment)\b/i;
+const VISUAL_GROUNDED_PATTERN = /\b(image|img|screenshot|screen shot|photo|picture|pic|scan|diagram|chart)\b/i;
+const REFERENTIAL_SOURCE_PATTERN = /\b(check|see|read|review|inspect|summari[sz]e|analy[sz]e|parse|extract|tell me|what(?:'s| is)|what do you see)\b/i;
+const DEICTIC_POINTER_PATTERN = /\b(this|that|it|above|latest|last)\b/i;
 
 export const upsertDesktopSourceArtifacts = (input: {
   taskState: DesktopTaskState;
@@ -805,7 +808,12 @@ export const selectDesktopSourceArtifacts = (input: {
     return [...matchedByName, ...artifacts.filter((artifact) => !matchedIds.has(artifact.fileAssetId))].slice(0, limit);
   }
 
-  if (FOLLOW_UP_SOURCE_PATTERN.test(trimmed) || DOC_GROUNDED_PATTERN.test(trimmed)) {
+  if (
+    FOLLOW_UP_SOURCE_PATTERN.test(trimmed)
+    || DOC_GROUNDED_PATTERN.test(trimmed)
+    || VISUAL_GROUNDED_PATTERN.test(trimmed)
+    || (REFERENTIAL_SOURCE_PATTERN.test(trimmed) && DEICTIC_POINTER_PATTERN.test(trimmed))
+  ) {
     return artifacts.slice(0, limit);
   }
 
