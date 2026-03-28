@@ -29,7 +29,15 @@ import {
   type CachedDesktopThreadContext,
   type CachedDesktopThreadMessage,
 } from './desktop-thread-context.cache';
-import { executionService } from '../../company/observability';
+import {
+  buildCapabilityGapFromSelection,
+  buildCapabilityGapFromToolFailure,
+  buildExecutionToolDemandPayload,
+  EXECUTION_CAPABILITY_GAP_EVENT,
+  EXECUTION_TOOL_DEMAND_EVENT,
+  executionService,
+  type ExecutionToolDemandPayload,
+} from '../../company/observability';
 import { CircuitBreakerOpenError, runWithCircuitBreaker } from '../../company/observability/circuit-breaker';
 import { conversationMemoryStore } from '../../company/state/conversation/conversation-memory.store';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
@@ -2451,6 +2459,7 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
   runtime: VercelRuntimeRequestContext;
   clarificationQuestion?: string;
   validationFailureReason?: string;
+  analyticsToolDemandPayload: ExecutionToolDemandPayload;
 }> => {
   const selection = await resolveRunScopedToolSelection({
     companyId: input.runtime.companyId,
@@ -2495,6 +2504,55 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
     clarificationTriggered: Boolean(selection.clarificationQuestion),
     validationFailureReason: selection.validationFailureReason ?? null,
   });
+  const analyticsToolDemandPayload = buildExecutionToolDemandPayload({
+    channel: input.runtime.channel,
+    latestUserMessage: input.latestUserMessage,
+    enrichedQueryText: input.queryEnrichment?.cleanQuery,
+    childRoute: input.childRouteHints
+      ? {
+        normalizedIntent: input.childRouteHints.normalizedIntent,
+        reason: input.childRouteHints.reason,
+        suggestedToolIds: input.childRouteHints.suggestedToolIds,
+        suggestedActions: input.childRouteHints.suggestedActions,
+      }
+      : undefined,
+    hasWorkspace: Boolean(input.runtime.workspace),
+    hasArtifacts: input.hasActiveArtifacts,
+    inferredDomain: selection.inferredDomain,
+    inferredOperationClass: selection.inferredOperationClass,
+    plannerChosenToolId: selection.plannerChosenToolId ?? null,
+    plannerChosenOperationClass: selection.plannerChosenOperationClass ?? null,
+    plannerCandidateToolIds: selection.plannerCandidateToolIds,
+    runExposedToolIds: selection.runExposedToolIds,
+    selectionReason: selection.selectionReason,
+    clarificationTriggered: Boolean(selection.clarificationQuestion),
+    validationFailureReason: selection.validationFailureReason ?? null,
+  });
+  await appendEventSafe({
+    executionId: input.executionId,
+    phase: 'planning',
+    eventType: EXECUTION_TOOL_DEMAND_EVENT,
+    actorType: 'planner',
+    actorKey: 'tool-selection',
+    title: 'tool demand inferred',
+    summary: `${analyticsToolDemandPayload.intendedToolFamily} (${analyticsToolDemandPayload.inferredOperationClass})`,
+    status: 'completed',
+    payload: analyticsToolDemandPayload as unknown as Record<string, unknown>,
+  });
+  const selectionGapPayload = buildCapabilityGapFromSelection(analyticsToolDemandPayload);
+  if (selectionGapPayload) {
+    await appendEventSafe({
+      executionId: input.executionId,
+      phase: 'planning',
+      eventType: EXECUTION_CAPABILITY_GAP_EVENT,
+      actorType: 'planner',
+      actorKey: 'tool-selection',
+      title: 'capability gap detected',
+      summary: selectionGapPayload.gapLabel,
+      status: 'failed',
+      payload: selectionGapPayload as unknown as Record<string, unknown>,
+    });
+  }
   return {
     runtime: {
       ...input.runtime,
@@ -2507,6 +2565,7 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
     },
     clarificationQuestion: selection.clarificationQuestion,
     validationFailureReason: selection.validationFailureReason,
+    analyticsToolDemandPayload,
   };
 };
 
@@ -2808,6 +2867,7 @@ const logAndPersistPlan = async (input: {
 
 const runVercelLoop = async (input: {
   runtime: VercelRuntimeRequestContext;
+  analyticsToolDemandPayload?: ExecutionToolDemandPayload;
   system: string;
   messages: ModelMessage[];
   onToolStart: (toolName: string, activityId: string, title: string) => Promise<void>;
@@ -2834,6 +2894,22 @@ const runVercelLoop = async (input: {
         channel: input.runtime.channel,
         threadId: input.runtime.threadId,
       });
+      const capabilityGapPayload = input.analyticsToolDemandPayload
+        ? buildCapabilityGapFromToolFailure(input.analyticsToolDemandPayload, toolName, output)
+        : null;
+      if (capabilityGapPayload) {
+        await appendEventSafe({
+          executionId: input.runtime.executionId,
+          phase: 'tool',
+          eventType: EXECUTION_CAPABILITY_GAP_EVENT,
+          actorType: 'tool',
+          actorKey: toolName,
+          title: 'capability gap detected',
+          summary: capabilityGapPayload.gapLabel,
+          status: 'failed',
+          payload: capabilityGapPayload as unknown as Record<string, unknown>,
+        });
+      }
       await input.onToolFinish(toolName, activityId, title, output);
     },
   });
@@ -2866,6 +2942,7 @@ const runVercelLoop = async (input: {
 
 const runVercelStreamLoop = async (input: {
   runtime: VercelRuntimeRequestContext;
+  analyticsToolDemandPayload?: ExecutionToolDemandPayload;
   system: string;
   messages: ModelMessage[];
   onToolStart: (toolName: string, activityId: string, title: string) => Promise<void>;
@@ -2892,6 +2969,22 @@ const runVercelStreamLoop = async (input: {
         channel: input.runtime.channel,
         threadId: input.runtime.threadId,
       });
+      const capabilityGapPayload = input.analyticsToolDemandPayload
+        ? buildCapabilityGapFromToolFailure(input.analyticsToolDemandPayload, toolName, output)
+        : null;
+      if (capabilityGapPayload) {
+        await appendEventSafe({
+          executionId: input.runtime.executionId,
+          phase: 'tool',
+          eventType: EXECUTION_CAPABILITY_GAP_EVENT,
+          actorType: 'tool',
+          actorKey: toolName,
+          title: 'capability gap detected',
+          summary: capabilityGapPayload.gapLabel,
+          status: 'failed',
+          payload: capabilityGapPayload as unknown as Record<string, unknown>,
+        });
+      }
       await input.onToolFinish(toolName, activityId, title, output);
     },
   });
@@ -3036,6 +3129,7 @@ export const executeAutomatedDesktopTurn = async (input: {
       runtime: effectiveRuntime,
       clarificationQuestion,
       validationFailureReason,
+      analyticsToolDemandPayload,
     } = await resolveDesktopRuntimeForRunScopedSelection({
       executionId,
       threadId: input.threadId,
@@ -3152,6 +3246,7 @@ export const executeAutomatedDesktopTurn = async (input: {
     while (true) {
       result = await runVercelLoop({
         runtime: effectiveRuntime,
+        analyticsToolDemandPayload,
         system: contextAssembly.systemPrompt,
         messages: activeWorkflowMessages,
         onToolStart: async (toolName, activityId, title) => {
@@ -3750,6 +3845,7 @@ export class VercelDesktopEngine {
         runtime: effectiveRuntime,
         clarificationQuestion,
         validationFailureReason,
+        analyticsToolDemandPayload,
       } = await resolveDesktopRuntimeForRunScopedSelection({
         executionId,
         threadId,
@@ -3877,6 +3973,7 @@ export class VercelDesktopEngine {
       const executedToolOutcomes: Array<{ toolName: string; success: boolean; pendingApproval?: boolean }> = [];
       const result = await runVercelStreamLoop({
         runtime: effectiveRuntime,
+        analyticsToolDemandPayload,
         system: contextAssembly.systemPrompt,
         messages: inputMessages,
         onToolStart: async (toolName, activityId, title) => {
@@ -4472,6 +4569,7 @@ export class VercelDesktopEngine {
         runtime: effectiveRuntime,
         clarificationQuestion,
         validationFailureReason,
+        analyticsToolDemandPayload,
       } = await resolveDesktopRuntimeForRunScopedSelection({
         executionId,
         threadId,
@@ -4581,6 +4679,7 @@ export class VercelDesktopEngine {
       });
       const result = await runVercelLoop({
         runtime: effectiveRuntime,
+        analyticsToolDemandPayload,
         system: contextAssembly.systemPrompt,
         messages: modelMessages,
         onToolStart: async (toolName, activityId, title) => {
@@ -5029,6 +5128,7 @@ export class VercelDesktopEngine {
         runtime: effectiveRuntime,
         clarificationQuestion,
         validationFailureReason,
+        analyticsToolDemandPayload,
       } = await resolveDesktopRuntimeForRunScopedSelection({
         executionId,
         threadId,
@@ -5137,6 +5237,7 @@ export class VercelDesktopEngine {
       });
       const result = await runVercelStreamLoop({
         runtime: effectiveRuntime,
+        analyticsToolDemandPayload,
         system: contextAssembly.systemPrompt,
         messages: modelMessages,
         onToolStart: async (toolName, activityId, title) => {

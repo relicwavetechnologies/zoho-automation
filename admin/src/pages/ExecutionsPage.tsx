@@ -77,6 +77,30 @@ type ExecutionListResponse = {
   }
 }
 
+type ExecutionDemandInsight = {
+  family: string
+  demandCount: number
+  uniqueUsers: number
+  sampleQueries: string[]
+  channels: Partial<Record<'desktop' | 'lark', number>>
+}
+
+type ExecutionCapabilityGapInsight = {
+  gapKey: string
+  label: string
+  family: string
+  gapCount: number
+  uniqueUsers: number
+  sampleQueries: string[]
+  reasons: string[]
+  channels: Partial<Record<'desktop' | 'lark', number>>
+}
+
+type ExecutionInsightsResponse = {
+  topDemandedFamilies: ExecutionDemandInsight[]
+  topCapabilityGaps: ExecutionCapabilityGapInsight[]
+}
+
 const DEFAULT_PAGE_SIZE = 25
 const TIMELINE_DEFAULT_SIZE = 58
 const TIMELINE_MIN_SIZE = 28
@@ -148,6 +172,7 @@ export const ExecutionsPage = () => {
   const [runs, setRuns] = useState<ExecutionRun[]>([])
   const [summary, setSummary] = useState<ExecutionListResponse['summary'] | null>(null)
   const [total, setTotal] = useState(0)
+  const [insights, setInsights] = useState<ExecutionInsightsResponse | null>(null)
   const [openedExecutionIds, setOpenedExecutionIds] = useState<string[]>([])
   const [detailById, setDetailById] = useState<Record<string, ExecutionRun>>({})
   const [eventsById, setEventsById] = useState<Record<string, ExecutionEvent[]>>({})
@@ -271,6 +296,25 @@ export const ExecutionsPage = () => {
     }
   }, [filters, activeExecutionId, openedExecutionIds, token])
 
+  const loadInsights = useCallback(async () => {
+    if (!token) return
+    const query = new URLSearchParams({
+      page: '1',
+      pageSize: String(DEFAULT_PAGE_SIZE),
+      dateFrom: filters.dateFrom,
+      dateTo: filters.dateTo,
+    })
+    if (filters.query) query.set('query', filters.query)
+    if (filters.channel !== 'all') query.set('channel', filters.channel)
+    if (filters.mode !== 'all') query.set('mode', filters.mode)
+    if (filters.status !== 'all') query.set('status', filters.status)
+    if (filters.phase !== 'all') query.set('phase', filters.phase)
+    if (filters.actorType !== 'all') query.set('actorType', filters.actorType)
+
+    const response = await api.get<ExecutionInsightsResponse>(`/api/admin/executions/insights?${query.toString()}`, token)
+    setInsights(response)
+  }, [filters.actorType, filters.channel, filters.dateFrom, filters.dateTo, filters.mode, filters.phase, filters.query, filters.status, token])
+
   const loadDetail = useCallback(async (executionId: string, options?: { silent?: boolean }) => {
     if (!token || !executionId) return
     if (!options?.silent) setLoadingDetailById((prev) => ({ ...prev, [executionId]: true }))
@@ -295,6 +339,20 @@ export const ExecutionsPage = () => {
     filters.dateTo,
     filters.mode,
     filters.page,
+    filters.phase,
+    filters.query,
+    filters.status,
+    token
+  ])
+
+  useEffect(() => {
+    void loadInsights()
+  }, [
+    filters.actorType,
+    filters.channel,
+    filters.dateFrom,
+    filters.dateTo,
+    filters.mode,
     filters.phase,
     filters.query,
     filters.status,
@@ -392,6 +450,66 @@ export const ExecutionsPage = () => {
               <div className={cn("text-xl font-bold tracking-tight truncate", stat.color)}>{stat.value ?? 0}</div>
             </div>
           ))}
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-2 min-w-0">
+          <Card className="bg-card/20 border-border/40 shadow-xl rounded-3xl min-w-0">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-base font-bold tracking-tight">Top Demanded Tool Families</CardTitle>
+              <CardDescription>What users are asking for most in the selected window.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3 min-w-0">
+              {(insights?.topDemandedFamilies ?? []).length > 0 ? (
+                insights!.topDemandedFamilies.map((item) => (
+                  <div key={item.family} className="rounded-2xl border border-border/30 bg-muted/10 p-4 space-y-2 min-w-0">
+                    <div className="flex items-center justify-between gap-3 min-w-0">
+                      <div className="font-semibold truncate">{item.family}</div>
+                      <Badge variant="secondary" className="shrink-0">{item.demandCount}</Badge>
+                    </div>
+                    <div className="text-[11px] text-muted-foreground uppercase tracking-wider">
+                      {item.uniqueUsers} user{item.uniqueUsers === 1 ? '' : 's'} • Desktop {item.channels.desktop ?? 0} • Lark {item.channels.lark ?? 0}
+                    </div>
+                    {item.sampleQueries[0] && (
+                      <div className="text-sm text-muted-foreground line-clamp-2">"{item.sampleQueries[0]}"</div>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="text-sm text-muted-foreground">No demand data in this range.</div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="bg-card/20 border-border/40 shadow-xl rounded-3xl min-w-0">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-base font-bold tracking-tight">Top Missing Capabilities</CardTitle>
+              <CardDescription>Requests where selection or execution exposed a real capability gap.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3 min-w-0">
+              {(insights?.topCapabilityGaps ?? []).length > 0 ? (
+                insights!.topCapabilityGaps.map((item) => (
+                  <div key={item.gapKey} className="rounded-2xl border border-border/30 bg-muted/10 p-4 space-y-2 min-w-0">
+                    <div className="flex items-center justify-between gap-3 min-w-0">
+                      <div className="font-semibold truncate">{item.family}</div>
+                      <Badge variant="secondary" className="shrink-0">{item.gapCount}</Badge>
+                    </div>
+                    <div className="text-sm truncate">{item.label}</div>
+                    <div className="text-[11px] text-muted-foreground uppercase tracking-wider">
+                      {item.uniqueUsers} user{item.uniqueUsers === 1 ? '' : 's'} • Desktop {item.channels.desktop ?? 0} • Lark {item.channels.lark ?? 0}
+                    </div>
+                    {item.sampleQueries[0] && (
+                      <div className="text-sm text-muted-foreground line-clamp-2">Query: "{item.sampleQueries[0]}"</div>
+                    )}
+                    {item.reasons[0] && (
+                      <div className="text-xs text-muted-foreground line-clamp-2">Reason: {item.reasons[0]}</div>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="text-sm text-muted-foreground">No capability gaps detected in this range.</div>
+              )}
+            </CardContent>
+          </Card>
         </div>
       </div>
 

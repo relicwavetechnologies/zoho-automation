@@ -32,6 +32,18 @@ const runInclude = {
 
 export type ExecutionRunRow = Prisma.ExecutionRunGetPayload<{ include: typeof runInclude }>;
 export type ExecutionEventRow = Prisma.ExecutionEventGetPayload<Record<string, never>>;
+const insightEventSelect = {
+  id: true,
+  eventType: true,
+  payload: true,
+  execution: {
+    select: {
+      userId: true,
+      channel: true,
+    },
+  },
+} satisfies Prisma.ExecutionEventSelect;
+export type ExecutionInsightEventRow = Prisma.ExecutionEventGetPayload<{ select: typeof insightEventSelect }>;
 
 export class ExecutionRepository {
   findById(id: string): Promise<ExecutionRunRow | null> {
@@ -195,6 +207,23 @@ export class ExecutionRepository {
       orderBy: [
         { sequence: 'asc' },
         { createdAt: 'asc' },
+      ],
+    });
+  }
+
+  listInsightEvents(input: {
+    runWhere: Prisma.ExecutionRunWhereInput;
+    eventTypes: string[];
+  }): Promise<ExecutionInsightEventRow[]> {
+    return prisma.executionEvent.findMany({
+      where: {
+        eventType: { in: input.eventTypes },
+        execution: input.runWhere,
+      },
+      select: insightEventSelect,
+      orderBy: [
+        { createdAt: 'desc' },
+        { id: 'desc' },
       ],
     });
   }

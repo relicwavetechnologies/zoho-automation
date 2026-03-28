@@ -21,30 +21,28 @@ class AdminExecutionsController extends BaseController {
 
   list = async (req: Request, res: Response) => {
     const session = this.readSession(req);
-    const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
-    const pageSize = Math.min(100, Math.max(10, Number.parseInt(String(req.query.pageSize ?? '25'), 10) || 25));
     const result = await executionService.listRuns(
       {
         role: 'admin',
         adminRole: session.role,
         companyId: session.companyId,
       },
-      {
-        query: typeof req.query.query === 'string' ? req.query.query : undefined,
-        userId: typeof req.query.userId === 'string' ? req.query.userId : undefined,
-        companyId: typeof req.query.companyId === 'string' ? req.query.companyId : undefined,
-        channel: typeof req.query.channel === 'string' ? (req.query.channel as ExecutionChannel) : undefined,
-        mode: typeof req.query.mode === 'string' ? (req.query.mode as 'fast' | 'high') : undefined,
-        status: typeof req.query.status === 'string' ? (req.query.status as ExecutionRunStatus) : undefined,
-        dateFrom: typeof req.query.dateFrom === 'string' ? req.query.dateFrom : undefined,
-        dateTo: typeof req.query.dateTo === 'string' ? req.query.dateTo : undefined,
-        phase: typeof req.query.phase === 'string' ? (req.query.phase as ExecutionPhase) : undefined,
-        actorType: typeof req.query.actorType === 'string' ? (req.query.actorType as ExecutionActorType) : undefined,
-        page,
-        pageSize,
-      },
+      this.readFilters(req),
     );
     return res.json(ApiResponse.success(result, 'Execution runs loaded'));
+  };
+
+  insights = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    const result = await executionService.getInsights(
+      {
+        role: 'admin',
+        adminRole: session.role,
+        companyId: session.companyId,
+      },
+      this.readFilters(req),
+    );
+    return res.json(ApiResponse.success(result, 'Execution insights loaded'));
   };
 
   get = async (req: Request, res: Response) => {
@@ -76,6 +74,25 @@ class AdminExecutionsController extends BaseController {
     );
     return res.json(ApiResponse.success(result, 'Execution events loaded'));
   };
+
+  private readFilters(req: Request) {
+    const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
+    const pageSize = Math.min(100, Math.max(10, Number.parseInt(String(req.query.pageSize ?? '25'), 10) || 25));
+    return {
+      query: typeof req.query.query === 'string' ? req.query.query : undefined,
+      userId: typeof req.query.userId === 'string' ? req.query.userId : undefined,
+      companyId: typeof req.query.companyId === 'string' ? req.query.companyId : undefined,
+      channel: typeof req.query.channel === 'string' ? (req.query.channel as ExecutionChannel) : undefined,
+      mode: typeof req.query.mode === 'string' ? (req.query.mode as 'fast' | 'high') : undefined,
+      status: typeof req.query.status === 'string' ? (req.query.status as ExecutionRunStatus) : undefined,
+      dateFrom: typeof req.query.dateFrom === 'string' ? req.query.dateFrom : undefined,
+      dateTo: typeof req.query.dateTo === 'string' ? req.query.dateTo : undefined,
+      phase: typeof req.query.phase === 'string' ? (req.query.phase as ExecutionPhase) : undefined,
+      actorType: typeof req.query.actorType === 'string' ? (req.query.actorType as ExecutionActorType) : undefined,
+      page,
+      pageSize,
+    };
+  }
 }
 
 export const adminExecutionsController = new AdminExecutionsController();

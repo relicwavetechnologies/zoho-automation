@@ -8,6 +8,7 @@ const router = Router();
 
 router.use(requireAdminSession());
 router.get('/', asyncHandler(adminExecutionsController.list));
+router.get('/insights', asyncHandler(adminExecutionsController.insights));
 router.get('/:executionId', asyncHandler(adminExecutionsController.get));
 router.get('/:executionId/events', asyncHandler(adminExecutionsController.events));
 

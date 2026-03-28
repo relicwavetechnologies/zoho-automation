@@ -1,6 +1,9 @@
 import type {
+  ExecutionCapabilityGapInsightDTO,
+  ExecutionDemandInsightDTO,
   ExecutionActorType,
   ExecutionEventItemDTO,
+  ExecutionInsightsDTO,
   ExecutionPhase,
   ExecutionRunDetailDTO,
   ExecutionRunFiltersDTO,
@@ -21,6 +24,7 @@ import type {
   CancelExecutionRunInput,
   CompleteExecutionRunInput,
   ExecutionEventListResponse,
+  ExecutionInsightsResponse,
   ExecutionRunDetailResponse,
   ExecutionRunListResponse,
   ExecutionRunQuery,
@@ -28,6 +32,12 @@ import type {
   FailExecutionRunInput,
   StartExecutionRunInput,
 } from './types';
+import {
+  EXECUTION_CAPABILITY_GAP_EVENT,
+  EXECUTION_TOOL_DEMAND_EVENT,
+  type ExecutionCapabilityGapPayload,
+  type ExecutionToolDemandPayload,
+} from './insights';
 
 const REDACTED_KEYS = new Set([
   'prompt',
@@ -181,6 +191,63 @@ const buildFilterWhere = (filters: ExecutionRunQuery): Prisma.ExecutionRunWhereI
   return where;
 };
 
+const asExecutionChannel = (value: unknown): 'desktop' | 'lark' | null =>
+  value === 'desktop' || value === 'lark' ? value : null;
+
+const coerceDemandPayload = (value: unknown): ExecutionToolDemandPayload | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const payload = value as Record<string, unknown>;
+  const family = typeof payload.intendedToolFamily === 'string' ? payload.intendedToolFamily.trim() : '';
+  const userQuery = typeof payload.userQuery === 'string' ? payload.userQuery.trim() : '';
+  if (!family || !userQuery) return null;
+  return {
+    channel: asExecutionChannel(payload.channel) ?? 'desktop',
+    userQuery,
+    enrichedQuery: typeof payload.enrichedQuery === 'string' ? payload.enrichedQuery : null,
+    normalizedIntent: typeof payload.normalizedIntent === 'string' ? payload.normalizedIntent : null,
+    canonicalIntentKey: typeof payload.canonicalIntentKey === 'string' ? payload.canonicalIntentKey : 'unknown:read:general:unspecified',
+    inferredDomain: typeof payload.inferredDomain === 'string' ? payload.inferredDomain as ExecutionToolDemandPayload['inferredDomain'] : 'unknown',
+    inferredOperationClass: typeof payload.inferredOperationClass === 'string'
+      ? payload.inferredOperationClass as ExecutionToolDemandPayload['inferredOperationClass']
+      : 'read',
+    intendedToolFamily: family,
+    plannerChosenToolId: typeof payload.plannerChosenToolId === 'string' ? payload.plannerChosenToolId : null,
+    plannerChosenOperationClass: typeof payload.plannerChosenOperationClass === 'string'
+      ? payload.plannerChosenOperationClass as ExecutionToolDemandPayload['plannerChosenOperationClass']
+      : null,
+    plannerCandidateToolIds: Array.isArray(payload.plannerCandidateToolIds)
+      ? payload.plannerCandidateToolIds.filter((entry): entry is string => typeof entry === 'string')
+      : [],
+    runExposedToolIds: Array.isArray(payload.runExposedToolIds)
+      ? payload.runExposedToolIds.filter((entry): entry is string => typeof entry === 'string')
+      : [],
+    selectionReason: typeof payload.selectionReason === 'string' ? payload.selectionReason : '',
+    clarificationTriggered: Boolean(payload.clarificationTriggered),
+    validationFailureReason: typeof payload.validationFailureReason === 'string' ? payload.validationFailureReason : null,
+  };
+};
+
+const coerceGapPayload = (value: unknown): ExecutionCapabilityGapPayload | null => {
+  const base = coerceDemandPayload(value);
+  if (!base || !value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const payload = value as Record<string, unknown>;
+  const gapKey = typeof payload.gapKey === 'string' ? payload.gapKey.trim() : '';
+  const gapLabel = typeof payload.gapLabel === 'string' ? payload.gapLabel.trim() : '';
+  const gapKind = typeof payload.gapKind === 'string' ? payload.gapKind.trim() : '';
+  if (!gapKey || !gapLabel || !gapKind) return null;
+  return {
+    ...base,
+    gapKind: gapKind as ExecutionCapabilityGapPayload['gapKind'],
+    gapKey,
+    gapLabel,
+    failedToolId: typeof payload.failedToolId === 'string' ? payload.failedToolId : null,
+    errorKind: typeof payload.errorKind === 'string' ? payload.errorKind : null,
+    errorMessage: typeof payload.errorMessage === 'string' ? payload.errorMessage : null,
+  };
+};
+
+const takeSampleQueries = (queries: Set<string>): string[] => Array.from(queries).slice(0, 3);
+
 export class ExecutionService extends BaseService {
   constructor(private readonly repository: ExecutionRepository = executionRepository) {
     super();
@@ -271,6 +338,112 @@ export class ExecutionService extends BaseService {
         byChannel: channelSummary,
         byMode: modeSummary,
       },
+    };
+  }
+
+  async getInsights(scope: ExecutionRunScope, filters: ExecutionRunFiltersDTO): Promise<ExecutionInsightsResponse> {
+    const runWhere: Prisma.ExecutionRunWhereInput = {
+      AND: [
+        buildScopeWhere(scope),
+        buildFilterWhere(filters),
+      ],
+    };
+
+    const events = await this.repository.listInsightEvents({
+      runWhere,
+      eventTypes: [EXECUTION_TOOL_DEMAND_EVENT, EXECUTION_CAPABILITY_GAP_EVENT],
+    });
+
+    const demandBuckets = new Map<string, {
+      family: string;
+      count: number;
+      users: Set<string>;
+      queries: Set<string>;
+      channels: Partial<Record<'desktop' | 'lark', number>>;
+    }>();
+    const gapBuckets = new Map<string, {
+      gapKey: string;
+      label: string;
+      family: string;
+      count: number;
+      users: Set<string>;
+      queries: Set<string>;
+      reasons: Set<string>;
+      channels: Partial<Record<'desktop' | 'lark', number>>;
+    }>();
+
+    for (const row of events) {
+      if (row.eventType === EXECUTION_TOOL_DEMAND_EVENT) {
+        const payload = coerceDemandPayload(row.payload);
+        if (!payload) continue;
+        const bucket = demandBuckets.get(payload.intendedToolFamily) ?? {
+          family: payload.intendedToolFamily,
+          count: 0,
+          users: new Set<string>(),
+          queries: new Set<string>(),
+          channels: {},
+        };
+        bucket.count += 1;
+        if (row.execution.userId) bucket.users.add(row.execution.userId);
+        bucket.queries.add(payload.userQuery);
+        const channel = asExecutionChannel(row.execution.channel) ?? payload.channel;
+        bucket.channels[channel] = (bucket.channels[channel] ?? 0) + 1;
+        demandBuckets.set(payload.intendedToolFamily, bucket);
+        continue;
+      }
+
+      if (row.eventType === EXECUTION_CAPABILITY_GAP_EVENT) {
+        const payload = coerceGapPayload(row.payload);
+        if (!payload) continue;
+        const bucket = gapBuckets.get(payload.gapKey) ?? {
+          gapKey: payload.gapKey,
+          label: payload.gapLabel,
+          family: payload.intendedToolFamily,
+          count: 0,
+          users: new Set<string>(),
+          queries: new Set<string>(),
+          reasons: new Set<string>(),
+          channels: {},
+        };
+        bucket.count += 1;
+        if (row.execution.userId) bucket.users.add(row.execution.userId);
+        bucket.queries.add(payload.userQuery);
+        const reason = payload.errorMessage || payload.validationFailureReason || payload.selectionReason;
+        if (reason) bucket.reasons.add(reason);
+        const channel = asExecutionChannel(row.execution.channel) ?? payload.channel;
+        bucket.channels[channel] = (bucket.channels[channel] ?? 0) + 1;
+        gapBuckets.set(payload.gapKey, bucket);
+      }
+    }
+
+    const topDemandedFamilies: ExecutionDemandInsightDTO[] = Array.from(demandBuckets.values())
+      .sort((left, right) => right.count - left.count || right.users.size - left.users.size || left.family.localeCompare(right.family))
+      .slice(0, 8)
+      .map((bucket) => ({
+        family: bucket.family,
+        demandCount: bucket.count,
+        uniqueUsers: bucket.users.size,
+        sampleQueries: takeSampleQueries(bucket.queries),
+        channels: bucket.channels,
+      }));
+
+    const topCapabilityGaps: ExecutionCapabilityGapInsightDTO[] = Array.from(gapBuckets.values())
+      .sort((left, right) => right.count - left.count || right.users.size - left.users.size || left.label.localeCompare(right.label))
+      .slice(0, 8)
+      .map((bucket) => ({
+        gapKey: bucket.gapKey,
+        label: bucket.label,
+        family: bucket.family,
+        gapCount: bucket.count,
+        uniqueUsers: bucket.users.size,
+        sampleQueries: takeSampleQueries(bucket.queries),
+        reasons: takeSampleQueries(bucket.reasons),
+        channels: bucket.channels,
+      }));
+
+    return {
+      topDemandedFamilies,
+      topCapabilityGaps,
     };
   }
 

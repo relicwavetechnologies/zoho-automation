@@ -2,6 +2,7 @@ import type {
   ExecutionActorType,
   ExecutionChannel,
   ExecutionEventItemDTO,
+  ExecutionInsightsDTO,
   ExecutionPhase,
   ExecutionRunDetailDTO,
   ExecutionRunFiltersDTO,
@@ -81,6 +82,8 @@ export type ExecutionRunDetailResponse = {
 export type ExecutionEventListResponse = {
   items: ExecutionEventItemDTO[];
 };
+
+export type ExecutionInsightsResponse = ExecutionInsightsDTO;
 
 export type ExecutionRunQuery = ExecutionRunFiltersDTO;
 

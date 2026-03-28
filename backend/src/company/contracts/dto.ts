@@ -238,6 +238,30 @@ export type ExecutionEventItemDTO = {
   createdAt: string;
 };
 
+export type ExecutionDemandInsightDTO = {
+  family: string;
+  demandCount: number;
+  uniqueUsers: number;
+  sampleQueries: string[];
+  channels: Partial<Record<ExecutionChannel, number>>;
+};
+
+export type ExecutionCapabilityGapInsightDTO = {
+  gapKey: string;
+  label: string;
+  family: string;
+  gapCount: number;
+  uniqueUsers: number;
+  sampleQueries: string[];
+  reasons: string[];
+  channels: Partial<Record<ExecutionChannel, number>>;
+};
+
+export type ExecutionInsightsDTO = {
+  topDemandedFamilies: ExecutionDemandInsightDTO[];
+  topCapabilityGaps: ExecutionCapabilityGapInsightDTO[];
+};
+
 export type ExecutionRunFiltersDTO = {
   query?: string;
   userId?: string;

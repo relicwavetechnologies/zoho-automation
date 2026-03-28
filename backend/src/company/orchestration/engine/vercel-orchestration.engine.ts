@@ -14,6 +14,15 @@ import { conversationMemoryStore } from '../../state/conversation';
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import { retrievalOrchestratorService } from '../../retrieval';
 import { logger } from '../../../utils/logger';
+import {
+  buildCapabilityGapFromSelection,
+  buildCapabilityGapFromToolFailure,
+  buildExecutionToolDemandPayload,
+  EXECUTION_CAPABILITY_GAP_EVENT,
+  EXECUTION_TOOL_DEMAND_EVENT,
+  executionService,
+  type ExecutionToolDemandPayload,
+} from '../../observability';
 import { resolveVercelChildRouterModel, resolveVercelLanguageModel } from '../vercel/model-factory';
 import { buildSharedAgentSystemPrompt } from '../prompting/shared-agent-prompt';
 import { resolveRunScopedToolSelection } from '../tool-selection/run-scoped-tool-selection.service';
@@ -104,6 +113,18 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const appendExecutionEventSafe = async (input: Parameters<typeof executionService.appendEvent>[0]) => {
+  try {
+    await executionService.appendEvent(input);
+  } catch (error) {
+    logger.warn('vercel.lark.execution.event.failed', {
+      executionId: input.executionId,
+      eventType: input.eventType,
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
 };
 
 const isPersonalMemoryQuestion = (value: string | null | undefined): boolean =>
@@ -1738,6 +1759,53 @@ const executeLarkVercelTask = async (
     clarificationTriggered: Boolean(toolSelection.clarificationQuestion),
     validationFailureReason: toolSelection.validationFailureReason ?? null,
   });
+  const analyticsToolDemandPayload = buildExecutionToolDemandPayload({
+    channel: 'lark',
+    latestUserMessage: message.text,
+    enrichedQueryText: queryEnrichment.cleanQuery,
+    childRoute: {
+      normalizedIntent: childRoute.normalizedIntent,
+      reason: childRoute.reason,
+      suggestedToolIds: childRoute.suggestedToolIds,
+      suggestedActions: childRoute.suggestedActions,
+    },
+    hasWorkspace: Boolean(runtime.workspace),
+    hasArtifacts: groundingAttachments.length > 0 || activeTaskState.activeSourceArtifacts.length > 0,
+    inferredDomain: toolSelection.inferredDomain,
+    inferredOperationClass: toolSelection.inferredOperationClass,
+    plannerChosenToolId: toolSelection.plannerChosenToolId ?? null,
+    plannerChosenOperationClass: toolSelection.plannerChosenOperationClass ?? null,
+    plannerCandidateToolIds: toolSelection.plannerCandidateToolIds,
+    runExposedToolIds: toolSelection.runExposedToolIds,
+    selectionReason: toolSelection.selectionReason,
+    clarificationTriggered: Boolean(toolSelection.clarificationQuestion),
+    validationFailureReason: toolSelection.validationFailureReason ?? null,
+  });
+  await appendExecutionEventSafe({
+    executionId: task.taskId,
+    phase: 'planning',
+    eventType: EXECUTION_TOOL_DEMAND_EVENT,
+    actorType: 'planner',
+    actorKey: 'tool-selection',
+    title: 'tool demand inferred',
+    summary: `${analyticsToolDemandPayload.intendedToolFamily} (${analyticsToolDemandPayload.inferredOperationClass})`,
+    status: 'completed',
+    payload: analyticsToolDemandPayload as unknown as Record<string, unknown>,
+  });
+  const selectionGapPayload = buildCapabilityGapFromSelection(analyticsToolDemandPayload);
+  if (selectionGapPayload) {
+    await appendExecutionEventSafe({
+      executionId: task.taskId,
+      phase: 'planning',
+      eventType: EXECUTION_CAPABILITY_GAP_EVENT,
+      actorType: 'planner',
+      actorKey: 'tool-selection',
+      title: 'capability gap detected',
+      summary: selectionGapPayload.gapLabel,
+      status: 'failed',
+      payload: selectionGapPayload as unknown as Record<string, unknown>,
+    });
+  }
   const effectiveRuntime: VercelRuntimeRequestContext = {
     ...runtime,
     latestUserMessage: message.text,
@@ -1810,6 +1878,20 @@ const executeLarkVercelTask = async (
         channel: 'lark',
         threadId: contextStorageId ?? message.chatId,
       });
+      const capabilityGapPayload = buildCapabilityGapFromToolFailure(analyticsToolDemandPayload, toolName, output);
+      if (capabilityGapPayload) {
+        await appendExecutionEventSafe({
+          executionId: task.taskId,
+          phase: 'tool',
+          eventType: EXECUTION_CAPABILITY_GAP_EVENT,
+          actorType: 'tool',
+          actorKey: toolName,
+          title: 'capability gap detected',
+          summary: capabilityGapPayload.gapLabel,
+          status: 'failed',
+          payload: capabilityGapPayload as unknown as Record<string, unknown>,
+        });
+      }
       const summary = summarizeText(output.summary, 180) ?? output.summary;
       statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${title}: ${summary}`);
       await updateStatus('tool_done', `${title}: ${summary}`);
