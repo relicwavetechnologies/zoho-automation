@@ -182,6 +182,21 @@ const loadFileUploadService = (): {
   }) => Promise<Array<Record<string, unknown>>>;
 } => loadModuleExport('../../../modules/file-upload/file-upload.service', 'fileUploadService');
 
+const loadOutboundArtifactService = (): {
+  materializeFromUploadedFile: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  materializeFromZohoBooksDocument: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  getArtifactForSend: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+} => loadModuleExport('../../artifacts/outbound-artifact.service', 'outboundArtifactService');
+
+const loadEmailComposeService = (): {
+  composeEmail: (input: Record<string, unknown>) => Promise<{
+    subject: string;
+    body: string;
+    isHtml: boolean;
+    composedBy: 'model' | 'fallback';
+  }>;
+} => loadModuleExport('../email-compose.service', 'emailComposeService');
+
 const loadDesktopWorkflowsService = (): {
   createDraft: (
     session: MemberSessionDTO,
@@ -2642,9 +2657,9 @@ export const createVercelDesktopTools = (
 
     documentOcrRead: tool({
       description:
-        'List visible uploaded files and extract machine-readable text from a selected document. Use this as an internal uploaded-file path before workspace, Google Drive, or repo inspection when you need the exact file contents.',
+        'List visible uploaded files, extract machine-readable text from a selected document, or materialize a sendable attachment artifact from an uploaded file. Use this as an internal uploaded-file path before workspace, Google Drive, or repo inspection when you need the exact file contents or a reusable outbound file reference.',
       inputSchema: z.object({
-        operation: z.enum(['listFiles', 'extractText']),
+        operation: z.enum(['listFiles', 'extractText', 'createArtifactFromUploadedFile']),
         fileAssetId: z.string().optional(),
         fileName: z.string().optional(),
         query: z.string().optional(),
@@ -2690,13 +2705,45 @@ export const createVercelDesktopTools = (
                   : 'No matching uploaded file was found. Provide fileAssetId or fileName, or upload a document first.',
               errorKind: 'missing_input',
               retryable: false,
-              ...(candidates.length > 0
-                ? {
-                    fullPayload: {
-                      candidates,
-                    },
-                  }
-                : {}),
+              fullPayload: {
+                missingFields: ['fileAssetId_or_fileName'],
+                ...(candidates.length > 0 ? { candidates } : {}),
+              },
+            });
+          }
+
+          if (input.operation === 'createArtifactFromUploadedFile') {
+            const artifact = await loadOutboundArtifactService().materializeFromUploadedFile({
+              companyId: runtime.companyId,
+              requesterUserId: runtime.userId,
+              requesterAiRole: runtime.requesterAiRole,
+              fileAssetId: file.fileAssetId,
+            });
+            conversationMemoryStore.addFileAsset(conversationKey, file);
+            return buildEnvelope({
+              success: true,
+              summary: `Created outbound attachment artifact for ${file.fileName}.`,
+              keyData: {
+                artifactId: asString(artifact.id),
+                fileAssetId: file.fileAssetId,
+                fileName: file.fileName,
+                mimeType: file.mimeType,
+              },
+              fullPayload: {
+                artifact,
+                file,
+              },
+              citations: [
+                {
+                  id: `file-${file.fileAssetId}`,
+                  title: file.fileName,
+                  url: file.cloudinaryUrl,
+                  kind: 'file',
+                  sourceType: 'file_document',
+                  sourceId: file.fileAssetId,
+                  fileAssetId: file.fileAssetId,
+                },
+              ],
             });
           }
 
@@ -4059,6 +4106,19 @@ export const createVercelDesktopTools = (
         cc: z.string().optional(),
         bcc: z.string().optional(),
         isHtml: z.boolean().optional(),
+        purpose: z.string().optional(),
+        audience: z.string().optional(),
+        tone: z.string().optional(),
+        templateFamily: z.string().optional(),
+        facts: z.array(z.string()).optional(),
+        preserveUserWording: z.boolean().optional(),
+        attachments: z
+          .array(
+            z.object({
+              artifactId: z.string().min(1),
+            }),
+          )
+          .optional(),
         format: z.enum(['metadata', 'full', 'minimal', 'raw']).optional(),
       }),
       execute: async (input) =>
@@ -4182,29 +4242,79 @@ export const createVercelDesktopTools = (
           }
 
           if (input.operation === 'createDraft') {
-            if (!input.to || !input.subject || !input.body) {
+            if (!input.to || (!input.body && !(input.facts?.length) && !input.purpose && !input.subject)) {
+              const missingFields = [
+                !input.to ? 'to' : null,
+                !input.body && !(input.facts?.length) && !input.purpose && !input.subject
+                  ? 'body_or_facts_or_purpose_or_subject'
+                  : null,
+              ].filter((value): value is string => Boolean(value));
               return buildEnvelope({
                 success: false,
-                summary: 'createDraft requires to, subject, and body.',
+                summary: 'createDraft requires to plus enough content to compose the email.',
                 errorKind: 'missing_input',
+                fullPayload: { missingFields },
               });
             }
+            const attachmentEntries = input.attachments
+              ? await Promise.all(
+                input.attachments.map(async (attachment) => {
+                  const artifact = await loadOutboundArtifactService().getArtifactForSend({
+                    artifactId: attachment.artifactId,
+                    companyId: runtime.companyId,
+                    requesterUserId: runtime.userId,
+                    requesterAiRole: runtime.requesterAiRole,
+                  });
+                  return {
+                    artifactId: asString(artifact.id) ?? attachment.artifactId,
+                    fileName: asString(artifact.fileName) ?? 'attachment',
+                    mimeType: asString(artifact.mimeType) ?? 'application/octet-stream',
+                  };
+                }),
+              )
+              : [];
+            const composed = await loadEmailComposeService().composeEmail({
+              purpose: input.purpose ?? input.subject,
+              audience: input.audience ?? input.to,
+              tone: input.tone,
+              templateFamily: input.templateFamily,
+              subject: input.subject,
+              body: input.body,
+              facts: input.facts,
+              attachments: attachmentEntries.map((entry) => ({
+                fileName: entry.fileName,
+                mimeType: entry.mimeType,
+              })),
+              preserveUserWording: input.preserveUserWording,
+              preferHtml: input.isHtml,
+            });
             return createPendingRemoteApproval({
               runtime,
               toolId: 'google-gmail',
               actionGroup: 'create',
               operation: 'createDraft',
-              summary: `Approval required to create Gmail draft "${input.subject}".`,
-              subject: input.subject,
+              summary: `Approval required to create Gmail draft "${composed.subject}"${attachmentEntries.length > 0 ? ` with ${attachmentEntries.length} attachment(s)` : ''}.`,
+              subject: composed.subject,
               explanation: `Create a draft to ${input.to}.`,
               payload: {
                 to: input.to,
-                subject: input.subject,
-                body: input.body,
+                subject: composed.subject,
+                body: composed.body,
                 cc: input.cc,
                 bcc: input.bcc,
-                isHtml: input.isHtml ?? false,
+                isHtml: composed.isHtml,
                 threadId: input.threadId,
+                attachments: attachmentEntries.map((entry) => ({
+                  artifactId: entry.artifactId,
+                })),
+                composeMeta: {
+                  purpose: input.purpose,
+                  audience: input.audience,
+                  tone: input.tone,
+                  templateFamily: input.templateFamily,
+                  facts: input.facts,
+                  composedBy: composed.composedBy,
+                },
               },
             });
           }
@@ -4216,6 +4326,7 @@ export const createVercelDesktopTools = (
                 success: false,
                 summary: 'sendDraft requires draftId.',
                 errorKind: 'missing_input',
+                fullPayload: { missingFields: ['draftId'] },
               });
             }
             return createPendingRemoteApproval({
@@ -4231,29 +4342,79 @@ export const createVercelDesktopTools = (
           }
 
           if (input.operation === 'sendMessage') {
-            if (!input.to || !input.subject || !input.body) {
+            if (!input.to || (!input.body && !(input.facts?.length) && !input.purpose && !input.subject)) {
+              const missingFields = [
+                !input.to ? 'to' : null,
+                !input.body && !(input.facts?.length) && !input.purpose && !input.subject
+                  ? 'body_or_facts_or_purpose_or_subject'
+                  : null,
+              ].filter((value): value is string => Boolean(value));
               return buildEnvelope({
                 success: false,
-                summary: 'sendMessage requires to, subject, and body.',
+                summary: 'sendMessage requires to plus enough content to compose the email.',
                 errorKind: 'missing_input',
+                fullPayload: { missingFields },
               });
             }
+            const attachmentEntries = input.attachments
+              ? await Promise.all(
+                input.attachments.map(async (attachment) => {
+                  const artifact = await loadOutboundArtifactService().getArtifactForSend({
+                    artifactId: attachment.artifactId,
+                    companyId: runtime.companyId,
+                    requesterUserId: runtime.userId,
+                    requesterAiRole: runtime.requesterAiRole,
+                  });
+                  return {
+                    artifactId: asString(artifact.id) ?? attachment.artifactId,
+                    fileName: asString(artifact.fileName) ?? 'attachment',
+                    mimeType: asString(artifact.mimeType) ?? 'application/octet-stream',
+                  };
+                }),
+              )
+              : [];
+            const composed = await loadEmailComposeService().composeEmail({
+              purpose: input.purpose ?? input.subject,
+              audience: input.audience ?? input.to,
+              tone: input.tone,
+              templateFamily: input.templateFamily,
+              subject: input.subject,
+              body: input.body,
+              facts: input.facts,
+              attachments: attachmentEntries.map((entry) => ({
+                fileName: entry.fileName,
+                mimeType: entry.mimeType,
+              })),
+              preserveUserWording: input.preserveUserWording,
+              preferHtml: input.isHtml,
+            });
             return createPendingRemoteApproval({
               runtime,
               toolId: 'google-gmail',
               actionGroup: 'send',
               operation: 'sendMessage',
-              summary: `Approval required to send Gmail message "${input.subject}".`,
-              subject: input.subject,
+              summary: `Approval required to send Gmail message "${composed.subject}"${attachmentEntries.length > 0 ? ` with ${attachmentEntries.length} attachment(s)` : ''}.`,
+              subject: composed.subject,
               explanation: `Send email to ${input.to}.`,
               payload: {
                 to: input.to,
-                subject: input.subject,
-                body: input.body,
+                subject: composed.subject,
+                body: composed.body,
                 cc: input.cc,
                 bcc: input.bcc,
-                isHtml: input.isHtml ?? false,
+                isHtml: composed.isHtml,
                 threadId: input.threadId,
+                attachments: attachmentEntries.map((entry) => ({
+                  artifactId: entry.artifactId,
+                })),
+                composeMeta: {
+                  purpose: input.purpose,
+                  audience: input.audience,
+                  tone: input.tone,
+                  templateFamily: input.templateFamily,
+                  facts: input.facts,
+                  composedBy: composed.composedBy,
+                },
               },
             });
           }
@@ -4853,18 +5014,20 @@ export const createVercelDesktopTools = (
 
     booksRead: tool({
       description:
-        'Read Zoho Books organizations, finance records, reports, comments, templates, attachments, record documents, bank data, and raw email/report metadata.',
+        'Read Zoho Books organizations, finance records, reports, comments, templates, attachments, record documents, bank data, raw email/report metadata, and materialize sendable document artifacts.',
       inputSchema: z.object({
         operation: z.enum([
           'listOrganizations',
           'listRecords',
           'getRecord',
           'getRecordDocument',
+          'materializeRecordDocumentArtifact',
           'summarizeModule',
           'getReport',
           'listTemplates',
           'listComments',
           'getBooksAttachment',
+          'materializeBooksAttachmentArtifact',
           'buildOverdueReport',
           'mapCustomerPayments',
           'reconcileVendorStatement',
@@ -5741,6 +5904,55 @@ export const createVercelDesktopTools = (
             }
           }
 
+          if (input.operation === 'materializeBooksAttachmentArtifact') {
+            if (!moduleName || !recordId) {
+              return buildEnvelope({
+                success: false,
+                summary: 'materializeBooksAttachmentArtifact requires a supported module and recordId.',
+                errorKind: 'missing_input',
+                retryable: false,
+                fullPayload: { missingFields: ['module', 'recordId'] },
+              });
+            }
+            try {
+              const artifact = await loadOutboundArtifactService().materializeFromZohoBooksDocument({
+                companyId: runtime.companyId,
+                requesterUserId: runtime.userId,
+                requesterAiRole: runtime.requesterAiRole,
+                requesterEmail: runtime.requesterEmail,
+                organizationId: input.organizationId?.trim(),
+                moduleName,
+                recordId,
+                kind: 'attachment',
+              });
+              return buildEnvelope({
+                success: true,
+                summary: `Created outbound attachment artifact for Zoho Books ${moduleName} ${recordId}.`,
+                keyData: {
+                  artifactId: asString(artifact.id),
+                  module: moduleName,
+                  recordId,
+                  fileName: asString(artifact.fileName),
+                  mimeType: asString(artifact.mimeType),
+                },
+                fullPayload: {
+                  artifact,
+                },
+              });
+            } catch (error) {
+              const summary =
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to materialize Zoho Books attachment artifact.';
+              return buildEnvelope({
+                success: false,
+                summary,
+                errorKind: inferErrorKind(summary),
+                retryable: true,
+              });
+            }
+          }
+
           if (input.operation === 'getRecordDocument') {
             if (!moduleName || !recordId) {
               return buildEnvelope({
@@ -5793,6 +6005,56 @@ export const createVercelDesktopTools = (
                 error instanceof Error
                   ? error.message
                   : 'Failed to fetch Zoho Books record document.';
+              return buildEnvelope({
+                success: false,
+                summary,
+                errorKind: inferErrorKind(summary),
+                retryable: true,
+              });
+            }
+          }
+
+          if (input.operation === 'materializeRecordDocumentArtifact') {
+            if (!moduleName || !recordId) {
+              return buildEnvelope({
+                success: false,
+                summary: 'materializeRecordDocumentArtifact requires a supported module and recordId.',
+                errorKind: 'missing_input',
+                retryable: false,
+                fullPayload: { missingFields: ['module', 'recordId'] },
+              });
+            }
+            try {
+              const artifact = await loadOutboundArtifactService().materializeFromZohoBooksDocument({
+                companyId: runtime.companyId,
+                requesterUserId: runtime.userId,
+                requesterAiRole: runtime.requesterAiRole,
+                requesterEmail: runtime.requesterEmail,
+                organizationId: input.organizationId?.trim(),
+                moduleName,
+                recordId,
+                kind: 'record_document',
+                accept: input.documentFormat ?? 'pdf',
+              });
+              return buildEnvelope({
+                success: true,
+                summary: `Created outbound document artifact for Zoho Books ${moduleName} ${recordId}.`,
+                keyData: {
+                  artifactId: asString(artifact.id),
+                  module: moduleName,
+                  recordId,
+                  fileName: asString(artifact.fileName),
+                  mimeType: asString(artifact.mimeType),
+                },
+                fullPayload: {
+                  artifact,
+                },
+              });
+            } catch (error) {
+              const summary =
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to materialize Zoho Books document artifact.';
               return buildEnvelope({
                 success: false,
                 summary,

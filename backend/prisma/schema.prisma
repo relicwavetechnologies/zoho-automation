@@ -162,6 +162,7 @@ model Company {
   googleAuthLinks        GoogleUserAuthLink[]
   googleWorkspaceAuth    CompanyGoogleAuthLink?
   fileAssets             FileAsset[]
+  outboundArtifacts      OutboundArtifact[]
   userMemoryItems        UserMemoryItem[]
   userMemoryProfiles     UserMemoryProfile[]
 }
@@ -536,9 +537,36 @@ model FileAsset {
   updatedAt              DateTime           @updatedAt
   accessPolicies         FileAccessPolicy[]
   vectorDocs             VectorDocument[]
+  outboundArtifacts      OutboundArtifact[]
 
   @@index([companyId, uploaderUserId])
   @@index([companyId, ingestionStatus])
+}
+
+model OutboundArtifact {
+  id               String     @id @default(uuid())
+  companyId        String
+  company          Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdByUserId  String?
+  sourceSystem     String
+  sourceKind       String
+  sourceRecordType String?
+  sourceRecordId   String?
+  sourceMetadata   Json?
+  fileAssetId      String?
+  fileAsset        FileAsset? @relation(fields: [fileAssetId], references: [id], onDelete: SetNull)
+  fileName         String
+  mimeType         String
+  sizeBytes        Int
+  storageKind      String     @default("inline_base64")
+  contentBase64    String
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  @@index([companyId, createdAt])
+  @@index([companyId, sourceSystem, sourceKind])
+  @@index([companyId, sourceRecordType, sourceRecordId])
+  @@index([fileAssetId])
 }
 
 model FileAccessPolicy {

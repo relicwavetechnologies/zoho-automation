@@ -5,6 +5,7 @@ import { googleOAuthService } from '../../channels/google/google-oauth.service';
 import { googleUserAuthLinkRepository } from '../../channels/google/google-user-auth-link.repository';
 import { larkMessagingService } from '../../channels/lark/lark-messaging.service';
 import { LarkRuntimeClientError } from '../../channels/lark/lark-runtime-client';
+import { outboundArtifactService } from '../../artifacts/outbound-artifact.service';
 import { departmentService } from '../../departments/department.service';
 import { formatZohoGatewayDeniedMessage } from '../../integrations/zoho/zoho-gateway-denials';
 import { zohoGatewayService } from '../../integrations/zoho/zoho-gateway.service';
@@ -40,6 +41,9 @@ const buildExpiryFromSeconds = (seconds?: number): Date | undefined => {
 
 const normalizeScopes = (scopes?: string[]): Set<string> =>
   new Set((scopes ?? []).map((scope) => scope.trim()).filter(Boolean));
+
+const wrapBase64 = (value: string): string =>
+  value.replace(/(.{76})/g, '$1\r\n');
 
 type StoredRuntimeMetadata = {
   companyId: string;
@@ -525,6 +529,43 @@ const resolveGoogleAccess = async (
   };
 };
 
+const resolveGmailAttachments = async (
+  action: HydratedStoredHitlAction,
+): Promise<Array<{ fileName: string; mimeType: string; contentBase64: string }>> => {
+  const payload = action.payload ?? {};
+  const attachments = Array.isArray(payload.attachments)
+    ? payload.attachments
+      .map((entry) => asRecord(entry))
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    : [];
+  if (attachments.length === 0) {
+    return [];
+  }
+
+  const metadata = loadRuntimeMetadata(action);
+  const resolved = await Promise.all(
+    attachments.map(async (entry) => {
+      const artifactId = asString(entry.artifactId);
+      if (!artifactId) {
+        throw new Error('Stored Gmail attachment is missing artifactId');
+      }
+      const artifact = await outboundArtifactService.getArtifactForSend({
+        artifactId,
+        companyId: metadata.companyId,
+        requesterUserId: metadata.userId,
+        requesterAiRole: metadata.requesterAiRole,
+      });
+      return {
+        fileName: artifact.fileName,
+        mimeType: artifact.mimeType,
+        contentBase64: artifact.contentBase64,
+      };
+    }),
+  );
+
+  return resolved;
+};
+
 const buildMimeMessage = (input: {
   to: string;
   subject: string;
@@ -532,7 +573,47 @@ const buildMimeMessage = (input: {
   cc?: string;
   bcc?: string;
   isHtml?: boolean;
+  attachments?: Array<{
+    fileName: string;
+    mimeType: string;
+    contentBase64: string;
+  }>;
 }): string => {
+  const attachmentCount = input.attachments?.length ?? 0;
+  if (attachmentCount > 0) {
+    const boundary = `divo-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
+    const parts = [
+      `To: ${input.to}`,
+      ...(input.cc ? [`Cc: ${input.cc}`] : []),
+      ...(input.bcc ? [`Bcc: ${input.bcc}`] : []),
+      `Subject: ${input.subject}`,
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      `Content-Type: ${input.isHtml ? 'text/html' : 'text/plain'}; charset="UTF-8"`,
+      'Content-Transfer-Encoding: 7bit',
+      '',
+      input.body,
+    ];
+    for (const attachment of input.attachments ?? []) {
+      parts.push(
+        `--${boundary}`,
+        `Content-Type: ${attachment.mimeType}; name="${attachment.fileName}"`,
+        `Content-Disposition: attachment; filename="${attachment.fileName}"`,
+        'Content-Transfer-Encoding: base64',
+        '',
+        wrapBase64(attachment.contentBase64),
+      );
+    }
+    parts.push(`--${boundary}--`, '');
+    return Buffer.from(parts.join('\r\n'))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+  }
+
   const lines = [
     `To: ${input.to}`,
     ...(input.cc ? [`Cc: ${input.cc}`] : []),
@@ -563,6 +644,7 @@ const executeGoogleMailAction = async (
     const access = await resolveGoogleAccess(action, [
       'https://www.googleapis.com/auth/gmail.compose',
     ]);
+    const attachments = await resolveGmailAttachments(action);
     const raw = buildMimeMessage({
       to: asString(payload.to) ?? '',
       subject: asString(payload.subject) ?? '',
@@ -570,6 +652,7 @@ const executeGoogleMailAction = async (
       cc: asString(payload.cc),
       bcc: asString(payload.bcc),
       isHtml: Boolean(payload.isHtml),
+      attachments,
     });
     const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
       method: 'POST',
@@ -592,7 +675,7 @@ const executeGoogleMailAction = async (
     }
     return {
       ok: true,
-      summary: `Created Gmail draft "${asString(payload.subject) ?? 'draft'}".`,
+      summary: `Created Gmail draft "${asString(payload.subject) ?? 'draft'}"${attachments.length > 0 ? ` with ${attachments.length} attachment(s)` : ''}.`,
       payload: result,
     };
   }
@@ -630,6 +713,7 @@ const executeGoogleMailAction = async (
     const access = await resolveGoogleAccess(action, [
       'https://www.googleapis.com/auth/gmail.send',
     ]);
+    const attachments = await resolveGmailAttachments(action);
     const raw = buildMimeMessage({
       to: asString(payload.to) ?? '',
       subject: asString(payload.subject) ?? '',
@@ -637,6 +721,7 @@ const executeGoogleMailAction = async (
       cc: asString(payload.cc),
       bcc: asString(payload.bcc),
       isHtml: Boolean(payload.isHtml),
+      attachments,
     });
     const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
       method: 'POST',
@@ -657,7 +742,7 @@ const executeGoogleMailAction = async (
     }
     return {
       ok: true,
-      summary: `Sent Gmail message "${asString(payload.subject) ?? 'message'}".`,
+      summary: `Sent Gmail message "${asString(payload.subject) ?? 'message'}"${attachments.length > 0 ? ` with ${attachments.length} attachment(s)` : ''}.`,
       payload: result,
     };
   }

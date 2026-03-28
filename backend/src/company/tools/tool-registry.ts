@@ -46,7 +46,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: 'google-gmail',
     name: 'Google Gmail',
-    description: 'List, read, draft, and send Gmail messages using the connected Google account.',
+    description: 'List, read, draft, and send Gmail messages with optional attachment artifacts using the connected Google account.',
     category: 'workspace',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
@@ -70,7 +70,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: 'document-ocr-read',
     name: 'Document OCR Read',
-    description: 'List accessible uploaded files and extract machine-readable text from PDFs, docs, CSVs, and scanned images.',
+    description: 'List accessible uploaded files, extract machine-readable text, and materialize sendable attachment artifacts from PDFs, docs, CSVs, and scanned images.',
     category: 'workspace',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
@@ -135,7 +135,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: 'zoho-books-read',
     name: 'Zoho Books Read',
-    description: 'Read Zoho Books finance records, contacts, vendor payments, bank accounts, credit notes, sales orders, purchase orders, bank transaction match suggestions, and related invoice/email/statement metadata.',
+    description: 'Read Zoho Books finance records, contacts, vendor payments, bank accounts, credit notes, sales orders, purchase orders, bank transaction match suggestions, and related invoice/email/statement/document metadata.',
     category: 'crm-read',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
