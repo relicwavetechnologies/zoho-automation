@@ -827,6 +827,20 @@ const buildConversationRefsContext = (conversationKey: string): string | null =>
   return lines.length > 0 ? ['Conversation refs:', ...lines].join('\n') : null;
 };
 
+const buildLatestConversationRefs = (conversationKey: string) => {
+  const latestTask = conversationMemoryStore.getLatestLarkTask(conversationKey);
+  const latestDoc = conversationMemoryStore.getLatestLarkDoc(conversationKey);
+  const latestEvent = conversationMemoryStore.getLatestLarkCalendarEvent(conversationKey);
+  const latestFile = conversationMemoryStore.getLatestFileAsset(conversationKey);
+
+  return {
+    latestTaskSummary: latestTask?.summary ?? null,
+    latestEventSummary: latestEvent?.summary ?? null,
+    latestDocTitle: latestDoc?.title ?? null,
+    latestFileName: latestFile?.fileName ?? null,
+  };
+};
+
 const shouldBypassUnverifiedDuplicateTaskFastReply = (input: {
   conversationKey: string;
   childRoute: DesktopChildRoute;
@@ -1615,11 +1629,13 @@ const executeLarkVercelTask = async (
   const runtime = await resolveRuntimeContext(task, message, contextStorageId, activeTaskState);
   runtime.attachedFiles =
     groundingAttachments.length > 0 ? groundingAttachments : runtime.attachedFiles;
+  const latestConversationRefs = buildLatestConversationRefs(conversationKey);
   const queryEnrichment = enrichQuery({
     rawMessage: message.text,
     attachedFiles: groundingAttachments,
     taskState: activeTaskState,
     threadSummary: activeThreadSummary,
+    recentConversationRefs: latestConversationRefs,
   });
   await resetLatestAgentRunLog(task.taskId, {
     channel: 'lark',
@@ -2163,6 +2179,7 @@ const executeLarkVercelTask = async (
     attachedFiles: groundingAttachments,
     taskState: activeTaskState,
     threadSummary: activeThreadSummary,
+    recentConversationRefs: latestConversationRefs,
     relevantMemoryFacts: conversationSnippets,
   });
   const systemPrompt = buildSystemPrompt({

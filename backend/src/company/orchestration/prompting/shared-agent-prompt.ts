@@ -266,7 +266,8 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
   if (input.hasActiveSourceArtifacts) {
     parts.push(
       'This thread has active source artifacts from uploaded/company documents.',
-      'For follow-up requests like "next task", "continue", or "pick the next one", treat those source artifacts as the default grounding context.',
+      'For referential follow-ups, prefer recent thread-local task/doc/event refs first when they fit the request.',
+      'Use active source artifacts as the default grounding context only when the user explicitly points to a file/image/document or when no newer task/doc/event refs fit.',
       'If an active source artifact is already attached as multimodal context, especially an image or screenshot, inspect that artifact directly before calling OCR.',
       'Use OCR/direct file extraction when you need exact extracted text from a document/image or when no active file attachment could be resolved.',
       'Do not search Google Drive, the workspace, local filesystem, or remote repos for a previously uploaded/company file unless artifact retrieval produced no relevant match or the user explicitly asked for those sources.',

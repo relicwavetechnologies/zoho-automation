@@ -16,6 +16,13 @@ type QueryEnrichmentThreadSummary = {
   constraints?: string[];
 };
 
+type QueryEnrichmentConversationRefs = {
+  latestTaskSummary?: string | null;
+  latestEventSummary?: string | null;
+  latestDocTitle?: string | null;
+  latestFileName?: string | null;
+};
+
 export type QueryEnrichment = {
   rawMessage: string;
   cleanQuery: string;
@@ -39,6 +46,10 @@ const SHORTHAND_REPLACEMENTS: Array<[RegExp, string]> = [
 ];
 
 const REFERENTIAL_QUERY_RE = /\b(this|that|it|same one|same file|same image|same doc|same document|same meeting|same task)\b/i;
+const REFERENTIAL_FOLLOWUP_RE =
+  /\b(this|that|it|them|those|these|same one|same file|same image|same doc|same document|same meeting|same task|continue|try again|again|retry|make them|assign them|do that)\b/i;
+const FILE_REFERENCE_RE =
+  /\b(file|files|pdf|document|documents|doc|image|images|picture|pictures|screenshot|attachment|attachments|upload|uploaded|csv|sheet|spreadsheet)\b/i;
 const FILENAME_RE = /\b[\w @()+-]+\.(?:csv|pdf|png|jpg|jpeg|gif|doc|docx|xls|xlsx|txt)\b/gi;
 const QUOTED_RE = /["']([^"']{2,160})["']/g;
 
@@ -101,11 +112,33 @@ const extractSummaryEntities = (input?: QueryEnrichmentThreadSummary): string[] 
   ).filter((value) => value.length > 0 && !/^lark_attachment_/i.test(value)));
 };
 
+const extractConversationRefHints = (input?: QueryEnrichmentConversationRefs | null): {
+  actionHints: string[];
+  fileHints: string[];
+} => {
+  if (!input) {
+    return { actionHints: [], fileHints: [] };
+  }
+
+  const actionHints = uniq([
+    input.latestTaskSummary ? `Recent task: ${summarize(normalizeWhitespace(input.latestTaskSummary), 100)}` : '',
+    input.latestEventSummary ? `Recent event: ${summarize(normalizeWhitespace(input.latestEventSummary), 100)}` : '',
+    input.latestDocTitle ? `Recent doc: ${summarize(normalizeWhitespace(input.latestDocTitle), 100)}` : '',
+  ]).filter(Boolean);
+
+  const fileHints = uniq([
+    input.latestFileName ? normalizeArtifactName(input.latestFileName) ?? '' : '',
+  ]).filter(Boolean);
+
+  return { actionHints, fileHints };
+};
+
 export const enrichQuery = (input: {
   rawMessage: string;
   attachedFiles?: QueryEnrichmentAttachment[];
   taskState?: QueryEnrichmentTaskState | null;
   threadSummary?: QueryEnrichmentThreadSummary | null;
+  recentConversationRefs?: QueryEnrichmentConversationRefs | null;
   relevantMemoryFacts?: string[];
 }): QueryEnrichment => {
   const rawMessage = normalizeWhitespace(input.rawMessage);
@@ -123,23 +156,37 @@ export const enrichQuery = (input: {
   const memoryHints = uniq((input.relevantMemoryFacts ?? []).map((value) => summarize(normalizeWhitespace(value), 120))).slice(0, 3);
   const summaryHints = extractSummaryEntities(input.threadSummary ?? undefined).slice(0, 3);
   const objectiveHint = input.taskState?.activeObjective ? summarize(normalizeWhitespace(input.taskState.activeObjective), 120) : null;
+  const referentialFollowup = REFERENTIAL_FOLLOWUP_RE.test(cleanQuery) || REFERENTIAL_QUERY_RE.test(cleanQuery);
+  const explicitFileCue = FILE_REFERENCE_RE.test(cleanQuery) || exactTerms.some((term) => FILE_REFERENCE_RE.test(term));
+  const conversationRefHints = extractConversationRefHints(input.recentConversationRefs ?? undefined);
+  const prioritizedActionHints = referentialFollowup && !explicitFileCue
+    ? conversationRefHints.actionHints
+    : [];
+  const prioritizedFileHints = explicitFileCue
+    ? uniq([...artifactHints, ...conversationRefHints.fileHints]).slice(0, 4)
+    : [];
 
   const contextHints = uniq([
-    ...(REFERENTIAL_QUERY_RE.test(cleanQuery) ? artifactHints : []),
+    ...prioritizedActionHints,
+    ...prioritizedFileHints,
+    ...(REFERENTIAL_QUERY_RE.test(cleanQuery) && explicitFileCue ? artifactHints : []),
     ...(objectiveHint ? [objectiveHint] : []),
     ...summaryHints,
-  ]).slice(0, 4);
+  ]).slice(0, 6);
 
   const entityHints = uniq([
     ...exactTerms,
-    ...artifactHints,
+    ...prioritizedActionHints,
     ...summaryHints,
-  ]).slice(0, 6);
+    ...artifactHints,
+    ...conversationRefHints.fileHints,
+  ]).slice(0, 8);
 
   const retrievalQueries = uniq([
     rawMessage,
     cleanQuery !== rawMessage ? cleanQuery : '',
     exactTerms.length > 0 ? `${cleanQuery}\nExact terms: ${exactTerms.join(', ')}` : '',
+    prioritizedActionHints.length > 0 ? `${cleanQuery}\nRecent thread refs: ${prioritizedActionHints.join(' | ')}` : '',
     contextHints.length > 0 ? `${cleanQuery}\nContext hints: ${contextHints.join(', ')}` : '',
     memoryHints.length > 0 ? `${cleanQuery}\nRelevant memory: ${memoryHints.join(' | ')}` : '',
   ]).slice(0, 5);

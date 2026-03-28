@@ -75,6 +75,22 @@ const MEMORY_KEYWORDS = [
   'my name is',
 ];
 
+const REFERENTIAL_FOLLOWUP_KEYWORDS = [
+  'continue',
+  'try again',
+  'again',
+  'same one',
+  'same task',
+  'same meeting',
+  'same doc',
+  'same document',
+  'those',
+  'them',
+  'do that',
+  'make them',
+  'assign them',
+];
+
 const WORKFLOW_KEYWORDS = [
   'how do',
   'how should',
@@ -149,6 +165,13 @@ const looksLikeAttachmentQuery = (normalized: string, hasAttachments: boolean): 
 
 const looksLikeConversationMemoryQuery = (normalized: string): boolean =>
   includesAny(normalized, MEMORY_KEYWORDS);
+
+const looksLikeReferentialFollowup = (normalized: string): boolean => {
+  if (!includesAny(normalized, REFERENTIAL_FOLLOWUP_KEYWORDS)) {
+    return false;
+  }
+  return normalized.split(/\s+/).filter(Boolean).length <= 14;
+};
 
 const looksLikeWorkflowQuery = (normalized: string): boolean =>
   includesAny(normalized, WORKFLOW_KEYWORDS);
@@ -229,6 +252,14 @@ export class RetrievalPlannerService {
     if (looksLikeConversationMemoryQuery(normalized)) {
       pushUnique(needs, 'conversation_memory');
       rationale.push('Conversation-memory retrieval applies because the request refers to prior user-provided context.');
+    }
+
+    if (
+      looksLikeReferentialFollowup(normalized) &&
+      !looksLikeAttachmentQuery(normalized, input.hasAttachments ?? false)
+    ) {
+      pushUnique(needs, 'conversation_memory');
+      rationale.push('Conversation-memory retrieval is prioritized because the request is a short referential follow-up without explicit file cues.');
     }
 
     const hasInternalNeed = needs.some((need) =>
