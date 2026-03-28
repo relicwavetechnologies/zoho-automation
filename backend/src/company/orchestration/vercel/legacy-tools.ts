@@ -732,7 +732,42 @@ const loadHitlActionService = (): {
     payload?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   }) => Promise<{ actionId: string }>;
+  resolveByActionId: (actionId: string, decision: 'confirmed' | 'cancelled') => Promise<boolean>;
+  getStoredAction: (actionId: string) => Promise<{
+    actionId: string;
+    toolId?: string;
+    actionGroup?: ToolActionGroup;
+    channel?: 'desktop' | 'lark';
+    payload?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  } | null>;
 } => loadModuleExport('../../state/hitl/hitl-action.service', 'hitlActionService');
+
+const loadExecuteStoredRemoteToolAction = (): ((action: {
+  actionId: string;
+  toolId?: string;
+  actionGroup?: ToolActionGroup;
+  channel?: 'desktop' | 'lark';
+  payload?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}) => Promise<{
+  kind?: string;
+  ok: boolean;
+  summary: string;
+  payload?: Record<string, unknown>;
+}>) => loadModuleExport('../../state/hitl/hitl-remote-action.executor', 'executeStoredRemoteToolAction');
+
+const loadDepartmentService = (): {
+  resolveDepartmentApprover: (input: {
+    companyId: string;
+    departmentId?: string;
+  }) => Promise<{
+    userId: string;
+    name?: string;
+    email?: string;
+    larkOpenId?: string;
+  } | null>;
+} => loadModuleExport('../../departments/department.service', 'departmentService');
 
 type DesktopWsGatewayLike = {
   getPolicyDecision: (
@@ -1122,6 +1157,49 @@ const ensureAnyActionPermission = (
   });
 };
 
+const isRequesterResolvedApprover = async (
+  runtime: VercelRuntimeRequestContext,
+): Promise<boolean> => {
+  if (runtime.departmentRoleSlug?.trim().toUpperCase() === 'MANAGER') {
+    return true;
+  }
+  const approver = await loadDepartmentService().resolveDepartmentApprover({
+    companyId: runtime.companyId,
+    departmentId: runtime.departmentId,
+  });
+  if (!approver) {
+    return false;
+  }
+  if (runtime.userId && approver.userId === runtime.userId) {
+    return true;
+  }
+  if (runtime.larkOpenId && approver.larkOpenId && approver.larkOpenId === runtime.larkOpenId) {
+    return true;
+  }
+  const requesterEmail = runtime.requesterEmail?.trim().toLowerCase();
+  const approverEmail = approver.email?.trim().toLowerCase();
+  return Boolean(requesterEmail && approverEmail && requesterEmail === approverEmail);
+};
+
+const buildImmediateApprovalExecutionEnvelope = (input: {
+  ok: boolean;
+  summary: string;
+  payload?: Record<string, unknown>;
+  errorKind?: VercelToolEnvelope['errorKind'];
+}): VercelToolEnvelope =>
+  buildEnvelope({
+    success: input.ok,
+    summary: input.summary,
+    keyData: input.payload,
+    fullPayload: input.payload,
+    ...(input.ok
+      ? {}
+      : {
+          errorKind: input.errorKind ?? 'api_failure',
+          retryable: false,
+        }),
+  });
+
 const createPendingRemoteApproval = async (input: {
   runtime: VercelRuntimeRequestContext;
   toolId: string;
@@ -1140,7 +1218,9 @@ const createPendingRemoteApproval = async (input: {
         : input.actionGroup === 'update'
           ? 'update'
           : 'write';
-  const pending = await loadHitlActionService().createPending({
+  const hitlActionService = loadHitlActionService();
+  const shouldBypassApproval = await isRequesterResolvedApprover(input.runtime);
+  const pending = await hitlActionService.createPending({
     taskId: input.runtime.executionId,
     actionType,
     summary: input.summary,
@@ -1178,6 +1258,32 @@ const createPendingRemoteApproval = async (input: {
       mode: input.runtime.mode,
     },
   });
+  if (shouldBypassApproval) {
+    try {
+      await hitlActionService.resolveByActionId(pending.actionId, 'confirmed');
+      const storedAction = await hitlActionService.getStoredAction(pending.actionId);
+      if (!storedAction) {
+        return buildImmediateApprovalExecutionEnvelope({
+          ok: false,
+          summary: 'Failed to execute the approved action because the stored approval record could not be found.',
+          errorKind: 'api_failure',
+        });
+      }
+      const executionResult = await loadExecuteStoredRemoteToolAction()(storedAction);
+      return buildImmediateApprovalExecutionEnvelope({
+        ok: executionResult.ok,
+        summary: executionResult.summary,
+        payload: executionResult.payload,
+        errorKind: executionResult.ok ? undefined : 'api_failure',
+      });
+    } catch (error) {
+      return buildImmediateApprovalExecutionEnvelope({
+        ok: false,
+        summary: error instanceof Error ? error.message : 'Failed to execute the approved action.',
+        errorKind: 'api_failure',
+      });
+    }
+  }
   return buildEnvelope({
     success: true,
     summary: input.summary,
@@ -1233,6 +1339,30 @@ const createPendingDesktopRemoteApproval = async (input: {
   subject?: string;
   explanation?: string;
 }): Promise<VercelToolEnvelope> => {
+  if (await isRequesterResolvedApprover(input.runtime)) {
+    try {
+      const gateway = loadDesktopWsGateway();
+      const result = await gateway.dispatchRemoteLocalAction({
+        userId: input.runtime.userId,
+        companyId: input.runtime.companyId,
+        action: input.action,
+        reason: input.explanation,
+        overrideAsk: true,
+      });
+      return buildImmediateApprovalExecutionEnvelope({
+        ok: result.ok,
+        summary: result.summary,
+        payload: result.payload,
+        errorKind: result.ok ? undefined : 'api_failure',
+      });
+    } catch (error) {
+      return buildImmediateApprovalExecutionEnvelope({
+        ok: false,
+        summary: error instanceof Error ? error.message : 'Failed to execute the approved desktop action.',
+        errorKind: 'api_failure',
+      });
+    }
+  }
   const actionType =
     input.actionGroup === 'delete'
       ? 'delete'
