@@ -394,15 +394,8 @@ const shouldAutoContinueAfterApproval = (input: {
   approvalAction: Record<string, unknown>;
   executionOk?: boolean;
 }): boolean => {
-  if (!input.executionOk) {
-    return true;
-  }
-  const actionGroup = typeof input.approvalAction.actionGroup === 'string'
-    ? input.approvalAction.actionGroup.trim().toLowerCase()
-    : '';
-  if (actionGroup === 'send') {
-    return false;
-  }
+  void input.approvalAction;
+  void input.executionOk;
   return true;
 };
 
@@ -562,9 +555,11 @@ const continueAfterApproval = async (input: {
       requestId: input.requestId,
       receivedAt: new Date().toISOString(),
       textHash: buildLarkTextHash(input.continuationText),
-      statusMessageId: input.parsedKind === 'event_callback_card_action'
-        ? input.tracedMessage.messageId
-        : input.tracedMessage.trace?.statusMessageId,
+      statusMessageId:
+        input.tracedMessage.trace?.statusMessageId
+        ?? (input.parsedKind === 'event_callback_card_action'
+          ? input.tracedMessage.messageId
+          : undefined),
     },
   };
 
@@ -615,11 +610,11 @@ const maybeSendManagerAuditDm = async (input: {
 }): Promise<void> => {
   const metadata = asRecord(input.action?.metadata);
   const managerApprovalConfig = asRecord(metadata?.departmentManagerApprovalConfig);
-  const auditGroups = Array.isArray(managerApprovalConfig?.managerDmAuditActionGroups)
-    ? managerApprovalConfig.managerDmAuditActionGroups.filter((entry): entry is string => typeof entry === 'string')
+  const auditToolIds = Array.isArray(managerApprovalConfig?.managerDmAuditToolIds)
+    ? managerApprovalConfig.managerDmAuditToolIds.filter((entry): entry is string => typeof entry === 'string')
     : [];
-  const actionGroup = asString(input.action?.actionGroup);
-  if (!actionGroup || !auditGroups.includes(actionGroup)) {
+  const toolId = asString(input.action?.toolId);
+  if (!toolId || !auditToolIds.includes(toolId)) {
     return;
   }
   const companyId = asString(metadata?.companyId);
@@ -2646,19 +2641,53 @@ export const createLarkWebhookEventHandler = (
           ? await dependencies.resolveHitlAction(hitlDecision.actionId, hitlDecision.decision)
           : Boolean(fallbackStoredAction);
         const actionChatId = asString((approvalAction as Record<string, unknown> | undefined)?._chatId);
-        const actionRequesterEmail = asString(asRecord((approvalAction as Record<string, unknown> | undefined)?.metadata)?.requesterEmail);
+        const approvalMetadata = asRecord((approvalAction as Record<string, unknown> | undefined)?.metadata);
+        const actionRequesterEmail = asString(approvalMetadata?.requesterEmail);
+        const actionRequesterUserId =
+          asString(approvalMetadata?.sourceChannelUserId)
+          ?? asString(approvalMetadata?.larkOpenId)
+          ?? asString(approvalMetadata?.larkUserId)
+          ?? tracedMessage.userId;
+        const actionReplyToMessageId = asString(approvalMetadata?.sourceReplyToMessageId);
+        const actionStatusMessageId = asString(approvalMetadata?.sourceStatusMessageId);
+        const actionChatType = asString(approvalMetadata?.sourceChatType);
         const continuationTargetMessage: NormalizedLarkMessage =
           actionChatId && actionChatId !== tracedMessage.chatId
             ? {
                 ...tracedMessage,
+                userId: actionRequesterUserId,
                 chatId: actionChatId,
-                chatType: actionChatId.startsWith('oc_') ? 'group' : 'p2p',
+                chatType:
+                  actionChatType === 'group' || actionChatType === 'p2p'
+                    ? actionChatType
+                    : actionChatId.startsWith('oc_')
+                      ? 'group'
+                      : 'p2p',
+                messageId: actionReplyToMessageId ?? tracedMessage.messageId,
                 trace: {
                   ...tracedMessage.trace,
+                  linkedUserId: asString(approvalMetadata?.userId) ?? tracedMessage.trace?.linkedUserId,
+                  larkOpenId: asString(approvalMetadata?.larkOpenId) ?? tracedMessage.trace?.larkOpenId,
+                  larkUserId: asString(approvalMetadata?.larkUserId) ?? tracedMessage.trace?.larkUserId,
                   requesterEmail: actionRequesterEmail ?? tracedMessage.trace?.requesterEmail,
+                  replyToMessageId: actionReplyToMessageId ?? tracedMessage.trace?.replyToMessageId,
+                  statusMessageId: actionStatusMessageId ?? tracedMessage.trace?.statusMessageId,
                 },
               }
-            : tracedMessage;
+            : {
+                ...tracedMessage,
+                userId: actionRequesterUserId,
+                messageId: actionReplyToMessageId ?? tracedMessage.messageId,
+                trace: {
+                  ...tracedMessage.trace,
+                  linkedUserId: asString(approvalMetadata?.userId) ?? tracedMessage.trace?.linkedUserId,
+                  larkOpenId: asString(approvalMetadata?.larkOpenId) ?? tracedMessage.trace?.larkOpenId,
+                  larkUserId: asString(approvalMetadata?.larkUserId) ?? tracedMessage.trace?.larkUserId,
+                  requesterEmail: actionRequesterEmail ?? tracedMessage.trace?.requesterEmail,
+                  replyToMessageId: actionReplyToMessageId ?? tracedMessage.trace?.replyToMessageId,
+                  statusMessageId: actionStatusMessageId ?? tracedMessage.trace?.statusMessageId,
+                },
+              };
         let executionSummary: string | undefined;
         let executionOk: boolean | undefined;
         let executionPayload: Record<string, unknown> | undefined;

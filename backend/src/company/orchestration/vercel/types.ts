@@ -113,6 +113,11 @@ export type VercelRuntimeRequestContext = {
   userId: string;
   requesterAiRole: string;
   requesterEmail?: string;
+  sourceMessageId?: string;
+  sourceReplyToMessageId?: string;
+  sourceStatusMessageId?: string;
+  sourceChatType?: 'p2p' | 'group';
+  sourceChannelUserId?: string;
   latestUserMessage?: string;
   departmentId?: string;
   departmentName?: string;

@@ -61,8 +61,8 @@ export type ResolvedDepartmentRuntime = {
 
 export type DepartmentManagerApprovalConfig = {
   enabled: boolean;
-  requiredActionGroups: ToolActionGroup[];
-  managerDmAuditActionGroups: ToolActionGroup[];
+  requiredToolIds: string[];
+  managerDmAuditToolIds: string[];
 };
 
 export type DepartmentApproverTarget = {
@@ -190,8 +190,10 @@ const DEFAULT_ZOHO_RATE_LIMIT_CONFIG: ZohoRateLimitConfig = {
 
 const DEFAULT_MANAGER_APPROVAL_CONFIG: DepartmentManagerApprovalConfig = {
   enabled: true,
-  requiredActionGroups: ['create', 'update', 'delete', 'send', 'execute'],
-  managerDmAuditActionGroups: [],
+  requiredToolIds: vercelToolIds.filter((toolId) =>
+    getSupportedToolActionGroups(toolId).some((actionGroup) => actionGroup !== 'read'),
+  ),
+  managerDmAuditToolIds: [],
 };
 
 const normalizeZohoRateLimitConfig = (value: unknown): ZohoRateLimitConfig => {
@@ -267,7 +269,23 @@ const normalizeZohoRateLimitConfig = (value: unknown): ZohoRateLimitConfig => {
   };
 };
 
-const normalizeManagerApprovalActionGroups = (value: unknown): ToolActionGroup[] => {
+const normalizeManagerApprovalToolIds = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(
+    value
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => entry.trim())
+      .filter((entry) =>
+        entry.length > 0
+        && vercelToolIds.includes(entry)
+        && getSupportedToolActionGroups(entry).some((actionGroup) => actionGroup !== 'read'),
+      ),
+  )];
+};
+
+const normalizeLegacyManagerApprovalActionGroups = (value: unknown): ToolActionGroup[] => {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -282,16 +300,28 @@ const normalizeManagerApprovalConfig = (value: unknown): DepartmentManagerApprov
       ? (value as Record<string, unknown>)
       : {};
 
-  const requiredActionGroups = normalizeManagerApprovalActionGroups(record.requiredActionGroups);
-  const managerDmAuditActionGroups = normalizeManagerApprovalActionGroups(record.managerDmAuditActionGroups);
+  const hasRequiredToolIds = Object.prototype.hasOwnProperty.call(record, 'requiredToolIds');
+  const hasManagerDmAuditToolIds = Object.prototype.hasOwnProperty.call(record, 'managerDmAuditToolIds');
+
+  const requiredToolIds = normalizeManagerApprovalToolIds(record.requiredToolIds);
+  const managerDmAuditToolIds = normalizeManagerApprovalToolIds(record.managerDmAuditToolIds);
+  const legacyRequiredActionGroups = normalizeLegacyManagerApprovalActionGroups(record.requiredActionGroups);
+  const legacyAuditActionGroups = normalizeLegacyManagerApprovalActionGroups(record.managerDmAuditActionGroups);
 
   return {
     enabled: typeof record.enabled === 'boolean' ? record.enabled : DEFAULT_MANAGER_APPROVAL_CONFIG.enabled,
-    requiredActionGroups:
-      requiredActionGroups.length > 0
-        ? requiredActionGroups
-        : DEFAULT_MANAGER_APPROVAL_CONFIG.requiredActionGroups,
-    managerDmAuditActionGroups,
+    requiredToolIds:
+      hasRequiredToolIds
+        ? requiredToolIds
+        : legacyRequiredActionGroups.some((group) => group !== 'read')
+          ? DEFAULT_MANAGER_APPROVAL_CONFIG.requiredToolIds
+          : DEFAULT_MANAGER_APPROVAL_CONFIG.requiredToolIds,
+    managerDmAuditToolIds:
+      hasManagerDmAuditToolIds
+        ? managerDmAuditToolIds
+        : legacyAuditActionGroups.some((group) => group !== 'read')
+          ? DEFAULT_MANAGER_APPROVAL_CONFIG.requiredToolIds
+          : [],
   };
 };
 

@@ -1224,8 +1224,8 @@ const requiresManagerApproval = (
 ): boolean =>
   pendingApproval.kind === 'tool_action'
   && Boolean(runtime.departmentManagerApprovalConfig?.enabled)
-  && runtime.departmentManagerApprovalConfig!.requiredActionGroups.includes(
-    pendingApproval.actionGroup,
+  && runtime.departmentManagerApprovalConfig!.requiredToolIds.includes(
+    pendingApproval.toolId,
   );
 
 const buildManagerApprovalText = (input: {
@@ -1390,6 +1390,11 @@ const resolveRuntimeContext = async (
     userId: linkedUserId,
     requesterAiRole,
     requesterEmail: message.trace?.requesterEmail,
+    sourceMessageId: message.messageId,
+    sourceReplyToMessageId: message.trace?.replyToMessageId ?? message.messageId,
+    sourceStatusMessageId: message.trace?.statusMessageId,
+    sourceChatType: message.chatType,
+    sourceChannelUserId: message.userId,
     departmentId,
     departmentName,
     departmentRoleSlug,

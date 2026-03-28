@@ -17,8 +17,8 @@ type CachedDepartmentRuntime = {
   };
   departmentManagerApprovalConfig?: {
     enabled: boolean;
-    requiredActionGroups: string[];
-    managerDmAuditActionGroups: string[];
+    requiredToolIds: string[];
+    managerDmAuditToolIds: string[];
   };
   systemPrompt?: string;
   skillsMarkdown?: string;
@@ -27,7 +27,7 @@ type CachedDepartmentRuntime = {
 };
 
 const DEPARTMENT_RUNTIME_TTL_SECONDS = 60 * 5;
-const DEPARTMENT_RUNTIME_CACHE_VERSION = 'v5';
+const DEPARTMENT_RUNTIME_CACHE_VERSION = 'v6';
 
 const fallbackHash = (fallbackAllowedToolIds: string[]): string =>
   createHash('sha1')

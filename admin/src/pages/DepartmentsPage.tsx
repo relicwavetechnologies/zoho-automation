@@ -184,8 +184,8 @@ type ZohoRateLimitConfig = {
 
 type DepartmentManagerApprovalConfig = {
   enabled: boolean;
-  requiredActionGroups: string[];
-  managerDmAuditActionGroups: string[];
+  requiredToolIds: string[];
+  managerDmAuditToolIds: string[];
 };
 
 type DepartmentSkill = {
@@ -252,24 +252,17 @@ const createDefaultZohoRateLimitConfig = (): ZohoRateLimitConfig => ({
   userOverrides: [],
 });
 
-const DEFAULT_MANAGER_APPROVAL_ACTION_GROUPS = [
-  "create",
-  "update",
-  "delete",
-  "send",
-  "execute",
-] as const;
-
 const createDefaultManagerApprovalConfig =
   (): DepartmentManagerApprovalConfig => ({
     enabled: true,
-    requiredActionGroups: [...DEFAULT_MANAGER_APPROVAL_ACTION_GROUPS],
-    managerDmAuditActionGroups: [],
+    requiredToolIds: [],
+    managerDmAuditToolIds: [],
   });
 
 const DEPARTMENT_TABS = [
   "profile",
   "prompt",
+  "controls",
   "skills",
   "members",
   "permissions",
@@ -580,7 +573,7 @@ export const DepartmentsPage = () => {
       configForm,
       token,
     );
-    toast({ title: "Prompt and skills saved" });
+    toast({ title: "Department settings saved" });
     await refreshDetail();
   };
 
@@ -647,16 +640,16 @@ export const DepartmentsPage = () => {
     }));
   };
 
-  const toggleManagerApprovalAction = (
-    key: "requiredActionGroups" | "managerDmAuditActionGroups",
-    actionGroup: string,
+  const toggleManagerApprovalTool = (
+    key: "requiredToolIds" | "managerDmAuditToolIds",
+    toolId: string,
   ) => {
     setConfigForm((prev) => {
       const current = new Set(prev.managerApproval[key]);
-      if (current.has(actionGroup)) {
-        current.delete(actionGroup);
+      if (current.has(toolId)) {
+        current.delete(toolId);
       } else {
-        current.add(actionGroup);
+        current.add(toolId);
       }
       return {
         ...prev,
@@ -928,6 +921,14 @@ export const DepartmentsPage = () => {
       detail?.availableTools.find((tool) => tool.toolId === overrideToolId)
         ?.supportedActionGroups ?? [],
     [detail?.availableTools, overrideToolId],
+  );
+
+  const nonReadAvailableTools = useMemo(
+    () =>
+      (detail?.availableTools ?? []).filter((tool) =>
+        tool.supportedActionGroups.some((actionGroup) => actionGroup !== "read"),
+      ),
+    [detail?.availableTools],
   );
 
   useEffect(() => {
@@ -1230,6 +1231,12 @@ export const DepartmentsPage = () => {
                           className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all"
                         >
                           Prompt
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="controls"
+                          className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all"
+                        >
+                          Controls
                         </TabsTrigger>
                         <TabsTrigger
                           value="skills"
@@ -1611,6 +1618,24 @@ export const DepartmentsPage = () => {
                               />
                             </div>
 
+                            <div className="flex justify-end pt-4">
+                              <Button
+                                onClick={() => void saveConfig()}
+                                className="bg-primary text-primary-foreground font-bold uppercase tracking-wider px-8 shadow-md"
+                              >
+                                Save Prompt Settings
+                              </Button>
+                            </div>
+                          </div>
+                        </ScrollArea>
+                      </TabsContent>
+
+                      <TabsContent
+                        value="controls"
+                        className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none"
+                      >
+                        <ScrollArea className="h-full">
+                          <div className="p-8 space-y-8">
                             <div className="space-y-4">
                               <div className="flex items-center justify-between">
                                 <div>
@@ -1619,8 +1644,7 @@ export const DepartmentsPage = () => {
                                     Zoho API Budget
                                   </label>
                                   <p className="text-xs text-muted-foreground mt-1 ml-1">
-                                    Spread Zoho call capacity across roles and
-                                    specific department members.
+                                    Spread Zoho call capacity across roles and specific department members.
                                   </p>
                                 </div>
                                 <Button
@@ -1634,9 +1658,7 @@ export const DepartmentsPage = () => {
                                     )
                                   }
                                 >
-                                  {configForm.zohoRateLimit.enabled
-                                    ? "Enabled"
-                                    : "Disabled"}
+                                  {configForm.zohoRateLimit.enabled ? "Enabled" : "Disabled"}
                                 </Button>
                               </div>
 
@@ -1650,21 +1672,11 @@ export const DepartmentsPage = () => {
                                       <Input
                                         type="number"
                                         min={10}
-                                        value={
-                                          configForm.zohoRateLimit.windowSeconds
-                                        }
+                                        value={configForm.zohoRateLimit.windowSeconds}
                                         onChange={(event) => {
-                                          const parsed = Number(
-                                            event.target.value,
-                                          );
-                                          if (
-                                            Number.isFinite(parsed) &&
-                                            parsed >= 10
-                                          ) {
-                                            updateZohoRateLimitField(
-                                              "windowSeconds",
-                                              Math.floor(parsed),
-                                            );
+                                          const parsed = Number(event.target.value);
+                                          if (Number.isFinite(parsed) && parsed >= 10) {
+                                            updateZohoRateLimitField("windowSeconds", Math.floor(parsed));
                                           }
                                         }}
                                       />
@@ -1676,22 +1688,11 @@ export const DepartmentsPage = () => {
                                       <Input
                                         type="number"
                                         min={1}
-                                        value={
-                                          configForm.zohoRateLimit
-                                            .totalCallsPerWindow
-                                        }
+                                        value={configForm.zohoRateLimit.totalCallsPerWindow}
                                         onChange={(event) => {
-                                          const parsed = Number(
-                                            event.target.value,
-                                          );
-                                          if (
-                                            Number.isFinite(parsed) &&
-                                            parsed >= 1
-                                          ) {
-                                            updateZohoRateLimitField(
-                                              "totalCallsPerWindow",
-                                              Math.floor(parsed),
-                                            );
+                                          const parsed = Number(event.target.value);
+                                          if (Number.isFinite(parsed) && parsed >= 1) {
+                                            updateZohoRateLimitField("totalCallsPerWindow", Math.floor(parsed));
                                           }
                                         }}
                                       />
@@ -1704,8 +1705,7 @@ export const DepartmentsPage = () => {
                                         Role Budgets
                                       </div>
                                       <p className="text-xs text-muted-foreground mt-1">
-                                        Leave a role blank to let it use the
-                                        shared department pool.
+                                        Leave a role blank to let it use the shared department pool.
                                       </p>
                                     </div>
                                     <div className="grid gap-3 md:grid-cols-2">
@@ -1726,15 +1726,9 @@ export const DepartmentsPage = () => {
                                             <Input
                                               type="number"
                                               min={1}
-                                              value={
-                                                configForm.zohoRateLimit
-                                                  .roleBudgets[role.slug] ?? ""
-                                              }
+                                              value={configForm.zohoRateLimit.roleBudgets[role.slug] ?? ""}
                                               onChange={(event) =>
-                                                updateZohoRoleBudget(
-                                                  role.slug,
-                                                  event.target.value,
-                                                )
+                                                updateZohoRoleBudget(role.slug, event.target.value)
                                               }
                                               className="w-32"
                                               placeholder="Shared"
@@ -1752,8 +1746,7 @@ export const DepartmentsPage = () => {
                                           Member Overrides
                                         </div>
                                         <p className="text-xs text-muted-foreground mt-1">
-                                          Give specific people a fixed cap
-                                          inside the department pool.
+                                          Give specific people a fixed cap inside the department pool.
                                         </p>
                                       </div>
                                       <Button
@@ -1768,73 +1761,52 @@ export const DepartmentsPage = () => {
                                     </div>
 
                                     <div className="space-y-3">
-                                      {configForm.zohoRateLimit.userOverrides.map(
-                                        (override, index) => (
-                                          <div
-                                            key={`${override.userId}-${index}`}
-                                            className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_44px] items-center rounded-lg border border-border/40 p-3"
+                                      {configForm.zohoRateLimit.userOverrides.map((override, index) => (
+                                        <div
+                                          key={`${override.userId}-${index}`}
+                                          className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_44px] items-center rounded-lg border border-border/40 p-3"
+                                        >
+                                          <Select
+                                            value={override.userId}
+                                            onValueChange={(value) =>
+                                              updateZohoUserOverride(index, { userId: value })
+                                            }
                                           >
-                                            <Select
-                                              value={override.userId}
-                                              onValueChange={(value) =>
+                                            <SelectTrigger>
+                                              <SelectValue placeholder="Select member" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                              {detail.memberships.map((membership) => (
+                                                <SelectItem key={membership.userId} value={membership.userId}>
+                                                  {memberLabel(membership)}
+                                                </SelectItem>
+                                              ))}
+                                            </SelectContent>
+                                          </Select>
+                                          <Input
+                                            type="number"
+                                            min={1}
+                                            value={override.maxCallsPerWindow}
+                                            onChange={(event) => {
+                                              const parsed = Number(event.target.value);
+                                              if (Number.isFinite(parsed) && parsed >= 1) {
                                                 updateZohoUserOverride(index, {
-                                                  userId: value,
-                                                })
+                                                  maxCallsPerWindow: Math.floor(parsed),
+                                                });
                                               }
-                                            >
-                                              <SelectTrigger>
-                                                <SelectValue placeholder="Select member" />
-                                              </SelectTrigger>
-                                              <SelectContent>
-                                                {detail.memberships.map(
-                                                  (membership) => (
-                                                    <SelectItem
-                                                      key={membership.userId}
-                                                      value={membership.userId}
-                                                    >
-                                                      {memberLabel(membership)}
-                                                    </SelectItem>
-                                                  ),
-                                                )}
-                                              </SelectContent>
-                                            </Select>
-                                            <Input
-                                              type="number"
-                                              min={1}
-                                              value={override.maxCallsPerWindow}
-                                              onChange={(event) => {
-                                                const parsed = Number(
-                                                  event.target.value,
-                                                );
-                                                if (
-                                                  Number.isFinite(parsed) &&
-                                                  parsed >= 1
-                                                ) {
-                                                  updateZohoUserOverride(
-                                                    index,
-                                                    {
-                                                      maxCallsPerWindow:
-                                                        Math.floor(parsed),
-                                                    },
-                                                  );
-                                                }
-                                              }}
-                                            />
-                                            <Button
-                                              variant="ghost"
-                                              size="icon"
-                                              className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                                              onClick={() =>
-                                                removeZohoUserOverride(index)
-                                              }
-                                            >
-                                              <Trash2 className="h-4 w-4" />
-                                            </Button>
-                                          </div>
-                                        ),
-                                      )}
-                                      {configForm.zohoRateLimit.userOverrides
-                                        .length === 0 && (
+                                            }}
+                                          />
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                            onClick={() => removeZohoUserOverride(index)}
+                                          >
+                                            <Trash2 className="h-4 w-4" />
+                                          </Button>
+                                        </div>
+                                      ))}
+                                      {configForm.zohoRateLimit.userOverrides.length === 0 && (
                                         <div className="rounded-lg border border-dashed border-border/50 p-4 text-xs text-muted-foreground">
                                           No member-specific override yet.
                                         </div>
@@ -1853,21 +1825,16 @@ export const DepartmentsPage = () => {
                                     Manager Approval
                                   </label>
                                   <p className="text-xs text-muted-foreground mt-1 ml-1">
-                                    Route non-read operations to the department
-                                    manager in Lark DM before they execute.
+                                    Configure approval and manager audit per non-read tool.
                                   </p>
                                 </div>
                                 <Button
                                   variant="ghost"
                                   size="sm"
                                   className="h-7 px-2 text-[10px] font-bold uppercase tracking-tighter"
-                                  onClick={() =>
-                                    toggleManagerApprovalField("enabled")
-                                  }
+                                  onClick={() => toggleManagerApprovalField("enabled")}
                                 >
-                                  {configForm.managerApproval.enabled
-                                    ? "Enabled"
-                                    : "Disabled"}
+                                  {configForm.managerApproval.enabled ? "Enabled" : "Disabled"}
                                 </Button>
                               </div>
 
@@ -1876,85 +1843,80 @@ export const DepartmentsPage = () => {
                                   <div className="space-y-3">
                                     <div>
                                       <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
-                                        Approval Required For
+                                        Approval Required By Tool
                                       </div>
                                       <p className="text-xs text-muted-foreground mt-1">
-                                        Reads stay immediate. Everything listed
-                                        here pauses for manager approval.
+                                        Reads stay immediate. Selected tools pause their non-read actions for manager approval.
                                       </p>
                                     </div>
-                                    <div className="flex flex-wrap gap-2">
-                                      {DEFAULT_MANAGER_APPROVAL_ACTION_GROUPS.map(
-                                        (actionGroup) => {
-                                          const active =
-                                            configForm.managerApproval.requiredActionGroups.includes(
-                                              actionGroup,
-                                            );
-                                          return (
+                                    <div className="space-y-3">
+                                      {nonReadAvailableTools.map((tool) => {
+                                        const active = configForm.managerApproval.requiredToolIds.includes(tool.toolId);
+                                        return (
+                                          <div
+                                            key={`approval-tool-${tool.toolId}`}
+                                            className="rounded-lg border border-border/40 p-3 flex items-start justify-between gap-4"
+                                          >
+                                            <div className="space-y-1">
+                                              <div className="text-sm font-semibold text-foreground">{tool.name}</div>
+                                              <div className="text-xs text-muted-foreground">{tool.description}</div>
+                                              <div className="text-[10px] font-mono uppercase text-muted-foreground">
+                                                {tool.toolId} • {tool.supportedActionGroups.filter((group) => group !== "read").join(", ")}
+                                              </div>
+                                            </div>
                                             <Button
-                                              key={`approval-${actionGroup}`}
-                                              variant={
-                                                active
-                                                  ? "default"
-                                                  : "outline"
-                                              }
+                                              variant={active ? "default" : "outline"}
                                               size="sm"
                                               className="h-8 text-[10px] font-bold uppercase tracking-widest"
                                               onClick={() =>
-                                                toggleManagerApprovalAction(
-                                                  "requiredActionGroups",
-                                                  actionGroup,
-                                                )
+                                                toggleManagerApprovalTool("requiredToolIds", tool.toolId)
                                               }
                                             >
-                                              {actionGroup}
+                                              {active ? "Required" : "Optional"}
                                             </Button>
-                                          );
-                                        },
-                                      )}
+                                          </div>
+                                        );
+                                      })}
                                     </div>
                                   </div>
 
                                   <div className="space-y-3">
                                     <div>
                                       <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
-                                        Manager DM Audit
+                                        Manager DM Audit By Tool
                                       </div>
                                       <p className="text-xs text-muted-foreground mt-1">
-                                        Send the manager a one-line summary
-                                        after completion for selected action
-                                        groups.
+                                        Send the manager a one-line completion summary for selected tools.
                                       </p>
                                     </div>
-                                    <div className="flex flex-wrap gap-2">
-                                      {DEFAULT_MANAGER_APPROVAL_ACTION_GROUPS.map(
-                                        (actionGroup) => {
-                                          const active =
-                                            configForm.managerApproval.managerDmAuditActionGroups.includes(
-                                              actionGroup,
-                                            );
-                                          return (
+                                    <div className="space-y-3">
+                                      {nonReadAvailableTools.map((tool) => {
+                                        const active = configForm.managerApproval.managerDmAuditToolIds.includes(tool.toolId);
+                                        return (
+                                          <div
+                                            key={`audit-tool-${tool.toolId}`}
+                                            className="rounded-lg border border-border/40 p-3 flex items-start justify-between gap-4"
+                                          >
+                                            <div className="space-y-1">
+                                              <div className="text-sm font-semibold text-foreground">{tool.name}</div>
+                                              <div className="text-xs text-muted-foreground">{tool.description}</div>
+                                              <div className="text-[10px] font-mono uppercase text-muted-foreground">
+                                                {tool.toolId}
+                                              </div>
+                                            </div>
                                             <Button
-                                              key={`audit-${actionGroup}`}
-                                              variant={
-                                                active
-                                                  ? "default"
-                                                  : "outline"
-                                              }
+                                              variant={active ? "default" : "outline"}
                                               size="sm"
                                               className="h-8 text-[10px] font-bold uppercase tracking-widest"
                                               onClick={() =>
-                                                toggleManagerApprovalAction(
-                                                  "managerDmAuditActionGroups",
-                                                  actionGroup,
-                                                )
+                                                toggleManagerApprovalTool("managerDmAuditToolIds", tool.toolId)
                                               }
                                             >
-                                              {actionGroup}
+                                              {active ? "Audit On" : "Audit Off"}
                                             </Button>
-                                          );
-                                        },
-                                      )}
+                                          </div>
+                                        );
+                                      })}
                                     </div>
                                   </div>
                                 </CardContent>
@@ -1966,7 +1928,7 @@ export const DepartmentsPage = () => {
                                 onClick={() => void saveConfig()}
                                 className="bg-primary text-primary-foreground font-bold uppercase tracking-wider px-8 shadow-md"
                               >
-                                Update Context
+                                Save Controls
                               </Button>
                             </div>
                           </div>
