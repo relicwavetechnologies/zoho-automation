@@ -887,6 +887,24 @@ const parseKnowledgeShareCardAction = (
   return { kind: 'revert', requestId };
 };
 
+const sanitizeCardActionMessageText = (value: string | null | undefined): string => {
+  const trimmed = value?.trim() ?? '';
+  if (!trimmed || trimmed.startsWith('[Interactive Card Action]')) {
+    return '';
+  }
+  return trimmed;
+};
+
+const buildLarkCardActionResponse = (
+  content: string,
+  type: 'success' | 'info' | 'warning' | 'error' = 'success',
+): { toast: { type: 'success' | 'info' | 'warning' | 'error'; content: string } } => ({
+  toast: {
+    type,
+    content: content.trim().slice(0, 200) || 'Done.',
+  },
+});
+
 const readMessageAgeMs = (timestamp: string): number | null => {
   const parsed = new Date(timestamp);
   if (Number.isNaN(parsed.getTime())) {
@@ -2476,7 +2494,21 @@ export const createLarkWebhookEventHandler = (
             text: responseText,
           });
         }
-        return res.status(parsed.kind === 'event_callback_card_action' ? 200 : 202).json({
+        if (parsed.kind === 'event_callback_card_action') {
+          return res.status(200).json(
+            buildLarkCardActionResponse(
+              resolved
+                ? hitlDecision.decision === 'cancelled'
+                  ? 'Request rejected.'
+                  : executionOk
+                    ? 'Approved.'
+                    : 'Action processed.'
+                : 'Action was already handled.',
+              resolved ? 'success' : 'warning',
+            ),
+          );
+        }
+        return res.status(202).json({
           success: true,
           message: 'HITL callback processed',
           data: {
@@ -2498,7 +2530,7 @@ export const createLarkWebhookEventHandler = (
             actions: [],
           });
         };
-        const baseMessageText = tracedMessage.text.trim();
+        const baseMessageText = sanitizeCardActionMessageText(tracedMessage.text);
         const buildKnowledgeShareResponseText = (detail: string): string =>
           baseMessageText
             ? `${baseMessageText}\n\n${detail}`
@@ -2511,13 +2543,10 @@ export const createLarkWebhookEventHandler = (
             ),
           );
           return res.status(200).json({
-            success: true,
-            message: 'Knowledge-share callback blocked: no linked reviewer account',
-            data: {
-              requestId: 'requestId' in knowledgeShareCardAction ? knowledgeShareCardAction.requestId : null,
-              blocked: true,
-              reason: 'missing_linked_user',
-            },
+            ...buildLarkCardActionResponse(
+              'This knowledge-share action requires a linked Divo account.',
+              'warning',
+            ),
           });
         }
 
@@ -2530,13 +2559,10 @@ export const createLarkWebhookEventHandler = (
                 ),
               );
               return res.status(200).json({
-                success: true,
-                message: 'Knowledge-share request blocked: no company scope',
-                data: {
-                  blocked: true,
-                  reason: 'missing_company_scope',
-                  conversationKey: knowledgeShareCardAction.conversationKey,
-                },
+                ...buildLarkCardActionResponse(
+                  'I could not determine your company context for this share request.',
+                  'warning',
+                ),
               });
             }
 
@@ -2552,13 +2578,10 @@ export const createLarkWebhookEventHandler = (
                 ),
               );
               return res.status(200).json({
-                success: true,
-                message: 'Knowledge-share request blocked: permission denied',
-                data: {
-                  blocked: true,
-                  reason: 'permission_denied',
-                  conversationKey: knowledgeShareCardAction.conversationKey,
-                },
+                ...buildLarkCardActionResponse(
+                  'You do not currently have permission to share chat knowledge.',
+                  'warning',
+                ),
               });
             }
 
@@ -2579,13 +2602,13 @@ export const createLarkWebhookEventHandler = (
                     : `Knowledge shared.\n\nPromoted ${result.promotedVectorCount ?? 0} vectors.`;
             await sendKnowledgeShareCardResponse(buildKnowledgeShareResponseText(responseText));
             return res.status(200).json({
-              success: true,
-              message: 'Knowledge-share request processed',
-              data: {
-                conversationKey: knowledgeShareCardAction.conversationKey,
-                status: result.status,
-                promotedVectorCount: result.promotedVectorCount ?? 0,
-              },
+              ...buildLarkCardActionResponse(
+                result.status === 'pending'
+                  ? 'Knowledge-share request sent.'
+                  : result.status === 'already_shared'
+                    ? 'Knowledge already shared.'
+                    : 'Knowledge shared.',
+              ),
             });
           }
 
@@ -2604,13 +2627,11 @@ export const createLarkWebhookEventHandler = (
               : 'Knowledge share rejected.';
             await sendKnowledgeShareCardResponse(buildKnowledgeShareResponseText(responseText));
             return res.status(200).json({
-              success: true,
-              message: 'Knowledge-share decision processed',
-              data: {
-                requestId: knowledgeShareCardAction.requestId,
-                status: result.status,
-                promotedVectorCount: 'promotedVectorCount' in result ? result.promotedVectorCount ?? 0 : 0,
-              },
+              ...buildLarkCardActionResponse(
+                knowledgeShareCardAction.decision === 'approve'
+                  ? 'Knowledge share approved.'
+                  : 'Knowledge share rejected.',
+              ),
             });
           }
 
@@ -2623,13 +2644,11 @@ export const createLarkWebhookEventHandler = (
             : `Knowledge share was not reverted because it is already ${result.status}.`;
           await sendKnowledgeShareCardResponse(buildKnowledgeShareResponseText(responseText));
           return res.status(200).json({
-            success: true,
-            message: 'Knowledge-share revert processed',
-            data: {
-              requestId: knowledgeShareCardAction.requestId,
-              status: result.status,
-              revertedVectorCount: result.revertedVectorCount ?? 0,
-            },
+            ...buildLarkCardActionResponse(
+              result.status === 'reverted'
+                ? 'Knowledge share reverted.'
+                : `Knowledge share is already ${result.status}.`,
+            ),
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Knowledge-share action failed';
@@ -2637,15 +2656,7 @@ export const createLarkWebhookEventHandler = (
             buildKnowledgeShareResponseText(`Knowledge-share action failed.\n\n${message}`),
           );
           return res.status(200).json({
-            success: true,
-            message: 'Knowledge-share callback failed',
-            data: {
-              requestId: 'requestId' in knowledgeShareCardAction ? knowledgeShareCardAction.requestId : null,
-              conversationKey: knowledgeShareCardAction.kind === 'request'
-                ? knowledgeShareCardAction.conversationKey
-                : null,
-              error: message,
-            },
+            ...buildLarkCardActionResponse('Knowledge-share action failed.', 'error'),
           });
         }
       }
@@ -2759,16 +2770,9 @@ export const createLarkWebhookEventHandler = (
             });
           });
 
-        return res.status(200).json({
-          success: true,
-          message: 'Lark card action accepted',
-          data: {
-            channel: tracedMessageWithStatus.channel,
-            messageId: tracedMessageWithStatus.messageId,
-            chatId: tracedMessageWithStatus.chatId,
-            eventId: parsed.eventId,
-          },
-        });
+        return res.status(200).json(
+          buildLarkCardActionResponse('Working on it.', 'info'),
+        );
       }
 
       if (parsed.kind === 'event_callback_message' && (msgType === 'image' || msgType === 'file' || msgType === 'media')) {
