@@ -48,10 +48,25 @@ export type ResolvedDepartmentRuntime = {
   departmentRoleSlug?: string;
   departmentZohoReadScope?: DepartmentZohoReadScope;
   departmentZohoRateLimitConfig?: ZohoRateLimitConfig;
+  departmentManagerApprovalConfig?: DepartmentManagerApprovalConfig;
   systemPrompt?: string;
   skillsMarkdown?: string;
   allowedToolIds: string[];
   allowedActionsByTool?: Record<string, ToolActionGroup[]>;
+};
+
+export type DepartmentManagerApprovalConfig = {
+  enabled: boolean;
+  requiredActionGroups: ToolActionGroup[];
+  managerDmAuditActionGroups: ToolActionGroup[];
+};
+
+export type DepartmentApproverTarget = {
+  userId: string;
+  name?: string;
+  email?: string;
+  larkOpenId?: string;
+  source: 'department_manager' | 'company_admin';
 };
 
 const DEFAULT_MEMBER_TOOL_IDS = new Set(['search-read', 'search-agent', 'skill-search']);
@@ -169,6 +184,12 @@ const DEFAULT_ZOHO_RATE_LIMIT_CONFIG: ZohoRateLimitConfig = {
   userOverrides: [],
 };
 
+const DEFAULT_MANAGER_APPROVAL_CONFIG: DepartmentManagerApprovalConfig = {
+  enabled: true,
+  requiredActionGroups: ['create', 'update', 'delete', 'send', 'execute'],
+  managerDmAuditActionGroups: [],
+};
+
 const normalizeZohoRateLimitConfig = (value: unknown): ZohoRateLimitConfig => {
   const record =
     typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -239,6 +260,34 @@ const normalizeZohoRateLimitConfig = (value: unknown): ZohoRateLimitConfig => {
     ),
     roleBudgets,
     userOverrides,
+  };
+};
+
+const normalizeManagerApprovalActionGroups = (value: unknown): ToolActionGroup[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(
+    value.filter((entry): entry is ToolActionGroup => typeof entry === 'string' && isSupportedToolActionGroup(entry)),
+  )];
+};
+
+const normalizeManagerApprovalConfig = (value: unknown): DepartmentManagerApprovalConfig => {
+  const record =
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+
+  const requiredActionGroups = normalizeManagerApprovalActionGroups(record.requiredActionGroups);
+  const managerDmAuditActionGroups = normalizeManagerApprovalActionGroups(record.managerDmAuditActionGroups);
+
+  return {
+    enabled: typeof record.enabled === 'boolean' ? record.enabled : DEFAULT_MANAGER_APPROVAL_CONFIG.enabled,
+    requiredActionGroups:
+      requiredActionGroups.length > 0
+        ? requiredActionGroups
+        : DEFAULT_MANAGER_APPROVAL_CONFIG.requiredActionGroups,
+    managerDmAuditActionGroups,
   };
 };
 
@@ -533,6 +582,9 @@ class DepartmentService {
       departmentZohoRateLimitConfig: normalizeZohoRateLimitConfig(
         membership.department.agentConfig?.zohoRateLimitJson,
       ),
+      departmentManagerApprovalConfig: normalizeManagerApprovalConfig(
+        membership.department.agentConfig?.managerApprovalJson,
+      ),
       systemPrompt: membership.department.agentConfig?.systemPrompt ?? undefined,
       skillsMarkdown: membership.department.agentConfig?.skillsMarkdown ?? undefined,
       allowedToolIds,
@@ -738,6 +790,7 @@ class DepartmentService {
         systemPrompt: department.agentConfig?.systemPrompt ?? '',
         skillsMarkdown: department.agentConfig?.skillsMarkdown ?? '',
         zohoRateLimit: normalizeZohoRateLimitConfig(department.agentConfig?.zohoRateLimitJson),
+        managerApproval: normalizeManagerApprovalConfig(department.agentConfig?.managerApprovalJson),
         isActive: department.agentConfig?.isActive ?? true,
       },
       roles: department.roles.map((role) => ({
@@ -1095,17 +1148,20 @@ class DepartmentService {
       systemPrompt: string;
       skillsMarkdown: string;
       zohoRateLimit?: ZohoRateLimitConfig;
+      managerApproval?: DepartmentManagerApprovalConfig;
       isActive?: boolean;
     },
   ) {
     const department = await this.assertDepartmentAccess(session, departmentId);
     const normalizedZohoRateLimit = normalizeZohoRateLimitConfig(input.zohoRateLimit);
+    const normalizedManagerApproval = normalizeManagerApprovalConfig(input.managerApproval);
     const updated = await prisma.departmentAgentConfig.upsert({
       where: { departmentId },
       update: {
         systemPrompt: input.systemPrompt,
         skillsMarkdown: input.skillsMarkdown,
         zohoRateLimitJson: normalizedZohoRateLimit,
+        managerApprovalJson: normalizedManagerApproval,
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
         updatedBy: session.userId,
       },
@@ -1114,6 +1170,7 @@ class DepartmentService {
         systemPrompt: input.systemPrompt,
         skillsMarkdown: input.skillsMarkdown,
         zohoRateLimitJson: normalizedZohoRateLimit,
+        managerApprovalJson: normalizedManagerApproval,
         isActive: input.isActive ?? true,
         createdBy: session.userId,
         updatedBy: session.userId,
@@ -1126,6 +1183,7 @@ class DepartmentService {
       systemPrompt: updated.systemPrompt,
       skillsMarkdown: updated.skillsMarkdown,
       zohoRateLimit: normalizeZohoRateLimitConfig(updated.zohoRateLimitJson),
+      managerApproval: normalizeManagerApprovalConfig(updated.managerApprovalJson),
       isActive: updated.isActive,
       updatedAt: updated.updatedAt.toISOString(),
     };
@@ -1485,6 +1543,91 @@ class DepartmentService {
       toolId: row.toolId,
       actionGroup: row.actionGroup,
       allowed: row.allowed,
+    };
+  }
+
+  async resolveDepartmentApprover(input: {
+    companyId: string;
+    departmentId?: string;
+  }): Promise<DepartmentApproverTarget | null> {
+    const resolveIdentityByEmail = async (email?: string | null) => {
+      if (!email?.trim()) return null;
+      return prisma.channelIdentity.findFirst({
+        where: {
+          companyId: input.companyId,
+          channel: 'lark',
+          email: {
+            equals: email.trim(),
+            mode: 'insensitive',
+          },
+        },
+        orderBy: { updatedAt: 'desc' },
+      });
+    };
+
+    if (input.departmentId) {
+      const manager = await prisma.departmentMembership.findFirst({
+        where: {
+          departmentId: input.departmentId,
+          status: 'active',
+          department: {
+            companyId: input.companyId,
+          },
+          role: {
+            slug: 'MANAGER',
+          },
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+        orderBy: { updatedAt: 'desc' },
+      });
+      const managerIdentity = await resolveIdentityByEmail(manager?.user.email);
+      if (manager && managerIdentity?.larkOpenId) {
+        return {
+          userId: manager.user.id,
+          name: manager.user.name ?? managerIdentity.displayName ?? undefined,
+          email: manager.user.email ?? undefined,
+          larkOpenId: managerIdentity.larkOpenId,
+          source: 'department_manager',
+        };
+      }
+    }
+
+    const admin = await prisma.adminMembership.findFirst({
+      where: {
+        companyId: input.companyId,
+        isActive: true,
+        role: 'COMPANY_ADMIN',
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    const adminIdentity = await resolveIdentityByEmail(admin?.user.email);
+    if (!admin || !adminIdentity?.larkOpenId) {
+      return null;
+    }
+
+    return {
+      userId: admin.user.id,
+      name: admin.user.name ?? adminIdentity.displayName ?? undefined,
+      email: admin.user.email ?? undefined,
+      larkOpenId: adminIdentity.larkOpenId,
+      source: 'company_admin',
     };
   }
 }

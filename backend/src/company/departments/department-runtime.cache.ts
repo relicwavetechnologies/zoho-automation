@@ -15,6 +15,11 @@ type CachedDepartmentRuntime = {
     roleBudgets: Record<string, number>;
     userOverrides: Array<{ userId: string; maxCallsPerWindow: number }>;
   };
+  departmentManagerApprovalConfig?: {
+    enabled: boolean;
+    requiredActionGroups: string[];
+    managerDmAuditActionGroups: string[];
+  };
   systemPrompt?: string;
   skillsMarkdown?: string;
   allowedToolIds: string[];
@@ -22,7 +27,7 @@ type CachedDepartmentRuntime = {
 };
 
 const DEPARTMENT_RUNTIME_TTL_SECONDS = 60 * 5;
-const DEPARTMENT_RUNTIME_CACHE_VERSION = 'v4';
+const DEPARTMENT_RUNTIME_CACHE_VERSION = 'v5';
 
 const fallbackHash = (fallbackAllowedToolIds: string[]): string =>
   createHash('sha1')

@@ -130,6 +130,43 @@ export const zohoAuthorizeUrlQuerySchema = z.object({
   environment: z.enum(['prod', 'sandbox']).optional(),
 });
 
+const baseZohoProfileSchema = z.object({
+  companyId: z.string().uuid().optional(),
+  profileName: z.string().min(1).max(120),
+  environment: z.enum(['prod', 'sandbox']).default('prod'),
+  scopes: z.array(z.string().min(1)).min(1),
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1),
+  redirectUri: z.string().url(),
+  accountsBaseUrl: z.string().url().optional(),
+  apiBaseUrl: z.string().url().optional(),
+  accessToken: z.string().min(1).optional(),
+  refreshToken: z.string().min(1).optional(),
+  accessTokenExpiresAt: z.string().datetime().optional(),
+  refreshTokenExpiresAt: z.string().datetime().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  setActive: z.boolean().optional(),
+});
+
+export const createZohoConnectionProfileSchema = baseZohoProfileSchema.superRefine((value, ctx) => {
+  if (!value.accessToken && !value.refreshToken) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['refreshToken'],
+      message: 'Provide at least one token (accessToken or refreshToken).',
+    });
+  }
+});
+
+export const updateZohoConnectionProfileSchema = baseZohoProfileSchema.partial().extend({
+  companyId: z.string().uuid().optional(),
+  profileName: z.string().min(1).max(120).optional(),
+});
+
+export const zohoProfileQuerySchema = z.object({
+  companyId: z.string().uuid().optional(),
+});
+
 export type ConnectOnboardingDto = z.infer<typeof connectOnboardingSchema>;
 export type DisconnectOnboardingDto = z.infer<typeof disconnectOnboardingSchema>;
 export type UpsertLarkBindingDto = z.infer<typeof upsertLarkBindingSchema>;
@@ -137,6 +174,9 @@ export type UpsertLarkWorkspaceConfigDto = z.infer<typeof upsertLarkWorkspaceCon
 export type UpsertLarkOperationalConfigDto = z.infer<typeof upsertLarkOperationalConfigSchema>;
 export type UpsertZohoOAuthConfigDto = z.infer<typeof upsertZohoOAuthConfigSchema>;
 export type ZohoAuthorizeUrlQueryDto = z.infer<typeof zohoAuthorizeUrlQuerySchema>;
+export type CreateZohoConnectionProfileDto = z.infer<typeof createZohoConnectionProfileSchema>;
+export type UpdateZohoConnectionProfileDto = z.infer<typeof updateZohoConnectionProfileSchema>;
+export type ZohoProfileQueryDto = z.infer<typeof zohoProfileQuerySchema>;
 export type TriggerHistoricalSyncDto = z.infer<typeof triggerHistoricalSyncSchema>;
 export type LarkSyncQueryDto = z.infer<typeof larkSyncQuerySchema>;
 export type LarkAuthorizeUrlQueryDto = z.infer<typeof larkAuthorizeUrlQuerySchema>;

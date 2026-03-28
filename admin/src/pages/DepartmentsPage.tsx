@@ -182,6 +182,12 @@ type ZohoRateLimitConfig = {
   userOverrides: ZohoRateLimitUserOverride[];
 };
 
+type DepartmentManagerApprovalConfig = {
+  enabled: boolean;
+  requiredActionGroups: string[];
+  managerDmAuditActionGroups: string[];
+};
+
 type DepartmentSkill = {
   id: string;
   companyId: string;
@@ -216,6 +222,7 @@ type DepartmentDetail = {
     systemPrompt: string;
     skillsMarkdown: string;
     zohoRateLimit: ZohoRateLimitConfig;
+    managerApproval: DepartmentManagerApprovalConfig;
     isActive: boolean;
   };
   roles: DepartmentRole[];
@@ -244,6 +251,21 @@ const createDefaultZohoRateLimitConfig = (): ZohoRateLimitConfig => ({
   roleBudgets: {},
   userOverrides: [],
 });
+
+const DEFAULT_MANAGER_APPROVAL_ACTION_GROUPS = [
+  "create",
+  "update",
+  "delete",
+  "send",
+  "execute",
+] as const;
+
+const createDefaultManagerApprovalConfig =
+  (): DepartmentManagerApprovalConfig => ({
+    enabled: true,
+    requiredActionGroups: [...DEFAULT_MANAGER_APPROVAL_ACTION_GROUPS],
+    managerDmAuditActionGroups: [],
+  });
 
 const DEPARTMENT_TABS = [
   "profile",
@@ -310,11 +332,13 @@ export const DepartmentsPage = () => {
     systemPrompt: string;
     skillsMarkdown: string;
     zohoRateLimit: ZohoRateLimitConfig;
+    managerApproval: DepartmentManagerApprovalConfig;
     isActive: boolean;
   }>({
     systemPrompt: "",
     skillsMarkdown: "",
     zohoRateLimit: createDefaultZohoRateLimitConfig(),
+    managerApproval: createDefaultManagerApprovalConfig(),
     isActive: true,
   });
   const [skillForm, setSkillForm] = useState({
@@ -422,6 +446,8 @@ export const DepartmentsPage = () => {
           skillsMarkdown: data.config.skillsMarkdown,
           zohoRateLimit:
             data.config.zohoRateLimit ?? createDefaultZohoRateLimitConfig(),
+          managerApproval:
+            data.config.managerApproval ?? createDefaultManagerApprovalConfig(),
           isActive: data.config.isActive,
         });
         setMembershipRoleId(
@@ -609,6 +635,37 @@ export const DepartmentsPage = () => {
         ],
       },
     }));
+  };
+
+  const toggleManagerApprovalField = (key: "enabled") => {
+    setConfigForm((prev) => ({
+      ...prev,
+      managerApproval: {
+        ...prev.managerApproval,
+        [key]: !prev.managerApproval[key],
+      },
+    }));
+  };
+
+  const toggleManagerApprovalAction = (
+    key: "requiredActionGroups" | "managerDmAuditActionGroups",
+    actionGroup: string,
+  ) => {
+    setConfigForm((prev) => {
+      const current = new Set(prev.managerApproval[key]);
+      if (current.has(actionGroup)) {
+        current.delete(actionGroup);
+      } else {
+        current.add(actionGroup);
+      }
+      return {
+        ...prev,
+        managerApproval: {
+          ...prev.managerApproval,
+          [key]: [...current],
+        },
+      };
+    });
   };
 
   const updateZohoUserOverride = (
@@ -1781,6 +1838,122 @@ export const DepartmentsPage = () => {
                                         <div className="rounded-lg border border-dashed border-border/50 p-4 text-xs text-muted-foreground">
                                           No member-specific override yet.
                                         </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            </div>
+
+                            <div className="space-y-4">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1 flex items-center gap-2">
+                                    <Shield className="h-3.5 w-3.5" />
+                                    Manager Approval
+                                  </label>
+                                  <p className="text-xs text-muted-foreground mt-1 ml-1">
+                                    Route non-read operations to the department
+                                    manager in Lark DM before they execute.
+                                  </p>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 px-2 text-[10px] font-bold uppercase tracking-tighter"
+                                  onClick={() =>
+                                    toggleManagerApprovalField("enabled")
+                                  }
+                                >
+                                  {configForm.managerApproval.enabled
+                                    ? "Enabled"
+                                    : "Disabled"}
+                                </Button>
+                              </div>
+
+                              <Card className="border-border/50 bg-background/50">
+                                <CardContent className="pt-6 space-y-6">
+                                  <div className="space-y-3">
+                                    <div>
+                                      <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                        Approval Required For
+                                      </div>
+                                      <p className="text-xs text-muted-foreground mt-1">
+                                        Reads stay immediate. Everything listed
+                                        here pauses for manager approval.
+                                      </p>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {DEFAULT_MANAGER_APPROVAL_ACTION_GROUPS.map(
+                                        (actionGroup) => {
+                                          const active =
+                                            configForm.managerApproval.requiredActionGroups.includes(
+                                              actionGroup,
+                                            );
+                                          return (
+                                            <Button
+                                              key={`approval-${actionGroup}`}
+                                              variant={
+                                                active
+                                                  ? "default"
+                                                  : "outline"
+                                              }
+                                              size="sm"
+                                              className="h-8 text-[10px] font-bold uppercase tracking-widest"
+                                              onClick={() =>
+                                                toggleManagerApprovalAction(
+                                                  "requiredActionGroups",
+                                                  actionGroup,
+                                                )
+                                              }
+                                            >
+                                              {actionGroup}
+                                            </Button>
+                                          );
+                                        },
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="space-y-3">
+                                    <div>
+                                      <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                        Manager DM Audit
+                                      </div>
+                                      <p className="text-xs text-muted-foreground mt-1">
+                                        Send the manager a one-line summary
+                                        after completion for selected action
+                                        groups.
+                                      </p>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {DEFAULT_MANAGER_APPROVAL_ACTION_GROUPS.map(
+                                        (actionGroup) => {
+                                          const active =
+                                            configForm.managerApproval.managerDmAuditActionGroups.includes(
+                                              actionGroup,
+                                            );
+                                          return (
+                                            <Button
+                                              key={`audit-${actionGroup}`}
+                                              variant={
+                                                active
+                                                  ? "default"
+                                                  : "outline"
+                                              }
+                                              size="sm"
+                                              className="h-8 text-[10px] font-bold uppercase tracking-widest"
+                                              onClick={() =>
+                                                toggleManagerApprovalAction(
+                                                  "managerDmAuditActionGroups",
+                                                  actionGroup,
+                                                )
+                                              }
+                                            >
+                                              {actionGroup}
+                                            </Button>
+                                          );
+                                        },
                                       )}
                                     </div>
                                   </div>

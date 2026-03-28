@@ -1150,6 +1150,7 @@ const createPendingRemoteApproval = async (input: {
       departmentId: input.runtime.departmentId,
       departmentName: input.runtime.departmentName,
       departmentRoleSlug: input.runtime.departmentRoleSlug,
+      departmentManagerApprovalConfig: input.runtime.departmentManagerApprovalConfig,
       authProvider: input.runtime.authProvider,
       larkTenantKey: input.runtime.larkTenantKey,
       larkOpenId: input.runtime.larkOpenId,

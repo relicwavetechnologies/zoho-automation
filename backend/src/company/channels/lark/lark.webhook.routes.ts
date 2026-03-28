@@ -37,6 +37,7 @@ import { runtimeTaskStore } from '../../orchestration/runtime-task.store';
 import { memoryService } from '../../memory';
 import { resolveAllowedRolesForVisibilityScope } from '../../../modules/file-upload/file-visibility-scope';
 import { knowledgeShareService } from '../../knowledge-share/knowledge-share.service';
+import { departmentService } from '../../departments/department.service';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
 type WebhookVerificationFailureReason = Exclude<LarkWebhookVerificationResult['reason'], undefined>;
@@ -52,6 +53,14 @@ type UpsertChannelIdentityInput = {
 };
 
 type NormalizedLarkMessage = NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>>;
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+
+const asString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 
 const buildSourceArtifactEntriesFromNormalizedFiles = (
   files: NonNullable<NormalizedIncomingMessageDTO['attachedFiles']>,
@@ -566,6 +575,71 @@ const continueAfterApproval = async (input: {
 
   const enqueued = await input.dependencies.enqueueTask(continuationMessage);
   return enqueued.taskId;
+};
+
+const isAuthorizedApprovalActor = async (input: {
+  companyId?: string;
+  linkedUserId?: string;
+  larkOpenId?: string;
+  action: Record<string, unknown> | null | undefined;
+}): Promise<boolean> => {
+  const metadata = asRecord(input.action?.metadata);
+  const companyId = asString(metadata?.companyId) ?? input.companyId;
+  if (!companyId) {
+    return true;
+  }
+
+  const departmentId = asString(metadata?.departmentId);
+  const approver = await departmentService.resolveDepartmentApprover({
+    companyId,
+    departmentId,
+  });
+  if (!approver) {
+    return true;
+  }
+
+  if (input.linkedUserId && approver.userId === input.linkedUserId) {
+    return true;
+  }
+  if (input.larkOpenId && approver.larkOpenId === input.larkOpenId) {
+    return true;
+  }
+  return false;
+};
+
+const maybeSendManagerAuditDm = async (input: {
+  adapter: Pick<LarkChannelAdapter, 'sendMessage'>;
+  action: Record<string, unknown> | null | undefined;
+  executionOk?: boolean;
+  executionSummary?: string;
+}): Promise<void> => {
+  const metadata = asRecord(input.action?.metadata);
+  const managerApprovalConfig = asRecord(metadata?.departmentManagerApprovalConfig);
+  const auditGroups = Array.isArray(managerApprovalConfig?.managerDmAuditActionGroups)
+    ? managerApprovalConfig.managerDmAuditActionGroups.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  const actionGroup = asString(input.action?.actionGroup);
+  if (!actionGroup || !auditGroups.includes(actionGroup)) {
+    return;
+  }
+  const companyId = asString(metadata?.companyId);
+  if (!companyId) {
+    return;
+  }
+  const approver = await departmentService.resolveDepartmentApprover({
+    companyId,
+    departmentId: asString(metadata?.departmentId),
+  });
+  if (!approver?.larkOpenId) {
+    return;
+  }
+  const requesterLabel = asString(metadata?.requesterEmail) ?? asString(metadata?.userId) ?? 'unknown requester';
+  const summary = asString(input.action?.summary) ?? 'mutating action';
+  await input.adapter.sendMessage({
+    chatId: approver.larkOpenId,
+    text: `Audit: ${requesterLabel} requested ${summary}. Outcome: ${input.executionOk ? 'completed' : 'failed'}${input.executionSummary ? ` (${input.executionSummary})` : ''}`,
+    format: 'text',
+  });
 };
 
 const parseHitlDecision = (text: string): { actionId: string; decision: 'confirmed' | 'cancelled' } | null => {
@@ -1969,7 +2043,6 @@ export const createLarkWebhookEventHandler = (
         parsed.kind === 'event_callback_message'
         && tracedMessageBase.chatType === 'group'
         && !botMentioned
-        && !shareCommand
       ) {
         dependencies.log.info('lark.webhook.event.ignored', {
           requestId,
@@ -2545,9 +2618,47 @@ export const createLarkWebhookEventHandler = (
           })
           : null;
         const approvalAction = storedAction ?? fallbackStoredAction;
+        const approvalActorAllowed = await isAuthorizedApprovalActor({
+          companyId: scopedCompanyId ?? undefined,
+          linkedUserId,
+          larkOpenId: tracedMessage.trace?.larkOpenId,
+          action: approvalAction,
+        });
+        if (!approvalActorAllowed) {
+          if (parsed.kind === 'event_callback_card_action') {
+            return res.status(200).json(
+              buildLarkCardActionResponse(
+                'Only the assigned manager can approve or reject this action.',
+                'warning',
+              ),
+            );
+          }
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessage.chatId,
+            text: 'Only the assigned manager can approve or reject this action.',
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Unauthorized HITL approval attempt ignored',
+          });
+        }
         const resolved = storedAction
           ? await dependencies.resolveHitlAction(hitlDecision.actionId, hitlDecision.decision)
           : Boolean(fallbackStoredAction);
+        const actionChatId = asString((approvalAction as Record<string, unknown> | undefined)?._chatId);
+        const actionRequesterEmail = asString(asRecord((approvalAction as Record<string, unknown> | undefined)?.metadata)?.requesterEmail);
+        const continuationTargetMessage: NormalizedLarkMessage =
+          actionChatId && actionChatId !== tracedMessage.chatId
+            ? {
+                ...tracedMessage,
+                chatId: actionChatId,
+                chatType: actionChatId.startsWith('oc_') ? 'group' : 'p2p',
+                trace: {
+                  ...tracedMessage.trace,
+                  requesterEmail: actionRequesterEmail ?? tracedMessage.trace?.requesterEmail,
+                },
+              }
+            : tracedMessage;
         let executionSummary: string | undefined;
         let executionOk: boolean | undefined;
         let executionPayload: Record<string, unknown> | undefined;
@@ -2569,6 +2680,12 @@ export const createLarkWebhookEventHandler = (
                 payload: executionResult.payload,
               },
             });
+            await maybeSendManagerAuditDm({
+              adapter: dependencies.adapter,
+              action: approvalAction,
+              executionOk: executionResult.ok,
+              executionSummary: executionResult.summary,
+            });
             if (shouldAutoContinueAfterApproval({
               approvalAction,
               executionOk: executionResult.ok,
@@ -2583,7 +2700,7 @@ export const createLarkWebhookEventHandler = (
               resumedTaskId = await continueAfterApproval({
                 dependencies,
                 taskId: typeof approvalAction.taskId === 'string' ? approvalAction.taskId : undefined,
-                tracedMessage,
+                tracedMessage: continuationTargetMessage,
                 requestId,
                 sourceActionId: hitlDecision.actionId,
                 sourceMessageId: tracedMessage.messageId,
@@ -2606,6 +2723,12 @@ export const createLarkWebhookEventHandler = (
                 payload: executionPayload,
               },
             });
+            await maybeSendManagerAuditDm({
+              adapter: dependencies.adapter,
+              action: approvalAction,
+              executionOk: false,
+              executionSummary,
+            });
             const continuationText = buildApprovalContinuationText({
               kind: executionKind,
               ok: false,
@@ -2616,7 +2739,7 @@ export const createLarkWebhookEventHandler = (
             resumedTaskId = await continueAfterApproval({
               dependencies,
               taskId: typeof approvalAction.taskId === 'string' ? approvalAction.taskId : undefined,
-              tracedMessage,
+              tracedMessage: continuationTargetMessage,
               requestId,
               sourceActionId: hitlDecision.actionId,
               sourceMessageId: tracedMessage.messageId,
@@ -2639,6 +2762,12 @@ export const createLarkWebhookEventHandler = (
               ok: false,
               summary: executionSummary,
             },
+          });
+          await maybeSendManagerAuditDm({
+            adapter: dependencies.adapter,
+            action: approvalAction,
+            executionOk: false,
+            executionSummary,
           });
         }
         dependencies.log.info('lark.webhook.hitl.decision', {

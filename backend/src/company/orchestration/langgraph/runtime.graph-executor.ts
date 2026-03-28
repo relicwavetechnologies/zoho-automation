@@ -26,9 +26,11 @@ import {
   shouldDelegateToCompatibility,
 } from './core/runtime';
 import { GraphToolFacade } from './graph-tool-facade';
+import { GRAPH_TOOL_FAMILY_MAP } from './graph-tool-facade';
 import { resolveRouteContract } from './route-contract';
 import { resolveSynthesisContract } from './synthesis-contract';
 import { runtimeLoopGuards } from './runtime.loop-guards';
+import { runtimeToolPolicy } from './runtime.tool-policy';
 import type {
   RuntimeDeliveryEnvelope,
   RuntimeEvidenceItem,
@@ -359,6 +361,19 @@ export class RuntimeGraphExecutor {
         const inputGuard = runtimeLoopGuards.registerToolCall(state.diagnostics, toolName, toolInput ?? {});
         if (inputGuard.blocked) {
           throw new Error(`Tool loop guard triggered for ${toolName}.`);
+        }
+        const candidateToolIds = GRAPH_TOOL_FAMILY_MAP[toolName as keyof typeof GRAPH_TOOL_FAMILY_MAP] ?? [toolName];
+        const authorized = candidateToolIds.some((toolId) =>
+          runtimeToolPolicy.authorize({
+            toolId,
+            actionGroup: 'read',
+            allowedToolIds: runtime.allowedToolIds,
+            allowedActionsByTool: runtime.allowedActionsByTool ?? {},
+            engineMode: 'primary',
+          }).allowed,
+        );
+        if (!authorized) {
+          throw new Error(`Runtime tool policy blocked ${toolName}.`);
         }
         toolIndexByActivityId.set(activityId, execution.steps.length);
         execution.steps.push({

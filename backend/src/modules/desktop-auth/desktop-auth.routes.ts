@@ -1,19 +1,28 @@
 import { Router } from 'express';
 import { asyncHandler } from '../../utils/async-handler';
 import { requireMemberSession } from '../../middlewares/member-auth.middleware';
+import { createRateLimitMiddleware } from '../../middlewares/rate-limit.middleware';
 import { desktopAuthController } from './desktop-auth.controller';
 
 const router = Router();
 
+const desktopExchangeRateLimit = createRateLimitMiddleware({
+  name: 'desktop_auth_exchange',
+  max: 10,
+  windowMs: 60_000,
+  message: 'Too many desktop auth exchange attempts. Please wait and try again.',
+  key: (req) => req.ip ?? 'unknown_ip',
+});
+
 router.get('/lark/authorize-url', asyncHandler(desktopAuthController.getLarkAuthorizeUrl));
 router.get('/lark/callback', asyncHandler(desktopAuthController.larkCallback));
-router.post('/lark/exchange', asyncHandler(desktopAuthController.exchangeLark));
+router.post('/lark/exchange', desktopExchangeRateLimit, asyncHandler(desktopAuthController.exchangeLark));
 
 router.get('/google/authorize-url', requireMemberSession(), asyncHandler(desktopAuthController.getGoogleAuthorizeUrl));
 router.get('/google/callback', asyncHandler(desktopAuthController.googleCallback));
 
 // Exchange handoff code (no auth required — the code IS the credential)
-router.post('/exchange', asyncHandler(desktopAuthController.exchange));
+router.post('/exchange', desktopExchangeRateLimit, asyncHandler(desktopAuthController.exchange));
 
 // Generate handoff code (requires logged-in member session from web app)
 router.post('/handoff', requireMemberSession(), asyncHandler(desktopAuthController.generateHandoff));

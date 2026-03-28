@@ -1,5 +1,6 @@
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
 import type { ZohoRateLimitConfig } from '../../integrations/zoho/zoho-rate-limit.types';
+import type { DepartmentManagerApprovalConfig } from '../../departments/department.service';
 
 export type VercelToolErrorKind =
   | 'missing_input'
@@ -118,6 +119,7 @@ export type VercelRuntimeRequestContext = {
   departmentRoleSlug?: string;
   departmentZohoReadScope?: 'personalized' | 'show_all';
   departmentZohoRateLimitConfig?: ZohoRateLimitConfig;
+  departmentManagerApprovalConfig?: DepartmentManagerApprovalConfig;
   larkTenantKey?: string;
   larkOpenId?: string;
   larkUserId?: string;

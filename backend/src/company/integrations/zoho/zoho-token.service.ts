@@ -109,6 +109,28 @@ export class ZohoTokenService {
     redirectUri: string;
     httpClient: ZohoHttpClient;
   }> {
+    if (companyId) {
+      const activeProfile = await prisma.zohoConnectionProfile.findFirst({
+        where: {
+          companyId,
+          isActive: true,
+          disabledAt: null,
+        },
+        orderBy: { updatedAt: 'desc' },
+      });
+      if (activeProfile) {
+        return {
+          clientId: activeProfile.clientId,
+          clientSecret: decryptZohoSecret(activeProfile.clientSecretEncrypted),
+          redirectUri: activeProfile.redirectUri,
+          httpClient: new ZohoHttpClient({
+            accountsBaseUrl: activeProfile.accountsBaseUrl,
+            apiBaseUrl: activeProfile.apiBaseUrl,
+          }),
+        };
+      }
+    }
+
     const hasPlatformConfig = Boolean(
       config.ZOHO_CLIENT_ID
       && config.ZOHO_CLIENT_SECRET

@@ -4,6 +4,7 @@ import config from '../../config';
 import { ApiResponse } from '../../core/api-response';
 import { BaseController } from '../../core/controller';
 import {
+  createZohoConnectionProfileSchema,
   connectLarkOnboardingSchema,
   connectGoogleOnboardingSchema,
   connectOnboardingSchema,
@@ -12,7 +13,9 @@ import {
   larkAuthorizeUrlQuerySchema,
   larkSyncQuerySchema,
   triggerHistoricalSyncSchema,
+  updateZohoConnectionProfileSchema,
   zohoAuthorizeUrlQuerySchema,
+  zohoProfileQuerySchema,
   upsertLarkBindingSchema,
   upsertLarkWorkspaceConfigSchema,
   upsertLarkOperationalConfigSchema,
@@ -369,6 +372,56 @@ class CompanyAdminController extends BaseController {
     }
     const result = await this.service.getZohoOAuthConfigStatus(session, companyId);
     return res.json(ApiResponse.success(result, 'Zoho OAuth config status loaded'));
+  };
+
+  listZohoConnectionProfiles = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const query = zohoProfileQuerySchema.parse(req.query);
+    const result = await this.service.listZohoConnectionProfiles(session, query);
+    return res.json(ApiResponse.success(result, 'Zoho connection profiles loaded'));
+  };
+
+  createZohoConnectionProfile = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const payload = createZohoConnectionProfileSchema.parse(req.body);
+    const result = await this.service.createZohoConnectionProfile(session, payload);
+    return res.status(201).json(ApiResponse.success(result, 'Zoho connection profile created'));
+  };
+
+  updateZohoConnectionProfile = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const payload = updateZohoConnectionProfileSchema.parse(req.body);
+    const result = await this.service.updateZohoConnectionProfile(session, req.params.profileId, payload);
+    return res.json(ApiResponse.success(result, 'Zoho connection profile updated'));
+  };
+
+  activateZohoConnectionProfile = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const companyId = typeof req.body?.companyId === 'string' ? req.body.companyId : undefined;
+    const result = await this.service.activateZohoConnectionProfile(session, req.params.profileId, companyId);
+    return res.json(ApiResponse.success(result, 'Zoho connection profile activated'));
+  };
+
+  disableZohoConnectionProfile = async (req: Request, res: Response) => {
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const companyId = typeof req.body?.companyId === 'string' ? req.body.companyId : undefined;
+    const result = await this.service.disableZohoConnectionProfile(session, req.params.profileId, companyId);
+    return res.json(ApiResponse.success(result, 'Zoho connection profile disabled'));
   };
 
   getZohoAuthorizeUrl = async (req: Request, res: Response) => {

@@ -19,13 +19,16 @@ import {
   ConnectOnboardingDto,
   ConnectLarkOnboardingDto,
   ConnectGoogleOnboardingDto,
+  CreateZohoConnectionProfileDto,
   GoogleAuthorizeUrlQueryDto,
   DisconnectOnboardingDto,
   TriggerHistoricalSyncDto,
+  UpdateZohoConnectionProfileDto,
   UpsertLarkBindingDto,
   UpsertLarkOperationalConfigDto,
   UpsertLarkWorkspaceConfigDto,
   UpsertZohoOAuthConfigDto,
+  ZohoProfileQueryDto,
 } from './dto/connect-onboarding.dto';
 import { CreateInviteDto } from './dto/create-invite.dto';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
@@ -41,6 +44,7 @@ import {
   resolveZohoOAuthScopes,
 } from '../../company/integrations/zoho/zoho-oauth-scopes';
 import { chooseFileChunkingPlan } from '../file-upload/file-chunking';
+import { encryptZohoSecret } from '../../company/integrations/zoho/zoho-token.crypto';
 
 export type SessionScope = {
   userId: string;
@@ -73,6 +77,26 @@ type RagReplayInput = {
   fileAssetId?: string;
   preferParentContext?: boolean;
   limit?: number;
+};
+
+type ZohoConnectionProfileSummary = {
+  id: string;
+  profileName: string;
+  environment: 'prod' | 'sandbox';
+  connectionSource: 'oauth_authorized' | 'manual_token_set';
+  status: string;
+  isActive: boolean;
+  connectedAt?: string;
+  scopes: string[];
+  clientId: string;
+  redirectUri: string;
+  accountsBaseUrl: string;
+  apiBaseUrl: string;
+  hasAccessToken: boolean;
+  hasRefreshToken: boolean;
+  accessTokenExpiresAt?: string;
+  refreshTokenExpiresAt?: string;
+  updatedAt: string;
 };
 
 const resolveCompanyScope = (session: SessionScope, requestedCompanyId?: string): string => {
@@ -135,9 +159,172 @@ const buildExpiry = (seconds?: number): Date | undefined => {
   return new Date(Date.now() + seconds * 1000);
 };
 
+const parseOptionalIsoDate = (value?: string): Date | undefined => {
+  if (!value?.trim()) return undefined;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+};
+
+const mapZohoProfileSummary = (profile: {
+  id: string;
+  profileName: string;
+  environment: string;
+  connectionSource: string;
+  status: string;
+  isActive: boolean;
+  connectedAt: Date | null;
+  scopes: string[];
+  clientId: string;
+  redirectUri: string;
+  accountsBaseUrl: string;
+  apiBaseUrl: string;
+  accessTokenEncrypted: string | null;
+  refreshTokenEncrypted: string | null;
+  accessTokenExpiresAt: Date | null;
+  refreshTokenExpiresAt: Date | null;
+  updatedAt: Date;
+}): ZohoConnectionProfileSummary => ({
+  id: profile.id,
+  profileName: profile.profileName,
+  environment: profile.environment === 'sandbox' ? 'sandbox' : 'prod',
+  connectionSource:
+    profile.connectionSource === 'oauth_authorized' ? 'oauth_authorized' : 'manual_token_set',
+  status: profile.status,
+  isActive: profile.isActive,
+  connectedAt: profile.connectedAt?.toISOString(),
+  scopes: profile.scopes,
+  clientId: profile.clientId,
+  redirectUri: profile.redirectUri,
+  accountsBaseUrl: profile.accountsBaseUrl,
+  apiBaseUrl: profile.apiBaseUrl,
+  hasAccessToken: Boolean(profile.accessTokenEncrypted),
+  hasRefreshToken: Boolean(profile.refreshTokenEncrypted),
+  accessTokenExpiresAt: profile.accessTokenExpiresAt?.toISOString(),
+  refreshTokenExpiresAt: profile.refreshTokenExpiresAt?.toISOString(),
+  updatedAt: profile.updatedAt.toISOString(),
+});
+
 export class CompanyAdminService extends BaseService {
   constructor(private readonly repository: CompanyAdminRepository = companyAdminRepository) {
     super();
+  }
+
+  private async syncRuntimeZohoConnectionFromProfile(profileId: string): Promise<void> {
+    const profile = await prisma.zohoConnectionProfile.findUnique({
+      where: { id: profileId },
+    });
+    if (!profile) {
+      throw new HttpException(404, 'Zoho connection profile not found.');
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.zohoConnectionProfile.updateMany({
+        where: {
+          companyId: profile.companyId,
+          id: { not: profile.id },
+        },
+        data: {
+          isActive: false,
+        },
+      });
+
+      await tx.zohoConnectionProfile.update({
+        where: { id: profile.id },
+        data: {
+          isActive: true,
+          status: profile.disabledAt ? 'DISABLED' : profile.status,
+        },
+      });
+
+      await tx.zohoConnection.updateMany({
+        where: {
+          companyId: profile.companyId,
+          status: 'CONNECTED',
+        },
+        data: {
+          status: 'DISCONNECTED',
+        },
+      });
+
+      if (!profile.disabledAt) {
+        await tx.zohoConnection.upsert({
+          where: {
+            companyId_environment: {
+              companyId: profile.companyId,
+              environment: profile.environment,
+            },
+          },
+          create: {
+            companyId: profile.companyId,
+            environment: profile.environment,
+            providerMode: 'rest',
+            status: 'CONNECTED',
+            connectedAt: profile.connectedAt ?? new Date(),
+            scopes: profile.scopes,
+            accessTokenEncrypted: profile.accessTokenEncrypted,
+            refreshTokenEncrypted: profile.refreshTokenEncrypted,
+            tokenCipherVersion: profile.tokenCipherVersion,
+            accessTokenExpiresAt: profile.accessTokenExpiresAt,
+            refreshTokenExpiresAt: profile.refreshTokenExpiresAt,
+            tokenMetadata: {
+              ...(typeof profile.tokenMetadata === 'object' && profile.tokenMetadata !== null
+                ? (profile.tokenMetadata as Record<string, unknown>)
+                : {}),
+              zohoProfileId: profile.id,
+              connectionSource: profile.connectionSource,
+              clientId: profile.clientId,
+              redirectUri: profile.redirectUri,
+              accountsBaseUrl: profile.accountsBaseUrl,
+              apiBaseUrl: profile.apiBaseUrl,
+            },
+            tokenFailureCode: null,
+            lastTokenRefreshAt: new Date(),
+          },
+          update: {
+            providerMode: 'rest',
+            status: 'CONNECTED',
+            connectedAt: profile.connectedAt ?? new Date(),
+            scopes: profile.scopes,
+            accessTokenEncrypted: profile.accessTokenEncrypted,
+            refreshTokenEncrypted: profile.refreshTokenEncrypted,
+            tokenCipherVersion: profile.tokenCipherVersion,
+            accessTokenExpiresAt: profile.accessTokenExpiresAt,
+            refreshTokenExpiresAt: profile.refreshTokenExpiresAt,
+            tokenMetadata: {
+              ...(typeof profile.tokenMetadata === 'object' && profile.tokenMetadata !== null
+                ? (profile.tokenMetadata as Record<string, unknown>)
+                : {}),
+              zohoProfileId: profile.id,
+              connectionSource: profile.connectionSource,
+              clientId: profile.clientId,
+              redirectUri: profile.redirectUri,
+              accountsBaseUrl: profile.accountsBaseUrl,
+              apiBaseUrl: profile.apiBaseUrl,
+            },
+            tokenFailureCode: null,
+            lastTokenRefreshAt: new Date(),
+          },
+        });
+      }
+    });
+  }
+
+  private async disconnectRuntimeZohoConnections(companyId: string): Promise<void> {
+    await prisma.$transaction(async (tx) => {
+      await tx.zohoConnection.updateMany({
+        where: {
+          companyId,
+          status: 'CONNECTED',
+        },
+        data: {
+          status: 'DISCONNECTED',
+        },
+      });
+      await tx.zohoConnectionProfile.updateMany({
+        where: { companyId },
+        data: { isActive: false },
+      });
+    });
   }
 
   async listMembers(session: SessionScope, companyId?: string) {
@@ -423,6 +610,72 @@ export class CompanyAdminService extends BaseService {
         scopes: payload.scopes,
         environment: payload.environment,
       });
+      if (hasPlatformZohoOAuthConfig()) {
+        const encryptedClientSecret = encryptZohoSecret(config.ZOHO_CLIENT_SECRET);
+        const latestConnection = await prisma.zohoConnection.findFirst({
+          where: {
+            companyId: scopedCompanyId,
+            environment: payload.environment,
+            status: 'CONNECTED',
+          },
+          orderBy: { connectedAt: 'desc' },
+        });
+        if (latestConnection) {
+          const profile = await prisma.zohoConnectionProfile.upsert({
+            where: {
+              companyId_profileName: {
+                companyId: scopedCompanyId,
+                profileName: `OAuth ${payload.environment}`,
+              },
+            },
+            create: {
+              companyId: scopedCompanyId,
+              profileName: `OAuth ${payload.environment}`,
+              environment: payload.environment,
+              connectionSource: 'oauth_authorized',
+              status: 'CONNECTED',
+              isActive: true,
+              connectedAt: latestConnection.connectedAt,
+              scopes: latestConnection.scopes,
+              clientId: config.ZOHO_CLIENT_ID,
+              clientSecretEncrypted: encryptedClientSecret.cipherText,
+              redirectUri: config.ZOHO_REDIRECT_URI,
+              accountsBaseUrl: config.ZOHO_ACCOUNTS_BASE_URL,
+              apiBaseUrl: config.ZOHO_API_BASE_URL,
+              accessTokenEncrypted: latestConnection.accessTokenEncrypted,
+              refreshTokenEncrypted: latestConnection.refreshTokenEncrypted,
+              tokenCipherVersion: latestConnection.tokenCipherVersion,
+              accessTokenExpiresAt: latestConnection.accessTokenExpiresAt,
+              refreshTokenExpiresAt: latestConnection.refreshTokenExpiresAt,
+              tokenMetadata: latestConnection.tokenMetadata,
+              createdBy: session.userId,
+              updatedBy: session.userId,
+            },
+            update: {
+              environment: payload.environment,
+              connectionSource: 'oauth_authorized',
+              status: 'CONNECTED',
+              isActive: true,
+              connectedAt: latestConnection.connectedAt,
+              scopes: latestConnection.scopes,
+              clientId: config.ZOHO_CLIENT_ID,
+              clientSecretEncrypted: encryptedClientSecret.cipherText,
+              redirectUri: config.ZOHO_REDIRECT_URI,
+              accountsBaseUrl: config.ZOHO_ACCOUNTS_BASE_URL,
+              apiBaseUrl: config.ZOHO_API_BASE_URL,
+              accessTokenEncrypted: latestConnection.accessTokenEncrypted,
+              refreshTokenEncrypted: latestConnection.refreshTokenEncrypted,
+              tokenCipherVersion: latestConnection.tokenCipherVersion,
+              accessTokenExpiresAt: latestConnection.accessTokenExpiresAt,
+              refreshTokenExpiresAt: latestConnection.refreshTokenExpiresAt,
+              tokenMetadata: latestConnection.tokenMetadata,
+              disabledAt: null,
+              updatedBy: session.userId,
+            },
+          });
+          await this.syncRuntimeZohoConnectionFromProfile(profile.id);
+        }
+      }
       await auditService.recordLog({
         actorId: session.userId,
         companyId: scopedCompanyId,
@@ -453,6 +706,10 @@ export class CompanyAdminService extends BaseService {
     const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
     try {
       const result = await companyOnboardingService.disconnectZoho(scopedCompanyId);
+      await prisma.zohoConnectionProfile.updateMany({
+        where: { companyId: scopedCompanyId },
+        data: { isActive: false },
+      });
       await auditService.recordLog({
         actorId: session.userId,
         companyId: scopedCompanyId,
@@ -766,9 +1023,20 @@ export class CompanyAdminService extends BaseService {
 
   async getZohoOAuthConfigStatus(session: SessionScope, companyId?: string) {
     const scopedCompanyId = resolveCompanyScope(session, companyId);
-    void scopedCompanyId;
+    const activeProfile = await prisma.zohoConnectionProfile.findFirst({
+      where: {
+        companyId: scopedCompanyId,
+        isActive: true,
+        disabledAt: null,
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
     if (!hasPlatformZohoOAuthConfig()) {
-      return { configured: false, source: 'missing' };
+      return {
+        configured: Boolean(activeProfile),
+        source: activeProfile ? 'manual_profile' : 'missing',
+        activeProfile: activeProfile ? mapZohoProfileSummary(activeProfile) : null,
+      };
     }
     return {
       configured: true,
@@ -777,7 +1045,163 @@ export class CompanyAdminService extends BaseService {
       accountsBaseUrl: config.ZOHO_ACCOUNTS_BASE_URL,
       apiBaseUrl: config.ZOHO_API_BASE_URL,
       source: 'platform_env',
+      activeProfile: activeProfile ? mapZohoProfileSummary(activeProfile) : null,
     };
+  }
+
+  async listZohoConnectionProfiles(session: SessionScope, query: ZohoProfileQueryDto) {
+    const scopedCompanyId = resolveCompanyScope(session, query.companyId);
+    const profiles = await prisma.zohoConnectionProfile.findMany({
+      where: {
+        companyId: scopedCompanyId,
+      },
+      orderBy: [{ isActive: 'desc' }, { updatedAt: 'desc' }],
+    });
+    return profiles.map(mapZohoProfileSummary);
+  }
+
+  async createZohoConnectionProfile(session: SessionScope, payload: CreateZohoConnectionProfileDto) {
+    const scopedCompanyId = resolveCompanyScope(session, payload.companyId);
+    const encryptedClientSecret = encryptZohoSecret(payload.clientSecret);
+    const encryptedAccessToken = payload.accessToken ? encryptZohoSecret(payload.accessToken) : undefined;
+    const encryptedRefreshToken = payload.refreshToken ? encryptZohoSecret(payload.refreshToken) : undefined;
+    const profile = await prisma.zohoConnectionProfile.create({
+      data: {
+        companyId: scopedCompanyId,
+        profileName: payload.profileName.trim(),
+        environment: payload.environment,
+        connectionSource: 'manual_token_set',
+        status: 'CONNECTED',
+        isActive: Boolean(payload.setActive),
+        connectedAt: new Date(),
+        scopes: payload.scopes,
+        clientId: payload.clientId.trim(),
+        clientSecretEncrypted: encryptedClientSecret.cipherText,
+        redirectUri: payload.redirectUri.trim(),
+        accountsBaseUrl: payload.accountsBaseUrl?.trim() || config.ZOHO_ACCOUNTS_BASE_URL,
+        apiBaseUrl: payload.apiBaseUrl?.trim() || config.ZOHO_API_BASE_URL,
+        accessTokenEncrypted: encryptedAccessToken?.cipherText,
+        refreshTokenEncrypted: encryptedRefreshToken?.cipherText,
+        tokenCipherVersion: encryptedClientSecret.version,
+        accessTokenExpiresAt: parseOptionalIsoDate(payload.accessTokenExpiresAt),
+        refreshTokenExpiresAt: parseOptionalIsoDate(payload.refreshTokenExpiresAt),
+        tokenMetadata: payload.metadata ?? {},
+        createdBy: session.userId,
+        updatedBy: session.userId,
+      },
+    });
+    if (payload.setActive) {
+      await this.syncRuntimeZohoConnectionFromProfile(profile.id);
+    }
+    await auditService.recordLog({
+      actorId: session.userId,
+      companyId: scopedCompanyId,
+      action: 'company.onboarding.zoho.profile.create',
+      outcome: 'success',
+      metadata: {
+        profileId: profile.id,
+        profileName: profile.profileName,
+        environment: profile.environment,
+      },
+    });
+    return mapZohoProfileSummary(profile);
+  }
+
+  async updateZohoConnectionProfile(
+    session: SessionScope,
+    profileId: string,
+    payload: UpdateZohoConnectionProfileDto,
+  ) {
+    const existing = await prisma.zohoConnectionProfile.findUnique({
+      where: { id: profileId },
+    });
+    if (!existing) {
+      throw new HttpException(404, 'Zoho connection profile not found.');
+    }
+    const scopedCompanyId = resolveCompanyScope(session, payload.companyId ?? existing.companyId);
+    if (existing.companyId !== scopedCompanyId) {
+      throw new HttpException(403, 'Company scope mismatch');
+    }
+
+    const updateData: Record<string, unknown> = {
+      updatedBy: session.userId,
+    };
+    if (payload.profileName?.trim()) updateData.profileName = payload.profileName.trim();
+    if (payload.environment) updateData.environment = payload.environment;
+    if (payload.scopes) updateData.scopes = payload.scopes;
+    if (payload.clientId?.trim()) updateData.clientId = payload.clientId.trim();
+    if (payload.clientSecret?.trim()) updateData.clientSecretEncrypted = encryptZohoSecret(payload.clientSecret).cipherText;
+    if (payload.redirectUri?.trim()) updateData.redirectUri = payload.redirectUri.trim();
+    if (payload.accountsBaseUrl?.trim()) updateData.accountsBaseUrl = payload.accountsBaseUrl.trim();
+    if (payload.apiBaseUrl?.trim()) updateData.apiBaseUrl = payload.apiBaseUrl.trim();
+    if (payload.accessToken?.trim()) updateData.accessTokenEncrypted = encryptZohoSecret(payload.accessToken).cipherText;
+    if (payload.refreshToken?.trim()) updateData.refreshTokenEncrypted = encryptZohoSecret(payload.refreshToken).cipherText;
+    if (payload.accessTokenExpiresAt !== undefined) updateData.accessTokenExpiresAt = parseOptionalIsoDate(payload.accessTokenExpiresAt) ?? null;
+    if (payload.refreshTokenExpiresAt !== undefined) updateData.refreshTokenExpiresAt = parseOptionalIsoDate(payload.refreshTokenExpiresAt) ?? null;
+    if (payload.metadata) updateData.tokenMetadata = payload.metadata;
+    if (payload.setActive !== undefined) updateData.isActive = payload.setActive;
+
+    const updated = await prisma.zohoConnectionProfile.update({
+      where: { id: profileId },
+      data: updateData,
+    });
+    if (payload.setActive ?? updated.isActive) {
+      await this.syncRuntimeZohoConnectionFromProfile(updated.id);
+    }
+    return mapZohoProfileSummary(updated);
+  }
+
+  async activateZohoConnectionProfile(session: SessionScope, profileId: string, companyId?: string) {
+    const existing = await prisma.zohoConnectionProfile.findUnique({
+      where: { id: profileId },
+    });
+    if (!existing) {
+      throw new HttpException(404, 'Zoho connection profile not found.');
+    }
+    const scopedCompanyId = resolveCompanyScope(session, companyId ?? existing.companyId);
+    if (existing.companyId !== scopedCompanyId) {
+      throw new HttpException(403, 'Company scope mismatch');
+    }
+    await prisma.zohoConnectionProfile.update({
+      where: { id: profileId },
+      data: {
+        isActive: true,
+        disabledAt: null,
+        status: 'CONNECTED',
+        updatedBy: session.userId,
+      },
+    });
+    await this.syncRuntimeZohoConnectionFromProfile(profileId);
+    const activated = await prisma.zohoConnectionProfile.findUniqueOrThrow({
+      where: { id: profileId },
+    });
+    return mapZohoProfileSummary(activated);
+  }
+
+  async disableZohoConnectionProfile(session: SessionScope, profileId: string, companyId?: string) {
+    const existing = await prisma.zohoConnectionProfile.findUnique({
+      where: { id: profileId },
+    });
+    if (!existing) {
+      throw new HttpException(404, 'Zoho connection profile not found.');
+    }
+    const scopedCompanyId = resolveCompanyScope(session, companyId ?? existing.companyId);
+    if (existing.companyId !== scopedCompanyId) {
+      throw new HttpException(403, 'Company scope mismatch');
+    }
+    const updated = await prisma.zohoConnectionProfile.update({
+      where: { id: profileId },
+      data: {
+        isActive: false,
+        status: 'DISABLED',
+        disabledAt: new Date(),
+        updatedBy: session.userId,
+      },
+    });
+    if (existing.isActive) {
+      await this.disconnectRuntimeZohoConnections(scopedCompanyId);
+    }
+    return mapZohoProfileSummary(updated);
   }
 
   async getZohoAuthorizeUrl(

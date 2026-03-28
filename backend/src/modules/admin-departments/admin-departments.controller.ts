@@ -44,6 +44,18 @@ const updateDepartmentConfigSchema = z.object({
         .max(500),
     })
     .optional(),
+  managerApproval: z
+    .object({
+      enabled: z.boolean(),
+      requiredActionGroups: z
+        .array(z.enum(['read', 'create', 'update', 'delete', 'send', 'execute']))
+        .min(1)
+        .max(6),
+      managerDmAuditActionGroups: z
+        .array(z.enum(['read', 'create', 'update', 'delete', 'send', 'execute']))
+        .max(6),
+    })
+    .optional(),
   isActive: z.boolean().optional(),
 });
 

@@ -112,6 +112,8 @@ model User {
   departmentUserToolOverrides        DepartmentUserToolOverride[]
   createdDepartmentAgentConfigs      DepartmentAgentConfig[]      @relation("DepartmentAgentConfigCreatedBy")
   updatedDepartmentAgentConfigs      DepartmentAgentConfig[]      @relation("DepartmentAgentConfigUpdatedBy")
+  createdZohoConnectionProfiles      ZohoConnectionProfile[]      @relation("ZohoConnectionProfileCreatedBy")
+  updatedZohoConnectionProfiles      ZohoConnectionProfile[]      @relation("ZohoConnectionProfileUpdatedBy")
   departmentToolPermissionsUpdated   DepartmentToolPermission[]   @relation("DepartmentToolPermissionUpdatedBy")
   departmentUserToolOverridesUpdated DepartmentUserToolOverride[] @relation("DepartmentUserToolOverrideUpdatedBy")
   memberSessions                     MemberSession[]
@@ -133,6 +135,7 @@ model Company {
   departments            Department[]
   skills                 Skill[]
   zohoConnections        ZohoConnection[]
+  zohoConnectionProfiles ZohoConnectionProfile[]
   zohoSyncJobs           ZohoSyncJob[]
   zohoOAuthConfig        ZohoOAuthConfig?
   larkTenantBindings     LarkTenantBinding[]
@@ -271,6 +274,40 @@ model ZohoConnection {
   vectorDocs            VectorDocument[]
 
   @@unique([companyId, environment])
+}
+
+model ZohoConnectionProfile {
+  id                    String   @id @default(uuid())
+  companyId             String
+  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  profileName           String
+  environment           String   @default("prod")
+  connectionSource      String   @default("manual_token_set")
+  status                String   @default("CONNECTED")
+  isActive              Boolean  @default(false)
+  connectedAt           DateTime?
+  scopes                String[]
+  clientId              String
+  clientSecretEncrypted String
+  redirectUri           String
+  accountsBaseUrl       String   @default("https://accounts.zoho.com")
+  apiBaseUrl            String   @default("https://www.zohoapis.com")
+  accessTokenEncrypted  String?
+  refreshTokenEncrypted String?
+  tokenCipherVersion    Int      @default(1)
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  tokenMetadata         Json?
+  disabledAt            DateTime?
+  createdBy             String
+  createdByUser         User     @relation("ZohoConnectionProfileCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  updatedBy             String
+  updatedByUser         User     @relation("ZohoConnectionProfileUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([companyId, profileName])
+  @@index([companyId, isActive, status])
 }
 
 model ZohoOAuthConfig {
@@ -658,6 +695,7 @@ model DepartmentAgentConfig {
   systemPrompt      String
   skillsMarkdown    String
   zohoRateLimitJson Json?
+  managerApprovalJson Json?
   isActive          Boolean    @default(true)
   createdBy         String
   createdByUser     User       @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)

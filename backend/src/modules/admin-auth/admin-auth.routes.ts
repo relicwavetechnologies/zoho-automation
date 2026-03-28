@@ -23,7 +23,15 @@ const adminLoginRateLimit = createRateLimitMiddleware({
   },
 });
 
-router.post('/bootstrap-super-admin', asyncHandler(adminAuthController.bootstrapSuperAdmin));
+const bootstrapRateLimit = createRateLimitMiddleware({
+  name: 'admin_bootstrap_super_admin',
+  max: 1,
+  windowMs: 60 * 60_000,
+  message: 'Bootstrap has been rate limited. Please wait before retrying.',
+  key: () => 'global',
+});
+
+router.post('/bootstrap-super-admin', bootstrapRateLimit, asyncHandler(adminAuthController.bootstrapSuperAdmin));
 router.post('/login/super-admin', adminLoginRateLimit, asyncHandler(adminAuthController.loginSuperAdmin));
 router.post('/login/company-admin', adminLoginRateLimit, asyncHandler(adminAuthController.loginCompanyAdmin));
 router.post('/signup/company-admin', asyncHandler(adminAuthController.signupCompanyAdmin));

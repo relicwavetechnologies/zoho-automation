@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
 import { Link2, Unlink, RefreshCw, Users, Zap, Building2, ExternalLink, ShieldCheck, Database, CheckCircle2, AlertCircle, ArrowRight, MessageSquare, Share2, Clock, Mail } from 'lucide-react';
 
 import { useAdminAuth } from '../auth/AdminAuthProvider';
@@ -13,6 +13,7 @@ import { Skeleton } from '../components/ui/skeleton';
 import { cn } from '../lib/utils';
 import { Separator } from '../components/ui/separator';
 import { ScrollArea } from '../components/ui/scroll-area';
+import { Textarea } from '../components/ui/textarea';
 
 type OnboardingStatus = {
   companyId: string;
@@ -53,7 +54,45 @@ type ZohoOAuthConfigStatus = {
   accountsBaseUrl?: string;
   apiBaseUrl?: string;
   updatedAt?: string;
-  source?: 'platform_env' | 'legacy_company_config' | 'missing';
+  source?: 'platform_env' | 'legacy_company_config' | 'manual_profile' | 'missing';
+  activeProfile?: ZohoConnectionProfileSummary | null;
+};
+
+type ZohoConnectionProfileSummary = {
+  id: string;
+  profileName: string;
+  environment: 'prod' | 'sandbox';
+  connectionSource: 'oauth_authorized' | 'manual_token_set';
+  status: string;
+  isActive: boolean;
+  connectedAt?: string;
+  scopes: string[];
+  clientId: string;
+  redirectUri: string;
+  accountsBaseUrl: string;
+  apiBaseUrl: string;
+  hasAccessToken: boolean;
+  hasRefreshToken: boolean;
+  accessTokenExpiresAt?: string;
+  refreshTokenExpiresAt?: string;
+  updatedAt: string;
+};
+
+type ZohoConnectionProfileForm = {
+  profileName: string;
+  environment: 'prod' | 'sandbox';
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+  accessToken: string;
+  accessTokenExpiresAt: string;
+  refreshTokenExpiresAt: string;
+  redirectUri: string;
+  accountsBaseUrl: string;
+  apiBaseUrl: string;
+  scopes: string;
+  metadataJson: string;
+  setActive: boolean;
 };
 
 type GoogleWorkspaceStatus = {
@@ -200,6 +239,7 @@ export const IntegrationsPage = () => {
   const [larkOperationalConfig, setLarkOperationalConfig] = useState<LarkOperationalConfigStatus | null>(null);
   const [larkSyncStatus, setLarkSyncStatus] = useState<LarkSyncStatus | null>(null);
   const [oauthConfig, setOauthConfig] = useState<ZohoOAuthConfigStatus | null>(null);
+  const [zohoProfiles, setZohoProfiles] = useState<ZohoConnectionProfileSummary[]>([]);
   const [googleWorkspace, setGoogleWorkspace] = useState<GoogleWorkspaceStatus | null>(null);
   const [identities, setIdentities] = useState<ChannelIdentity[]>([]);
   const [vectorShareRequests, setVectorShareRequests] = useState<VectorShareRequest[]>([]);
@@ -213,6 +253,26 @@ export const IntegrationsPage = () => {
 
   const [restScopes, setRestScopes] = useState('ZohoCRM.modules.ALL,ZohoCRM.coql.READ,ZohoCRM.settings.fields.READ,ZohoCRM.settings.modules.READ,ZohoCRM.modules.notes.ALL,ZohoCRM.modules.attachments.ALL,ZohoBooks.settings.READ,ZohoBooks.settings.CREATE,ZohoBooks.accountants.READ,ZohoBooks.contacts.ALL,ZohoBooks.estimates.ALL,ZohoBooks.invoices.ALL,ZohoBooks.creditnotes.ALL,ZohoBooks.customerpayments.ALL,ZohoBooks.bills.ALL,ZohoBooks.salesorders.ALL,ZohoBooks.purchaseorders.ALL,ZohoBooks.vendorpayments.ALL,ZohoBooks.banking.ALL');
   const [restEnv, setRestEnv] = useState<'prod' | 'sandbox'>('prod');
+  const [zohoProfileForm, setZohoProfileForm] = useState<ZohoConnectionProfileForm>({
+    profileName: '',
+    environment: 'prod',
+    clientId: '',
+    clientSecret: '',
+    refreshToken: '',
+    accessToken: '',
+    accessTokenExpiresAt: '',
+    refreshTokenExpiresAt: '',
+    redirectUri: '',
+    accountsBaseUrl: '',
+    apiBaseUrl: '',
+    scopes: '',
+    metadataJson: '{}',
+    setActive: true,
+  });
+  const [editingZohoProfileId, setEditingZohoProfileId] = useState<string | null>(null);
+  const [zohoProfilesLoading, setZohoProfilesLoading] = useState(true);
+  const [zohoProfileSaving, setZohoProfileSaving] = useState(false);
+  const [zohoProfileMutatingId, setZohoProfileMutatingId] = useState<string | null>(null);
   const [zohoDisconnecting, setZohoDisconnecting] = useState(false);
   const [oauthLaunching, setOauthLaunching] = useState(false);
   const [googleLaunching, setGoogleLaunching] = useState(false);
@@ -228,6 +288,26 @@ export const IntegrationsPage = () => {
   });
 
   const zohoRedirectUri = oauthConfig?.redirectUri || `${window.location.origin}/zoho/callback`;
+
+  const resetZohoProfileForm = (profile?: ZohoConnectionProfileSummary | null) => {
+    setEditingZohoProfileId(profile?.id ?? null);
+    setZohoProfileForm({
+      profileName: profile?.profileName ?? '',
+      environment: profile?.environment ?? restEnv,
+      clientId: profile?.clientId ?? oauthConfig?.clientId ?? '',
+      clientSecret: '',
+      refreshToken: '',
+      accessToken: '',
+      accessTokenExpiresAt: profile?.accessTokenExpiresAt ? profile.accessTokenExpiresAt.slice(0, 16) : '',
+      refreshTokenExpiresAt: profile?.refreshTokenExpiresAt ? profile.refreshTokenExpiresAt.slice(0, 16) : '',
+      redirectUri: profile?.redirectUri ?? zohoRedirectUri,
+      accountsBaseUrl: profile?.accountsBaseUrl ?? oauthConfig?.accountsBaseUrl ?? '',
+      apiBaseUrl: profile?.apiBaseUrl ?? oauthConfig?.apiBaseUrl ?? '',
+      scopes: profile?.scopes?.join(',') ?? restScopes,
+      metadataJson: '{}',
+      setActive: profile?.isActive ?? true,
+    });
+  };
 
   const loadStatus = async (options?: { silent?: boolean }) => {
     if (!token) return;
@@ -270,6 +350,19 @@ export const IntegrationsPage = () => {
       const result = await api.get<ZohoOAuthConfigStatus>(`/api/admin/company/onboarding/zoho-oauth-config${buildQuery()}`, token);
       setOauthConfig(result);
     } catch { setOauthConfig({ configured: false }); } finally { setOauthConfigLoading(false); }
+  };
+
+  const loadZohoProfiles = async (options?: { silent?: boolean }) => {
+    if (!token || (isSuperAdmin && !scopedCompanyId)) { setZohoProfiles([]); setZohoProfilesLoading(false); return; }
+    if (!options?.silent) setZohoProfilesLoading(true);
+    try {
+      const result = await api.get<ZohoConnectionProfileSummary[]>(`/api/admin/company/onboarding/zoho-profiles${buildQuery()}`, token);
+      setZohoProfiles(result);
+    } catch {
+      setZohoProfiles([]);
+    } finally {
+      setZohoProfilesLoading(false);
+    }
   };
 
   const loadGoogleWorkspaceStatus = async () => {
@@ -331,9 +424,13 @@ export const IntegrationsPage = () => {
 
   useEffect(() => {
     void loadStatus(); void loadIdentities(); void loadZohoOAuthConfig(); void loadGoogleWorkspaceStatus();
-    void loadLarkWorkspaceConfig(); void loadLarkOperationalConfig();
+    void loadZohoProfiles(); void loadLarkWorkspaceConfig(); void loadLarkOperationalConfig();
     void loadLarkSyncStatus(); void loadVectorShareRequests();
   }, [token, scopedCompanyId, isSuperAdmin]);
+
+  useEffect(() => {
+    resetZohoProfileForm(oauthConfig?.activeProfile ?? null);
+  }, [oauthConfig?.activeProfile?.id, oauthConfig?.clientId, oauthConfig?.redirectUri, oauthConfig?.accountsBaseUrl, oauthConfig?.apiBaseUrl, restEnv, restScopes]);
 
   useEffect(() => { void loadIdentities(); }, [channelFilter]);
 
@@ -394,7 +491,7 @@ export const IntegrationsPage = () => {
     try {
       await api.post('/api/admin/company/onboarding/disconnect', { companyId: scopedCompanyId || undefined }, token);
       toast({ title: 'Zoho disconnected', variant: 'success' });
-      void loadStatus();
+      void loadStatus(); void loadZohoOAuthConfig(); void loadZohoProfiles();
     } finally { setZohoDisconnecting(false); }
   };
 
@@ -463,6 +560,71 @@ export const IntegrationsPage = () => {
       const result = await api.get<ZohoAuthorizeUrlResult>(`/api/admin/company/onboarding/zoho-authorize-url?${query.toString()}`, token || undefined);
       window.location.assign(result.authorizeUrl);
     } catch { setOauthLaunching(false); }
+  };
+
+  const saveZohoProfile = async () => {
+    if (!token) return;
+    setZohoProfileSaving(true);
+    try {
+      const payload = {
+        companyId: scopedCompanyId || undefined,
+        profileName: zohoProfileForm.profileName.trim(),
+        environment: zohoProfileForm.environment,
+        clientId: zohoProfileForm.clientId.trim(),
+        clientSecret: zohoProfileForm.clientSecret.trim(),
+        refreshToken: zohoProfileForm.refreshToken.trim(),
+        accessToken: zohoProfileForm.accessToken.trim() || undefined,
+        accessTokenExpiresAt: zohoProfileForm.accessTokenExpiresAt || undefined,
+        refreshTokenExpiresAt: zohoProfileForm.refreshTokenExpiresAt || undefined,
+        redirectUri: zohoProfileForm.redirectUri.trim(),
+        accountsBaseUrl: zohoProfileForm.accountsBaseUrl.trim() || undefined,
+        apiBaseUrl: zohoProfileForm.apiBaseUrl.trim() || undefined,
+        scopes: zohoProfileForm.scopes.split(',').map((value) => value.trim()).filter(Boolean),
+        metadata: zohoProfileForm.metadataJson.trim() ? JSON.parse(zohoProfileForm.metadataJson) : {},
+        setActive: zohoProfileForm.setActive,
+      };
+      if (editingZohoProfileId) {
+        await api.put(`/api/admin/company/onboarding/zoho-profiles/${editingZohoProfileId}`, payload, token);
+        toast({ title: 'Zoho profile updated', variant: 'success' });
+      } else {
+        await api.post(`/api/admin/company/onboarding/zoho-profiles`, payload, token);
+        toast({ title: 'Zoho profile created', variant: 'success' });
+      }
+      await Promise.all([loadZohoProfiles(), loadZohoOAuthConfig(), loadStatus({ silent: true })]);
+      resetZohoProfileForm(null);
+    } catch (error) {
+      toast({
+        title: 'Zoho profile save failed',
+        description: error instanceof Error ? error.message : 'Invalid Zoho profile payload',
+        variant: 'destructive',
+      });
+    } finally {
+      setZohoProfileSaving(false);
+    }
+  };
+
+  const activateZohoProfile = async (profileId: string) => {
+    if (!token) return;
+    setZohoProfileMutatingId(profileId);
+    try {
+      await api.post(`/api/admin/company/onboarding/zoho-profiles/${profileId}/activate`, { companyId: scopedCompanyId || undefined }, token);
+      toast({ title: 'Zoho profile activated', variant: 'success' });
+      await Promise.all([loadZohoProfiles(), loadZohoOAuthConfig(), loadStatus({ silent: true })]);
+    } finally {
+      setZohoProfileMutatingId(null);
+    }
+  };
+
+  const disableZohoProfile = async (profileId: string) => {
+    if (!token) return;
+    setZohoProfileMutatingId(profileId);
+    try {
+      await api.post(`/api/admin/company/onboarding/zoho-profiles/${profileId}/disable`, { companyId: scopedCompanyId || undefined }, token);
+      toast({ title: 'Zoho profile disabled', variant: 'success' });
+      await Promise.all([loadZohoProfiles(), loadZohoOAuthConfig(), loadStatus({ silent: true })]);
+    } finally {
+      setZohoProfileMutatingId(null);
+    }
   };
 
   const zohoConnected = !!onboarding?.connection && onboarding.connection.status !== 'disconnected';
@@ -679,7 +841,7 @@ export const IntegrationsPage = () => {
             </div>
           </div>
 
-          <div className="grid gap-6 md:grid-cols-[1fr_380px]">
+          <div className="grid gap-6 md:grid-cols-[1.1fr_0.9fr]">
             <Card className={cn("bg-card border-border/50 shadow-md overflow-hidden", zohoConnected ? "border-emerald-500/20" : "")}>
               <CardHeader className="bg-secondary/5 border-b border-border/50 py-4 px-6 flex flex-row items-center justify-between">
                 <CardTitle className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Retrieval Health</CardTitle>
@@ -731,38 +893,224 @@ export const IntegrationsPage = () => {
               </CardContent>
             </Card>
 
-            <Card className="bg-card border-border/50 shadow-md overflow-hidden">
-              <CardHeader className="bg-secondary/5 border-b border-border/50 py-4 px-6">
-                <CardTitle className="text-sm font-bold uppercase tracking-widest text-muted-foreground">OAuth Configuration</CardTitle>
-              </CardHeader>
-              <CardContent className="p-6 space-y-6">
-                <div className="space-y-4">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold uppercase text-muted-foreground tracking-widest ml-1">Environment</label>
-                    <Select value={restEnv} onValueChange={(val) => setRestEnv(val as any)}>
-                      <SelectTrigger className="bg-secondary/20 border-border/50 h-9 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="prod">Production (Default)</SelectItem>
-                        <SelectItem value="sandbox">Sandbox / Dev</SelectItem>
-                      </SelectContent>
-                    </Select>
+            <div className="space-y-6">
+              <Card className="bg-card border-border/50 shadow-md overflow-hidden">
+                <CardHeader className="bg-secondary/5 border-b border-border/50 py-4 px-6 flex flex-row items-center justify-between">
+                  <div>
+                    <CardTitle className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Connection Center</CardTitle>
+                    <CardDescription className="mt-1 text-xs">
+                      OAuth and manual encrypted token-set profiles both feed the same active runtime connection.
+                    </CardDescription>
                   </div>
+                  <Badge variant="outline" className="text-[9px] h-5 font-bold uppercase border-border/50">
+                    {oauthConfig?.activeProfile?.connectionSource === 'manual_token_set'
+                      ? 'Manual Active'
+                      : zohoConnected
+                        ? 'OAuth Active'
+                        : 'No Active Profile'}
+                  </Badge>
+                </CardHeader>
+                <CardContent className="p-6 space-y-5">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold uppercase text-muted-foreground tracking-widest ml-1">OAuth Environment</label>
+                      <Select value={restEnv} onValueChange={(val) => setRestEnv(val as 'prod' | 'sandbox')}>
+                        <SelectTrigger className="bg-secondary/20 border-border/50 h-9 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="prod">Production</SelectItem>
+                          <SelectItem value="sandbox">Sandbox</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold uppercase text-muted-foreground tracking-widest ml-1">Platform Source</label>
+                      <div className="h-9 px-3 rounded-md border border-border/50 bg-secondary/10 text-xs flex items-center">
+                        {oauthConfig?.source || 'missing'}
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-bold uppercase text-muted-foreground tracking-widest ml-1">Scopes Policy</label>
                     <div className="p-3 rounded-lg bg-[#050505] border border-border/50 text-[10px] font-mono text-muted-foreground break-all leading-relaxed">
                       {restScopes}
                     </div>
                   </div>
+
                   {canManageWorkspaceIntegrations && (
-                    <Button onClick={() => void launchZohoOauth()} disabled={oauthLaunching || !oauthConfig?.configured} className="w-full bg-[#f37021] hover:bg-[#f37021]/90 text-white font-bold uppercase text-[10px] tracking-widest h-10 shadow-lg shadow-[#f37021]/10">
-                      {oauthLaunching ? 'Authorizing...' : 'Authorize Zoho CRM'}
-                    </Button>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <Button onClick={() => void launchZohoOauth()} disabled={oauthLaunching || !oauthConfig?.configured} className="bg-[#f37021] hover:bg-[#f37021]/90 text-white font-bold uppercase text-[10px] tracking-widest h-10 shadow-lg shadow-[#f37021]/10">
+                        {oauthLaunching ? 'Authorizing...' : 'Connect via OAuth'}
+                      </Button>
+                      <Button variant="outline" onClick={() => resetZohoProfileForm(null)} className="h-10 text-[10px] font-bold uppercase tracking-widest border-border/50">
+                        Add Manual Profile
+                      </Button>
+                    </div>
                   )}
-                </div>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-card border-border/50 shadow-md overflow-hidden">
+                <CardHeader className="bg-secondary/5 border-b border-border/50 py-4 px-6">
+                  <CardTitle className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
+                    {editingZohoProfileId ? 'Edit Manual Token Set' : 'Manual Token Set'}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-6 space-y-4">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Input
+                      value={zohoProfileForm.profileName}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, profileName: event.target.value }))}
+                      placeholder="Profile name"
+                    />
+                    <Select
+                      value={zohoProfileForm.environment}
+                      onValueChange={(value) =>
+                        setZohoProfileForm((prev) => ({ ...prev, environment: value as 'prod' | 'sandbox' }))
+                      }
+                    >
+                      <SelectTrigger><SelectValue placeholder="Environment" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="prod">Production</SelectItem>
+                        <SelectItem value="sandbox">Sandbox</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      value={zohoProfileForm.clientId}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, clientId: event.target.value }))}
+                      placeholder="Client ID"
+                    />
+                    <Input
+                      value={zohoProfileForm.clientSecret}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, clientSecret: event.target.value }))}
+                      placeholder={editingZohoProfileId ? 'Client secret (leave blank to keep)' : 'Client secret'}
+                    />
+                    <Input
+                      value={zohoProfileForm.refreshToken}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, refreshToken: event.target.value }))}
+                      placeholder={editingZohoProfileId ? 'Refresh token (leave blank to keep)' : 'Refresh token'}
+                    />
+                    <Input
+                      value={zohoProfileForm.accessToken}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, accessToken: event.target.value }))}
+                      placeholder="Access token (optional)"
+                    />
+                    <Input
+                      type="datetime-local"
+                      value={zohoProfileForm.accessTokenExpiresAt}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, accessTokenExpiresAt: event.target.value }))}
+                    />
+                    <Input
+                      type="datetime-local"
+                      value={zohoProfileForm.refreshTokenExpiresAt}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, refreshTokenExpiresAt: event.target.value }))}
+                    />
+                    <Input
+                      value={zohoProfileForm.redirectUri}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, redirectUri: event.target.value }))}
+                      placeholder="Redirect URI"
+                    />
+                    <Input
+                      value={zohoProfileForm.accountsBaseUrl}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, accountsBaseUrl: event.target.value }))}
+                      placeholder="Accounts base URL"
+                    />
+                    <Input
+                      value={zohoProfileForm.apiBaseUrl}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, apiBaseUrl: event.target.value }))}
+                      placeholder="API base URL"
+                    />
+                    <Input
+                      value={zohoProfileForm.scopes}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, scopes: event.target.value }))}
+                      placeholder="Comma-separated scopes"
+                    />
+                  </div>
+                  <Textarea
+                    rows={4}
+                    value={zohoProfileForm.metadataJson}
+                    onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setZohoProfileForm((prev) => ({ ...prev, metadataJson: event.target.value }))}
+                    placeholder='Optional metadata JSON, e.g. {"booksOrgId":"123"}'
+                    className="font-mono text-xs"
+                  />
+                  <div className="flex items-center justify-between gap-3">
+                    <Button
+                      variant={zohoProfileForm.setActive ? 'default' : 'outline'}
+                      size="sm"
+                      className="h-8 text-[10px] font-bold uppercase tracking-widest"
+                      onClick={() => setZohoProfileForm((prev) => ({ ...prev, setActive: !prev.setActive }))}
+                    >
+                      {zohoProfileForm.setActive ? 'Will Set Active' : 'Save Inactive'}
+                    </Button>
+                    <div className="flex gap-2">
+                      {editingZohoProfileId && (
+                        <Button variant="ghost" size="sm" className="h-8 text-[10px] font-bold uppercase tracking-widest" onClick={() => resetZohoProfileForm(null)}>
+                          Cancel Edit
+                        </Button>
+                      )}
+                      <Button onClick={() => void saveZohoProfile()} disabled={zohoProfileSaving} size="sm" className="h-8 text-[10px] font-bold uppercase tracking-widest">
+                        {zohoProfileSaving ? 'Saving...' : editingZohoProfileId ? 'Update Profile' : 'Create Profile'}
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-card border-border/50 shadow-md overflow-hidden">
+                <CardHeader className="bg-secondary/5 border-b border-border/50 py-4 px-6 flex flex-row items-center justify-between">
+                  <CardTitle className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Saved Profiles</CardTitle>
+                  <Button variant="ghost" size="sm" onClick={() => void loadZohoProfiles()} className="text-[10px] font-bold uppercase tracking-widest h-7">
+                    <RefreshCw className={cn("h-3 w-3 mr-2", zohoProfilesLoading && "animate-spin")} /> Refresh
+                  </Button>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="divide-y divide-border/50">
+                    {zohoProfiles.length === 0 ? (
+                      <div className="p-6 text-xs text-muted-foreground">No Zoho profiles saved yet.</div>
+                    ) : (
+                      zohoProfiles.map((profile) => (
+                        <div key={profile.id} className="p-4 space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="space-y-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-semibold">{profile.profileName}</span>
+                                <Badge variant={profile.isActive ? "secondary" : "outline"} className="text-[9px] h-5 uppercase">
+                                  {profile.isActive ? 'Active' : profile.status}
+                                </Badge>
+                                <Badge variant="outline" className="text-[9px] h-5 uppercase border-border/50">
+                                  {profile.connectionSource === 'manual_token_set' ? 'Manual' : 'OAuth'}
+                                </Badge>
+                              </div>
+                              <div className="text-[10px] font-mono text-muted-foreground break-all">
+                                {profile.environment} · {profile.clientId} · {profile.apiBaseUrl}
+                              </div>
+                            </div>
+                            <div className="flex gap-2 shrink-0">
+                              <Button variant="outline" size="sm" className="h-8 text-[10px] font-bold uppercase tracking-widest border-border/50" onClick={() => resetZohoProfileForm(profile)}>
+                                Edit
+                              </Button>
+                              {!profile.isActive && (
+                                <Button size="sm" className="h-8 text-[10px] font-bold uppercase tracking-widest" disabled={zohoProfileMutatingId === profile.id} onClick={() => void activateZohoProfile(profile.id)}>
+                                  Activate
+                                </Button>
+                              )}
+                              <Button variant="ghost" size="sm" className="h-8 text-[10px] font-bold uppercase tracking-widest text-destructive hover:bg-destructive/10" disabled={zohoProfileMutatingId === profile.id} onClick={() => void disableZohoProfile(profile.id)}>
+                                Disable
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="text-[10px] text-muted-foreground leading-relaxed">
+                            Scopes: {profile.scopes.length ? profile.scopes.join(', ') : '—'}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
           </div>
         </section>
 

@@ -163,6 +163,31 @@ router.get(
   asyncHandler(companyAdminController.getZohoOAuthConfigStatus),
 );
 router.get(
+  '/onboarding/zoho-profiles',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.listZohoConnectionProfiles),
+);
+router.post(
+  '/onboarding/zoho-profiles',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.createZohoConnectionProfile),
+);
+router.put(
+  '/onboarding/zoho-profiles/:profileId',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.updateZohoConnectionProfile),
+);
+router.post(
+  '/onboarding/zoho-profiles/:profileId/activate',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.activateZohoConnectionProfile),
+);
+router.post(
+  '/onboarding/zoho-profiles/:profileId/disable',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.disableZohoConnectionProfile),
+);
+router.get(
   '/onboarding/zoho-authorize-url',
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.getZohoAuthorizeUrl),

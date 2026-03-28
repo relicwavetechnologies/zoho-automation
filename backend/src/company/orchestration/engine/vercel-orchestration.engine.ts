@@ -1218,6 +1218,79 @@ const buildLarkApprovalActions = (pendingApproval: PendingApprovalAction): Chann
   ];
 };
 
+const requiresManagerApproval = (
+  runtime: VercelRuntimeRequestContext,
+  pendingApproval: PendingApprovalAction,
+): boolean =>
+  pendingApproval.kind === 'tool_action'
+  && Boolean(runtime.departmentManagerApprovalConfig?.enabled)
+  && runtime.departmentManagerApprovalConfig!.requiredActionGroups.includes(
+    pendingApproval.actionGroup,
+  );
+
+const buildManagerApprovalText = (input: {
+  pendingApproval: PendingApprovalAction;
+  requesterLabel: string;
+  departmentName?: string;
+}): string => {
+  const { pendingApproval } = input;
+  const departmentLine = input.departmentName ? `Department: ${input.departmentName}` : null;
+  const targetLine =
+    pendingApproval.kind === 'tool_action'
+      ? `Tool: ${pendingApproval.toolId} (${pendingApproval.actionGroup})`
+      : null;
+  return [
+    'Manager approval needed.',
+    '',
+    `Requester: ${input.requesterLabel}`,
+    departmentLine,
+    targetLine,
+    `Summary: ${pendingApproval.kind === 'tool_action' ? pendingApproval.summary : pendingApproval.title ?? pendingApproval.kind}`,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join('\n');
+};
+
+const sendManagerApprovalRequest = async (input: {
+  runtime: VercelRuntimeRequestContext;
+  message: NormalizedIncomingMessageDTO;
+  pendingApproval: PendingApprovalAction;
+}): Promise<{ sent: boolean; approverName?: string; approverOpenId?: string; reason?: string }> => {
+  if (!requiresManagerApproval(input.runtime, input.pendingApproval)) {
+    return { sent: false, reason: 'manager_approval_not_required' };
+  }
+
+  const approver = await departmentService.resolveDepartmentApprover({
+    companyId: input.runtime.companyId,
+    departmentId: input.runtime.departmentId,
+  });
+  if (!approver?.larkOpenId) {
+    return { sent: false, reason: 'no_lark_manager_available' };
+  }
+
+  const adapter = resolveChannelAdapter('lark');
+  const requesterLabel =
+    input.runtime.requesterEmail?.trim()
+    || input.message.trace?.requesterEmail?.trim()
+    || input.runtime.userId;
+  await adapter.sendMessage({
+    chatId: approver.larkOpenId,
+    text: buildManagerApprovalText({
+      pendingApproval: input.pendingApproval,
+      requesterLabel,
+      departmentName: input.runtime.departmentName,
+    }),
+    actions: buildLarkApprovalActions(input.pendingApproval),
+    correlationId: input.runtime.executionId,
+  });
+
+  return {
+    sent: true,
+    approverName: approver.name ?? approver.email ?? undefined,
+    approverOpenId: approver.larkOpenId,
+  };
+};
+
 const mapToolStepsToAgentResults = (
   steps: Array<{ toolResults?: Array<{ toolName?: string; output?: unknown }> }>,
 ): AgentResultDTO[] =>
@@ -1273,6 +1346,7 @@ const resolveRuntimeContext = async (
   let departmentRoleSlug: string | undefined;
   let departmentZohoReadScope: 'personalized' | 'show_all' | undefined;
   let departmentZohoRateLimitConfig: VercelRuntimeRequestContext['departmentZohoRateLimitConfig'];
+  let departmentManagerApprovalConfig: VercelRuntimeRequestContext['departmentManagerApprovalConfig'];
   let departmentSystemPrompt: string | undefined;
   let departmentSkillsMarkdown: string | undefined;
   let allowedToolIds = fallbackAllowedToolIds;
@@ -1299,6 +1373,7 @@ const resolveRuntimeContext = async (
     departmentRoleSlug = resolved.departmentRoleSlug;
     departmentZohoReadScope = resolved.departmentZohoReadScope;
     departmentZohoRateLimitConfig = resolved.departmentZohoRateLimitConfig;
+    departmentManagerApprovalConfig = resolved.departmentManagerApprovalConfig;
     departmentSystemPrompt = resolved.systemPrompt;
     departmentSkillsMarkdown = resolved.skillsMarkdown;
     allowedToolIds = resolved.allowedToolIds;
@@ -1320,6 +1395,7 @@ const resolveRuntimeContext = async (
     departmentRoleSlug,
     departmentZohoReadScope,
     departmentZohoRateLimitConfig,
+    departmentManagerApprovalConfig,
     larkTenantKey: message.trace?.larkTenantKey,
     larkOpenId: message.trace?.larkOpenId,
     larkUserId: message.trace?.larkUserId,
@@ -2318,13 +2394,20 @@ const executeLarkVercelTask = async (
     await updateStatus('analyzing', 'Finalizing the response for you.');
 
     if (pendingApproval) {
+      const managerApprovalResult = await sendManagerApprovalRequest({
+        runtime,
+        message,
+        pendingApproval,
+      });
       statusHistory.push(`Approval required: ${pendingApproval.kind}`);
       await updateStatus(
         'approval',
-        pendingApproval.kind === 'tool_action'
-          ? (summarizeText(pendingApproval.summary, 220) ?? finalText)
-          : finalText,
-        buildLarkApprovalActions(pendingApproval),
+        managerApprovalResult.sent
+          ? `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`
+          : pendingApproval.kind === 'tool_action'
+            ? (summarizeText(pendingApproval.summary, 220) ?? finalText)
+            : finalText,
+        managerApprovalResult.sent ? [] : buildLarkApprovalActions(pendingApproval),
         { force: true, terminal: true },
       );
     } else {
