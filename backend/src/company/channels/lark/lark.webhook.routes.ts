@@ -580,8 +580,23 @@ const parseHitlDecision = (text: string): { actionId: string; decision: 'confirm
   };
 };
 
+const normalizeLarkCommandText = (text: string): string => {
+  let current = text.trim();
+  while (current) {
+    const strippedPunctuation = current.replace(/^[-–—:>\s]+/, '').trim();
+    const strippedBotMention = strippedPunctuation
+      .replace(/^@?(?:divo(?: ai)?)\b[\s,:\-]*/i, '')
+      .trim();
+    if (strippedBotMention === current) {
+      return current;
+    }
+    current = strippedBotMention;
+  }
+  return current;
+};
+
 const isLarkClearContextCommand = (text: string): boolean => {
-  const normalized = text.trim().toLowerCase();
+  const normalized = normalizeLarkCommandText(text).toLowerCase();
   return normalized === '/clear'
     || normalized === '/new'
     || normalized === '/newchat'
@@ -594,7 +609,7 @@ const isLarkClearContextCommand = (text: string): boolean => {
 const parseLarkWorkflowCommand = (
   text: string,
 ): { kind: 'list' } | { kind: 'run'; reference: string } | null => {
-  const trimmed = text.trim();
+  const trimmed = normalizeLarkCommandText(text);
   const normalized = trimmed.toLowerCase();
   if (normalized === '/prompts' || normalized === '/workflows') {
     return { kind: 'list' };
@@ -613,7 +628,7 @@ const parseLarkWorkflowCommand = (
 const parseLarkMemoryCommand = (
   text: string,
 ): { kind: 'list' | 'help' | 'clear' } | { kind: 'forget'; reference: string } | null => {
-  const trimmed = text.trim();
+  const trimmed = normalizeLarkCommandText(text);
   const normalized = trimmed.toLowerCase();
   if (normalized === '/memory') {
     return { kind: 'list' };
@@ -631,8 +646,23 @@ const parseLarkMemoryCommand = (
   return null;
 };
 
+const parseLarkShareCommand = (
+  text: string,
+): { kind: 'share'; reason?: string } | null => {
+  const trimmed = normalizeLarkCommandText(text);
+  const normalized = trimmed.toLowerCase();
+  if (normalized === '/share') {
+    return { kind: 'share' };
+  }
+  if (normalized.startsWith('/share ')) {
+    const reason = trimmed.slice('/share '.length).trim();
+    return reason ? { kind: 'share', reason } : { kind: 'share' };
+  }
+  return null;
+};
+
 const isLarkCommandMenuCommand = (text: string): boolean => {
-  const normalized = text.trim().toLowerCase();
+  const normalized = normalizeLarkCommandText(text).toLowerCase();
   return normalized === '/'
     || normalized === '/help'
     || normalized === '/commands';
@@ -664,6 +694,9 @@ const buildLarkCommandMenuText = (): string => [
   '',
   '/memory clear',
   'Clear all durable personal memories for your linked account.',
+  '',
+  '/share [optional reason]',
+  'Share this chat knowledge up to the current point for admin review/approval.',
 ].join('\n');
 
 const buildLarkMemoryHelpText = (): string => [
@@ -718,6 +751,56 @@ const buildLarkWorkflowSession = (input: {
   larkOpenId: input.larkOpenId,
   larkUserId: input.larkUserId,
 });
+
+const buildLarkConversationKeyForShare = async (input: {
+  companyId: string;
+  linkedUserId: string;
+  chatId: string;
+  chatType: string;
+}): Promise<string> => {
+  if (input.chatType === 'group') {
+    return `lark-chat:${input.chatId}`;
+  }
+  const thread = await desktopThreadsService.findOrCreateLarkLifetimeThread(
+    input.linkedUserId,
+    input.companyId,
+  );
+  return `lark-thread:${thread.id}`;
+};
+
+const formatLarkShareCommandResult = (input: {
+  status: string;
+  classification: string;
+  promotedVectorCount?: number;
+}): string => {
+  const ratingLine =
+    input.classification === 'safe'
+      ? 'AI rating: safe'
+      : input.classification === 'review'
+        ? 'AI rating: review'
+        : input.classification === 'critical'
+          ? 'AI rating: critical'
+          : null;
+
+  const detail =
+    input.status === 'already_shared'
+      ? 'This chat knowledge is already shared.'
+      : input.status === 'auto_shared'
+        ? `Shared now. Promoted ${input.promotedVectorCount ?? 0} vectors.`
+        : input.status === 'shared_notified'
+          ? `Shared and admins were notified. Promoted ${input.promotedVectorCount ?? 0} vectors.`
+          : input.status === 'pending'
+            ? 'Queued for admin approval.'
+            : input.status === 'delivery_failed'
+              ? `Shared, but admin notification failed. Promoted ${input.promotedVectorCount ?? 0} vectors.`
+              : 'Share request processed.';
+
+  return [
+    'Knowledge share status:',
+    detail,
+    ...(ratingLine ? [ratingLine] : []),
+  ].join('\n');
+};
 
 const formatWorkflowListText = (rows: Array<Record<string, unknown>>): string => {
   if (rows.length === 0) {
@@ -784,7 +867,7 @@ const formatWorkflowRunResultText = (input: {
 };
 
 const isLarkInterruptCommand = (text: string): boolean => {
-  const normalized = text.trim().toLowerCase();
+  const normalized = normalizeLarkCommandText(text).toLowerCase();
   return normalized === '/q' || normalized === '/stop' || normalized === '/cancel';
 };
 
@@ -1806,6 +1889,9 @@ export const createLarkWebhookEventHandler = (
       const memoryCommand = parsed.kind === 'event_callback_message'
         ? parseLarkMemoryCommand(tracedMessageBase.text)
         : null;
+      const shareCommand = parsed.kind === 'event_callback_message'
+        ? parseLarkShareCommand(tracedMessageBase.text)
+        : null;
       const shouldStoreGroupContextMessage =
         parsed.kind === 'event_callback_message'
         && tracedMessageBase.chatType === 'group'
@@ -1815,6 +1901,7 @@ export const createLarkWebhookEventHandler = (
         && !isLarkInterruptCommand(tracedMessageBase.text)
         && !workflowCommand
         && !memoryCommand
+        && !shareCommand
         && !isLarkClearContextCommand(tracedMessageBase.text);
 
       if (shouldStoreGroupContextMessage) {
@@ -1869,7 +1956,12 @@ export const createLarkWebhookEventHandler = (
         }
       }
 
-      if (parsed.kind === 'event_callback_message' && tracedMessageBase.chatType === 'group' && !botMentioned) {
+      if (
+        parsed.kind === 'event_callback_message'
+        && tracedMessageBase.chatType === 'group'
+        && !botMentioned
+        && !shareCommand
+      ) {
         dependencies.log.info('lark.webhook.event.ignored', {
           requestId,
           reason: 'group_message_without_bot_mention',
@@ -1970,6 +2062,89 @@ export const createLarkWebhookEventHandler = (
           message: 'Memory forget command handled',
           data: { memoryId: target.id },
         });
+      }
+
+      if (parsed.kind === 'event_callback_message' && shareCommand) {
+        if (!scopedCompanyId || !linkedUserId) {
+          await sendLarkReply({ text: 'Share commands need a linked desktop account for this Lark user. Link your account first, then retry.' });
+          return res.status(202).json({
+            success: true,
+            message: 'Share command handled without linked account',
+          });
+        }
+
+        const shareToolsAllowed = await toolPermissionService.isAllowed(
+          scopedCompanyId,
+          'share_chat_vectors',
+          userRole,
+        );
+        if (!shareToolsAllowed) {
+          await sendLarkReply({ text: 'You do not currently have permission to share chat knowledge.' });
+          return res.status(202).json({
+            success: true,
+            message: 'Share command blocked by permissions',
+          });
+        }
+
+        const statusCoordinator = new LarkStatusCoordinator({
+          adapter: dependencies.adapter,
+          chatId: tracedMessageBase.chatId,
+          correlationId: requestId,
+          replyToMessageId: tracedMessageBase.messageId,
+          replyInThread: tracedMessageBase.chatType === 'group',
+        });
+
+        try {
+          await statusCoordinator.update({
+            text: 'Checking the current chat context and preparing the share request...',
+          }, { force: true });
+
+          const conversationKey = await buildLarkConversationKeyForShare({
+            companyId: scopedCompanyId,
+            linkedUserId,
+            chatId: tracedMessageBase.chatId,
+            chatType: tracedMessageBase.chatType,
+          });
+
+          await statusCoordinator.update({
+            text: 'Reviewing this chat and deciding whether it can be shared directly or needs admin approval...',
+          });
+
+          const result = await knowledgeShareService.requestConversationShare({
+            companyId: scopedCompanyId,
+            requesterUserId: linkedUserId,
+            requesterChannelIdentityId: channelIdentityId ?? undefined,
+            requesterAiRole: userRole,
+            conversationKey,
+            humanReason: shareCommand.reason,
+          });
+
+          await statusCoordinator.replace(formatLarkShareCommandResult({
+            status: result.status,
+            classification: result.classification,
+            promotedVectorCount: result.promotedVectorCount ?? 0,
+          }));
+          await statusCoordinator.close();
+          return res.status(202).json({
+            success: true,
+            message: 'Share command handled',
+            data: {
+              conversationKey,
+              status: result.status,
+              classification: result.classification,
+              promotedVectorCount: result.promotedVectorCount ?? 0,
+            },
+          });
+        } catch (error) {
+          await statusCoordinator.replace(
+            `Share command failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          );
+          await statusCoordinator.close();
+          return res.status(202).json({
+            success: true,
+            message: 'Share command failed gracefully',
+          });
+        }
       }
 
       if (parsed.kind === 'event_callback_message' && workflowCommand) {
