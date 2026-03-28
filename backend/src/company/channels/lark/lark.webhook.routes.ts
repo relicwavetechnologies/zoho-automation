@@ -854,10 +854,24 @@ const parseHitlCardDecision = (value: unknown): { actionId: string; decision: 'c
 
 const parseKnowledgeShareCardAction = (
   value: unknown,
-): { kind: 'decision'; requestId: string; decision: 'approve' | 'reject' } | { kind: 'revert'; requestId: string } | null => {
+):
+  | { kind: 'request'; conversationKey: string }
+  | { kind: 'decision'; requestId: string; decision: 'approve' | 'reject' }
+  | { kind: 'revert'; requestId: string }
+  | null => {
   const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : null;
   if (!record) {
     return null;
+  }
+  if (record.kind === 'conversation_share_request') {
+    const conversationKey = typeof record.conversationKey === 'string' ? record.conversationKey.trim() : '';
+    if (!conversationKey) {
+      return null;
+    }
+    return {
+      kind: 'request',
+      conversationKey,
+    };
   }
   const requestId = typeof record.requestId === 'string' ? record.requestId.trim() : '';
   if (!requestId) {
@@ -2484,16 +2498,23 @@ export const createLarkWebhookEventHandler = (
             actions: [],
           });
         };
+        const baseMessageText = tracedMessage.text.trim();
+        const buildKnowledgeShareResponseText = (detail: string): string =>
+          baseMessageText
+            ? `${baseMessageText}\n\n${detail}`
+            : detail;
 
         if (!linkedUserId) {
           await sendKnowledgeShareCardResponse(
-            'This knowledge-share action requires a linked Divo account for the reviewer.',
+            buildKnowledgeShareResponseText(
+              'This knowledge-share action requires a linked Divo account.',
+            ),
           );
           return res.status(200).json({
             success: true,
             message: 'Knowledge-share callback blocked: no linked reviewer account',
             data: {
-              requestId: knowledgeShareCardAction.requestId,
+              requestId: 'requestId' in knowledgeShareCardAction ? knowledgeShareCardAction.requestId : null,
               blocked: true,
               reason: 'missing_linked_user',
             },
@@ -2501,6 +2522,73 @@ export const createLarkWebhookEventHandler = (
         }
 
         try {
+          if (knowledgeShareCardAction.kind === 'request') {
+            if (!scopedCompanyId) {
+              await sendKnowledgeShareCardResponse(
+                buildKnowledgeShareResponseText(
+                  'I could not determine your company context for this share request.',
+                ),
+              );
+              return res.status(200).json({
+                success: true,
+                message: 'Knowledge-share request blocked: no company scope',
+                data: {
+                  blocked: true,
+                  reason: 'missing_company_scope',
+                  conversationKey: knowledgeShareCardAction.conversationKey,
+                },
+              });
+            }
+
+            const allowed = await toolPermissionService.isAllowed(
+              scopedCompanyId,
+              'share_chat_vectors',
+              userRole,
+            );
+            if (!allowed) {
+              await sendKnowledgeShareCardResponse(
+                buildKnowledgeShareResponseText(
+                  'You do not currently have permission to share chat knowledge.',
+                ),
+              );
+              return res.status(200).json({
+                success: true,
+                message: 'Knowledge-share request blocked: permission denied',
+                data: {
+                  blocked: true,
+                  reason: 'permission_denied',
+                  conversationKey: knowledgeShareCardAction.conversationKey,
+                },
+              });
+            }
+
+            const result = await knowledgeShareService.requestConversationShare({
+              companyId: scopedCompanyId,
+              requesterUserId: linkedUserId,
+              requesterChannelIdentityId: channelIdentityId ?? undefined,
+              requesterAiRole: userRole,
+              conversationKey: knowledgeShareCardAction.conversationKey,
+            });
+            const responseText =
+              result.status === 'already_shared'
+                ? 'This chat knowledge is already shared.'
+                : result.status === 'pending'
+                  ? 'Knowledge-share request sent to admins for approval.'
+                  : result.status === 'delivery_failed'
+                    ? 'Knowledge was shared, but I could not notify the admins.'
+                    : `Knowledge shared.\n\nPromoted ${result.promotedVectorCount ?? 0} vectors.`;
+            await sendKnowledgeShareCardResponse(buildKnowledgeShareResponseText(responseText));
+            return res.status(200).json({
+              success: true,
+              message: 'Knowledge-share request processed',
+              data: {
+                conversationKey: knowledgeShareCardAction.conversationKey,
+                status: result.status,
+                promotedVectorCount: result.promotedVectorCount ?? 0,
+              },
+            });
+          }
+
           if (knowledgeShareCardAction.kind === 'decision') {
             const result = knowledgeShareCardAction.decision === 'approve'
               ? await knowledgeShareService.approveRequest({
@@ -2514,7 +2602,7 @@ export const createLarkWebhookEventHandler = (
             const responseText = knowledgeShareCardAction.decision === 'approve'
               ? `Knowledge share approved.\n\nPromoted ${result.promotedVectorCount ?? 0} vectors.`
               : 'Knowledge share rejected.';
-            await sendKnowledgeShareCardResponse(responseText);
+            await sendKnowledgeShareCardResponse(buildKnowledgeShareResponseText(responseText));
             return res.status(200).json({
               success: true,
               message: 'Knowledge-share decision processed',
@@ -2533,7 +2621,7 @@ export const createLarkWebhookEventHandler = (
           const responseText = result.status === 'reverted'
             ? `Knowledge share reverted.\n\nRemoved ${result.revertedVectorCount ?? 0} shared vectors.`
             : `Knowledge share was not reverted because it is already ${result.status}.`;
-          await sendKnowledgeShareCardResponse(responseText);
+          await sendKnowledgeShareCardResponse(buildKnowledgeShareResponseText(responseText));
           return res.status(200).json({
             success: true,
             message: 'Knowledge-share revert processed',
@@ -2545,12 +2633,17 @@ export const createLarkWebhookEventHandler = (
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Knowledge-share action failed';
-          await sendKnowledgeShareCardResponse(`Knowledge-share action failed.\n\n${message}`);
+          await sendKnowledgeShareCardResponse(
+            buildKnowledgeShareResponseText(`Knowledge-share action failed.\n\n${message}`),
+          );
           return res.status(200).json({
             success: true,
             message: 'Knowledge-share callback failed',
             data: {
-              requestId: knowledgeShareCardAction.requestId,
+              requestId: 'requestId' in knowledgeShareCardAction ? knowledgeShareCardAction.requestId : null,
+              conversationKey: knowledgeShareCardAction.kind === 'request'
+                ? knowledgeShareCardAction.conversationKey
+                : null,
               error: message,
             },
           });

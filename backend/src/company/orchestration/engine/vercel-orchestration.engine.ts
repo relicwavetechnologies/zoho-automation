@@ -132,6 +132,81 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
 };
 
+const LARK_SHARE_APPROVED_STATUSES = ['approved', 'auto_shared', 'shared_notified', 'already_shared'] as const;
+
+const resolveConversationSharedThroughAt = async (input: {
+  companyId: string;
+  conversationKey: string;
+}): Promise<Date | null> => {
+  const latestSharedRequest = await prisma.vectorShareRequest.findFirst({
+    where: {
+      companyId: input.companyId,
+      conversationKey: input.conversationKey,
+      status: { in: [...LARK_SHARE_APPROVED_STATUSES] },
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true, reviewedAt: true, reason: true },
+  });
+  if (!latestSharedRequest) {
+    return null;
+  }
+  try {
+    const meta = latestSharedRequest.reason
+      ? JSON.parse(latestSharedRequest.reason) as { snapshotAt?: string }
+      : null;
+    if (typeof meta?.snapshotAt === 'string' && meta.snapshotAt.trim()) {
+      const parsed = new Date(meta.snapshotAt);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore malformed share metadata.
+  }
+  return latestSharedRequest.reviewedAt ?? latestSharedRequest.createdAt;
+};
+
+const buildLarkConversationShareActions = async (input: {
+  companyId?: string;
+  linkedUserId?: string;
+  requesterAiRole?: string;
+  allowedToolIds: string[];
+  conversationKey: string;
+}): Promise<ChannelAction[]> => {
+  if (!input.companyId || !input.linkedUserId) {
+    return [];
+  }
+  if (!input.allowedToolIds.includes('share_chat_vectors')) {
+    return [];
+  }
+  const allowed = await toolPermissionService.isAllowed(
+    input.companyId,
+    'share_chat_vectors',
+    input.requesterAiRole ?? 'MEMBER',
+  );
+  if (!allowed) {
+    return [];
+  }
+  const sharedThroughAt = await resolveConversationSharedThroughAt({
+    companyId: input.companyId,
+    conversationKey: input.conversationKey,
+  });
+  if (sharedThroughAt) {
+    return [];
+  }
+  return [
+    {
+      id: 'share_chat_vectors',
+      label: "Share this chat's knowledge",
+      style: 'primary',
+      value: {
+        kind: 'conversation_share_request',
+        conversationKey: input.conversationKey,
+      },
+    },
+  ];
+};
+
 const appendExecutionEventSafe = async (
   input: Parameters<typeof executionService.appendEvent>[0],
 ) => {
@@ -1806,7 +1881,14 @@ const executeLarkVercelTask = async (
   ) {
     const reply = childRoute.reply.trim();
     statusHistory.push('Handled directly by child router.');
-    await statusCoordinator.replace(reply, []);
+    const shareActions = await buildLarkConversationShareActions({
+      companyId,
+      linkedUserId,
+      requesterAiRole: runtime.requesterAiRole,
+      allowedToolIds: runtime.allowedToolIds,
+      conversationKey,
+    });
+    await statusCoordinator.replace(reply, shareActions);
     const statusMessageId = statusCoordinator.getStatusMessageId();
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, reply);
     await persistAssistantTurn({
@@ -1980,7 +2062,14 @@ const executeLarkVercelTask = async (
   }> = [];
   if (toolSelection.clarificationQuestion?.trim()) {
     const clarificationText = toolSelection.clarificationQuestion.trim();
-    await statusCoordinator.replace(clarificationText, []);
+    const shareActions = await buildLarkConversationShareActions({
+      companyId,
+      linkedUserId,
+      requesterAiRole: runtime.requesterAiRole,
+      allowedToolIds: runtime.allowedToolIds,
+      conversationKey,
+    });
+    await statusCoordinator.replace(clarificationText, shareActions);
     const statusMessageId = statusCoordinator.getStatusMessageId();
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, clarificationText);
     await persistAssistantTurn({
@@ -2328,7 +2417,14 @@ const executeLarkVercelTask = async (
         { force: true, terminal: true },
       );
     } else {
-      await statusCoordinator.replace(finalText, []);
+      const shareActions = await buildLarkConversationShareActions({
+        companyId,
+        linkedUserId,
+        requesterAiRole: runtime.requesterAiRole,
+        allowedToolIds: runtime.allowedToolIds,
+        conversationKey,
+      });
+      await statusCoordinator.replace(finalText, shareActions);
     }
 
     const statusMessageId = statusCoordinator.getStatusMessageId();
