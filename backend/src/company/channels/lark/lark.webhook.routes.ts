@@ -2994,6 +2994,8 @@ export const createLarkWebhookEventHandler = (
               queuedCountAhead: (queuedBehindActive ? 1 : 0) + conversationState.pendingCount,
             }),
             correlationId: requestId,
+            replyToMessageId: tracedMessage.messageId,
+            replyInThread: tracedMessage.chatType === 'group',
           });
           if (ack.status !== 'failed') {
             statusMessageId = ack.messageId ?? undefined;
