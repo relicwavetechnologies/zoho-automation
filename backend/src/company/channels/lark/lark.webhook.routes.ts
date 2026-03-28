@@ -581,14 +581,23 @@ const parseHitlDecision = (text: string): { actionId: string; decision: 'confirm
 };
 
 const normalizeLarkCommandText = (text: string): string => {
-  let current = text.trim();
+  let current = text
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\u00A0/g, ' ')
+    .trim();
   while (current) {
     const strippedPunctuation = current.replace(/^[-–—:>\s]+/, '').trim();
     const strippedBotMention = strippedPunctuation
       .replace(/^@?(?:divo(?: ai)?)\b[\s,:\-]*/i, '')
       .trim();
+    const slashIndex = strippedBotMention.search(/\/[a-z]/i);
+    if (slashIndex > 0) {
+      return strippedBotMention.slice(slashIndex).trim();
+    }
     if (strippedBotMention === current) {
-      return current;
+      const directSlashIndex = current.search(/\/[a-z]/i);
+      return directSlashIndex >= 0 ? current.slice(directSlashIndex).trim() : current;
     }
     current = strippedBotMention;
   }
