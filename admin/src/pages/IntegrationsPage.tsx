@@ -288,6 +288,7 @@ export const IntegrationsPage = () => {
   });
 
   const zohoRedirectUri = oauthConfig?.redirectUri || `${window.location.origin}/zoho/callback`;
+  const zohoRedirectUriMode = oauthConfig?.redirectUri ? 'configured' : 'origin_fallback';
 
   const resetZohoProfileForm = (profile?: ZohoConnectionProfileSummary | null) => {
     setEditingZohoProfileId(profile?.id ?? null);
@@ -939,6 +940,32 @@ export const IntegrationsPage = () => {
                     </div>
                   </div>
 
+                  <div className="rounded-xl border border-border/50 bg-secondary/10 p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">OAuth Redirect URI</div>
+                        <div className="text-xs text-muted-foreground">
+                          Zoho will send the authorization code back to this exact URL. It must match the redirect URI configured in your Zoho app.
+                        </div>
+                      </div>
+                      <Badge variant="outline" className="text-[9px] h-5 uppercase border-border/50">
+                        {zohoRedirectUriMode === 'configured' ? 'Configured' : 'Using Admin Origin'}
+                      </Badge>
+                    </div>
+                    <div className="rounded-lg border border-border/50 bg-[#050505] p-3 text-[10px] font-mono text-muted-foreground break-all">
+                      {zohoRedirectUri}
+                    </div>
+                    {zohoRedirectUriMode === 'origin_fallback' ? (
+                      <div className="text-[10px] text-amber-600 dark:text-amber-400 leading-relaxed">
+                        No explicit Zoho redirect URI is saved yet. OAuth will currently fall back to the URL of the admin app you launched from.
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-muted-foreground leading-relaxed">
+                        This redirect URI is coming from the active Zoho configuration and will be reused for OAuth launches.
+                      </div>
+                    )}
+                  </div>
+
                   {canManageWorkspaceIntegrations && (
                     <div className="grid gap-3 md:grid-cols-2">
                       <Button onClick={() => void launchZohoOauth()} disabled={oauthLaunching || !oauthConfig?.configured} className="bg-[#f37021] hover:bg-[#f37021]/90 text-white font-bold uppercase text-[10px] tracking-widest h-10 shadow-lg shadow-[#f37021]/10">
@@ -957,8 +984,33 @@ export const IntegrationsPage = () => {
                   <CardTitle className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
                     {editingZohoProfileId ? 'Edit Manual Token Set' : 'Manual Token Set'}
                   </CardTitle>
+                  <CardDescription className="mt-1 text-xs">
+                    Use this when you want to save a full Zoho token set yourself. Keep the redirect URI aligned with the same callback URL your Zoho app is configured to allow.
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="p-6 space-y-4">
+                  <div className="rounded-xl border border-border/50 bg-secondary/10 p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Redirect URI For This Profile</div>
+                        <div className="text-xs text-muted-foreground">
+                          Manual profiles should normally use the same callback URL as OAuth unless your Zoho app is configured differently.
+                        </div>
+                      </div>
+                      <Badge variant="outline" className="text-[9px] h-5 uppercase border-border/50">
+                        {editingZohoProfileId ? 'Editing Saved Value' : 'Prefilled'}
+                      </Badge>
+                    </div>
+                    <Input
+                      value={zohoProfileForm.redirectUri}
+                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, redirectUri: event.target.value }))}
+                      placeholder="Redirect URI"
+                      className="font-mono text-xs"
+                    />
+                    <div className="text-[10px] text-muted-foreground leading-relaxed">
+                      Default suggestion: <span className="font-mono break-all">{zohoRedirectUri}</span>
+                    </div>
+                  </div>
                   <div className="grid gap-4 md:grid-cols-2">
                     <Input
                       value={zohoProfileForm.profileName}
@@ -1006,11 +1058,6 @@ export const IntegrationsPage = () => {
                       type="datetime-local"
                       value={zohoProfileForm.refreshTokenExpiresAt}
                       onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, refreshTokenExpiresAt: event.target.value }))}
-                    />
-                    <Input
-                      value={zohoProfileForm.redirectUri}
-                      onChange={(event) => setZohoProfileForm((prev) => ({ ...prev, redirectUri: event.target.value }))}
-                      placeholder="Redirect URI"
                     />
                     <Input
                       value={zohoProfileForm.accountsBaseUrl}
@@ -1103,6 +1150,9 @@ export const IntegrationsPage = () => {
                           </div>
                           <div className="text-[10px] text-muted-foreground leading-relaxed">
                             Scopes: {profile.scopes.length ? profile.scopes.join(', ') : '—'}
+                          </div>
+                          <div className="text-[10px] font-mono text-muted-foreground break-all">
+                            Redirect URI: {profile.redirectUri || '—'}
                           </div>
                         </div>
                       ))
