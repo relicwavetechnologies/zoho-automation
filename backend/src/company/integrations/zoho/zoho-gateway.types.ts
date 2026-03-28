@@ -50,6 +50,9 @@ export type ZohoAuthorizationResult<TPayload = Record<string, unknown>> = {
 
 export type ZohoGatewayRequester = {
   companyId: string;
+  userId?: string;
+  departmentId?: string;
+  departmentRoleSlug?: string;
   requesterEmail?: string;
   requesterAiRole?: string;
   departmentZohoReadScope?: 'personalized' | 'show_all';

@@ -8,6 +8,13 @@ type CachedDepartmentRuntime = {
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentZohoReadScope?: 'personalized' | 'show_all';
+  departmentZohoRateLimitConfig?: {
+    enabled: boolean;
+    windowSeconds: number;
+    totalCallsPerWindow: number;
+    roleBudgets: Record<string, number>;
+    userOverrides: Array<{ userId: string; maxCallsPerWindow: number }>;
+  };
   systemPrompt?: string;
   skillsMarkdown?: string;
   allowedToolIds: string[];
@@ -15,7 +22,7 @@ type CachedDepartmentRuntime = {
 };
 
 const DEPARTMENT_RUNTIME_TTL_SECONDS = 60 * 5;
-const DEPARTMENT_RUNTIME_CACHE_VERSION = 'v3';
+const DEPARTMENT_RUNTIME_CACHE_VERSION = 'v4';
 
 const fallbackHash = (fallbackAllowedToolIds: string[]): string =>
   createHash('sha1')
@@ -58,12 +65,16 @@ class DepartmentRuntimeCache {
     if (!cached) return null;
     try {
       const parsed = JSON.parse(cached) as CachedDepartmentRuntime;
-      logger.info('department_runtime.cache.hit', {
-        companyId: input.companyId,
-        userId: input.userId,
-        departmentId: input.departmentId,
-        allowedToolCount: parsed.allowedToolIds.length,
-      }, { sampleRate: 0.05 });
+      logger.info(
+        'department_runtime.cache.hit',
+        {
+          companyId: input.companyId,
+          userId: input.userId,
+          departmentId: input.departmentId,
+          allowedToolCount: parsed.allowedToolIds.length,
+        },
+        { sampleRate: 0.05 },
+      );
       return parsed;
     } catch {
       return null;
@@ -84,16 +95,22 @@ class DepartmentRuntimeCache {
       'EX',
       DEPARTMENT_RUNTIME_TTL_SECONDS,
     );
-    logger.info('department_runtime.cache.set', {
-      companyId: input.companyId,
-      userId: input.userId,
-      departmentId: input.departmentId,
-      allowedToolCount: input.runtime.allowedToolIds.length,
-    }, { sampleRate: 0.1 });
+    logger.info(
+      'department_runtime.cache.set',
+      {
+        companyId: input.companyId,
+        userId: input.userId,
+        departmentId: input.departmentId,
+        allowedToolCount: input.runtime.allowedToolIds.length,
+      },
+      { sampleRate: 0.1 },
+    );
   }
 
   async invalidateDepartment(companyId: string, departmentId: string): Promise<void> {
-    const deleted = await invalidateByPattern(`company:${companyId}:department_runtime:department:${departmentId}:*`);
+    const deleted = await invalidateByPattern(
+      `company:${companyId}:department_runtime:${DEPARTMENT_RUNTIME_CACHE_VERSION}:department:${departmentId}:*`,
+    );
     logger.info('department_runtime.cache.invalidated', {
       companyId,
       departmentId,

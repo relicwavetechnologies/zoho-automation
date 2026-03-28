@@ -27,15 +27,25 @@ import { resolveVercelChildRouterModel, resolveVercelLanguageModel } from '../ve
 import { buildSharedAgentSystemPrompt } from '../prompting/shared-agent-prompt';
 import { resolveRunScopedToolSelection } from '../tool-selection/run-scoped-tool-selection.service';
 import { createVercelDesktopTools } from '../vercel/tools';
-import { CircuitBreakerOpenError, runWithCircuitBreaker } from '../../observability/circuit-breaker';
+import {
+  CircuitBreakerOpenError,
+  runWithCircuitBreaker,
+} from '../../observability/circuit-breaker';
 import type {
   PendingApprovalAction,
   VercelRuntimeRequestContext,
   VercelToolEnvelope,
 } from '../vercel/types';
-import type { OrchestrationEngine, OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
+import type {
+  OrchestrationEngine,
+  OrchestrationExecutionInput,
+  OrchestrationExecutionResult,
+} from './types';
 import { legacyOrchestrationEngine } from './legacy-orchestration.engine';
-import { buildVisionContent, type AttachedFileRef } from '../../../modules/desktop-chat/file-vision.builder';
+import {
+  buildVisionContent,
+  type AttachedFileRef,
+} from '../../../modules/desktop-chat/file-vision.builder';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
 import { DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT } from '../../../modules/desktop-chat/desktop-thread-context.cache';
 import {
@@ -53,7 +63,10 @@ import {
   type DesktopTaskState,
   type DesktopThreadSummary,
 } from '../../../modules/desktop-chat/desktop-thread-memory';
-import { runDesktopChildRouter, type DesktopChildRoute } from '../../../modules/desktop-chat/vercel-desktop.engine';
+import {
+  runDesktopChildRouter,
+  type DesktopChildRoute,
+} from '../../../modules/desktop-chat/vercel-desktop.engine';
 import { LarkStatusCoordinator } from './lark-status.coordinator';
 import { aiTokenUsageService } from '../../ai-usage/ai-token-usage.service';
 import { estimateTokens } from '../../../utils/token-estimator';
@@ -62,7 +75,10 @@ import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../int
 import { memoryService } from '../../memory';
 import { enrichQuery, type QueryEnrichment } from '../query-enrichment.service';
 import { desktopWsGateway } from '../../../modules/desktop-live/desktop-ws.gateway';
-import { appendLatestAgentRunLog, resetLatestAgentRunLog } from '../../../utils/latest-agent-run-log';
+import {
+  appendLatestAgentRunLog,
+  resetLatestAgentRunLog,
+} from '../../../utils/latest-agent-run-log';
 import { prisma } from '../../../utils/prisma';
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
@@ -93,7 +109,8 @@ const GEMINI_CIRCUIT_BREAKER = {
 
 const larkConversationHydrationVersions = new Map<string, string>();
 
-const buildConversationKey = (message: NormalizedIncomingMessageDTO): string => `${message.channel}:${message.chatId}`;
+const buildConversationKey = (message: NormalizedIncomingMessageDTO): string =>
+  `${message.channel}:${message.chatId}`;
 const buildPersistentLarkConversationKey = (threadId: string): string => `lark-thread:${threadId}`;
 const buildSharedLarkConversationKey = (chatId: string): string => `lark-chat:${chatId}`;
 const buildSourceArtifactEntriesFromAttachments = (
@@ -115,7 +132,9 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
 };
 
-const appendExecutionEventSafe = async (input: Parameters<typeof executionService.appendEvent>[0]) => {
+const appendExecutionEventSafe = async (
+  input: Parameters<typeof executionService.appendEvent>[0],
+) => {
   try {
     await executionService.appendEvent(input);
   } catch (error) {
@@ -128,7 +147,9 @@ const appendExecutionEventSafe = async (input: Parameters<typeof executionServic
 };
 
 const isPersonalMemoryQuestion = (value: string | null | undefined): boolean =>
-  /\b(do you know|do you remember|remember|recall|what(?:'s| is) my|my (?:fav|favorite|favourite|preferred)|favorite|favourite|preferred|preference|about me|my name|my email)\b/i.test(value ?? '');
+  /\b(do you know|do you remember|remember|recall|what(?:'s| is) my|my (?:fav|favorite|favourite|preferred)|favorite|favourite|preferred|preference|about me|my name|my email)\b/i.test(
+    value ?? '',
+  );
 
 const expandConversationMemoryQuery = (value: string): string => {
   const normalized = value
@@ -154,7 +175,10 @@ const compactMessageText = (value: string, limit: number): string => {
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
 };
 
-const sanitizeMessagesForProviderRetry = (messages: ModelMessage[], latestUserMessage: string): ModelMessage[] => {
+const sanitizeMessagesForProviderRetry = (
+  messages: ModelMessage[],
+  latestUserMessage: string,
+): ModelMessage[] => {
   const compacted = messages
     .map((message) => {
       const flattened = flattenModelContent(message.content);
@@ -173,7 +197,9 @@ const sanitizeMessagesForProviderRetry = (messages: ModelMessage[], latestUserMe
   const trimmedHistory = compacted.slice(-12);
   const latestUser = compactMessageText(latestUserMessage, 6_000);
   if (!latestUser) {
-    return trimmedHistory.length > 0 ? trimmedHistory : [{ role: 'user', content: 'Continue from the latest verified context.' }];
+    return trimmedHistory.length > 0
+      ? trimmedHistory
+      : [{ role: 'user', content: 'Continue from the latest verified context.' }];
   }
 
   if (trimmedHistory.length === 0) {
@@ -198,7 +224,9 @@ const runWithModelCircuitBreaker = async <T>(
     return Promise.resolve(run());
   }
   try {
-    return await runWithCircuitBreaker('gemini', operation, GEMINI_CIRCUIT_BREAKER, async () => Promise.resolve(run()));
+    return await runWithCircuitBreaker('gemini', operation, GEMINI_CIRCUIT_BREAKER, async () =>
+      Promise.resolve(run()),
+    );
   } catch (error) {
     if (error instanceof CircuitBreakerOpenError) {
       throw new Error('Gemini is temporarily unavailable. Please try again shortly.');
@@ -214,19 +242,24 @@ const flattenModelContent = (content: ModelMessage['content'] | string | undefin
   if (!Array.isArray(content)) {
     return '';
   }
-  return content.map((part) => {
-    if (!part || typeof part !== 'object') {
-      return '';
-    }
-    const record = part as Record<string, unknown>;
-    return typeof record.text === 'string' ? record.text : '';
-  }).filter(Boolean).join('\n');
+  return content
+    .map((part) => {
+      if (!part || typeof part !== 'object') {
+        return '';
+      }
+      const record = part as Record<string, unknown>;
+      return typeof record.text === 'string' ? record.text : '';
+    })
+    .filter(Boolean)
+    .join('\n');
 };
 
 const estimateMessageTokens = (messages: ModelMessage[]): number =>
   messages.reduce((sum, message) => sum + estimateTokens(flattenModelContent(message.content)), 0);
 
-const takeRecentMessagesByTokenBudget = <T extends { content: ModelMessage['content'] | string; role: string }>(input: {
+const takeRecentMessagesByTokenBudget = <
+  T extends { content: ModelMessage['content'] | string; role: string },
+>(input: {
   messages: T[];
   tokenBudget: number;
   maxMessages: number;
@@ -237,8 +270,8 @@ const takeRecentMessagesByTokenBudget = <T extends { content: ModelMessage['cont
     const message = input.messages[index]!;
     const estimatedTokens = estimateTokens(flattenModelContent(message.content));
     if (
-      selected.length >= input.maxMessages
-      || (selected.length > 0 && usedTokens + estimatedTokens > input.tokenBudget)
+      selected.length >= input.maxMessages ||
+      (selected.length > 0 && usedTokens + estimatedTokens > input.tokenBudget)
     ) {
       break;
     }
@@ -248,18 +281,23 @@ const takeRecentMessagesByTokenBudget = <T extends { content: ModelMessage['cont
   return selected;
 };
 
-type LarkContextClass = 'lightweight_chat' | 'normal_work' | 'long_running_task' | 'document_grounded_followup';
+type LarkContextClass =
+  | 'lightweight_chat'
+  | 'normal_work'
+  | 'long_running_task'
+  | 'document_grounded_followup';
 
 const isReferentialFollowup = (value: string | null | undefined): boolean =>
-  /\b(next task|pick the next|move on|move to next|continue|next one|same file|same one|next estimate|what next)\b/i.test(value ?? '');
+  /\b(next task|pick the next|move on|move to next|continue|next one|same file|same one|next estimate|what next)\b/i.test(
+    value ?? '',
+  );
 
 const isLightweightChatTurn = (value: string | null | undefined): boolean =>
-  /^(hi|hello|hey|thanks|thank you|ok|okay|cool|great|nice|yes|no)[.! ]*$/i.test((value ?? '').trim());
+  /^(hi|hello|hey|thanks|thank you|ok|okay|cool|great|nice|yes|no)[.! ]*$/i.test(
+    (value ?? '').trim(),
+  );
 
-const summarizeConversationMatches = (
-  matches: PersonalMemoryMatch[],
-  maxCount: number,
-): string[] =>
+const summarizeConversationMatches = (matches: PersonalMemoryMatch[], maxCount: number): string[] =>
   matches
     .slice(0, maxCount)
     .map((match) => summarizeText(match.content, 320))
@@ -296,22 +334,24 @@ const maybeStoreLarkConversationTurn = (input: {
   if (!input.userId || !input.text.trim()) {
     return;
   }
-  void personalVectorMemoryService.storeChatTurn({
-    companyId: input.companyId,
-    requesterUserId: input.userId,
-    conversationKey: input.conversationKey,
-    sourceId: input.sourceId,
-    role: input.role,
-    text: input.text,
-    channel: 'lark',
-    chatId: input.chatId,
-  }).catch((error) => {
-    logger.warn('lark.conversation_vector.store.failed', {
+  void personalVectorMemoryService
+    .storeChatTurn({
+      companyId: input.companyId,
+      requesterUserId: input.userId,
       conversationKey: input.conversationKey,
       sourceId: input.sourceId,
-      error: error instanceof Error ? error.message : 'unknown',
+      role: input.role,
+      text: input.text,
+      channel: 'lark',
+      chatId: input.chatId,
+    })
+    .catch((error) => {
+      logger.warn('lark.conversation_vector.store.failed', {
+        conversationKey: input.conversationKey,
+        sourceId: input.sourceId,
+        error: error instanceof Error ? error.message : 'unknown',
+      });
     });
-  });
   if (input.role === 'user') {
     void memoryService.recordUserTurn({
       companyId: input.companyId,
@@ -373,26 +413,30 @@ const retrieveLarkConversationMemory = async (input: {
 }): Promise<string[]> => {
   const isMemoryQuestion = isPersonalMemoryQuestion(input.queryText);
   if (
-    !input.userId
-    || (input.contextClass === 'lightweight_chat' && !isMemoryQuestion)
-    || !input.queryText.trim()
-    || (!isReferentialFollowup(input.queryText)
-      && !isMemoryQuestion
-      && input.contextClass !== 'long_running_task'
-      && input.contextClass !== 'document_grounded_followup')
+    !input.userId ||
+    (input.contextClass === 'lightweight_chat' && !isMemoryQuestion) ||
+    !input.queryText.trim() ||
+    (!isReferentialFollowup(input.queryText) &&
+      !isMemoryQuestion &&
+      input.contextClass !== 'long_running_task' &&
+      input.contextClass !== 'document_grounded_followup')
   ) {
     return [];
   }
 
   const limit = isMemoryQuestion ? 6 : input.contextClass === 'document_grounded_followup' ? 6 : 4;
   try {
-    logger.info('lark.context.conversation_retrieval.start', {
-      conversationKey: input.conversationKey,
-      contextClass: input.contextClass,
-      isMemoryQuestion,
-      queryLength: input.queryText.trim().length,
-      limit,
-    }, { sampleRate: 0.1 });
+    logger.info(
+      'lark.context.conversation_retrieval.start',
+      {
+        conversationKey: input.conversationKey,
+        contextClass: input.contextClass,
+        isMemoryQuestion,
+        queryLength: input.queryText.trim().length,
+        limit,
+      },
+      { sampleRate: 0.1 },
+    );
     const { matches, scope } = await queryLarkConversationMemoryWithFallback({
       companyId: input.companyId,
       userId: input.userId,
@@ -406,15 +450,19 @@ const retrieveLarkConversationMemory = async (input: {
       threadSummary: input.threadSummary,
       taskState: input.taskState,
     });
-    logger.info('lark.context.conversation_retrieval.completed', {
-      conversationKey: input.conversationKey,
-      contextClass: input.contextClass,
-      isMemoryQuestion,
-      scope,
-      matchCount: matches.length,
-      snippetCount: snippets.length,
-      topScores: matches.slice(0, 3).map((match) => Number(match.score.toFixed(4))),
-    }, { sampleRate: 0.1 });
+    logger.info(
+      'lark.context.conversation_retrieval.completed',
+      {
+        conversationKey: input.conversationKey,
+        contextClass: input.contextClass,
+        isMemoryQuestion,
+        scope,
+        matchCount: matches.length,
+        snippetCount: snippets.length,
+        topScores: matches.slice(0, 3).map((match) => Number(match.score.toFixed(4))),
+      },
+      { sampleRate: 0.1 },
+    );
     return snippets;
   } catch (error) {
     logger.warn('lark.context.conversation_retrieval.failed', {
@@ -436,18 +484,19 @@ const hydrateAttachedFilesForArtifacts = async (input: {
   }
 
   const fileAssetIds = Array.from(new Set(input.artifacts.map((artifact) => artifact.fileAssetId)));
-  const isAdmin = input.requesterAiRole === 'COMPANY_ADMIN' || input.requesterAiRole === 'SUPER_ADMIN';
+  const isAdmin =
+    input.requesterAiRole === 'COMPANY_ADMIN' || input.requesterAiRole === 'SUPER_ADMIN';
   const assets = await prisma.fileAsset.findMany({
     where: {
       companyId: input.companyId,
       id: { in: fileAssetIds },
       ...(!isAdmin && input.requesterUserId
         ? {
-          OR: [
-            { uploaderUserId: input.requesterUserId },
-            { accessPolicies: { some: { aiRole: input.requesterAiRole, canRead: true } } },
-          ],
-        }
+            OR: [
+              { uploaderUserId: input.requesterUserId },
+              { accessPolicies: { some: { aiRole: input.requesterAiRole, canRead: true } } },
+            ],
+          }
         : {}),
     },
     select: {
@@ -464,12 +513,14 @@ const hydrateAttachedFilesForArtifacts = async (input: {
     if (!asset?.cloudinaryUrl || !asset.mimeType) {
       return [];
     }
-    return [{
-      fileAssetId: asset.id,
-      fileName: asset.fileName,
-      mimeType: asset.mimeType,
-      cloudinaryUrl: asset.cloudinaryUrl,
-    }];
+    return [
+      {
+        fileAssetId: asset.id,
+        fileName: asset.fileName,
+        mimeType: asset.mimeType,
+        cloudinaryUrl: asset.cloudinaryUrl,
+      },
+    ];
   });
 };
 
@@ -494,21 +545,23 @@ const resolveLarkGroundingAttachments = async (input: {
     });
   }
 
-  const artifactCandidates = input.currentAttachedFiles.length === 0
-    ? selectDesktopSourceArtifacts({
-      taskState: nextTaskState,
-      message: input.message,
-    })
-    : [];
+  const artifactCandidates =
+    input.currentAttachedFiles.length === 0
+      ? selectDesktopSourceArtifacts({
+          taskState: nextTaskState,
+          message: input.message,
+        })
+      : [];
 
-  const artifactAttachments = artifactCandidates.length > 0
-    ? await hydrateAttachedFilesForArtifacts({
-      companyId: input.companyId,
-      artifacts: artifactCandidates,
-      requesterUserId: input.requesterUserId,
-      requesterAiRole: input.requesterAiRole,
-    })
-    : [];
+  const artifactAttachments =
+    artifactCandidates.length > 0
+      ? await hydrateAttachedFilesForArtifacts({
+          companyId: input.companyId,
+          artifacts: artifactCandidates,
+          requesterUserId: input.requesterUserId,
+          requesterAiRole: input.requesterAiRole,
+        })
+      : [];
 
   if (artifactAttachments.length > 0) {
     nextTaskState = markDesktopSourceArtifactsUsed({
@@ -530,15 +583,18 @@ const resolveLarkGroundingAttachments = async (input: {
   return {
     attachments: Array.from(merged.values()),
     taskState: nextTaskState,
-    source: input.currentAttachedFiles.length > 0
-      ? 'current'
-      : artifactAttachments.length > 0
-        ? 'artifact'
-        : 'none',
+    source:
+      input.currentAttachedFiles.length > 0
+        ? 'current'
+        : artifactAttachments.length > 0
+          ? 'artifact'
+          : 'none',
   };
 };
 
-const classifyArtifactMode = (attachments: AttachedFileRef[]): 'none' | 'image_only' | 'document_only' | 'mixed' => {
+const classifyArtifactMode = (
+  attachments: AttachedFileRef[],
+): 'none' | 'image_only' | 'document_only' | 'mixed' => {
   if (attachments.length === 0) {
     return 'none';
   }
@@ -559,17 +615,17 @@ const chooseLarkContextClass = (input: {
     return 'lightweight_chat';
   }
   if (
-    input.taskState.activeSourceArtifacts.length > 0
-    && isReferentialFollowup(latestUserMessage)
+    input.taskState.activeSourceArtifacts.length > 0 &&
+    isReferentialFollowup(latestUserMessage)
   ) {
     return 'document_grounded_followup';
   }
   if (
-    input.taskState.activeSourceArtifacts.length > 0
-    || input.taskState.completedMutations.length > 0
-    || Boolean(input.taskState.pendingApproval)
-    || input.threadSummary.sourceMessageCount >= 10
-    || input.historyMessageCount >= 16
+    input.taskState.activeSourceArtifacts.length > 0 ||
+    input.taskState.completedMutations.length > 0 ||
+    Boolean(input.taskState.pendingApproval) ||
+    input.threadSummary.sourceMessageCount >= 10 ||
+    input.historyMessageCount >= 16
   ) {
     return 'long_running_task';
   }
@@ -580,11 +636,13 @@ const resolveModelCatalogEntry = (resolvedModel: {
   effectiveProvider: string;
   effectiveModelId: string;
 }) =>
-  AI_MODEL_CATALOG_MAP.get(`${resolvedModel.effectiveProvider}:${resolvedModel.effectiveModelId}`)
-  ?? (resolvedModel.effectiveProvider === 'google'
-    ? AI_MODEL_CATALOG_MAP.get('google:gemini-3.1-flash-lite-preview')
-      ?? AI_MODEL_CATALOG_MAP.get('google:gemini-2.5-flash')
-      ?? null
+  AI_MODEL_CATALOG_MAP.get(
+    `${resolvedModel.effectiveProvider}:${resolvedModel.effectiveModelId}`,
+  ) ??
+  (resolvedModel.effectiveProvider === 'google'
+    ? (AI_MODEL_CATALOG_MAP.get('google:gemini-3.1-flash-lite-preview') ??
+      AI_MODEL_CATALOG_MAP.get('google:gemini-2.5-flash') ??
+      null)
     : null);
 
 const resolveLarkContextBudget = (input: {
@@ -597,11 +655,12 @@ const resolveLarkContextBudget = (input: {
     : input.resolvedModel.effectiveProvider === 'google'
       ? 1_048_576 - 32_768
       : 128_000 - 16_384;
-  const ratio = input.contextClass === 'lightweight_chat'
-    ? LARK_LIGHT_CONTEXT_TARGET_RATIO
-    : input.contextClass === 'normal_work'
-      ? LARK_NORMAL_CONTEXT_TARGET_RATIO
-      : LARK_CONTEXT_TARGET_RATIO;
+  const ratio =
+    input.contextClass === 'lightweight_chat'
+      ? LARK_LIGHT_CONTEXT_TARGET_RATIO
+      : input.contextClass === 'normal_work'
+        ? LARK_NORMAL_CONTEXT_TARGET_RATIO
+        : LARK_CONTEXT_TARGET_RATIO;
   return {
     usableContextBudget,
     targetContextBudget: Math.max(12_000, Math.floor(usableContextBudget * ratio)),
@@ -619,16 +678,18 @@ const buildAdaptiveLarkHistoryMessages = (input: {
   includedRawMessageCount: number;
   compactionTier: number;
 } => {
-  const maxMessages = input.contextClass === 'lightweight_chat'
-    ? LARK_LIGHTWEIGHT_RAW_HISTORY_MAX_MESSAGES
-    : input.contextClass === 'normal_work'
-      ? LARK_NORMAL_RAW_HISTORY_MAX_MESSAGES
-      : LARK_LONG_RUNNING_RAW_HISTORY_MAX_MESSAGES;
-  const rawHistoryTokenBudget = input.contextClass === 'lightweight_chat'
-    ? LARK_LIGHTWEIGHT_RAW_HISTORY_TOKEN_BUDGET
-    : input.contextClass === 'normal_work'
-      ? LARK_NORMAL_RAW_HISTORY_TOKEN_BUDGET
-      : LARK_LONG_RUNNING_RAW_HISTORY_TOKEN_BUDGET;
+  const maxMessages =
+    input.contextClass === 'lightweight_chat'
+      ? LARK_LIGHTWEIGHT_RAW_HISTORY_MAX_MESSAGES
+      : input.contextClass === 'normal_work'
+        ? LARK_NORMAL_RAW_HISTORY_MAX_MESSAGES
+        : LARK_LONG_RUNNING_RAW_HISTORY_MAX_MESSAGES;
+  const rawHistoryTokenBudget =
+    input.contextClass === 'lightweight_chat'
+      ? LARK_LIGHTWEIGHT_RAW_HISTORY_TOKEN_BUDGET
+      : input.contextClass === 'normal_work'
+        ? LARK_NORMAL_RAW_HISTORY_TOKEN_BUDGET
+        : LARK_LONG_RUNNING_RAW_HISTORY_TOKEN_BUDGET;
   const lowValueFilter = input.contextClass !== 'lightweight_chat';
   const selected: Array<ModelMessage & { id?: string }> = [];
   let used = 0;
@@ -640,16 +701,18 @@ const buildAdaptiveLarkHistoryMessages = (input: {
       if (lowValueFilter && isLightweightChatTurn(flattened)) {
         return false;
       }
-      return filterThreadMessagesForContext([{ role: message.role, content: flattened }]).length > 0;
+      return (
+        filterThreadMessagesForContext([{ role: message.role, content: flattened }]).length > 0
+      );
     });
 
   for (let index = recent.length - 1; index >= 0; index -= 1) {
     const message = recent[index]!;
     const estimated = estimateTokens(flattenModelContent(message.content));
     if (
-      selected.length >= maxMessages
-      || (selected.length > 0 && used + estimated > rawHistoryTokenBudget)
-      || used + estimated + input.reservedTokens > input.targetBudgetTokens
+      selected.length >= maxMessages ||
+      (selected.length > 0 && used + estimated > rawHistoryTokenBudget) ||
+      used + estimated + input.reservedTokens > input.targetBudgetTokens
     ) {
       compactionTier = Math.max(compactionTier, 4);
       continue;
@@ -665,7 +728,10 @@ const buildAdaptiveLarkHistoryMessages = (input: {
   };
 };
 
-const loadLarkThreadMemory = async (threadId: string, userId: string): Promise<{
+const loadLarkThreadMemory = async (
+  threadId: string,
+  userId: string,
+): Promise<{
   summary: DesktopThreadSummary;
   taskState: DesktopTaskState;
 }> => {
@@ -683,8 +749,18 @@ const persistLarkThreadMemory = async (input: {
   taskState?: DesktopTaskState | null;
 }) => {
   await desktopThreadsService.updateOwnedThreadMemory(input.threadId, input.userId, {
-    ...(input.summary !== undefined ? { summaryJson: input.summary ? input.summary as unknown as Record<string, unknown> : null } : {}),
-    ...(input.taskState !== undefined ? { taskStateJson: input.taskState ? input.taskState as unknown as Record<string, unknown> : null } : {}),
+    ...(input.summary !== undefined
+      ? {
+          summaryJson: input.summary ? (input.summary as unknown as Record<string, unknown>) : null,
+        }
+      : {}),
+    ...(input.taskState !== undefined
+      ? {
+          taskStateJson: input.taskState
+            ? (input.taskState as unknown as Record<string, unknown>)
+            : null,
+        }
+      : {}),
   });
 };
 
@@ -743,7 +819,9 @@ const buildConversationRefsContext = (conversationKey: string): string | null =>
     lines.push(`Latest Lark doc: ${latestDoc.title} [documentId=${latestDoc.documentId}]`);
   }
   if (latestEvent) {
-    lines.push(`Latest Lark event: ${latestEvent.summary ?? latestEvent.eventId} [eventId=${latestEvent.eventId}]`);
+    lines.push(
+      `Latest Lark event: ${latestEvent.summary ?? latestEvent.eventId} [eventId=${latestEvent.eventId}]`,
+    );
   }
 
   return lines.length > 0 ? ['Conversation refs:', ...lines].join('\n') : null;
@@ -759,8 +837,10 @@ const shouldBypassUnverifiedDuplicateTaskFastReply = (input: {
   }
   const normalizedIntent = input.childRoute.normalizedIntent?.trim().toLowerCase() ?? '';
   const latestUserMessage = input.latestUserMessage.trim().toLowerCase();
-  const looksLikeDuplicateTaskClaim = normalizedIntent.includes('duplicate task request')
-    || (latestUserMessage.includes('task') && /already created|already assigned/i.test(input.childRoute.reply));
+  const looksLikeDuplicateTaskClaim =
+    normalizedIntent.includes('duplicate task request') ||
+    (latestUserMessage.includes('task') &&
+      /already created|already assigned/i.test(input.childRoute.reply));
   if (!looksLikeDuplicateTaskClaim) {
     return false;
   }
@@ -773,44 +853,55 @@ type PersistedConversationRefs = {
   latestLarkTask?: Record<string, unknown>;
 };
 
-const buildPersistedConversationRefs = (conversationKey: string): PersistedConversationRefs | null => {
+const buildPersistedConversationRefs = (
+  conversationKey: string,
+): PersistedConversationRefs | null => {
   const latestDoc = conversationMemoryStore.getLatestLarkDoc(conversationKey);
   const latestEvent = conversationMemoryStore.getLatestLarkCalendarEvent(conversationKey);
   const latestTask = conversationMemoryStore.getLatestLarkTask(conversationKey);
 
   const refs: PersistedConversationRefs = {
-    ...(latestDoc ? {
-      latestLarkDoc: {
-        title: latestDoc.title,
-        documentId: latestDoc.documentId,
-        ...(latestDoc.url ? { url: latestDoc.url } : {}),
-      },
-    } : {}),
-    ...(latestEvent ? {
-      latestLarkCalendarEvent: {
-        eventId: latestEvent.eventId,
-        ...(latestEvent.calendarId ? { calendarId: latestEvent.calendarId } : {}),
-        ...(latestEvent.summary ? { summary: latestEvent.summary } : {}),
-        ...(latestEvent.startTime ? { startTime: latestEvent.startTime } : {}),
-        ...(latestEvent.endTime ? { endTime: latestEvent.endTime } : {}),
-        ...(latestEvent.url ? { url: latestEvent.url } : {}),
-      },
-    } : {}),
-    ...(latestTask ? {
-      latestLarkTask: {
-        taskId: latestTask.taskId,
-        ...(latestTask.taskGuid ? { taskGuid: latestTask.taskGuid } : {}),
-        ...(latestTask.summary ? { summary: latestTask.summary } : {}),
-        ...(latestTask.status ? { status: latestTask.status } : {}),
-        ...(latestTask.url ? { url: latestTask.url } : {}),
-      },
-    } : {}),
+    ...(latestDoc
+      ? {
+          latestLarkDoc: {
+            title: latestDoc.title,
+            documentId: latestDoc.documentId,
+            ...(latestDoc.url ? { url: latestDoc.url } : {}),
+          },
+        }
+      : {}),
+    ...(latestEvent
+      ? {
+          latestLarkCalendarEvent: {
+            eventId: latestEvent.eventId,
+            ...(latestEvent.calendarId ? { calendarId: latestEvent.calendarId } : {}),
+            ...(latestEvent.summary ? { summary: latestEvent.summary } : {}),
+            ...(latestEvent.startTime ? { startTime: latestEvent.startTime } : {}),
+            ...(latestEvent.endTime ? { endTime: latestEvent.endTime } : {}),
+            ...(latestEvent.url ? { url: latestEvent.url } : {}),
+          },
+        }
+      : {}),
+    ...(latestTask
+      ? {
+          latestLarkTask: {
+            taskId: latestTask.taskId,
+            ...(latestTask.taskGuid ? { taskGuid: latestTask.taskGuid } : {}),
+            ...(latestTask.summary ? { summary: latestTask.summary } : {}),
+            ...(latestTask.status ? { status: latestTask.status } : {}),
+            ...(latestTask.url ? { url: latestTask.url } : {}),
+          },
+        }
+      : {}),
   };
 
   return Object.keys(refs).length > 0 ? refs : null;
 };
 
-const hydrateConversationRefsFromMetadata = (conversationKey: string, metadata: Record<string, unknown>): void => {
+const hydrateConversationRefsFromMetadata = (
+  conversationKey: string,
+  metadata: Record<string, unknown>,
+): void => {
   const refs = metadata.conversationRefs;
   if (!refs || typeof refs !== 'object' || Array.isArray(refs)) return;
   const record = refs as PersistedConversationRefs;
@@ -874,16 +965,18 @@ const buildSystemPrompt = (input: {
 }) => {
   const retrievalGuidance = input.latestUserMessage?.trim()
     ? retrievalOrchestratorService.buildPromptGuidance({
-      messageText: input.queryEnrichment?.cleanQuery ?? input.latestUserMessage,
-      hasAttachments: input.hasAttachedFiles,
-    })
+        messageText: input.queryEnrichment?.cleanQuery ?? input.latestUserMessage,
+        hasAttachments: input.hasAttachedFiles,
+      })
     : [];
   return buildSharedAgentSystemPrompt({
     runtimeLabel: 'You are the Vercel AI SDK runtime for a tool-using assistant.',
     conversationKey: input.conversationKey,
     workspace: input.runtime.workspace,
     approvalPolicySummary: input.runtime.desktopApprovalPolicySummary,
-    workspaceAvailability: input.runtime.desktopExecutionAvailability ?? (input.runtime.workspace ? 'available' : 'unknown'),
+    workspaceAvailability:
+      input.runtime.desktopExecutionAvailability ??
+      (input.runtime.workspace ? 'available' : 'unknown'),
     latestActionResult: input.runtime.latestActionResult,
     allowedToolIds: input.runtime.allowedToolIds,
     runExposedToolIds: input.runtime.runExposedToolIds,
@@ -900,13 +993,15 @@ const buildSystemPrompt = (input: {
     latestUserMessage: input.latestUserMessage,
     queryEnrichment: input.queryEnrichment
       ? {
-        cleanQuery: input.queryEnrichment.cleanQuery,
-        retrievalQuery: input.queryEnrichment.retrievalQuery,
-        exactTerms: input.queryEnrichment.exactTerms,
-        contextHints: input.queryEnrichment.contextHints,
-      }
+          cleanQuery: input.queryEnrichment.cleanQuery,
+          retrievalQuery: input.queryEnrichment.retrievalQuery,
+          exactTerms: input.queryEnrichment.exactTerms,
+          contextHints: input.queryEnrichment.contextHints,
+        }
       : undefined,
-    threadSummaryContext: input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null,
+    threadSummaryContext: input.threadSummary
+      ? buildThreadSummaryContext(input.threadSummary)
+      : null,
     taskStateContext: input.taskState ? buildTaskStateContext(input.taskState) : null,
     conversationRefsContext: buildConversationRefsContext(input.conversationKey),
     conversationRetrievalSnippets: input.conversationRetrievalSnippets,
@@ -972,7 +1067,10 @@ const toClarificationQuestion = (value: string | null | undefined): string | nul
   if (lower.includes('requires title and markdown')) {
     return 'Please send the document title and the markdown content you want in the Lark doc.';
   }
-  if (lower.includes('need both a dayofweek and time') || lower.includes('need both a weekday and time')) {
+  if (
+    lower.includes('need both a dayofweek and time') ||
+    lower.includes('need both a weekday and time')
+  ) {
     return 'Which weekday and time should this run?';
   }
   if (lower.startsWith('ask the user ')) {
@@ -994,32 +1092,34 @@ const toClarificationQuestion = (value: string | null | undefined): string | nul
 };
 
 const buildExplicitMissingInputReason = (output: VercelToolEnvelope): string | null => {
-  const denialReason = typeof output.fullPayload?.denialReason === 'string'
-    ? output.fullPayload.denialReason
-    : null;
+  const denialReason =
+    typeof output.fullPayload?.denialReason === 'string' ? output.fullPayload.denialReason : null;
   const summary = summarizeText(output.summary, 600) ?? output.summary;
-  const action = toClarificationQuestion(output.userAction) ?? summarizeText(output.userAction, 400);
+  const action =
+    toClarificationQuestion(output.userAction) ?? summarizeText(output.userAction, 400);
 
   if (!denialReason || !summary) {
     return null;
   }
 
-  if ([
-    'books_principal_not_resolved',
-    'missing_requester_email',
-    'books_module_requires_company_scope',
-    'record_not_in_self_scope',
-    'ownership_not_matched',
-  ].includes(denialReason)) {
-    return action
-      ? [summary, '', action].join('\n')
-      : summary;
+  if (
+    [
+      'books_principal_not_resolved',
+      'missing_requester_email',
+      'books_module_requires_company_scope',
+      'record_not_in_self_scope',
+      'ownership_not_matched',
+    ].includes(denialReason)
+  ) {
+    return action ? [summary, '', action].join('\n') : summary;
   }
 
   return null;
 };
 
-const buildMissingInputResponseText = (output: VercelToolEnvelope | null | undefined): string | null => {
+const buildMissingInputResponseText = (
+  output: VercelToolEnvelope | null | undefined,
+): string | null => {
   if (!output) {
     return null;
   }
@@ -1027,29 +1127,18 @@ const buildMissingInputResponseText = (output: VercelToolEnvelope | null | undef
   if (explicitReason) {
     return explicitReason;
   }
-  const question = toClarificationQuestion(output.userAction) ?? toClarificationQuestion(output.summary);
+  const question =
+    toClarificationQuestion(output.userAction) ?? toClarificationQuestion(output.summary);
   if (question) {
-    return [
-      'I need a bit more information before I can finish this.',
-      '',
-      question,
-    ].join('\n');
+    return ['I need a bit more information before I can finish this.', '', question].join('\n');
   }
   const action = summarizeText(output.userAction, 400);
   const summary = summarizeText(output.summary, 500);
   if (action) {
-    return [
-      'I need a bit more information before I can finish this.',
-      '',
-      action,
-    ].join('\n');
+    return ['I need a bit more information before I can finish this.', '', action].join('\n');
   }
   if (summary) {
-    return [
-      'I need a bit more information before I can finish this.',
-      '',
-      summary,
-    ].join('\n');
+    return ['I need a bit more information before I can finish this.', '', summary].join('\n');
   }
   return null;
 };
@@ -1057,7 +1146,15 @@ const buildMissingInputResponseText = (output: VercelToolEnvelope | null | undef
 const buildLarkStatusText = (input: {
   task: OrchestrationTaskDTO;
   message: NormalizedIncomingMessageDTO;
-  phase: 'received' | 'preparing' | 'planning' | 'tool_running' | 'tool_done' | 'analyzing' | 'approval' | 'failed';
+  phase:
+    | 'received'
+    | 'preparing'
+    | 'planning'
+    | 'tool_running'
+    | 'tool_done'
+    | 'analyzing'
+    | 'approval'
+    | 'failed';
   detail?: string;
   history: string[];
   heartbeatNote?: string;
@@ -1137,11 +1234,11 @@ const mapToolStepsToAgentResults = (
         error: output?.success
           ? undefined
           : {
-            type: 'TOOL_ERROR',
-            classifiedReason: output?.errorKind ?? 'tool_failed',
-            rawMessage: output?.summary,
-            retriable: output?.retryable ?? false,
-          },
+              type: 'TOOL_ERROR',
+              classifiedReason: output?.errorKind ?? 'tool_failed',
+              rawMessage: output?.summary,
+              retriable: output?.retryable ?? false,
+            },
         metrics: { apiCalls: 1 },
       } satisfies AgentResultDTO;
     }),
@@ -1149,7 +1246,9 @@ const mapToolStepsToAgentResults = (
 
 const adaptPlanForVercel = (task: OrchestrationTaskDTO): OrchestrationTaskDTO => ({
   ...task,
-  plan: task.plan.map((step) => (step === 'agent.invoke.lark-response' ? 'delivery.lark-status' : step)),
+  plan: task.plan.map((step) =>
+    step === 'agent.invoke.lark-response' ? 'delivery.lark-status' : step,
+  ),
 });
 
 const resolveRuntimeContext = async (
@@ -1164,12 +1263,16 @@ const resolveRuntimeContext = async (
   }
 
   const requesterAiRole = message.trace?.userRole ?? 'MEMBER';
-  const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(companyId, requesterAiRole);
+  const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(
+    companyId,
+    requesterAiRole,
+  );
   const linkedUserId = message.trace?.linkedUserId ?? message.userId;
   let departmentId: string | undefined;
   let departmentName: string | undefined;
   let departmentRoleSlug: string | undefined;
   let departmentZohoReadScope: 'personalized' | 'show_all' | undefined;
+  let departmentZohoRateLimitConfig: VercelRuntimeRequestContext['departmentZohoRateLimitConfig'];
   let departmentSystemPrompt: string | undefined;
   let departmentSkillsMarkdown: string | undefined;
   let allowedToolIds = fallbackAllowedToolIds;
@@ -1177,9 +1280,10 @@ const resolveRuntimeContext = async (
   const desktopAvailability = linkedUserId
     ? desktopWsGateway.getRemoteExecutionAvailability(linkedUserId, companyId)
     : { status: 'none' as const };
-  const activeWorkspace = desktopAvailability.status === 'available'
-    ? desktopAvailability.session?.activeWorkspace
-    : undefined;
+  const activeWorkspace =
+    desktopAvailability.status === 'available'
+      ? desktopAvailability.session?.activeWorkspace
+      : undefined;
 
   if (linkedUserId) {
     const departments = await departmentService.listUserDepartments(linkedUserId, companyId);
@@ -1194,6 +1298,7 @@ const resolveRuntimeContext = async (
     departmentName = resolved.departmentName;
     departmentRoleSlug = resolved.departmentRoleSlug;
     departmentZohoReadScope = resolved.departmentZohoReadScope;
+    departmentZohoRateLimitConfig = resolved.departmentZohoRateLimitConfig;
     departmentSystemPrompt = resolved.systemPrompt;
     departmentSkillsMarkdown = resolved.skillsMarkdown;
     allowedToolIds = resolved.allowedToolIds;
@@ -1214,6 +1319,7 @@ const resolveRuntimeContext = async (
     departmentName,
     departmentRoleSlug,
     departmentZohoReadScope,
+    departmentZohoRateLimitConfig,
     larkTenantKey: message.trace?.larkTenantKey,
     larkOpenId: message.trace?.larkOpenId,
     larkUserId: message.trace?.larkUserId,
@@ -1239,8 +1345,10 @@ const resolveRuntimeContext = async (
     allowedToolIds: allowedToolIds.filter((toolId) => !LARK_BLOCKED_TOOL_IDS.has(toolId)),
     allowedActionsByTool: allowedActionsByTool
       ? Object.fromEntries(
-        Object.entries(allowedActionsByTool).filter(([toolId]) => !LARK_BLOCKED_TOOL_IDS.has(toolId)),
-      )
+          Object.entries(allowedActionsByTool).filter(
+            ([toolId]) => !LARK_BLOCKED_TOOL_IDS.has(toolId),
+          ),
+        )
       : undefined,
     departmentSystemPrompt,
     departmentSkillsMarkdown,
@@ -1255,24 +1363,34 @@ const executeLarkVercelTask = async (
   const companyId = message.trace?.companyId;
   const linkedUserId = message.trace?.linkedUserId;
   const isSharedGroupChat = Boolean(companyId && message.chatType === 'group' && message.chatId);
-  const sharedChatContext = isSharedGroupChat && companyId
-    ? await larkChatContextService.load({
-      companyId,
-      chatId: message.chatId,
-      chatType: message.chatType,
-    })
-    : null;
-  const persistentThread = !isSharedGroupChat && companyId && linkedUserId
-    ? await desktopThreadsService.findOrCreateLarkLifetimeThread(linkedUserId, companyId)
-    : null;
+  const sharedChatContext =
+    isSharedGroupChat && companyId
+      ? await larkChatContextService.load({
+          companyId,
+          chatId: message.chatId,
+          chatType: message.chatType,
+        })
+      : null;
+  const persistentThread =
+    !isSharedGroupChat && companyId && linkedUserId
+      ? await desktopThreadsService.findOrCreateLarkLifetimeThread(linkedUserId, companyId)
+      : null;
   const contextStorageId = persistentThread?.id ?? sharedChatContext?.id;
   const conversationKey = persistentThread
     ? buildPersistentLarkConversationKey(persistentThread.id)
     : sharedChatContext
       ? buildSharedLarkConversationKey(message.chatId)
-    : buildConversationKey(message);
+      : buildConversationKey(message);
   const statusHistory: string[] = [];
-  let currentStatusPhase: 'received' | 'preparing' | 'planning' | 'tool_running' | 'tool_done' | 'analyzing' | 'approval' | 'failed' = 'received';
+  let currentStatusPhase:
+    | 'received'
+    | 'preparing'
+    | 'planning'
+    | 'tool_running'
+    | 'tool_done'
+    | 'analyzing'
+    | 'approval'
+    | 'failed' = 'received';
   let currentStatusDetail: string | undefined;
   let currentStatusActions: ChannelAction[] | undefined;
   let heartbeatIndex = 0;
@@ -1378,7 +1496,9 @@ const executeLarkVercelTask = async (
     });
     activeTaskState = grounding.taskState;
     groundingAttachments = grounding.attachments;
-    const existingUserMessage = sharedChatContext.recentMessages.find((entry) => entry.id === message.messageId);
+    const existingUserMessage = sharedChatContext.recentMessages.find(
+      (entry) => entry.id === message.messageId,
+    );
     if (existingUserMessage) {
       persistedUserMessageId = existingUserMessage.id;
     } else {
@@ -1412,7 +1532,8 @@ const executeLarkVercelTask = async (
   }
 
   const runtime = await resolveRuntimeContext(task, message, contextStorageId, activeTaskState);
-  runtime.attachedFiles = groundingAttachments.length > 0 ? groundingAttachments : runtime.attachedFiles;
+  runtime.attachedFiles =
+    groundingAttachments.length > 0 ? groundingAttachments : runtime.attachedFiles;
   const queryEnrichment = enrichQuery({
     rawMessage: message.text,
     attachedFiles: groundingAttachments,
@@ -1432,63 +1553,76 @@ const executeLarkVercelTask = async (
   statusHistory.push('Context ready.');
   const contextMessages = persistentThread
     ? await (async () => {
-      const cachedContext = await desktopThreadsService.getCachedOwnedThreadContext(
-        persistentThread.id,
-        linkedUserId!,
-        LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
-      );
-      const hydrationVersion = `${cachedContext.cachedAt}:${cachedContext.messages[cachedContext.messages.length - 1]?.id ?? 'empty'}`;
-      if (larkConversationHydrationVersions.get(conversationKey) !== hydrationVersion) {
-        for (const entry of cachedContext.messages) {
-          if (entry.role === 'user') {
-            conversationMemoryStore.addUserMessage(conversationKey, entry.id, entry.content);
-          } else {
-            conversationMemoryStore.addAssistantMessage(conversationKey, entry.id, entry.content);
-            if (entry.metadata && typeof entry.metadata === 'object' && !Array.isArray(entry.metadata)) {
-              hydrateConversationRefsFromMetadata(conversationKey, entry.metadata as Record<string, unknown>);
-            }
-          }
-        }
-        larkConversationHydrationVersions.set(conversationKey, hydrationVersion);
-      }
-      return cachedContext.messages.map((entry) => ({
-        id: entry.id,
-        role: entry.role === 'assistant' ? 'assistant' : 'user',
-        content: entry.content,
-      })) as Array<ModelMessage & { id?: string }>;
-    })()
-    : sharedChatContext && companyId
-      ? await (async () => {
-        const latestSharedContext = await larkChatContextService.load({
-          companyId,
-          chatId: message.chatId,
-          chatType: message.chatType,
-        });
-        const recentMessages = latestSharedContext.recentMessages.slice(-LARK_THREAD_CONTEXT_MESSAGE_LIMIT);
-        const hydrationVersion = `${latestSharedContext.summary.updatedAt ?? 'none'}:${recentMessages[recentMessages.length - 1]?.id ?? 'empty'}`;
+        const cachedContext = await desktopThreadsService.getCachedOwnedThreadContext(
+          persistentThread.id,
+          linkedUserId!,
+          LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
+        );
+        const hydrationVersion = `${cachedContext.cachedAt}:${cachedContext.messages[cachedContext.messages.length - 1]?.id ?? 'empty'}`;
         if (larkConversationHydrationVersions.get(conversationKey) !== hydrationVersion) {
-          for (const entry of recentMessages) {
+          for (const entry of cachedContext.messages) {
             if (entry.role === 'user') {
               conversationMemoryStore.addUserMessage(conversationKey, entry.id, entry.content);
             } else {
               conversationMemoryStore.addAssistantMessage(conversationKey, entry.id, entry.content);
-              if (entry.metadata) {
-                hydrateConversationRefsFromMetadata(conversationKey, entry.metadata);
+              if (
+                entry.metadata &&
+                typeof entry.metadata === 'object' &&
+                !Array.isArray(entry.metadata)
+              ) {
+                hydrateConversationRefsFromMetadata(
+                  conversationKey,
+                  entry.metadata as Record<string, unknown>,
+                );
               }
             }
           }
           larkConversationHydrationVersions.set(conversationKey, hydrationVersion);
         }
-        return recentMessages.map((entry) => ({
+        return cachedContext.messages.map((entry) => ({
           id: entry.id,
-          role: entry.role,
+          role: entry.role === 'assistant' ? 'assistant' : 'user',
           content: entry.content,
         })) as Array<ModelMessage & { id?: string }>;
       })()
-    : conversationMemoryStore.getContextMessages(conversationKey).map((entry) => ({
-      role: entry.role,
-      content: entry.content,
-    })) as Array<ModelMessage & { id?: string }>;
+    : sharedChatContext && companyId
+      ? await (async () => {
+          const latestSharedContext = await larkChatContextService.load({
+            companyId,
+            chatId: message.chatId,
+            chatType: message.chatType,
+          });
+          const recentMessages = latestSharedContext.recentMessages.slice(
+            -LARK_THREAD_CONTEXT_MESSAGE_LIMIT,
+          );
+          const hydrationVersion = `${latestSharedContext.summary.updatedAt ?? 'none'}:${recentMessages[recentMessages.length - 1]?.id ?? 'empty'}`;
+          if (larkConversationHydrationVersions.get(conversationKey) !== hydrationVersion) {
+            for (const entry of recentMessages) {
+              if (entry.role === 'user') {
+                conversationMemoryStore.addUserMessage(conversationKey, entry.id, entry.content);
+              } else {
+                conversationMemoryStore.addAssistantMessage(
+                  conversationKey,
+                  entry.id,
+                  entry.content,
+                );
+                if (entry.metadata) {
+                  hydrateConversationRefsFromMetadata(conversationKey, entry.metadata);
+                }
+              }
+            }
+            larkConversationHydrationVersions.set(conversationKey, hydrationVersion);
+          }
+          return recentMessages.map((entry) => ({
+            id: entry.id,
+            role: entry.role,
+            content: entry.content,
+          })) as Array<ModelMessage & { id?: string }>;
+        })()
+      : (conversationMemoryStore.getContextMessages(conversationKey).map((entry) => ({
+          role: entry.role,
+          content: entry.content,
+        })) as Array<ModelMessage & { id?: string }>);
   const persistAssistantTurn = async (input: {
     content: string;
     statusMessageId?: string | null;
@@ -1512,7 +1646,15 @@ const executeLarkVercelTask = async (
             correlationId: task.taskId,
           },
           ...(input.pendingApproval
-            ? { pendingApproval: { kind: input.pendingApproval.kind, approvalId: input.pendingApproval.kind === 'tool_action' ? input.pendingApproval.approvalId : null } }
+            ? {
+                pendingApproval: {
+                  kind: input.pendingApproval.kind,
+                  approvalId:
+                    input.pendingApproval.kind === 'tool_action'
+                      ? input.pendingApproval.approvalId
+                      : null,
+                },
+              }
             : {}),
           ...(conversationRefs ? { conversationRefs } : {}),
         },
@@ -1544,7 +1686,15 @@ const executeLarkVercelTask = async (
             correlationId: task.taskId,
           },
           ...(input.pendingApproval
-            ? { pendingApproval: { kind: input.pendingApproval.kind, approvalId: input.pendingApproval.kind === 'tool_action' ? input.pendingApproval.approvalId : null } }
+            ? {
+                pendingApproval: {
+                  kind: input.pendingApproval.kind,
+                  approvalId:
+                    input.pendingApproval.kind === 'tool_action'
+                      ? input.pendingApproval.approvalId
+                      : null,
+                },
+              }
             : {}),
           ...(conversationRefs ? { conversationRefs } : {}),
         },
@@ -1632,10 +1782,13 @@ const executeLarkVercelTask = async (
     taskState: activeTaskState,
     threadSummary: activeThreadSummary,
     history: takeRecentMessagesByTokenBudget({
-      messages: filterThreadMessagesForContext(contextMessages.map((entry) => ({
-        role: entry.role === 'assistant' ? 'assistant' : 'user',
-        content: typeof entry.content === 'string' ? entry.content : flattenModelContent(entry.content),
-      }))),
+      messages: filterThreadMessagesForContext(
+        contextMessages.map((entry) => ({
+          role: entry.role === 'assistant' ? 'assistant' : 'user',
+          content:
+            typeof entry.content === 'string' ? entry.content : flattenModelContent(entry.content),
+        })),
+      ),
       tokenBudget: LARK_CHILD_ROUTER_HISTORY_TOKEN_BUDGET,
       maxMessages: LARK_CHILD_ROUTER_HISTORY_MAX_MESSAGES,
     }),
@@ -1643,9 +1796,9 @@ const executeLarkVercelTask = async (
   });
 
   if (
-    childRoute.route === 'fast_reply'
-    && childRoute.reply?.trim()
-    && !shouldBypassUnverifiedDuplicateTaskFastReply({
+    childRoute.route === 'fast_reply' &&
+    childRoute.reply?.trim() &&
+    !shouldBypassUnverifiedDuplicateTaskFastReply({
       conversationKey,
       childRoute,
       latestUserMessage: message.text,
@@ -1707,9 +1860,10 @@ const executeLarkVercelTask = async (
     };
   }
 
-  const routerAcknowledgement = childRoute.route === 'fast_reply'
-    ? undefined
-    : childRoute.acknowledgement?.trim() || 'I’ll handle that now and keep it moving for you.';
+  const routerAcknowledgement =
+    childRoute.route === 'fast_reply'
+      ? undefined
+      : childRoute.acknowledgement?.trim() || 'I’ll handle that now and keep it moving for you.';
   statusHistory.push('Context ready.');
   await updateStatus(
     'planning',
@@ -1726,7 +1880,8 @@ const executeLarkVercelTask = async (
     allowedToolIds: runtime.allowedToolIds,
     allowedActionsByTool: runtime.allowedActionsByTool,
     workspaceAvailable: Boolean(runtime.workspace),
-    hasActiveArtifacts: groundingAttachments.length > 0 || activeTaskState.activeSourceArtifacts.length > 0,
+    hasActiveArtifacts:
+      groundingAttachments.length > 0 || activeTaskState.activeSourceArtifacts.length > 0,
     artifactMode: classifyArtifactMode(groundingAttachments),
     childRoute: {
       normalizedIntent: childRoute.normalizedIntent,
@@ -1770,7 +1925,8 @@ const executeLarkVercelTask = async (
       suggestedActions: childRoute.suggestedActions,
     },
     hasWorkspace: Boolean(runtime.workspace),
-    hasArtifacts: groundingAttachments.length > 0 || activeTaskState.activeSourceArtifacts.length > 0,
+    hasArtifacts:
+      groundingAttachments.length > 0 || activeTaskState.activeSourceArtifacts.length > 0,
     inferredDomain: toolSelection.inferredDomain,
     inferredOperationClass: toolSelection.inferredOperationClass,
     plannerChosenToolId: toolSelection.plannerChosenToolId ?? null,
@@ -1817,7 +1973,11 @@ const executeLarkVercelTask = async (
     plannerChosenToolId: toolSelection.plannerChosenToolId,
     plannerChosenOperationClass: toolSelection.plannerChosenOperationClass,
   };
-  const executedToolOutcomes: Array<{ toolName: string; success: boolean; pendingApproval?: boolean }> = [];
+  const executedToolOutcomes: Array<{
+    toolName: string;
+    success: boolean;
+    pendingApproval?: boolean;
+  }> = [];
   if (toolSelection.clarificationQuestion?.trim()) {
     const clarificationText = toolSelection.clarificationQuestion.trim();
     await statusCoordinator.replace(clarificationText, []);
@@ -1878,7 +2038,11 @@ const executeLarkVercelTask = async (
         channel: 'lark',
         threadId: contextStorageId ?? message.chatId,
       });
-      const capabilityGapPayload = buildCapabilityGapFromToolFailure(analyticsToolDemandPayload, toolName, output);
+      const capabilityGapPayload = buildCapabilityGapFromToolFailure(
+        analyticsToolDemandPayload,
+        toolName,
+        output,
+      );
       if (capabilityGapPayload) {
         await appendExecutionEventSafe({
           executionId: task.taskId,
@@ -1940,9 +2104,9 @@ const executeLarkVercelTask = async (
     contextClass,
   });
   const reservedTokens =
-    estimateTokens(systemPrompt)
-    + estimateTokens(message.text)
-    + (groundingAttachments.length > 0 ? 8_000 : 1_500);
+    estimateTokens(systemPrompt) +
+    estimateTokens(message.text) +
+    (groundingAttachments.length > 0 ? 8_000 : 1_500);
   const historySelection = buildAdaptiveLarkHistoryMessages({
     messages: contextMessages,
     targetBudgetTokens: budget.targetContextBudget,
@@ -1961,10 +2125,10 @@ const executeLarkVercelTask = async (
     includedSourceArtifactCount: groundingAttachments.length,
     includedThreadSummary: activeThreadSummary.sourceMessageCount > 0,
     includedTaskState:
-      activeTaskState.completedMutations.length > 0
-      || activeTaskState.activeSourceArtifacts.length > 0
-      || Boolean(activeTaskState.pendingApproval)
-      || Boolean(activeTaskState.activeObjective),
+      activeTaskState.completedMutations.length > 0 ||
+      activeTaskState.activeSourceArtifacts.length > 0 ||
+      Boolean(activeTaskState.pendingApproval) ||
+      Boolean(activeTaskState.activeObjective),
     compactionTier: historySelection.compactionTier,
   });
   await appendLatestAgentRunLog(task.taskId, 'lark.context.summary', {
@@ -1978,13 +2142,17 @@ const executeLarkVercelTask = async (
     includedSourceArtifactCount: groundingAttachments.length,
     includedThreadSummary: activeThreadSummary.sourceMessageCount > 0,
     includedTaskState:
-      activeTaskState.completedMutations.length > 0
-      || activeTaskState.activeSourceArtifacts.length > 0
-      || Boolean(activeTaskState.pendingApproval)
-      || Boolean(activeTaskState.activeObjective),
+      activeTaskState.completedMutations.length > 0 ||
+      activeTaskState.activeSourceArtifacts.length > 0 ||
+      Boolean(activeTaskState.pendingApproval) ||
+      Boolean(activeTaskState.activeObjective),
     compactionTier: historySelection.compactionTier,
   });
-  let inputMessages = historySelection.messages.map(({ role, content, id }) => ({ role, content, id })) as Array<ModelMessage & { id?: string }>;
+  let inputMessages = historySelection.messages.map(({ role, content, id }) => ({
+    role,
+    content,
+    id,
+  })) as Array<ModelMessage & { id?: string }>;
   if (groundingAttachments.length > 0) {
     const visionParts = await buildVisionContent({
       userMessage: message.text,
@@ -1996,7 +2164,8 @@ const executeLarkVercelTask = async (
     if ((persistentThread || sharedChatContext) && persistedUserMessageId) {
       let replacedCurrentMessage = false;
       inputMessages = historySelection.messages.map((entry, index) => {
-        const shouldReplace = index === historySelection.messages.length - 1 && entry.id === persistedUserMessageId;
+        const shouldReplace =
+          index === historySelection.messages.length - 1 && entry.id === persistedUserMessageId;
         if (shouldReplace) {
           replacedCurrentMessage = true;
         }
@@ -2017,9 +2186,10 @@ const executeLarkVercelTask = async (
       ];
     }
   } else if (message.text.trim()) {
-    const hasCurrentUserTurn = (persistentThread || sharedChatContext)
-      ? inputMessages.some((entry) => entry.id === persistedUserMessageId)
-      : false;
+    const hasCurrentUserTurn =
+      persistentThread || sharedChatContext
+        ? inputMessages.some((entry) => entry.id === persistedUserMessageId)
+        : false;
     if ((!persistentThread && !sharedChatContext) || !hasCurrentUserTurn) {
       inputMessages = [
         ...inputMessages.map(({ role, content }) => ({ role, content })),
@@ -2029,9 +2199,8 @@ const executeLarkVercelTask = async (
   }
 
   try {
-    const primaryMessages = inputMessages.length > 0
-      ? inputMessages
-      : [{ role: 'user', content: message.text }];
+    const primaryMessages =
+      inputMessages.length > 0 ? inputMessages : [{ role: 'user', content: message.text }];
     await appendLatestAgentRunLog(task.taskId, 'llm.context', {
       phase: 'lark_generate',
       threadId: contextStorageId ?? message.chatId,
@@ -2059,22 +2228,27 @@ const executeLarkVercelTask = async (
     });
     let result;
     try {
-      result = await runWithModelCircuitBreaker(resolvedModel.effectiveProvider, 'lark_generate', () => generateText({
-        model: resolvedModel.model,
-        system: systemPrompt,
-        messages: primaryMessages,
-        tools,
-        temperature: config.OPENAI_TEMPERATURE,
-        providerOptions: {
-          google: {
-            thinkingConfig: {
-              includeThoughts: true,
-              thinkingLevel: resolvedModel.thinkingLevel,
+      result = await runWithModelCircuitBreaker(
+        resolvedModel.effectiveProvider,
+        'lark_generate',
+        () =>
+          generateText({
+            model: resolvedModel.model,
+            system: systemPrompt,
+            messages: primaryMessages,
+            tools,
+            temperature: config.OPENAI_TEMPERATURE,
+            providerOptions: {
+              google: {
+                thinkingConfig: {
+                  includeThoughts: true,
+                  thinkingLevel: resolvedModel.thinkingLevel,
+                },
+              },
             },
-          },
-        },
-        stopWhen: [stopOnPendingApproval, stopOnBlockingUserInput, stepCountIs(20)],
-      }));
+            stopWhen: [stopOnPendingApproval, stopOnBlockingUserInput, stepCountIs(20)],
+          }),
+      );
     } catch (error) {
       if (!isProviderInvalidArgumentError(error)) {
         throw error;
@@ -2087,27 +2261,33 @@ const executeLarkVercelTask = async (
         originalMessageCount: primaryMessages.length,
         sanitizedMessageCount: sanitizedMessages.length,
         originalLatestUserLength: message.text.length,
-        sanitizedLatestUserLength: typeof sanitizedMessages[sanitizedMessages.length - 1]?.content === 'string'
-          ? sanitizedMessages[sanitizedMessages.length - 1]!.content.length
-          : 0,
+        sanitizedLatestUserLength:
+          typeof sanitizedMessages[sanitizedMessages.length - 1]?.content === 'string'
+            ? sanitizedMessages[sanitizedMessages.length - 1]!.content.length
+            : 0,
         error: error instanceof Error ? error.message : 'invalid_argument',
       });
-      result = await runWithModelCircuitBreaker(resolvedModel.effectiveProvider, 'lark_generate_sanitized_retry', () => generateText({
-        model: resolvedModel.model,
-        system: systemPrompt,
-        messages: sanitizedMessages,
-        tools,
-        temperature: config.OPENAI_TEMPERATURE,
-        providerOptions: {
-          google: {
-            thinkingConfig: {
-              includeThoughts: true,
-              thinkingLevel: resolvedModel.thinkingLevel,
+      result = await runWithModelCircuitBreaker(
+        resolvedModel.effectiveProvider,
+        'lark_generate_sanitized_retry',
+        () =>
+          generateText({
+            model: resolvedModel.model,
+            system: systemPrompt,
+            messages: sanitizedMessages,
+            tools,
+            temperature: config.OPENAI_TEMPERATURE,
+            providerOptions: {
+              google: {
+                thinkingConfig: {
+                  includeThoughts: true,
+                  thinkingLevel: resolvedModel.thinkingLevel,
+                },
+              },
             },
-          },
-        },
-        stopWhen: [stopOnPendingApproval, stopOnBlockingUserInput, stepCountIs(20)],
-      }));
+            stopWhen: [stopOnPendingApproval, stopOnBlockingUserInput, stepCountIs(20)],
+          }),
+      );
     }
     logger.info('vercel.tool_loop.summary', {
       mode: runtime.mode,
@@ -2118,14 +2298,21 @@ const executeLarkVercelTask = async (
       channel: 'lark',
     });
 
-    const steps = result.steps as Array<{ toolResults?: Array<{ toolName?: string; output?: unknown }> }>;
-    const pendingApproval = findPendingApproval(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
-    const blockingUserInput = findBlockingUserInput(steps as Array<{ toolResults?: Array<{ output: unknown }> }>);
+    const steps = result.steps as Array<{
+      toolResults?: Array<{ toolName?: string; output?: unknown }>;
+    }>;
+    const pendingApproval = findPendingApproval(
+      steps as Array<{ toolResults?: Array<{ output: unknown }> }>,
+    );
+    const blockingUserInput = findBlockingUserInput(
+      steps as Array<{ toolResults?: Array<{ output: unknown }> }>,
+    );
     const finalText = blockingUserInput
-      ? ((buildMissingInputResponseText(blockingUserInput) ?? result.text.trim()) || 'I need one more detail from you before I can continue.')
+      ? (buildMissingInputResponseText(blockingUserInput) ?? result.text.trim()) ||
+        'I need one more detail from you before I can continue.'
       : pendingApproval
-      ? `Approval required before continuing: ${pendingApproval.kind === 'run_command' ? pendingApproval.command : pendingApproval.kind}.`
-      : result.text.trim() || 'Done.';
+        ? `Approval required before continuing: ${pendingApproval.kind === 'run_command' ? pendingApproval.command : pendingApproval.kind}.`
+        : result.text.trim() || 'Done.';
 
     statusHistory.push('Execution complete. Preparing the final response.');
     await updateStatus('analyzing', 'Finalizing the response for you.');
@@ -2135,7 +2322,7 @@ const executeLarkVercelTask = async (
       await updateStatus(
         'approval',
         pendingApproval.kind === 'tool_action'
-          ? summarizeText(pendingApproval.summary, 220) ?? finalText
+          ? (summarizeText(pendingApproval.summary, 220) ?? finalText)
           : finalText,
         buildLarkApprovalActions(pendingApproval),
         { force: true, terminal: true },
@@ -2149,10 +2336,10 @@ const executeLarkVercelTask = async (
       conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, finalText);
     }
     if (linkedUserId) {
-      const effectiveMessages = inputMessages.length > 0
-        ? inputMessages
-        : [{ role: 'user', content: message.text }];
-      const estimatedInputTokens = estimateTokens(systemPrompt) + estimateMessageTokens(effectiveMessages);
+      const effectiveMessages =
+        inputMessages.length > 0 ? inputMessages : [{ role: 'user', content: message.text }];
+      const estimatedInputTokens =
+        estimateTokens(systemPrompt) + estimateMessageTokens(effectiveMessages);
       const estimatedOutputTokens = estimateTokens(finalText);
       await aiTokenUsageService.record({
         userId: linkedUserId,
@@ -2167,9 +2354,9 @@ const executeLarkVercelTask = async (
         actualInputTokens: estimatedInputTokens,
         actualOutputTokens: estimatedOutputTokens,
         wasCompacted: historySelection.compactionTier > 1,
-      mode: runtime.mode,
-      runExposedToolIds: effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
-    });
+        mode: runtime.mode,
+        runExposedToolIds: effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
+      });
     }
 
     await persistAssistantTurn({
@@ -2209,26 +2396,32 @@ const executeLarkVercelTask = async (
         suggestedActions: childRoute.suggestedActions,
       },
       hasWorkspace: Boolean(runtime.workspace),
-      hasArtifacts: groundingAttachments.length > 0 || activeTaskState.activeSourceArtifacts.length > 0,
+      hasArtifacts:
+        groundingAttachments.length > 0 || activeTaskState.activeSourceArtifacts.length > 0,
       plannerChosenToolId: effectiveRuntime.plannerChosenToolId,
       plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
       runExposedToolIds: effectiveRuntime.runExposedToolIds,
       selectionReason: effectiveRuntime.toolSelectionReason,
       toolResults: executedToolOutcomes,
     });
-    await appendLatestAgentRunLog(task.taskId, pendingApproval ? 'run.waiting_for_approval' : 'run.completed', {
-      channel: 'lark',
-      route: childRoute.route,
-      threadId: contextStorageId ?? message.chatId,
-      finalText,
-      pendingApproval: pendingApproval
-        ? {
-          kind: pendingApproval.kind,
-          approvalId: pendingApproval.kind === 'tool_action' ? pendingApproval.approvalId : null,
-        }
-        : null,
-      stepCount: Array.isArray(result.steps) ? result.steps.length : 0,
-    });
+    await appendLatestAgentRunLog(
+      task.taskId,
+      pendingApproval ? 'run.waiting_for_approval' : 'run.completed',
+      {
+        channel: 'lark',
+        route: childRoute.route,
+        threadId: contextStorageId ?? message.chatId,
+        finalText,
+        pendingApproval: pendingApproval
+          ? {
+              kind: pendingApproval.kind,
+              approvalId:
+                pendingApproval.kind === 'tool_action' ? pendingApproval.approvalId : null,
+            }
+          : null,
+        stepCount: Array.isArray(result.steps) ? result.steps.length : 0,
+      },
+    );
 
     return {
       task,

@@ -1,9 +1,13 @@
 import { Buffer } from 'buffer';
 
 import config from '../../../config';
-import { CircuitBreakerOpenError, runWithCircuitBreaker } from '../../observability/circuit-breaker';
+import {
+  CircuitBreakerOpenError,
+  runWithCircuitBreaker,
+} from '../../observability/circuit-breaker';
 import { logger } from '../../../utils/logger';
 import { ZohoIntegrationError, ZohoFailureCode } from './zoho.errors';
+import { zohoRateLimitService } from './zoho-rate-limit.service';
 
 type RetryOptions = {
   maxAttempts?: number;
@@ -57,7 +61,9 @@ const sleep = (ms: number) =>
     setTimeout(resolve, ms);
   });
 
-const redactBody = (body: URLSearchParams | FormData | Record<string, unknown> | undefined): unknown => {
+const redactBody = (
+  body: URLSearchParams | FormData | Record<string, unknown> | undefined,
+): unknown => {
   if (!body) {
     return undefined;
   }
@@ -124,16 +130,24 @@ export class ZohoHttpClient {
       maxAttempts: Math.max(1, options.retry?.maxAttempts ?? 3),
       baseDelayMs: Math.max(0, options.retry?.baseDelayMs ?? 250),
     };
-    this.accountsBaseUrl = (options.accountsBaseUrl ?? config.ZOHO_ACCOUNTS_BASE_URL).replace(/\/$/, '');
+    this.accountsBaseUrl = (options.accountsBaseUrl ?? config.ZOHO_ACCOUNTS_BASE_URL).replace(
+      /\/$/,
+      '',
+    );
     this.apiBaseUrl = (options.apiBaseUrl ?? config.ZOHO_API_BASE_URL).replace(/\/$/, '');
   }
 
   async requestJson<T>(input: RequestInput): Promise<T> {
     try {
-      return await runWithCircuitBreaker('zoho', input.base, {
-        ...ZOHO_CIRCUIT_BREAKER,
-        isFailure: (error) => error instanceof ZohoIntegrationError ? error.retriable : true,
-      }, () => this.requestJsonInternal(input));
+      return await runWithCircuitBreaker(
+        'zoho',
+        input.base,
+        {
+          ...ZOHO_CIRCUIT_BREAKER,
+          isFailure: (error) => (error instanceof ZohoIntegrationError ? error.retriable : true),
+        },
+        () => this.requestJsonInternal(input),
+      );
     } catch (error) {
       if (error instanceof CircuitBreakerOpenError) {
         throw new ZohoIntegrationError({
@@ -159,6 +173,10 @@ export class ZohoHttpClient {
 
     for (;;) {
       try {
+        await zohoRateLimitService.consumeCall({
+          path: input.path,
+          base: input.base,
+        });
         const headers = new Headers(input.headers ?? {});
         let body: string | FormData | undefined;
 
@@ -193,11 +211,15 @@ export class ZohoHttpClient {
           const retryAfterHeader = response.headers.get('retry-after');
           const retryAfterMs = readRetryAfterMs(retryAfterHeader);
           const payloadMessage =
-            typeof payload === 'object' && payload !== null && typeof (payload as { message?: unknown }).message === 'string'
+            typeof payload === 'object' &&
+            payload !== null &&
+            typeof (payload as { message?: unknown }).message === 'string'
               ? (payload as { message: string }).message
               : undefined;
           const payloadCode =
-            typeof payload === 'object' && payload !== null && typeof (payload as { code?: unknown }).code === 'string'
+            typeof payload === 'object' &&
+            payload !== null &&
+            typeof (payload as { code?: unknown }).code === 'string'
               ? (payload as { code: string }).code
               : undefined;
           const message = payloadMessage
@@ -265,7 +287,9 @@ export class ZohoHttpClient {
           error instanceof ZohoIntegrationError
             ? error.retriable
             : error instanceof Error
-              ? ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN'].includes((error as NodeJS.ErrnoException).code ?? '')
+              ? ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN'].includes(
+                  (error as NodeJS.ErrnoException).code ?? '',
+                )
               : false;
 
         if (!retriable || attempt >= retryPolicy.maxAttempts) {
@@ -297,10 +321,15 @@ export class ZohoHttpClient {
 
   async requestRaw(input: RequestInput): Promise<ZohoRawResponse> {
     try {
-      return await runWithCircuitBreaker('zoho', `${input.base}:raw`, {
-        ...ZOHO_CIRCUIT_BREAKER,
-        isFailure: (error) => error instanceof ZohoIntegrationError ? error.retriable : true,
-      }, () => this.requestRawInternal(input));
+      return await runWithCircuitBreaker(
+        'zoho',
+        `${input.base}:raw`,
+        {
+          ...ZOHO_CIRCUIT_BREAKER,
+          isFailure: (error) => (error instanceof ZohoIntegrationError ? error.retriable : true),
+        },
+        () => this.requestRawInternal(input),
+      );
     } catch (error) {
       if (error instanceof CircuitBreakerOpenError) {
         throw new ZohoIntegrationError({
@@ -326,6 +355,10 @@ export class ZohoHttpClient {
 
     for (;;) {
       try {
+        await zohoRateLimitService.consumeCall({
+          path: input.path,
+          base: input.base,
+        });
         const headers = new Headers(input.headers ?? {});
         let body: string | FormData | undefined;
 
@@ -360,11 +393,15 @@ export class ZohoHttpClient {
           const retryAfterHeader = response.headers.get('retry-after');
           const retryAfterMs = readRetryAfterMs(retryAfterHeader);
           const payloadMessage =
-            typeof payload === 'object' && payload !== null && typeof (payload as { message?: unknown }).message === 'string'
+            typeof payload === 'object' &&
+            payload !== null &&
+            typeof (payload as { message?: unknown }).message === 'string'
               ? (payload as { message: string }).message
               : undefined;
           const payloadCode =
-            typeof payload === 'object' && payload !== null && typeof (payload as { code?: unknown }).code === 'string'
+            typeof payload === 'object' &&
+            payload !== null &&
+            typeof (payload as { code?: unknown }).code === 'string'
               ? (payload as { code: string }).code
               : undefined;
           const message = payloadMessage
@@ -441,7 +478,9 @@ export class ZohoHttpClient {
           error instanceof ZohoIntegrationError
             ? error.retriable
             : error instanceof Error
-              ? ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN'].includes((error as NodeJS.ErrnoException).code ?? '')
+              ? ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN'].includes(
+                  (error as NodeJS.ErrnoException).code ?? '',
+                )
               : false;
 
         if (!retriable || attempt >= retryPolicy.maxAttempts) {

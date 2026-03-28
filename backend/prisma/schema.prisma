@@ -100,67 +100,67 @@ enum UserMemoryFormatting {
 }
 
 model User {
-  id               String            @id @default(uuid())
-  email            String            @unique
-  password         String
-  name             String?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  adminMemberships AdminMembership[]
-  adminSessions    AdminSession[]
-  departmentMemberships DepartmentMembership[]
-  departmentUserToolOverrides DepartmentUserToolOverride[]
-  createdDepartmentAgentConfigs DepartmentAgentConfig[] @relation("DepartmentAgentConfigCreatedBy")
-  updatedDepartmentAgentConfigs DepartmentAgentConfig[] @relation("DepartmentAgentConfigUpdatedBy")
-  departmentToolPermissionsUpdated DepartmentToolPermission[] @relation("DepartmentToolPermissionUpdatedBy")
+  id                                 String                       @id @default(uuid())
+  email                              String                       @unique
+  password                           String
+  name                               String?
+  createdAt                          DateTime                     @default(now())
+  updatedAt                          DateTime                     @updatedAt
+  adminMemberships                   AdminMembership[]
+  adminSessions                      AdminSession[]
+  departmentMemberships              DepartmentMembership[]
+  departmentUserToolOverrides        DepartmentUserToolOverride[]
+  createdDepartmentAgentConfigs      DepartmentAgentConfig[]      @relation("DepartmentAgentConfigCreatedBy")
+  updatedDepartmentAgentConfigs      DepartmentAgentConfig[]      @relation("DepartmentAgentConfigUpdatedBy")
+  departmentToolPermissionsUpdated   DepartmentToolPermission[]   @relation("DepartmentToolPermissionUpdatedBy")
   departmentUserToolOverridesUpdated DepartmentUserToolOverride[] @relation("DepartmentUserToolOverrideUpdatedBy")
-  memberSessions   MemberSession[]
-  desktopHandoffs  DesktopAuthHandoff[]
-  desktopThreads   DesktopThread[]
-  scheduledWorkflowsCreated ScheduledWorkflow[] @relation("ScheduledWorkflowCreatedBy")
-  executionRuns    ExecutionRun[]
-  larkAuthLinks    LarkUserAuthLink[]
-  googleAuthLinks  GoogleUserAuthLink[]
-  memoryItems      UserMemoryItem[]
-  memoryProfiles   UserMemoryProfile[]
+  memberSessions                     MemberSession[]
+  desktopHandoffs                    DesktopAuthHandoff[]
+  desktopThreads                     DesktopThread[]
+  scheduledWorkflowsCreated          ScheduledWorkflow[]          @relation("ScheduledWorkflowCreatedBy")
+  executionRuns                      ExecutionRun[]
+  larkAuthLinks                      LarkUserAuthLink[]
+  googleAuthLinks                    GoogleUserAuthLink[]
+  memoryItems                        UserMemoryItem[]
+  memoryProfiles                     UserMemoryProfile[]
 }
 
 model Company {
-  id              String           @id @default(uuid())
-  name            String
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  departments     Department[]
-  skills          Skill[]
-  zohoConnections ZohoConnection[]
-  zohoSyncJobs    ZohoSyncJob[]
-  zohoOAuthConfig ZohoOAuthConfig?
-  larkTenantBindings LarkTenantBinding[]
-  larkWorkspaceConfig LarkWorkspaceConfig?
-  larkOperationalConfig LarkOperationalConfig?
-  larkDirectorySyncRuns LarkDirectorySyncRun[]
-  adminMemberships AdminMembership[]
-  adminSessions    AdminSession[]
-  invites          CompanyInvite[]
-  mcpActionLogs    McpActionLog[]
-  channelIdentities ChannelIdentity[]
-  toolPermissions  ToolPermission[]
+  id                     String                 @id @default(uuid())
+  name                   String
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  departments            Department[]
+  skills                 Skill[]
+  zohoConnections        ZohoConnection[]
+  zohoSyncJobs           ZohoSyncJob[]
+  zohoOAuthConfig        ZohoOAuthConfig?
+  larkTenantBindings     LarkTenantBinding[]
+  larkWorkspaceConfig    LarkWorkspaceConfig?
+  larkOperationalConfig  LarkOperationalConfig?
+  larkDirectorySyncRuns  LarkDirectorySyncRun[]
+  adminMemberships       AdminMembership[]
+  adminSessions          AdminSession[]
+  invites                CompanyInvite[]
+  mcpActionLogs          McpActionLog[]
+  channelIdentities      ChannelIdentity[]
+  toolPermissions        ToolPermission[]
   zohoRoleAccessPolicies ZohoRoleAccessPolicy[]
-  aiRoleDefinitions AiRoleDefinition[]
-  vectorDocuments  VectorDocument[]
-  vectorShareRequests VectorShareRequest[]
-  memberSessions   MemberSession[]
-  desktopHandoffs  DesktopAuthHandoff[]
-  desktopThreads   DesktopThread[]
-  larkChatContexts LarkChatContext[]
-  scheduledWorkflows ScheduledWorkflow[]
-  executionRuns    ExecutionRun[]
-  larkAuthLinks    LarkUserAuthLink[]
-  googleAuthLinks  GoogleUserAuthLink[]
-  googleWorkspaceAuth CompanyGoogleAuthLink?
-  fileAssets       FileAsset[]
-  userMemoryItems  UserMemoryItem[]
-  userMemoryProfiles UserMemoryProfile[]
+  aiRoleDefinitions      AiRoleDefinition[]
+  vectorDocuments        VectorDocument[]
+  vectorShareRequests    VectorShareRequest[]
+  memberSessions         MemberSession[]
+  desktopHandoffs        DesktopAuthHandoff[]
+  desktopThreads         DesktopThread[]
+  larkChatContexts       LarkChatContext[]
+  scheduledWorkflows     ScheduledWorkflow[]
+  executionRuns          ExecutionRun[]
+  larkAuthLinks          LarkUserAuthLink[]
+  googleAuthLinks        GoogleUserAuthLink[]
+  googleWorkspaceAuth    CompanyGoogleAuthLink?
+  fileAssets             FileAsset[]
+  userMemoryItems        UserMemoryItem[]
+  userMemoryProfiles     UserMemoryProfile[]
 }
 
 model UserMemoryItem {
@@ -194,17 +194,17 @@ model UserMemoryItem {
 }
 
 model UserMemoryProfile {
-  id                     String                 @id @default(uuid())
-  companyId              String
-  company                Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  userId                 String
-  user                   User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  preferredReplyLength   UserMemoryReplyLength?
-  preferredTone          UserMemoryTone?
-  preferredFormatting    UserMemoryFormatting?
+  id                      String                 @id @default(uuid())
+  companyId               String
+  company                 Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId                  String
+  user                    User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  preferredReplyLength    UserMemoryReplyLength?
+  preferredTone           UserMemoryTone?
+  preferredFormatting     UserMemoryFormatting?
   updatedFromMemoryItemId String?
-  createdAt              DateTime               @default(now())
-  updatedAt              DateTime               @updatedAt
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
 
   @@unique([companyId, userId])
 }
@@ -225,50 +225,50 @@ model AdminMembership {
 }
 
 model AdminSession {
-  id        String   @id @default(uuid())
-  sessionId String   @unique @default(uuid())
+  id        String    @id @default(uuid())
+  sessionId String    @unique @default(uuid())
   userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   companyId String?
-  company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company   Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   role      String
   expiresAt DateTime
   revokedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   @@index([userId, role, expiresAt])
   @@index([companyId, role, expiresAt])
 }
 
 model ZohoConnection {
-  id          String      @id @default(uuid())
-  companyId   String
-  company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  environment String      @default("prod")
-  providerMode String     @default("rest")
-  status      String
-  connectedAt DateTime
-  scopes      String[]
-  lastSyncAt  DateTime?
-  mcpBaseUrl  String?
-  mcpApiKeyEncrypted String?
-  mcpWorkspaceKey String?
-  mcpAllowedTools String[]
-  mcpCapabilities Json?
-  mcpLastHealthAt DateTime?
-  mcpLastHealthStatus String?
-  accessTokenEncrypted String?
+  id                    String           @id @default(uuid())
+  companyId             String
+  company               Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  environment           String           @default("prod")
+  providerMode          String           @default("rest")
+  status                String
+  connectedAt           DateTime
+  scopes                String[]
+  lastSyncAt            DateTime?
+  mcpBaseUrl            String?
+  mcpApiKeyEncrypted    String?
+  mcpWorkspaceKey       String?
+  mcpAllowedTools       String[]
+  mcpCapabilities       Json?
+  mcpLastHealthAt       DateTime?
+  mcpLastHealthStatus   String?
+  accessTokenEncrypted  String?
   refreshTokenEncrypted String?
-  tokenCipherVersion Int @default(1)
-  accessTokenExpiresAt DateTime?
+  tokenCipherVersion    Int              @default(1)
+  accessTokenExpiresAt  DateTime?
   refreshTokenExpiresAt DateTime?
-  tokenFailureCode String?
-  lastTokenRefreshAt DateTime?
-  tokenMetadata Json?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  syncJobs    ZohoSyncJob[]
-  vectorDocs  VectorDocument[]
+  tokenFailureCode      String?
+  lastTokenRefreshAt    DateTime?
+  tokenMetadata         Json?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  syncJobs              ZohoSyncJob[]
+  vectorDocs            VectorDocument[]
 
   @@unique([companyId, environment])
 }
@@ -287,23 +287,23 @@ model ZohoOAuthConfig {
 }
 
 model ChannelIdentity {
-  id               String   @id @default(uuid())
-  companyId        String
-  company          Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  channel          String
-  externalUserId   String
-  externalTenantId String
-  displayName      String?
-  email            String?
-  larkOpenId       String?
-  larkUserId       String?
-  sourceRoles      String[] @default([])
-  aiRole           String   @default("MEMBER")
-  aiRoleSource     String   @default("sync")
-  syncedAiRole     String?
+  id                 String   @id @default(uuid())
+  companyId          String
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  channel            String
+  externalUserId     String
+  externalTenantId   String
+  displayName        String?
+  email              String?
+  larkOpenId         String?
+  larkUserId         String?
+  sourceRoles        String[] @default([])
+  aiRole             String   @default("MEMBER")
+  aiRoleSource       String   @default("sync")
+  syncedAiRole       String?
   syncedFromLarkRole String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   @@unique([channel, externalUserId, companyId])
   @@index([companyId, larkOpenId])
@@ -312,18 +312,18 @@ model ChannelIdentity {
 }
 
 model LarkWorkspaceConfig {
-  id                           String   @id @default(uuid())
-  companyId                    String   @unique
-  company                      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  appId                        String
-  appSecretEncrypted           String
-  verificationTokenEncrypted   String?
-  signingSecretEncrypted       String?
+  id                               String   @id @default(uuid())
+  companyId                        String   @unique
+  company                          Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  appId                            String
+  appSecretEncrypted               String
+  verificationTokenEncrypted       String?
+  signingSecretEncrypted           String?
   staticTenantAccessTokenEncrypted String?
-  apiBaseUrl                   String   @default("https://open.larksuite.com")
-  createdBy                    String
-  createdAt                    DateTime @default(now())
-  updatedAt                    DateTime @updatedAt
+  apiBaseUrl                       String   @default("https://open.larksuite.com")
+  createdBy                        String
+  createdAt                        DateTime @default(now())
+  updatedAt                        DateTime @updatedAt
 }
 
 model LarkOperationalConfig {
@@ -342,76 +342,76 @@ model LarkOperationalConfig {
 }
 
 model LarkDirectorySyncRun {
-  id            String   @id @default(uuid())
-  companyId     String
-  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  trigger       String
-  status        String
-  syncedCount   Int      @default(0)
-  adminCount    Int      @default(0)
-  memberCount   Int      @default(0)
-  startedAt     DateTime?
-  finishedAt    DateTime?
-  errorMessage  String?
-  diagnostics   Json?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String    @id @default(uuid())
+  companyId    String
+  company      Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  trigger      String
+  status       String
+  syncedCount  Int       @default(0)
+  adminCount   Int       @default(0)
+  memberCount  Int       @default(0)
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  errorMessage String?
+  diagnostics  Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   @@index([companyId, createdAt])
   @@index([companyId, status, createdAt])
 }
 
 model LarkTenantBinding {
-  id           String   @id @default(uuid())
-  companyId    String
-  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id            String   @id @default(uuid())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   larkTenantKey String
-  isActive     Boolean  @default(true)
-  createdBy    String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  isActive      Boolean  @default(true)
+  createdBy     String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@unique([larkTenantKey])
   @@index([companyId, isActive])
 }
 
 model McpActionLog {
-  id            String   @id @default(uuid())
-  companyId     String
-  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  taskId        String
-  actionName    String
-  payloadHash   String
-  status        String
-  receipt       Json?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id          String   @id @default(uuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  taskId      String
+  actionName  String
+  payloadHash String
+  status      String
+  receipt     Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@index([companyId, createdAt])
   @@index([taskId, createdAt])
 }
 
 model ZohoSyncJob {
-  id            String         @id @default(uuid())
-  companyId     String
-  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  connectionId  String
-  connection    ZohoConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  jobType       String
-  status        String
-  progressPercent Int       @default(0)
-  checkpoint    String?
-  totalBatches  Int?
-  processedBatches Int      @default(0)
-  retryCount    Int           @default(0)
-  maxAttempts   Int           @default(3)
-  queuedAt      DateTime       @default(now())
-  startedAt     DateTime?
-  finishedAt    DateTime?
-  correlationId String?
-  payload       Json?
-  errorMessage  String?
-  events        ZohoSyncJobEvent[]
+  id               String             @id @default(uuid())
+  companyId        String
+  company          Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connectionId     String
+  connection       ZohoConnection     @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  jobType          String
+  status           String
+  progressPercent  Int                @default(0)
+  checkpoint       String?
+  totalBatches     Int?
+  processedBatches Int                @default(0)
+  retryCount       Int                @default(0)
+  maxAttempts      Int                @default(3)
+  queuedAt         DateTime           @default(now())
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  correlationId    String?
+  payload          Json?
+  errorMessage     String?
+  events           ZohoSyncJobEvent[]
 
   @@index([companyId, status])
   @@index([connectionId, jobType, status])
@@ -449,29 +449,29 @@ model ZohoSyncJobEvent {
 }
 
 model VectorDocument {
-  id           String      @id @default(uuid())
-  companyId    String
-  company      Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  connectionId String?
-  connection   ZohoConnection? @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  fileAssetId  String?
-  fileAsset    FileAsset?  @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
-  sourceType   String
-  sourceId     String
-  chunkIndex   Int
-  documentKey  String?
-  contentHash  String
-  visibility   VectorVisibility @default(shared)
-  ownerUserId  String?
-  conversationKey String?
-  chunkText    String?
-  payload      Json
-  embedding    Float[]      @default([])
+  id                     String           @id @default(uuid())
+  companyId              String
+  company                Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connectionId           String?
+  connection             ZohoConnection?  @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  fileAssetId            String?
+  fileAsset              FileAsset?       @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
+  sourceType             String
+  sourceId               String
+  chunkIndex             Int
+  documentKey            String?
+  contentHash            String
+  visibility             VectorVisibility @default(shared)
+  ownerUserId            String?
+  conversationKey        String?
+  chunkText              String?
+  payload                Json
+  embedding              Float[]          @default([])
   embeddingSchemaVersion String?
-  retrievalProfile String?
-  sourceUpdatedAt DateTime?
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  retrievalProfile       String?
+  sourceUpdatedAt        DateTime?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
 
   @@unique([companyId, sourceType, sourceId, chunkIndex])
   @@index([companyId, sourceType])
@@ -482,23 +482,23 @@ model VectorDocument {
 }
 
 model FileAsset {
-  id              String          @id @default(uuid())
-  companyId       String
-  company         Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  uploaderUserId  String
-  uploaderChannel String          // "lark" | "desktop"
-  fileName        String
-  mimeType        String
-  sizeBytes       Int
-  cloudinaryPublicId String
-  cloudinaryUrl   String
-  cloudinaryResourceType String   @default("raw")
-  ingestionStatus IngestionStatus @default(pending)
-  ingestionError  String?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  accessPolicies  FileAccessPolicy[]
-  vectorDocs      VectorDocument[]
+  id                     String             @id @default(uuid())
+  companyId              String
+  company                Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  uploaderUserId         String
+  uploaderChannel        String // "lark" | "desktop"
+  fileName               String
+  mimeType               String
+  sizeBytes              Int
+  cloudinaryPublicId     String
+  cloudinaryUrl          String
+  cloudinaryResourceType String             @default("raw")
+  ingestionStatus        IngestionStatus    @default(pending)
+  ingestionError         String?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  accessPolicies         FileAccessPolicy[]
+  vectorDocs             VectorDocument[]
 
   @@index([companyId, uploaderUserId])
   @@index([companyId, ingestionStatus])
@@ -519,21 +519,21 @@ model FileAccessPolicy {
 }
 
 model VectorShareRequest {
-  id                       String   @id @default(uuid())
-  companyId                String
-  company                  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  requesterUserId          String
+  id                         String    @id @default(uuid())
+  companyId                  String
+  company                    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  requesterUserId            String
   requesterChannelIdentityId String?
-  conversationKey          String
-  status                   String
-  reason                   String?
-  decisionNote             String?
-  reviewedBy               String?
-  reviewedAt               DateTime?
-  expiresAt                DateTime?
-  promotedVectorCount      Int      @default(0)
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
+  conversationKey            String
+  status                     String
+  reason                     String?
+  decisionNote               String?
+  reviewedBy                 String?
+  reviewedAt                 DateTime?
+  expiresAt                  DateTime?
+  promotedVectorCount        Int       @default(0)
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
   @@index([companyId, status, createdAt])
   @@index([companyId, requesterUserId, conversationKey])
@@ -575,51 +575,51 @@ model AuditLog {
 }
 
 model AdminControlState {
-  id        String   @id @default(uuid())
+  id         String   @id @default(uuid())
   controlKey String
-  companyId String?
-  value     String
-  updatedBy String
-  updatedAt DateTime @updatedAt
+  companyId  String?
+  value      String
+  updatedBy  String
+  updatedAt  DateTime @updatedAt
 
   @@unique([controlKey, companyId])
   @@index([companyId, updatedAt])
 }
 
 model CompanyInvite {
-  id         String   @id @default(uuid())
+  id         String    @id @default(uuid())
   companyId  String
-  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   email      String
   role       String
   status     String
-  token      String   @unique
+  token      String    @unique
   invitedBy  String
   expiresAt  DateTime
   acceptedAt DateTime?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@index([companyId, status, createdAt])
 }
 
 model Department {
-  id          String   @id @default(uuid())
-  companyId    String
-  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  name        String
-  slug        String
-  description String?
-  status      String   @default("active")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  agentConfig DepartmentAgentConfig?
-  skills      Skill[]
-  roles       DepartmentRole[]
-  memberships DepartmentMembership[]
-  toolPermissions DepartmentToolPermission[]
-  userToolOverrides DepartmentUserToolOverride[]
-  desktopThreads DesktopThread[]
+  id                 String                       @id @default(uuid())
+  companyId          String
+  company            Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name               String
+  slug               String
+  description        String?
+  status             String                       @default("active")
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  agentConfig        DepartmentAgentConfig?
+  skills             Skill[]
+  roles              DepartmentRole[]
+  memberships        DepartmentMembership[]
+  toolPermissions    DepartmentToolPermission[]
+  userToolOverrides  DepartmentUserToolOverride[]
+  desktopThreads     DesktopThread[]
   scheduledWorkflows ScheduledWorkflow[]
 
   @@unique([companyId, slug])
@@ -627,24 +627,24 @@ model Department {
 }
 
 model Skill {
-  id          String   @id @default(uuid())
+  id           String      @id @default(uuid())
   companyId    String
-  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company      Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
   departmentId String?
   department   Department? @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  scope       String
-  name        String
-  slug        String
-  summary     String
-  markdown    String
-  tags        String[] @default([])
-  status      String   @default("active")
-  isSystem    Boolean  @default(false)
-  sortOrder   Int      @default(0)
-  createdBy   String?
-  updatedBy   String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  scope        String
+  name         String
+  slug         String
+  summary      String
+  markdown     String
+  tags         String[]    @default([])
+  status       String      @default("active")
+  isSystem     Boolean     @default(false)
+  sortOrder    Int         @default(0)
+  createdBy    String?
+  updatedBy    String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 
   @@index([companyId, scope, status, sortOrder])
   @@index([departmentId, status, sortOrder])
@@ -652,34 +652,35 @@ model Skill {
 }
 
 model DepartmentAgentConfig {
-  id            String   @id @default(uuid())
-  departmentId   String   @unique
-  department     Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  systemPrompt  String
-  skillsMarkdown String
-  isActive      Boolean  @default(true)
-  createdBy     String
-  createdByUser User     @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
-  updatedBy     String
-  updatedByUser User     @relation("DepartmentAgentConfigUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                String     @id @default(uuid())
+  departmentId      String     @unique
+  department        Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  systemPrompt      String
+  skillsMarkdown    String
+  zohoRateLimitJson Json?
+  isActive          Boolean    @default(true)
+  createdBy         String
+  createdByUser     User       @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  updatedBy         String
+  updatedByUser     User       @relation("DepartmentAgentConfigUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
 
   @@index([departmentId, isActive])
 }
 
 model DepartmentRole {
-  id          String   @id @default(uuid())
-  departmentId String
-  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  name        String
-  slug        String
-  isSystem    Boolean  @default(false)
-  isDefault   Boolean  @default(false)
-  zohoReadScope String @default("personalized")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  memberships DepartmentMembership[]
+  id              String                     @id @default(uuid())
+  departmentId    String
+  department      Department                 @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  name            String
+  slug            String
+  isSystem        Boolean                    @default(false)
+  isDefault       Boolean                    @default(false)
+  zohoReadScope   String                     @default("personalized")
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+  memberships     DepartmentMembership[]
   toolPermissions DepartmentToolPermission[]
 
   @@unique([departmentId, slug])
@@ -687,16 +688,16 @@ model DepartmentRole {
 }
 
 model DepartmentMembership {
-  id          String   @id @default(uuid())
+  id           String         @id @default(uuid())
   departmentId String
-  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  roleId      String
-  role        DepartmentRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  status      String   @default("active")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  department   Department     @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId       String
+  role         DepartmentRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  status       String         @default("active")
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
   @@unique([departmentId, userId])
   @@index([departmentId, status, updatedAt])
@@ -705,34 +706,34 @@ model DepartmentMembership {
 }
 
 model DepartmentToolPermission {
-  id          String   @id @default(uuid())
-  departmentId String
-  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  roleId      String
-  role        DepartmentRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  toolId      String
-  actionGroup String   @default("all")
-  allowed     Boolean  @default(true)
-  updatedBy   String
-  updatedByUser User   @relation("DepartmentToolPermissionUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
-  updatedAt   DateTime @updatedAt
+  id            String         @id @default(uuid())
+  departmentId  String
+  department    Department     @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  roleId        String
+  role          DepartmentRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  toolId        String
+  actionGroup   String         @default("all")
+  allowed       Boolean        @default(true)
+  updatedBy     String
+  updatedByUser User           @relation("DepartmentToolPermissionUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  updatedAt     DateTime       @updatedAt
 
   @@unique([departmentId, roleId, toolId, actionGroup])
   @@index([departmentId, roleId])
 }
 
 model DepartmentUserToolOverride {
-  id          String   @id @default(uuid())
-  departmentId String
-  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  toolId      String
-  actionGroup String   @default("all")
-  allowed     Boolean  @default(true)
-  updatedBy   String
-  updatedByUser User   @relation("DepartmentUserToolOverrideUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
-  updatedAt   DateTime @updatedAt
+  id            String     @id @default(uuid())
+  departmentId  String
+  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  toolId        String
+  actionGroup   String     @default("all")
+  allowed       Boolean    @default(true)
+  updatedBy     String
+  updatedByUser User       @relation("DepartmentUserToolOverrideUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  updatedAt     DateTime   @updatedAt
 
   @@unique([departmentId, userId, toolId, actionGroup])
   @@index([departmentId, userId])
@@ -754,12 +755,12 @@ model ToolPermission {
 
 model ZohoRoleAccessPolicy {
   id                String   @id @default(uuid())
-  companyId          String
-  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  role               String
-  companyScopedRead  Boolean  @default(false)
-  updatedAt          DateTime @updatedAt
-  updatedBy          String?
+  companyId         String
+  company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role              String
+  companyScopedRead Boolean  @default(false)
+  updatedAt         DateTime @updatedAt
+  updatedBy         String?
 
   @@unique([companyId, role])
   @@index([companyId, role])
@@ -780,19 +781,19 @@ model AiRoleDefinition {
 }
 
 model AiModelTargetConfig {
-  id                String   @id @default(uuid())
-  targetKey         String   @unique
-  provider          String
-  modelId           String
-  thinkingLevel     String?
-  fastProvider      String?
-  fastModelId       String?
-  fastThinkingLevel String?
+  id                  String   @id @default(uuid())
+  targetKey           String   @unique
+  provider            String
+  modelId             String
+  thinkingLevel       String?
+  fastProvider        String?
+  fastModelId         String?
+  fastThinkingLevel   String?
   xtremeProvider      String?
   xtremeModelId       String?
   xtremeThinkingLevel String?
-  updatedBy         String
-  updatedAt         DateTime @updatedAt
+  updatedBy           String
+  updatedAt           DateTime @updatedAt
 
   @@index([updatedAt])
 }
@@ -800,21 +801,21 @@ model AiModelTargetConfig {
 // ─── Desktop / Member models ───
 
 model MemberSession {
-  id        String    @id @default(uuid())
-  sessionId String    @unique @default(uuid())
-  userId    String
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  companyId String
-  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  role      String    @default("MEMBER")
-  channel   String    @default("desktop")
-  authProvider String @default("password")
+  id            String    @id @default(uuid())
+  sessionId     String    @unique @default(uuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId     String
+  company       Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role          String    @default("MEMBER")
+  channel       String    @default("desktop")
+  authProvider  String    @default("password")
   larkTenantKey String?
-  larkOpenId String?
-  larkUserId String?
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime  @default(now())
+  larkOpenId    String?
+  larkUserId    String?
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  createdAt     DateTime  @default(now())
 
   @@index([userId, channel, expiresAt])
   @@index([companyId, channel, expiresAt])
@@ -822,11 +823,11 @@ model MemberSession {
 }
 
 model LarkUserAuthLink {
-  id                    String   @id @default(uuid())
+  id                    String    @id @default(uuid())
   userId                String
-  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   companyId             String
-  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company               Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   larkTenantKey         String
   larkOpenId            String?
   larkUserId            String?
@@ -838,11 +839,11 @@ model LarkUserAuthLink {
   accessTokenExpiresAt  DateTime?
   refreshTokenExpiresAt DateTime?
   tokenMetadata         Json?
-  linkedAt              DateTime @default(now())
+  linkedAt              DateTime  @default(now())
   lastUsedAt            DateTime?
   revokedAt             DateTime?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@unique([userId, companyId])
   @@index([companyId, larkTenantKey])
@@ -850,11 +851,11 @@ model LarkUserAuthLink {
 }
 
 model GoogleUserAuthLink {
-  id                    String   @id @default(uuid())
+  id                    String    @id @default(uuid())
   userId                String
-  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   companyId             String
-  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company               Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   googleUserId          String?
   googleEmail           String?
   googleName            String?
@@ -865,11 +866,11 @@ model GoogleUserAuthLink {
   accessTokenExpiresAt  DateTime?
   refreshTokenExpiresAt DateTime?
   tokenMetadata         Json?
-  linkedAt              DateTime @default(now())
+  linkedAt              DateTime  @default(now())
   lastUsedAt            DateTime?
   revokedAt             DateTime?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@unique([userId, companyId])
   @@index([companyId, googleEmail])
@@ -877,9 +878,9 @@ model GoogleUserAuthLink {
 }
 
 model CompanyGoogleAuthLink {
-  id                    String   @id @default(uuid())
-  companyId             String   @unique
-  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                    String    @id @default(uuid())
+  companyId             String    @unique
+  company               Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   googleUserId          String?
   googleEmail           String?
   googleName            String?
@@ -891,11 +892,11 @@ model CompanyGoogleAuthLink {
   refreshTokenExpiresAt DateTime?
   tokenMetadata         Json?
   linkedByUserId        String?
-  linkedAt              DateTime @default(now())
+  linkedAt              DateTime  @default(now())
   lastUsedAt            DateTime?
   revokedAt             DateTime?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@index([companyId, googleEmail])
   @@index([companyId, googleUserId])
@@ -917,47 +918,47 @@ model DesktopAuthHandoff {
 }
 
 model DesktopThread {
-  id            String           @id @default(uuid())
-  userId        String
-  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  companyId     String
-  company       Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  channel       String           @default("desktop")
+  id                 String           @id @default(uuid())
+  userId             String
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId          String
+  company            Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  channel            String           @default("desktop")
   canonicalThreadKey String?
-  departmentId  String?
-  department    Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
-  preferredEngine String?
-  title         String?
-  summaryJson   Json?
-  summaryUpdatedAt DateTime?
-  taskStateJson Json?
+  departmentId       String?
+  department         Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  preferredEngine    String?
+  title              String?
+  summaryJson        Json?
+  summaryUpdatedAt   DateTime?
+  taskStateJson      Json?
   taskStateUpdatedAt DateTime?
-  lastMessageAt DateTime?
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-  messages      DesktopMessage[]
+  lastMessageAt      DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  messages           DesktopMessage[]
 
+  @@unique([companyId, userId, channel, canonicalThreadKey])
   @@index([userId, companyId, channel, updatedAt])
   @@index([departmentId, channel, updatedAt])
-  @@unique([companyId, userId, channel, canonicalThreadKey])
 }
 
 model LarkChatContext {
-  id                String   @id @default(uuid())
-  companyId         String
-  company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  chatId            String
-  channel           String   @default("lark")
-  chatType          String?
-  summaryJson       Json?
-  summaryUpdatedAt  DateTime?
-  taskStateJson     Json?
+  id                 String    @id @default(uuid())
+  companyId          String
+  company            Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  chatId             String
+  channel            String    @default("lark")
+  chatType           String?
+  summaryJson        Json?
+  summaryUpdatedAt   DateTime?
+  taskStateJson      Json?
   taskStateUpdatedAt DateTime?
   recentMessagesJson Json?
-  sourceMessageCount Int     @default(0)
-  lastMessageAt     DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  sourceMessageCount Int       @default(0)
+  lastMessageAt      DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   @@unique([companyId, channel, chatId])
   @@index([companyId, channel, updatedAt])
@@ -1054,10 +1055,10 @@ model AiTokenUsage {
   id                    String   @id @default(uuid())
   userId                String
   companyId             String
-  agentTarget           String   // e.g. 'mastra.supervisor'
-  modelId               String   // e.g. 'gpt-4.1-mini'
-  provider              String   // 'openai' | 'google'
-  channel               String   // 'desktop' | 'lark' | 'web'
+  agentTarget           String // e.g. 'mastra.supervisor'
+  modelId               String // e.g. 'gpt-4.1-mini'
+  provider              String // 'openai' | 'google'
+  channel               String // 'desktop' | 'lark' | 'web'
   threadId              String?
   estimatedInputTokens  Int      @default(0)
   estimatedOutputTokens Int      @default(0)
@@ -1065,7 +1066,7 @@ model AiTokenUsage {
   actualInputTokens     Int?
   actualOutputTokens    Int?
   wasCompacted          Boolean  @default(false)
-  mode                  String   @default("high")  // 'fast' | 'high' | 'xtreme'
+  mode                  String   @default("high") // 'fast' | 'high' | 'xtreme'
   createdAt             DateTime @default(now())
 
   @@index([userId, companyId, createdAt])
@@ -1130,7 +1131,7 @@ model ExecutionEvent {
 }
 
 model RuntimeConversation {
-  id                     String                     @id @default(uuid())
+  id                     String                       @id @default(uuid())
   companyId              String
   departmentId           String?
   channel                String
@@ -1139,11 +1140,11 @@ model RuntimeConversation {
   createdByUserId        String?
   createdByEmail         String?
   title                  String?
-  status                 String                     @default("active")
+  status                 String                       @default("active")
   refsJson               Json?
-  lastMessageSequence    Int                        @default(0)
-  createdAt              DateTime                   @default(now())
-  updatedAt              DateTime                   @updatedAt
+  lastMessageSequence    Int                          @default(0)
+  createdAt              DateTime                     @default(now())
+  updatedAt              DateTime                     @updatedAt
   messages               RuntimeConversationMessage[]
   runs                   RuntimeRun[]
   approvals              RuntimeApproval[]
@@ -1182,26 +1183,26 @@ model RuntimeConversationMessage {
 }
 
 model RuntimeRun {
-  id             String                     @id @default(uuid())
+  id             String                       @id @default(uuid())
   conversationId String
-  conversation   RuntimeConversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversation   RuntimeConversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   parentRunId    String?
-  engine         String                     @default("langgraph")
-  engineMode     String                     @default("primary")
+  engine         String                       @default("langgraph")
+  engineMode     String                       @default("primary")
   channel        String
   entrypoint     String
-  status         String                     @default("running")
+  status         String                       @default("running")
   currentNode    String?
-  stepCount      Int                        @default(0)
-  maxSteps       Int                        @default(12)
+  stepCount      Int                          @default(0)
+  maxSteps       Int                          @default(12)
   stopReason     String?
   errorJson      Json?
   traceJson      Json?
   metadataJson   Json?
-  startedAt      DateTime                   @default(now())
+  startedAt      DateTime                     @default(now())
   finishedAt     DateTime?
-  createdAt      DateTime                   @default(now())
-  updatedAt      DateTime                   @updatedAt
+  createdAt      DateTime                     @default(now())
+  updatedAt      DateTime                     @updatedAt
   messages       RuntimeConversationMessage[]
   approvals      RuntimeApproval[]
   snapshots      RuntimeSnapshot[]

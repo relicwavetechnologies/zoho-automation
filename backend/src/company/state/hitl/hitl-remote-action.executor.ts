@@ -10,6 +10,7 @@ import { formatZohoGatewayDeniedMessage } from '../../integrations/zoho/zoho-gat
 import { zohoGatewayService } from '../../integrations/zoho/zoho-gateway.service';
 import { zohoBooksClient, type ZohoBooksModule } from '../../integrations/zoho/zoho-books.client';
 import { zohoDataClient, type ZohoSourceType } from '../../integrations/zoho/zoho-data.client';
+import { zohoRateLimitService } from '../../integrations/zoho/zoho-rate-limit.service';
 import { isSupportedToolActionGroup, type ToolActionGroup } from '../../tools/tool-action-groups';
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import { logger } from '../../../utils/logger';
@@ -17,7 +18,7 @@ import type { HydratedStoredHitlAction } from './hitl-action.repository';
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : undefined;
 
 const asString = (value: unknown): string | undefined =>
@@ -25,7 +26,9 @@ const asString = (value: unknown): string | undefined =>
 
 const asStringArray = (value: unknown): string[] =>
   Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).map((entry) => entry.trim())
+    ? value
+        .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+        .map((entry) => entry.trim())
     : [];
 
 const buildExpiryFromSeconds = (seconds?: number): Date | undefined => {
@@ -54,7 +57,10 @@ type ActionExecutionResult = {
   payload?: Record<string, unknown>;
 };
 
-const readBooksRecordId = (record: Record<string, unknown>, moduleName: ZohoBooksModule): string | undefined => {
+const readBooksRecordId = (
+  record: Record<string, unknown>,
+  moduleName: ZohoBooksModule,
+): string | undefined => {
   if (moduleName === 'invoices') {
     return asString(record.invoice_id) ?? asString(record.id);
   }
@@ -67,7 +73,10 @@ const readBooksRecordId = (record: Record<string, unknown>, moduleName: ZohoBook
   return asString(record.id);
 };
 
-const readBooksRecordNumber = (record: Record<string, unknown>, moduleName: ZohoBooksModule): string | undefined => {
+const readBooksRecordNumber = (
+  record: Record<string, unknown>,
+  moduleName: ZohoBooksModule,
+): string | undefined => {
   if (moduleName === 'invoices') {
     return asString(record.invoice_number) ?? asString(record.invoiceNumber);
   }
@@ -102,11 +111,18 @@ const resolveZohoBooksRecordIdentifier = async (input: {
     limit: 20,
   });
   if (!auth.allowed) {
-    throw new Error(formatZohoGatewayDeniedMessage(auth, `You are not allowed to read Zoho Books ${input.moduleName}.`).summary);
+    throw new Error(
+      formatZohoGatewayDeniedMessage(
+        auth,
+        `You are not allowed to read Zoho Books ${input.moduleName}.`,
+      ).summary,
+    );
   }
   const records = Array.isArray(auth.payload?.records) ? auth.payload.records : [];
 
-  const exactIdMatch = records.find((record) => readBooksRecordId(record, input.moduleName) === direct);
+  const exactIdMatch = records.find(
+    (record) => readBooksRecordId(record, input.moduleName) === direct,
+  );
   if (exactIdMatch) {
     return {
       recordId: readBooksRecordId(exactIdMatch, input.moduleName)!,
@@ -114,7 +130,9 @@ const resolveZohoBooksRecordIdentifier = async (input: {
     };
   }
 
-  const exactNumberMatch = records.find((record) => readBooksRecordNumber(record, input.moduleName) === direct);
+  const exactNumberMatch = records.find(
+    (record) => readBooksRecordNumber(record, input.moduleName) === direct,
+  );
   if (exactNumberMatch) {
     return {
       recordId: readBooksRecordId(exactNumberMatch, input.moduleName)!,
@@ -130,9 +148,40 @@ const resolveZohoBooksRecordIdentifier = async (input: {
 
 const buildZohoGatewayRequester = (metadata: StoredRuntimeMetadata) => ({
   companyId: metadata.companyId,
+  userId: metadata.userId,
+  departmentId: metadata.departmentId,
+  departmentRoleSlug: metadata.departmentRoleSlug,
   requesterEmail: metadata.requesterEmail,
   requesterAiRole: metadata.requesterAiRole,
 });
+
+const withZohoRateLimitContext = async <T>(
+  action: HydratedStoredHitlAction,
+  fn: () => Promise<T>,
+): Promise<T> => {
+  const metadata = loadRuntimeMetadata(action);
+  const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(
+    metadata.companyId,
+    metadata.requesterAiRole ?? 'MEMBER',
+  );
+  const runtime = await departmentService.resolveRuntimeContext({
+    userId: metadata.userId,
+    companyId: metadata.companyId,
+    departmentId: metadata.departmentId,
+    fallbackAllowedToolIds,
+  });
+
+  return zohoRateLimitService.runWithContext(
+    {
+      companyId: metadata.companyId,
+      userId: metadata.userId,
+      departmentId: runtime.departmentId ?? metadata.departmentId,
+      departmentRoleSlug: runtime.departmentRoleSlug ?? metadata.departmentRoleSlug,
+      config: runtime.departmentZohoRateLimitConfig,
+    },
+    fn,
+  );
+};
 
 const buildBooksMutationAuthorizationTarget = (input: {
   operation: string;
@@ -153,81 +202,101 @@ const buildBooksMutationAuthorizationTarget = (input: {
   let module = input.moduleName;
   let recordId = input.recordId;
 
-  if (['activateBankAccount', 'deactivateBankAccount', 'importBankStatement'].includes(input.operation)) {
+  if (
+    ['activateBankAccount', 'deactivateBankAccount', 'importBankStatement'].includes(
+      input.operation,
+    )
+  ) {
     module = 'bankaccounts';
     recordId = input.accountId;
-  } else if ([
-    'matchBankTransaction',
-    'unmatchBankTransaction',
-    'excludeBankTransaction',
-    'restoreBankTransaction',
-    'uncategorizeBankTransaction',
-    'categorizeBankTransaction',
-    'categorizeBankTransactionAsExpense',
-    'categorizeBankTransactionAsVendorPayment',
-    'categorizeBankTransactionAsCustomerPayment',
-    'categorizeBankTransactionAsCreditNoteRefund',
-  ].includes(input.operation)) {
+  } else if (
+    [
+      'matchBankTransaction',
+      'unmatchBankTransaction',
+      'excludeBankTransaction',
+      'restoreBankTransaction',
+      'uncategorizeBankTransaction',
+      'categorizeBankTransaction',
+      'categorizeBankTransactionAsExpense',
+      'categorizeBankTransactionAsVendorPayment',
+      'categorizeBankTransactionAsCustomerPayment',
+      'categorizeBankTransactionAsCreditNoteRefund',
+    ].includes(input.operation)
+  ) {
     module = 'banktransactions';
     recordId = input.transactionId;
-  } else if ([
-    'emailInvoice',
-    'remindInvoice',
-    'enableInvoicePaymentReminder',
-    'disableInvoicePaymentReminder',
-    'writeOffInvoice',
-    'cancelInvoiceWriteOff',
-    'markInvoiceSent',
-    'voidInvoice',
-    'markInvoiceDraft',
-    'submitInvoice',
-    'approveInvoice',
-  ].includes(input.operation)) {
+  } else if (
+    [
+      'emailInvoice',
+      'remindInvoice',
+      'enableInvoicePaymentReminder',
+      'disableInvoicePaymentReminder',
+      'writeOffInvoice',
+      'cancelInvoiceWriteOff',
+      'markInvoiceSent',
+      'voidInvoice',
+      'markInvoiceDraft',
+      'submitInvoice',
+      'approveInvoice',
+    ].includes(input.operation)
+  ) {
     module = 'invoices';
     recordId = input.invoiceId;
-  } else if ([
-    'emailEstimate',
-    'markEstimateSent',
-    'acceptEstimate',
-    'declineEstimate',
-    'submitEstimate',
-    'approveEstimate',
-  ].includes(input.operation)) {
+  } else if (
+    [
+      'emailEstimate',
+      'markEstimateSent',
+      'acceptEstimate',
+      'declineEstimate',
+      'submitEstimate',
+      'approveEstimate',
+    ].includes(input.operation)
+  ) {
     module = 'estimates';
     recordId = input.estimateId;
-  } else if (['emailCreditNote', 'openCreditNote', 'voidCreditNote', 'refundCreditNote'].includes(input.operation)) {
+  } else if (
+    ['emailCreditNote', 'openCreditNote', 'voidCreditNote', 'refundCreditNote'].includes(
+      input.operation,
+    )
+  ) {
     module = 'creditnotes';
     recordId = input.creditNoteId;
-  } else if ([
-    'emailSalesOrder',
-    'openSalesOrder',
-    'voidSalesOrder',
-    'submitSalesOrder',
-    'approveSalesOrder',
-    'createInvoiceFromSalesOrder',
-  ].includes(input.operation)) {
+  } else if (
+    [
+      'emailSalesOrder',
+      'openSalesOrder',
+      'voidSalesOrder',
+      'submitSalesOrder',
+      'approveSalesOrder',
+      'createInvoiceFromSalesOrder',
+    ].includes(input.operation)
+  ) {
     module = 'salesorders';
     recordId = input.salesOrderId;
-  } else if ([
-    'emailPurchaseOrder',
-    'openPurchaseOrder',
-    'billPurchaseOrder',
-    'cancelPurchaseOrder',
-    'rejectPurchaseOrder',
-    'submitPurchaseOrder',
-    'approvePurchaseOrder',
-  ].includes(input.operation)) {
+  } else if (
+    [
+      'emailPurchaseOrder',
+      'openPurchaseOrder',
+      'billPurchaseOrder',
+      'cancelPurchaseOrder',
+      'rejectPurchaseOrder',
+      'submitPurchaseOrder',
+      'approvePurchaseOrder',
+    ].includes(input.operation)
+  ) {
     module = 'purchaseorders';
     recordId = input.purchaseOrderId;
   } else if (['voidBill', 'openBill', 'submitBill', 'approveBill'].includes(input.operation)) {
     module = 'bills';
     recordId = input.billId;
-  } else if ([
-    'emailContact',
-    'emailContactStatement',
-    'enableContactPaymentReminder',
-    'disableContactPaymentReminder',
-  ].includes(input.operation)) {
+  } else if (
+    [
+      'emailContact',
+      'emailContactStatement',
+      'enableContactPaymentReminder',
+      'disableContactPaymentReminder',
+    ].includes(input.operation)
+  ) {
     module = 'contacts';
     recordId = input.contactId;
   } else if (input.operation === 'emailVendorPayment') {
@@ -261,7 +330,12 @@ const authorizeZohoMutationOrThrow = async (input: {
     requester: buildZohoGatewayRequester(input.metadata),
   });
   if (!auth.allowed) {
-    throw new Error(formatZohoGatewayDeniedMessage(auth, `You are not allowed to mutate Zoho ${input.module ?? input.operation}.`).summary);
+    throw new Error(
+      formatZohoGatewayDeniedMessage(
+        auth,
+        `You are not allowed to mutate Zoho ${input.module ?? input.operation}.`,
+      ).summary,
+    );
   }
 };
 
@@ -310,7 +384,8 @@ const enforceCurrentToolPermission = async (
   },
 ): Promise<void> => {
   const metadata = loadRuntimeMetadata(action);
-  const actionGroup = input.actionGroup ?? (asString(action.actionGroup) as ToolActionGroup | undefined);
+  const actionGroup =
+    input.actionGroup ?? (asString(action.actionGroup) as ToolActionGroup | undefined);
   const requesterAiRole = metadata.requesterAiRole ?? 'MEMBER';
 
   if (!actionGroup) {
@@ -320,7 +395,10 @@ const enforceCurrentToolPermission = async (
     throw new Error(`Tool "${input.toolId}" does not support "${actionGroup}" actions.`);
   }
 
-  const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(metadata.companyId, requesterAiRole);
+  const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(
+    metadata.companyId,
+    requesterAiRole,
+  );
   const runtime = await departmentService.resolveRuntimeContext({
     userId: metadata.userId,
     companyId: metadata.companyId,
@@ -352,37 +430,39 @@ const resolveGoogleAccess = async (
 ): Promise<ResolvedGoogleAccess> => {
   const metadata = loadRuntimeMetadata(action);
   const companyLink = await companyGoogleAuthLinkRepository.findActiveByCompany(metadata.companyId);
-  const userLink = companyLink ? null : await googleUserAuthLinkRepository.findActiveByUser(metadata.userId, metadata.companyId);
+  const userLink = companyLink
+    ? null
+    : await googleUserAuthLinkRepository.findActiveByUser(metadata.userId, metadata.companyId);
   const link = companyLink
     ? {
-      mode: 'company' as const,
-      accessToken: companyLink.accessToken,
-      refreshToken: companyLink.refreshToken,
-      refreshTokenExpiresAt: companyLink.refreshTokenExpiresAt,
-      accessTokenExpiresAt: companyLink.accessTokenExpiresAt,
-      tokenType: companyLink.tokenType,
-      scope: companyLink.scope,
-      scopes: companyLink.scopes,
-      googleUserId: companyLink.googleUserId,
-      googleEmail: companyLink.googleEmail,
-      googleName: companyLink.googleName,
-      tokenMetadata: companyLink.tokenMetadata,
-    }
+        mode: 'company' as const,
+        accessToken: companyLink.accessToken,
+        refreshToken: companyLink.refreshToken,
+        refreshTokenExpiresAt: companyLink.refreshTokenExpiresAt,
+        accessTokenExpiresAt: companyLink.accessTokenExpiresAt,
+        tokenType: companyLink.tokenType,
+        scope: companyLink.scope,
+        scopes: companyLink.scopes,
+        googleUserId: companyLink.googleUserId,
+        googleEmail: companyLink.googleEmail,
+        googleName: companyLink.googleName,
+        tokenMetadata: companyLink.tokenMetadata,
+      }
     : userLink
       ? {
-        mode: 'user' as const,
-        accessToken: userLink.accessToken,
-        refreshToken: userLink.refreshToken,
-        refreshTokenExpiresAt: userLink.refreshTokenExpiresAt,
-        accessTokenExpiresAt: userLink.accessTokenExpiresAt,
-        tokenType: userLink.tokenType,
-        scope: userLink.scope,
-        scopes: userLink.scopes,
-        googleUserId: userLink.googleUserId,
-        googleEmail: userLink.googleEmail,
-        googleName: userLink.googleName,
-        tokenMetadata: userLink.tokenMetadata,
-      }
+          mode: 'user' as const,
+          accessToken: userLink.accessToken,
+          refreshToken: userLink.refreshToken,
+          refreshTokenExpiresAt: userLink.refreshTokenExpiresAt,
+          accessTokenExpiresAt: userLink.accessTokenExpiresAt,
+          tokenType: userLink.tokenType,
+          scope: userLink.scope,
+          scopes: userLink.scopes,
+          googleUserId: userLink.googleUserId,
+          googleEmail: userLink.googleEmail,
+          googleName: userLink.googleName,
+          tokenMetadata: userLink.tokenMetadata,
+        }
       : null;
 
   if (!link) {
@@ -470,7 +550,9 @@ const buildMimeMessage = (input: {
     .replace(/=+$/g, '');
 };
 
-const executeGoogleMailAction = async (action: HydratedStoredHitlAction): Promise<ActionExecutionResult> => {
+const executeGoogleMailAction = async (
+  action: HydratedStoredHitlAction,
+): Promise<ActionExecutionResult> => {
   const payload = action.payload ?? {};
   const operation = asString(payload.operation);
   if (!operation) {
@@ -478,7 +560,9 @@ const executeGoogleMailAction = async (action: HydratedStoredHitlAction): Promis
   }
 
   if (operation === 'createDraft') {
-    const access = await resolveGoogleAccess(action, ['https://www.googleapis.com/auth/gmail.compose']);
+    const access = await resolveGoogleAccess(action, [
+      'https://www.googleapis.com/auth/gmail.compose',
+    ]);
     const raw = buildMimeMessage({
       to: asString(payload.to) ?? '',
       subject: asString(payload.subject) ?? '',
@@ -502,7 +586,9 @@ const executeGoogleMailAction = async (action: HydratedStoredHitlAction): Promis
     });
     const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
-      throw new Error(`Gmail draft create failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`);
+      throw new Error(
+        `Gmail draft create failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`,
+      );
     }
     return {
       ok: true,
@@ -512,7 +598,9 @@ const executeGoogleMailAction = async (action: HydratedStoredHitlAction): Promis
   }
 
   if (operation === 'sendDraft') {
-    const access = await resolveGoogleAccess(action, ['https://www.googleapis.com/auth/gmail.send']);
+    const access = await resolveGoogleAccess(action, [
+      'https://www.googleapis.com/auth/gmail.send',
+    ]);
     const draftId = asString(payload.draftId);
     if (!draftId) {
       throw new Error('Stored Gmail draft-send action is missing draftId');
@@ -527,7 +615,9 @@ const executeGoogleMailAction = async (action: HydratedStoredHitlAction): Promis
     });
     const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
-      throw new Error(`Gmail draft send failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`);
+      throw new Error(
+        `Gmail draft send failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`,
+      );
     }
     return {
       ok: true,
@@ -537,7 +627,9 @@ const executeGoogleMailAction = async (action: HydratedStoredHitlAction): Promis
   }
 
   if (operation === 'sendMessage') {
-    const access = await resolveGoogleAccess(action, ['https://www.googleapis.com/auth/gmail.send']);
+    const access = await resolveGoogleAccess(action, [
+      'https://www.googleapis.com/auth/gmail.send',
+    ]);
     const raw = buildMimeMessage({
       to: asString(payload.to) ?? '',
       subject: asString(payload.subject) ?? '',
@@ -559,7 +651,9 @@ const executeGoogleMailAction = async (action: HydratedStoredHitlAction): Promis
     });
     const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
-      throw new Error(`Gmail send failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`);
+      throw new Error(
+        `Gmail send failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`,
+      );
     }
     return {
       ok: true,
@@ -571,7 +665,9 @@ const executeGoogleMailAction = async (action: HydratedStoredHitlAction): Promis
   throw new Error(`Unsupported Gmail approval operation: ${operation}`);
 };
 
-const executeGoogleDriveAction = async (action: HydratedStoredHitlAction): Promise<ActionExecutionResult> => {
+const executeGoogleDriveAction = async (
+  action: HydratedStoredHitlAction,
+): Promise<ActionExecutionResult> => {
   const payload = action.payload ?? {};
   const operation = asString(payload.operation);
   if (!operation) {
@@ -579,7 +675,9 @@ const executeGoogleDriveAction = async (action: HydratedStoredHitlAction): Promi
   }
 
   if (operation === 'createFolder') {
-    const access = await resolveGoogleAccess(action, ['https://www.googleapis.com/auth/drive.file']);
+    const access = await resolveGoogleAccess(action, [
+      'https://www.googleapis.com/auth/drive.file',
+    ]);
     const response = await fetch('https://www.googleapis.com/drive/v3/files', {
       method: 'POST',
       headers: {
@@ -594,7 +692,9 @@ const executeGoogleDriveAction = async (action: HydratedStoredHitlAction): Promi
     });
     const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
-      throw new Error(`Drive folder create failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`);
+      throw new Error(
+        `Drive folder create failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`,
+      );
     }
     return {
       ok: true,
@@ -604,10 +704,15 @@ const executeGoogleDriveAction = async (action: HydratedStoredHitlAction): Promi
   }
 
   if (operation === 'uploadFile' || operation === 'updateFile') {
-    const access = await resolveGoogleAccess(action, ['https://www.googleapis.com/auth/drive.file']);
+    const access = await resolveGoogleAccess(action, [
+      'https://www.googleapis.com/auth/drive.file',
+    ]);
     const fileName = asString(payload.fileName);
-    const contentBase64 = asString(payload.contentBase64)
-      ?? (asString(payload.contentText) ? Buffer.from(asString(payload.contentText) ?? '', 'utf8').toString('base64') : undefined);
+    const contentBase64 =
+      asString(payload.contentBase64) ??
+      (asString(payload.contentText)
+        ? Buffer.from(asString(payload.contentText) ?? '', 'utf8').toString('base64')
+        : undefined);
     if (!contentBase64) {
       throw new Error(`Stored Drive ${operation} action is missing file content`);
     }
@@ -632,9 +737,10 @@ const executeGoogleDriveAction = async (action: HydratedStoredHitlAction): Promi
       '',
     ].join('\r\n');
     const fileId = asString(payload.fileId);
-    const url = operation === 'updateFile' && fileId
-      ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=multipart`
-      : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+    const url =
+      operation === 'updateFile' && fileId
+        ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=multipart`
+        : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
     const method = operation === 'updateFile' ? 'PATCH' : 'POST';
     const response = await fetch(url, {
       method,
@@ -646,30 +752,40 @@ const executeGoogleDriveAction = async (action: HydratedStoredHitlAction): Promi
     });
     const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
-      throw new Error(`Drive ${operation} failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`);
+      throw new Error(
+        `Drive ${operation} failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`,
+      );
     }
     return {
       ok: true,
-      summary: operation === 'updateFile'
-        ? `Updated Drive file ${fileId ?? ''}.`
-        : `Uploaded Drive file "${fileName ?? 'file'}".`,
+      summary:
+        operation === 'updateFile'
+          ? `Updated Drive file ${fileId ?? ''}.`
+          : `Uploaded Drive file "${fileName ?? 'file'}".`,
       payload: result,
     };
   }
 
   if (operation === 'deleteFile') {
-    const access = await resolveGoogleAccess(action, ['https://www.googleapis.com/auth/drive.file']);
+    const access = await resolveGoogleAccess(action, [
+      'https://www.googleapis.com/auth/drive.file',
+    ]);
     const fileId = asString(payload.fileId);
     if (!fileId) {
       throw new Error('Stored Drive delete action is missing fileId');
     }
-    const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${access.accessToken}` },
-    });
+    const response = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`,
+      {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${access.accessToken}` },
+      },
+    );
     if (!response.ok) {
       const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-      throw new Error(`Drive delete failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`);
+      throw new Error(
+        `Drive delete failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`,
+      );
     }
     return {
       ok: true,
@@ -681,28 +797,37 @@ const executeGoogleDriveAction = async (action: HydratedStoredHitlAction): Promi
   throw new Error(`Unsupported Drive approval operation: ${operation}`);
 };
 
-const executeGoogleCalendarAction = async (action: HydratedStoredHitlAction): Promise<ActionExecutionResult> => {
+const executeGoogleCalendarAction = async (
+  action: HydratedStoredHitlAction,
+): Promise<ActionExecutionResult> => {
   const payload = action.payload ?? {};
   const operation = asString(payload.operation);
   if (!operation) {
     throw new Error('Stored Google Calendar action is missing operation');
   }
 
-  const access = await resolveGoogleAccess(action, ['https://www.googleapis.com/auth/calendar.events']);
+  const access = await resolveGoogleAccess(action, [
+    'https://www.googleapis.com/auth/calendar.events',
+  ]);
   const calendarId = encodeURIComponent(asString(payload.calendarId) ?? 'primary');
 
   if (operation === 'createEvent') {
-    const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${access.accessToken}`,
-        'Content-Type': 'application/json',
+    const response = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${access.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload.body ?? {}),
       },
-      body: JSON.stringify(payload.body ?? {}),
-    });
+    );
     const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
-      throw new Error(`Google Calendar create failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`);
+      throw new Error(
+        `Google Calendar create failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`,
+      );
     }
     return {
       ok: true,
@@ -716,17 +841,22 @@ const executeGoogleCalendarAction = async (action: HydratedStoredHitlAction): Pr
     if (!eventId) {
       throw new Error('Stored Google Calendar update action is missing eventId');
     }
-    const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}`, {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${access.accessToken}`,
-        'Content-Type': 'application/json',
+    const response = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${access.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload.body ?? {}),
       },
-      body: JSON.stringify(payload.body ?? {}),
-    });
+    );
     const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
-      throw new Error(`Google Calendar update failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`);
+      throw new Error(
+        `Google Calendar update failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`,
+      );
     }
     return {
       ok: true,
@@ -740,13 +870,18 @@ const executeGoogleCalendarAction = async (action: HydratedStoredHitlAction): Pr
     if (!eventId) {
       throw new Error('Stored Google Calendar delete action is missing eventId');
     }
-    const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${access.accessToken}` },
-    });
+    const response = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}`,
+      {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${access.accessToken}` },
+      },
+    );
     if (!response.ok) {
       const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-      throw new Error(`Google Calendar delete failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`);
+      throw new Error(
+        `Google Calendar delete failed: ${asString(asRecord(result.error)?.message) ?? response.statusText}`,
+      );
     }
     return {
       ok: true,
@@ -758,7 +893,9 @@ const executeGoogleCalendarAction = async (action: HydratedStoredHitlAction): Pr
   throw new Error(`Unsupported Google Calendar approval operation: ${operation}`);
 };
 
-const executeLarkMessageAction = async (action: HydratedStoredHitlAction): Promise<ActionExecutionResult> => {
+const executeLarkMessageAction = async (
+  action: HydratedStoredHitlAction,
+): Promise<ActionExecutionResult> => {
   const payload = action.payload ?? {};
   const metadata = action.metadata ?? {};
   const operation = asString(payload.operation);
@@ -772,7 +909,8 @@ const executeLarkMessageAction = async (action: HydratedStoredHitlAction): Promi
   const recipientOpenIds = asStringArray(payload.recipientOpenIds);
   const recipientLabels = asStringArray(payload.recipientLabels);
   const larkTenantKey = asString(metadata.larkTenantKey);
-  const credentialMode = asString(metadata.authProvider) === 'lark' ? 'user_linked' as const : 'tenant' as const;
+  const credentialMode =
+    asString(metadata.authProvider) === 'lark' ? ('user_linked' as const) : ('tenant' as const);
 
   if (!companyId || !userId) {
     throw new Error('Stored Lark messaging action is missing execution identity metadata');
@@ -785,15 +923,18 @@ const executeLarkMessageAction = async (action: HydratedStoredHitlAction): Promi
   }
 
   const sendWithAuth = async (mode: 'tenant' | 'user_linked') =>
-    Promise.all(recipientOpenIds.map((recipientOpenId) =>
-      larkMessagingService.sendDirectTextMessage({
-        companyId,
-        larkTenantKey,
-        appUserId: userId,
-        credentialMode: mode,
-        recipientOpenId,
-        text: message,
-      })));
+    Promise.all(
+      recipientOpenIds.map((recipientOpenId) =>
+        larkMessagingService.sendDirectTextMessage({
+          companyId,
+          larkTenantKey,
+          appUserId: userId,
+          credentialMode: mode,
+          recipientOpenId,
+          text: message,
+        }),
+      ),
+    );
 
   let deliveries: Array<Record<string, unknown>>;
   try {
@@ -820,9 +961,21 @@ const moduleNameToSourceType = (moduleName: string): ZohoSourceType => {
   const normalized = moduleName.trim().toLowerCase();
   if (normalized === 'leads' || normalized === 'lead') return 'zoho_lead';
   if (normalized === 'contacts' || normalized === 'contact') return 'zoho_contact';
-  if (normalized === 'accounts' || normalized === 'account' || normalized === 'companies' || normalized === 'company') return 'zoho_account';
+  if (
+    normalized === 'accounts' ||
+    normalized === 'account' ||
+    normalized === 'companies' ||
+    normalized === 'company'
+  )
+    return 'zoho_account';
   if (normalized === 'deals' || normalized === 'deal') return 'zoho_deal';
-  if (normalized === 'cases' || normalized === 'case' || normalized === 'tickets' || normalized === 'ticket') return 'zoho_ticket';
+  if (
+    normalized === 'cases' ||
+    normalized === 'case' ||
+    normalized === 'tickets' ||
+    normalized === 'ticket'
+  )
+    return 'zoho_ticket';
   throw new Error(`Unsupported Zoho module for mutation: ${moduleName}`);
 };
 
@@ -830,50 +983,115 @@ const moduleNameToCrmModule = (moduleName: string): string => {
   const normalized = moduleName.trim().toLowerCase();
   if (normalized === 'leads' || normalized === 'lead') return 'Leads';
   if (normalized === 'contacts' || normalized === 'contact') return 'Contacts';
-  if (normalized === 'accounts' || normalized === 'account' || normalized === 'companies' || normalized === 'company') return 'Accounts';
+  if (
+    normalized === 'accounts' ||
+    normalized === 'account' ||
+    normalized === 'companies' ||
+    normalized === 'company'
+  )
+    return 'Accounts';
   if (normalized === 'deals' || normalized === 'deal') return 'Deals';
-  if (normalized === 'cases' || normalized === 'case' || normalized === 'tickets' || normalized === 'ticket') return 'Cases';
+  if (
+    normalized === 'cases' ||
+    normalized === 'case' ||
+    normalized === 'tickets' ||
+    normalized === 'ticket'
+  )
+    return 'Cases';
   if (normalized === 'tasks' || normalized === 'task') return 'Tasks';
-  if (normalized === 'events' || normalized === 'event' || normalized === 'meetings' || normalized === 'meeting') return 'Events';
+  if (
+    normalized === 'events' ||
+    normalized === 'event' ||
+    normalized === 'meetings' ||
+    normalized === 'meeting'
+  )
+    return 'Events';
   if (normalized === 'calls' || normalized === 'call') return 'Calls';
   if (normalized === 'products' || normalized === 'product') return 'Products';
   if (normalized === 'quotes' || normalized === 'quote') return 'Quotes';
   if (normalized === 'vendors' || normalized === 'vendor') return 'Vendors';
   if (normalized === 'invoices' || normalized === 'invoice') return 'Invoices';
-  if (normalized === 'salesorders' || normalized === 'salesorder' || normalized === 'sales_orders' || normalized === 'sales-order') return 'Sales_Orders';
-  if (normalized === 'purchaseorders' || normalized === 'purchaseorder' || normalized === 'purchase_orders' || normalized === 'purchase-order') return 'Purchase_Orders';
+  if (
+    normalized === 'salesorders' ||
+    normalized === 'salesorder' ||
+    normalized === 'sales_orders' ||
+    normalized === 'sales-order'
+  )
+    return 'Sales_Orders';
+  if (
+    normalized === 'purchaseorders' ||
+    normalized === 'purchaseorder' ||
+    normalized === 'purchase_orders' ||
+    normalized === 'purchase-order'
+  )
+    return 'Purchase_Orders';
   return moduleName.trim();
 };
 
 const moduleNameToBooksModule = (moduleName: string): ZohoBooksModule => {
   const normalized = moduleName.trim().toLowerCase();
-  if (normalized === 'contact' || normalized === 'contacts' || normalized === 'customer' || normalized === 'customers' || normalized === 'vendor' || normalized === 'vendors') {
+  if (
+    normalized === 'contact' ||
+    normalized === 'contacts' ||
+    normalized === 'customer' ||
+    normalized === 'customers' ||
+    normalized === 'vendor' ||
+    normalized === 'vendors'
+  ) {
     return 'contacts';
   }
   if (normalized === 'invoice' || normalized === 'invoices') return 'invoices';
   if (normalized === 'estimate' || normalized === 'estimates') return 'estimates';
-  if (normalized === 'creditnote' || normalized === 'creditnotes' || normalized === 'credit-note' || normalized === 'credit-notes') {
+  if (
+    normalized === 'creditnote' ||
+    normalized === 'creditnotes' ||
+    normalized === 'credit-note' ||
+    normalized === 'credit-notes'
+  ) {
     return 'creditnotes';
   }
   if (normalized === 'bill' || normalized === 'bills') return 'bills';
-  if (normalized === 'salesorder' || normalized === 'salesorders' || normalized === 'sales-order' || normalized === 'sales-orders') {
+  if (
+    normalized === 'salesorder' ||
+    normalized === 'salesorders' ||
+    normalized === 'sales-order' ||
+    normalized === 'sales-orders'
+  ) {
     return 'salesorders';
   }
-  if (normalized === 'purchaseorder' || normalized === 'purchaseorders' || normalized === 'purchase-order' || normalized === 'purchase-orders') {
+  if (
+    normalized === 'purchaseorder' ||
+    normalized === 'purchaseorders' ||
+    normalized === 'purchase-order' ||
+    normalized === 'purchase-orders'
+  ) {
     return 'purchaseorders';
   }
-  if (normalized === 'payment' || normalized === 'payments' || normalized === 'customerpayment' || normalized === 'customerpayments') {
+  if (
+    normalized === 'payment' ||
+    normalized === 'payments' ||
+    normalized === 'customerpayment' ||
+    normalized === 'customerpayments'
+  ) {
     return 'customerpayments';
   }
   if (normalized === 'vendorpayment' || normalized === 'vendorpayments') return 'vendorpayments';
-  if (normalized === 'bankaccount' || normalized === 'bankaccounts' || normalized === 'account' || normalized === 'accounts') {
+  if (
+    normalized === 'bankaccount' ||
+    normalized === 'bankaccounts' ||
+    normalized === 'account' ||
+    normalized === 'accounts'
+  ) {
     return 'bankaccounts';
   }
-  if (normalized === 'banktransaction' || normalized === 'banktransactions') return 'banktransactions';
+  if (normalized === 'banktransaction' || normalized === 'banktransactions')
+    return 'banktransactions';
   throw new Error(`Unsupported Zoho Books module for mutation: ${moduleName}`);
 };
 
-const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<ActionExecutionResult> => {
+const executeZohoAction = async (
+  action: HydratedStoredHitlAction,
+): Promise<ActionExecutionResult> => {
   const payload = action.payload ?? {};
   const operation = asString(payload.operation);
   const moduleName = asString(payload.module);
@@ -881,12 +1099,12 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     throw new Error('Stored Zoho action is missing operation');
   }
   const needsModule =
-    operation === 'createRecord'
-    || operation === 'updateRecord'
-    || operation === 'deleteRecord'
-    || operation === 'createNote'
-    || operation === 'uploadAttachment'
-    || operation === 'deleteAttachment';
+    operation === 'createRecord' ||
+    operation === 'updateRecord' ||
+    operation === 'deleteRecord' ||
+    operation === 'createNote' ||
+    operation === 'uploadAttachment' ||
+    operation === 'deleteAttachment';
   if (needsModule && !moduleName) {
     throw new Error('Stored Zoho action is missing module');
   }
@@ -903,17 +1121,17 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     });
     const result = sourceType
       ? await zohoDataClient.createRecord({
-        companyId: metadata.companyId,
-        sourceType,
-        fields: asRecord(payload.fields) ?? {},
-        trigger: asStringArray(payload.trigger),
-      })
+          companyId: metadata.companyId,
+          sourceType,
+          fields: asRecord(payload.fields) ?? {},
+          trigger: asStringArray(payload.trigger),
+        })
       : await zohoDataClient.createModuleRecord({
-        companyId: metadata.companyId,
-        moduleName: crmModuleName!,
-        fields: asRecord(payload.fields) ?? {},
-        trigger: asStringArray(payload.trigger),
-      });
+          companyId: metadata.companyId,
+          moduleName: crmModuleName!,
+          fields: asRecord(payload.fields) ?? {},
+          trigger: asStringArray(payload.trigger),
+        });
     return {
       ok: true,
       summary: `Created Zoho ${moduleName} record.`,
@@ -935,19 +1153,19 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     });
     const result = sourceType
       ? await zohoDataClient.updateRecord({
-        companyId: metadata.companyId,
-        sourceType,
-        sourceId: recordId,
-        fields: asRecord(payload.fields) ?? {},
-        trigger: asStringArray(payload.trigger),
-      })
+          companyId: metadata.companyId,
+          sourceType,
+          sourceId: recordId,
+          fields: asRecord(payload.fields) ?? {},
+          trigger: asStringArray(payload.trigger),
+        })
       : await zohoDataClient.updateModuleRecord({
-        companyId: metadata.companyId,
-        moduleName: crmModuleName!,
-        recordId,
-        fields: asRecord(payload.fields) ?? {},
-        trigger: asStringArray(payload.trigger),
-      });
+          companyId: metadata.companyId,
+          moduleName: crmModuleName!,
+          recordId,
+          fields: asRecord(payload.fields) ?? {},
+          trigger: asStringArray(payload.trigger),
+        });
     return {
       ok: true,
       summary: `Updated Zoho ${moduleName} record ${recordId}.`,
@@ -1001,17 +1219,17 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     });
     const result = sourceType
       ? await zohoDataClient.createNote({
-        companyId: metadata.companyId,
-        sourceType,
-        sourceId: recordId,
-        fields: asRecord(payload.fields) ?? {},
-      })
+          companyId: metadata.companyId,
+          sourceType,
+          sourceId: recordId,
+          fields: asRecord(payload.fields) ?? {},
+        })
       : await zohoDataClient.createModuleNote({
-        companyId: metadata.companyId,
-        moduleName: crmModuleName!,
-        recordId,
-        fields: asRecord(payload.fields) ?? {},
-      });
+          companyId: metadata.companyId,
+          moduleName: crmModuleName!,
+          recordId,
+          fields: asRecord(payload.fields) ?? {},
+        });
     return {
       ok: true,
       summary: `Created Zoho ${moduleName} note on record ${recordId}.`,
@@ -1080,23 +1298,23 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
     });
     const result = sourceType
       ? await zohoDataClient.uploadAttachment({
-        companyId: metadata.companyId,
-        sourceType,
-        sourceId: recordId,
-        fileName: asString(payload.fileName),
-        contentType: asString(payload.contentType),
-        contentBase64: asString(payload.contentBase64),
-        attachmentUrl: asString(payload.attachmentUrl),
-      })
+          companyId: metadata.companyId,
+          sourceType,
+          sourceId: recordId,
+          fileName: asString(payload.fileName),
+          contentType: asString(payload.contentType),
+          contentBase64: asString(payload.contentBase64),
+          attachmentUrl: asString(payload.attachmentUrl),
+        })
       : await zohoDataClient.uploadModuleAttachment({
-        companyId: metadata.companyId,
-        moduleName: crmModuleName!,
-        recordId,
-        fileName: asString(payload.fileName),
-        contentType: asString(payload.contentType),
-        contentBase64: asString(payload.contentBase64),
-        attachmentUrl: asString(payload.attachmentUrl),
-      });
+          companyId: metadata.companyId,
+          moduleName: crmModuleName!,
+          recordId,
+          fileName: asString(payload.fileName),
+          contentType: asString(payload.contentType),
+          contentBase64: asString(payload.contentBase64),
+          attachmentUrl: asString(payload.attachmentUrl),
+        });
     return {
       ok: true,
       summary: `Uploaded Zoho attachment to ${moduleName} ${recordId}.`,
@@ -1142,14 +1360,17 @@ const executeZohoAction = async (action: HydratedStoredHitlAction): Promise<Acti
   throw new Error(`Unsupported Zoho approval operation: ${operation}`);
 };
 
-const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise<ActionExecutionResult> => {
+const executeZohoBooksAction = async (
+  action: HydratedStoredHitlAction,
+): Promise<ActionExecutionResult> => {
   const payload = action.payload ?? {};
   const operation = asString(payload.operation);
   const moduleName = asString(payload.module);
   if (!operation) {
     throw new Error('Stored Zoho Books action is missing operation');
   }
-  const isRecordCrudOperation = operation === 'createRecord' || operation === 'updateRecord' || operation === 'deleteRecord';
+  const isRecordCrudOperation =
+    operation === 'createRecord' || operation === 'updateRecord' || operation === 'deleteRecord';
   if (isRecordCrudOperation && !moduleName) {
     throw new Error('Stored Zoho Books record action is missing module');
   }
@@ -1251,7 +1472,8 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     });
     return {
       ok: true,
-      summary: `Imported bank statement into Zoho Books account ${asString(payload.accountId) ?? ''}.`.trim(),
+      summary:
+        `Imported bank statement into Zoho Books account ${asString(payload.accountId) ?? ''}.`.trim(),
       payload: result.payload,
     };
   }
@@ -1308,7 +1530,12 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     };
   }
 
-  if (operation === 'unmatchBankTransaction' || operation === 'excludeBankTransaction' || operation === 'restoreBankTransaction' || operation === 'uncategorizeBankTransaction') {
+  if (
+    operation === 'unmatchBankTransaction' ||
+    operation === 'excludeBankTransaction' ||
+    operation === 'restoreBankTransaction' ||
+    operation === 'uncategorizeBankTransaction'
+  ) {
     const transactionId = asString(payload.transactionId);
     if (!transactionId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing transactionId`);
@@ -1322,33 +1549,34 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
       }),
     });
     const body = asRecord(payload.body);
-    const result = operation === 'unmatchBankTransaction'
-      ? await zohoBooksClient.unmatchBankTransaction({
-        companyId: metadata.companyId,
-        organizationId,
-        transactionId,
-        body,
-      })
-      : operation === 'excludeBankTransaction'
-        ? await zohoBooksClient.excludeBankTransaction({
-          companyId: metadata.companyId,
-          organizationId,
-          transactionId,
-          body,
-        })
-        : operation === 'restoreBankTransaction'
-          ? await zohoBooksClient.restoreBankTransaction({
+    const result =
+      operation === 'unmatchBankTransaction'
+        ? await zohoBooksClient.unmatchBankTransaction({
             companyId: metadata.companyId,
             organizationId,
             transactionId,
             body,
           })
-          : await zohoBooksClient.uncategorizeBankTransaction({
-            companyId: metadata.companyId,
-            organizationId,
-            transactionId,
-            body,
-          });
+        : operation === 'excludeBankTransaction'
+          ? await zohoBooksClient.excludeBankTransaction({
+              companyId: metadata.companyId,
+              organizationId,
+              transactionId,
+              body,
+            })
+          : operation === 'restoreBankTransaction'
+            ? await zohoBooksClient.restoreBankTransaction({
+                companyId: metadata.companyId,
+                organizationId,
+                transactionId,
+                body,
+              })
+            : await zohoBooksClient.uncategorizeBankTransaction({
+                companyId: metadata.companyId,
+                organizationId,
+                transactionId,
+                body,
+              });
     return {
       ok: true,
       summary:
@@ -1364,11 +1592,11 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
   }
 
   if (
-    operation === 'categorizeBankTransaction'
-    || operation === 'categorizeBankTransactionAsExpense'
-    || operation === 'categorizeBankTransactionAsVendorPayment'
-    || operation === 'categorizeBankTransactionAsCustomerPayment'
-    || operation === 'categorizeBankTransactionAsCreditNoteRefund'
+    operation === 'categorizeBankTransaction' ||
+    operation === 'categorizeBankTransactionAsExpense' ||
+    operation === 'categorizeBankTransactionAsVendorPayment' ||
+    operation === 'categorizeBankTransactionAsCustomerPayment' ||
+    operation === 'categorizeBankTransactionAsCreditNoteRefund'
   ) {
     const transactionId = asString(payload.transactionId);
     if (!transactionId) {
@@ -1430,19 +1658,20 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
         organizationId,
       }),
     });
-    const result = operation === 'emailInvoice'
-      ? await zohoBooksClient.emailInvoice({
-        companyId: metadata.companyId,
-        organizationId,
-        invoiceId,
-        body: asRecord(payload.body) ?? {},
-      })
-      : await zohoBooksClient.remindInvoice({
-        companyId: metadata.companyId,
-        organizationId,
-        invoiceId,
-        body: asRecord(payload.body) ?? {},
-      });
+    const result =
+      operation === 'emailInvoice'
+        ? await zohoBooksClient.emailInvoice({
+            companyId: metadata.companyId,
+            organizationId,
+            invoiceId,
+            body: asRecord(payload.body) ?? {},
+          })
+        : await zohoBooksClient.remindInvoice({
+            companyId: metadata.companyId,
+            organizationId,
+            invoiceId,
+            body: asRecord(payload.body) ?? {},
+          });
     return {
       ok: true,
       summary: `${operation === 'emailInvoice' ? 'Emailed' : 'Sent reminder for'} Zoho Books invoice ${invoiceIdentifier}.`,
@@ -1450,7 +1679,10 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     };
   }
 
-  if (operation === 'enableInvoicePaymentReminder' || operation === 'disableInvoicePaymentReminder') {
+  if (
+    operation === 'enableInvoicePaymentReminder' ||
+    operation === 'disableInvoicePaymentReminder'
+  ) {
     const invoiceIdentifier = asString(payload.invoiceId);
     if (!invoiceIdentifier) {
       throw new Error(`Stored Zoho Books ${operation} action is missing invoiceId`);
@@ -1505,19 +1737,20 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
         organizationId,
       }),
     });
-    const result = operation === 'writeOffInvoice'
-      ? await zohoBooksClient.writeOffInvoice({
-        companyId: metadata.companyId,
-        organizationId,
-        invoiceId,
-        body: asRecord(payload.body),
-      })
-      : await zohoBooksClient.cancelInvoiceWriteOff({
-        companyId: metadata.companyId,
-        organizationId,
-        invoiceId,
-        body: asRecord(payload.body),
-      });
+    const result =
+      operation === 'writeOffInvoice'
+        ? await zohoBooksClient.writeOffInvoice({
+            companyId: metadata.companyId,
+            organizationId,
+            invoiceId,
+            body: asRecord(payload.body),
+          })
+        : await zohoBooksClient.cancelInvoiceWriteOff({
+            companyId: metadata.companyId,
+            organizationId,
+            invoiceId,
+            body: asRecord(payload.body),
+          });
     return {
       ok: true,
       summary: `${operation === 'writeOffInvoice' ? 'Wrote off' : 'Cancelled write off for'} Zoho Books invoice ${invoiceIdentifier}.`,
@@ -1525,7 +1758,13 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     };
   }
 
-  if (operation === 'markInvoiceSent' || operation === 'voidInvoice' || operation === 'markInvoiceDraft' || operation === 'submitInvoice' || operation === 'approveInvoice') {
+  if (
+    operation === 'markInvoiceSent' ||
+    operation === 'voidInvoice' ||
+    operation === 'markInvoiceDraft' ||
+    operation === 'submitInvoice' ||
+    operation === 'approveInvoice'
+  ) {
     const invoiceIdentifier = asString(payload.invoiceId);
     if (!invoiceIdentifier) {
       throw new Error(`Stored Zoho Books ${operation} action is missing invoiceId`);
@@ -1604,7 +1843,10 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     };
   }
 
-  if (operation === 'enableContactPaymentReminder' || operation === 'disableContactPaymentReminder') {
+  if (
+    operation === 'enableContactPaymentReminder' ||
+    operation === 'disableContactPaymentReminder'
+  ) {
     const contactId = asString(payload.contactId);
     if (!contactId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing contactId`);
@@ -1630,7 +1872,13 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     };
   }
 
-  if (operation === 'markEstimateSent' || operation === 'acceptEstimate' || operation === 'declineEstimate' || operation === 'submitEstimate' || operation === 'approveEstimate') {
+  if (
+    operation === 'markEstimateSent' ||
+    operation === 'acceptEstimate' ||
+    operation === 'declineEstimate' ||
+    operation === 'submitEstimate' ||
+    operation === 'approveEstimate'
+  ) {
     const estimateId = asString(payload.estimateId);
     if (!estimateId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing estimateId`);
@@ -1754,7 +2002,14 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     };
   }
 
-  if (operation === 'emailSalesOrder' || operation === 'openSalesOrder' || operation === 'voidSalesOrder' || operation === 'submitSalesOrder' || operation === 'approveSalesOrder' || operation === 'createInvoiceFromSalesOrder') {
+  if (
+    operation === 'emailSalesOrder' ||
+    operation === 'openSalesOrder' ||
+    operation === 'voidSalesOrder' ||
+    operation === 'submitSalesOrder' ||
+    operation === 'approveSalesOrder' ||
+    operation === 'createInvoiceFromSalesOrder'
+  ) {
     const salesOrderId = asString(payload.salesOrderId);
     if (!salesOrderId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing salesOrderId`);
@@ -1767,34 +2022,35 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
         organizationId,
       }),
     });
-    const result = operation === 'emailSalesOrder'
-      ? await zohoBooksClient.emailSalesOrder({
-        companyId: metadata.companyId,
-        organizationId,
-        salesOrderId,
-        body: asRecord(payload.body),
-      })
-      : operation === 'createInvoiceFromSalesOrder'
-        ? await zohoBooksClient.createInvoiceFromSalesOrder({
-          companyId: metadata.companyId,
-          organizationId,
-          salesOrderId,
-          body: asRecord(payload.body),
-        })
-        : await zohoBooksClient.transitionSalesOrder({
-          companyId: metadata.companyId,
-          organizationId,
-          salesOrderId,
-          action:
-            operation === 'openSalesOrder'
-              ? 'markOpen'
-              : operation === 'voidSalesOrder'
-                ? 'markVoid'
-                : operation === 'submitSalesOrder'
-                  ? 'submit'
-                  : 'approve',
-          body: asRecord(payload.body),
-        });
+    const result =
+      operation === 'emailSalesOrder'
+        ? await zohoBooksClient.emailSalesOrder({
+            companyId: metadata.companyId,
+            organizationId,
+            salesOrderId,
+            body: asRecord(payload.body),
+          })
+        : operation === 'createInvoiceFromSalesOrder'
+          ? await zohoBooksClient.createInvoiceFromSalesOrder({
+              companyId: metadata.companyId,
+              organizationId,
+              salesOrderId,
+              body: asRecord(payload.body),
+            })
+          : await zohoBooksClient.transitionSalesOrder({
+              companyId: metadata.companyId,
+              organizationId,
+              salesOrderId,
+              action:
+                operation === 'openSalesOrder'
+                  ? 'markOpen'
+                  : operation === 'voidSalesOrder'
+                    ? 'markVoid'
+                    : operation === 'submitSalesOrder'
+                      ? 'submit'
+                      : 'approve',
+              body: asRecord(payload.body),
+            });
     return {
       ok: true,
       summary:
@@ -1813,7 +2069,15 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     };
   }
 
-  if (operation === 'emailPurchaseOrder' || operation === 'openPurchaseOrder' || operation === 'billPurchaseOrder' || operation === 'cancelPurchaseOrder' || operation === 'rejectPurchaseOrder' || operation === 'submitPurchaseOrder' || operation === 'approvePurchaseOrder') {
+  if (
+    operation === 'emailPurchaseOrder' ||
+    operation === 'openPurchaseOrder' ||
+    operation === 'billPurchaseOrder' ||
+    operation === 'cancelPurchaseOrder' ||
+    operation === 'rejectPurchaseOrder' ||
+    operation === 'submitPurchaseOrder' ||
+    operation === 'approvePurchaseOrder'
+  ) {
     const purchaseOrderId = asString(payload.purchaseOrderId);
     if (!purchaseOrderId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing purchaseOrderId`);
@@ -1826,31 +2090,32 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
         organizationId,
       }),
     });
-    const result = operation === 'emailPurchaseOrder'
-      ? await zohoBooksClient.emailPurchaseOrder({
-        companyId: metadata.companyId,
-        organizationId,
-        purchaseOrderId,
-        body: asRecord(payload.body),
-      })
-      : await zohoBooksClient.transitionPurchaseOrder({
-        companyId: metadata.companyId,
-        organizationId,
-        purchaseOrderId,
-        action:
-          operation === 'openPurchaseOrder'
-            ? 'markOpen'
-            : operation === 'billPurchaseOrder'
-              ? 'markBilled'
-              : operation === 'cancelPurchaseOrder'
-                ? 'markCancelled'
-                : operation === 'rejectPurchaseOrder'
-                  ? 'reject'
-                  : operation === 'submitPurchaseOrder'
-                    ? 'submit'
-                    : 'approve',
-        body: asRecord(payload.body),
-      });
+    const result =
+      operation === 'emailPurchaseOrder'
+        ? await zohoBooksClient.emailPurchaseOrder({
+            companyId: metadata.companyId,
+            organizationId,
+            purchaseOrderId,
+            body: asRecord(payload.body),
+          })
+        : await zohoBooksClient.transitionPurchaseOrder({
+            companyId: metadata.companyId,
+            organizationId,
+            purchaseOrderId,
+            action:
+              operation === 'openPurchaseOrder'
+                ? 'markOpen'
+                : operation === 'billPurchaseOrder'
+                  ? 'markBilled'
+                  : operation === 'cancelPurchaseOrder'
+                    ? 'markCancelled'
+                    : operation === 'rejectPurchaseOrder'
+                      ? 'reject'
+                      : operation === 'submitPurchaseOrder'
+                        ? 'submit'
+                        : 'approve',
+            body: asRecord(payload.body),
+          });
     return {
       ok: true,
       summary:
@@ -1871,7 +2136,11 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     };
   }
 
-  if (operation === 'addBooksComment' || operation === 'updateBooksComment' || operation === 'deleteBooksComment') {
+  if (
+    operation === 'addBooksComment' ||
+    operation === 'updateBooksComment' ||
+    operation === 'deleteBooksComment'
+  ) {
     const recordId = asString(payload.recordId);
     const commentId = asString(payload.commentId);
     if (!booksModule || !recordId) {
@@ -1889,30 +2158,49 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
         organizationId,
       }),
     });
-    const result = operation === 'addBooksComment'
-      ? await zohoBooksClient.addComment({
-        companyId: metadata.companyId,
-        organizationId,
-        moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
-        recordId,
-        body: asRecord(payload.body) ?? {},
-      })
-      : operation === 'updateBooksComment'
-        ? await zohoBooksClient.updateComment({
-          companyId: metadata.companyId,
-          organizationId,
-          moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
-          recordId,
-          commentId: commentId!,
-          body: asRecord(payload.body) ?? {},
-        })
-        : await zohoBooksClient.deleteComment({
-          companyId: metadata.companyId,
-          organizationId,
-          moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
-          recordId,
-          commentId: commentId!,
-        });
+    const result =
+      operation === 'addBooksComment'
+        ? await zohoBooksClient.addComment({
+            companyId: metadata.companyId,
+            organizationId,
+            moduleName: booksModule as
+              | 'invoices'
+              | 'estimates'
+              | 'creditnotes'
+              | 'bills'
+              | 'salesorders'
+              | 'purchaseorders',
+            recordId,
+            body: asRecord(payload.body) ?? {},
+          })
+        : operation === 'updateBooksComment'
+          ? await zohoBooksClient.updateComment({
+              companyId: metadata.companyId,
+              organizationId,
+              moduleName: booksModule as
+                | 'invoices'
+                | 'estimates'
+                | 'creditnotes'
+                | 'bills'
+                | 'salesorders'
+                | 'purchaseorders',
+              recordId,
+              commentId: commentId!,
+              body: asRecord(payload.body) ?? {},
+            })
+          : await zohoBooksClient.deleteComment({
+              companyId: metadata.companyId,
+              organizationId,
+              moduleName: booksModule as
+                | 'invoices'
+                | 'estimates'
+                | 'creditnotes'
+                | 'bills'
+                | 'salesorders'
+                | 'purchaseorders',
+              recordId,
+              commentId: commentId!,
+            });
     return {
       ok: true,
       summary:
@@ -1929,7 +2217,9 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     const recordId = asString(payload.recordId);
     const templateId = asString(payload.templateId);
     if (!booksModule || !recordId || !templateId) {
-      throw new Error('Stored Zoho Books applyBooksTemplate action is missing module, recordId, or templateId');
+      throw new Error(
+        'Stored Zoho Books applyBooksTemplate action is missing module, recordId, or templateId',
+      );
     }
     await authorizeZohoMutationOrThrow({
       metadata,
@@ -1943,7 +2233,13 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     const result = await zohoBooksClient.applyTemplate({
       companyId: metadata.companyId,
       organizationId,
-      moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
+      moduleName: booksModule as
+        | 'invoices'
+        | 'estimates'
+        | 'creditnotes'
+        | 'bills'
+        | 'salesorders'
+        | 'purchaseorders',
       recordId,
       templateId,
     });
@@ -1959,7 +2255,9 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     const fileName = asString(payload.fileName);
     const contentBase64 = asString(payload.contentBase64);
     if (!booksModule || !recordId || !fileName || !contentBase64) {
-      throw new Error('Stored Zoho Books uploadBooksAttachment action is missing module, recordId, fileName, or contentBase64');
+      throw new Error(
+        'Stored Zoho Books uploadBooksAttachment action is missing module, recordId, fileName, or contentBase64',
+      );
     }
     await authorizeZohoMutationOrThrow({
       metadata,
@@ -1973,7 +2271,13 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     const result = await zohoBooksClient.uploadAttachment({
       companyId: metadata.companyId,
       organizationId,
-      moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
+      moduleName: booksModule as
+        | 'invoices'
+        | 'estimates'
+        | 'creditnotes'
+        | 'bills'
+        | 'salesorders'
+        | 'purchaseorders',
       recordId,
       fileName,
       contentBase64,
@@ -1989,7 +2293,9 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
   if (operation === 'deleteBooksAttachment') {
     const recordId = asString(payload.recordId);
     if (!booksModule || !recordId) {
-      throw new Error('Stored Zoho Books deleteBooksAttachment action is missing module or recordId');
+      throw new Error(
+        'Stored Zoho Books deleteBooksAttachment action is missing module or recordId',
+      );
     }
     await authorizeZohoMutationOrThrow({
       metadata,
@@ -2003,7 +2309,13 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     const result = await zohoBooksClient.deleteAttachment({
       companyId: metadata.companyId,
       organizationId,
-      moduleName: booksModule as 'invoices' | 'estimates' | 'creditnotes' | 'bills' | 'salesorders' | 'purchaseorders',
+      moduleName: booksModule as
+        | 'invoices'
+        | 'estimates'
+        | 'creditnotes'
+        | 'bills'
+        | 'salesorders'
+        | 'purchaseorders',
       recordId,
     });
     return {
@@ -2013,7 +2325,12 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
     };
   }
 
-  if (operation === 'voidBill' || operation === 'openBill' || operation === 'submitBill' || operation === 'approveBill') {
+  if (
+    operation === 'voidBill' ||
+    operation === 'openBill' ||
+    operation === 'submitBill' ||
+    operation === 'approveBill'
+  ) {
     const billId = asString(payload.billId);
     if (!billId) {
       throw new Error(`Stored Zoho Books ${operation} action is missing billId`);
@@ -2067,19 +2384,20 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
         organizationId,
       }),
     });
-    const result = operation === 'emailContact'
-      ? await zohoBooksClient.emailContact({
-        companyId: metadata.companyId,
-        organizationId,
-        contactId,
-        body: asRecord(payload.body) ?? {},
-      })
-      : await zohoBooksClient.emailContactStatement({
-        companyId: metadata.companyId,
-        organizationId,
-        contactId,
-        body: asRecord(payload.body) ?? {},
-      });
+    const result =
+      operation === 'emailContact'
+        ? await zohoBooksClient.emailContact({
+            companyId: metadata.companyId,
+            organizationId,
+            contactId,
+            body: asRecord(payload.body) ?? {},
+          })
+        : await zohoBooksClient.emailContactStatement({
+            companyId: metadata.companyId,
+            organizationId,
+            contactId,
+            body: asRecord(payload.body) ?? {},
+          });
     return {
       ok: true,
       summary: `${operation === 'emailContact' ? 'Emailed' : 'Emailed statement to'} Zoho Books contact ${contactId}.`,
@@ -2116,7 +2434,9 @@ const executeZohoBooksAction = async (action: HydratedStoredHitlAction): Promise
   throw new Error(`Unsupported Zoho Books approval operation: ${operation}`);
 };
 
-export const executeStoredRemoteToolAction = async (action: HydratedStoredHitlAction): Promise<ActionExecutionResult> => {
+export const executeStoredRemoteToolAction = async (
+  action: HydratedStoredHitlAction,
+): Promise<ActionExecutionResult> => {
   const toolId = asString(action.toolId) ?? asString(action.payload?.toolId);
   if (!toolId) {
     throw new Error('Stored HITL action is missing toolId');
@@ -2142,9 +2462,9 @@ export const executeStoredRemoteToolAction = async (action: HydratedStoredHitlAc
     case 'lark-message-write':
       return executeLarkMessageAction(action);
     case 'zoho-write':
-      return executeZohoAction(action);
+      return withZohoRateLimitContext(action, () => executeZohoAction(action));
     case 'zoho-books-write':
-      return executeZohoBooksAction(action);
+      return withZohoRateLimitContext(action, () => executeZohoBooksAction(action));
     default:
       throw new Error(`Unsupported remote HITL tool execution: ${toolId}`);
   }

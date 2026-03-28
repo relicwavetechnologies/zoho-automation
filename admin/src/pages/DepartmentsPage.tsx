@@ -1,322 +1,474 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, Plus, Search, Building2, Users, Shield, Terminal, BookOpen, Settings, MoreHorizontal, Trash2, Archive, Globe, Lock, RefreshCw } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Plus,
+  Search,
+  Building2,
+  Users,
+  Shield,
+  Terminal,
+  BookOpen,
+  Settings,
+  MoreHorizontal,
+  Trash2,
+  Archive,
+  Globe,
+  Lock,
+  RefreshCw,
+} from "lucide-react";
 
-import { useAdminAuth } from '../auth/AdminAuthProvider'
-import { api } from '../lib/api'
-import { roleLabel } from '../lib/labels'
-import { cn } from '../lib/utils'
-import { Badge } from '../components/ui/badge'
-import { Button } from '../components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
-import { Avatar, AvatarFallback } from '../components/ui/avatar'
-import { Input } from '../components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
-import { Skeleton } from '../components/ui/skeleton'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
-import { Textarea } from '../components/ui/textarea'
-import { ScrollArea } from '../components/ui/scroll-area'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
-import { toast } from '../components/ui/use-toast'
-import { Separator } from '../components/ui/separator'
+import { useAdminAuth } from "../auth/AdminAuthProvider";
+import { api } from "../lib/api";
+import { roleLabel } from "../lib/labels";
+import { cn } from "../lib/utils";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../components/ui/dropdown-menu";
+import { Avatar, AvatarFallback } from "../components/ui/avatar";
+import { Input } from "../components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
+import { Skeleton } from "../components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
+import { Textarea } from "../components/ui/textarea";
+import { ScrollArea } from "../components/ui/scroll-area";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "../components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "../components/ui/tooltip";
+import { toast } from "../components/ui/use-toast";
+import { Separator } from "../components/ui/separator";
 
 type DepartmentListItem = {
-  id: string
-  companyId: string
-  name: string
-  slug: string
-  description?: string | null
-  status: string
-  managerCount: number
-  memberCount: number
-  hasAgentConfig: boolean
-  createdAt: string
-  updatedAt: string
-}
+  id: string;
+  companyId: string;
+  name: string;
+  slug: string;
+  description?: string | null;
+  status: string;
+  managerCount: number;
+  memberCount: number;
+  hasAgentConfig: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
 
 type DepartmentRole = {
-  id: string
-  name: string
-  slug: string
-  isSystem: boolean
-  isDefault: boolean
-  zohoReadScope: 'personalized' | 'show_all'
-  createdAt: string
-  updatedAt: string
-}
+  id: string;
+  name: string;
+  slug: string;
+  isSystem: boolean;
+  isDefault: boolean;
+  zohoReadScope: "personalized" | "show_all";
+  createdAt: string;
+  updatedAt: string;
+};
 
 type DepartmentMembership = {
-  id: string
-  userId: string
-  name?: string | null
-  email?: string | null
-  roleId: string
-  roleSlug: string
-  roleName: string
-  status: string
-  createdAt: string
-  updatedAt: string
-}
+  id: string;
+  userId: string;
+  name?: string | null;
+  email?: string | null;
+  roleId: string;
+  roleSlug: string;
+  roleName: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 type DepartmentToolPermission = {
-  id: string
-  roleId: string
-  toolId: string
-  actionGroup: string
-  allowed: boolean
-}
+  id: string;
+  roleId: string;
+  toolId: string;
+  actionGroup: string;
+  allowed: boolean;
+};
 
 type DepartmentUserOverride = {
-  id: string
-  userId: string
-  toolId: string
-  actionGroup: string
-  allowed: boolean
-}
+  id: string;
+  userId: string;
+  toolId: string;
+  actionGroup: string;
+  allowed: boolean;
+};
 
 type DepartmentAvailableMember = {
-  userId: string
-  name?: string | null
-  email?: string | null
-  workspaceRole: string
-  isLarkSynced?: boolean
-  larkDisplayName?: string | null
-  larkUserId?: string | null
-  larkOpenId?: string | null
-  larkSourceRoles?: string[]
-}
+  userId: string;
+  name?: string | null;
+  email?: string | null;
+  workspaceRole: string;
+  isLarkSynced?: boolean;
+  larkDisplayName?: string | null;
+  larkUserId?: string | null;
+  larkOpenId?: string | null;
+  larkSourceRoles?: string[];
+};
 
 type DepartmentCandidate = {
-  channelIdentityId: string
-  userId?: string
-  name?: string | null
-  email?: string | null
-  workspaceRole?: string
-  isWorkspaceMember: boolean
-  isAlreadyAssigned: boolean
-  larkDisplayName?: string | null
-  larkUserId?: string | null
-  larkOpenId?: string | null
-  larkSourceRoles: string[]
-}
+  channelIdentityId: string;
+  userId?: string;
+  name?: string | null;
+  email?: string | null;
+  workspaceRole?: string;
+  isWorkspaceMember: boolean;
+  isAlreadyAssigned: boolean;
+  larkDisplayName?: string | null;
+  larkUserId?: string | null;
+  larkOpenId?: string | null;
+  larkSourceRoles: string[];
+};
 
 type DepartmentAvailableTool = {
-  toolId: string
-  name: string
-  description: string
-  category: string
-  supportedActionGroups: string[]
-}
+  toolId: string;
+  name: string;
+  description: string;
+  category: string;
+  supportedActionGroups: string[];
+};
+
+type ZohoRateLimitUserOverride = {
+  userId: string;
+  maxCallsPerWindow: number;
+};
+
+type ZohoRateLimitConfig = {
+  enabled: boolean;
+  windowSeconds: number;
+  totalCallsPerWindow: number;
+  roleBudgets: Record<string, number>;
+  userOverrides: ZohoRateLimitUserOverride[];
+};
 
 type DepartmentSkill = {
-  id: string
-  companyId: string
-  departmentId?: string | null
-  departmentName?: string | null
-  scope: 'global' | 'department'
-  name: string
-  slug: string
-  summary: string
-  markdown: string
-  tags: string[]
-  status: string
-  isSystem: boolean
-  sortOrder: number
-  source: 'database' | 'legacy'
-  createdAt?: string
-  updatedAt?: string
-}
+  id: string;
+  companyId: string;
+  departmentId?: string | null;
+  departmentName?: string | null;
+  scope: "global" | "department";
+  name: string;
+  slug: string;
+  summary: string;
+  markdown: string;
+  tags: string[];
+  status: string;
+  isSystem: boolean;
+  sortOrder: number;
+  source: "database" | "legacy";
+  createdAt?: string;
+  updatedAt?: string;
+};
 
 type DepartmentDetail = {
   department: {
-    id: string
-    companyId: string
-    name: string
-    slug: string
-    description?: string | null
-    status: string
-    createdAt: string
-    updatedAt: string
-  }
+    id: string;
+    companyId: string;
+    name: string;
+    slug: string;
+    description?: string | null;
+    status: string;
+    createdAt: string;
+    updatedAt: string;
+  };
   config: {
-    systemPrompt: string
-    skillsMarkdown: string
-    isActive: boolean
-  }
-  roles: DepartmentRole[]
-  memberships: DepartmentMembership[]
-  toolPermissions: DepartmentToolPermission[]
-  userOverrides: DepartmentUserOverride[]
-  globalSkills: DepartmentSkill[]
-  departmentSkills: DepartmentSkill[]
-  availableMembers: DepartmentAvailableMember[]
-  availableTools: DepartmentAvailableTool[]
-}
+    systemPrompt: string;
+    skillsMarkdown: string;
+    zohoRateLimit: ZohoRateLimitConfig;
+    isActive: boolean;
+  };
+  roles: DepartmentRole[];
+  memberships: DepartmentMembership[];
+  toolPermissions: DepartmentToolPermission[];
+  userOverrides: DepartmentUserOverride[];
+  globalSkills: DepartmentSkill[];
+  departmentSkills: DepartmentSkill[];
+  availableMembers: DepartmentAvailableMember[];
+  availableTools: DepartmentAvailableTool[];
+};
 
 const statusBadgeVariant = (status: string) =>
-  status === 'active' ? 'outline' : 'secondary'
+  status === "active" ? "outline" : "secondary";
 
-const memberLabel = (member: { name?: string | null; email?: string | null; userId: string }) =>
-  member.name?.trim() || member.email?.trim() || member.userId
+const memberLabel = (member: {
+  name?: string | null;
+  email?: string | null;
+  userId: string;
+}) => member.name?.trim() || member.email?.trim() || member.userId;
 
-const DEPARTMENT_TABS = ['profile', 'prompt', 'skills', 'members', 'permissions'] as const
+const createDefaultZohoRateLimitConfig = (): ZohoRateLimitConfig => ({
+  enabled: false,
+  windowSeconds: 60,
+  totalCallsPerWindow: 100,
+  roleBudgets: {},
+  userOverrides: [],
+});
 
-const isDepartmentTab = (value: string | null): value is (typeof DEPARTMENT_TABS)[number] =>
-  Boolean(value && DEPARTMENT_TABS.includes(value as (typeof DEPARTMENT_TABS)[number]))
+const DEPARTMENT_TABS = [
+  "profile",
+  "prompt",
+  "skills",
+  "members",
+  "permissions",
+] as const;
+
+const isDepartmentTab = (
+  value: string | null,
+): value is (typeof DEPARTMENT_TABS)[number] =>
+  Boolean(
+    value &&
+    DEPARTMENT_TABS.includes(value as (typeof DEPARTMENT_TABS)[number]),
+  );
 
 export const DepartmentsPage = () => {
-  const { token, session } = useAdminAuth()
-  const [searchParams, setSearchParams] = useSearchParams()
-  const [companyId, setCompanyId] = useState('')
-  const [departments, setDepartments] = useState<DepartmentListItem[]>([])
-  const [detail, setDetail] = useState<DepartmentDetail | null>(null)
-  const [loadingList, setLoadingList] = useState(false)
-  const [loadingDetail, setLoadingDetail] = useState(false)
-  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
-  const [isSkillDialogOpen, setIsSkillDialogOpen] = useState(false)
-  const [editingSkillId, setEditingSkillId] = useState<string | null>(null)
-  const [departmentSearch, setDepartmentSearch] = useState('')
+  const { token, session } = useAdminAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [companyId, setCompanyId] = useState("");
+  const [departments, setDepartments] = useState<DepartmentListItem[]>([]);
+  const [detail, setDetail] = useState<DepartmentDetail | null>(null);
+  const [loadingList, setLoadingList] = useState(false);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const [isSkillDialogOpen, setIsSkillDialogOpen] = useState(false);
+  const [editingSkillId, setEditingSkillId] = useState<string | null>(null);
+  const [departmentSearch, setDepartmentSearch] = useState("");
 
-  const [newDepartmentName, setNewDepartmentName] = useState('')
-  const [newDepartmentDescription, setNewDepartmentDescription] = useState('')
-  const [newRoleName, setNewRoleName] = useState('')
-  const [newRoleSlug, setNewRoleSlug] = useState('')
-  const [newRoleZohoReadScope, setNewRoleZohoReadScope] = useState<'personalized' | 'show_all'>('personalized')
-  const [membershipUserId, setMembershipUserId] = useState('')
-  const [membershipRoleId, setMembershipRoleId] = useState('')
-  const [memberSearch, setMemberSearch] = useState('')
-  const [debouncedMemberSearch, setDebouncedMemberSearch] = useState('')
-  const [candidateResults, setCandidateResults] = useState<DepartmentCandidate[]>([])
-  const [searchingCandidates, setSearchingCandidates] = useState(false)
-  const [pendingPermissionKey, setPendingPermissionKey] = useState<string | null>(null)
-  const [pendingRoleScopeId, setPendingRoleScopeId] = useState<string | null>(null)
-  const [overrideUserId, setOverrideUserId] = useState('')
-  const [overrideToolId, setOverrideToolId] = useState('')
-  const [overrideActionGroup, setOverrideActionGroup] = useState('read')
-  const [overrideAllowed, setOverrideAllowed] = useState<'allow' | 'deny'>('allow')
-  const [departmentForm, setDepartmentForm] = useState({ name: '', description: '', status: 'active' })
-  const [configForm, setConfigForm] = useState({ systemPrompt: '', skillsMarkdown: '', isActive: true })
+  const [newDepartmentName, setNewDepartmentName] = useState("");
+  const [newDepartmentDescription, setNewDepartmentDescription] = useState("");
+  const [newRoleName, setNewRoleName] = useState("");
+  const [newRoleSlug, setNewRoleSlug] = useState("");
+  const [newRoleZohoReadScope, setNewRoleZohoReadScope] = useState<
+    "personalized" | "show_all"
+  >("personalized");
+  const [membershipUserId, setMembershipUserId] = useState("");
+  const [membershipRoleId, setMembershipRoleId] = useState("");
+  const [memberSearch, setMemberSearch] = useState("");
+  const [debouncedMemberSearch, setDebouncedMemberSearch] = useState("");
+  const [candidateResults, setCandidateResults] = useState<
+    DepartmentCandidate[]
+  >([]);
+  const [searchingCandidates, setSearchingCandidates] = useState(false);
+  const [pendingPermissionKey, setPendingPermissionKey] = useState<
+    string | null
+  >(null);
+  const [pendingRoleScopeId, setPendingRoleScopeId] = useState<string | null>(
+    null,
+  );
+  const [overrideUserId, setOverrideUserId] = useState("");
+  const [overrideToolId, setOverrideToolId] = useState("");
+  const [overrideActionGroup, setOverrideActionGroup] = useState("read");
+  const [overrideAllowed, setOverrideAllowed] = useState<"allow" | "deny">(
+    "allow",
+  );
+  const [departmentForm, setDepartmentForm] = useState({
+    name: "",
+    description: "",
+    status: "active",
+  });
+  const [configForm, setConfigForm] = useState<{
+    systemPrompt: string;
+    skillsMarkdown: string;
+    zohoRateLimit: ZohoRateLimitConfig;
+    isActive: boolean;
+  }>({
+    systemPrompt: "",
+    skillsMarkdown: "",
+    zohoRateLimit: createDefaultZohoRateLimitConfig(),
+    isActive: true,
+  });
   const [skillForm, setSkillForm] = useState({
-    name: '',
-    slug: '',
-    summary: '',
-    markdown: '',
-    tags: '',
-    status: 'active',
-  })
+    name: "",
+    slug: "",
+    summary: "",
+    markdown: "",
+    tags: "",
+    status: "active",
+  });
 
-  const rawDepartmentId = searchParams.get('departmentId')
-  const rawTab = searchParams.get('tab')
-  const selectedDepartmentId = rawDepartmentId?.trim() || null
-  const selectedTab: (typeof DEPARTMENT_TABS)[number] = isDepartmentTab(rawTab) ? rawTab : 'profile'
+  const rawDepartmentId = searchParams.get("departmentId");
+  const rawTab = searchParams.get("tab");
+  const selectedDepartmentId = rawDepartmentId?.trim() || null;
+  const selectedTab: (typeof DEPARTMENT_TABS)[number] = isDepartmentTab(rawTab)
+    ? rawTab
+    : "profile";
 
-  const isSuperAdmin = session?.role === 'SUPER_ADMIN'
+  const isSuperAdmin = session?.role === "SUPER_ADMIN";
   const effectiveCompanyId = useMemo(
-    () => (isSuperAdmin ? companyId.trim() : session?.companyId ?? ''),
+    () => (isSuperAdmin ? companyId.trim() : (session?.companyId ?? "")),
     [companyId, isSuperAdmin, session?.companyId],
-  )
+  );
 
   const updateSearchParam = useCallback(
     (updater: (next: URLSearchParams) => void) => {
-      const next = new URLSearchParams(searchParams)
-      updater(next)
-      setSearchParams(next, { replace: true })
+      const next = new URLSearchParams(searchParams);
+      updater(next);
+      setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
-  )
+  );
 
-  const selectDepartment = useCallback((departmentId: string | null) => {
-    updateSearchParam((next) => {
-      if (departmentId) {
-        next.set('departmentId', departmentId)
-      } else {
-        next.delete('departmentId')
+  const selectDepartment = useCallback(
+    (departmentId: string | null) => {
+      updateSearchParam((next) => {
+        if (departmentId) {
+          next.set("departmentId", departmentId);
+        } else {
+          next.delete("departmentId");
+        }
+      });
+    },
+    [updateSearchParam],
+  );
+
+  const loadDepartments = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (!token) return;
+      if (isSuperAdmin && !effectiveCompanyId) {
+        setDepartments([]);
+        setDetail(null);
+        selectDepartment(null);
+        return;
       }
-    })
-  }, [updateSearchParam])
 
-  const loadDepartments = useCallback(async (options?: { silent?: boolean }) => {
-    if (!token) return
-    if (isSuperAdmin && !effectiveCompanyId) {
-      setDepartments([])
-      setDetail(null)
-      selectDepartment(null)
-      return
-    }
-
-    if (!options?.silent) setLoadingList(true)
-    try {
-      const query = effectiveCompanyId ? `?companyId=${encodeURIComponent(effectiveCompanyId)}` : ''
-      const data = await api.get<DepartmentListItem[]>(`/api/admin/departments${query}`, token)
-      setDepartments(data)
-      const resolvedDepartmentId =
-        selectedDepartmentId && data.some((department) => department.id === selectedDepartmentId)
-          ? selectedDepartmentId
-          : data[0]?.id ?? null
-      if (resolvedDepartmentId !== selectedDepartmentId) {
-        selectDepartment(resolvedDepartmentId)
+      if (!options?.silent) setLoadingList(true);
+      try {
+        const query = effectiveCompanyId
+          ? `?companyId=${encodeURIComponent(effectiveCompanyId)}`
+          : "";
+        const data = await api.get<DepartmentListItem[]>(
+          `/api/admin/departments${query}`,
+          token,
+        );
+        setDepartments(data);
+        const resolvedDepartmentId =
+          selectedDepartmentId &&
+          data.some((department) => department.id === selectedDepartmentId)
+            ? selectedDepartmentId
+            : (data[0]?.id ?? null);
+        if (resolvedDepartmentId !== selectedDepartmentId) {
+          selectDepartment(resolvedDepartmentId);
+        }
+      } finally {
+        setLoadingList(false);
       }
-    } finally {
-      setLoadingList(false)
-    }
-  }, [effectiveCompanyId, isSuperAdmin, selectDepartment, selectedDepartmentId, token])
+    },
+    [
+      effectiveCompanyId,
+      isSuperAdmin,
+      selectDepartment,
+      selectedDepartmentId,
+      token,
+    ],
+  );
 
-  const loadDetail = useCallback(async (departmentId: string, options?: { silent?: boolean }) => {
-    if (!token) return
-    if (!options?.silent) setLoadingDetail(true)
-    try {
-      const data = await api.get<DepartmentDetail>(`/api/admin/departments/${departmentId}`, token)
-      setDetail(data)
-      setDepartmentForm({
-        name: data.department.name,
-        description: data.department.description ?? '',
-        status: data.department.status,
-      })
-      setConfigForm({
-        systemPrompt: data.config.systemPrompt,
-        skillsMarkdown: data.config.skillsMarkdown,
-        isActive: data.config.isActive,
-      })
-      setMembershipRoleId(data.roles.find((role) => role.isDefault)?.id ?? data.roles[0]?.id ?? '')
-      setOverrideUserId(data.memberships[0]?.userId ?? '')
-      setOverrideToolId(data.availableTools[0]?.toolId ?? '')
-      setOverrideActionGroup(data.availableTools[0]?.supportedActionGroups?.[0] ?? 'read')
-    } finally {
-      setLoadingDetail(false)
-    }
-  }, [token])
+  const loadDetail = useCallback(
+    async (departmentId: string, options?: { silent?: boolean }) => {
+      if (!token) return;
+      if (!options?.silent) setLoadingDetail(true);
+      try {
+        const data = await api.get<DepartmentDetail>(
+          `/api/admin/departments/${departmentId}`,
+          token,
+        );
+        setDetail(data);
+        setDepartmentForm({
+          name: data.department.name,
+          description: data.department.description ?? "",
+          status: data.department.status,
+        });
+        setConfigForm({
+          systemPrompt: data.config.systemPrompt,
+          skillsMarkdown: data.config.skillsMarkdown,
+          zohoRateLimit:
+            data.config.zohoRateLimit ?? createDefaultZohoRateLimitConfig(),
+          isActive: data.config.isActive,
+        });
+        setMembershipRoleId(
+          data.roles.find((role) => role.isDefault)?.id ??
+            data.roles[0]?.id ??
+            "",
+        );
+        setOverrideUserId(data.memberships[0]?.userId ?? "");
+        setOverrideToolId(data.availableTools[0]?.toolId ?? "");
+        setOverrideActionGroup(
+          data.availableTools[0]?.supportedActionGroups?.[0] ?? "read",
+        );
+      } finally {
+        setLoadingDetail(false);
+      }
+    },
+    [token],
+  );
 
   useEffect(() => {
-    void loadDepartments()
-  }, [effectiveCompanyId, isSuperAdmin, token]) // Reduced dependencies to avoid re-triggering on selection
+    void loadDepartments();
+  }, [effectiveCompanyId, isSuperAdmin, token]); // Reduced dependencies to avoid re-triggering on selection
 
   useEffect(() => {
     if (selectedDepartmentId) {
-      void loadDetail(selectedDepartmentId)
+      void loadDetail(selectedDepartmentId);
     } else {
-      setDetail(null)
+      setDetail(null);
     }
-  }, [selectedDepartmentId, token])
+  }, [selectedDepartmentId, token]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      setDebouncedMemberSearch(memberSearch)
-    }, 180)
-    return () => window.clearTimeout(timeout)
-  }, [memberSearch])
+      setDebouncedMemberSearch(memberSearch);
+    }, 180);
+    return () => window.clearTimeout(timeout);
+  }, [memberSearch]);
 
   useEffect(() => {
     if (!token || !selectedDepartmentId || !debouncedMemberSearch.trim()) {
-      setCandidateResults([])
-      setSearchingCandidates(false)
-      return
+      setCandidateResults([]);
+      setSearchingCandidates(false);
+      return;
     }
 
-    let isActive = true
-    setSearchingCandidates(true)
+    let isActive = true;
+    setSearchingCandidates(true);
 
     void api
       .get<DepartmentCandidate[]>(
@@ -324,53 +476,53 @@ export const DepartmentsPage = () => {
         token,
       )
       .then((data) => {
-        if (!isActive) return
-        setCandidateResults(data)
+        if (!isActive) return;
+        setCandidateResults(data);
       })
       .catch(() => {
-        if (!isActive) return
-        setCandidateResults([])
+        if (!isActive) return;
+        setCandidateResults([]);
       })
       .finally(() => {
-        if (!isActive) return
-        setSearchingCandidates(false)
-      })
+        if (!isActive) return;
+        setSearchingCandidates(false);
+      });
 
     return () => {
-      isActive = false
-    }
-  }, [debouncedMemberSearch, selectedDepartmentId, token])
+      isActive = false;
+    };
+  }, [debouncedMemberSearch, selectedDepartmentId, token]);
 
   const refreshDetail = async () => {
-    if (!selectedDepartmentId) return
+    if (!selectedDepartmentId) return;
     // Use silent refresh to avoid full UI flicker
     await Promise.all([
       loadDetail(selectedDepartmentId, { silent: true }),
-      loadDepartments({ silent: true })
-    ])
-  }
+      loadDepartments({ silent: true }),
+    ]);
+  };
 
   const createDepartment = async () => {
-    if (!token || !newDepartmentName.trim()) return
+    if (!token || !newDepartmentName.trim()) return;
     const created = await api.post<{ id: string }>(
-      '/api/admin/departments',
+      "/api/admin/departments",
       {
         companyId: isSuperAdmin ? effectiveCompanyId : undefined,
         name: newDepartmentName.trim(),
         description: newDepartmentDescription.trim() || undefined,
       },
       token,
-    )
-    toast({ title: 'Department created' })
-    setNewDepartmentName('')
-    setNewDepartmentDescription('')
-    setIsCreateDialogOpen(false)
-    await loadDepartments()
-    selectDepartment(created.id)
-  }
+    );
+    toast({ title: "Department created" });
+    setNewDepartmentName("");
+    setNewDepartmentDescription("");
+    setIsCreateDialogOpen(false);
+    await loadDepartments();
+    selectDepartment(created.id);
+  };
 
   const saveDepartment = async () => {
-    if (!token || !selectedDepartmentId) return
+    if (!token || !selectedDepartmentId) return;
     await api.put(
       `/api/admin/departments/${selectedDepartmentId}`,
       {
@@ -379,99 +531,200 @@ export const DepartmentsPage = () => {
         status: departmentForm.status,
       },
       token,
-    )
-    toast({ title: 'Department updated' })
-    await refreshDetail()
-  }
+    );
+    toast({ title: "Department updated" });
+    await refreshDetail();
+  };
 
   const archiveDepartment = async () => {
-    if (!token || !selectedDepartmentId) return
-    await api.post(`/api/admin/departments/${selectedDepartmentId}/archive`, {}, token)
-    toast({ title: 'Department archived' })
-    await refreshDetail()
-  }
+    if (!token || !selectedDepartmentId) return;
+    await api.post(
+      `/api/admin/departments/${selectedDepartmentId}/archive`,
+      {},
+      token,
+    );
+    toast({ title: "Department archived" });
+    await refreshDetail();
+  };
 
   const saveConfig = async () => {
-    if (!token || !selectedDepartmentId) return
+    if (!token || !selectedDepartmentId) return;
     await api.put(
       `/api/admin/departments/${selectedDepartmentId}/config`,
       configForm,
       token,
-    )
-    toast({ title: 'Prompt and skills saved' })
-    await refreshDetail()
-  }
+    );
+    toast({ title: "Prompt and skills saved" });
+    await refreshDetail();
+  };
+
+  const updateZohoRateLimitField = <K extends keyof ZohoRateLimitConfig>(
+    key: K,
+    value: ZohoRateLimitConfig[K],
+  ) => {
+    setConfigForm((prev) => ({
+      ...prev,
+      zohoRateLimit: {
+        ...prev.zohoRateLimit,
+        [key]: value,
+      },
+    }));
+  };
+
+  const updateZohoRoleBudget = (roleSlug: string, rawValue: string) => {
+    setConfigForm((prev) => {
+      const nextBudgets = { ...prev.zohoRateLimit.roleBudgets };
+      const normalized = rawValue.trim();
+      if (!normalized) {
+        delete nextBudgets[roleSlug];
+      } else {
+        const parsed = Number(normalized);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          nextBudgets[roleSlug] = Math.floor(parsed);
+        }
+      }
+      return {
+        ...prev,
+        zohoRateLimit: {
+          ...prev.zohoRateLimit,
+          roleBudgets: nextBudgets,
+        },
+      };
+    });
+  };
+
+  const addZohoUserOverride = () => {
+    const firstMembership = detail?.memberships[0]?.userId;
+    if (!firstMembership) return;
+    setConfigForm((prev) => ({
+      ...prev,
+      zohoRateLimit: {
+        ...prev.zohoRateLimit,
+        userOverrides: [
+          ...prev.zohoRateLimit.userOverrides,
+          {
+            userId: firstMembership,
+            maxCallsPerWindow: prev.zohoRateLimit.totalCallsPerWindow,
+          },
+        ],
+      },
+    }));
+  };
+
+  const updateZohoUserOverride = (
+    index: number,
+    patch: Partial<ZohoRateLimitUserOverride>,
+  ) => {
+    setConfigForm((prev) => ({
+      ...prev,
+      zohoRateLimit: {
+        ...prev.zohoRateLimit,
+        userOverrides: prev.zohoRateLimit.userOverrides.map(
+          (override, overrideIndex) =>
+            overrideIndex === index ? { ...override, ...patch } : override,
+        ),
+      },
+    }));
+  };
+
+  const removeZohoUserOverride = (index: number) => {
+    setConfigForm((prev) => ({
+      ...prev,
+      zohoRateLimit: {
+        ...prev.zohoRateLimit,
+        userOverrides: prev.zohoRateLimit.userOverrides.filter(
+          (_, overrideIndex) => overrideIndex !== index,
+        ),
+      },
+    }));
+  };
 
   const openCreateSkillDialog = () => {
-    setEditingSkillId(null)
+    setEditingSkillId(null);
     setSkillForm({
-      name: '',
-      slug: '',
-      summary: '',
-      markdown: '',
-      tags: '',
-      status: 'active',
-    })
-    setIsSkillDialogOpen(true)
-  }
+      name: "",
+      slug: "",
+      summary: "",
+      markdown: "",
+      tags: "",
+      status: "active",
+    });
+    setIsSkillDialogOpen(true);
+  };
 
   const openEditSkillDialog = (skill: DepartmentSkill) => {
-    setEditingSkillId(skill.id)
+    setEditingSkillId(skill.id);
     setSkillForm({
       name: skill.name,
       slug: skill.slug,
       summary: skill.summary,
       markdown: skill.markdown,
-      tags: skill.tags.join(', '),
-      status: skill.status === 'archived' ? 'archived' : 'active',
-    })
-    setIsSkillDialogOpen(true)
-  }
+      tags: skill.tags.join(", "),
+      status: skill.status === "archived" ? "archived" : "active",
+    });
+    setIsSkillDialogOpen(true);
+  };
 
   const saveSkill = async () => {
-    if (!token || !selectedDepartmentId || !skillForm.name.trim() || !skillForm.markdown.trim()) return
+    if (
+      !token ||
+      !selectedDepartmentId ||
+      !skillForm.name.trim() ||
+      !skillForm.markdown.trim()
+    )
+      return;
     const payload = {
       name: skillForm.name.trim(),
       slug: skillForm.slug.trim() || undefined,
       summary: skillForm.summary.trim() || undefined,
       markdown: skillForm.markdown.trim(),
       tags: skillForm.tags
-        .split(',')
+        .split(",")
         .map((tag) => tag.trim())
         .filter(Boolean),
       status: skillForm.status,
-    }
+    };
 
     if (editingSkillId) {
       await api.put(
         `/api/admin/departments/${selectedDepartmentId}/skills/${editingSkillId}`,
         payload,
         token,
-      )
-      toast({ title: 'Department skill updated' })
+      );
+      toast({ title: "Department skill updated" });
     } else {
       await api.post(
         `/api/admin/departments/${selectedDepartmentId}/skills`,
         payload,
         token,
-      )
-      toast({ title: 'Department skill created' })
+      );
+      toast({ title: "Department skill created" });
     }
 
-    setIsSkillDialogOpen(false)
-    setEditingSkillId(null)
-    await refreshDetail()
-  }
+    setIsSkillDialogOpen(false);
+    setEditingSkillId(null);
+    await refreshDetail();
+  };
 
   const archiveSkill = async (skillId: string) => {
-    if (!token || !selectedDepartmentId) return
-    await api.post(`/api/admin/departments/${selectedDepartmentId}/skills/${skillId}/archive`, {}, token)
-    toast({ title: 'Department skill archived' })
-    await refreshDetail()
-  }
+    if (!token || !selectedDepartmentId) return;
+    await api.post(
+      `/api/admin/departments/${selectedDepartmentId}/skills/${skillId}/archive`,
+      {},
+      token,
+    );
+    toast({ title: "Department skill archived" });
+    await refreshDetail();
+  };
 
   const createRole = async () => {
-    if (!token || !selectedDepartmentId || !newRoleName.trim() || !newRoleSlug.trim()) return
+    if (
+      !token ||
+      !selectedDepartmentId ||
+      !newRoleName.trim() ||
+      !newRoleSlug.trim()
+    )
+      return;
     await api.post(
       `/api/admin/departments/${selectedDepartmentId}/roles`,
       {
@@ -480,175 +733,207 @@ export const DepartmentsPage = () => {
         zohoReadScope: newRoleZohoReadScope,
       },
       token,
-    )
-    toast({ title: 'Role created' })
-    setNewRoleName('')
-    setNewRoleSlug('')
-    setNewRoleZohoReadScope('personalized')
-    await refreshDetail()
-  }
+    );
+    toast({ title: "Role created" });
+    setNewRoleName("");
+    setNewRoleSlug("");
+    setNewRoleZohoReadScope("personalized");
+    await refreshDetail();
+  };
 
   const deleteRole = async (roleId: string) => {
-    if (!token || !selectedDepartmentId) return
-    await api.delete(`/api/admin/departments/${selectedDepartmentId}/roles/${roleId}`, {}, token)
-    toast({ title: 'Role deleted' })
-    await refreshDetail()
-  }
+    if (!token || !selectedDepartmentId) return;
+    await api.delete(
+      `/api/admin/departments/${selectedDepartmentId}/roles/${roleId}`,
+      {},
+      token,
+    );
+    toast({ title: "Role deleted" });
+    await refreshDetail();
+  };
 
   const assignMember = async () => {
-    if (!token || !selectedDepartmentId || !membershipUserId) return
+    if (!token || !selectedDepartmentId || !membershipUserId) return;
     await api.put(
       `/api/admin/departments/${selectedDepartmentId}/memberships`,
-      { userId: membershipUserId, roleId: membershipRoleId || undefined, status: 'active' },
+      {
+        userId: membershipUserId,
+        roleId: membershipRoleId || undefined,
+        status: "active",
+      },
       token,
-    )
-    toast({ title: 'Department membership saved' })
-    await refreshDetail()
-  }
+    );
+    toast({ title: "Department membership saved" });
+    await refreshDetail();
+  };
 
   const assignMemberCandidate = async (candidate: DepartmentCandidate) => {
-    if (!token || !selectedDepartmentId) return
-    setMembershipUserId(candidate.userId ?? '')
+    if (!token || !selectedDepartmentId) return;
+    setMembershipUserId(candidate.userId ?? "");
     await api.put(
       `/api/admin/departments/${selectedDepartmentId}/memberships`,
       {
         userId: candidate.userId,
         channelIdentityId: candidate.channelIdentityId,
         roleId: membershipRoleId || undefined,
-        status: 'active',
+        status: "active",
       },
       token,
-    )
-    toast({ title: 'Department membership saved' })
-    await refreshDetail()
-  }
+    );
+    toast({ title: "Department membership saved" });
+    await refreshDetail();
+  };
 
   const updateMemberRole = async (userId: string, roleId: string) => {
-    if (!token || !selectedDepartmentId) return
+    if (!token || !selectedDepartmentId) return;
     await api.put(
       `/api/admin/departments/${selectedDepartmentId}/memberships`,
-      { userId, roleId, status: 'active' },
+      { userId, roleId, status: "active" },
       token,
-    )
-    toast({ title: 'Member role updated' })
-    await refreshDetail()
-  }
+    );
+    toast({ title: "Member role updated" });
+    await refreshDetail();
+  };
 
   const removeMember = async (userId: string) => {
-    if (!token || !selectedDepartmentId) return
-    await api.delete(`/api/admin/departments/${selectedDepartmentId}/memberships/${userId}`, {}, token)
-    toast({ title: 'Member removed from department' })
-    await refreshDetail()
-  }
+    if (!token || !selectedDepartmentId) return;
+    await api.delete(
+      `/api/admin/departments/${selectedDepartmentId}/memberships/${userId}`,
+      {},
+      token,
+    );
+    toast({ title: "Member removed from department" });
+    await refreshDetail();
+  };
 
-  const toggleRolePermissionAction = async (roleId: string, toolId: string, actionGroup: string, allowed: boolean) => {
-    if (!token || !selectedDepartmentId) return
-    const key = `${roleId}:${toolId}:${actionGroup}`
-    setPendingPermissionKey(key)
+  const toggleRolePermissionAction = async (
+    roleId: string,
+    toolId: string,
+    actionGroup: string,
+    allowed: boolean,
+  ) => {
+    if (!token || !selectedDepartmentId) return;
+    const key = `${roleId}:${toolId}:${actionGroup}`;
+    setPendingPermissionKey(key);
     try {
       await api.put(
         `/api/admin/departments/${selectedDepartmentId}/role-permissions/${roleId}/${toolId}/${actionGroup}`,
         { allowed },
         token,
-      )
-      await refreshDetail()
+      );
+      await refreshDetail();
     } finally {
-      setPendingPermissionKey(null)
+      setPendingPermissionKey(null);
     }
-  }
+  };
 
   const saveUserOverride = async () => {
-    if (!token || !selectedDepartmentId || !overrideUserId || !overrideToolId || !overrideActionGroup) return
+    if (
+      !token ||
+      !selectedDepartmentId ||
+      !overrideUserId ||
+      !overrideToolId ||
+      !overrideActionGroup
+    )
+      return;
     await api.put(
       `/api/admin/departments/${selectedDepartmentId}/user-overrides/${overrideUserId}/${overrideToolId}/${overrideActionGroup}`,
-      { allowed: overrideAllowed === 'allow' },
+      { allowed: overrideAllowed === "allow" },
       token,
-    )
-    toast({ title: 'User override saved' })
-    await refreshDetail()
-  }
+    );
+    toast({ title: "User override saved" });
+    await refreshDetail();
+  };
 
   const filteredDepartments = useMemo(() => {
-    const q = departmentSearch.trim().toLowerCase()
-    if (!q) return departments
+    const q = departmentSearch.trim().toLowerCase();
+    if (!q) return departments;
     return departments.filter(
-      (d) => d.name.toLowerCase().includes(q) || d.slug.toLowerCase().includes(q),
-    )
-  }, [departments, departmentSearch])
+      (d) =>
+        d.name.toLowerCase().includes(q) || d.slug.toLowerCase().includes(q),
+    );
+  }, [departments, departmentSearch]);
 
   const availableDepartmentCandidates = useMemo(() => {
-    return candidateResults.filter((c) => !c.isAlreadyAssigned)
-  }, [candidateResults])
+    return candidateResults.filter((c) => !c.isAlreadyAssigned);
+  }, [candidateResults]);
 
   const rolePermissionMap = useMemo(() => {
-    const map = new Map<string, boolean>()
+    const map = new Map<string, boolean>();
     detail?.toolPermissions.forEach((p) => {
-      map.set(`${p.roleId}:${p.toolId}:${p.actionGroup}`, p.allowed)
-    })
-    return map
-  }, [detail?.toolPermissions])
+      map.set(`${p.roleId}:${p.toolId}:${p.actionGroup}`, p.allowed);
+    });
+    return map;
+  }, [detail?.toolPermissions]);
 
   const availableOverrideActionGroups = useMemo(
-    () => detail?.availableTools.find((tool) => tool.toolId === overrideToolId)?.supportedActionGroups ?? [],
+    () =>
+      detail?.availableTools.find((tool) => tool.toolId === overrideToolId)
+        ?.supportedActionGroups ?? [],
     [detail?.availableTools, overrideToolId],
-  )
+  );
 
   useEffect(() => {
     if (availableOverrideActionGroups.length === 0) {
-      if (overrideActionGroup !== 'read') {
-        setOverrideActionGroup('read')
+      if (overrideActionGroup !== "read") {
+        setOverrideActionGroup("read");
       }
-      return
+      return;
     }
     if (!availableOverrideActionGroups.includes(overrideActionGroup)) {
-      setOverrideActionGroup(availableOverrideActionGroups[0]!)
+      setOverrideActionGroup(availableOverrideActionGroups[0]!);
     }
-  }, [availableOverrideActionGroups, overrideActionGroup])
+  }, [availableOverrideActionGroups, overrideActionGroup]);
 
   const candidateLabel = (candidate: DepartmentCandidate) =>
-    candidate.name?.trim() || candidate.email?.trim() || candidate.larkDisplayName?.trim() || candidate.channelIdentityId
+    candidate.name?.trim() ||
+    candidate.email?.trim() ||
+    candidate.larkDisplayName?.trim() ||
+    candidate.channelIdentityId;
 
   const defaultRole = useMemo(
     () => detail?.roles.find((role) => role.isDefault) ?? null,
     [detail?.roles],
-  )
+  );
 
   const setSelectedTab = (tab: (typeof DEPARTMENT_TABS)[number]) => {
     updateSearchParam((next) => {
-      next.set('tab', tab)
-    })
-  }
+      next.set("tab", tab);
+    });
+  };
 
   const setDefaultRole = async (roleId: string, roleName: string) => {
-    if (!token || !selectedDepartmentId) return
+    if (!token || !selectedDepartmentId) return;
     await api.put(
       `/api/admin/departments/${selectedDepartmentId}/roles/${roleId}`,
       { name: roleName, isDefault: true },
       token,
-    )
-    toast({ title: 'Default department role updated' })
-    await refreshDetail()
-  }
+    );
+    toast({ title: "Default department role updated" });
+    await refreshDetail();
+  };
 
   const updateRoleZohoReadScope = async (
     roleId: string,
     roleName: string,
-    zohoReadScope: 'personalized' | 'show_all',
+    zohoReadScope: "personalized" | "show_all",
   ) => {
-    if (!token || !selectedDepartmentId) return
-    setPendingRoleScopeId(roleId)
+    if (!token || !selectedDepartmentId) return;
+    setPendingRoleScopeId(roleId);
     try {
       await api.put(
         `/api/admin/departments/${selectedDepartmentId}/roles/${roleId}`,
         { name: roleName, zohoReadScope },
         token,
-      )
-      toast({ title: `Zoho scope updated to ${zohoReadScope === 'show_all' ? 'Show All' : 'Personalized'}` })
-      await refreshDetail()
+      );
+      toast({
+        title: `Zoho scope updated to ${zohoReadScope === "show_all" ? "Show All" : "Personalized"}`,
+      });
+      await refreshDetail();
     } finally {
-      setPendingRoleScopeId(null)
+      setPendingRoleScopeId(null);
     }
-  }
+  };
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -660,7 +945,8 @@ export const DepartmentsPage = () => {
               Departments
             </h1>
             <p className="text-sm text-muted-foreground">
-              Configure department prompts, skills, members, and scoped tool access.
+              Configure department prompts, skills, members, and scoped tool
+              access.
             </p>
           </div>
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-end md:gap-4">
@@ -695,8 +981,18 @@ export const DepartmentsPage = () => {
                 </span>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-accent/50" onClick={() => void loadDepartments()}>
-                      <RefreshCw className={cn("h-3.5 w-3.5", loadingList && "animate-spin")} />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 hover:bg-accent/50"
+                      onClick={() => void loadDepartments()}
+                    >
+                      <RefreshCw
+                        className={cn(
+                          "h-3.5 w-3.5",
+                          loadingList && "animate-spin",
+                        )}
+                      />
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent side="right">Sync Directory</TooltipContent>
@@ -723,11 +1019,13 @@ export const DepartmentsPage = () => {
                   </div>
                 ) : filteredDepartments.length === 0 ? (
                   <div className="p-8 text-center border border-dashed border-border/30 rounded-xl m-2 bg-muted/5">
-                    <p className="text-[11px] font-medium text-muted-foreground">No units found.</p>
+                    <p className="text-[11px] font-medium text-muted-foreground">
+                      No units found.
+                    </p>
                   </div>
                 ) : (
                   filteredDepartments.map((department) => {
-                    const isActive = selectedDepartmentId === department.id
+                    const isActive = selectedDepartmentId === department.id;
                     return (
                       <button
                         key={department.id}
@@ -735,20 +1033,29 @@ export const DepartmentsPage = () => {
                         onClick={() => selectDepartment(department.id)}
                         className={cn(
                           "w-full group flex flex-col gap-2 p-4 rounded-xl border transition-all duration-300 text-left relative overflow-hidden",
-                          isActive 
-                            ? "bg-primary/[0.03] border-primary/30 shadow-lg" 
-                            : "border-transparent hover:bg-muted/30 hover:border-border/40"
+                          isActive
+                            ? "bg-primary/[0.03] border-primary/30 shadow-lg"
+                            : "border-transparent hover:bg-muted/30 hover:border-border/40",
                         )}
                       >
-                        {isActive && <div className="absolute top-0 left-0 w-1 h-full bg-primary" />}
+                        {isActive && (
+                          <div className="absolute top-0 left-0 w-1 h-full bg-primary" />
+                        )}
                         <div className="flex items-start justify-between gap-2">
-                          <span className={cn(
-                            "text-sm font-bold truncate tracking-tight",
-                            isActive ? "text-primary" : "text-foreground group-hover:text-primary transition-colors"
-                          )}>
+                          <span
+                            className={cn(
+                              "text-sm font-bold truncate tracking-tight",
+                              isActive
+                                ? "text-primary"
+                                : "text-foreground group-hover:text-primary transition-colors",
+                            )}
+                          >
                             {department.name}
                           </span>
-                          <Badge variant={statusBadgeVariant(department.status)} className="text-[8px] px-1.5 h-4 uppercase font-bold tracking-widest bg-muted/50 border-border/20">
+                          <Badge
+                            variant={statusBadgeVariant(department.status)}
+                            className="text-[8px] px-1.5 h-4 uppercase font-bold tracking-widest bg-muted/50 border-border/20"
+                          >
                             {department.status}
                           </Badge>
                         </div>
@@ -758,10 +1065,12 @@ export const DepartmentsPage = () => {
                             <span>{department.memberCount}</span>
                           </div>
                           <span>·</span>
-                          <span className="font-mono text-[9px] opacity-60">{department.slug}</span>
+                          <span className="font-mono text-[9px] opacity-60">
+                            {department.slug}
+                          </span>
                         </div>
                       </button>
-                    )
+                    );
                   })
                 )}
               </div>
@@ -786,9 +1095,12 @@ export const DepartmentsPage = () => {
                 <div className="h-24 w-24 rounded-[2rem] bg-muted/20 flex items-center justify-center mb-8 border border-border/20 shadow-inner">
                   <Building2 className="h-10 w-10 text-muted-foreground/30" />
                 </div>
-                <h3 className="text-2xl font-bold text-foreground mb-3 tracking-tight">Select a Business Unit</h3>
+                <h3 className="text-2xl font-bold text-foreground mb-3 tracking-tight">
+                  Select a Business Unit
+                </h3>
                 <p className="text-muted-foreground font-medium max-w-sm leading-relaxed">
-                  Choose a department from the explorer to modify agent behavior, manage rosters, and audit tool permissions.
+                  Choose a department from the explorer to modify agent
+                  behavior, manage rosters, and audit tool permissions.
                 </p>
               </div>
             ) : (
@@ -796,25 +1108,44 @@ export const DepartmentsPage = () => {
                 <div className="p-8 border-b border-border/40 bg-muted/10 flex flex-col md:flex-row md:items-center justify-between gap-6">
                   <div className="flex items-center gap-6">
                     <div className="h-16 w-16 rounded-2xl bg-primary/5 border border-primary/20 flex items-center justify-center shrink-0 shadow-lg">
-                      <span className="text-2xl font-bold text-primary">{detail.department.name[0].toUpperCase()}</span>
+                      <span className="text-2xl font-bold text-primary">
+                        {detail.department.name[0].toUpperCase()}
+                      </span>
                     </div>
                     <div>
-                      <h2 className="text-2xl font-bold tracking-tight text-foreground">{detail.department.name}</h2>
+                      <h2 className="text-2xl font-bold tracking-tight text-foreground">
+                        {detail.department.name}
+                      </h2>
                       <div className="flex items-center gap-3 text-xs text-muted-foreground/80 mt-1 font-medium">
-                        <span className="font-mono bg-muted/30 px-2 py-0.5 rounded border border-border/20">{detail.department.id}</span>
+                        <span className="font-mono bg-muted/30 px-2 py-0.5 rounded border border-border/20">
+                          {detail.department.id}
+                        </span>
                         <span>·</span>
-                        <Badge variant="outline" className="h-5 text-[9px] font-bold uppercase tracking-widest bg-emerald-500/5 text-emerald-500 border-emerald-500/20">
+                        <Badge
+                          variant="outline"
+                          className="h-5 text-[9px] font-bold uppercase tracking-widest bg-emerald-500/5 text-emerald-500 border-emerald-500/20"
+                        >
                           {detail.department.status}
                         </Badge>
                       </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <Button variant="outline" size="sm" onClick={() => void archiveDepartment()} className="h-9 px-4 text-[10px] font-bold uppercase tracking-widest border-border/60 hover:bg-destructive/10 hover:text-destructive hover:border-destructive/20 transition-all">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void archiveDepartment()}
+                      className="h-9 px-4 text-[10px] font-bold uppercase tracking-widest border-border/60 hover:bg-destructive/10 hover:text-destructive hover:border-destructive/20 transition-all"
+                    >
                       <Archive className="h-3.5 w-3.5 mr-2" />
                       Archive Unit
                     </Button>
-                    <Button variant="default" size="sm" onClick={() => void saveDepartment()} className="h-9 px-6 text-[10px] font-bold uppercase tracking-widest shadow-[0_0_20px_rgba(var(--primary),0.2)]">
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={() => void saveDepartment()}
+                      className="h-9 px-6 text-[10px] font-bold uppercase tracking-widest shadow-[0_0_20px_rgba(var(--primary),0.2)]"
+                    >
                       <Settings className="h-3.5 w-3.5 mr-2" />
                       Save Configuration
                     </Button>
@@ -822,63 +1153,110 @@ export const DepartmentsPage = () => {
                 </div>
 
                 <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                  <Tabs value={selectedTab} onValueChange={(value) => {
-                    if (isDepartmentTab(value)) setSelectedTab(value)
-                  }} className="flex-1 flex flex-col min-h-0">
+                  <Tabs
+                    value={selectedTab}
+                    onValueChange={(value) => {
+                      if (isDepartmentTab(value)) setSelectedTab(value);
+                    }}
+                    className="flex-1 flex flex-col min-h-0"
+                  >
                     <div className="px-6 border-b border-border/50 bg-secondary/5 shrink-0">
                       <TabsList className="bg-transparent h-12 gap-6 border-none">
-                        <TabsTrigger value="profile" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all">
+                        <TabsTrigger
+                          value="profile"
+                          className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all"
+                        >
                           Profile
                         </TabsTrigger>
-                        <TabsTrigger value="prompt" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all">
+                        <TabsTrigger
+                          value="prompt"
+                          className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all"
+                        >
                           Prompt
                         </TabsTrigger>
-                        <TabsTrigger value="skills" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all">
+                        <TabsTrigger
+                          value="skills"
+                          className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all"
+                        >
                           Skills
                         </TabsTrigger>
-                        <TabsTrigger value="members" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all">
+                        <TabsTrigger
+                          value="members"
+                          className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all"
+                        >
                           Members
                         </TabsTrigger>
-                        <TabsTrigger value="permissions" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all">
+                        <TabsTrigger
+                          value="permissions"
+                          className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-12 text-xs font-bold tracking-wider uppercase transition-all"
+                        >
                           Permissions
                         </TabsTrigger>
                       </TabsList>
                     </div>
 
                     <div className="flex-1 min-h-0">
-                      <TabsContent value="profile" className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none">
+                      <TabsContent
+                        value="profile"
+                        className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none"
+                      >
                         <ScrollArea className="h-full">
                           <div className="p-8 space-y-8">
                             <div className="grid gap-8 md:grid-cols-2">
                               <div className="space-y-2">
-                                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Department Name</label>
+                                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                                  Department Name
+                                </label>
                                 <Input
                                   value={departmentForm.name}
-                                  onChange={(event) => setDepartmentForm((prev) => ({ ...prev, name: event.target.value }))}
+                                  onChange={(event) =>
+                                    setDepartmentForm((prev) => ({
+                                      ...prev,
+                                      name: event.target.value,
+                                    }))
+                                  }
                                   className="bg-background border-border/50 h-11 focus-visible:ring-primary/30"
                                 />
                               </div>
                               <div className="space-y-2">
-                                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Status</label>
+                                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                                  Status
+                                </label>
                                 <Select
                                   value={departmentForm.status}
-                                  onValueChange={(value) => setDepartmentForm((prev) => ({ ...prev, status: value }))}
+                                  onValueChange={(value) =>
+                                    setDepartmentForm((prev) => ({
+                                      ...prev,
+                                      status: value,
+                                    }))
+                                  }
                                 >
                                   <SelectTrigger className="bg-background border-border/50 h-11 focus:ring-primary/30">
                                     <SelectValue />
                                   </SelectTrigger>
                                   <SelectContent>
-                                    <SelectItem value="active">Active</SelectItem>
-                                    <SelectItem value="archived">Archived</SelectItem>
+                                    <SelectItem value="active">
+                                      Active
+                                    </SelectItem>
+                                    <SelectItem value="archived">
+                                      Archived
+                                    </SelectItem>
                                   </SelectContent>
                                 </Select>
                               </div>
                             </div>
                             <div className="space-y-2">
-                              <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Description</label>
+                              <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                                Description
+                              </label>
                               <Textarea
                                 value={departmentForm.description}
-                                onChange={(event) => setDepartmentForm((prev) => ({ ...prev, description: event.target.value }))}
+                                onChange={(event) =>
+                                  setDepartmentForm((prev) => ({
+                                    ...prev,
+                                    description: event.target.value,
+                                  }))
+                                }
                                 rows={4}
                                 className="bg-background border-border/50 text-foreground resize-none focus-visible:ring-primary/30"
                               />
@@ -888,46 +1266,73 @@ export const DepartmentsPage = () => {
 
                             <div className="space-y-6">
                               <div className="flex items-center justify-between">
-                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Custom Roles</h3>
-                                <Badge variant="outline" className="text-[10px] font-bold uppercase">{detail.roles.length} Total</Badge>
+                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
+                                  Custom Roles
+                                </h3>
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] font-bold uppercase"
+                                >
+                                  {detail.roles.length} Total
+                                </Badge>
                               </div>
-                              
+
                               <div className="grid gap-4 md:grid-cols-[1fr_1fr_180px_auto] p-4 bg-secondary/10 border border-border/30 rounded-xl">
                                 <div className="space-y-1.5">
-                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Role Name</label>
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">
+                                    Role Name
+                                  </label>
                                   <Input
                                     value={newRoleName}
-                                    onChange={(event) => setNewRoleName(event.target.value)}
+                                    onChange={(event) =>
+                                      setNewRoleName(event.target.value)
+                                    }
                                     placeholder="e.g. Sales Lead"
                                     className="bg-background border-border/50 h-9 text-sm"
                                   />
                                 </div>
                                 <div className="space-y-1.5">
-                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Role Slug</label>
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">
+                                    Role Slug
+                                  </label>
                                   <Input
                                     value={newRoleSlug}
-                                    onChange={(event) => setNewRoleSlug(event.target.value)}
+                                    onChange={(event) =>
+                                      setNewRoleSlug(event.target.value)
+                                    }
                                     placeholder="e.g. sales-lead"
                                     className="bg-background border-border/50 h-9 text-sm font-mono"
                                   />
                                 </div>
                                 <div className="space-y-1.5">
-                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Zoho Read Scope</label>
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">
+                                    Zoho Read Scope
+                                  </label>
                                   <Select
                                     value={newRoleZohoReadScope}
-                                    onValueChange={(value: 'personalized' | 'show_all') => setNewRoleZohoReadScope(value)}
+                                    onValueChange={(
+                                      value: "personalized" | "show_all",
+                                    ) => setNewRoleZohoReadScope(value)}
                                   >
                                     <SelectTrigger className="bg-background border-border/50 h-9 text-sm">
                                       <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      <SelectItem value="personalized">Personalized</SelectItem>
-                                      <SelectItem value="show_all">Show All</SelectItem>
+                                      <SelectItem value="personalized">
+                                        Personalized
+                                      </SelectItem>
+                                      <SelectItem value="show_all">
+                                        Show All
+                                      </SelectItem>
                                     </SelectContent>
                                   </Select>
                                 </div>
                                 <div className="flex items-end">
-                                  <Button onClick={() => void createRole()} variant="outline" className="h-9 px-4 text-xs font-bold uppercase tracking-wider">
+                                  <Button
+                                    onClick={() => void createRole()}
+                                    variant="outline"
+                                    className="h-9 px-4 text-xs font-bold uppercase tracking-wider"
+                                  >
                                     <Plus className="h-3.5 w-3.5 mr-2" />
                                     Add Role
                                   </Button>
@@ -935,13 +1340,23 @@ export const DepartmentsPage = () => {
                               </div>
 
                               <div className="rounded-xl border border-border/30 bg-secondary/5 p-4 text-xs text-muted-foreground">
-                                <span className="font-semibold text-foreground">Personalized</span> passes requester-based Zoho filters.{' '}
-                                <span className="font-semibold text-foreground">Show All</span> allows company-scoped Zoho reads for that department role.
+                                <span className="font-semibold text-foreground">
+                                  Personalized
+                                </span>{" "}
+                                passes requester-based Zoho filters.{" "}
+                                <span className="font-semibold text-foreground">
+                                  Show All
+                                </span>{" "}
+                                allows company-scoped Zoho reads for that
+                                department role.
                               </div>
 
                               <div className="grid gap-3">
                                 {detail.roles.map((role) => (
-                                  <div key={role.id} className="group flex items-center justify-between p-4 rounded-xl border border-border/30 bg-background hover:border-border/60 transition-colors">
+                                  <div
+                                    key={role.id}
+                                    className="group flex items-center justify-between p-4 rounded-xl border border-border/30 bg-background hover:border-border/60 transition-colors"
+                                  >
                                     <div className="flex items-center gap-3 min-w-0">
                                       <div className="h-8 w-8 rounded-lg bg-secondary/50 flex items-center justify-center">
                                         <Shield className="h-4 w-4 text-muted-foreground" />
@@ -949,21 +1364,44 @@ export const DepartmentsPage = () => {
                                       <div className="min-w-0">
                                         <div className="text-sm font-bold text-foreground flex items-center gap-2">
                                           {role.name}
-                                          {role.isDefault && <Badge variant="secondary" className="text-[9px] h-4 font-bold uppercase">Default</Badge>}
-                                          {role.isSystem && <Badge variant="outline" className="text-[9px] h-4 font-bold uppercase">System</Badge>}
+                                          {role.isDefault && (
+                                            <Badge
+                                              variant="secondary"
+                                              className="text-[9px] h-4 font-bold uppercase"
+                                            >
+                                              Default
+                                            </Badge>
+                                          )}
+                                          {role.isSystem && (
+                                            <Badge
+                                              variant="outline"
+                                              className="text-[9px] h-4 font-bold uppercase"
+                                            >
+                                              System
+                                            </Badge>
+                                          )}
                                         </div>
-                                        <div className="text-xs font-mono text-muted-foreground">{role.slug}</div>
+                                        <div className="text-xs font-mono text-muted-foreground">
+                                          {role.slug}
+                                        </div>
                                         <div className="mt-2 flex items-center gap-2">
                                           <Badge
-                                            variant={role.zohoReadScope === 'show_all' ? 'outline' : 'secondary'}
+                                            variant={
+                                              role.zohoReadScope === "show_all"
+                                                ? "outline"
+                                                : "secondary"
+                                            }
                                             className={cn(
                                               "text-[9px] h-5 font-bold uppercase tracking-wider",
-                                              role.zohoReadScope === 'show_all'
+                                              role.zohoReadScope === "show_all"
                                                 ? "border-amber-500/30 text-amber-600 bg-amber-500/5"
-                                                : "bg-sky-500/10 text-sky-700"
+                                                : "bg-sky-500/10 text-sky-700",
                                             )}
                                           >
-                                            Zoho: {role.zohoReadScope === 'show_all' ? 'Show All' : 'Personalized'}
+                                            Zoho:{" "}
+                                            {role.zohoReadScope === "show_all"
+                                              ? "Show All"
+                                              : "Personalized"}
                                           </Badge>
                                         </div>
                                       </div>
@@ -971,38 +1409,59 @@ export const DepartmentsPage = () => {
                                     <div className="flex items-center gap-3">
                                       <Select
                                         value={role.zohoReadScope}
-                                        onValueChange={(value: 'personalized' | 'show_all') => void updateRoleZohoReadScope(role.id, role.name, value)}
-                                        disabled={pendingRoleScopeId === role.id}
+                                        onValueChange={(
+                                          value: "personalized" | "show_all",
+                                        ) =>
+                                          void updateRoleZohoReadScope(
+                                            role.id,
+                                            role.name,
+                                            value,
+                                          )
+                                        }
+                                        disabled={
+                                          pendingRoleScopeId === role.id
+                                        }
                                       >
                                         <SelectTrigger className="w-[160px] h-9 text-xs bg-background border-border/50 focus:ring-primary/20">
                                           <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
-                                          <SelectItem value="personalized">Personalized</SelectItem>
-                                          <SelectItem value="show_all">Show All</SelectItem>
+                                          <SelectItem value="personalized">
+                                            Personalized
+                                          </SelectItem>
+                                          <SelectItem value="show_all">
+                                            Show All
+                                          </SelectItem>
                                         </SelectContent>
                                       </Select>
                                       <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                      {!role.isDefault && (
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={() => void setDefaultRole(role.id, role.name)}
-                                          className="h-8 text-[10px] font-bold uppercase tracking-wider text-muted-foreground hover:text-primary"
-                                        >
-                                          Set Default
-                                        </Button>
-                                      )}
-                                      {!role.isSystem && (
-                                        <Button 
-                                          variant="ghost" 
-                                          size="sm" 
-                                          onClick={() => void deleteRole(role.id)} 
-                                          className="h-8 text-[10px] font-bold uppercase tracking-wider text-destructive hover:bg-destructive/10"
-                                        >
-                                          <Trash2 className="h-3.5 w-3.5" />
-                                        </Button>
-                                      )}
+                                        {!role.isDefault && (
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() =>
+                                              void setDefaultRole(
+                                                role.id,
+                                                role.name,
+                                              )
+                                            }
+                                            className="h-8 text-[10px] font-bold uppercase tracking-wider text-muted-foreground hover:text-primary"
+                                          >
+                                            Set Default
+                                          </Button>
+                                        )}
+                                        {!role.isSystem && (
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() =>
+                                              void deleteRole(role.id)
+                                            }
+                                            className="h-8 text-[10px] font-bold uppercase tracking-wider text-destructive hover:bg-destructive/10"
+                                          >
+                                            <Trash2 className="h-3.5 w-3.5" />
+                                          </Button>
+                                        )}
                                       </div>
                                     </div>
                                   </div>
@@ -1013,7 +1472,10 @@ export const DepartmentsPage = () => {
                         </ScrollArea>
                       </TabsContent>
 
-                      <TabsContent value="prompt" className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none">
+                      <TabsContent
+                        value="prompt"
+                        className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none"
+                      >
                         <ScrollArea className="h-full">
                           <div className="p-8 space-y-8">
                             <div className="space-y-4">
@@ -1023,16 +1485,32 @@ export const DepartmentsPage = () => {
                                   Department System Prompt
                                 </label>
                                 <div className="flex items-center gap-2">
-                                  <span className="text-[10px] font-mono text-muted-foreground uppercase">{configForm.systemPrompt.length} chars</span>
-                                  <Separator orientation="vertical" className="h-3" />
-                                  <Button 
-                                    variant="ghost" 
-                                    size="sm" 
+                                  <span className="text-[10px] font-mono text-muted-foreground uppercase">
+                                    {configForm.systemPrompt.length} chars
+                                  </span>
+                                  <Separator
+                                    orientation="vertical"
+                                    className="h-3"
+                                  />
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
                                     className="h-6 px-2 text-[10px] font-bold uppercase tracking-tighter"
-                                    onClick={() => setConfigForm(prev => ({ ...prev, isActive: !prev.isActive }))}
+                                    onClick={() =>
+                                      setConfigForm((prev) => ({
+                                        ...prev,
+                                        isActive: !prev.isActive,
+                                      }))
+                                    }
                                   >
-                                    {configForm.isActive ? <Lock className="h-3 w-3 mr-1 text-emerald-500" /> : <Shield className="h-3 w-3 mr-1 text-muted-foreground" />}
-                                    {configForm.isActive ? 'Active' : 'Disabled'}
+                                    {configForm.isActive ? (
+                                      <Lock className="h-3 w-3 mr-1 text-emerald-500" />
+                                    ) : (
+                                      <Shield className="h-3 w-3 mr-1 text-muted-foreground" />
+                                    )}
+                                    {configForm.isActive
+                                      ? "Active"
+                                      : "Disabled"}
                                   </Button>
                                 </div>
                               </div>
@@ -1044,7 +1522,12 @@ export const DepartmentsPage = () => {
                                 </div>
                                 <Textarea
                                   value={configForm.systemPrompt}
-                                  onChange={(event) => setConfigForm((prev) => ({ ...prev, systemPrompt: event.target.value }))}
+                                  onChange={(event) =>
+                                    setConfigForm((prev) => ({
+                                      ...prev,
+                                      systemPrompt: event.target.value,
+                                    }))
+                                  }
                                   rows={12}
                                   className="bg-[#050505] border-border/50 text-emerald-500 font-mono text-sm leading-relaxed p-6 pt-10 focus-visible:ring-emerald-500/20 resize-y rounded-xl shadow-inner"
                                   placeholder="# You are the Finance Department Agent..."
@@ -1059,15 +1542,257 @@ export const DepartmentsPage = () => {
                               </label>
                               <Textarea
                                 value={configForm.skillsMarkdown}
-                                onChange={(event) => setConfigForm((prev) => ({ ...prev, skillsMarkdown: event.target.value }))}
+                                onChange={(event) =>
+                                  setConfigForm((prev) => ({
+                                    ...prev,
+                                    skillsMarkdown: event.target.value,
+                                  }))
+                                }
                                 rows={15}
                                 className="bg-background border-border/50 text-foreground font-mono text-sm leading-relaxed p-6 focus-visible:ring-primary/30 resize-y rounded-xl"
                                 placeholder="## Skill: Invoice Processing..."
                               />
                             </div>
 
+                            <div className="space-y-4">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1 flex items-center gap-2">
+                                    <Globe className="h-3.5 w-3.5" />
+                                    Zoho API Budget
+                                  </label>
+                                  <p className="text-xs text-muted-foreground mt-1 ml-1">
+                                    Spread Zoho call capacity across roles and
+                                    specific department members.
+                                  </p>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 px-2 text-[10px] font-bold uppercase tracking-tighter"
+                                  onClick={() =>
+                                    updateZohoRateLimitField(
+                                      "enabled",
+                                      !configForm.zohoRateLimit.enabled,
+                                    )
+                                  }
+                                >
+                                  {configForm.zohoRateLimit.enabled
+                                    ? "Enabled"
+                                    : "Disabled"}
+                                </Button>
+                              </div>
+
+                              <Card className="border-border/50 bg-background/50">
+                                <CardContent className="pt-6 space-y-6">
+                                  <div className="grid gap-4 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                        Window (seconds)
+                                      </label>
+                                      <Input
+                                        type="number"
+                                        min={10}
+                                        value={
+                                          configForm.zohoRateLimit.windowSeconds
+                                        }
+                                        onChange={(event) => {
+                                          const parsed = Number(
+                                            event.target.value,
+                                          );
+                                          if (
+                                            Number.isFinite(parsed) &&
+                                            parsed >= 10
+                                          ) {
+                                            updateZohoRateLimitField(
+                                              "windowSeconds",
+                                              Math.floor(parsed),
+                                            );
+                                          }
+                                        }}
+                                      />
+                                    </div>
+                                    <div className="space-y-2">
+                                      <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                        Total calls per window
+                                      </label>
+                                      <Input
+                                        type="number"
+                                        min={1}
+                                        value={
+                                          configForm.zohoRateLimit
+                                            .totalCallsPerWindow
+                                        }
+                                        onChange={(event) => {
+                                          const parsed = Number(
+                                            event.target.value,
+                                          );
+                                          if (
+                                            Number.isFinite(parsed) &&
+                                            parsed >= 1
+                                          ) {
+                                            updateZohoRateLimitField(
+                                              "totalCallsPerWindow",
+                                              Math.floor(parsed),
+                                            );
+                                          }
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+
+                                  <div className="space-y-3">
+                                    <div>
+                                      <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                        Role Budgets
+                                      </div>
+                                      <p className="text-xs text-muted-foreground mt-1">
+                                        Leave a role blank to let it use the
+                                        shared department pool.
+                                      </p>
+                                    </div>
+                                    <div className="grid gap-3 md:grid-cols-2">
+                                      {detail.roles.map((role) => (
+                                        <div
+                                          key={role.id}
+                                          className="rounded-lg border border-border/40 p-3 space-y-2"
+                                        >
+                                          <div className="flex items-center justify-between gap-3">
+                                            <div>
+                                              <div className="text-sm font-semibold text-foreground">
+                                                {role.name}
+                                              </div>
+                                              <div className="text-[10px] font-mono uppercase text-muted-foreground">
+                                                {role.slug}
+                                              </div>
+                                            </div>
+                                            <Input
+                                              type="number"
+                                              min={1}
+                                              value={
+                                                configForm.zohoRateLimit
+                                                  .roleBudgets[role.slug] ?? ""
+                                              }
+                                              onChange={(event) =>
+                                                updateZohoRoleBudget(
+                                                  role.slug,
+                                                  event.target.value,
+                                                )
+                                              }
+                                              className="w-32"
+                                              placeholder="Shared"
+                                            />
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                      <div>
+                                        <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                          Member Overrides
+                                        </div>
+                                        <p className="text-xs text-muted-foreground mt-1">
+                                          Give specific people a fixed cap
+                                          inside the department pool.
+                                        </p>
+                                      </div>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-8 text-[10px] font-bold uppercase"
+                                        onClick={addZohoUserOverride}
+                                      >
+                                        <Plus className="h-3.5 w-3.5 mr-1" />
+                                        Add Override
+                                      </Button>
+                                    </div>
+
+                                    <div className="space-y-3">
+                                      {configForm.zohoRateLimit.userOverrides.map(
+                                        (override, index) => (
+                                          <div
+                                            key={`${override.userId}-${index}`}
+                                            className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_44px] items-center rounded-lg border border-border/40 p-3"
+                                          >
+                                            <Select
+                                              value={override.userId}
+                                              onValueChange={(value) =>
+                                                updateZohoUserOverride(index, {
+                                                  userId: value,
+                                                })
+                                              }
+                                            >
+                                              <SelectTrigger>
+                                                <SelectValue placeholder="Select member" />
+                                              </SelectTrigger>
+                                              <SelectContent>
+                                                {detail.memberships.map(
+                                                  (membership) => (
+                                                    <SelectItem
+                                                      key={membership.userId}
+                                                      value={membership.userId}
+                                                    >
+                                                      {memberLabel(membership)}
+                                                    </SelectItem>
+                                                  ),
+                                                )}
+                                              </SelectContent>
+                                            </Select>
+                                            <Input
+                                              type="number"
+                                              min={1}
+                                              value={override.maxCallsPerWindow}
+                                              onChange={(event) => {
+                                                const parsed = Number(
+                                                  event.target.value,
+                                                );
+                                                if (
+                                                  Number.isFinite(parsed) &&
+                                                  parsed >= 1
+                                                ) {
+                                                  updateZohoUserOverride(
+                                                    index,
+                                                    {
+                                                      maxCallsPerWindow:
+                                                        Math.floor(parsed),
+                                                    },
+                                                  );
+                                                }
+                                              }}
+                                            />
+                                            <Button
+                                              variant="ghost"
+                                              size="icon"
+                                              className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                              onClick={() =>
+                                                removeZohoUserOverride(index)
+                                              }
+                                            >
+                                              <Trash2 className="h-4 w-4" />
+                                            </Button>
+                                          </div>
+                                        ),
+                                      )}
+                                      {configForm.zohoRateLimit.userOverrides
+                                        .length === 0 && (
+                                        <div className="rounded-lg border border-dashed border-border/50 p-4 text-xs text-muted-foreground">
+                                          No member-specific override yet.
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            </div>
+
                             <div className="flex justify-end pt-4">
-                              <Button onClick={() => void saveConfig()} className="bg-primary text-primary-foreground font-bold uppercase tracking-wider px-8 shadow-md">
+                              <Button
+                                onClick={() => void saveConfig()}
+                                className="bg-primary text-primary-foreground font-bold uppercase tracking-wider px-8 shadow-md"
+                              >
                                 Update Context
                               </Button>
                             </div>
@@ -1075,26 +1800,54 @@ export const DepartmentsPage = () => {
                         </ScrollArea>
                       </TabsContent>
 
-                      <TabsContent value="skills" className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none">
+                      <TabsContent
+                        value="skills"
+                        className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none"
+                      >
                         <ScrollArea className="h-full">
                           <div className="p-8 space-y-8">
                             <div className="space-y-6">
                               <div className="flex items-center justify-between">
-                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Global Playbooks</h3>
-                                <Badge variant="secondary" className="text-[10px] font-bold uppercase">System Managed</Badge>
+                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
+                                  Global Playbooks
+                                </h3>
+                                <Badge
+                                  variant="secondary"
+                                  className="text-[10px] font-bold uppercase"
+                                >
+                                  System Managed
+                                </Badge>
                               </div>
                               <div className="grid gap-4">
                                 {detail.globalSkills.map((skill) => (
-                                  <div key={skill.id} className="p-4 rounded-xl border border-border/30 bg-background/50 hover:bg-background transition-colors flex items-start justify-between gap-4">
+                                  <div
+                                    key={skill.id}
+                                    className="p-4 rounded-xl border border-border/30 bg-background/50 hover:bg-background transition-colors flex items-start justify-between gap-4"
+                                  >
                                     <div className="space-y-2">
                                       <div className="flex items-center gap-2">
-                                        <span className="text-sm font-bold text-foreground">{skill.name}</span>
-                                        <Badge variant="outline" className="text-[9px] h-4 uppercase border-border/50">Global</Badge>
+                                        <span className="text-sm font-bold text-foreground">
+                                          {skill.name}
+                                        </span>
+                                        <Badge
+                                          variant="outline"
+                                          className="text-[9px] h-4 uppercase border-border/50"
+                                        >
+                                          Global
+                                        </Badge>
                                       </div>
-                                      <p className="text-xs text-muted-foreground line-clamp-2 max-w-2xl">{skill.summary}</p>
+                                      <p className="text-xs text-muted-foreground line-clamp-2 max-w-2xl">
+                                        {skill.summary}
+                                      </p>
                                       <div className="flex flex-wrap gap-1.5 pt-1">
                                         {skill.tags.map((tag) => (
-                                          <Badge key={tag} variant="secondary" className="text-[9px] h-4 px-1.5 font-medium">{tag}</Badge>
+                                          <Badge
+                                            key={tag}
+                                            variant="secondary"
+                                            className="text-[9px] h-4 px-1.5 font-medium"
+                                          >
+                                            {tag}
+                                          </Badge>
                                         ))}
                                       </div>
                                     </div>
@@ -1111,10 +1864,19 @@ export const DepartmentsPage = () => {
                             <div className="space-y-6">
                               <div className="flex items-center justify-between">
                                 <div>
-                                  <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Department Playbooks</h3>
-                                  <p className="text-xs text-muted-foreground mt-1">Reusable workflows specific to this department.</p>
+                                  <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
+                                    Department Playbooks
+                                  </h3>
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    Reusable workflows specific to this
+                                    department.
+                                  </p>
                                 </div>
-                                <Button onClick={openCreateSkillDialog} size="sm" className="h-8 px-4 text-xs font-bold uppercase tracking-wider">
+                                <Button
+                                  onClick={openCreateSkillDialog}
+                                  size="sm"
+                                  className="h-8 px-4 text-xs font-bold uppercase tracking-wider"
+                                >
                                   <Plus className="h-3.5 w-3.5 mr-2" />
                                   New Skill
                                 </Button>
@@ -1122,39 +1884,76 @@ export const DepartmentsPage = () => {
 
                               <div className="grid gap-4 md:grid-cols-2">
                                 {detail.departmentSkills.map((skill) => (
-                                  <div key={skill.id} className="group p-5 rounded-xl border border-border/30 bg-background hover:border-primary/30 transition-all">
+                                  <div
+                                    key={skill.id}
+                                    className="group p-5 rounded-xl border border-border/30 bg-background hover:border-primary/30 transition-all"
+                                  >
                                     <div className="flex items-start justify-between gap-3 mb-3">
                                       <div className="space-y-1">
-                                        <div className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">{skill.name}</div>
-                                        <div className="text-[10px] font-mono text-muted-foreground uppercase">{skill.slug}</div>
+                                        <div className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">
+                                          {skill.name}
+                                        </div>
+                                        <div className="text-[10px] font-mono text-muted-foreground uppercase">
+                                          {skill.slug}
+                                        </div>
                                       </div>
                                       <DropdownMenu>
                                         <DropdownMenuTrigger asChild>
-                                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-7 w-7 text-muted-foreground"
+                                          >
                                             <MoreHorizontal className="h-4 w-4" />
                                           </Button>
                                         </DropdownMenuTrigger>
                                         <DropdownMenuContent align="end">
-                                          <DropdownMenuItem onClick={() => openEditSkillDialog(skill)}>
+                                          <DropdownMenuItem
+                                            onClick={() =>
+                                              openEditSkillDialog(skill)
+                                            }
+                                          >
                                             Edit skill
                                           </DropdownMenuItem>
-                                          {skill.status !== 'archived' && (
-                                            <DropdownMenuItem onClick={() => void archiveSkill(skill.id)} className="text-destructive focus:text-destructive">
+                                          {skill.status !== "archived" && (
+                                            <DropdownMenuItem
+                                              onClick={() =>
+                                                void archiveSkill(skill.id)
+                                              }
+                                              className="text-destructive focus:text-destructive"
+                                            >
                                               Archive skill
                                             </DropdownMenuItem>
                                           )}
                                         </DropdownMenuContent>
                                       </DropdownMenu>
                                     </div>
-                                    <p className="text-xs text-muted-foreground line-clamp-2 h-8 mb-4">{skill.summary}</p>
+                                    <p className="text-xs text-muted-foreground line-clamp-2 h-8 mb-4">
+                                      {skill.summary}
+                                    </p>
                                     <div className="flex items-center justify-between">
                                       <div className="flex flex-wrap gap-1">
                                         {skill.tags.slice(0, 2).map((tag) => (
-                                          <Badge key={tag} variant="secondary" className="text-[9px] px-1.5 h-4 font-medium">{tag}</Badge>
+                                          <Badge
+                                            key={tag}
+                                            variant="secondary"
+                                            className="text-[9px] px-1.5 h-4 font-medium"
+                                          >
+                                            {tag}
+                                          </Badge>
                                         ))}
-                                        {skill.tags.length > 2 && <span className="text-[9px] text-muted-foreground">+{skill.tags.length - 2}</span>}
+                                        {skill.tags.length > 2 && (
+                                          <span className="text-[9px] text-muted-foreground">
+                                            +{skill.tags.length - 2}
+                                          </span>
+                                        )}
                                       </div>
-                                      <Badge variant={statusBadgeVariant(skill.status)} className="text-[9px] px-1.5 h-4 uppercase font-bold tracking-tighter">
+                                      <Badge
+                                        variant={statusBadgeVariant(
+                                          skill.status,
+                                        )}
+                                        className="text-[9px] px-1.5 h-4 uppercase font-bold tracking-tighter"
+                                      >
                                         {skill.status}
                                       </Badge>
                                     </div>
@@ -1163,8 +1962,14 @@ export const DepartmentsPage = () => {
                                 {detail.departmentSkills.length === 0 && (
                                   <div className="col-span-full py-12 flex flex-col items-center justify-center border border-dashed border-border/50 rounded-xl bg-secondary/5">
                                     <BookOpen className="h-8 w-8 text-muted-foreground/30 mb-3" />
-                                    <p className="text-sm text-muted-foreground">No department-specific skills yet.</p>
-                                    <Button variant="link" onClick={openCreateSkillDialog} className="text-xs font-bold uppercase tracking-widest h-8 mt-2">
+                                    <p className="text-sm text-muted-foreground">
+                                      No department-specific skills yet.
+                                    </p>
+                                    <Button
+                                      variant="link"
+                                      onClick={openCreateSkillDialog}
+                                      className="text-xs font-bold uppercase tracking-widest h-8 mt-2"
+                                    >
                                       Create First Skill
                                     </Button>
                                   </div>
@@ -1175,13 +1980,21 @@ export const DepartmentsPage = () => {
                         </ScrollArea>
                       </TabsContent>
 
-                      <TabsContent value="members" className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none">
+                      <TabsContent
+                        value="members"
+                        className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none"
+                      >
                         <ScrollArea className="h-full">
                           <div className="p-8 space-y-8">
                             <div className="p-6 rounded-xl border border-border/30 bg-secondary/10 space-y-6">
                               <div className="space-y-1">
-                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Onboard Sync Members</h3>
-                                <p className="text-xs text-muted-foreground">Search and add users from the workspace directory.</p>
+                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
+                                  Onboard Sync Members
+                                </h3>
+                                <p className="text-xs text-muted-foreground">
+                                  Search and add users from the workspace
+                                  directory.
+                                </p>
                               </div>
 
                               <div className="grid gap-4 md:grid-cols-[1fr_200px]">
@@ -1189,19 +2002,25 @@ export const DepartmentsPage = () => {
                                   <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground group-focus-within:text-foreground transition-colors" />
                                   <Input
                                     value={memberSearch}
-                                    onChange={(event) => setMemberSearch(event.target.value)}
+                                    onChange={(event) =>
+                                      setMemberSearch(event.target.value)
+                                    }
                                     placeholder="Search by name, email or Lark role..."
                                     className="bg-background border-border/50 h-10 pl-9"
                                   />
                                 </div>
-                                <Select value={membershipRoleId} onValueChange={setMembershipRoleId}>
+                                <Select
+                                  value={membershipRoleId}
+                                  onValueChange={setMembershipRoleId}
+                                >
                                   <SelectTrigger className="bg-background border-border/50 h-10">
                                     <SelectValue placeholder="Add with role" />
                                   </SelectTrigger>
                                   <SelectContent>
                                     {detail.roles.map((role) => (
                                       <SelectItem key={role.id} value={role.id}>
-                                        {role.name}{role.isDefault ? ' (Default)' : ''}
+                                        {role.name}
+                                        {role.isDefault ? " (Default)" : ""}
                                       </SelectItem>
                                     ))}
                                   </SelectContent>
@@ -1214,47 +2033,73 @@ export const DepartmentsPage = () => {
                                     <Skeleton className="h-14 w-full rounded-xl" />
                                     <Skeleton className="h-14 w-full rounded-xl" />
                                   </div>
-                                ) : availableDepartmentCandidates.map((member) => (
-                                  <button
-                                    key={member.channelIdentityId}
-                                    type="button"
-                                    onClick={() => void assignMemberCandidate(member)}
-                                    className="w-full p-4 rounded-xl border border-border/30 bg-background hover:border-primary/30 hover:shadow-sm transition-all text-left flex items-center justify-between group"
-                                  >
-                                    <div className="flex items-center gap-4 min-w-0">
-                                      <Avatar className="h-10 w-10 rounded-lg border border-border/50 shrink-0">
-                                        <AvatarFallback className="rounded-lg bg-secondary text-secondary-foreground text-xs font-bold uppercase">
-                                          {candidateLabel(member)[0]}
-                                        </AvatarFallback>
-                                      </Avatar>
-                                      <div className="min-w-0">
-                                        <div className="text-sm font-bold text-foreground group-hover:text-primary transition-colors truncate">{candidateLabel(member)}</div>
-                                        <div className="text-[10px] text-muted-foreground truncate">{member.email || 'No email synced'}</div>
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <Badge variant="outline" className="text-[9px] font-bold uppercase bg-secondary/30 h-5">
-                                        {member.workspaceRole ? roleLabel(member.workspaceRole) : 'Synced'}
-                                      </Badge>
-                                      <div className="h-8 w-8 rounded-full bg-secondary/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <Plus className="h-4 w-4 text-primary" />
-                                      </div>
-                                    </div>
-                                  </button>
-                                ))}
-                                {!searchingCandidates && debouncedMemberSearch.trim().length > 0 && availableDepartmentCandidates.length === 0 && (
-                                  <div className="text-center py-8 border border-dashed border-border/50 rounded-xl">
-                                    <p className="text-xs text-muted-foreground font-medium">No users matching your search.</p>
-                                  </div>
+                                ) : (
+                                  availableDepartmentCandidates.map(
+                                    (member) => (
+                                      <button
+                                        key={member.channelIdentityId}
+                                        type="button"
+                                        onClick={() =>
+                                          void assignMemberCandidate(member)
+                                        }
+                                        className="w-full p-4 rounded-xl border border-border/30 bg-background hover:border-primary/30 hover:shadow-sm transition-all text-left flex items-center justify-between group"
+                                      >
+                                        <div className="flex items-center gap-4 min-w-0">
+                                          <Avatar className="h-10 w-10 rounded-lg border border-border/50 shrink-0">
+                                            <AvatarFallback className="rounded-lg bg-secondary text-secondary-foreground text-xs font-bold uppercase">
+                                              {candidateLabel(member)[0]}
+                                            </AvatarFallback>
+                                          </Avatar>
+                                          <div className="min-w-0">
+                                            <div className="text-sm font-bold text-foreground group-hover:text-primary transition-colors truncate">
+                                              {candidateLabel(member)}
+                                            </div>
+                                            <div className="text-[10px] text-muted-foreground truncate">
+                                              {member.email ||
+                                                "No email synced"}
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          <Badge
+                                            variant="outline"
+                                            className="text-[9px] font-bold uppercase bg-secondary/30 h-5"
+                                          >
+                                            {member.workspaceRole
+                                              ? roleLabel(member.workspaceRole)
+                                              : "Synced"}
+                                          </Badge>
+                                          <div className="h-8 w-8 rounded-full bg-secondary/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <Plus className="h-4 w-4 text-primary" />
+                                          </div>
+                                        </div>
+                                      </button>
+                                    ),
+                                  )
                                 )}
+                                {!searchingCandidates &&
+                                  debouncedMemberSearch.trim().length > 0 &&
+                                  availableDepartmentCandidates.length ===
+                                    0 && (
+                                    <div className="text-center py-8 border border-dashed border-border/50 rounded-xl">
+                                      <p className="text-xs text-muted-foreground font-medium">
+                                        No users matching your search.
+                                      </p>
+                                    </div>
+                                  )}
                               </div>
                             </div>
 
                             <div className="space-y-4">
-                              <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground ml-1">Current Department Roster</h3>
+                              <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                                Current Department Roster
+                              </h3>
                               <div className="grid gap-3">
                                 {detail.memberships.map((membership) => (
-                                  <div key={membership.id} className="group p-4 rounded-xl border border-border/30 bg-background hover:bg-secondary/5 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                  <div
+                                    key={membership.id}
+                                    className="group p-4 rounded-xl border border-border/30 bg-background hover:bg-secondary/5 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4"
+                                  >
                                     <div className="flex items-center gap-4 min-w-0">
                                       <Avatar className="h-10 w-10 rounded-lg border border-border/50">
                                         <AvatarFallback className="rounded-lg bg-primary/5 text-primary text-xs font-bold uppercase">
@@ -1262,27 +2107,46 @@ export const DepartmentsPage = () => {
                                         </AvatarFallback>
                                       </Avatar>
                                       <div className="min-w-0">
-                                        <div className="text-sm font-bold text-foreground truncate">{memberLabel(membership)}</div>
-                                        <div className="text-xs text-muted-foreground truncate">{membership.email || 'No email'}</div>
+                                        <div className="text-sm font-bold text-foreground truncate">
+                                          {memberLabel(membership)}
+                                        </div>
+                                        <div className="text-xs text-muted-foreground truncate">
+                                          {membership.email || "No email"}
+                                        </div>
                                       </div>
                                     </div>
                                     <div className="flex items-center gap-3">
                                       <Select
                                         value={membership.roleId}
-                                        onValueChange={(value) => void updateMemberRole(membership.userId, value)}
+                                        onValueChange={(value) =>
+                                          void updateMemberRole(
+                                            membership.userId,
+                                            value,
+                                          )
+                                        }
                                       >
                                         <SelectTrigger className="w-[160px] h-9 text-xs bg-background border-border/50 focus:ring-primary/20">
                                           <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
                                           {detail.roles.map((role) => (
-                                            <SelectItem key={role.id} value={role.id}>
+                                            <SelectItem
+                                              key={role.id}
+                                              value={role.id}
+                                            >
                                               {role.name}
                                             </SelectItem>
                                           ))}
                                         </SelectContent>
                                       </Select>
-                                      <Button variant="ghost" size="icon" onClick={() => void removeMember(membership.userId)} className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10">
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() =>
+                                          void removeMember(membership.userId)
+                                        }
+                                        className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                      >
                                         <Trash2 className="h-4 w-4" />
                                       </Button>
                                     </div>
@@ -1294,16 +2158,24 @@ export const DepartmentsPage = () => {
                         </ScrollArea>
                       </TabsContent>
 
-                      <TabsContent value="permissions" className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none">
+                      <TabsContent
+                        value="permissions"
+                        className="mt-0 h-full animate-in slide-in-from-bottom-2 duration-300 outline-none"
+                      >
                         <ScrollArea className="h-full">
                           <div className="p-8 space-y-8">
                             <div className="rounded-xl border border-border/50 bg-card overflow-hidden shadow-inner shadow-black/5">
                               <Table>
                                 <TableHeader className="bg-secondary/20">
                                   <TableRow className="hover:bg-transparent border-border/50">
-                                    <TableHead className="w-[240px] text-[10px] font-bold uppercase tracking-widest text-muted-foreground py-4">Control Tool</TableHead>
+                                    <TableHead className="w-[240px] text-[10px] font-bold uppercase tracking-widest text-muted-foreground py-4">
+                                      Control Tool
+                                    </TableHead>
                                     {detail.roles.map((role) => (
-                                      <TableHead key={role.id} className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground py-4 text-center">
+                                      <TableHead
+                                        key={role.id}
+                                        className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground py-4 text-center"
+                                      >
                                         {role.name}
                                       </TableHead>
                                     ))}
@@ -1311,56 +2183,101 @@ export const DepartmentsPage = () => {
                                 </TableHeader>
                                 <TableBody>
                                   {detail.availableTools.map((tool) => (
-                                    <TableRow key={tool.toolId} className="border-border/50 hover:bg-secondary/5 transition-colors">
+                                    <TableRow
+                                      key={tool.toolId}
+                                      className="border-border/50 hover:bg-secondary/5 transition-colors"
+                                    >
                                       <TableCell className="py-5">
-                                        <div className="text-sm font-bold text-foreground">{tool.name}</div>
-                                        <div className="text-[10px] font-mono text-muted-foreground mt-0.5 uppercase tracking-tighter">{tool.toolId}</div>
+                                        <div className="text-sm font-bold text-foreground">
+                                          {tool.name}
+                                        </div>
+                                        <div className="text-[10px] font-mono text-muted-foreground mt-0.5 uppercase tracking-tighter">
+                                          {tool.toolId}
+                                        </div>
                                         <div className="mt-2 flex flex-wrap gap-1.5">
-                                          {tool.supportedActionGroups.map((actionGroup) => (
-                                            <Badge key={actionGroup} variant="secondary" className="text-[9px] h-5 uppercase">
-                                              {actionGroup}
-                                            </Badge>
-                                          ))}
+                                          {tool.supportedActionGroups.map(
+                                            (actionGroup) => (
+                                              <Badge
+                                                key={actionGroup}
+                                                variant="secondary"
+                                                className="text-[9px] h-5 uppercase"
+                                              >
+                                                {actionGroup}
+                                              </Badge>
+                                            ),
+                                          )}
                                         </div>
                                       </TableCell>
                                       {detail.roles.map((role) => {
-                                        const defaultAllowsAction = (actionGroup: string) =>
-                                          role.slug === 'MANAGER'
+                                        const defaultAllowsAction = (
+                                          actionGroup: string,
+                                        ) =>
+                                          role.slug === "MANAGER"
                                             ? true
-                                            : (tool.toolId === 'search-read' || tool.toolId === 'search-agent' || tool.toolId === 'skill-search')
-                                              && actionGroup === 'read'
+                                            : (tool.toolId === "search-read" ||
+                                                tool.toolId ===
+                                                  "search-agent" ||
+                                                tool.toolId ===
+                                                  "skill-search") &&
+                                              actionGroup === "read";
                                         return (
-                                          <TableCell key={`${role.id}:${tool.toolId}`} className="text-center py-5 align-top">
+                                          <TableCell
+                                            key={`${role.id}:${tool.toolId}`}
+                                            className="text-center py-5 align-top"
+                                          >
                                             <div className="flex flex-col gap-2">
-                                              {tool.supportedActionGroups.map((actionGroup) => {
-                                                const key = `${role.id}:${tool.toolId}:${actionGroup}`
-                                                const allowed =
-                                                  rolePermissionMap.get(key)
-                                                  ?? rolePermissionMap.get(`${role.id}:${tool.toolId}:all`)
-                                                  ?? defaultAllowsAction(actionGroup)
-                                                const isPending = pendingPermissionKey === key
-                                                return (
-                                                  <Button
-                                                    key={key}
-                                                    variant="outline"
-                                                    size="sm"
-                                                    disabled={isPending}
-                                                    onClick={() => void toggleRolePermissionAction(role.id, tool.toolId, actionGroup, !allowed)}
-                                                    className={cn(
-                                                      "h-8 justify-between px-3 text-[10px] font-bold uppercase tracking-widest transition-all shadow-sm",
-                                                      allowed
-                                                        ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 hover:bg-emerald-500/20"
-                                                        : "bg-secondary/30 border-border/50 text-muted-foreground hover:bg-secondary/50"
-                                                    )}
-                                                  >
-                                                    <span>{actionGroup}</span>
-                                                    <span>{isPending ? '...' : allowed ? 'On' : 'Off'}</span>
-                                                  </Button>
-                                                )
-                                              })}
+                                              {tool.supportedActionGroups.map(
+                                                (actionGroup) => {
+                                                  const key = `${role.id}:${tool.toolId}:${actionGroup}`;
+                                                  const allowed =
+                                                    rolePermissionMap.get(
+                                                      key,
+                                                    ) ??
+                                                    rolePermissionMap.get(
+                                                      `${role.id}:${tool.toolId}:all`,
+                                                    ) ??
+                                                    defaultAllowsAction(
+                                                      actionGroup,
+                                                    );
+                                                  const isPending =
+                                                    pendingPermissionKey ===
+                                                    key;
+                                                  return (
+                                                    <Button
+                                                      key={key}
+                                                      variant="outline"
+                                                      size="sm"
+                                                      disabled={isPending}
+                                                      onClick={() =>
+                                                        void toggleRolePermissionAction(
+                                                          role.id,
+                                                          tool.toolId,
+                                                          actionGroup,
+                                                          !allowed,
+                                                        )
+                                                      }
+                                                      className={cn(
+                                                        "h-8 justify-between px-3 text-[10px] font-bold uppercase tracking-widest transition-all shadow-sm",
+                                                        allowed
+                                                          ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 hover:bg-emerald-500/20"
+                                                          : "bg-secondary/30 border-border/50 text-muted-foreground hover:bg-secondary/50",
+                                                      )}
+                                                    >
+                                                      <span>{actionGroup}</span>
+                                                      <span>
+                                                        {isPending
+                                                          ? "..."
+                                                          : allowed
+                                                            ? "On"
+                                                            : "Off"}
+                                                      </span>
+                                                    </Button>
+                                                  );
+                                                },
+                                              )}
                                             </div>
                                           </TableCell>
-                                        )
+                                        );
                                       })}
                                     </TableRow>
                                   ))}
@@ -1370,20 +2287,33 @@ export const DepartmentsPage = () => {
 
                             <div className="p-6 rounded-xl border border-border/30 bg-secondary/10 space-y-6">
                               <div className="space-y-1">
-                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">User-Specific Overrides</h3>
-                                <p className="text-xs text-muted-foreground">Force allow or deny specific tools for individual members, bypassing role defaults.</p>
+                                <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
+                                  User-Specific Overrides
+                                </h3>
+                                <p className="text-xs text-muted-foreground">
+                                  Force allow or deny specific tools for
+                                  individual members, bypassing role defaults.
+                                </p>
                               </div>
-                              
+
                               <div className="grid gap-3 md:grid-cols-[1fr_1fr_120px_120px_auto] items-end">
                                 <div className="space-y-1.5">
-                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Member</label>
-                                  <Select value={overrideUserId} onValueChange={setOverrideUserId}>
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">
+                                    Member
+                                  </label>
+                                  <Select
+                                    value={overrideUserId}
+                                    onValueChange={setOverrideUserId}
+                                  >
                                     <SelectTrigger className="bg-background border-border/50 h-9 text-xs">
                                       <SelectValue placeholder="Select member" />
                                     </SelectTrigger>
                                     <SelectContent>
                                       {detail.memberships.map((membership) => (
-                                        <SelectItem key={membership.userId} value={membership.userId}>
+                                        <SelectItem
+                                          key={membership.userId}
+                                          value={membership.userId}
+                                        >
                                           {memberLabel(membership)}
                                         </SelectItem>
                                       ))}
@@ -1391,14 +2321,22 @@ export const DepartmentsPage = () => {
                                   </Select>
                                 </div>
                                 <div className="space-y-1.5">
-                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Tool</label>
-                                  <Select value={overrideToolId} onValueChange={setOverrideToolId}>
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">
+                                    Tool
+                                  </label>
+                                  <Select
+                                    value={overrideToolId}
+                                    onValueChange={setOverrideToolId}
+                                  >
                                     <SelectTrigger className="bg-background border-border/50 h-9 text-xs">
                                       <SelectValue placeholder="Select tool" />
                                     </SelectTrigger>
                                     <SelectContent>
                                       {detail.availableTools.map((tool) => (
-                                        <SelectItem key={tool.toolId} value={tool.toolId}>
+                                        <SelectItem
+                                          key={tool.toolId}
+                                          value={tool.toolId}
+                                        >
                                           {tool.name}
                                         </SelectItem>
                                       ))}
@@ -1406,52 +2344,100 @@ export const DepartmentsPage = () => {
                                   </Select>
                                 </div>
                                 <div className="space-y-1.5">
-                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Action</label>
-                                  <Select value={overrideActionGroup} onValueChange={setOverrideActionGroup}>
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">
+                                    Action
+                                  </label>
+                                  <Select
+                                    value={overrideActionGroup}
+                                    onValueChange={setOverrideActionGroup}
+                                  >
                                     <SelectTrigger className="bg-background border-border/50 h-9 text-xs">
                                       <SelectValue placeholder="Select action" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      {availableOverrideActionGroups.map((actionGroup) => (
-                                        <SelectItem key={actionGroup} value={actionGroup}>
-                                          {actionGroup}
-                                        </SelectItem>
-                                      ))}
+                                      {availableOverrideActionGroups.map(
+                                        (actionGroup) => (
+                                          <SelectItem
+                                            key={actionGroup}
+                                            value={actionGroup}
+                                          >
+                                            {actionGroup}
+                                          </SelectItem>
+                                        ),
+                                      )}
                                     </SelectContent>
                                   </Select>
                                 </div>
                                 <div className="space-y-1.5">
-                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">Policy</label>
-                                  <Select value={overrideAllowed} onValueChange={(value) => setOverrideAllowed(value as 'allow' | 'deny')}>
+                                  <label className="text-[10px] font-bold uppercase tracking-tighter text-muted-foreground/80 ml-1">
+                                    Policy
+                                  </label>
+                                  <Select
+                                    value={overrideAllowed}
+                                    onValueChange={(value) =>
+                                      setOverrideAllowed(
+                                        value as "allow" | "deny",
+                                      )
+                                    }
+                                  >
                                     <SelectTrigger className="bg-background border-border/50 h-9 text-xs">
                                       <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      <SelectItem value="allow">Allow</SelectItem>
+                                      <SelectItem value="allow">
+                                        Allow
+                                      </SelectItem>
                                       <SelectItem value="deny">Deny</SelectItem>
                                     </SelectContent>
                                   </Select>
                                 </div>
-                                <Button onClick={() => void saveUserOverride()} className="h-9 px-4 text-xs font-bold uppercase tracking-wider">
+                                <Button
+                                  onClick={() => void saveUserOverride()}
+                                  className="h-9 px-4 text-xs font-bold uppercase tracking-wider"
+                                >
                                   Apply
                                 </Button>
                               </div>
 
                               <div className="grid gap-2">
                                 {detail.userOverrides.map((override) => (
-                                  <div key={override.id} className="flex items-center justify-between p-3 rounded-lg border border-border/30 bg-background text-[11px]">
+                                  <div
+                                    key={override.id}
+                                    className="flex items-center justify-between p-3 rounded-lg border border-border/30 bg-background text-[11px]"
+                                  >
                                     <div className="font-medium">
-                                      <span className="text-foreground">{memberLabel(detail.memberships.find((m) => m.userId === override.userId) || { userId: override.userId })}</span>
-                                      <span className="text-muted-foreground mx-2">on</span>
-                                      <span className="font-mono text-primary">{override.toolId}</span>
-                                      <span className="text-muted-foreground mx-2">/</span>
-                                      <span className="font-mono text-foreground/80">{override.actionGroup}</span>
+                                      <span className="text-foreground">
+                                        {memberLabel(
+                                          detail.memberships.find(
+                                            (m) => m.userId === override.userId,
+                                          ) || { userId: override.userId },
+                                        )}
+                                      </span>
+                                      <span className="text-muted-foreground mx-2">
+                                        on
+                                      </span>
+                                      <span className="font-mono text-primary">
+                                        {override.toolId}
+                                      </span>
+                                      <span className="text-muted-foreground mx-2">
+                                        /
+                                      </span>
+                                      <span className="font-mono text-foreground/80">
+                                        {override.actionGroup}
+                                      </span>
                                     </div>
-                                    <Badge className={cn(
-                                      "text-[9px] h-4 uppercase font-bold tracking-tighter",
-                                      override.allowed ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20" : "bg-red-500/10 text-red-600 border-red-500/20"
-                                    )} variant="outline">
-                                      {override.allowed ? 'Force Allow' : 'Force Deny'}
+                                    <Badge
+                                      className={cn(
+                                        "text-[9px] h-4 uppercase font-bold tracking-tighter",
+                                        override.allowed
+                                          ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
+                                          : "bg-red-500/10 text-red-600 border-red-500/20",
+                                      )}
+                                      variant="outline"
+                                    >
+                                      {override.allowed
+                                        ? "Force Allow"
+                                        : "Force Deny"}
                                     </Badge>
                                   </div>
                                 ))}
@@ -1471,14 +2457,19 @@ export const DepartmentsPage = () => {
         <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
           <DialogContent className="max-w-md rounded-2xl">
             <DialogHeader>
-              <DialogTitle className="text-xl font-bold">New Department</DialogTitle>
+              <DialogTitle className="text-xl font-bold">
+                New Department
+              </DialogTitle>
               <DialogDescription className="text-muted-foreground">
-                Set up a new organizational unit to manage specific AI workflows and access.
+                Set up a new organizational unit to manage specific AI workflows
+                and access.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-5 py-4">
               <div className="space-y-2">
-                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Department Name</label>
+                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                  Department Name
+                </label>
                 <Input
                   value={newDepartmentName}
                   onChange={(event) => setNewDepartmentName(event.target.value)}
@@ -1487,10 +2478,14 @@ export const DepartmentsPage = () => {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Description</label>
+                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                  Description
+                </label>
                 <Textarea
                   value={newDepartmentDescription}
-                  onChange={(event) => setNewDepartmentDescription(event.target.value)}
+                  onChange={(event) =>
+                    setNewDepartmentDescription(event.target.value)
+                  }
                   placeholder="What does this department do?"
                   rows={3}
                   className="bg-secondary/20 border-border/50 resize-none"
@@ -1498,10 +2493,17 @@ export const DepartmentsPage = () => {
               </div>
             </div>
             <DialogFooter className="gap-2 sm:gap-0">
-              <Button variant="ghost" onClick={() => setIsCreateDialogOpen(false)} className="font-bold uppercase tracking-widest text-xs h-10">
+              <Button
+                variant="ghost"
+                onClick={() => setIsCreateDialogOpen(false)}
+                className="font-bold uppercase tracking-widest text-xs h-10"
+              >
                 Cancel
               </Button>
-              <Button onClick={() => void createDepartment()} className="bg-primary text-primary-foreground font-bold uppercase tracking-widest text-xs h-10 px-6">
+              <Button
+                onClick={() => void createDepartment()}
+                className="bg-primary text-primary-foreground font-bold uppercase tracking-widest text-xs h-10 px-6"
+              >
                 Create Department
               </Button>
             </DialogFooter>
@@ -1514,42 +2516,66 @@ export const DepartmentsPage = () => {
               <DialogHeader>
                 <DialogTitle className="text-xl font-bold flex items-center gap-2">
                   <BookOpen className="h-5 w-5 text-primary" />
-                  {editingSkillId ? 'Edit Skill Playbook' : 'New Skill Playbook'}
+                  {editingSkillId
+                    ? "Edit Skill Playbook"
+                    : "New Skill Playbook"}
                 </DialogTitle>
                 <DialogDescription>
-                  Define detailed procedures and knowledge for the department agent.
+                  Define detailed procedures and knowledge for the department
+                  agent.
                 </DialogDescription>
               </DialogHeader>
             </div>
-            
+
             <ScrollArea className="flex-1 p-6">
               <div className="space-y-6 pb-4">
                 <div className="grid gap-6 md:grid-cols-2">
                   <div className="space-y-2">
-                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Skill Name</label>
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                      Skill Name
+                    </label>
                     <Input
                       value={skillForm.name}
-                      onChange={(event) => setSkillForm((prev) => ({ ...prev, name: event.target.value }))}
+                      onChange={(event) =>
+                        setSkillForm((prev) => ({
+                          ...prev,
+                          name: event.target.value,
+                        }))
+                      }
                       placeholder="e.g. Return Policy Verification"
                       className="bg-secondary/20 border-border/50 h-10"
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Slug</label>
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                      Slug
+                    </label>
                     <Input
                       value={skillForm.slug}
-                      onChange={(event) => setSkillForm((prev) => ({ ...prev, slug: event.target.value }))}
+                      onChange={(event) =>
+                        setSkillForm((prev) => ({
+                          ...prev,
+                          slug: event.target.value,
+                        }))
+                      }
                       placeholder="e.g. return-policy-verification"
                       className="bg-secondary/20 border-border/50 h-10 font-mono"
                     />
                   </div>
                 </div>
-                
+
                 <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Summary</label>
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                    Summary
+                  </label>
                   <Input
                     value={skillForm.summary}
-                    onChange={(event) => setSkillForm((prev) => ({ ...prev, summary: event.target.value }))}
+                    onChange={(event) =>
+                      setSkillForm((prev) => ({
+                        ...prev,
+                        summary: event.target.value,
+                      }))
+                    }
                     placeholder="Briefly describe what this playbook covers"
                     className="bg-secondary/20 border-border/50 h-10"
                   />
@@ -1557,17 +2583,31 @@ export const DepartmentsPage = () => {
 
                 <div className="grid gap-6 md:grid-cols-2">
                   <div className="space-y-2">
-                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Tags (Comma Separated)</label>
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                      Tags (Comma Separated)
+                    </label>
                     <Input
                       value={skillForm.tags}
-                      onChange={(event) => setSkillForm((prev) => ({ ...prev, tags: event.target.value }))}
+                      onChange={(event) =>
+                        setSkillForm((prev) => ({
+                          ...prev,
+                          tags: event.target.value,
+                        }))
+                      }
                       placeholder="e.g. policy, returns, support"
                       className="bg-secondary/20 border-border/50 h-10"
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Status</label>
-                    <Select value={skillForm.status} onValueChange={(value) => setSkillForm((prev) => ({ ...prev, status: value }))}>
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                      Status
+                    </label>
+                    <Select
+                      value={skillForm.status}
+                      onValueChange={(value) =>
+                        setSkillForm((prev) => ({ ...prev, status: value }))
+                      }
+                    >
                       <SelectTrigger className="bg-secondary/20 border-border/50 h-10">
                         <SelectValue />
                       </SelectTrigger>
@@ -1580,10 +2620,17 @@ export const DepartmentsPage = () => {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">Markdown Body</label>
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                    Markdown Body
+                  </label>
                   <Textarea
                     value={skillForm.markdown}
-                    onChange={(event) => setSkillForm((prev) => ({ ...prev, markdown: event.target.value }))}
+                    onChange={(event) =>
+                      setSkillForm((prev) => ({
+                        ...prev,
+                        markdown: event.target.value,
+                      }))
+                    }
                     className="bg-[#050505] border-border/50 text-foreground font-mono text-sm min-h-[400px] p-6 focus-visible:ring-primary/20 leading-relaxed"
                     placeholder="# Playbook: Procedure for..."
                   />
@@ -1593,11 +2640,18 @@ export const DepartmentsPage = () => {
 
             <div className="p-6 border-t border-border/50 bg-secondary/5">
               <DialogFooter className="gap-2 sm:gap-0">
-                <Button variant="ghost" onClick={() => setIsSkillDialogOpen(false)} className="font-bold uppercase tracking-widest text-xs h-10">
+                <Button
+                  variant="ghost"
+                  onClick={() => setIsSkillDialogOpen(false)}
+                  className="font-bold uppercase tracking-widest text-xs h-10"
+                >
                   Cancel
                 </Button>
-                <Button onClick={() => void saveSkill()} className="bg-primary text-primary-foreground font-bold uppercase tracking-widest text-xs h-10 px-8 shadow-md">
-                  {editingSkillId ? 'Update Playbook' : 'Create Playbook'}
+                <Button
+                  onClick={() => void saveSkill()}
+                  className="bg-primary text-primary-foreground font-bold uppercase tracking-widest text-xs h-10 px-8 shadow-md"
+                >
+                  {editingSkillId ? "Update Playbook" : "Create Playbook"}
                 </Button>
               </DialogFooter>
             </div>
@@ -1605,5 +2659,5 @@ export const DepartmentsPage = () => {
         </Dialog>
       </div>
     </TooltipProvider>
-  )
-}
+  );
+};

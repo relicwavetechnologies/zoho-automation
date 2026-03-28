@@ -6,6 +6,7 @@ import { hashPassword } from '../../utils/bcrypt';
 import crypto from 'crypto';
 import { skillService } from '../skills/skill.service';
 import { departmentRuntimeCache } from './department-runtime.cache';
+import type { ZohoRateLimitConfig } from '../integrations/zoho/zoho-rate-limit.types';
 
 type DepartmentAdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 
@@ -46,6 +47,7 @@ export type ResolvedDepartmentRuntime = {
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentZohoReadScope?: DepartmentZohoReadScope;
+  departmentZohoRateLimitConfig?: ZohoRateLimitConfig;
   systemPrompt?: string;
   skillsMarkdown?: string;
   allowedToolIds: string[];
@@ -63,9 +65,16 @@ const normalizeSlug = (value: string): string =>
     .slice(0, 60);
 
 const normalizeRoleSlug = (value: string): string =>
-  value.trim().toUpperCase().replace(/\s+/g, '_').replace(/[^A-Z0-9_]/g, '').slice(0, 40);
+  value
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^A-Z0-9_]/g, '')
+    .slice(0, 40);
 
-const vercelToolIds = TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel')).map((tool) => tool.id);
+const vercelToolIds = TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel')).map(
+  (tool) => tool.id,
+);
 const ACTION_GROUP_ALL = 'all';
 
 const uniqueByUserId = <T extends { userId: string }>(rows: T[]): T[] => {
@@ -88,7 +97,13 @@ const normalizeSearchValue = (value: string | null | undefined): string =>
 const computeCandidateScore = (
   candidate: Pick<
     DepartmentCandidateSummary,
-    'name' | 'email' | 'larkDisplayName' | 'larkUserId' | 'larkOpenId' | 'larkSourceRoles' | 'isWorkspaceMember'
+    | 'name'
+    | 'email'
+    | 'larkDisplayName'
+    | 'larkUserId'
+    | 'larkOpenId'
+    | 'larkSourceRoles'
+    | 'isWorkspaceMember'
   >,
   query: string,
 ): number => {
@@ -146,8 +161,92 @@ const buildCaseInsensitiveEmailClauses = (emails: string[]) =>
 const normalizeZohoReadScope = (value: unknown): DepartmentZohoReadScope =>
   value === 'show_all' ? 'show_all' : 'personalized';
 
+const DEFAULT_ZOHO_RATE_LIMIT_CONFIG: ZohoRateLimitConfig = {
+  enabled: false,
+  windowSeconds: 60,
+  totalCallsPerWindow: 100,
+  roleBudgets: {},
+  userOverrides: [],
+};
+
+const normalizeZohoRateLimitConfig = (value: unknown): ZohoRateLimitConfig => {
+  const record =
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+
+  const roleBudgets = Object.fromEntries(
+    Object.entries(
+      typeof record.roleBudgets === 'object' &&
+        record.roleBudgets !== null &&
+        !Array.isArray(record.roleBudgets)
+        ? (record.roleBudgets as Record<string, unknown>)
+        : {},
+    )
+      .map(
+        ([roleSlug, budget]) =>
+          [
+            normalizeRoleSlug(roleSlug),
+            Math.max(1, Math.floor(typeof budget === 'number' ? budget : Number(budget))),
+          ] as const,
+      )
+      .filter(([roleSlug, budget]) => roleSlug.length > 0 && Number.isFinite(budget) && budget > 0),
+  );
+
+  const userOverrides = Array.isArray(record.userOverrides)
+    ? record.userOverrides
+        .map((entry) => {
+          const candidate =
+            typeof entry === 'object' && entry !== null && !Array.isArray(entry)
+              ? (entry as Record<string, unknown>)
+              : null;
+          const userId = typeof candidate?.userId === 'string' ? candidate.userId.trim() : '';
+          const maxCallsPerWindow = Math.floor(
+            typeof candidate?.maxCallsPerWindow === 'number'
+              ? candidate.maxCallsPerWindow
+              : Number(candidate?.maxCallsPerWindow),
+          );
+          if (!userId || !Number.isFinite(maxCallsPerWindow) || maxCallsPerWindow <= 0) {
+            return null;
+          }
+          return {
+            userId,
+            maxCallsPerWindow,
+          };
+        })
+        .filter((entry): entry is { userId: string; maxCallsPerWindow: number } => Boolean(entry))
+    : [];
+
+  return {
+    enabled: Boolean(record.enabled),
+    windowSeconds: Math.max(
+      10,
+      Math.floor(
+        typeof record.windowSeconds === 'number'
+          ? record.windowSeconds
+          : Number(record.windowSeconds ?? DEFAULT_ZOHO_RATE_LIMIT_CONFIG.windowSeconds),
+      ),
+    ),
+    totalCallsPerWindow: Math.max(
+      1,
+      Math.floor(
+        typeof record.totalCallsPerWindow === 'number'
+          ? record.totalCallsPerWindow
+          : Number(
+              record.totalCallsPerWindow ?? DEFAULT_ZOHO_RATE_LIMIT_CONFIG.totalCallsPerWindow,
+            ),
+      ),
+    ),
+    roleBudgets,
+    userOverrides,
+  };
+};
+
 class DepartmentService {
-  private async resolveDepartmentCompanyId(departmentId: string, fallbackCompanyId?: string): Promise<string> {
+  private async resolveDepartmentCompanyId(
+    departmentId: string,
+    fallbackCompanyId?: string,
+  ): Promise<string> {
     if (fallbackCompanyId) return fallbackCompanyId;
     const department = await prisma.department.findUnique({
       where: { id: departmentId },
@@ -177,7 +276,10 @@ class DepartmentService {
 
     const email = identity.email?.trim();
     if (!email) {
-      throw new HttpException(400, 'This synced Lark user has no email, so it cannot be mapped into a department yet.');
+      throw new HttpException(
+        400,
+        'This synced Lark user has no email, so it cannot be mapped into a department yet.',
+      );
     }
 
     const normalizedEmail = email.toLowerCase();
@@ -249,10 +351,7 @@ class DepartmentService {
         department: true,
         role: true,
       },
-      orderBy: [
-        { department: { name: 'asc' } },
-        { createdAt: 'asc' },
-      ],
+      orderBy: [{ department: { name: 'asc' } }, { createdAt: 'asc' }],
     });
 
     return rows.map((row) => ({
@@ -317,7 +416,10 @@ class DepartmentService {
   }): Promise<ResolvedDepartmentRuntime> {
     if (!input.departmentId) {
       const allowedActionsByTool = Object.fromEntries(
-        input.fallbackAllowedToolIds.map((toolId) => [toolId, getSupportedToolActionGroups(toolId)]),
+        input.fallbackAllowedToolIds.map((toolId) => [
+          toolId,
+          getSupportedToolActionGroups(toolId),
+        ]),
       );
       return { allowedToolIds: input.fallbackAllowedToolIds, allowedActionsByTool };
     }
@@ -369,7 +471,9 @@ class DepartmentService {
       },
     });
 
-    const buildActionLookup = <T extends { toolId: string; actionGroup: string; allowed: boolean }>(rows: T[]) => {
+    const buildActionLookup = <T extends { toolId: string; actionGroup: string; allowed: boolean }>(
+      rows: T[],
+    ) => {
       const map = new Map<string, Map<string, boolean>>();
       for (const row of rows) {
         const existing = map.get(row.toolId) ?? new Map<string, boolean>();
@@ -411,7 +515,8 @@ class DepartmentService {
       vercelToolIds
         .map((toolId) => {
           const actions = getSupportedToolActionGroups(toolId).filter((actionGroup) =>
-            resolveActionAllowed(toolId, actionGroup));
+            resolveActionAllowed(toolId, actionGroup),
+          );
           return [toolId, actions] as const;
         })
         .filter(([, actions]) => actions.length > 0),
@@ -422,7 +527,12 @@ class DepartmentService {
       departmentId: membership.department.id,
       departmentName: membership.department.name,
       departmentRoleSlug: membership.role.slug,
-      departmentZohoReadScope: normalizeZohoReadScope((membership.role as Record<string, unknown>).zohoReadScope),
+      departmentZohoReadScope: normalizeZohoReadScope(
+        (membership.role as Record<string, unknown>).zohoReadScope,
+      ),
+      departmentZohoRateLimitConfig: normalizeZohoRateLimitConfig(
+        membership.department.agentConfig?.zohoRateLimitJson,
+      ),
       systemPrompt: membership.department.agentConfig?.systemPrompt ?? undefined,
       skillsMarkdown: membership.department.agentConfig?.skillsMarkdown ?? undefined,
       allowedToolIds,
@@ -438,7 +548,10 @@ class DepartmentService {
     return resolved;
   }
 
-  private async resolveAdminCompanyId(session: DepartmentAdminSession, requestedCompanyId?: string): Promise<string> {
+  private async resolveAdminCompanyId(
+    session: DepartmentAdminSession,
+    requestedCompanyId?: string,
+  ): Promise<string> {
     if (session.role === 'SUPER_ADMIN') {
       if (!requestedCompanyId) {
         throw new HttpException(400, 'companyId is required.');
@@ -454,10 +567,7 @@ class DepartmentService {
     return session.companyId;
   }
 
-  private async assertDepartmentAccess(
-    session: DepartmentAdminSession,
-    departmentId: string,
-  ) {
+  private async assertDepartmentAccess(session: DepartmentAdminSession, departmentId: string) {
     const department = await prisma.department.findUnique({
       where: { id: departmentId },
       include: {
@@ -518,14 +628,14 @@ class DepartmentService {
         companyId: scopedCompanyId,
         ...(session.role === 'DEPARTMENT_MANAGER'
           ? {
-            memberships: {
-              some: {
-                userId: session.userId,
-                status: 'active',
-                role: { slug: 'MANAGER' },
+              memberships: {
+                some: {
+                  userId: session.userId,
+                  status: 'active',
+                  role: { slug: 'MANAGER' },
+                },
               },
-            },
-          }
+            }
           : {}),
       },
       include: {
@@ -539,7 +649,9 @@ class DepartmentService {
     });
 
     return departments.map((department) => {
-      const managerCount = department.memberships.filter((membership) => membership.role.slug === 'MANAGER').length;
+      const managerCount = department.memberships.filter(
+        (membership) => membership.role.slug === 'MANAGER',
+      ).length;
       return {
         id: department.id,
         companyId: department.companyId,
@@ -577,23 +689,27 @@ class DepartmentService {
         .filter((row) => typeof row.email === 'string' && row.email.trim().length > 0)
         .map((row) => [row.email!.trim().toLowerCase(), row]),
     );
-    const availableMembers = uniqueByUserId(await prisma.adminMembership.findMany({
-      where: {
-        companyId: department.companyId,
-        isActive: true,
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
+    const availableMembers = uniqueByUserId(
+      await prisma.adminMembership.findMany({
+        where: {
+          companyId: department.companyId,
+          isActive: true,
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
           },
         },
-      },
-      orderBy: { createdAt: 'desc' },
-    })).map((row) => {
-      const larkIdentity = row.user.email ? larkIdentityByEmail.get(row.user.email.trim().toLowerCase()) : undefined;
+        orderBy: { createdAt: 'desc' },
+      }),
+    ).map((row) => {
+      const larkIdentity = row.user.email
+        ? larkIdentityByEmail.get(row.user.email.trim().toLowerCase())
+        : undefined;
       return {
         userId: row.userId,
         name: row.user.name,
@@ -621,6 +737,7 @@ class DepartmentService {
       config: {
         systemPrompt: department.agentConfig?.systemPrompt ?? '',
         skillsMarkdown: department.agentConfig?.skillsMarkdown ?? '',
+        zohoRateLimit: normalizeZohoRateLimitConfig(department.agentConfig?.zohoRateLimitJson),
         isActive: department.agentConfig?.isActive ?? true,
       },
       roles: department.roles.map((role) => ({
@@ -662,17 +779,23 @@ class DepartmentService {
       globalSkills: skillBundle.globalSkills,
       departmentSkills: skillBundle.departmentSkills,
       availableMembers,
-      availableTools: TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel')).map((tool) => ({
-        toolId: tool.id,
-        name: tool.name,
-        description: tool.description,
-        category: tool.category,
-        supportedActionGroups: getSupportedToolActionGroups(tool.id),
-      })),
+      availableTools: TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel')).map(
+        (tool) => ({
+          toolId: tool.id,
+          name: tool.name,
+          description: tool.description,
+          category: tool.category,
+          supportedActionGroups: getSupportedToolActionGroups(tool.id),
+        }),
+      ),
     };
   }
 
-  async searchDepartmentCandidates(session: DepartmentAdminSession, departmentId: string, query: string): Promise<DepartmentCandidateSummary[]> {
+  async searchDepartmentCandidates(
+    session: DepartmentAdminSession,
+    departmentId: string,
+    query: string,
+  ): Promise<DepartmentCandidateSummary[]> {
     const department = await this.assertDepartmentAccess(session, departmentId);
     const normalizedQuery = query.trim();
     if (!normalizedQuery) {
@@ -735,41 +858,39 @@ class DepartmentService {
     const [users, memberships] = await Promise.all([
       emailClauses.length > 0
         ? prisma.user.findMany({
-          where: {
-            OR: emailClauses,
-          },
-          select: {
-            id: true,
-            email: true,
-            name: true,
-          },
-        })
+            where: {
+              OR: emailClauses,
+            },
+            select: {
+              id: true,
+              email: true,
+              name: true,
+            },
+          })
         : Promise.resolve([]),
       emailClauses.length > 0
         ? prisma.adminMembership.findMany({
-          where: {
-            companyId: department.companyId,
-            isActive: true,
-            user: {
-              OR: emailClauses,
-            },
-          },
-          include: {
-            user: {
-              select: {
-                id: true,
-                email: true,
+            where: {
+              companyId: department.companyId,
+              isActive: true,
+              user: {
+                OR: emailClauses,
               },
             },
-          },
-          orderBy: { createdAt: 'desc' },
-        })
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  email: true,
+                },
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+          })
         : Promise.resolve([]),
     ]);
 
-    const userByEmail = new Map(
-      users.map((user) => [user.email.trim().toLowerCase(), user]),
-    );
+    const userByEmail = new Map(users.map((user) => [user.email.trim().toLowerCase(), user]));
     const membershipByEmail = new Map<string, { userId: string; role: string }>();
     for (const membership of memberships) {
       const email = membership.user.email.trim().toLowerCase();
@@ -783,43 +904,52 @@ class DepartmentService {
 
     return rows
       .map((row) => {
-      const normalizedEmail = row.email?.trim().toLowerCase();
-      const matchedUser = normalizedEmail ? userByEmail.get(normalizedEmail) : undefined;
-      const matchedMembership = normalizedEmail ? membershipByEmail.get(normalizedEmail) : undefined;
-      const resolvedUserId = matchedMembership?.userId ?? matchedUser?.id;
-      const candidate: DepartmentCandidateSummary = {
-        channelIdentityId: row.id,
-        userId: resolvedUserId,
-        name: matchedUser?.name ?? row.displayName ?? undefined,
-        email: row.email ?? undefined,
-        workspaceRole: matchedMembership?.role,
-        isWorkspaceMember: Boolean(matchedMembership),
-        isAlreadyAssigned: Boolean(resolvedUserId && assignedUserIds.has(resolvedUserId)),
-        larkDisplayName: row.displayName ?? undefined,
-        larkUserId: row.larkUserId ?? undefined,
-        larkOpenId: row.larkOpenId ?? undefined,
-        larkSourceRoles: row.sourceRoles,
-      };
-      return {
-        candidate,
-        score: computeCandidateScore(candidate, normalizedQuery),
-      };
+        const normalizedEmail = row.email?.trim().toLowerCase();
+        const matchedUser = normalizedEmail ? userByEmail.get(normalizedEmail) : undefined;
+        const matchedMembership = normalizedEmail
+          ? membershipByEmail.get(normalizedEmail)
+          : undefined;
+        const resolvedUserId = matchedMembership?.userId ?? matchedUser?.id;
+        const candidate: DepartmentCandidateSummary = {
+          channelIdentityId: row.id,
+          userId: resolvedUserId,
+          name: matchedUser?.name ?? row.displayName ?? undefined,
+          email: row.email ?? undefined,
+          workspaceRole: matchedMembership?.role,
+          isWorkspaceMember: Boolean(matchedMembership),
+          isAlreadyAssigned: Boolean(resolvedUserId && assignedUserIds.has(resolvedUserId)),
+          larkDisplayName: row.displayName ?? undefined,
+          larkUserId: row.larkUserId ?? undefined,
+          larkOpenId: row.larkOpenId ?? undefined,
+          larkSourceRoles: row.sourceRoles,
+        };
+        return {
+          candidate,
+          score: computeCandidateScore(candidate, normalizedQuery),
+        };
       })
       .filter((row) => row.score >= 0)
       .sort((left, right) => {
         if (right.score !== left.score) return right.score - left.score;
-        return (left.candidate.name ?? left.candidate.email ?? left.candidate.channelIdentityId).localeCompare(
+        return (
+          left.candidate.name ??
+          left.candidate.email ??
+          left.candidate.channelIdentityId
+        ).localeCompare(
           right.candidate.name ?? right.candidate.email ?? right.candidate.channelIdentityId,
         );
       })
       .map((row) => row.candidate);
   }
 
-  async createDepartment(session: DepartmentAdminSession, input: {
-    companyId?: string;
-    name: string;
-    description?: string;
-  }) {
+  async createDepartment(
+    session: DepartmentAdminSession,
+    input: {
+      companyId?: string;
+      name: string;
+      description?: string;
+    },
+  ) {
     if (session.role === 'DEPARTMENT_MANAGER') {
       throw new HttpException(403, 'Department managers cannot create departments.');
     }
@@ -893,11 +1023,15 @@ class DepartmentService {
     };
   }
 
-  async updateDepartment(session: DepartmentAdminSession, departmentId: string, input: {
-    name?: string;
-    description?: string | null;
-    status?: string;
-  }) {
+  async updateDepartment(
+    session: DepartmentAdminSession,
+    departmentId: string,
+    input: {
+      name?: string;
+      description?: string | null;
+      status?: string;
+    },
+  ) {
     const existing = await this.assertDepartmentAccess(session, departmentId);
     if (session.role === 'DEPARTMENT_MANAGER' && input.status && input.status !== existing.status) {
       throw new HttpException(403, 'Department managers cannot change department status.');
@@ -909,7 +1043,11 @@ class DepartmentService {
       const baseSlug = normalizeSlug(nextName);
       nextSlug = baseSlug || existing.slug;
       let suffix = 2;
-      while (await prisma.department.findFirst({ where: { companyId: existing.companyId, slug: nextSlug, id: { not: departmentId } } })) {
+      while (
+        await prisma.department.findFirst({
+          where: { companyId: existing.companyId, slug: nextSlug, id: { not: departmentId } },
+        })
+      ) {
         nextSlug = `${baseSlug}-${suffix++}`;
       }
     }
@@ -918,7 +1056,9 @@ class DepartmentService {
       where: { id: departmentId },
       data: {
         ...(nextName ? { name: nextName, slug: nextSlug } : {}),
-        ...(input.description !== undefined ? { description: input.description?.trim() || null } : {}),
+        ...(input.description !== undefined
+          ? { description: input.description?.trim() || null }
+          : {}),
         ...(input.status ? { status: input.status } : {}),
       },
     });
@@ -948,17 +1088,24 @@ class DepartmentService {
     };
   }
 
-  async updateDepartmentConfig(session: DepartmentAdminSession, departmentId: string, input: {
-    systemPrompt: string;
-    skillsMarkdown: string;
-    isActive?: boolean;
-  }) {
-    await this.assertDepartmentAccess(session, departmentId);
+  async updateDepartmentConfig(
+    session: DepartmentAdminSession,
+    departmentId: string,
+    input: {
+      systemPrompt: string;
+      skillsMarkdown: string;
+      zohoRateLimit?: ZohoRateLimitConfig;
+      isActive?: boolean;
+    },
+  ) {
+    const department = await this.assertDepartmentAccess(session, departmentId);
+    const normalizedZohoRateLimit = normalizeZohoRateLimitConfig(input.zohoRateLimit);
     const updated = await prisma.departmentAgentConfig.upsert({
       where: { departmentId },
       update: {
         systemPrompt: input.systemPrompt,
         skillsMarkdown: input.skillsMarkdown,
+        zohoRateLimitJson: normalizedZohoRateLimit,
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
         updatedBy: session.userId,
       },
@@ -966,26 +1113,33 @@ class DepartmentService {
         departmentId,
         systemPrompt: input.systemPrompt,
         skillsMarkdown: input.skillsMarkdown,
+        zohoRateLimitJson: normalizedZohoRateLimit,
         isActive: input.isActive ?? true,
         createdBy: session.userId,
         updatedBy: session.userId,
       },
     });
+    await departmentRuntimeCache.invalidateDepartment(department.companyId, departmentId);
 
     return {
       departmentId,
       systemPrompt: updated.systemPrompt,
       skillsMarkdown: updated.skillsMarkdown,
+      zohoRateLimit: normalizeZohoRateLimitConfig(updated.zohoRateLimitJson),
       isActive: updated.isActive,
       updatedAt: updated.updatedAt.toISOString(),
     };
   }
 
-  async createDepartmentRole(session: DepartmentAdminSession, departmentId: string, input: {
-    name: string;
-    slug: string;
-    zohoReadScope?: DepartmentZohoReadScope;
-  }) {
+  async createDepartmentRole(
+    session: DepartmentAdminSession,
+    departmentId: string,
+    input: {
+      name: string;
+      slug: string;
+      zohoReadScope?: DepartmentZohoReadScope;
+    },
+  ) {
     await this.assertDepartmentAccess(session, departmentId);
     const slug = normalizeRoleSlug(input.slug);
     if (!slug || slug === 'MANAGER' || slug === 'MEMBER') {
@@ -1009,7 +1163,12 @@ class DepartmentService {
     };
   }
 
-  async updateDepartmentRole(session: DepartmentAdminSession, departmentId: string, roleId: string, input: { name: string }) {
+  async updateDepartmentRole(
+    session: DepartmentAdminSession,
+    departmentId: string,
+    roleId: string,
+    input: { name: string },
+  ) {
     await this.assertDepartmentAccess(session, departmentId);
     const existing = await prisma.departmentRole.findFirst({
       where: { id: roleId, departmentId },
@@ -1066,6 +1225,10 @@ class DepartmentService {
         },
       });
     });
+    await departmentRuntimeCache.invalidateDepartment(
+      await this.resolveDepartmentCompanyId(departmentId, session.companyId),
+      departmentId,
+    );
 
     return {
       id: updated.id,
@@ -1076,7 +1239,11 @@ class DepartmentService {
     };
   }
 
-  async deleteDepartmentRole(session: DepartmentAdminSession, departmentId: string, roleId: string) {
+  async deleteDepartmentRole(
+    session: DepartmentAdminSession,
+    departmentId: string,
+    roleId: string,
+  ) {
     await this.assertDepartmentAccess(session, departmentId);
     const existing = await prisma.departmentRole.findFirst({
       where: { id: roleId, departmentId },
@@ -1090,7 +1257,9 @@ class DepartmentService {
     if (existing.isDefault) {
       throw new HttpException(409, 'Choose a different default role before deleting this one.');
     }
-    const membershipCount = await prisma.departmentMembership.count({ where: { roleId, status: 'active' } });
+    const membershipCount = await prisma.departmentMembership.count({
+      where: { roleId, status: 'active' },
+    });
     if (membershipCount > 0) {
       throw new HttpException(409, 'Move members off this role before deleting it.');
     }
@@ -1098,12 +1267,16 @@ class DepartmentService {
     return { deleted: true };
   }
 
-  async upsertDepartmentMembership(session: DepartmentAdminSession, departmentId: string, input: {
-    userId?: string;
-    channelIdentityId?: string;
-    roleId?: string;
-    status?: string;
-  }) {
+  async upsertDepartmentMembership(
+    session: DepartmentAdminSession,
+    departmentId: string,
+    input: {
+      userId?: string;
+      channelIdentityId?: string;
+      roleId?: string;
+      status?: string;
+    },
+  ) {
     const department = await this.assertDepartmentAccess(session, departmentId);
     let resolvedUserId = input.userId;
     if (!resolvedUserId && input.channelIdentityId) {
@@ -1128,14 +1301,17 @@ class DepartmentService {
     }
     const role = input.roleId
       ? await prisma.departmentRole.findFirst({
-        where: { id: input.roleId, departmentId },
-      })
+          where: { id: input.roleId, departmentId },
+        })
       : await prisma.departmentRole.findFirst({
-        where: { departmentId, isDefault: true },
-        orderBy: [{ updatedAt: 'desc' }],
-      });
+          where: { departmentId, isDefault: true },
+          orderBy: [{ updatedAt: 'desc' }],
+        });
     if (!role) {
-      throw new HttpException(404, 'Department role not found. Configure a default department role first.');
+      throw new HttpException(
+        404,
+        'Department role not found. Configure a default department role first.',
+      );
     }
 
     const membership = await prisma.departmentMembership.upsert({
@@ -1166,6 +1342,7 @@ class DepartmentService {
         role: true,
       },
     });
+    await departmentRuntimeCache.invalidateDepartment(department.companyId, departmentId);
 
     return {
       id: membership.id,
@@ -1179,8 +1356,12 @@ class DepartmentService {
     };
   }
 
-  async removeDepartmentMembership(session: DepartmentAdminSession, departmentId: string, userId: string) {
-    await this.assertDepartmentAccess(session, departmentId);
+  async removeDepartmentMembership(
+    session: DepartmentAdminSession,
+    departmentId: string,
+    userId: string,
+  ) {
+    const department = await this.assertDepartmentAccess(session, departmentId);
     await prisma.departmentMembership.delete({
       where: {
         departmentId_userId: {
@@ -1189,6 +1370,7 @@ class DepartmentService {
         },
       },
     });
+    await departmentRuntimeCache.invalidateDepartment(department.companyId, departmentId);
     return { deleted: true };
   }
 
@@ -1211,7 +1393,10 @@ class DepartmentService {
       throw new HttpException(404, 'Unknown or unsupported tool.');
     }
     const normalizedActionGroup = actionGroup.trim().toLowerCase();
-    if (normalizedActionGroup !== ACTION_GROUP_ALL && !getSupportedToolActionGroups(toolId).includes(normalizedActionGroup as ToolActionGroup)) {
+    if (
+      normalizedActionGroup !== ACTION_GROUP_ALL &&
+      !getSupportedToolActionGroups(toolId).includes(normalizedActionGroup as ToolActionGroup)
+    ) {
       throw new HttpException(400, 'Unsupported action group for this tool.');
     }
     const row = await prisma.departmentToolPermission.upsert({
@@ -1262,7 +1447,10 @@ class DepartmentService {
       throw new HttpException(404, 'Unknown or unsupported tool.');
     }
     const normalizedActionGroup = actionGroup.trim().toLowerCase();
-    if (normalizedActionGroup !== ACTION_GROUP_ALL && !getSupportedToolActionGroups(toolId).includes(normalizedActionGroup as ToolActionGroup)) {
+    if (
+      normalizedActionGroup !== ACTION_GROUP_ALL &&
+      !getSupportedToolActionGroups(toolId).includes(normalizedActionGroup as ToolActionGroup)
+    ) {
       throw new HttpException(400, 'Unsupported action group for this tool.');
     }
     const row = await prisma.departmentUserToolOverride.upsert({

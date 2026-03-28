@@ -28,6 +28,22 @@ const updateDepartmentSchema = z.object({
 const updateDepartmentConfigSchema = z.object({
   systemPrompt: z.string().max(20000),
   skillsMarkdown: z.string().max(40000),
+  zohoRateLimit: z
+    .object({
+      enabled: z.boolean(),
+      windowSeconds: z.number().int().min(10).max(86400),
+      totalCallsPerWindow: z.number().int().min(1).max(100000),
+      roleBudgets: z.record(z.string(), z.number().int().min(1).max(100000)),
+      userOverrides: z
+        .array(
+          z.object({
+            userId: z.string().uuid(),
+            maxCallsPerWindow: z.number().int().min(1).max(100000),
+          }),
+        )
+        .max(500),
+    })
+    .optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -89,7 +105,10 @@ class AdminDepartmentsController extends BaseController {
 
   detail = async (req: Request, res: Response) => {
     const session = this.readSession(req);
-    const result = await departmentService.getAdminDepartmentDetail(session, req.params.departmentId);
+    const result = await departmentService.getAdminDepartmentDetail(
+      session,
+      req.params.departmentId,
+    );
     return res.json(ApiResponse.success(result, 'Department detail loaded'));
   };
 
@@ -103,7 +122,11 @@ class AdminDepartmentsController extends BaseController {
   update = async (req: Request, res: Response) => {
     const session = this.readSession(req);
     const payload = updateDepartmentSchema.parse(req.body);
-    const result = await departmentService.updateDepartment(session, req.params.departmentId, payload);
+    const result = await departmentService.updateDepartment(
+      session,
+      req.params.departmentId,
+      payload,
+    );
     return res.json(ApiResponse.success(result, 'Department updated'));
   };
 
@@ -116,14 +139,22 @@ class AdminDepartmentsController extends BaseController {
   updateConfig = async (req: Request, res: Response) => {
     const session = this.readSession(req);
     const payload = updateDepartmentConfigSchema.parse(req.body);
-    const result = await departmentService.updateDepartmentConfig(session, req.params.departmentId, payload);
+    const result = await departmentService.updateDepartmentConfig(
+      session,
+      req.params.departmentId,
+      payload,
+    );
     return res.json(ApiResponse.success(result, 'Department configuration updated'));
   };
 
   createRole = async (req: Request, res: Response) => {
     const session = this.readSession(req);
     const payload = createRoleSchema.parse(req.body);
-    const result = await departmentService.createDepartmentRole(session, req.params.departmentId, payload);
+    const result = await departmentService.createDepartmentRole(
+      session,
+      req.params.departmentId,
+      payload,
+    );
     return res.status(201).json(ApiResponse.success(result, 'Department role created'));
   };
 
@@ -152,14 +183,22 @@ class AdminDepartmentsController extends BaseController {
   upsertMembership = async (req: Request, res: Response) => {
     const session = this.readSession(req);
     const payload = upsertMembershipSchema.parse(req.body);
-    const result = await departmentService.upsertDepartmentMembership(session, req.params.departmentId, payload);
+    const result = await departmentService.upsertDepartmentMembership(
+      session,
+      req.params.departmentId,
+      payload,
+    );
     return res.json(ApiResponse.success(result, 'Department membership saved'));
   };
 
   searchCandidates = async (req: Request, res: Response) => {
     const session = this.readSession(req);
     const query = searchCandidatesQuerySchema.parse(req.query);
-    const result = await departmentService.searchDepartmentCandidates(session, req.params.departmentId, query.query);
+    const result = await departmentService.searchDepartmentCandidates(
+      session,
+      req.params.departmentId,
+      query.query,
+    );
     return res.json(ApiResponse.success(result, 'Department candidates loaded'));
   };
 
@@ -204,7 +243,11 @@ class AdminDepartmentsController extends BaseController {
   createSkill = async (req: Request, res: Response) => {
     const session = this.readSession(req);
     const payload = upsertSkillSchema.parse(req.body);
-    const result = await skillService.createDepartmentSkill(session, req.params.departmentId, payload);
+    const result = await skillService.createDepartmentSkill(
+      session,
+      req.params.departmentId,
+      payload,
+    );
     return res.status(201).json(ApiResponse.success(result, 'Department skill created'));
   };
 
