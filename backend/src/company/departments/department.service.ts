@@ -1,7 +1,11 @@
 import { HttpException } from '../../core/http-exception';
 import { prisma } from '../../utils/prisma';
 import { TOOL_REGISTRY } from '../tools/tool-registry';
-import { getSupportedToolActionGroups, type ToolActionGroup } from '../tools/tool-action-groups';
+import {
+  getSupportedToolActionGroups,
+  isSupportedToolActionGroup,
+  type ToolActionGroup,
+} from '../tools/tool-action-groups';
 import { hashPassword } from '../../utils/bcrypt';
 import crypto from 'crypto';
 import { skillService } from '../skills/skill.service';
