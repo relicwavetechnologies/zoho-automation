@@ -32,7 +32,11 @@ const inferSourceFamilyFromCitation = (
 ): GroundedEvidenceSourceFamily => {
   const sourceType = readString(citation?.sourceType);
   if (sourceType?.startsWith('zoho_') || toolName === 'zoho') return 'zoho';
-  if (sourceType === 'file_document' || toolName === 'docSearch' || toolName === 'documentOcrRead') return 'file';
+  if (
+    sourceType === 'file_document'
+    || toolName === 'contextSearch'
+    || toolName === 'documentOcrRead'
+  ) return 'file';
   if (sourceType === 'chat_turn') return 'chat';
   if (toolName === 'skillSearch') return 'skill';
   if (toolName === 'webSearch' || sourceType === 'web') return 'web';
@@ -63,7 +67,7 @@ export class RetrievalOrchestratorService {
 
     for (const step of plan.steps) {
       if (step.need === 'attachment_exact') {
-        pushUnique(toolFamilies, 'docSearch');
+        pushUnique(toolFamilies, 'contextSearch');
         pushUnique(toolFamilies, 'documentOcrRead');
         systemDirectives.push(
           'Attachment-aware retrieval is active. Ground the answer in the attached/uploaded file context before broader company retrieval.',
@@ -71,15 +75,15 @@ export class RetrievalOrchestratorService {
       }
 
       if (step.need === 'company_docs') {
-        pushUnique(toolFamilies, 'docSearch');
+        pushUnique(toolFamilies, 'contextSearch');
         pushUnique(toolFamilies, 'documentOcrRead');
         if (step.strategy === 'doc_full_read') {
           systemDirectives.push(
-            'For exact policy wording, clauses, definitions, or exceptions, search internal documents first, then use document OCR/full extraction on the most relevant file.',
+            'For exact policy wording, clauses, definitions, or exceptions, use contextSearch first and then document OCR/full extraction on the most relevant file.',
           );
         } else {
           systemDirectives.push(
-            'Use indexed internal document retrieval first. Use OCR/direct file extraction only when chunk retrieval is insufficient.',
+            'Use contextSearch first for indexed internal retrieval. Use OCR/direct file extraction only when chunk retrieval is insufficient.',
           );
         }
       }
@@ -101,7 +105,7 @@ export class RetrievalOrchestratorService {
         pushUnique(toolFamilies, 'invoiceParser');
         pushUnique(toolFamilies, 'statementParser');
         pushUnique(toolFamilies, 'documentOcrRead');
-        pushUnique(toolFamilies, 'docSearch');
+        pushUnique(toolFamilies, 'contextSearch');
         systemDirectives.push(
           'Prefer structured parsers for invoice, statement, balance, and transaction questions. Use document retrieval only to supplement missing parsed fields or explain surrounding context.',
         );

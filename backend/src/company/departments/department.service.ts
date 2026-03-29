@@ -73,7 +73,13 @@ export type DepartmentApproverTarget = {
   source: 'department_manager' | 'company_admin';
 };
 
-const DEFAULT_MEMBER_TOOL_IDS = new Set(['search-read', 'search-agent', 'skill-search']);
+const DEFAULT_MEMBER_TOOL_IDS = new Set([
+  'search-read',
+  'search-agent',
+  'skill-search',
+  'context-search',
+  'document-ocr-read',
+]);
 
 const normalizeSlug = (value: string): string =>
   value

@@ -10,7 +10,7 @@ import type { GraphToolResult } from './runtime.tool-contract';
 
 export type GraphToolFamily =
   | 'webSearch'
-  | 'docSearch'
+  | 'contextSearch'
   | 'documentOcrRead'
   | 'invoiceParser'
   | 'statementParser'
@@ -33,7 +33,7 @@ export type GraphToolFamily =
 
 export const GRAPH_TOOL_FAMILY_NAMES = [
   'webSearch',
-  'docSearch',
+  'contextSearch',
   'documentOcrRead',
   'invoiceParser',
   'statementParser',
@@ -60,7 +60,7 @@ export const isGraphToolFamilyName = (value: string): value is GraphToolFamily =
 
 export const GRAPH_TOOL_FAMILY_MAP: Record<GraphToolFamily, string[]> = {
   webSearch: ['search-read', 'search-agent'],
-  docSearch: ['search-documents'],
+  contextSearch: ['context-search'],
   documentOcrRead: ['document-ocr-read'],
   invoiceParser: ['invoice-parser'],
   statementParser: ['statement-parser'],

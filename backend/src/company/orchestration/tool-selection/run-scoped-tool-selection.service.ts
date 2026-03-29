@@ -43,7 +43,7 @@ const plannerDecisionSchema = z.object({
   clarificationQuestion: z.string().max(300).optional(),
 });
 
-const GLOBAL_ALWAYS_ON_IDS = ['skill-search'] as const;
+const GLOBAL_ALWAYS_ON_IDS = ['skill-search', 'context-search'] as const;
 const WORKSPACE_GLOBAL_IDS = ['coding'] as const;
 const ARTIFACT_GLOBAL_IDS = ['document-ocr-read'] as const;
 
@@ -126,6 +126,19 @@ const isVisualInspectionRequest = (message: string): boolean =>
 const requiresExplicitExtraction = (message: string): boolean =>
   /\b(ocr|extract text|exact text|read the text|what does it say|copy the text|transcribe|verbatim|all the text|full text)\b/.test(asLower(message));
 
+const requiresContextSearch = (message: string): boolean => {
+  const text = asLower(message);
+  if (/\b(context search|search history|search memory|conversation history|past chats?|past files?)\b/.test(text)) {
+    return true;
+  }
+  if (/\b(remember|previous|before|last time|we talked about|we discussed|that file|that document|that csv|earlier)\b/.test(text)) {
+    return true;
+  }
+  return /\b(csv|spreadsheet|sheet|file|files|document|documents|pdf|uploaded|assignment)\b/.test(text)
+    && /\b(search|find|look up|look in|what did you find|history|memory|discussed|earlier|before)\b/.test(text)
+    && !requiresExplicitExtraction(text);
+};
+
 const canAnswerFromGroundedContext = (input: {
   artifactMode?: ArtifactMode;
   hasActiveArtifacts: boolean;
@@ -168,6 +181,12 @@ const buildPrimaryBundle = (input: {
   const suggestedAllowedToolIds = chooseSuggestedAllowed(input.allowed, input.childRoute?.suggestedToolIds);
   if (isAffirmationFollowUp(input.latestUserMessage) && suggestedAllowedToolIds.length > 0) {
     return suggestedAllowedToolIds.slice(0, 3);
+  }
+  if (requiresExplicitExtraction(input.latestUserMessage)) {
+    return chooseFirstAllowed(input.allowed, ['document-ocr-read']);
+  }
+  if (requiresContextSearch(input.latestUserMessage)) {
+    return chooseFirstAllowed(input.allowed, ['context-search']);
   }
   switch (input.domain) {
     case 'zoho_books':
@@ -257,16 +276,15 @@ const buildPrimaryBundle = (input: {
         ...chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent']),
         ...chooseFirstAllowed(input.allowed, ['lark-task-read', 'lark-task-agent']),
       ]).slice(0, 3);
+    case 'context_search':
+      return chooseFirstAllowed(input.allowed, ['context-search']);
     case 'workspace':
       return chooseFirstAllowed(input.allowed, ['coding']);
     case 'document_inspection':
       if (input.allowContextOnlyAnswer) {
         return [];
       }
-      return uniq([
-        ...chooseFirstAllowed(input.allowed, ['document-ocr-read']),
-        ...(input.hasArtifacts ? chooseFirstAllowed(input.allowed, ['search-documents']) : []),
-      ]);
+      return chooseFirstAllowed(input.allowed, ['document-ocr-read']);
     case 'web_search':
       return chooseFirstAllowed(input.allowed, ['search-read', 'search-agent']);
     default:
@@ -285,14 +303,17 @@ const buildFallbackBundle = (input: {
   const skipArtifactInspectionTools = Boolean(input.allowContextOnlyAnswer);
   if (input.domain === 'unknown') {
     return uniq([
-      ...(input.hasArtifacts && !skipArtifactInspectionTools
-        ? chooseFirstAllowed(input.allowed, ['document-ocr-read', 'search-documents'])
+      ...(requiresContextSearch(input.latestUserMessage)
+        ? chooseFirstAllowed(input.allowed, ['context-search'])
+        : []),
+      ...(input.hasArtifacts && !skipArtifactInspectionTools && requiresExplicitExtraction(input.latestUserMessage)
+        ? chooseFirstAllowed(input.allowed, ['document-ocr-read'])
         : []),
       ...chooseFirstAllowed(input.allowed, ['search-read', 'search-agent']),
     ]).slice(0, 2);
   }
   if (input.domain === 'document_inspection' && !skipArtifactInspectionTools) {
-    return chooseFirstAllowed(input.allowed, ['search-documents']);
+    return chooseFirstAllowed(input.allowed, ['document-ocr-read']);
   }
   return [];
 };
@@ -338,7 +359,7 @@ const buildPlannerPrompt = (input: {
     ? 'If current grounded artifacts already provide multimodal image context for this request, set "answerFromContextOnly": true and do not choose document-ocr-read. Use OCR only when the user explicitly asked for exact extracted text.'
     : (input.artifactMode ?? 'none') === 'image_only'
       ? 'If active artifacts are images and the user asks what they show, prefer answering from multimodal image context. Do not choose document-ocr-read unless the user explicitly asked for exact extracted text.'
-    : 'If the user asks what is in an image, message, button, or attachment, prefer document inspection tools.',
+      : 'For internal retrieval, prefer context-search. Use document-ocr-read only for exact extraction or OCR.',
 ].filter(Boolean).join('\n');
 
 const validatePlannerDecision = (input: {

@@ -121,6 +121,20 @@ const detectOperationClass = (message: string): ToolRoutingOperationClass => {
   return 'read';
 };
 
+const hasExactExtractionIntent = (text: string): boolean =>
+  /\b(ocr|extract text|exact text|read the text|what does it say|copy the text|transcribe|verbatim|all the text|full text)\b/.test(text);
+
+const hasContextSearchIntent = (text: string): boolean => {
+  if (/\b(context search|search history|search memory|conversation history|past chats?|past files?)\b/.test(text)) {
+    return true;
+  }
+  if (/\b(remember|previous|before|last time|we talked about|we discussed|that file|that document|that csv|earlier)\b/.test(text)) {
+    return true;
+  }
+  return /\b(csv|spreadsheet|sheet|file|files|document|documents|pdf|uploaded|assignment)\b/.test(text)
+    && /\b(search|find|look up|look in|what did you find|history|memory|discussed|earlier|before)\b/.test(text);
+};
+
 const detectScopeHint = (message: string): ToolRoutingScopeHint => {
   const text = normalizePhrase(message);
   if (/\b(my|mine|me)\b/.test(text)) return 'self';
@@ -134,6 +148,9 @@ const detectDomain = (text: string, hasWorkspace: boolean, hasArtifacts: boolean
   }
   if (/\b(lead|contact|deal|case|zoho crm|crm)\b/.test(text)) {
     return 'zoho_crm';
+  }
+  if (!hasExactExtractionIntent(text) && hasContextSearchIntent(text)) {
+    return 'context_search';
   }
   if (/\b(gmail|inbox|draft email|send by gmail|mail via gmail)\b/.test(text)) {
     return 'gmail';
@@ -194,6 +211,8 @@ const detectEntity = (domain: ToolRoutingDomain, text: string): string => {
       if (/\bdeal\b/.test(text)) return 'deals';
       if (/\bcase\b/.test(text)) return 'cases';
       return 'records';
+    case 'context_search':
+      return 'retrieval';
     case 'lark_base':
       if (/\bfield\b/.test(text)) return 'fields';
       if (/\bview\b/.test(text)) return 'views';
@@ -312,6 +331,7 @@ const deriveToolFamily = (toolId: string): string => {
   if (toolId.startsWith('workflow-authoring')) return 'workflow';
   if (toolId.startsWith('search-read') || toolId.startsWith('search-agent')) return 'web_search';
   if (toolId.startsWith('search-documents')) return 'document_search';
+  if (toolId.startsWith('context-search')) return 'context_search';
   if (toolId.startsWith('coding')) return 'workspace';
   if (toolId.startsWith('repo')) return 'repo';
   return toolId;
@@ -320,7 +340,7 @@ const deriveToolFamily = (toolId: string): string => {
 const isGenericHelperTool = (toolId: string): boolean =>
   toolId === 'skill-search'
   || toolId === 'document-ocr-read'
-  || toolId === 'search-documents'
+  || toolId === 'context-search'
   || toolId === 'search-read'
   || toolId === 'search-agent';
 
@@ -345,7 +365,7 @@ const EXECUTION_TOOL_ID_CANDIDATES: Record<string, string[]> = {
   repo: ['repo'],
   coding: ['coding'],
   webSearch: ['search-read', 'search-agent'],
-  docSearch: ['search-documents'],
+  contextSearch: ['context-search'],
   larkTask: ['lark-task-read', 'lark-task-write', 'lark-task-agent'],
   larkMessage: ['lark-message-read', 'lark-message-write'],
   larkCalendar: ['lark-calendar-list', 'lark-calendar-read', 'lark-calendar-write', 'lark-calendar-agent'],
@@ -374,7 +394,7 @@ const EXECUTION_TOOL_OPERATION: Partial<Record<string, ToolRoutingOperationClass
   repo: 'read',
   coding: 'write',
   webSearch: 'search',
-  docSearch: 'search',
+  contextSearch: 'search',
   larkTask: 'write',
   larkMessage: 'send',
   larkCalendar: 'schedule',

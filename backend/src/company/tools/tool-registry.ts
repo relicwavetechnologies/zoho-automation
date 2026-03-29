@@ -177,7 +177,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: 'search-agent',
     name: 'Search Agent',
-    description: 'Delegate to the research agent for external web research, exact-site page context, and internal document retrieval.',
+    description: 'Delegate to the research agent for external web research and exact-site page context.',
     category: 'search',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
@@ -191,9 +191,9 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   },
   {
-    id: 'search-documents',
-    name: 'Search Documents',
-    description: 'Search uploaded company documents and private knowledge chunks that the requester is authorized to access.',
+    id: 'context-search',
+    name: 'Context Search',
+    description: 'Search personal conversation history, uploaded documents, and Zoho CRM context through one unified retrieval interface.',
     category: 'search',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },

@@ -126,6 +126,102 @@ class VectorDocumentRepository {
       orderBy: [{ chunkIndex: 'asc' }, { createdAt: 'asc' }],
     });
   }
+
+  async fetchChunkByKey(input: {
+    companyId: string;
+    sourceType: string;
+    sourceId: string;
+    chunkIndex: number;
+  }): Promise<{
+    text: string | null;
+    createdAt?: Date | null;
+    sourceUpdatedAt?: Date | null;
+    payload?: Record<string, unknown> | null;
+  }> {
+    const row = await prisma.vectorDocument.findFirst({
+      where: {
+        companyId: input.companyId,
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        chunkIndex: input.chunkIndex,
+      },
+      select: {
+        chunkText: true,
+        payload: true,
+        createdAt: true,
+        sourceUpdatedAt: true,
+      },
+    });
+
+    const payload = row?.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+      ? row.payload as Record<string, unknown>
+      : null;
+    const payloadText = typeof payload?._chunk === 'string'
+      ? payload._chunk
+      : typeof payload?.text === 'string'
+        ? payload.text
+        : typeof payload?.chunkText === 'string'
+          ? payload.chunkText
+          : null;
+
+    return {
+      text: row?.chunkText ?? payloadText ?? null,
+      createdAt: row?.createdAt ?? null,
+      sourceUpdatedAt: row?.sourceUpdatedAt ?? null,
+      payload,
+    };
+  }
+
+  async findChunkByText(input: {
+    companyId: string;
+    sourceType: string;
+    sourceId: string;
+    chunkText: string;
+  }): Promise<{
+    chunkIndex: number;
+    text: string | null;
+    createdAt?: Date | null;
+    sourceUpdatedAt?: Date | null;
+    payload?: Record<string, unknown> | null;
+  } | null> {
+    const normalizedText = input.chunkText.trim();
+    if (!normalizedText) {
+      return null;
+    }
+
+    const row = await prisma.vectorDocument.findFirst({
+      where: {
+        companyId: input.companyId,
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        chunkText: normalizedText,
+      },
+      select: {
+        chunkIndex: true,
+        chunkText: true,
+        payload: true,
+        createdAt: true,
+        sourceUpdatedAt: true,
+      },
+      orderBy: [{ chunkIndex: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    if (!row) {
+      return null;
+    }
+
+    const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+      ? row.payload as Record<string, unknown>
+      : null;
+
+    return {
+      chunkIndex: row.chunkIndex,
+      text: row.chunkText,
+      createdAt: row.createdAt,
+      sourceUpdatedAt: row.sourceUpdatedAt,
+      payload,
+    };
+  }
 }
 
 export const vectorDocumentRepository = new VectorDocumentRepository();

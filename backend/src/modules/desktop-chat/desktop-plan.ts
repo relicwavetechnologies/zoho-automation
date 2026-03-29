@@ -207,7 +207,11 @@ export const resolvePlanOwnerFromToolName = (toolName?: string | null): Executio
   if (normalized === 'outreach-agent' || normalized === 'read-outreach-publishers') {
     return 'outreach';
   }
-  if (normalized === 'search-agent' || normalized === 'search-read' || normalized === 'search-documents') {
+  if (
+    normalized === 'search-agent'
+    || normalized === 'search-read'
+    || normalized === 'context-search'
+  ) {
     return 'search';
   }
   if (normalized === 'lark-base-agent' || normalized === 'lark-base-read' || normalized === 'lark-base-write') {

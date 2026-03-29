@@ -306,6 +306,42 @@ const loadFileRetrievalService = (): {
   }) => Promise<string>;
 } => loadModuleExport('../../retrieval/file-retrieval.service', 'fileRetrievalService');
 
+const loadPersonalVectorMemoryService = (): {
+  query: (input: {
+    companyId: string;
+    requesterUserId: string;
+    text: string;
+    limit?: number;
+    conversationKey?: string;
+  }) => Promise<Array<Record<string, unknown>>>;
+} => loadModuleExport('../../integrations/vector/personal-vector-memory.service', 'personalVectorMemoryService');
+
+const loadVectorDocumentRepository = (): {
+  fetchChunkByKey: (input: {
+    companyId: string;
+    sourceType: string;
+    sourceId: string;
+    chunkIndex: number;
+  }) => Promise<{
+    text: string | null;
+    createdAt?: Date | null;
+    sourceUpdatedAt?: Date | null;
+    payload?: Record<string, unknown> | null;
+  }>;
+  findChunkByText: (input: {
+    companyId: string;
+    sourceType: string;
+    sourceId: string;
+    chunkText: string;
+  }) => Promise<{
+    chunkIndex: number;
+    text: string | null;
+    createdAt?: Date | null;
+    sourceUpdatedAt?: Date | null;
+    payload?: Record<string, unknown> | null;
+  } | null>;
+} => loadModuleExport('../../integrations/vector/vector-document.repository', 'vectorDocumentRepository');
+
 const loadZohoReadAgent = (): {
   invoke: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
 } => new (loadModuleExport('../../agents/implementations/zoho-read.agent', 'ZohoReadAgent'))();
@@ -1008,6 +1044,126 @@ const uniqueDefinedStrings = (values: Array<string | undefined>): string[] =>
       ),
     ),
   );
+
+const CONTEXT_SEARCH_SCOPE_VALUES = ['personal_history', 'files', 'zoho_crm', 'all'] as const;
+const CONTEXT_SEARCH_FETCH_SCOPES = ['personal_history', 'files', 'zoho_crm'] as const;
+type ContextSearchScope = (typeof CONTEXT_SEARCH_FETCH_SCOPES)[number];
+
+type ContextSearchNormalizedHit = {
+  scope: ContextSearchScope;
+  sourceType: string;
+  sourceId: string;
+  chunkIndex: number;
+  score: number;
+  text: string;
+  fileName?: string;
+  documentClass?: string;
+  role?: string;
+  conversationKey?: string;
+  createdAt?: string;
+  sourceLabel?: string;
+};
+
+const formatContextSearchDate = (value?: string): string => {
+  if (!value) return 'unknown date';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return 'unknown date';
+  }
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  }).format(parsed);
+};
+
+const buildContextSearchSourceLabel = (hit: ContextSearchNormalizedHit): string => {
+  switch (hit.scope) {
+    case 'personal_history':
+      return `Your past conversation · ${formatContextSearchDate(hit.createdAt)}`;
+    case 'files':
+      return `${hit.fileName ?? 'Document'} · ${hit.documentClass ?? 'file'} · ${formatContextSearchDate(hit.createdAt)}`;
+    case 'zoho_crm':
+      return `Zoho CRM · ${hit.sourceType ?? 'record'} · ${formatContextSearchDate(hit.createdAt)}`;
+    default:
+      return `Unknown source · ${formatContextSearchDate(hit.createdAt)}`;
+  }
+};
+
+const parseContextSearchDate = (
+  value: string | undefined,
+  edge: 'start' | 'end',
+): Date | null => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return new Date(Number.NaN);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    if (edge === 'start') {
+      parsed.setUTCHours(0, 0, 0, 0);
+    } else {
+      parsed.setUTCHours(23, 59, 59, 999);
+    }
+  }
+  return parsed;
+};
+
+const extractContextSearchTimestamp = (input: {
+  createdAt?: Date | null;
+  sourceUpdatedAt?: Date | null;
+  payload?: Record<string, unknown> | null;
+}): string | undefined => {
+  if (input.sourceUpdatedAt instanceof Date && !Number.isNaN(input.sourceUpdatedAt.getTime())) {
+    return input.sourceUpdatedAt.toISOString();
+  }
+  const payloadSourceUpdatedAt = asString(input.payload?.sourceUpdatedAt);
+  if (payloadSourceUpdatedAt) {
+    const parsed = new Date(payloadSourceUpdatedAt);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  const payloadUpdatedAt = asString(input.payload?.updatedAt);
+  if (payloadUpdatedAt) {
+    const parsed = new Date(payloadUpdatedAt);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  if (input.createdAt instanceof Date && !Number.isNaN(input.createdAt.getTime())) {
+    return input.createdAt.toISOString();
+  }
+  return undefined;
+};
+
+const contextSearchDateMatches = (
+  timestampIso: string | undefined,
+  dateFrom: Date | null,
+  dateTo: Date | null,
+): boolean => {
+  if (!dateFrom && !dateTo) {
+    return true;
+  }
+  if (!timestampIso) {
+    return false;
+  }
+  const parsed = new Date(timestampIso);
+  if (Number.isNaN(parsed.getTime())) {
+    return false;
+  }
+  if (dateFrom && parsed < dateFrom) {
+    return false;
+  }
+  if (dateTo && parsed > dateTo) {
+    return false;
+  }
+  return true;
+};
 
 const buildWebCitations = (
   items: Array<Record<string, unknown>>,
@@ -2880,7 +3036,7 @@ const summarizeActionResult = (
 
 const VERCEL_TOOL_PERMISSION_IDS: Record<string, string[]> = {
   webSearch: ['search-read', 'search-agent'],
-  docSearch: ['search-documents'],
+  contextSearch: ['context-search'],
   documentOcrRead: ['document-ocr-read'],
   invoiceParser: ['invoice-parser'],
   statementParser: ['statement-parser'],
@@ -3112,6 +3268,344 @@ export const createVercelDesktopTools = (
               correctiveRetryUsed: searchResult.correctiveRetryUsed,
             },
             citations,
+          });
+        }),
+    }),
+
+    contextSearch: tool({
+      description:
+        'Search across personal conversation history, uploaded documents, and Zoho CRM context in one pass, then fetch full chunk content on demand using a chunkRef.',
+      inputSchema: z.object({
+        operation: z.enum(['search', 'fetch']),
+        query: z.string().optional(),
+        scopes: z.array(z.enum(CONTEXT_SEARCH_SCOPE_VALUES)).optional().default(['all']),
+        limit: z.number().int().min(1).max(10).optional().default(5),
+        dateFrom: z.string().optional(),
+        dateTo: z.string().optional(),
+        chunkRef: z.string().optional(),
+      }),
+      execute: async (input) =>
+        withLifecycle(hooks, 'contextSearch', 'Searching memory and context', async () => {
+          if (input.operation === 'fetch') {
+            const chunkRef = input.chunkRef?.trim();
+            if (!chunkRef) {
+              return buildEnvelope({
+                success: false,
+                summary: 'fetch requires chunkRef.',
+                errorKind: 'missing_input',
+                retryable: false,
+                missingFields: ['chunkRef'],
+                userAction: 'Use a chunkRef returned from a contextSearch search call.',
+              });
+            }
+
+            const parts = chunkRef.split(':');
+            if (parts.length !== 4) {
+              return buildEnvelope({
+                success: false,
+                summary: 'Invalid chunkRef format. Expected scope:sourceType:sourceId:chunkIndex.',
+                errorKind: 'validation',
+                retryable: false,
+                missingFields: ['chunkRef'],
+                userAction: 'Use a chunkRef returned from a contextSearch search call.',
+              });
+            }
+
+            const [scope, sourceType, sourceId, chunkIndexRaw] = parts;
+            const chunkIndex = Number.parseInt(chunkIndexRaw ?? '', 10);
+            if (
+              !CONTEXT_SEARCH_FETCH_SCOPES.includes(scope as ContextSearchScope)
+              || !sourceType?.trim()
+              || !sourceId?.trim()
+              || Number.isNaN(chunkIndex)
+            ) {
+              return buildEnvelope({
+                success: false,
+                summary: 'Invalid chunkRef format. Expected scope:sourceType:sourceId:chunkIndex.',
+                errorKind: 'validation',
+                retryable: false,
+                missingFields: ['chunkRef'],
+                userAction: 'Use a chunkRef returned from a contextSearch search call.',
+              });
+            }
+
+            let fullText = '';
+            if (scope === 'files') {
+              const context = await loadFileRetrievalService().readChunkContext({
+                companyId: runtime.companyId,
+                fileAssetId: sourceId.trim(),
+                chunkIndex,
+              });
+              fullText = context.text.trim();
+            } else {
+              const fetched = await loadVectorDocumentRepository().fetchChunkByKey({
+                companyId: runtime.companyId,
+                sourceType: sourceType.trim(),
+                sourceId: sourceId.trim(),
+                chunkIndex,
+              });
+              fullText = fetched.text?.trim() ?? '';
+            }
+
+            if (!fullText) {
+              return buildEnvelope({
+                success: false,
+                summary: `No content found for chunkRef: ${chunkRef}`,
+                errorKind: 'not_found',
+                retryable: false,
+                keyData: { resultCount: 0 },
+              });
+            }
+
+            return buildEnvelope({
+              success: true,
+              summary: `Full content retrieved for ${chunkRef}.`,
+              keyData: {
+                chunkRef,
+                scope,
+                sourceType: sourceType.trim(),
+                sourceId: sourceId.trim(),
+                chunkIndex,
+              },
+              fullPayload: {
+                text: fullText,
+              },
+            });
+          }
+
+          const query = input.query?.trim();
+          if (!query) {
+            return buildEnvelope({
+              success: false,
+              summary: 'search requires query.',
+              errorKind: 'missing_input',
+              retryable: false,
+              missingFields: ['query'],
+              userAction: 'Provide a natural-language query to search your history and context.',
+            });
+          }
+
+          const dateFrom = parseContextSearchDate(input.dateFrom, 'start');
+          const dateTo = parseContextSearchDate(input.dateTo, 'end');
+          if ((dateFrom && Number.isNaN(dateFrom.getTime())) || (dateTo && Number.isNaN(dateTo.getTime()))) {
+            return buildEnvelope({
+              success: false,
+              summary: 'dateFrom and dateTo must be valid ISO date strings.',
+              errorKind: 'validation',
+              retryable: false,
+              missingFields: [
+                ...(dateFrom && Number.isNaN(dateFrom.getTime()) ? ['dateFrom'] : []),
+                ...(dateTo && Number.isNaN(dateTo.getTime()) ? ['dateTo'] : []),
+              ],
+              userAction: 'Use ISO date strings like 2026-03-29 or 2026-03-29T17:30:00Z.',
+            });
+          }
+          if (dateFrom && dateTo && dateFrom > dateTo) {
+            return buildEnvelope({
+              success: false,
+              summary: 'dateFrom must be earlier than or equal to dateTo.',
+              errorKind: 'validation',
+              retryable: false,
+              missingFields: ['dateFrom', 'dateTo'],
+              userAction: 'Adjust the date range so the start is not after the end.',
+            });
+          }
+
+          const limit = Math.max(1, Math.min(10, input.limit ?? 5));
+          const requestedScopes = (input.scopes ?? ['all']).filter((scope) => scope !== 'all') as ContextSearchScope[];
+          const resolvedScopes = requestedScopes.length > 0
+            ? requestedScopes
+            : [...CONTEXT_SEARCH_FETCH_SCOPES];
+          const vectorRepository = loadVectorDocumentRepository();
+
+          const scopeResults = await Promise.allSettled(resolvedScopes.map(async (scope) => {
+            if (scope === 'personal_history') {
+              const matches = await loadPersonalVectorMemoryService().query({
+                companyId: runtime.companyId,
+                requesterUserId: runtime.userId,
+                text: query,
+                limit,
+              });
+              const normalized = await Promise.all(matches.map(async (match) => {
+                const sourceId = asString(asRecord(match)?.sourceId);
+                const text = asString(asRecord(match)?.content);
+                if (!sourceId || !text) {
+                  return null;
+                }
+                const chunk = await vectorRepository.findChunkByText({
+                  companyId: runtime.companyId,
+                  sourceType: 'chat_turn',
+                  sourceId,
+                  chunkText: text,
+                });
+                if (!chunk) {
+                  return null;
+                }
+                const createdAt = extractContextSearchTimestamp(chunk);
+                if (!contextSearchDateMatches(createdAt, dateFrom, dateTo)) {
+                  return null;
+                }
+                const normalizedHit: ContextSearchNormalizedHit = {
+                  scope,
+                  sourceType: 'chat_turn',
+                  sourceId,
+                  chunkIndex: chunk.chunkIndex,
+                  score: typeof asRecord(match)?.score === 'number' ? asRecord(match)?.score as number : 0,
+                  text,
+                  role: asString(asRecord(match)?.role),
+                  conversationKey: asString(asRecord(match)?.conversationKey),
+                  createdAt,
+                };
+                normalizedHit.sourceLabel = buildContextSearchSourceLabel(normalizedHit);
+                return normalizedHit;
+              }));
+              return normalized.filter((entry): entry is ContextSearchNormalizedHit => Boolean(entry));
+            }
+
+            if (scope === 'files') {
+              const searchResult = await loadFileRetrievalService().search({
+                companyId: runtime.companyId,
+                query,
+                limit,
+                requesterAiRole: runtime.requesterAiRole,
+                preferParentContext: true,
+              });
+              const normalized = await Promise.all(searchResult.matches.map(async (match) => {
+                const payload = asRecord(match) ?? {};
+                const sourceId = asString(payload.sourceId);
+                const chunkIndex = typeof payload.chunkIndex === 'number' ? payload.chunkIndex : undefined;
+                const text = asString(payload.displayText) ?? asString(payload.text);
+                if (!sourceId || chunkIndex === undefined || !text) {
+                  return null;
+                }
+                const chunk = await vectorRepository.fetchChunkByKey({
+                  companyId: runtime.companyId,
+                  sourceType: 'file_document',
+                  sourceId,
+                  chunkIndex,
+                });
+                const createdAt = extractContextSearchTimestamp(chunk);
+                if (!contextSearchDateMatches(createdAt, dateFrom, dateTo)) {
+                  return null;
+                }
+                const normalizedHit: ContextSearchNormalizedHit = {
+                  scope,
+                  sourceType: 'file_document',
+                  sourceId,
+                  chunkIndex,
+                  score: typeof payload.score === 'number' ? payload.score : 0,
+                  text,
+                  fileName: asString(payload.fileName),
+                  documentClass: asString(payload.documentClass),
+                  createdAt,
+                };
+                normalizedHit.sourceLabel = buildContextSearchSourceLabel(normalizedHit);
+                return normalizedHit;
+              }));
+              return normalized.filter((entry): entry is ContextSearchNormalizedHit => Boolean(entry));
+            }
+
+            const matches = await loadZohoRetrievalService().query({
+              companyId: runtime.companyId,
+              requesterUserId: runtime.userId,
+              requesterEmail: runtime.requesterEmail,
+              text: query,
+              limit,
+            });
+            const normalized = await Promise.all(matches.map(async (match) => {
+              const payload = asRecord(match) ?? {};
+              const sourceType = asString(payload.sourceType);
+              const sourceId = asString(payload.sourceId);
+              const chunkIndex = typeof payload.chunkIndex === 'number' ? payload.chunkIndex : undefined;
+              const recordPayload = asRecord(payload.payload);
+              const text = asString(recordPayload?._chunk) ?? asString(recordPayload?.text);
+              if (!sourceType || !sourceId || chunkIndex === undefined || !text) {
+                return null;
+              }
+              const chunk = await vectorRepository.fetchChunkByKey({
+                companyId: runtime.companyId,
+                sourceType,
+                sourceId,
+                chunkIndex,
+              });
+              const createdAt = extractContextSearchTimestamp(chunk);
+              if (!contextSearchDateMatches(createdAt, dateFrom, dateTo)) {
+                return null;
+              }
+              const normalizedHit: ContextSearchNormalizedHit = {
+                scope,
+                sourceType,
+                sourceId,
+                chunkIndex,
+                score: typeof payload.score === 'number' ? payload.score : 0,
+                text,
+                createdAt,
+              };
+              normalizedHit.sourceLabel = buildContextSearchSourceLabel(normalizedHit);
+              return normalizedHit;
+            }));
+            return normalized.filter((entry): entry is ContextSearchNormalizedHit => Boolean(entry));
+          }));
+
+          const hits: ContextSearchNormalizedHit[] = [];
+          const scopeErrors: Array<{ scope: ContextSearchScope; error: string }> = [];
+          scopeResults.forEach((result, index) => {
+            const scope = resolvedScopes[index]!;
+            if (result.status === 'fulfilled') {
+              hits.push(...result.value);
+              return;
+            }
+            const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+            logger.warn('context.search.scope_failed', {
+              companyId: runtime.companyId,
+              threadId: runtime.threadId,
+              scope,
+              error: message,
+            });
+            scopeErrors.push({ scope, error: message });
+          });
+
+          const topHits = hits
+            .sort((left, right) => right.score - left.score)
+            .slice(0, limit);
+
+          if (topHits.length === 0) {
+            return buildEnvelope({
+              success: true,
+              summary: `No relevant history or documents found for: "${query}"`,
+              keyData: {
+                resultCount: 0,
+                scopesQueried: resolvedScopes,
+              },
+              fullPayload: {
+                citations: [],
+                scopeErrors,
+              },
+            });
+          }
+
+          const citations = topHits.map((hit, index) => ({
+            index: index + 1,
+            chunkRef: `${hit.scope}:${hit.sourceType}:${hit.sourceId}:${hit.chunkIndex}`,
+            scope: hit.scope,
+            sourceType: hit.sourceType,
+            sourceLabel: hit.sourceLabel ?? buildContextSearchSourceLabel(hit),
+            asOf: hit.createdAt,
+            score: hit.score,
+            excerpt: hit.text.length > 280 ? `${hit.text.slice(0, 280)}...` : hit.text,
+          }));
+
+          return buildEnvelope({
+            success: true,
+            summary: `Found ${topHits.length} relevant references across ${resolvedScopes.join(', ')}.`,
+            keyData: {
+              resultCount: topHits.length,
+              scopesQueried: resolvedScopes,
+            },
+            fullPayload: {
+              citations,
+              scopeErrors,
+            },
           });
         }),
     }),

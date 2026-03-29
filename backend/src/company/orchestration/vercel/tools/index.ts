@@ -1,4 +1,5 @@
 import type { VercelRuntimeRequestContext, VercelRuntimeToolHooks } from '../types';
+import { buildContextSearchTools } from './families/context-search';
 import { buildDocumentTools } from './families/documents';
 import { buildGoogleTools } from './families/google';
 import { buildLarkCollabTools } from './families/lark-collab';
@@ -20,16 +21,17 @@ export const createVercelDesktopTools = (
 
   return {
     ...coreSearchTools,
+    ...buildContextSearchTools(runtime, hooks),
     ...buildDocumentTools(runtime, hooks),
     ...buildWorkflowAuthoringTools(runtime, hooks),
     ...(skillSearch ? { skillSearch } : {}),
-  ...buildRepoCodingTools(runtime, hooks),
-  ...buildGoogleTools(runtime, hooks),
-  ...buildZohoBooksTools(runtime, hooks),
-  ...buildLarkTaskTools(runtime, hooks),
-  ...buildLarkMessagingTools(runtime, hooks),
-  ...buildLarkCollabTools(runtime, hooks),
-  ...buildZohoCrmTools(runtime, hooks),
-  ...buildOutreachTools(runtime, hooks),
+    ...buildRepoCodingTools(runtime, hooks),
+    ...buildGoogleTools(runtime, hooks),
+    ...buildZohoBooksTools(runtime, hooks),
+    ...buildLarkTaskTools(runtime, hooks),
+    ...buildLarkMessagingTools(runtime, hooks),
+    ...buildLarkCollabTools(runtime, hooks),
+    ...buildZohoCrmTools(runtime, hooks),
+    ...buildOutreachTools(runtime, hooks),
   };
 };

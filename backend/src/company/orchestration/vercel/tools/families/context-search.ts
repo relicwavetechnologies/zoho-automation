@@ -1,10 +1,9 @@
 import type { VercelRuntimeRequestContext, VercelRuntimeToolHooks } from '../../types';
 import { getLegacyToolMap, pickTools } from '../shared/legacy-factory';
 
-export const buildSearchTools = (
+export const buildContextSearchTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
 ): Record<string, any> => pickTools(getLegacyToolMap(runtime, hooks), [
-  'webSearch',
-  'skillSearch',
+  'contextSearch',
 ]);

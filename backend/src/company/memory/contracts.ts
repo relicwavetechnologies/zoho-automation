@@ -54,6 +54,7 @@ export type UserBehaviorProfile = {
 export type ToolRoutingDomain =
   | 'zoho_books'
   | 'zoho_crm'
+  | 'context_search'
   | 'gmail'
   | 'google_drive'
   | 'google_calendar'

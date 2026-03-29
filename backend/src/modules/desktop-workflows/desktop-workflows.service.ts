@@ -305,8 +305,8 @@ const looksLikeReferenceRetrieval = (value: string | undefined): boolean => {
 
 const buildReferenceRetrievalInstructions = (referenceContext: string): string => [
   'Retrieve and read the referenced files or images before downstream work.',
-  'First try indexed company documents using search-documents when available.',
-  'If indexed retrieval is unavailable or insufficient, fall back to document-ocr-read.',
+  'First use contextSearch to retrieve indexed company documents and prior grounded context.',
+  'If chunk retrieval is unavailable or insufficient, fall back to document-ocr-read for exact extraction.',
   'Use the retrieved file contents as grounding context for all later steps.',
   '',
   'Referenced context:',
@@ -385,11 +385,11 @@ const buildToolFamilyGuide = (allowedToolIds: string[]): string =>
 
 const buildPlanningToolGuide = (allowedToolIds: string[]): string => {
   const lines: string[] = [];
-  if (allowedToolIds.includes('search-documents')) {
-    lines.push('- search-documents: search indexed company docs and uploaded file chunks first.');
+  if (allowedToolIds.includes('context-search')) {
+    lines.push('- context-search: search indexed company docs, prior conversations, and Zoho CRM context first.');
   }
   if (allowedToolIds.includes('document-ocr-read')) {
-    lines.push('- document-ocr-read: read the actual uploaded file directly when indexed retrieval is weak or insufficient.');
+    lines.push('- document-ocr-read: read the actual uploaded file directly when exact extraction or OCR is needed.');
   }
   if (allowedToolIds.includes('skill-search')) {
     lines.push('- skill-search: discover and read internal operating skills for ambiguous operational workflows.');
@@ -547,8 +547,8 @@ const buildCompilerPrompt = (input: {
     'Focus on: source retrieval, unit of work, execution policy, reporting, and delivery.',
     'Prefer explicit operational instructions over paraphrases.',
     'If referenced files exist, explain how runtime should retrieve them first.',
-    'For referenced files, prefer indexed company documents using search-documents first.',
-    'Use document-ocr-read only as fallback when indexed retrieval is unavailable or insufficient.',
+    'For referenced files, prefer contextSearch first for indexed retrieval and history recall.',
+    'Use document-ocr-read only as fallback when exact extraction is required or chunk retrieval is insufficient.',
     'For CSV or task-table jobs, describe the units of work as rows/tasks and the execution policy as sequential unless the user clearly asks for parallelism.',
     'If work items imply writes or sends, tell runtime to route each item to the appropriate approved tool family based on item content and to honor approvals when required.',
     'If the workflow must send Lark direct messages, populate notificationPlan with channel=lark_dm, the intended recipientQueries, and the exact messageTemplate to send. Recipient queries may include "me".',
@@ -606,7 +606,7 @@ const buildAuthoringPrompt = (input: {
     'Preserve the underlying job unless the latest user instruction clearly changes it.',
     'Carry forward source context, units of work, execution policy, and delivery expectations from the current workflow unless the user changes them.',
     'For referenced files, the blueprint must explicitly explain retrieval and extraction before downstream execution.',
-    'Prefer indexed company document retrieval with search-documents first, then OCR/document-read as fallback.',
+    'Prefer contextSearch first for indexed company retrieval, then document-ocr-read as fallback for exact extraction.',
     'For CSV or task-table workflows, keep the unit of work as rows/tasks and keep execution sequential unless the user says otherwise.',
     'Do not regress a file-backed operational workflow into generic analyze-only instructions.',
     'If the workflow should message teammates on Lark, preserve the notification plan with concrete recipient queries and a concrete message template.',
@@ -800,7 +800,7 @@ const buildHeuristicPlanningTurn = (input: {
     executionOrder: 'sequential',
     unitOfWork: fileBackedTaskList ? 'rows' : 'general',
     sourceSummary: input.referenceContext?.trim()
-      ? 'Use referenced uploaded/company files. Retrieve from indexed company docs first, then OCR/direct file read if needed.'
+      ? 'Use referenced uploaded/company files. Retrieve with contextSearch first, then OCR/direct file read only if exact extraction is needed.'
       : undefined,
     outputSummary: input.outputConfig.destinations.length > 0
       ? `Deliver to ${input.outputConfig.destinations.map((destination) => destination.label ?? destination.id).join(', ')}.`
@@ -843,22 +843,15 @@ const pickSearchCapability = (allowedToolIds: string[]) => {
       operation: 'search.agent.research',
     };
   }
-  if (allowedToolIds.includes('search-documents')) {
-    return {
-      toolId: 'search-documents',
-      actionGroup: 'read' as const,
-      operation: 'search.documents.context',
-    };
-  }
   return undefined;
 };
 
 const pickReferenceRetrievalCapability = (allowedToolIds: string[]) => {
-  if (allowedToolIds.includes('search-documents')) {
+  if (allowedToolIds.includes('context-search')) {
     return {
-      toolId: 'search-documents',
+      toolId: 'context-search',
       actionGroup: 'read' as const,
-      operation: 'search.documents.reference_context',
+      operation: 'context.search.reference_context',
     };
   }
   if (allowedToolIds.includes('document-ocr-read')) {
@@ -1231,7 +1224,7 @@ const buildPlanningSkillContext = async (input: {
     if (joined.includes('books')) families.push('booksRead', 'booksWrite');
     if (joined.includes('lark')) families.push('larkTask', 'larkCalendar', 'larkDoc', 'larkApproval');
     if (joined.includes('google')) families.push('googleDrive', 'googleCalendar', 'googleMail');
-    if (joined.includes('search')) families.push('docSearch');
+    if (joined.includes('search')) families.push('contextSearch');
     return families;
   }).filter((value, index, array) => array.indexOf(value) === index);
 
@@ -1314,8 +1307,8 @@ const buildReusableWorkflowBrief = (input: {
     sections.push(
       '',
       'Source handling:',
-      '- Retrieve referenced files from indexed company documents first using search-documents.',
-      '- If indexed retrieval is missing or weak, use document-ocr-read as the fallback retrieval path.',
+      '- Retrieve referenced files with contextSearch first.',
+      '- If chunk retrieval is missing, weak, or insufficient for exact wording, use document-ocr-read as the fallback retrieval path.',
       '- Treat the extracted file contents as the source of truth for downstream execution.',
       ...sourceNotes,
       '',
@@ -1839,7 +1832,7 @@ class DesktopWorkflowsService {
 
     const allowedToolIds = await this.getAllowedWorkflowTools(input.session);
     const allowedPlanningToolIds = allowedToolIds.filter((toolId) => [
-      'search-documents',
+      'context-search',
       'document-ocr-read',
       'skill-search',
       'share_chat_vectors',

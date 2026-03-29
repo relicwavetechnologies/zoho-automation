@@ -167,8 +167,11 @@ export class GoogleRankingService {
     }
 
     if (!this.isConfigured()) {
-      if (options.required && config.NODE_ENV === 'production') {
-        throw new Error('Google ranking is required in production but is not configured');
+      if (options.required) {
+        logger.warn('google.ranking.unconfigured', {
+          model: config.GOOGLE_RANKING_MODEL,
+          required: true,
+        });
       }
       return this.fallback(normalizedRecords, topN);
     }
@@ -230,11 +233,9 @@ export class GoogleRankingService {
     } catch (error) {
       logger.warn('google.ranking.failed', {
         model: config.GOOGLE_RANKING_MODEL,
+        required: Boolean(options.required),
         reason: error instanceof Error ? error.message : 'unknown_error',
       });
-      if (options.required && config.NODE_ENV === 'production') {
-        throw error;
-      }
       return this.fallback(normalizedRecords, topN);
     }
   }

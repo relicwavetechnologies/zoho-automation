@@ -28,7 +28,7 @@ const TOOL_ACTION_GROUPS: Record<string, ToolActionGroup[]> = {
   'outreach-agent': ['read'],
   'search-agent': ['read'],
   'search-read': ['read'],
-  'search-documents': ['read'],
+  'context-search': ['read'],
   'lark-base-read': ['read'],
   'lark-base-write': ['create', 'update', 'delete'],
   'lark-base-agent': ['read', 'create', 'update', 'delete'],

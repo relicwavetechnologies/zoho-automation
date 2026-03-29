@@ -1001,23 +1001,39 @@ export const updateTaskStateFromToolEnvelope = (input: {
     }
   }
 
-  if (input.toolName === 'docSearch' && input.output.success) {
+  if ((input.toolName === 'docSearch' || input.toolName === 'contextSearch') && input.output.success) {
     const fullPayload = asRecord(input.output.fullPayload);
     const matches = Array.isArray(fullPayload?.matches) ? fullPayload.matches : [];
-    if (matches.length > 0) {
+    const citations = Array.isArray(fullPayload?.citations) ? fullPayload.citations : [];
+    const artifacts = matches.length > 0
+      ? matches.flatMap((entry) => {
+        const record = asRecord(entry);
+        const fileAssetId = asString(record?.sourceId);
+        const fileName = asString(record?.fileName);
+        if (!fileAssetId || !fileName) return [];
+        return [{
+          fileAssetId,
+          fileName,
+          sourceType: 'company_file' as const,
+        }];
+      })
+      : citations.flatMap((entry) => {
+        const record = asRecord(entry);
+        if (asString(record?.scope) !== 'files' || asString(record?.sourceType) !== 'file_document') {
+          return [];
+        }
+        const fileAssetId = asString(record?.sourceId) ?? asString(record?.fileAssetId);
+        if (!fileAssetId) return [];
+        return [{
+          fileAssetId,
+          fileName: asString(record?.sourceLabel) ?? fileAssetId,
+          sourceType: 'company_file' as const,
+        }];
+      });
+    if (artifacts.length > 0) {
       return upsertDesktopSourceArtifacts({
         taskState: next,
-        artifacts: matches.flatMap((entry) => {
-          const record = asRecord(entry);
-          const fileAssetId = asString(record?.sourceId);
-          const fileName = asString(record?.fileName);
-          if (!fileAssetId || !fileName) return [];
-          return [{
-            fileAssetId,
-            fileName,
-            sourceType: 'company_file' as const,
-          }];
-        }),
+        artifacts,
       });
     }
   }
