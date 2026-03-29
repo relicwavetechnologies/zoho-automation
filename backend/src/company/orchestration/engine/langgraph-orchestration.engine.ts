@@ -81,6 +81,7 @@ const wrapCompatibilityResult = async (input: {
         node: 'await_approval',
         stepHistory: ['load_run_context', 'compat.execute_vercel', 'await_approval'],
         routeIntent: input.routeIntent ?? input.compatibilityResult.runtimeMeta?.routeIntent,
+        canonicalIntent: input.execution.task.canonicalIntent,
       },
       hitlAction: {
         taskId: input.execution.task.taskId,
@@ -117,6 +118,7 @@ const wrapCompatibilityResult = async (input: {
       node: input.compatibilityResult.currentStep ?? 'persist_and_finish',
       stepHistory: ['load_run_context', 'compat.execute_vercel', input.compatibilityResult.currentStep ?? 'persist_and_finish'],
       routeIntent: input.routeIntent ?? input.compatibilityResult.runtimeMeta?.routeIntent,
+      canonicalIntent: input.execution.task.canonicalIntent,
     },
   };
 };

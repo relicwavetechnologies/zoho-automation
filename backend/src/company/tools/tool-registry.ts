@@ -419,6 +419,7 @@ export const TOOL_REGISTRY_MAP = new Map(TOOL_REGISTRY.map((t) => [t.id, t]));
 export const LEGACY_AGENT_TOOL_MAP: Record<string, string> = {
   'zoho-read': 'zoho-read',
   'zoho-action': 'zoho-action',
+  'zoho-books-action': 'zoho-books-write',
   'outreach-read': 'read-outreach-publishers',
   'search-read': 'search-read',
   'lark-doc': 'lark-doc-agent',

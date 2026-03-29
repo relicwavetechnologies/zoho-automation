@@ -78,6 +78,7 @@ import { AI_MODEL_CATALOG_MAP } from '../../ai-models';
 import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../integrations/vector';
 import { memoryExtractionService, memoryService } from '../../memory';
 import { enrichQuery, type QueryEnrichment } from '../query-enrichment.service';
+import { classifyIntent } from '../intent/canonical-intent';
 import { hotContextStore, type HotContextIndexedEntity, type HotContextSlot } from '../hot-context.store';
 import { resolveOrdinalReferences } from '../utils/resolve-ordinal-references';
 import { desktopWsGateway } from '../../../modules/desktop-live/desktop-ws.gateway';
@@ -700,40 +701,6 @@ const isMutationToolResult = (toolName: string, output: VercelToolEnvelope): boo
   return false;
 };
 
-const isWriteLikeIntent = (input: {
-  latestUserMessage: string;
-  normalizedIntent?: string | null;
-  plannerChosenOperationClass?: string | null;
-}): boolean => {
-  const combined = [
-    input.latestUserMessage,
-    input.normalizedIntent ?? '',
-  ]
-    .filter(Boolean)
-    .join('\n')
-    .toLowerCase();
-  if (['write', 'send', 'execute'].includes((input.plannerChosenOperationClass ?? '').toLowerCase())) {
-    return true;
-  }
-  return /\b(create|save|schedule|enable|disable|pause|resume|run|send|email|update|edit|modify|rename|delete|delte|remove|archive|clear)\b/.test(
-    combined,
-  );
-};
-
-const isDestructiveIntent = (input: {
-  latestUserMessage: string;
-  normalizedIntent?: string | null;
-}): boolean => {
-  const combined = [
-    input.latestUserMessage,
-    input.normalizedIntent ?? '',
-  ]
-    .filter(Boolean)
-    .join('\n')
-    .toLowerCase();
-  return /\b(delete|delte|remove|archive|clear)\b/.test(combined);
-};
-
 const hasConfirmedMutationForIntent = (input: {
   taskId: string;
   destructiveOnly?: boolean;
@@ -775,20 +742,20 @@ const resolveMutationGuard = (input: {
       node: resolveExecutionNode(input.taskId),
     };
   }
-  const writeLikeIntent = isWriteLikeIntent({
-    latestUserMessage: input.latestUserMessage,
-    normalizedIntent: input.normalizedIntent,
-    plannerChosenOperationClass: input.plannerChosenOperationClass,
-  });
+  const canonicalIntent = classifyIntent(
+    input.latestUserMessage,
+    {
+      normalizedIntent: input.normalizedIntent,
+      plannerChosenOperationClass: input.plannerChosenOperationClass,
+    },
+  );
+  const writeLikeIntent = canonicalIntent.isWriteLike;
   if (!writeLikeIntent) {
     return {
       node: resolveExecutionNode(input.taskId),
     };
   }
-  const destructiveIntent = isDestructiveIntent({
-    latestUserMessage: input.latestUserMessage,
-    normalizedIntent: input.normalizedIntent,
-  });
+  const destructiveIntent = canonicalIntent.isDestructive;
   const hasConfirmedMutation = hasConfirmedMutationForIntent({
     taskId: input.taskId,
     destructiveOnly: destructiveIntent,
@@ -2831,6 +2798,7 @@ const executeLarkVercelTask = async (
         threadId: contextStorageId,
         node: 'planner.clarification',
         stepHistory: task.plan,
+        canonicalIntent: task.canonicalIntent,
       },
     };
   }
@@ -2901,6 +2869,7 @@ const executeLarkVercelTask = async (
         threadId: contextStorageId,
         node: 'child_router.fast_reply',
         stepHistory: task.plan,
+        canonicalIntent: task.canonicalIntent,
       },
     };
   }
@@ -3069,6 +3038,7 @@ const executeLarkVercelTask = async (
         threadId: contextStorageId,
         node: 'planner.clarification',
         stepHistory: task.plan,
+        canonicalIntent: task.canonicalIntent,
       },
     };
   }
@@ -3585,6 +3555,7 @@ const executeLarkVercelTask = async (
         threadId: contextStorageId,
         node: pendingApproval ? 'control.requested' : mutationGuard.node,
         stepHistory: task.plan,
+        canonicalIntent: task.canonicalIntent,
       },
     };
   } catch (error) {

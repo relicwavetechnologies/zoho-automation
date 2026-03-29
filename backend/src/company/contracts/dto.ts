@@ -4,6 +4,7 @@ import type {
   HitlActionStatus,
   OrchestrationTaskStatus,
 } from './status';
+import type { CanonicalIntent } from '../orchestration/intent/canonical-intent';
 import type { ToolActionGroup } from '../tools/tool-action-groups';
 
 /** Shared file reference type — carried in normalized messages and used by buildVisionContent. */
@@ -67,6 +68,7 @@ export type OrchestrationTaskDTO = {
   orchestratorModel?: string;
   plan: string[];
   executionMode?: 'sequential' | 'parallel' | 'mixed';
+  canonicalIntent?: CanonicalIntent;
 };
 
 export type AgentInvokeInputDTO = {

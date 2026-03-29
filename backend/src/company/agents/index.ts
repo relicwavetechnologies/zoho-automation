@@ -6,6 +6,7 @@ import {
   RiskCheckAgent,
   SearchReadAgent,
   ZohoActionAgent,
+  ZohoBooksActionAgent,
   ZohoReadAgent,
 } from './implementations';
 import { AgentRegistry } from './registry';
@@ -26,6 +27,7 @@ registry.register(new ZohoReadAgent());
 registry.register(new OutreachReadAgent());
 registry.register(new SearchReadAgent());
 registry.register(new ZohoActionAgent());
+registry.register(new ZohoBooksActionAgent());
 registry.register(new LarkResponseAgent());
 registry.register(new LarkDocAgent());
 

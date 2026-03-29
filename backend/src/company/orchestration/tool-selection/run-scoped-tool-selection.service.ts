@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { memoryService, normalizeToolRoutingIntent, type ToolRoutingDomain, type ToolRoutingOperationClass, type ToolRoutingPriorMatch } from '../../memory';
 import { logger } from '../../../utils/logger';
+import { classifyIntent, toNarrowOperationClass } from '../intent/canonical-intent';
 import { resolveVercelChildRouterModel } from '../vercel/model-factory';
 import { TOOL_REGISTRY_MAP } from '../../tools/tool-registry';
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
@@ -110,14 +111,11 @@ const canBypassPlannerWithLearnedPrior = (input: {
     && (prior.matchedBy === 'exact_canonical' || prior.matchedBy === 'thread_continuation' || prior.matchedBy === 'base_intent');
 };
 
-const inferOperationClass = (message: string): OperationClass => {
-  const text = asLower(message);
-  if (/\b(send|email|mail|draft|reply|forward)\b/.test(text)) return 'send';
-  if (/\b(create|update|delete|edit|modify|rename|convert|approve|reconcile|import|upload)\b/.test(text)) return 'write';
-  if (/\b(what is in|what's in|what is shown|check this|inspect|view|open this|read this)\b/.test(text)) return 'inspect';
-  if (/\b(schedule|book|calendar|meeting|event)\b/.test(text)) return 'schedule';
-  if (/\b(search|look up|find on web|latest|recent news|google)\b/.test(text)) return 'search';
-  return 'read';
+const inferOperationClass = (
+  message: string,
+  supplementarySignals?: { normalizedIntent?: string | null; plannerChosenOperationClass?: string | null },
+): OperationClass => {
+  return toNarrowOperationClass(classifyIntent(message, supplementarySignals)) as OperationClass;
 };
 
 const isVisualInspectionRequest = (message: string): boolean =>
@@ -439,7 +437,9 @@ export const resolveRunScopedToolSelection = async (input: {
     ...(exposeArtifactTools ? ARTIFACT_GLOBAL_IDS.filter((toolId) => allowed.has(toolId)) : []),
   ]);
 
-  const inferredOperationClass = inferOperationClass(queryTextForInference);
+  const inferredOperationClass = inferOperationClass(queryTextForInference, {
+    normalizedIntent: input.childRoute?.normalizedIntent,
+  });
   const inferredDomain = inferIntentDomain({
     message: queryTextForInference,
     childRoute: input.childRoute,

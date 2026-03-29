@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { KNOWLEDGE_NEEDS, RETRIEVAL_STRATEGIES, retrievalPlannerService } from '../../retrieval';
+import { classifyIntent } from '../intent/canonical-intent';
 import type {
   RuntimeClassificationResult,
   RuntimeComplexity,
@@ -31,7 +32,6 @@ export type ResolvedRouteContract = {
   };
 };
 
-const WRITE_KEYWORDS = ['create', 'update', 'edit', 'delete', 'remove', 'send', 'schedule', 'upload', 'write'];
 const WEB_KEYWORDS = ['news', 'website', 'site:', 'http://', 'https://', 'search', 'look up'];
 const FRESHNESS_KEYWORDS = ['latest', 'current', 'today', 'news'];
 const DOC_KEYWORDS = ['document', 'doc', 'pdf', 'file', 'upload', 'internal doc', 'folder'];
@@ -62,8 +62,7 @@ const inferDomains = (text: string): string[] => {
 };
 
 const inferComplexity = (text: string): RuntimeComplexity => {
-  const normalized = text.toLowerCase();
-  if (WRITE_KEYWORDS.some((keyword) => normalized.includes(keyword))) {
+  if (classifyIntent(text).isWriteLike) {
     return 'multi_step';
   }
   if (/\b(and|then|after that|also)\b/i.test(text)) {
@@ -76,8 +75,8 @@ const inferFreshnessNeed = (text: string): RuntimeFreshnessNeed =>
   FRESHNESS_KEYWORDS.some((keyword) => text.toLowerCase().includes(keyword)) ? 'required' : 'none';
 
 const inferRisk = (text: string): RuntimeRiskLevel => {
-  const normalized = text.toLowerCase();
-  if (WRITE_KEYWORDS.some((keyword) => normalized.includes(keyword))) {
+  const intent = classifyIntent(text);
+  if (intent.isWriteLike) {
     return 'high';
   }
   if (/\b(mail|calendar|approval|meeting|payment|invoice)\b/i.test(text)) {
@@ -88,9 +87,10 @@ const inferRisk = (text: string): RuntimeRiskLevel => {
 
 const inferIntent = (text: string, domains: string[]): string => {
   const normalized = text.toLowerCase();
+  const intent = classifyIntent(text);
   if (CODING_KEYWORDS.some((keyword) => normalized.includes(keyword))) return 'coding';
   if (REPO_KEYWORDS.some((keyword) => normalized.includes(keyword))) return 'repo_read';
-  if (WRITE_KEYWORDS.some((keyword) => normalized.includes(keyword))) return 'write_intent';
+  if (intent.isWriteLike) return 'write_intent';
   if (domains.includes('outreach')) return 'outreach_read';
   if (domains.includes('books')) return 'books_read';
   if (domains.includes('zoho')) return 'zoho_read';

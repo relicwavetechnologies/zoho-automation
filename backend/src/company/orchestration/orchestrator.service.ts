@@ -20,6 +20,7 @@ import {
 } from './routing-heuristics';
 import { toolPermissionService } from '../tools/tool-permission.service';
 import { LEGACY_AGENT_TOOL_MAP, TOOL_REGISTRY_MAP, type AiRole } from '../tools/tool-registry';
+import { classifyIntent } from './intent/canonical-intent';
 
 export class OrchestratorService {
   requiresHumanConfirmation(messageText: string): boolean {
@@ -33,6 +34,7 @@ export class OrchestratorService {
   async buildTask(taskId: string, message: NormalizedIncomingMessageDTO): Promise<OrchestrationTaskDTO> {
     const complexityLevel = classifyComplexityLevel(message.text);
     const intent = detectRouteIntent(message.text);
+    const canonicalIntent = classifyIntent(message.text);
     return {
       taskId,
       messageId: message.messageId,
@@ -43,6 +45,7 @@ export class OrchestratorService {
       orchestratorModel: 'v0-rule-router',
       plan: buildPlanFromIntent(intent, complexityLevel, message.text),
       executionMode: 'sequential',
+      canonicalIntent,
     };
   }
 

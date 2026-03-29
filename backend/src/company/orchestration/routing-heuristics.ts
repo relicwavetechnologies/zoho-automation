@@ -1,6 +1,8 @@
 import type { AgentResultDTO, NormalizedIncomingMessageDTO, OrchestrationTaskDTO } from '../contracts';
+import { ALL_WRITE_LIKE_VERBS, classifyIntent } from './intent/canonical-intent';
 
-export const WRITE_INTENT_KEYWORDS = ['delete', 'remove', 'drop', 'overwrite', 'destroy', 'write'];
+/** @deprecated Use classifyIntent() from canonical-intent instead */
+export { ALL_WRITE_LIKE_VERBS as WRITE_INTENT_KEYWORDS } from './intent/canonical-intent';
 const OUTREACH_QUERY_KEYWORDS = [
   'outreach',
   'publisher',
@@ -64,7 +66,7 @@ const isLarkDocQuery = (text: string): boolean => {
 
 export const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {
   const normalized = text.toLowerCase();
-  if (WRITE_INTENT_KEYWORDS.some((keyword) => normalized.includes(keyword))) {
+  if (classifyIntent(text).isWriteLike) {
     return 4;
   }
   if (normalized.includes('sync') || normalized.includes('onboard') || normalized.includes('workflow')) {
@@ -77,16 +79,14 @@ export const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {
 };
 
 export const detectRouteIntent = (text: string): 'zoho_read' | 'write_intent' | 'general' => {
-  const normalized = text.toLowerCase();
-  if (
-    normalized.includes('zoho') ||
-    normalized.includes('deal') ||
-    normalized.includes('contact') ||
-    isOutreachQuery(normalized)
-  ) {
+  const intent = classifyIntent(text);
+  if (intent.domain === 'zoho_crm' || intent.domain === 'outreach') {
     return 'zoho_read';
   }
-  if (WRITE_INTENT_KEYWORDS.some((keyword) => normalized.includes(keyword))) {
+  if (intent.domain === 'zoho_books') {
+    return 'write_intent';
+  }
+  if (intent.isWriteLike) {
     return 'write_intent';
   }
   return 'general';
@@ -110,7 +110,27 @@ export const buildPlanFromIntent = (
     return ['route.classify', 'agent.invoke.unknown', 'synthesis.compose'];
   }
 
-  if (intent === 'write_intent' || complexityLevel >= 4) {
+  if (intent === 'write_intent') {
+    const canonicalIntent = classifyIntent(text);
+    if (canonicalIntent.domain === 'zoho_books') {
+      return [
+        'route.classify',
+        'agent.invoke.risk-check',
+        'agent.invoke.zoho-books-action',
+        'agent.invoke.lark-response',
+        'synthesis.compose',
+      ];
+    }
+    return [
+      'route.classify',
+      'agent.invoke.risk-check',
+      'agent.invoke.zoho-action',
+      'agent.invoke.lark-response',
+      'synthesis.compose',
+    ];
+  }
+
+  if (complexityLevel >= 4) {
     return [
       'route.classify',
       'agent.invoke.risk-check',
@@ -132,8 +152,7 @@ export const buildPlanFromIntent = (
 };
 
 export const requiresHumanConfirmation = (text: string): boolean => {
-  const normalized = text.toLowerCase();
-  return WRITE_INTENT_KEYWORDS.some((keyword) => normalized.includes(keyword));
+  return classifyIntent(text).isWriteLike;
 };
 
 export const buildHitlSummary = (text: string): string => {
@@ -172,7 +191,9 @@ export const synthesizeFromAgentResults = (
     };
   }
 
-  const actionResult = agentResults.find((result) => result.agentKey === 'zoho-action' && result.status === 'success');
+  const actionResult = agentResults.find(
+    (result) => (result.agentKey === 'zoho-action' || result.agentKey === 'zoho-books-action') && result.status === 'success',
+  );
   if (actionResult?.result) {
     const actionName = typeof actionResult.result.actionName === 'string' ? actionResult.result.actionName : 'action';
     const sources = Array.isArray(actionResult.result.sourceRefs)

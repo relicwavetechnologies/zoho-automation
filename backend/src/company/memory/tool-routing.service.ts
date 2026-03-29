@@ -1,4 +1,5 @@
 import { prisma } from '../../utils/prisma';
+import { classifyIntent, toNarrowOperationClass } from '../orchestration/intent/canonical-intent';
 import { addDays, MEMORY_ROUTING_PHRASE_EXAMPLE_CAP, type ToolRoutingDomain, type ToolRoutingFollowUpClass, type ToolRoutingIntent, type ToolRoutingMemoryValue, type ToolRoutingOperationClass, type ToolRoutingScopeHint, type UserMemoryChannelOrigin, type UserMemoryScope } from './contracts';
 import { memoryContextService } from './memory-context.service';
 import { memoryRetentionService } from './memory-retention.service';
@@ -112,13 +113,7 @@ const detectFollowUpClass = (message: string): ToolRoutingFollowUpClass => {
 };
 
 const detectOperationClass = (message: string): ToolRoutingOperationClass => {
-  const text = normalizePhrase(message);
-  if (/\b(send|email|reply|forward|remind)\b/.test(text)) return 'send';
-  if (/\b(create|make|update|delete|edit|modify|rename|assign|reassign|approve|reconcile|import|upload)\b/.test(text)) return 'write';
-  if (/\b(what is in|what is shown|inspect|view|open|read this|check this|look at)\b/.test(text)) return 'inspect';
-  if (/\b(schedule|book|calendar|meeting|event)\b/.test(text)) return 'schedule';
-  if (/\b(search|look up|find|latest|recent news|google)\b/.test(text)) return 'search';
-  return 'read';
+  return toNarrowOperationClass(classifyIntent(normalizePhrase(message))) as ToolRoutingOperationClass;
 };
 
 const hasExactExtractionIntent = (text: string): boolean =>
@@ -143,16 +138,17 @@ const detectScopeHint = (message: string): ToolRoutingScopeHint => {
 };
 
 const detectDomain = (text: string, hasWorkspace: boolean, hasArtifacts: boolean): ToolRoutingDomain => {
-  if (/\b(invoice|estimate|bill|vendor payment|customer payment|credit note|sales order|purchase order|zoho books)\b/.test(text)) {
+  const canonicalIntent = classifyIntent(text);
+  if (canonicalIntent.domain === 'zoho_books') {
     return 'zoho_books';
   }
-  if (/\b(lead|contact|deal|case|zoho crm|crm)\b/.test(text)) {
+  if (canonicalIntent.domain === 'zoho_crm') {
     return 'zoho_crm';
   }
   if (!hasExactExtractionIntent(text) && hasContextSearchIntent(text)) {
     return 'context_search';
   }
-  if (/\b(gmail|inbox|draft email|send by gmail|mail via gmail)\b/.test(text)) {
+  if (canonicalIntent.domain === 'gmail' || /\b(draft email|send by gmail|mail via gmail)\b/.test(text)) {
     return 'gmail';
   }
   if (/\b(google drive|drive file|drive folder)\b/.test(text)) {
@@ -170,7 +166,7 @@ const detectDomain = (text: string, hasWorkspace: boolean, hasArtifacts: boolean
   if (/\b(task|assignee|todo|due date)\b/.test(text)) {
     return 'lark_task';
   }
-  if (/\b(lark doc|doc|document|note|writeup|report)\b/.test(text)) {
+  if (canonicalIntent.domain === 'lark_doc' || /\b(note|writeup|report)\b/.test(text)) {
     return 'lark_doc';
   }
   if (/\b(lark calendar|calendar event|schedule|event)\b/.test(text)) {
@@ -191,7 +187,7 @@ const detectDomain = (text: string, hasWorkspace: boolean, hasArtifacts: boolean
   if (hasWorkspace && /\b(repo|repository|workspace|folder|file path|terminal|command|script|code)\b/.test(text)) {
     return 'workspace';
   }
-  if (/\b(web|internet|online|site|up to date|up-to-date)\b/.test(text)) {
+  if (canonicalIntent.domain === 'web_search' || /\b(web|internet|online|site|up to date|up-to-date)\b/.test(text)) {
     return 'web_search';
   }
   return 'unknown';

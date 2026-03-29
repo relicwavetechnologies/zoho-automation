@@ -7,6 +7,7 @@ import type {
   OrchestrationTaskDTO,
 } from '../../contracts';
 import type { OrchestrationTaskStatus } from '../../contracts/status';
+import type { CanonicalIntent } from '../intent/canonical-intent';
 
 export type OrchestrationEngineId = 'legacy' | 'vercel' | 'langgraph';
 
@@ -23,6 +24,7 @@ export type OrchestrationExecutionResult = {
     node?: string;
     stepHistory?: string[];
     routeIntent?: string;
+    canonicalIntent?: CanonicalIntent;
   };
   errors?: ErrorDTO[];
 };

@@ -1,21 +1,20 @@
 import type { AgentInvokeInputDTO } from '../../contracts';
+import { classifyIntent } from '../../orchestration/intent/canonical-intent';
 import { BaseAgent } from '../base';
-
-const RISK_KEYWORDS = ['delete', 'remove', 'drop', 'overwrite', 'destroy'];
 
 export class RiskCheckAgent extends BaseAgent {
   readonly key = 'risk-check';
 
   async invoke(input: AgentInvokeInputDTO) {
-    const normalized = input.objective.toLowerCase();
-    const risky = RISK_KEYWORDS.some((keyword) => normalized.includes(keyword));
+    const intent = classifyIntent(input.objective);
+    const risky = intent.isDestructive;
 
     return this.success(
       input,
       risky ? 'Potentially destructive intent detected' : 'No destructive intent detected',
       {
         risky,
-        keywords: RISK_KEYWORDS.filter((keyword) => normalized.includes(keyword)),
+        keywords: intent.matchedVerbs,
       },
       { latencyMs: 1, apiCalls: 1 },
     );

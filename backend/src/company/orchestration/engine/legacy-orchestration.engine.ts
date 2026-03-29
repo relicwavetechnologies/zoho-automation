@@ -115,6 +115,7 @@ export class LegacyOrchestrationEngine implements OrchestrationEngine {
           engine: 'legacy',
           node: 'synthesis.complete',
           stepHistory: ['synthesis.complete'],
+          canonicalIntent: task.canonicalIntent,
         },
       };
     }
@@ -255,6 +256,7 @@ export class LegacyOrchestrationEngine implements OrchestrationEngine {
               engine: 'legacy',
               node: `hitl.${resolved.action.status}`,
               stepHistory,
+              canonicalIntent: task.canonicalIntent,
             },
           };
         }
@@ -356,6 +358,7 @@ export class LegacyOrchestrationEngine implements OrchestrationEngine {
           engine: 'legacy',
           node: 'synthesis.complete',
           stepHistory,
+          canonicalIntent: task.canonicalIntent,
         },
       };
     } catch (error) {

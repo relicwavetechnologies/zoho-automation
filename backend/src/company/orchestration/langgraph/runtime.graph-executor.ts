@@ -609,6 +609,7 @@ export class RuntimeGraphExecutor {
           node: 'persist_and_finish',
           stepHistory: ['route.classify', 'policy.gate', 'route.retrieval', 'research.execute', 'synthesis.compose', 'deliver.response', 'persist_and_finish'],
           routeIntent: classification.intent,
+          canonicalIntent: task.canonicalIntent,
         },
       },
     };
