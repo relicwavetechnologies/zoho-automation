@@ -144,6 +144,7 @@ export type MemoryPromptContext = {
   durableTaskContextText: string | null;
   relevantMemoryFacts: string[];
   relevantMemoryFactsText: string | null;
+  preferredReplyMode?: 'thread' | 'reply' | 'plain' | 'dm' | null;
 };
 
 export const normalizeMemorySubjectKey = (value: string): string =>

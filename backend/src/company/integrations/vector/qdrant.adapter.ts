@@ -585,6 +585,35 @@ export class QdrantAdapter implements VectorStoreAdapter {
     await this.deleteBySource(input);
   }
 
+  async deleteOwnedChatTurns(input: {
+    companyId: string;
+    ownerUserId: string;
+  }): Promise<void> {
+    try {
+      await this.ensureIndexes();
+      await this.request({
+        method: 'POST',
+        path: `/collections/${encodeURIComponent(this.collection)}/points/delete?wait=true`,
+        body: {
+          filter: {
+            must: [
+              { key: 'companyId', match: { value: input.companyId } },
+              { key: 'sourceType', match: { value: 'chat_turn' } },
+              { key: 'ownerUserId', match: { value: input.ownerUserId } },
+            ],
+          },
+        },
+      });
+    } catch (error) {
+      if (isCollectionNotFoundError(error)) {
+        await this.ensureCollection();
+        await this.ensureIndexes();
+      } else {
+        throw error;
+      }
+    }
+  }
+
   async search(query: VectorSearchQuery): Promise<VectorSearchGroup[]> {
     const filter = buildSearchFilter(query);
     const branchLimit = Math.max(
@@ -597,6 +626,9 @@ export class QdrantAdapter implements VectorStoreAdapter {
         using: PRIMARY_TEXT_VECTOR_NAME,
         limit: branchLimit,
         filter,
+        ...(typeof query.scoreThreshold === 'number'
+          ? { score_threshold: query.scoreThreshold }
+          : {}),
       },
     ];
 
@@ -628,6 +660,9 @@ export class QdrantAdapter implements VectorStoreAdapter {
           query: prefetch.length > 1 ? { fusion: query.fusion ?? 'dbsf' } : query.denseVector,
           using: prefetch.length > 1 ? undefined : PRIMARY_TEXT_VECTOR_NAME,
           filter: prefetch.length > 1 ? undefined : filter,
+          ...(prefetch.length === 1 && typeof query.scoreThreshold === 'number'
+            ? { score_threshold: query.scoreThreshold }
+            : {}),
           group_by: query.groupByField ?? 'documentKey',
           group_size: Math.max(1, Math.min(10, query.groupSize ?? 3)),
           limit: Math.max(1, Math.min(25, query.limit)),

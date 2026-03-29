@@ -49,6 +49,7 @@ export type VectorSearchQuery = {
   groupSize?: number;
   rerankTopK?: number;
   rerankRequired?: boolean;
+  scoreThreshold?: number;
   sourceTypes?: VectorSourceType[];
   includePersonal?: boolean;
   includeShared?: boolean;

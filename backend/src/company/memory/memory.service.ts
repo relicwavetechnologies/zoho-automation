@@ -13,6 +13,51 @@ import { memoryExtractionService } from './memory-extraction.service';
 import { toolRoutingService, type ToolRoutingExecutionOutcome, type ToolRoutingPriorMatch } from './tool-routing.service';
 
 class MemoryService {
+  async recordUserTurnOrThrow(input: {
+    companyId: string;
+    userId?: string | null;
+    channelOrigin: UserMemoryChannelOrigin;
+    threadId?: string;
+    conversationKey?: string;
+    localTimeZoneHint?: string;
+    text: string;
+  }): Promise<{ draftCount: number; wasExplicitInstruction: boolean }> {
+    if (!input.userId || !input.text.trim()) {
+      return {
+        draftCount: 0,
+        wasExplicitInstruction: false,
+      };
+    }
+    const extraction = memoryExtractionService.analyzeUserMessage({
+      channelOrigin: input.channelOrigin,
+      threadId: input.threadId,
+      conversationKey: input.conversationKey,
+      localTimeZoneHint: input.localTimeZoneHint,
+      text: input.text,
+    });
+    if (extraction.drafts.length === 0) {
+      return {
+        draftCount: 0,
+        wasExplicitInstruction: extraction.wasExplicitInstruction,
+      };
+    }
+    await memoryConsolidationService.upsertDrafts({
+      companyId: input.companyId,
+      userId: input.userId,
+      drafts: extraction.drafts,
+    });
+    await memoryContextService.invalidateCache({
+      companyId: input.companyId,
+      userId: input.userId,
+      threadId: input.threadId,
+      conversationKey: input.conversationKey,
+    });
+    return {
+      draftCount: extraction.drafts.length,
+      wasExplicitInstruction: extraction.wasExplicitInstruction,
+    };
+  }
+
   async recordUserTurn(input: {
     companyId: string;
     userId?: string | null;
@@ -22,31 +67,8 @@ class MemoryService {
     localTimeZoneHint?: string;
     text: string;
   }): Promise<void> {
-    if (!input.userId || !input.text.trim()) {
-      return;
-    }
     try {
-      const drafts = memoryExtractionService.extractFromUserMessage({
-        channelOrigin: input.channelOrigin,
-        threadId: input.threadId,
-        conversationKey: input.conversationKey,
-        localTimeZoneHint: input.localTimeZoneHint,
-        text: input.text,
-      });
-      if (drafts.length === 0) {
-        return;
-      }
-      await memoryConsolidationService.upsertDrafts({
-        companyId: input.companyId,
-        userId: input.userId,
-        drafts,
-      });
-      await memoryContextService.invalidateCache({
-        companyId: input.companyId,
-        userId: input.userId,
-        threadId: input.threadId,
-        conversationKey: input.conversationKey,
-      });
+      await this.recordUserTurnOrThrow(input);
     } catch (error) {
       logger.warn('memory.user_turn.record.failed', {
         companyId: input.companyId,

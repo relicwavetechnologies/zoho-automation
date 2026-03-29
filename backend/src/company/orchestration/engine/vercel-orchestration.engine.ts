@@ -76,7 +76,7 @@ import { aiTokenUsageService } from '../../ai-usage/ai-token-usage.service';
 import { estimateTokens } from '../../../utils/token-estimator';
 import { AI_MODEL_CATALOG_MAP } from '../../ai-models';
 import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../integrations/vector';
-import { memoryService } from '../../memory';
+import { memoryExtractionService, memoryService } from '../../memory';
 import { enrichQuery, type QueryEnrichment } from '../query-enrichment.service';
 import { hotContextStore, type HotContextIndexedEntity, type HotContextSlot } from '../hot-context.store';
 import { resolveOrdinalReferences } from '../utils/resolve-ordinal-references';
@@ -162,7 +162,7 @@ const resolveExplicitReplyModeFromText = (
     return 'thread';
   }
   if (
-    /\b(?:reply to (?:this|that) message|reply here|reply to this|tell me here|answer here|say it here|here itself|in (?:this )?chat)\b/u.test(normalized)
+    /\b(?:reply to (?:this|that) message|reply here|reply to this|tell me here|answer here|say it here|here itself|in (?:this )?chat|reply in (?:the )?chat|chat only|here only|not in (?:a )?thread|don't reply in (?:a )?thread|do not reply in (?:a )?thread)\b/u.test(normalized)
   ) {
     return 'reply';
   }
@@ -171,6 +171,11 @@ const resolveExplicitReplyModeFromText = (
   }
   return undefined;
 };
+
+const resolveStoredReplyMode = (
+  taskState: DesktopTaskState | null | undefined,
+): 'thread' | 'reply' | 'plain' | 'dm' | undefined =>
+  taskState?.preferredReplyMode;
 
 export const resolveReplyMode = (params: {
   chatType: 'group' | 'p2p';
@@ -1022,7 +1027,70 @@ const maybeStoreLarkConversationTurn = (input: {
       });
     });
   if (input.role === 'user') {
-    void memoryService.recordUserTurn({
+    if (!memoryExtractionService.isExplicitMemoryInstruction(input.text)) {
+      void memoryService.recordUserTurn({
+        companyId: input.companyId,
+        userId: input.userId,
+        channelOrigin: 'lark',
+        conversationKey: input.conversationKey,
+        localTimeZoneHint: LOCAL_TIME_ZONE,
+        text: input.text,
+      });
+    }
+  }
+};
+
+const resolveLarkExplicitMemoryWriteStatus = async (input: {
+  adapter: ReturnType<typeof resolveChannelAdapter>;
+  taskId: string;
+  companyId?: string;
+  userId?: string;
+  conversationKey: string;
+  message: NormalizedIncomingMessageDTO;
+  text: string;
+  currentTurnExplicitReplyMode?: 'dm' | 'thread' | 'reply' | 'plain';
+}): Promise<string | null> => {
+  if (!input.companyId || !input.userId || !memoryExtractionService.isExplicitMemoryInstruction(input.text)) {
+    return null;
+  }
+
+  const sendStatusMessage = async (text: string): Promise<boolean> => {
+    try {
+      const replyMode = resolveReplyMode({
+        chatType: input.message.chatType,
+        incomingMessageId: input.message.messageId,
+        isProactiveDelivery: false,
+        isSensitiveContent: false,
+        isShortAcknowledgement: true,
+        userExplicitMode: input.currentTurnExplicitReplyMode,
+      });
+      await input.adapter.sendMessage({
+        chatId: resolveReplyModeChatId({
+          replyMode,
+          message: input.message,
+        }),
+        text,
+        correlationId: input.taskId,
+        ...(replyMode.chatType === 'p2p'
+          ? {}
+          : {
+              replyToMessageId: replyMode.replyToMessageId,
+              replyInThread: replyMode.replyInThread,
+            }),
+      });
+      return true;
+    } catch (error) {
+      logger.warn('lark.memory.explicit_write.notice_failed', {
+        taskId: input.taskId,
+        messageId: input.message.messageId,
+        error: error instanceof Error ? error.message : 'unknown',
+      });
+      return false;
+    }
+  };
+
+  try {
+    const result = await memoryService.recordUserTurnOrThrow({
       companyId: input.companyId,
       userId: input.userId,
       channelOrigin: 'lark',
@@ -1030,6 +1098,34 @@ const maybeStoreLarkConversationTurn = (input: {
       localTimeZoneHint: LOCAL_TIME_ZONE,
       text: input.text,
     });
+    if (result.draftCount > 0) {
+      const sent = await sendStatusMessage(
+        'Got it. I\'ve saved that. You can check what I remember with /memory.',
+      );
+      return sent
+        ? 'A memory save confirmation has already been sent to the user for this turn. Do not repeat it.'
+        : 'The current user turn explicitly asked to save a memory and the write succeeded. Start the response with exactly "Got it. I\\\'ve saved that." once, then continue normally. Do not repeat the confirmation later in the message.';
+    }
+
+    const sent = await sendStatusMessage(
+      'I couldn\'t save that yet. Please restate it more explicitly.',
+    );
+    return sent
+      ? 'The explicit memory save produced no durable memory item, and a failure notice has already been sent to the user. Do not claim it was saved.'
+      : 'The current user turn explicitly asked to save a memory, but nothing durable could be extracted. Start the response with exactly "I couldn\\\'t save that yet. Please restate it more explicitly." once, and do not claim it was saved.';
+  } catch (error) {
+    logger.error('memory.explicit_write.failed', {
+      companyId: input.companyId,
+      userId: input.userId,
+      conversationKey: input.conversationKey,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    const sent = await sendStatusMessage(
+      'I tried to save that, but something went wrong. Please try again.',
+    );
+    return sent
+      ? 'The explicit memory save failed for this turn, and a failure notice has already been sent to the user. Do not claim it was saved.'
+      : 'The current user turn explicitly asked to save a memory, but the write failed. Start the response with exactly "I tried to save that, but something went wrong. Please try again." once, and do not claim it was saved.';
   }
 };
 
@@ -1647,6 +1743,7 @@ const buildSystemPrompt = (input: {
   behaviorProfileContext?: string | null;
   durableMemoryContext?: string | null;
   relevantMemoryFactsContext?: string | null;
+  memoryWriteStatusContext?: string | null;
   activeTaskContext?: string | null;
 }) => {
   const retrievalGuidance = input.latestUserMessage?.trim()
@@ -1694,6 +1791,7 @@ const buildSystemPrompt = (input: {
     behaviorProfileContext: input.behaviorProfileContext,
     durableMemoryContext: input.durableMemoryContext,
     relevantMemoryFactsContext: input.relevantMemoryFactsContext,
+    memoryWriteStatusContext: input.memoryWriteStatusContext,
     activeTaskContext: input.activeTaskContext,
     routerAcknowledgement: input.routerAcknowledgement,
     childRouteHints: input.childRouteHints,
@@ -2170,12 +2268,13 @@ const executeLarkVercelTask = async (
   let currentStatusActions: ChannelAction[] | undefined;
   let heartbeatIndex = 0;
   const originalUserMessage = message.text;
-  const explicitReplyMode = resolveExplicitReplyModeFromText(originalUserMessage) as
+  const currentTurnExplicitReplyMode = resolveExplicitReplyModeFromText(originalUserMessage) as
     | 'dm'
     | 'thread'
     | 'reply'
     | 'plain'
     | undefined;
+  let explicitReplyMode = currentTurnExplicitReplyMode;
   let proposedReplyMode: ReplyModeHint | undefined;
   const ackMessageId = message.trace?.ackMessageId;
   const ackReplyModeHint = message.trace?.ackReplyModeHint ?? 'reply';
@@ -2388,6 +2487,20 @@ const executeLarkVercelTask = async (
     conversationMemoryStore.addUserMessage(conversationKey, message.messageId, originalUserMessage);
   }
 
+  const storedReplyMode = resolveStoredReplyMode(activeTaskState);
+  if (
+    currentTurnExplicitReplyMode
+    && currentTurnExplicitReplyMode !== 'dm'
+    && activeTaskState.preferredReplyMode !== currentTurnExplicitReplyMode
+  ) {
+    activeTaskState = {
+      ...activeTaskState,
+      preferredReplyMode: currentTurnExplicitReplyMode,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  explicitReplyMode = currentTurnExplicitReplyMode ?? storedReplyMode;
+
   const runtime = await resolveRuntimeContext(task, message, contextStorageId, activeTaskState);
   runtime.attachedFiles =
     groundingAttachments.length > 0 ? groundingAttachments : runtime.attachedFiles;
@@ -2483,6 +2596,16 @@ const executeLarkVercelTask = async (
     taskState: activeTaskState,
     threadSummary: activeThreadSummary,
     recentConversationRefs: latestConversationRefs,
+  });
+  const memoryWriteStatusContext = await resolveLarkExplicitMemoryWriteStatus({
+    adapter,
+    taskId: task.taskId,
+    companyId,
+    userId: linkedUserId,
+    conversationKey,
+    message,
+    text: originalUserMessage,
+    currentTurnExplicitReplyMode,
   });
   await resetLatestAgentRunLog(task.taskId, {
     channel: 'lark',
@@ -3015,6 +3138,16 @@ const executeLarkVercelTask = async (
     queryText: queryEnrichment.retrievalQuery,
     contextClass,
   });
+  if (!activeTaskState.preferredReplyMode && memoryPromptContext.preferredReplyMode) {
+    activeTaskState = {
+      ...activeTaskState,
+      preferredReplyMode: memoryPromptContext.preferredReplyMode,
+      updatedAt: new Date().toISOString(),
+    };
+    if (!currentTurnExplicitReplyMode) {
+      explicitReplyMode = memoryPromptContext.preferredReplyMode;
+    }
+  }
   const conversationSnippets = memoryPromptContext.relevantMemoryFacts;
   const enrichedQueryWithMemory = enrichQuery({
     rawMessage: resolvedUserMessage,
@@ -3049,6 +3182,7 @@ const executeLarkVercelTask = async (
     behaviorProfileContext: memoryPromptContext.behaviorProfileContext,
     durableMemoryContext: memoryPromptContext.durableTaskContextText,
     relevantMemoryFactsContext: memoryPromptContext.relevantMemoryFactsText,
+    memoryWriteStatusContext,
     activeTaskContext: formatActiveTaskContext(task.taskId),
   });
   const budget = resolveLarkContextBudget({

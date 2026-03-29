@@ -1,12 +1,12 @@
 import type { FlatUserMemoryItem } from './contracts';
 
-export type MemoryRankingMode = 'off' | 'heuristic' | 'rerank';
+export type MemoryRankingMode = 'off' | 'heuristic' | 'rerank' | 'keyword_overlap';
 
 const normalizeTokens = (value: string): string[] =>
   value
     .toLowerCase()
     .split(/[^a-z0-9]+/g)
-    .filter((token) => token.length >= 3);
+    .filter((token) => token.length > 3);
 
 const tokenOverlapScore = (queryTokens: Set<string>, text: string): number => {
   if (queryTokens.size === 0) {
@@ -46,6 +46,26 @@ const kindPriority = (kind: FlatUserMemoryItem['kind']): number => {
   }
 };
 
+const resolveEvidenceTimestamp = (item: FlatUserMemoryItem): number =>
+  (item.lastConfirmedAt ?? item.lastSeenAt ?? item.updatedAt).getTime();
+
+const keywordOverlapScore = (
+  item: FlatUserMemoryItem,
+  queryTokens: Set<string>,
+): number => {
+  const overlapScore = tokenOverlapScore(
+    queryTokens,
+    `${item.summary} ${JSON.stringify(item.valueJson ?? {})}`,
+  );
+  const daysSinceConfirmed = Math.max(
+    0,
+    (Date.now() - resolveEvidenceTimestamp(item)) / (1000 * 60 * 60 * 24),
+  );
+  const recencyScore = Math.max(0, 1 - (daysSinceConfirmed / 180));
+  const confidenceScore = Math.max(0, Math.min(1, item.confidence ?? 0.5));
+  return (overlapScore * 0.5) + (recencyScore * 0.3) + (confidenceScore * 0.2);
+};
+
 class MemoryRankingService {
   rankRelevant(input: {
     mode?: MemoryRankingMode;
@@ -57,14 +77,35 @@ class MemoryRankingService {
     const queryTokens = new Set(normalizeTokens(input.queryText));
 
     const ranked = [...input.items].sort((left, right) => {
-      const leftRecency = left.updatedAt.getTime();
-      const rightRecency = right.updatedAt.getTime();
-      const leftOverlap = mode === 'off' ? 0 : tokenOverlapScore(queryTokens, `${left.summary} ${JSON.stringify(left.valueJson)}`);
-      const rightOverlap = mode === 'off' ? 0 : tokenOverlapScore(queryTokens, `${right.summary} ${JSON.stringify(right.valueJson)}`);
-      const leftScore = (left.confidence * 100) + kindPriority(left.kind) + (leftOverlap * 50);
-      const rightScore = (right.confidence * 100) + kindPriority(right.kind) + (rightOverlap * 50);
+      const leftRecency = resolveEvidenceTimestamp(left);
+      const rightRecency = resolveEvidenceTimestamp(right);
+      const leftScore = mode === 'keyword_overlap'
+        ? keywordOverlapScore(left, queryTokens)
+        : (left.confidence * 100)
+          + kindPriority(left.kind)
+          + (
+            mode === 'off'
+              ? 0
+              : tokenOverlapScore(queryTokens, `${left.summary} ${JSON.stringify(left.valueJson)}`) * 50
+          );
+      const rightScore = mode === 'keyword_overlap'
+        ? keywordOverlapScore(right, queryTokens)
+        : (right.confidence * 100)
+          + kindPriority(right.kind)
+          + (
+            mode === 'off'
+              ? 0
+              : tokenOverlapScore(queryTokens, `${right.summary} ${JSON.stringify(right.valueJson)}`) * 50
+          );
       if (rightScore !== leftScore) {
         return rightScore - leftScore;
+      }
+      if (mode === 'keyword_overlap') {
+        const rightKindPriority = kindPriority(right.kind);
+        const leftKindPriority = kindPriority(left.kind);
+        if (rightKindPriority !== leftKindPriority) {
+          return rightKindPriority - leftKindPriority;
+        }
       }
       return rightRecency - leftRecency;
     });

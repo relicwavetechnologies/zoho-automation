@@ -17,6 +17,11 @@ type ExtractionBaseInput = {
   now?: Date;
 };
 
+export type UserMessageExtractionResult = {
+  drafts: ExtractedMemoryDraft[];
+  wasExplicitInstruction: boolean;
+};
+
 const buildBaseDraft = (
   input: ExtractionBaseInput,
   draft: Omit<ExtractedMemoryDraft, 'channelOrigin' | 'threadId' | 'conversationKey'>,
@@ -254,13 +259,36 @@ const resolveTimezonePreference = (text: string, localTimeZoneHint?: string): Ti
   return null;
 };
 
+const EXPLICIT_MEMORY_INSTRUCTION_PATTERNS = [
+  /\bremember\s+that\b/i,
+  /\bremember\s+i\b/i,
+  /\balways\s+(?:do|use|reply|respond|send)\b/i,
+  /\bnever\s+(?:do|use|reply|respond|send)\b/i,
+  /\bi\s+(?:prefer|like|don't want|do not want|hate)\b/i,
+  /\bkeep\s+in\s+mind\b/i,
+  /\bdon't\s+forget\b/i,
+  /\bmake\s+a\s+note\b/i,
+];
+
 class MemoryExtractionService {
-  extractFromUserMessage(input: ExtractionBaseInput & { text: string }): ExtractedMemoryDraft[] {
+  isExplicitMemoryInstruction(text: string): boolean {
+    const normalized = text.trim();
+    if (!normalized) {
+      return false;
+    }
+    return EXPLICIT_MEMORY_INSTRUCTION_PATTERNS.some((pattern) => pattern.test(normalized));
+  }
+
+  analyzeUserMessage(input: ExtractionBaseInput & { text: string }): UserMessageExtractionResult {
     const text = input.text.trim();
     if (!text) {
-      return [];
+      return {
+        drafts: [],
+        wasExplicitInstruction: false,
+      };
     }
 
+    const wasExplicitInstruction = this.isExplicitMemoryInstruction(text);
     const drafts: ExtractedMemoryDraft[] = [];
     const now = input.now ?? new Date();
 
@@ -450,7 +478,14 @@ class MemoryExtractionService {
       }));
     }
 
-    return drafts;
+    return {
+      drafts,
+      wasExplicitInstruction,
+    };
+  }
+
+  extractFromUserMessage(input: ExtractionBaseInput & { text: string }): ExtractedMemoryDraft[] {
+    return this.analyzeUserMessage(input).drafts;
   }
 
   extractFromTaskStateSnapshot(

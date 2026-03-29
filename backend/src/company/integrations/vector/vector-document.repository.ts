@@ -78,6 +78,35 @@ class VectorDocumentRepository {
     });
   }
 
+  findAllByOwner(input: {
+    companyId: string;
+    ownerUserId: string;
+    sourceType?: string;
+  }): Promise<VectorDocument[]> {
+    return prisma.vectorDocument.findMany({
+      where: {
+        companyId: input.companyId,
+        ownerUserId: input.ownerUserId,
+        ...(input.sourceType ? { sourceType: input.sourceType } : {}),
+      },
+      orderBy: [{ createdAt: 'asc' }, { chunkIndex: 'asc' }],
+    });
+  }
+
+  deleteAllByOwner(input: {
+    companyId: string;
+    ownerUserId: string;
+    sourceType?: string;
+  }): Promise<Prisma.BatchPayload> {
+    return prisma.vectorDocument.deleteMany({
+      where: {
+        companyId: input.companyId,
+        ownerUserId: input.ownerUserId,
+        ...(input.sourceType ? { sourceType: input.sourceType } : {}),
+      },
+    });
+  }
+
   findByConversation(input: {
     companyId: string;
     requesterUserId: string;

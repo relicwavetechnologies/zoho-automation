@@ -80,6 +80,7 @@ export type DesktopTaskState = {
   activeModule?: string;
   activeObjective?: string;
   currentWorkflowId?: string;
+  preferredReplyMode?: 'thread' | 'reply' | 'plain' | 'dm';
   activeSourceArtifacts: DesktopSourceArtifact[];
   workingSets: Record<string, DesktopWorkingSet>;
   aliases: Record<string, DesktopEntityRef>;
@@ -470,6 +471,13 @@ export const parseDesktopTaskState = (value: unknown): DesktopTaskState => {
     activeModule: asString(record.activeModule),
     activeObjective: asString(record.activeObjective),
     currentWorkflowId: asString(record.currentWorkflowId),
+    preferredReplyMode:
+      asString(record.preferredReplyMode) === 'thread'
+      || asString(record.preferredReplyMode) === 'reply'
+      || asString(record.preferredReplyMode) === 'plain'
+      || asString(record.preferredReplyMode) === 'dm'
+        ? asString(record.preferredReplyMode) as 'thread' | 'reply' | 'plain' | 'dm'
+        : undefined,
     activeSourceArtifacts,
     workingSets: Object.fromEntries(
       Object.entries(workingSets).flatMap(([key, value]) => {

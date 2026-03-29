@@ -6,6 +6,7 @@ import type { RerankCandidate, RerankResult } from '../vector/retrieval-contract
 
 const GOOGLE_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_RANKING_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+const GOOGLE_RERANK_401_COOLDOWN_MS = 5 * 60 * 1000;
 
 type AccessTokenState = {
   token: string;
@@ -130,6 +131,7 @@ const truncateForRanking = (value: string, tokenBudget = 900): string => {
 
 export class GoogleRankingService {
   private readonly tokenProvider = new GoogleCloudAccessTokenProvider();
+  private unauthorizedCooldownUntil = 0;
 
   isConfigured(): boolean {
     return Boolean(
@@ -176,6 +178,10 @@ export class GoogleRankingService {
       return this.fallback(normalizedRecords, topN);
     }
 
+    if (this.unauthorizedCooldownUntil > Date.now()) {
+      return this.fallback(normalizedRecords, topN);
+    }
+
     try {
       const token = await this.tokenProvider.getToken();
       if (!token) {
@@ -206,6 +212,9 @@ export class GoogleRankingService {
 
       if (!response.ok) {
         const body = await response.text();
+        if (response.status === 401) {
+          this.unauthorizedCooldownUntil = Date.now() + GOOGLE_RERANK_401_COOLDOWN_MS;
+        }
         throw new Error(
           `Google ranking request failed: HTTP ${response.status}${body ? ` - ${body}` : ''}`,
         );
@@ -226,11 +235,15 @@ export class GoogleRankingService {
         .filter((record): record is RerankResult => Boolean(record));
 
       if (ranked.length > 0) {
+        this.unauthorizedCooldownUntil = 0;
         return ranked;
       }
 
       throw new Error('Google ranking returned no ranked records');
     } catch (error) {
+      if (error instanceof Error && error.message.includes('HTTP 401')) {
+        this.unauthorizedCooldownUntil = Date.now() + GOOGLE_RERANK_401_COOLDOWN_MS;
+      }
       logger.warn('google.ranking.failed', {
         model: config.GOOGLE_RANKING_MODEL,
         required: Boolean(options.required),

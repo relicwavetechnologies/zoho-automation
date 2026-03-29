@@ -33,6 +33,8 @@ type SerializedPromptContext = Omit<MemoryPromptContext, 'behaviorProfile'> & {
   behaviorProfile: UserBehaviorProfile | null;
 };
 
+type PreferredReplyMode = NonNullable<MemoryPromptContext['preferredReplyMode']>;
+
 const profileCache = new Map<string, TimedPromiseCacheEntry<UserBehaviorProfile | null>>();
 const activeRowsCache = new Map<string, TimedPromiseCacheEntry<FlatUserMemoryItem[]>>();
 const promptContextCache = new Map<string, TimedPromiseCacheEntry<MemoryPromptContext>>();
@@ -80,6 +82,71 @@ const dedupeStrings = (values: string[]): string[] => {
     output.push(normalized);
   }
   return output;
+};
+
+const isPreferredReplyMode = (value: unknown): value is PreferredReplyMode =>
+  value === 'thread' || value === 'reply' || value === 'plain' || value === 'dm';
+
+const resolveMemoryEvidenceTime = (item: FlatUserMemoryItem): number =>
+  (item.lastConfirmedAt ?? item.lastSeenAt ?? item.updatedAt).getTime();
+
+const resolveReplyModeFromText = (text: string): PreferredReplyMode | null => {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (/\b(?:dm me|my dm|send to my dm|private|privately|just me)\b/u.test(normalized)) {
+    return 'dm';
+  }
+  if (/\b(?:post to channel|send to the channel|plain send|standalone update|no reply reference)\b/u.test(normalized)) {
+    return 'plain';
+  }
+  if (
+    /\b(?:reply in (?:the )?chat|reply directly|direct reply|chat only|here only|reply here|answer here|not in (?:a )?thread|do not reply in (?:a )?thread|don't reply in (?:a )?thread|inline reply)\b/u.test(normalized)
+  ) {
+    return 'reply';
+  }
+  if (/\b(?:thread|reply in thread|threaded)\b/u.test(normalized)) {
+    return 'thread';
+  }
+  return null;
+};
+
+const resolveReplyModeFromMemoryItem = (item: FlatUserMemoryItem): PreferredReplyMode | null => {
+  const fromValue = item.valueJson && typeof item.valueJson === 'object'
+    ? (item.valueJson as Record<string, unknown>).replyMode
+    : null;
+  if (isPreferredReplyMode(fromValue)) {
+    return fromValue;
+  }
+  return resolveReplyModeFromText(`${item.summary} ${JSON.stringify(item.valueJson ?? {})}`);
+};
+
+const extractPreferredReplyMode = (
+  activeItems: FlatUserMemoryItem[],
+): MemoryPromptContext['preferredReplyMode'] => {
+  const primary = activeItems
+    .filter((item) => item.status === 'active' && item.kind === 'response_style')
+    .sort((left, right) => resolveMemoryEvidenceTime(right) - resolveMemoryEvidenceTime(left));
+  for (const item of primary) {
+    const mode = resolveReplyModeFromMemoryItem(item);
+    if (mode) {
+      return mode;
+    }
+  }
+
+  const fallback = activeItems
+    .filter((item) =>
+      item.status === 'active' && (item.kind === 'preference' || item.kind === 'constraint'))
+    .sort((left, right) => resolveMemoryEvidenceTime(right) - resolveMemoryEvidenceTime(left));
+  for (const item of fallback) {
+    const mode = resolveReplyModeFromMemoryItem(item);
+    if (mode) {
+      return mode;
+    }
+  }
+
+  return null;
 };
 
 const mapMemoryItem = (item: {
@@ -261,6 +328,7 @@ const parsePromptContext = (serialized: string | null): MemoryPromptContext | un
         durableTaskContextText: null,
         relevantMemoryFacts: [],
         relevantMemoryFactsText: null,
+        preferredReplyMode: null,
       };
     }
     return {
@@ -270,6 +338,9 @@ const parsePromptContext = (serialized: string | null): MemoryPromptContext | un
       durableTaskContextText: typeof parsed.durableTaskContextText === 'string' ? parsed.durableTaskContextText : null,
       relevantMemoryFacts: Array.isArray(parsed.relevantMemoryFacts) ? parsed.relevantMemoryFacts.filter((value): value is string => typeof value === 'string') : [],
       relevantMemoryFactsText: typeof parsed.relevantMemoryFactsText === 'string' ? parsed.relevantMemoryFactsText : null,
+      preferredReplyMode: isPreferredReplyMode(parsed.preferredReplyMode)
+        ? parsed.preferredReplyMode
+        : null,
     };
   } catch {
     return {
@@ -279,6 +350,7 @@ const parsePromptContext = (serialized: string | null): MemoryPromptContext | un
       durableTaskContextText: null,
       relevantMemoryFacts: [],
       relevantMemoryFactsText: null,
+      preferredReplyMode: null,
     };
   }
 };
@@ -460,6 +532,7 @@ class MemoryContextService {
         durableTaskContextText: null,
         relevantMemoryFacts: [],
         relevantMemoryFactsText: null,
+        preferredReplyMode: null,
       };
     }
 
@@ -501,7 +574,7 @@ class MemoryContextService {
         || item.kind === 'constraint');
 
       const relevantStructured = memoryRankingService.rankRelevant({
-        mode: 'off',
+        mode: 'keyword_overlap',
         queryText: input.queryText,
         items: activeItems.filter((item) => item.kind !== 'response_style' && item.kind !== 'tool_routing'),
         limit: 6,
@@ -542,6 +615,7 @@ class MemoryContextService {
         ...relevantStructured,
         ...vectorSnippets,
       ]).slice(0, 8);
+      const preferredReplyMode = extractPreferredReplyMode(activeItems);
 
       const behaviorSummary = buildBehaviorProfileSummary(behaviorProfile);
 
@@ -554,6 +628,7 @@ class MemoryContextService {
         durableTaskContextText: durableTaskContext.length > 0 ? durableTaskContext.map((entry) => `- ${entry}`).join('\n') : null,
         relevantMemoryFacts,
         relevantMemoryFactsText: relevantMemoryFacts.length > 0 ? relevantMemoryFacts.map((entry) => `- ${entry}`).join('\n') : null,
+        preferredReplyMode,
       };
       await redis.set(
         redisKey,

@@ -39,6 +39,8 @@ import { memoryService } from '../../memory';
 import { resolveAllowedRolesForVisibilityScope } from '../../../modules/file-upload/file-visibility-scope';
 import { knowledgeShareService } from '../../knowledge-share/knowledge-share.service';
 import { departmentService } from '../../departments/department.service';
+import { stateRedisConnection } from '../../queue/runtime/redis.connection';
+import { personalVectorMemoryService } from '../../integrations/vector';
 
 type IngressIdempotencyKeyType = 'event' | 'message';
 type WebhookVerificationFailureReason = Exclude<LarkWebhookVerificationResult['reason'], undefined>;
@@ -723,7 +725,10 @@ const parseLarkWorkflowCommand = (
 
 const parseLarkMemoryCommand = (
   text: string,
-): { kind: 'list' | 'help' | 'clear' } | { kind: 'forget'; reference: string } | null => {
+): (
+  | { kind: 'list' | 'help' | 'clear' | 'clear_hard' | 'clear_hard_confirm' }
+  | { kind: 'forget'; reference: string }
+) | null => {
   const trimmed = normalizeLarkCommandText(text);
   const normalized = trimmed.toLowerCase();
   if (normalized === '/memory') {
@@ -731,6 +736,12 @@ const parseLarkMemoryCommand = (
   }
   if (normalized === '/memory help') {
     return { kind: 'help' };
+  }
+  if (normalized === '/memory clear --hard confirm') {
+    return { kind: 'clear_hard_confirm' };
+  }
+  if (normalized === '/memory clear --hard') {
+    return { kind: 'clear_hard' };
   }
   if (normalized === '/memory clear') {
     return { kind: 'clear' };
@@ -789,7 +800,10 @@ const buildLarkCommandMenuText = (): string => [
   'Forget one stored memory item.',
   '',
   '/memory clear',
-  'Clear all durable personal memories for your linked account.',
+  'Clear saved preferences and facts for your linked account.',
+  '',
+  '/memory clear --hard',
+  'Wipe saved memories and conversation-history recall after confirmation.',
   '',
   '/share [optional reason]',
   'Share this chat knowledge up to the current point for admin review/approval.',
@@ -805,7 +819,10 @@ const buildLarkMemoryHelpText = (): string => [
   'Forget one memory from the latest list order or by exact id.',
   '',
   '/memory clear',
-  'Clear all durable personal memories.',
+  'Clear saved preferences and facts only.',
+  '',
+  '/memory clear --hard',
+  'Wipe saved memories and conversation-history recall after confirmation.',
 ].join('\n');
 
 const formatLarkMemoryListText = (
@@ -1778,13 +1795,14 @@ export const createLarkWebhookEventHandler = (
       const sendLarkReply = async (input: {
         text: string;
         format?: 'interactive' | 'text';
+        replyInThread?: boolean;
       }) => dependencies.adapter.sendMessage({
         chatId: tracedMessageBase.chatId,
         text: input.text,
         format: input.format,
         correlationId: requestId,
         replyToMessageId: tracedMessageBase.messageId,
-        replyInThread: tracedMessageBase.chatType === 'group',
+        replyInThread: input.replyInThread ?? false,
       });
 
       let attachedFiles = normalized.attachedFiles ?? [];
@@ -2102,16 +2120,93 @@ export const createLarkWebhookEventHandler = (
           });
         }
 
+        const redis = stateRedisConnection.getClient();
+        const hardClearKey = `lark:memory:clear-hard:${scopedCompanyId}:${linkedUserId}:${tracedMessageBase.chatId}`;
+
         if (memoryCommand.kind === 'clear') {
           await memoryService.clearUserMemory({
             companyId: scopedCompanyId,
             userId: linkedUserId,
           });
-          await sendLarkReply({ text: 'Cleared durable personal memories for your linked account.' });
+          await redis.del(hardClearKey);
+          await sendLarkReply({
+            text: [
+              'Done - I\'ve cleared your saved preferences and facts.',
+              '',
+              'Note: conversation history used for context recall is stored separately and has not been cleared.',
+              'Use /memory clear --hard if you want to wipe everything including conversation history.',
+            ].join('\n'),
+          });
           return res.status(202).json({
             success: true,
             message: 'Memory clear command handled',
           });
+        }
+
+        if (memoryCommand.kind === 'clear_hard') {
+          await redis.set(hardClearKey, requestId, 'EX', 60);
+          await sendLarkReply({
+            text: [
+              'Hard memory clear requested.',
+              '',
+              'This will permanently delete:',
+              '- All your saved preferences and facts',
+              '- All conversation history vectors',
+              '- Everything Divo has learned about you from personal chat recall',
+              '',
+              'This cannot be undone.',
+              '',
+              'Reply /memory clear --hard confirm within 60 seconds to proceed.',
+            ].join('\n'),
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Memory hard clear command staged',
+          });
+        }
+
+        if (memoryCommand.kind === 'clear_hard_confirm') {
+          const pending = await redis.get(hardClearKey);
+          if (!pending) {
+            await sendLarkReply({
+              text: 'Confirmation expired. Run /memory clear --hard again to start over.',
+            });
+            return res.status(202).json({
+              success: true,
+              message: 'Memory hard clear confirmation expired',
+            });
+          }
+          await redis.del(hardClearKey);
+          try {
+            await memoryService.clearUserMemory({
+              companyId: scopedCompanyId,
+              userId: linkedUserId,
+            });
+            await personalVectorMemoryService.clearAllForUser({
+              companyId: scopedCompanyId,
+              userId: linkedUserId,
+            });
+            await sendLarkReply({
+              text: 'Done - everything has been cleared, including conversation-history recall.',
+            });
+            return res.status(202).json({
+              success: true,
+              message: 'Memory hard clear command handled',
+            });
+          } catch (error) {
+            logger.error('memory.hard_clear.failed', {
+              companyId: scopedCompanyId,
+              userId: linkedUserId,
+              error: error instanceof Error ? error.message : 'unknown',
+            });
+            await sendLarkReply({
+              text: 'Something went wrong during the hard clear. Please try again or contact support.',
+            });
+            return res.status(202).json({
+              success: true,
+              message: 'Memory hard clear command failed',
+            });
+          }
         }
 
         const listed = await memoryService.listForUser({

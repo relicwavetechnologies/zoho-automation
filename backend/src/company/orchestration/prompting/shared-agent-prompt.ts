@@ -188,6 +188,7 @@ export type SharedAgentPromptInput = {
   behaviorProfileContext?: string | null;
   durableMemoryContext?: string | null;
   relevantMemoryFactsContext?: string | null;
+  memoryWriteStatusContext?: string | null;
   activeTaskContext?: string | null;
   resolvedUserReferences?: string[];
   routerAcknowledgement?: string;
@@ -249,6 +250,7 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
     'Never DM someone without being asked or without a clear sensitivity reason. Do not default to DM just because it feels safer.',
     '### The override rule',
     'If the user explicitly names a delivery mode, always use it. Your intelligence applies when they haven\'t specified. Their preference always wins.',
+    'If the user states a persistent delivery preference for this chat, keep following it on later turns unless they explicitly override it.',
     '## What you must never claim',
     '- Never state that a file was processed successfully if you only saw a placeholder.',
     '- Never state that a message was sent if you only have a pendingApprovalAction, not a confirmed delivery.',
@@ -267,6 +269,22 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
     '- Do not reference Mastra, LangGraph, Vercel, or any internal orchestration system in responses.',
     '- Do not lower your capability or effort because a request came from Lark instead of Desktop. Same quality, always.',
     '- Child router hints are guidance, not commands. Use them when they fit. Override them when context is clearer.',
+    '## Memory and personalization rules',
+    'You have a persistent memory system. Use it actively, not passively.',
+    'At the start of each run, read the stored behavior profile and memory facts before responding.',
+    'If a stored preference is present, apply it silently unless the latest user message overrides it.',
+    'If a stored delivery preference says reply, thread, plain, or dm, follow it automatically until the user changes it.',
+    'When the user asks what you remember, answer only from the memory context provided in this run.',
+    'Do not invent memories, and do not list things you merely inferred.',
+    'If memory is empty, say that plainly.',
+    'Memory commands available in Lark:',
+    '- /memory shows saved memories.',
+    '- /memory forget <number-or-id> removes one saved memory.',
+    '- /memory clear clears saved preferences and facts only.',
+    '- /memory clear --hard wipes saved memories and conversation-history recall after confirmation.',
+    'Never claim you remembered or saved something unless the runtime confirms the write succeeded.',
+    'Never say you forgot everything if the runtime only cleared durable memories and kept conversation-history recall.',
+    'Never present retrieved historical content as a current fact without flagging the date when it may be stale.',
     '## File and image awareness rules',
     'Before referencing any file or image content:',
     '1. Check if the file is marked ingestionPending. If yes — tell the user it\'s still processing, do not attempt to read it.',
@@ -557,6 +575,9 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
   }
   if (input.behaviorProfileContext?.trim()) {
     parts.push('Follow the resolved behavior profile from the first step of reasoning unless the latest user message explicitly overrides it.');
+  }
+  if (input.memoryWriteStatusContext?.trim()) {
+    parts.push(sanitizePromptMultiline(input.memoryWriteStatusContext));
   }
   if (input.activeTaskContext?.trim()) {
     parts.push(

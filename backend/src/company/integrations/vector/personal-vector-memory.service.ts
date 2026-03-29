@@ -10,6 +10,7 @@ import { buildCanonicalChatChunks } from './canonical-retrieval';
 import { RETRIEVAL_PROFILE_CONFIG } from './retrieval-contract';
 
 const hashContent = (content: string): string => createHash('sha256').update(content).digest('hex');
+const PERSONAL_MEMORY_SCORE_THRESHOLD = 0.62;
 
 export type PersonalMemoryMatch = {
   sourceId: string;
@@ -25,6 +26,34 @@ const PERSONAL_VECTOR_QUERY_CACHE_TTL_MS = 20_000;
 type PersonalMemoryQueryCacheEntry = {
   expiresAt: number;
   promise: Promise<PersonalMemoryMatch[]>;
+};
+
+const applyRecencyDecay = <T extends { score: number; payload: Record<string, unknown> }>(
+  hits: T[],
+): T[] => {
+  const now = Date.now();
+  return hits.map((hit) => {
+    const sourceDate =
+      typeof hit.payload.sourceUpdatedAt === 'string'
+        ? hit.payload.sourceUpdatedAt
+        : typeof hit.payload.createdAt === 'string'
+          ? hit.payload.createdAt
+          : null;
+    if (!sourceDate) {
+      return hit;
+    }
+    const ageInDays = (now - new Date(sourceDate).getTime()) / (1000 * 60 * 60 * 24);
+    const decayMultiplier =
+      ageInDays < 7 ? 1
+        : ageInDays < 30 ? 0.88
+          : ageInDays < 90 ? 0.74
+            : ageInDays < 180 ? 0.6
+              : 0.45;
+    return {
+      ...hit,
+      score: hit.score * decayMultiplier,
+    };
+  });
 };
 
 class PersonalVectorMemoryService {
@@ -101,12 +130,13 @@ class PersonalVectorMemoryService {
         fusion: 'dbsf',
         groupByField: 'documentKey',
         groupSize: profile.groupSize,
+        scoreThreshold: PERSONAL_MEMORY_SCORE_THRESHOLD,
         sourceTypes: ['chat_turn'],
         includePersonal: true,
         includeShared: false,
         includePublic: false,
       });
-      const matches = groups.flatMap((group) => group.hits);
+      const matches = applyRecencyDecay(groups.flatMap((group) => group.hits));
       const reranked = await googleRankingService.rerank(
         normalized,
         matches.map((match) => ({
@@ -143,7 +173,9 @@ class PersonalVectorMemoryService {
         })
         .map((match) => ({
           sourceId: match.sourceId,
-          score: match.score,
+          score:
+            rerankedById.get(`${match.sourceType}:${match.sourceId}:${match.chunkIndex}`)
+              ?.rerankScore ?? match.score,
           documentKey: match.documentKey,
           content:
             typeof match.payload._chunk === 'string'
@@ -396,6 +428,27 @@ class PersonalVectorMemoryService {
       .filter((line): line is string => line !== null);
 
     return lines.length > 0 ? lines.join('\n') : null;
+  }
+
+  async clearAllForUser(input: {
+    companyId: string;
+    userId: string;
+  }): Promise<void> {
+    const ownerPrefix = `${input.companyId}:${input.userId}:`;
+    for (const key of this.queryCache.keys()) {
+      if (key.startsWith(ownerPrefix)) {
+        this.queryCache.delete(key);
+      }
+    }
+    await qdrantAdapter.deleteOwnedChatTurns({
+      companyId: input.companyId,
+      ownerUserId: input.userId,
+    });
+    await vectorDocumentRepository.deleteAllByOwner({
+      companyId: input.companyId,
+      ownerUserId: input.userId,
+      sourceType: 'chat_turn',
+    });
   }
 }
 

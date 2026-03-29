@@ -57,7 +57,7 @@ import {
   personalVectorMemoryService,
   type PersonalMemoryMatch,
 } from '../../company/integrations/vector';
-import { memoryService } from '../../company/memory';
+import { memoryExtractionService, memoryService } from '../../company/memory';
 import {
   enrichQuery,
   type QueryEnrichment,
@@ -1241,7 +1241,7 @@ export const runDesktopChildRouter = async (input: {
   try {
     const memoryPromptContext =
       input.companyId && input.userId
-        ? await memoryService.getPromptContext({
+          ? await memoryService.getPromptContext({
             companyId: input.companyId,
             userId: input.userId,
             threadId: input.threadId,
@@ -1256,7 +1256,12 @@ export const runDesktopChildRouter = async (input: {
             durableTaskContextText: null,
             relevantMemoryFacts: [],
             relevantMemoryFactsText: null,
+            preferredReplyMode: null,
           };
+    if (input.taskState && !input.taskState.preferredReplyMode && memoryPromptContext.preferredReplyMode) {
+      input.taskState.preferredReplyMode = memoryPromptContext.preferredReplyMode;
+      input.taskState.updatedAt = new Date().toISOString();
+    }
     const retrievedMemorySnippets = memoryPromptContext.relevantMemoryFacts;
     const model = await resolveVercelChildRouterModel();
     await appendLatestAgentRunLog(input.executionId, 'child_router.start', {
@@ -2405,7 +2410,7 @@ const maybeStoreConversationTurn = (input: {
       channel: 'desktop',
       chatId: input.threadId,
     });
-    if (input.role === 'user') {
+    if (input.role === 'user' && !memoryExtractionService.isExplicitMemoryInstruction(input.text)) {
       await memoryService.recordUserTurn({
         companyId: input.companyId,
         userId: input.userId,
@@ -2417,6 +2422,40 @@ const maybeStoreConversationTurn = (input: {
       });
     }
   });
+};
+
+const resolveDesktopMemoryWriteStatusContext = async (input: {
+  companyId: string;
+  userId: string;
+  threadId: string;
+  text: string;
+}): Promise<string | null> => {
+  if (!memoryExtractionService.isExplicitMemoryInstruction(input.text)) {
+    return null;
+  }
+  try {
+    const result = await memoryService.recordUserTurnOrThrow({
+      companyId: input.companyId,
+      userId: input.userId,
+      channelOrigin: 'desktop',
+      threadId: input.threadId,
+      conversationKey: buildConversationKey(input.threadId),
+      localTimeZoneHint: LOCAL_TIME_ZONE,
+      text: input.text,
+    });
+    if (result.draftCount > 0) {
+      return 'The current user turn explicitly asked to save a memory and the write succeeded. Start the response with exactly "Got it. I\\\'ve saved that." once, then continue normally. Do not repeat the confirmation later in the message.';
+    }
+    return 'The current user turn explicitly asked to save a memory, but nothing durable could be extracted. Start the response with exactly "I couldn\\\'t save that yet. Please restate it more explicitly." once, and do not claim it was saved.';
+  } catch (error) {
+    logger.warn('desktop.memory.explicit_write.failed', {
+      companyId: input.companyId,
+      userId: input.userId,
+      threadId: input.threadId,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return 'The current user turn explicitly asked to save a memory, but the write failed. Start the response with exactly "I tried to save that, but something went wrong. Please try again." once, and do not claim it was saved.';
+  }
 };
 
 const queryConversationMemoryWithFallback = async (input: {
@@ -2740,6 +2779,7 @@ const buildDesktopContextAssembly = async (input: {
     string,
     import('../../company/tools/tool-action-groups').ToolActionGroup[]
   >;
+  memoryWriteStatusContext?: string | null;
 }): Promise<{
   systemPrompt: string;
   historyMessages: ModelMessage[];
@@ -2754,6 +2794,12 @@ const buildDesktopContextAssembly = async (input: {
     threadSummary: input.threadSummary,
     history: input.history,
   });
+  const memoryWriteStatusContext = input.memoryWriteStatusContext ?? await resolveDesktopMemoryWriteStatusContext({
+    companyId: input.session.companyId,
+    userId: input.session.userId,
+    threadId: input.threadId,
+    text: input.latestUserMessage,
+  });
   const memoryPromptContext = await memoryService.getPromptContext({
     companyId: input.session.companyId,
     userId: input.session.userId,
@@ -2762,6 +2808,10 @@ const buildDesktopContextAssembly = async (input: {
     queryText: input.queryEnrichment?.retrievalQuery ?? input.latestUserMessage,
     contextClass,
   });
+  if (!input.taskState.preferredReplyMode && memoryPromptContext.preferredReplyMode) {
+    input.taskState.preferredReplyMode = memoryPromptContext.preferredReplyMode;
+    input.taskState.updatedAt = new Date().toISOString();
+  }
   const conversationSnippets = memoryPromptContext.relevantMemoryFacts;
   const systemPrompt = buildSystemPrompt({
     threadId: input.threadId,
@@ -2793,6 +2843,7 @@ const buildDesktopContextAssembly = async (input: {
     behaviorProfileContext: memoryPromptContext.behaviorProfileContext,
     durableMemoryContext: memoryPromptContext.durableTaskContextText,
     relevantMemoryFactsContext: memoryPromptContext.relevantMemoryFactsText,
+    memoryWriteStatusContext,
     contextClass,
     hasAttachedFiles: input.activeAttachments.length > 0,
   });
@@ -2893,6 +2944,7 @@ const buildSystemPrompt = (input: {
   behaviorProfileContext?: string | null;
   durableMemoryContext?: string | null;
   relevantMemoryFactsContext?: string | null;
+  memoryWriteStatusContext?: string | null;
   contextClass?: DesktopContextClass;
   hasAttachedFiles?: boolean;
 }) => {
@@ -2946,6 +2998,7 @@ const buildSystemPrompt = (input: {
     behaviorProfileContext: input.behaviorProfileContext,
     durableMemoryContext: input.durableMemoryContext,
     relevantMemoryFactsContext: input.relevantMemoryFactsContext,
+    memoryWriteStatusContext: input.memoryWriteStatusContext,
     resolvedUserReferences: input.resolvedUserReferences,
     routerAcknowledgement: input.routerAcknowledgement,
     childRouteHints: input.childRouteHints,
