@@ -2514,6 +2514,87 @@ const encodeGmailMessage = (input: {
   return raw;
 };
 
+const decodeGmailBodyData = (value: string | null | undefined): string | null => {
+  const encoded = value?.trim();
+  if (!encoded) return null;
+  try {
+    const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    return Buffer.from(padded, 'base64').toString('utf-8');
+  } catch {
+    return null;
+  }
+};
+
+const getGmailHeaderValue = (
+  headers: Array<Record<string, unknown>>,
+  headerName: string,
+): string | null => {
+  const normalized = headerName.trim().toLowerCase();
+  for (const header of headers) {
+    const name = asString(header.name)?.trim().toLowerCase();
+    if (name === normalized) {
+      return asString(header.value) ?? null;
+    }
+  }
+  return null;
+};
+
+const extractPlainTextBody = (payload: Record<string, unknown> | undefined): string | null => {
+  if (!payload) return null;
+  const mimeType = asString(payload.mimeType)?.trim().toLowerCase();
+  const body = asRecord(payload.body);
+  const decoded = decodeGmailBodyData(asString(body?.data));
+  if (mimeType === 'text/plain' && decoded?.trim()) {
+    return decoded.trim().slice(0, 500);
+  }
+  const parts = asArray(payload.parts)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+  for (const part of parts) {
+    const text = extractPlainTextBody(part);
+    if (text) return text;
+  }
+  if (mimeType === 'text/html' && decoded?.trim()) {
+    return decoded
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 500) || null;
+  }
+  return null;
+};
+
+const normalizeGmailMessage = (rawMessage: Record<string, unknown>): Record<string, unknown> => {
+  const payload = asRecord(rawMessage.payload);
+  const headers = asArray(payload?.headers)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+  const from = getGmailHeaderValue(headers, 'from');
+  const to = getGmailHeaderValue(headers, 'to');
+  const subject = getGmailHeaderValue(headers, 'subject');
+  const date = getGmailHeaderValue(headers, 'date');
+  const inReplyTo = getGmailHeaderValue(headers, 'in-reply-to');
+  const references = getGmailHeaderValue(headers, 'references');
+
+  return {
+    messageId: asString(rawMessage.id),
+    threadId: asString(rawMessage.threadId),
+    from,
+    to,
+    subject,
+    date,
+    snippet: asString(rawMessage.snippet) ?? null,
+    bodyText: extractPlainTextBody(payload),
+    replyFound: Boolean(inReplyTo || references),
+    labelIds: asArray(rawMessage.labelIds)
+      .map((entry) => asString(entry))
+      .filter((entry): entry is string => Boolean(entry)),
+  };
+};
+
 const toEnvelopeFromAgentResult = (
   output: unknown,
   input?: {
@@ -5488,43 +5569,60 @@ export const createVercelDesktopTools = (
             return access.error;
           }
 
-          const baseUrl = 'https://gmail.googleapis.com/gmail/v1/users/me';
+	          const baseUrl = 'https://gmail.googleapis.com/gmail/v1/users/me';
+	          const buildGmailEnvelope = (envelope: Parameters<typeof buildEnvelope>[0]): VercelToolEnvelope =>
+	            buildEnvelope({
+	              toolId: 'google-gmail',
+	              ...envelope,
+	            });
 
-          if (input.operation === 'listMessages') {
-            const url = new URL(`${baseUrl}/messages`);
+	          if (input.operation === 'listMessages') {
+	            const url = new URL(`${baseUrl}/messages`);
             url.searchParams.set('maxResults', String(input.maxResults ?? 10));
             url.searchParams.set('q', input.query?.trim() || 'in:inbox');
             const response = await fetch(url, {
               headers: { Authorization: `Bearer ${access.accessToken}` },
             });
             const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-            if (!response.ok) {
-              return buildEnvelope({
-                success: false,
-                summary: `Gmail list failed: ${(payload as any)?.error?.message ?? response.statusText}`,
-                errorKind: 'api_failure',
+	            if (!response.ok) {
+	              return buildGmailEnvelope({
+	                success: false,
+	                summary: `Gmail list failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+	                errorKind: 'api_failure',
                 retryable: true,
                 fullPayload: { status: response.status, payload },
               });
             }
-            const items = asArray(payload.messages)
-              .map((entry) => asRecord(entry))
-              .filter(Boolean);
-            return buildEnvelope({
-              success: true,
-              summary: `Found ${items.length} message(s).`,
-              keyData: { items, resultCount: items.length },
-              fullPayload: payload,
-            });
-          }
+	            const items = asArray(payload.messages)
+	              .map((entry) => asRecord(entry))
+	              .filter(Boolean);
+	            const normalizedMessages = items.map((entry) => normalizeGmailMessage(entry));
+	            return buildGmailEnvelope({
+	              success: true,
+	              summary: `Found ${items.length} message(s).`,
+	              data: {
+	                count: items.length,
+	                messages: normalizedMessages,
+	              },
+	              keyData: {
+	                messages: normalizedMessages,
+	                resultCount: items.length,
+	              },
+	              fullPayload: {
+	                count: items.length,
+	                messages: normalizedMessages,
+	                resultSizeEstimate: payload.resultSizeEstimate ?? items.length,
+	              },
+	            });
+	          }
 
           if (input.operation === 'getMessage') {
             const messageId = input.messageId?.trim();
-            if (!messageId) {
-              return buildEnvelope({
-                success: false,
-                summary: 'getMessage requires messageId.',
-                errorKind: 'missing_input',
+	            if (!messageId) {
+	              return buildGmailEnvelope({
+	                success: false,
+	                summary: 'getMessage requires messageId.',
+	                errorKind: 'missing_input',
               });
             }
             const url = new URL(`${baseUrl}/messages/${messageId}`);
@@ -5533,30 +5631,34 @@ export const createVercelDesktopTools = (
               headers: { Authorization: `Bearer ${access.accessToken}` },
             });
             const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-            if (!response.ok) {
-              return buildEnvelope({
-                success: false,
-                summary: `Gmail getMessage failed: ${(payload as any)?.error?.message ?? response.statusText}`,
-                errorKind: 'api_failure',
+	            if (!response.ok) {
+	              return buildGmailEnvelope({
+	                success: false,
+	                summary: `Gmail getMessage failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+	                errorKind: 'api_failure',
                 retryable: true,
                 fullPayload: { status: response.status, payload },
               });
             }
-            return buildEnvelope({
-              success: true,
-              summary: `Fetched message ${messageId}.`,
-              keyData: { messageId },
-              fullPayload: payload,
-            });
-          }
+	            const normalizedMessage = normalizeGmailMessage(payload);
+	            const fromLabel = asString(normalizedMessage.from) ?? 'unknown sender';
+	            const subjectLabel = asString(normalizedMessage.subject) ?? 'No subject';
+	            return buildGmailEnvelope({
+	              success: true,
+	              summary: `Fetched message from ${fromLabel} — "${subjectLabel}".`,
+	              data: normalizedMessage,
+	              keyData: normalizedMessage,
+	              fullPayload: normalizedMessage,
+	            });
+	          }
 
           if (input.operation === 'getThread') {
             const threadId = input.threadId?.trim();
-            if (!threadId) {
-              return buildEnvelope({
-                success: false,
-                summary: 'getThread requires threadId.',
-                errorKind: 'missing_input',
+	            if (!threadId) {
+	              return buildGmailEnvelope({
+	                success: false,
+	                summary: 'getThread requires threadId.',
+	                errorKind: 'missing_input',
               });
             }
             const url = new URL(`${baseUrl}/threads/${threadId}`);
@@ -5565,22 +5667,34 @@ export const createVercelDesktopTools = (
               headers: { Authorization: `Bearer ${access.accessToken}` },
             });
             const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-            if (!response.ok) {
-              return buildEnvelope({
-                success: false,
-                summary: `Gmail getThread failed: ${(payload as any)?.error?.message ?? response.statusText}`,
-                errorKind: 'api_failure',
+	            if (!response.ok) {
+	              return buildGmailEnvelope({
+	                success: false,
+	                summary: `Gmail getThread failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+	                errorKind: 'api_failure',
                 retryable: true,
                 fullPayload: { status: response.status, payload },
               });
             }
-            return buildEnvelope({
-              success: true,
-              summary: `Fetched thread ${threadId}.`,
-              keyData: { threadId },
-              fullPayload: payload,
-            });
-          }
+	            return buildGmailEnvelope({
+	              success: true,
+	              summary: `Fetched thread ${threadId}.`,
+	              keyData: {
+	                threadId,
+	                messages: asArray(payload.messages)
+	                  .map((entry) => asRecord(entry))
+	                  .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+	                  .map((entry) => normalizeGmailMessage(entry)),
+	              },
+	              fullPayload: {
+	                threadId,
+	                messages: asArray(payload.messages)
+	                  .map((entry) => asRecord(entry))
+	                  .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+	                  .map((entry) => normalizeGmailMessage(entry)),
+	              },
+	            });
+	          }
 
           if (input.operation === 'createDraft') {
             if (!input.to || (!input.body && !(input.facts?.length) && !input.purpose && !input.subject)) {
@@ -5590,9 +5704,9 @@ export const createVercelDesktopTools = (
                   ? 'body_or_facts_or_purpose_or_subject'
                   : null,
               ].filter((value): value is string => Boolean(value));
-              return buildEnvelope({
-                success: false,
-                summary: 'createDraft requires to plus enough content to compose the email.',
+	              return buildGmailEnvelope({
+	                success: false,
+	                summary: 'createDraft requires to plus enough content to compose the email.',
                 errorKind: 'missing_input',
                 missingFields,
                 userAction: 'Please provide the recipient plus enough content to compose the email.',
@@ -5664,9 +5778,9 @@ export const createVercelDesktopTools = (
           if (input.operation === 'sendDraft') {
             const draftId = input.draftId?.trim();
             if (!draftId) {
-              return buildEnvelope({
-                success: false,
-                summary: 'sendDraft requires draftId.',
+	              return buildGmailEnvelope({
+	                success: false,
+	                summary: 'sendDraft requires draftId.',
                 errorKind: 'missing_input',
                 missingFields: ['draftId'],
                 userAction: 'Please provide the Gmail draftId to send.',
@@ -5692,9 +5806,9 @@ export const createVercelDesktopTools = (
                   ? 'body_or_facts_or_purpose_or_subject'
                   : null,
               ].filter((value): value is string => Boolean(value));
-              return buildEnvelope({
-                success: false,
-                summary: 'sendMessage requires to plus enough content to compose the email.',
+	              return buildGmailEnvelope({
+	                success: false,
+	                summary: 'sendMessage requires to plus enough content to compose the email.',
                 errorKind: 'missing_input',
                 missingFields,
                 userAction: 'Please provide the recipient plus enough content to compose the email.',
@@ -5763,9 +5877,9 @@ export const createVercelDesktopTools = (
             });
           }
 
-          return buildEnvelope({
-            success: false,
-            summary: `Unsupported Gmail operation: ${input.operation}`,
+	          return buildGmailEnvelope({
+	            success: false,
+	            summary: `Unsupported Gmail operation: ${input.operation}`,
             errorKind: 'unsupported',
             retryable: false,
           });

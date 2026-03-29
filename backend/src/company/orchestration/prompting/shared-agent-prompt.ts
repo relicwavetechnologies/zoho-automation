@@ -125,6 +125,41 @@ export const wrapUntrustedPromptDataBlock = (input: {
   ].join('\n');
 };
 
+const extractOperationFromSelectionReason = (reason?: string | null): string | null => {
+  const match = reason?.match(/\boperation\s+([a-z_]+)\b/i);
+  return match?.[1]?.trim().toLowerCase() ?? null;
+};
+
+const shouldInjectToolSelectionReason = (input: {
+  toolSelectionReason?: string | null;
+  plannerChosenOperationClass?: string | null;
+}): boolean => {
+  const selectionReason = input.toolSelectionReason?.trim();
+  if (!selectionReason) {
+    return false;
+  }
+
+  const reasonOperation = extractOperationFromSelectionReason(selectionReason);
+  const chosenOperation = input.plannerChosenOperationClass?.trim().toLowerCase();
+  if (!reasonOperation || !chosenOperation) {
+    return true;
+  }
+
+  const compatibleOperations = new Set([reasonOperation]);
+  if (reasonOperation === 'read') {
+    compatibleOperations.add('search');
+    compatibleOperations.add('inspect');
+  }
+  if (reasonOperation === 'search') {
+    compatibleOperations.add('read');
+  }
+  if (reasonOperation === 'inspect') {
+    compatibleOperations.add('read');
+  }
+
+  return compatibleOperations.has(chosenOperation);
+};
+
 const buildAllowedToolCatalog = (input: {
   allowedToolIds?: string[];
   allowedActionsByTool?: Record<string, ToolActionGroup[]>;
@@ -414,8 +449,12 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
     parts.push(`Context assembly class: ${sanitizePromptLiteral(input.contextClass)}.`);
   }
 
-  if (input.toolSelectionReason?.trim()) {
-    parts.push(`Run-scoped tool selection reason: ${sanitizePromptLiteral(input.toolSelectionReason)}.`);
+  const sanitizedToolSelectionReason = input.toolSelectionReason?.trim();
+  if (shouldInjectToolSelectionReason({
+    toolSelectionReason: input.toolSelectionReason,
+    plannerChosenOperationClass: input.plannerChosenOperationClass,
+  }) && sanitizedToolSelectionReason) {
+    parts.push(`Run-scoped tool selection reason: ${sanitizePromptLiteral(sanitizedToolSelectionReason)}.`);
   }
   if (input.plannerCandidateToolIds && input.plannerCandidateToolIds.length > 0) {
     parts.push(`Planner candidate tool ids for this run: ${input.plannerCandidateToolIds.map((toolId) => sanitizePromptLiteral(toolId)).join(', ')}.`);

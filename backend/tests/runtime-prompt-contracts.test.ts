@@ -134,6 +134,41 @@ test('shared prompt contract stays identical across Desktop and Lark when inputs
   );
 });
 
+test('shared prompt suppresses stale selection reason when it conflicts with current planner operation', () => {
+  const prompt = buildSharedAgentSystemPrompt({
+    runtimeLabel: 'You are the parity test runtime.',
+    conversationKey: 'conversation-456',
+    latestUserMessage: 'Check my Gmail for replies from Anish.',
+    toolSelectionReason: 'Primary domain gmail with operation send. Learned routing priors favored google-gmail.',
+    plannerChosenToolId: 'google-gmail',
+    plannerChosenOperationClass: 'search',
+    allowedToolIds: ['google-gmail'],
+    allowedActionsByTool: {
+      'google-gmail': ['read', 'create', 'send'],
+    },
+  });
+
+  assert.doesNotMatch(prompt, /Run-scoped tool selection reason:/);
+  assert.match(prompt, /Planner selected primary tool: google-gmail \(search\)\./);
+});
+
+test('shared prompt keeps aligned selection reason when it matches current planner operation', () => {
+  const prompt = buildSharedAgentSystemPrompt({
+    runtimeLabel: 'You are the parity test runtime.',
+    conversationKey: 'conversation-789',
+    latestUserMessage: 'Check my Gmail for replies from Anish.',
+    toolSelectionReason: 'Primary domain gmail with operation search. Learned routing priors favored google-gmail.',
+    plannerChosenToolId: 'google-gmail',
+    plannerChosenOperationClass: 'search',
+    allowedToolIds: ['google-gmail'],
+    allowedActionsByTool: {
+      'google-gmail': ['read', 'create', 'send'],
+    },
+  });
+
+  assert.match(prompt, /Run-scoped tool selection reason: Primary domain gmail with operation search\./);
+});
+
 test('reply mode proposal is respected unless the user explicitly overrides it', () => {
   assert.deepEqual(
     resolveReplyMode({

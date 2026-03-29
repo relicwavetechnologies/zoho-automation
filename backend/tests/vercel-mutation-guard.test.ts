@@ -68,3 +68,13 @@ test('evaluateRunCompletion ignores read-only success results', () => {
     readOnly: true,
   });
 });
+
+test('no_action_attempted keeps the composed answer and appends a soft note', () => {
+  const finalText = __vercelMutationGuardTestUtils.finalizeNoActionAttemptText(
+    'Yes. I found a reply from Anish on March 29, 2026. Subject: Re: Audit Brief: Invoice INV-000007. His reply says: Worng one.',
+  );
+
+  assert.match(finalText, /^Yes\. I found a reply from Anish/);
+  assert.match(finalText, /_Note: I wasn't fully able to confirm this completed\./);
+  assert.doesNotMatch(finalText, /I did not complete that action because no confirmed action ran successfully\./);
+});

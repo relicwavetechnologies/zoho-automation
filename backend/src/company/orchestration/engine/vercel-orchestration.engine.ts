@@ -743,6 +743,20 @@ const evaluateRunCompletion = (
 
 export const __vercelMutationGuardTestUtils = {
   evaluateRunCompletion,
+  finalizeNoActionAttemptText: (agentComposedAnswer: string): string => {
+    const trimmedAnswer = agentComposedAnswer.trim();
+    const loweredAnswer = trimmedAnswer.toLowerCase();
+    const hasUsefulContent =
+      trimmedAnswer.length > 60 &&
+      !loweredAnswer.includes('i was unable') &&
+      !loweredAnswer.includes('i could not');
+
+    if (hasUsefulContent) {
+      return `${trimmedAnswer}\n\n_Note: I wasn't fully able to confirm this completed. If something looks off, just ask me to try again._`;
+    }
+
+    return 'I wasn\'t able to confirm this completed. Would you like me to try again?';
+  },
 };
 
 const resolveMutationGuard = (input: {
@@ -3404,7 +3418,9 @@ const executeLarkVercelTask = async (
       pendingApproval: Boolean(pendingApproval),
       blockingUserInput: Boolean(blockingUserInput),
     });
-    const finalText = mutationGuard.forcedFinalText
+    const finalText = mutationGuard.forcedFinalText === 'I did not complete that action because no confirmed action ran successfully.'
+      ? __vercelMutationGuardTestUtils.finalizeNoActionAttemptText(result.text.trim())
+      : mutationGuard.forcedFinalText
       ?? (blockingUserInput
       ? (buildMissingInputResponseText(blockingUserInput) ?? result.text.trim()) ||
         'I need one more detail from you before I can continue.'

@@ -117,6 +117,16 @@ const summarizeLearnedPriors = (priors: ToolRoutingPriorMatch[]): string[] =>
   priors.slice(0, 3).map((prior) =>
     `${prior.toolId} via ${prior.matchedBy} (${prior.scope}, confidence ${prior.confidenceScore.toFixed(2)})`);
 
+const resolveSelectionReasonOperation = (input: {
+  childRouteOperationType?: string | null;
+  inferredOperationClass: OperationClass;
+}): OperationClass => {
+  const childRouteOperation = input.childRouteOperationType
+    ? toNarrowOperationClass(input.childRouteOperationType)
+    : null;
+  return (childRouteOperation as OperationClass | null) ?? input.inferredOperationClass;
+};
+
 const canBypassPlannerWithLearnedPrior = (input: {
   prior?: ToolRoutingPriorMatch;
   inferredOperationClass: OperationClass;
@@ -547,8 +557,12 @@ export const resolveRunScopedToolSelection = async (input: {
     allowContextOnlyAnswer,
   });
   const learnedSummary = summarizeLearnedPriors(learnedPriors);
+  const selectionReasonOperation = resolveSelectionReasonOperation({
+    childRouteOperationType: input.childRoute?.operationType,
+    inferredOperationClass,
+  });
   const selectionReason = primaryBundle.length > 0
-    ? `Primary domain ${inferredDomain} with operation ${inferredOperationClass}.${learnedSummary.length > 0 ? ` Learned routing priors favored ${learnedSummary.join('; ')}.` : ''}${pinnedAllowedToolIds.length > 0 ? ` Pinned required tools: ${pinnedAllowedToolIds.join(', ')}.` : ''}`
+    ? `Primary domain ${inferredDomain} with operation ${selectionReasonOperation}.${learnedSummary.length > 0 ? ` Learned routing priors favored ${learnedSummary.join('; ')}.` : ''}${pinnedAllowedToolIds.length > 0 ? ` Pinned required tools: ${pinnedAllowedToolIds.join(', ')}.` : ''}`
     : allowContextOnlyAnswer
       ? 'Current grounded multimodal context appears sufficient to answer directly without document extraction tools.'
       : `No safe primary domain could be resolved from the latest message; preserving only core and fallback tools.${pinnedAllowedToolIds.length > 0 ? ` Pinned required tools: ${pinnedAllowedToolIds.join(', ')}.` : ''}`;
