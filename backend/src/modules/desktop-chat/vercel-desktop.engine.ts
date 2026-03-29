@@ -742,6 +742,12 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
 };
 
+const isBareMentionMessage = (value: string | null | undefined): boolean => {
+  const trimmed = value?.trim();
+  if (!trimmed) return true;
+  return trimmed.replace(/@\S+/g, '').trim().length === 0;
+};
+
 const getCachedPromiseValue = async <T>(
   cache: Map<string, TimedPromiseCacheEntry<T>>,
   key: string,
@@ -1070,9 +1076,16 @@ export const buildChildRouterPrompt = (input: {
         .filter(Boolean)
         .join('\n')
     : 'No L1 query enrichment.';
+  const currentRequestBlock = [
+    '## CURRENT REQUEST — this is the ONLY message that determines tool selection',
+    `Message: ${input.message || '(empty)'}`,
+    'The above is the message you are classifying right now.',
+    'History above is context only. It must never override the intent of the current request.',
+  ].join('\n');
 
   return [
     'Classify and enrich this chat turn for a two-tier assistant runtime.',
+    'The CURRENT REQUEST section later in this prompt is the highest-priority signal for tool selection.',
     'Return exactly one JSON object only.',
     'Do not wrap it in markdown, prose, arrays, or an outer envelope.',
     'Required JSON keys:',
@@ -1148,10 +1161,26 @@ export const buildChildRouterPrompt = (input: {
     taskStateBlock,
     'Retrieved conversation memory:',
     retrievedMemoryBlock,
-    'Recent conversation:',
+    '## Conversation history (background context only)',
     historyBlock,
-    'Latest user message:',
-    input.message,
+    currentRequestBlock,
+    '## Tool selection priority — non-negotiable',
+    'The CURRENT REQUEST section above is the only signal that determines which tools and domain to expose for this run.',
+    'Thread history tells you what has happened before.',
+    'The current request tells you what the user needs right now.',
+    'These are different things. Always use the current request for tool selection.',
+    'If the current request intent conflicts with what thread history suggests, the current request wins unconditionally.',
+    'Do not weight recency of prior completed actions over the explicit content of the current message.',
+    'Rules:',
+    '- Classify domain and operation from the CURRENT REQUEST text alone',
+    '- History may inform tone and entity resolution but never domain classification',
+    '- A completed prior task in history has zero influence on current tool exposure',
+    '- If the current request is a bare mention with no text, do not infer domain from history. Route=fast_reply with no tool suggestions.',
+    'Examples of correct behavior:',
+    '- History: edited a workflow. Current: "get my tasks" -> domain=lark_task, operation=read',
+    '- History: sent an invoice. Current: "show calendar" -> domain=lark_calendar, operation=read',
+    '- History: complex multi-step task. Current: "@Divo" alone -> domain=unknown, route=fast_reply',
+    '- History: anything. Current: "get my tasks" -> lark-task-read must be in exposed tools',
   ].join('\n\n');
 };
 
@@ -1187,6 +1216,18 @@ export const runDesktopChildRouter = async (input: {
     hasWorkspace: Boolean(input.workspace),
     attachedFileCount: input.attachedFiles?.length ?? 0,
   });
+  if (isBareMentionMessage(input.message)) {
+    return {
+      route: 'fast_reply',
+      reply: 'You mentioned me — what would you like me to do?',
+      reason: 'bare mention without actionable text',
+      normalizedIntent: 'unknown',
+      intentClass: 'other',
+      confidence: 1,
+      suggestedToolIds: [],
+      suggestedActions: [],
+    };
+  }
 
   try {
     const memoryPromptContext =
