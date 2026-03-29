@@ -2,38 +2,65 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { __vercelMutationGuardTestUtils } from '../src/company/orchestration/engine/vercel-orchestration.engine';
-import type { VercelToolEnvelope } from '../src/company/orchestration/vercel/types';
 
-test('googleMail send results count as confirmed mutations', () => {
-  const output: VercelToolEnvelope = {
-    success: true,
-    summary: 'Sent Gmail message "Audit Documentation: Invoice List".',
-  };
-
-  assert.equal(__vercelMutationGuardTestUtils.isMutationToolResult('googleMail', output), true);
-});
-
-test('structured actionGroup metadata counts as a mutation even when summary text is generic', () => {
-  const output: VercelToolEnvelope = {
-    success: true,
-    summary: 'Completed request.',
-    toolId: 'google-gmail',
-    actionGroup: 'send',
-    operation: 'sendMessage',
-  };
-
-  assert.equal(__vercelMutationGuardTestUtils.resolveToolActionGroup(output), 'send');
-  assert.equal(__vercelMutationGuardTestUtils.isMutationToolResult('googleMail', output), true);
-});
-
-test('googleMail read results do not count as confirmed mutations', () => {
-  const output: VercelToolEnvelope = {
-    success: true,
-    summary: 'Found 10 message(s).',
-    keyData: {
-      operation: 'listMessages',
+test('evaluateRunCompletion marks a confirmed action as completed', () => {
+  const completion = __vercelMutationGuardTestUtils.evaluateRunCompletion([
+    {
+      toolId: 'google-gmail',
+      toolName: 'googleMail',
+      success: true,
+      status: 'success',
+      data: { id: 'msg-1' },
+      confirmedAction: true,
+      summary: 'Sent Gmail message.',
     },
-  };
+  ]);
 
-  assert.equal(__vercelMutationGuardTestUtils.isMutationToolResult('googleMail', output), false);
+  assert.deepEqual(completion, {
+    status: 'completed',
+    confirmedCount: 1,
+    failedCount: 0,
+  });
+});
+
+test('evaluateRunCompletion marks failed attempts without confirmed actions', () => {
+  const completion = __vercelMutationGuardTestUtils.evaluateRunCompletion([
+    {
+      toolId: 'zoho-books-write',
+      toolName: 'booksWrite',
+      success: false,
+      status: 'error',
+      data: null,
+      confirmedAction: false,
+      error: 'Zoho Books update failed.',
+      summary: 'Zoho Books update failed.',
+    },
+  ]);
+
+  assert.deepEqual(completion, {
+    status: 'attempted_failed',
+    confirmedCount: 0,
+    failedCount: 1,
+    errors: ['Zoho Books update failed.'],
+  });
+});
+
+test('evaluateRunCompletion ignores read-only success results', () => {
+  const completion = __vercelMutationGuardTestUtils.evaluateRunCompletion([
+    {
+      toolId: 'zoho-books-read',
+      toolName: 'booksRead',
+      success: true,
+      status: 'success',
+      data: { invoices: [] },
+      confirmedAction: false,
+      summary: 'Found 0 invoices.',
+    },
+  ]);
+
+  assert.deepEqual(completion, {
+    status: 'no_action_attempted',
+    confirmedCount: 0,
+    failedCount: 0,
+  });
 });

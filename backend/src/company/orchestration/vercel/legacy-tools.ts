@@ -1191,9 +1191,13 @@ const buildWebCitations = (
 };
 
 const buildEnvelope = (input: {
+  toolId?: string;
+  status?: VercelToolEnvelope['status'];
+  data?: unknown;
+  confirmedAction?: boolean;
+  error?: string;
   success: boolean;
   summary: string;
-  toolId?: string;
   actionGroup?: ToolActionGroup;
   operation?: string;
   keyData?: Record<string, unknown>;
@@ -1206,27 +1210,46 @@ const buildEnvelope = (input: {
   missingFields?: string[];
   repairHints?: Record<string, string>;
   pendingApprovalAction?: PendingApprovalAction;
-}): VercelToolEnvelope => ({
-  success: input.success,
-  summary: input.summary,
-  ...(input.toolId ? { toolId: input.toolId } : {}),
-  ...(input.actionGroup ? { actionGroup: input.actionGroup } : {}),
-  ...(input.operation ? { operation: input.operation } : {}),
-  ...(input.keyData ? { keyData: input.keyData } : {}),
-  ...(input.fullPayload ? { fullPayload: input.fullPayload } : {}),
-  ...(input.citations && input.citations.length > 0 ? { citations: input.citations } : {}),
-  ...(input.errorKind ? { errorKind: input.errorKind } : {}),
-  ...(input.errorCode ? { errorCode: input.errorCode } : {}),
-  ...(input.retryable !== undefined ? { retryable: input.retryable } : {}),
-  ...(input.userAction ? { userAction: input.userAction } : {}),
-  ...(input.missingFields && input.missingFields.length > 0
-    ? { missingFields: input.missingFields }
-    : {}),
-  ...(input.repairHints && Object.keys(input.repairHints).length > 0
-    ? { repairHints: input.repairHints }
-    : {}),
-  ...(input.pendingApprovalAction ? { pendingApprovalAction: input.pendingApprovalAction } : {}),
-});
+}): VercelToolEnvelope => {
+  const status =
+    input.status
+    ?? (input.pendingApprovalAction
+      ? 'skipped'
+      : input.success
+        ? 'success'
+        : /timeout|timed out/i.test(input.error ?? input.summary)
+          ? 'timeout'
+          : 'error');
+  const data = input.data ?? input.fullPayload ?? input.keyData ?? null;
+  const confirmedAction = input.confirmedAction ?? false;
+  const error = input.error ?? (!input.success ? input.summary : undefined);
+
+  return {
+    toolId: input.toolId ?? 'unknown',
+    status,
+    data,
+    confirmedAction,
+    success: input.success,
+    summary: input.summary,
+    ...(input.actionGroup ? { actionGroup: input.actionGroup } : {}),
+    ...(input.operation ? { operation: input.operation } : {}),
+    ...(input.keyData ? { keyData: input.keyData } : {}),
+    ...(input.fullPayload ? { fullPayload: input.fullPayload } : {}),
+    ...(input.citations && input.citations.length > 0 ? { citations: input.citations } : {}),
+    ...(input.errorKind ? { errorKind: input.errorKind } : {}),
+    ...(error ? { error } : {}),
+    ...(input.errorCode ? { errorCode: input.errorCode } : {}),
+    ...(input.retryable !== undefined ? { retryable: input.retryable } : {}),
+    ...(input.userAction ? { userAction: input.userAction } : {}),
+    ...(input.missingFields && input.missingFields.length > 0
+      ? { missingFields: input.missingFields }
+      : {}),
+    ...(input.repairHints && Object.keys(input.repairHints).length > 0
+      ? { repairHints: input.repairHints }
+      : {}),
+    ...(input.pendingApprovalAction ? { pendingApprovalAction: input.pendingApprovalAction } : {}),
+  };
+};
 
 const buildZodBoundaryEnvelope = (
   error: ZodError,
@@ -1728,6 +1751,11 @@ const createPendingRemoteApproval = async (input: {
     }
   }
   return buildEnvelope({
+    toolId: input.toolId,
+    actionGroup: input.actionGroup,
+    operation: input.operation,
+    status: 'skipped',
+    confirmedAction: false,
     success: true,
     summary: input.summary,
     pendingApprovalAction: {
@@ -2909,6 +2937,42 @@ const withLarkTenantFallback = async <T>(
   }
 };
 
+const isConfirmedActionGroup = (actionGroup?: string): boolean =>
+  Boolean(actionGroup && actionGroup !== 'read');
+
+const finalizeToolEnvelope = (
+  toolName: string,
+  output: VercelToolEnvelope,
+): VercelToolEnvelope => {
+  const actionGroup =
+    output.actionGroup
+    ?? (output.pendingApprovalAction?.kind === 'tool_action'
+      ? output.pendingApprovalAction.actionGroup
+      : undefined);
+  const status =
+    output.status
+    ?? (output.pendingApprovalAction
+      ? 'skipped'
+      : output.success
+        ? 'success'
+        : /timeout|timed out/i.test(output.error ?? output.summary)
+          ? 'timeout'
+          : 'error');
+  const confirmedAction =
+    output.confirmedAction
+    ?? Boolean(output.success && !output.pendingApprovalAction && isConfirmedActionGroup(actionGroup));
+
+  return {
+    ...output,
+    toolId: output.toolId || toolName,
+    status,
+    data: output.data ?? output.fullPayload ?? output.keyData ?? null,
+    confirmedAction,
+    ...(actionGroup ? { actionGroup } : {}),
+    ...(output.error || output.success ? {} : { error: output.summary }),
+  };
+};
+
 const withLifecycle = async (
   hooks: VercelRuntimeToolHooks,
   toolName: string,
@@ -2918,17 +2982,21 @@ const withLifecycle = async (
   const activityId = randomUUID();
   await hooks.onToolStart(toolName, activityId, title);
   try {
-    const output = await run();
+    const output = finalizeToolEnvelope(toolName, await run());
     await hooks.onToolFinish(toolName, activityId, title, output);
     return output;
   } catch (error) {
     const summary = error instanceof Error ? error.message : 'Unknown tool error';
-    const output = enrichApiFailureEnvelope(buildEnvelope({
-      success: false,
-      summary,
-      errorKind: 'api_failure',
-      retryable: true,
-    }), error, toolName);
+    const output = finalizeToolEnvelope(
+      toolName,
+      enrichApiFailureEnvelope(buildEnvelope({
+        toolId: toolName,
+        success: false,
+        summary,
+        errorKind: 'api_failure',
+        retryable: true,
+      }), error, toolName),
+    );
     await hooks.onToolFinish(toolName, activityId, title, output);
     return output;
   }
@@ -3962,6 +4030,7 @@ export const createVercelDesktopTools = (
               : existing;
             return buildEnvelope({
               success: true,
+              confirmedAction: true,
               summary: `Resumed workflow draft "${asString(normalized.name) ?? input.workflowId}".`,
               keyData: {
                 workflowId: normalized.id,
@@ -3992,6 +4061,7 @@ export const createVercelDesktopTools = (
 
           return buildEnvelope({
             success: true,
+            confirmedAction: true,
             summary: `Created workflow draft "${asString(normalized.name) ?? asString(created.name) ?? 'New workflow'}".`,
             keyData: {
               workflowId: normalized.id,
@@ -4113,6 +4183,7 @@ export const createVercelDesktopTools = (
 
           return buildEnvelope({
             success: true,
+            confirmedAction: true,
             summary:
               planningState?.readyToBuild === true
                 ? `Workflow "${asString(planned.name) ?? workflowId}" is ready to build.`
@@ -4191,6 +4262,7 @@ export const createVercelDesktopTools = (
           );
           return buildEnvelope({
             success: true,
+            confirmedAction: true,
             summary: `Built workflow "${asString(built.name) ?? input.workflowId}".`,
             keyData: {
               workflowId: built.id,
@@ -4409,6 +4481,7 @@ export const createVercelDesktopTools = (
 
           return buildEnvelope({
             success: true,
+            confirmedAction: true,
             summary: input.scheduleEnabled
               ? `Saved and scheduled workflow "${asString(current.name) ?? input.workflowId}".`
               : `Saved workflow "${asString(current.name) ?? input.workflowId}".`,
@@ -4530,6 +4603,7 @@ export const createVercelDesktopTools = (
             );
             return buildEnvelope({
               success: true,
+              confirmedAction: true,
               summary: `Enabled scheduling for "${asString(current.name) ?? input.workflowId}".`,
               keyData: {
                 ...scheduled,
@@ -4556,6 +4630,7 @@ export const createVercelDesktopTools = (
             );
             return buildEnvelope({
               success: true,
+              confirmedAction: true,
               summary: `Paused scheduling for "${asString(current.name) ?? input.workflowId}".`,
               keyData: paused,
               fullPayload: paused,
@@ -4565,6 +4640,7 @@ export const createVercelDesktopTools = (
           const refreshed = await workflowsService.get(session, input.workflowId);
           return buildEnvelope({
             success: true,
+            confirmedAction: true,
             summary: `Updated the saved schedule for "${asString(refreshed.name) ?? input.workflowId}".`,
             keyData: {
               workflowId: refreshed.id,
@@ -4677,6 +4753,7 @@ export const createVercelDesktopTools = (
           await workflowsService.archive(session, workflowId);
           return buildEnvelope({
             success: true,
+            confirmedAction: true,
             summary: `Archived workflow "${workflowName}".`,
             keyData: {
               workflowId,
@@ -4747,6 +4824,7 @@ export const createVercelDesktopTools = (
           );
           return buildEnvelope({
             success: asString(run.status) !== 'failed',
+            confirmedAction: asString(run.status) !== 'failed',
             summary:
               asString(run.resultSummary) ??
               (asString(run.errorSummary)
@@ -8852,6 +8930,7 @@ export const createVercelDesktopTools = (
             );
             return buildEnvelope({
               success: true,
+              confirmedAction: true,
               summary: `Sent ${deliveries.length} Lark DM(s) to ${recipientLabels.join(', ')}.`,
               keyData: {
                 recipients: recipientLabels,
@@ -9462,6 +9541,7 @@ export const createVercelDesktopTools = (
             );
             return buildEnvelope({
               success: true,
+              confirmedAction: true,
               summary: `Deleted Lark task ${input.taskId?.trim() ?? taskGuid}.`,
               keyData: { task: { taskGuid } },
             });
@@ -9555,6 +9635,7 @@ export const createVercelDesktopTools = (
               rememberTask(task);
               return buildEnvelope({
                 success: true,
+                confirmedAction: true,
                 summary: `Reused existing Lark task: ${asString(task.summary) ?? asString(task.taskId) ?? 'task'}${assigneeSyncSummary ? ` (${assigneeSyncSummary})` : ''}.`,
                 keyData: { task, deduped: true },
                 fullPayload: { task, deduped: true },
@@ -9584,6 +9665,7 @@ export const createVercelDesktopTools = (
             rememberTask(task);
             return buildEnvelope({
               success: true,
+              confirmedAction: true,
               summary: `Created Lark task: ${asString(task.summary) ?? asString(task.taskId) ?? 'task'}${assigneeSyncSummary ? ` (${assigneeSyncSummary})` : ''}.`,
               keyData: { task },
               fullPayload: { task },
@@ -9658,6 +9740,7 @@ export const createVercelDesktopTools = (
           rememberTask(task);
           return buildEnvelope({
             success: true,
+            confirmedAction: true,
             summary: `${input.operation === 'reassign' ? 'Reassigned' : 'Updated'} Lark task: ${asString(task.summary) ?? asString(task.taskId) ?? 'task'}${assigneeSyncSummary ? ` (${assigneeSyncSummary})` : ''}.`,
             keyData: { task },
             fullPayload: { task },
@@ -10228,6 +10311,7 @@ export const createVercelDesktopTools = (
             });
             return buildEnvelope({
               success: true,
+              confirmedAction: true,
               summary: `Scheduled Lark meeting "${resolvedSummary}" for ${availability.length} attendee(s).`,
               keyData: {
                 event,
@@ -10267,6 +10351,7 @@ export const createVercelDesktopTools = (
             });
             return buildEnvelope({
               success: true,
+              confirmedAction: true,
               summary: `Deleted Lark calendar event ${resolvedEventId as string}.`,
               keyData: { event: { eventId: resolvedEventId } },
             });
@@ -10328,6 +10413,7 @@ export const createVercelDesktopTools = (
           });
           return buildEnvelope({
             success: true,
+            confirmedAction: true,
             summary: `${input.operation === 'createEvent' ? 'Created' : 'Updated'} Lark calendar event: ${asString(event.summary) ?? asString(event.eventId) ?? 'event'}.`,
             keyData: { event },
             fullPayload: { event },
@@ -10542,6 +10628,7 @@ export const createVercelDesktopTools = (
           );
           return buildEnvelope({
             success: true,
+            confirmedAction: true,
             summary: `Created Lark approval instance ${asString(instance.title) ?? asString(instance.instanceCode) ?? 'instance'}.`,
             keyData: { instance },
             fullPayload: { instance },
@@ -10764,6 +10851,7 @@ export const createVercelDesktopTools = (
               );
               return buildEnvelope({
                 success: true,
+                confirmedAction: true,
                 summary: `Deleted Lark Base record ${input.recordId.trim()}.`,
                 keyData: {
                   app: { appToken },
@@ -10842,6 +10930,7 @@ export const createVercelDesktopTools = (
                   );
             return buildEnvelope({
               success: true,
+              confirmedAction: true,
               summary: `${input.operation === 'createRecord' ? 'Created' : 'Updated'} Lark Base record ${asString(record.recordId) ?? 'record'}.`,
               keyData: {
                 app: { appToken },
@@ -10903,6 +10992,7 @@ export const createVercelDesktopTools = (
             });
             return buildEnvelope({
               success: true,
+              confirmedAction: true,
               summary: `Created Lark Doc ${asString(result.url) ?? asString(result.documentId) ?? 'document'}.`,
               keyData: {
                 documentId: asString(result.documentId),
@@ -10938,6 +11028,7 @@ export const createVercelDesktopTools = (
             });
             return buildEnvelope({
               success: true,
+              confirmedAction: true,
               summary: `Updated Lark Doc ${asString(result.url) ?? asString(result.documentId) ?? documentId}.`,
               keyData: {
                 documentId: asString(result.documentId) ?? documentId,

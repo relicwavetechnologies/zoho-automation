@@ -13,7 +13,6 @@ export type HotContextSlot = {
   toolId?: string;
   actionGroup?: string;
   operation?: string;
-  isMutation?: boolean;
   resolvedIds: Record<string, string>;
   entityIndexes?: Record<string, HotContextIndexedEntity[]>;
   fullPayload: unknown;

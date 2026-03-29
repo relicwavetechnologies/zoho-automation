@@ -9,6 +9,13 @@ export type VercelToolErrorKind =
   | 'api_failure'
   | 'validation';
 
+export type VercelToolResultStatus =
+  | 'success'
+  | 'error'
+  | 'empty'
+  | 'timeout'
+  | 'skipped';
+
 export type VercelCitation = {
   id: string;
   title: string;
@@ -82,15 +89,19 @@ export type PendingApprovalAction =
     };
 
 export type VercelToolEnvelope = {
+  toolId: string;
+  status: VercelToolResultStatus;
+  data: unknown;
+  confirmedAction: boolean;
   success: boolean;
   summary: string;
-  toolId?: string;
   actionGroup?: ToolActionGroup;
   operation?: string;
   keyData?: Record<string, unknown>;
   fullPayload?: Record<string, unknown>;
   citations?: VercelCitation[];
   errorKind?: VercelToolErrorKind;
+  error?: string;
   errorCode?: string;
   retryable?: boolean;
   userAction?: string;

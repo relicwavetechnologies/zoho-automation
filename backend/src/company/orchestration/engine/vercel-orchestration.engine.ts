@@ -36,6 +36,7 @@ import type {
   PendingApprovalAction,
   VercelRuntimeRequestContext,
   VercelToolEnvelope,
+  VercelToolResultStatus,
 } from '../vercel/types';
 import type {
   OrchestrationEngine,
@@ -82,7 +83,6 @@ import { classifyIntent } from '../intent/canonical-intent';
 import { hotContextStore, type HotContextIndexedEntity, type HotContextSlot } from '../hot-context.store';
 import { resolveOrdinalReferences } from '../utils/resolve-ordinal-references';
 import { desktopWsGateway } from '../../../modules/desktop-live/desktop-ws.gateway';
-import type { ToolActionGroup } from '../../tools/tool-action-groups';
 import {
   appendLatestAgentRunLog,
   resetLatestAgentRunLog,
@@ -114,14 +114,6 @@ const GEMINI_CIRCUIT_BREAKER = {
   windowMs: 60_000,
   openMs: 120_000,
 };
-const MUTATING_ACTION_GROUPS = new Set<ToolActionGroup>([
-  'create',
-  'update',
-  'delete',
-  'send',
-  'execute',
-]);
-
 const larkConversationHydrationVersions = new Map<string, string>();
 
 const buildConversationKey = (message: NormalizedIncomingMessageDTO): string =>
@@ -683,114 +675,68 @@ const buildHotContextEntityIndexes = (
   return undefined;
 };
 
-const resolveToolActionGroup = (
-  output: VercelToolEnvelope,
-): ToolActionGroup | undefined => {
-  const direct = asStringSafe(output.actionGroup)?.toLowerCase();
-  if (
-    direct === 'read'
-    || direct === 'create'
-    || direct === 'update'
-    || direct === 'delete'
-    || direct === 'send'
-    || direct === 'execute'
-  ) {
-    return direct;
-  }
-  if (output.pendingApprovalAction?.kind === 'tool_action') {
-    return output.pendingApprovalAction.actionGroup;
-  }
-  const nested = asStringSafe(output.keyData?.actionGroup)?.toLowerCase()
-    ?? asStringSafe(output.fullPayload?.actionGroup)?.toLowerCase();
-  if (
-    nested === 'read'
-    || nested === 'create'
-    || nested === 'update'
-    || nested === 'delete'
-    || nested === 'send'
-    || nested === 'execute'
-  ) {
-    return nested;
-  }
-  return undefined;
+type RunToolResult = {
+  toolId: string;
+  toolName: string;
+  success: boolean;
+  status: VercelToolResultStatus;
+  data: unknown;
+  confirmedAction: boolean;
+  error?: string;
+  pendingApproval?: boolean;
+  summary?: string;
 };
 
-const isMutationToolResult = (toolName: string, output: VercelToolEnvelope): boolean => {
-  const actionGroup = resolveToolActionGroup(output);
-  if (actionGroup) {
-    return MUTATING_ACTION_GROUPS.has(actionGroup);
+type RunCompletionState =
+  | { status: 'completed'; confirmedCount: number; failedCount: number }
+  | { status: 'attempted_failed'; confirmedCount: 0; failedCount: number; errors: string[] }
+  | { status: 'no_action_attempted'; confirmedCount: 0; failedCount: 0 };
+
+const evaluateRunCompletion = (toolResults: RunToolResult[]): RunCompletionState => {
+  const actionResults = toolResults.filter((result) => result.confirmedAction === true);
+  const errorResults = toolResults.filter(
+    (result) => result.status === 'error' || result.status === 'timeout',
+  );
+  const attemptedActions = toolResults.filter(
+    (result) =>
+      result.confirmedAction === true
+      || result.status === 'error'
+      || result.status === 'timeout',
+  );
+
+  if (actionResults.length > 0) {
+    return {
+      status: 'completed',
+      confirmedCount: actionResults.length,
+      failedCount: errorResults.length,
+    };
   }
-  if (
-    toolName === 'workflowDraft'
-    || toolName === 'workflowPlan'
-    || toolName === 'workflowBuild'
-    || toolName === 'workflowSave'
-    || toolName === 'workflowSchedule'
-    || toolName === 'workflowArchive'
-  ) {
-    return true;
+
+  if (attemptedActions.length > 0) {
+    return {
+      status: 'attempted_failed',
+      confirmedCount: 0,
+      failedCount: errorResults.length,
+      errors: errorResults
+        .map((result) => result.error?.trim())
+        .filter((value): value is string => Boolean(value)),
+    };
   }
-  if (toolName === 'booksWrite') {
-    return true;
-  }
-  if (toolName === 'googleMail') {
-    const operation =
-      asStringSafe(output.operation)?.toLowerCase()
-      ?? asStringSafe(output.keyData?.operation)?.toLowerCase();
-    if (operation === 'sendmessage' || operation === 'senddraft' || operation === 'createdraft') {
-      return true;
-    }
-    return /\b(sent gmail message|created gmail draft|sent|draft)\b/i.test(output.summary);
-  }
-  if (toolName === 'larkMessage') {
-    return Boolean(output.pendingApprovalAction)
-      || /\b(send|sent|dm|message)\b/i.test(output.summary);
-  }
-  if (toolName === 'larkTask') {
-    return /\b(create|created|update|updated|delete|deleted|complete|completed|assign|assigned)\b/i.test(
-      output.summary,
-    );
-  }
-  return false;
+
+  return {
+    status: 'no_action_attempted',
+    confirmedCount: 0,
+    failedCount: 0,
+  };
 };
 
 export const __vercelMutationGuardTestUtils = {
-  isMutationToolResult,
-  resolveToolActionGroup,
-};
-
-const hasConfirmedMutationForIntent = (input: {
-  taskId: string;
-  destructiveOnly?: boolean;
-}): boolean => {
-  const hotContext = hotContextStore.get(input.taskId);
-  if (!hotContext || hotContext.slots.length === 0) {
-    return false;
-  }
-  for (let index = hotContext.slots.length - 1; index >= 0; index -= 1) {
-    const slot = hotContext.slots[index]!;
-    if (!slot.success || !slot.isMutation) {
-      continue;
-    }
-    if (!input.destructiveOnly) {
-      return true;
-    }
-    if (
-      slot.actionGroup === 'delete'
-      || slot.toolName === 'workflowArchive'
-      || /\b(archive|archived|delete|deleted|remove|removed|clear|cleared)\b/i.test(
-        [slot.summary, slot.operation ?? ''].join(' '),
-      )
-    ) {
-      return true;
-    }
-  }
-  return false;
+  evaluateRunCompletion,
 };
 
 const resolveMutationGuard = (input: {
-  taskId: string;
   latestUserMessage: string;
+  toolResults: RunToolResult[];
   childRouterOperationType?: string | null;
   normalizedIntent?: string | null;
   plannerChosenOperationClass?: string | null;
@@ -799,7 +745,7 @@ const resolveMutationGuard = (input: {
 }): { node: 'synthesis.complete' | 'execution.incomplete'; forcedFinalText?: string } => {
   if (input.pendingApproval || input.blockingUserInput) {
     return {
-      node: resolveExecutionNode(input.taskId),
+      node: 'execution.incomplete',
     };
   }
   const canonicalIntent = classifyIntent(
@@ -813,24 +759,27 @@ const resolveMutationGuard = (input: {
   const writeLikeIntent = canonicalIntent.isWriteLike;
   if (!writeLikeIntent) {
     return {
-      node: resolveExecutionNode(input.taskId),
+      node: 'synthesis.complete',
     };
   }
-  const destructiveIntent = canonicalIntent.isDestructive;
-  const hasConfirmedMutation = hasConfirmedMutationForIntent({
-    taskId: input.taskId,
-    destructiveOnly: destructiveIntent,
-  });
-  if (hasConfirmedMutation) {
+  const completion = evaluateRunCompletion(input.toolResults);
+  if (completion.status === 'completed') {
     return {
-      node: resolveExecutionNode(input.taskId),
+      node: 'synthesis.complete',
+    };
+  }
+  if (completion.status === 'attempted_failed') {
+    const firstError = completion.errors[0];
+    return {
+      node: 'execution.incomplete',
+      forcedFinalText: firstError
+        ? `I tried to complete that action, but it failed: ${firstError}`
+        : 'I tried to complete that action, but the action failed before it could finish.',
     };
   }
   return {
     node: 'execution.incomplete',
-    forcedFinalText: destructiveIntent
-      ? 'I have not deleted or archived anything yet because no archive action completed successfully.'
-      : 'I have not completed that change yet because no confirmed write action succeeded.',
+    forcedFinalText: 'I did not complete that action because no confirmed action ran successfully.',
   };
 };
 
@@ -861,20 +810,9 @@ const buildHotContextSlot = (toolName: string, output: VercelToolEnvelope): HotC
     success: output.success,
     summary: output.summary,
     errorKind: output.errorKind,
-    toolId:
-      asStringSafe(output.toolId)
-      ?? (output.pendingApprovalAction?.kind === 'tool_action'
-        ? output.pendingApprovalAction.toolId
-        : undefined),
-    actionGroup:
-      resolveToolActionGroup(output),
-    operation:
-      asStringSafe(output.operation)
-      ?? asStringSafe(output.keyData?.operation)
-      ?? (output.pendingApprovalAction?.kind === 'tool_action'
-        ? output.pendingApprovalAction.operation
-        : undefined),
-    isMutation: isMutationToolResult(toolName, output),
+    toolId: asStringSafe(output.toolId),
+    actionGroup: asStringSafe(output.actionGroup),
+    operation: asStringSafe(output.operation),
     resolvedIds,
     entityIndexes: buildHotContextEntityIndexes(toolName, output),
     fullPayload: output.fullPayload ?? output.keyData ?? {},
@@ -950,21 +888,6 @@ const appendWarmTaskSummary = (
       ...existing,
     ].slice(0, 10),
   };
-};
-
-const resolveExecutionNode = (taskId: string): 'synthesis.complete' | 'execution.incomplete' => {
-  const hotContext = hotContextStore.get(taskId);
-  if (!hotContext || hotContext.slots.length === 0) {
-    return 'synthesis.complete';
-  }
-  for (let index = hotContext.slots.length - 1; index >= 0; index -= 1) {
-    const slot = hotContext.slots[index]!;
-    if (!slot.isMutation) {
-      continue;
-    }
-    return slot.success ? 'synthesis.complete' : 'execution.incomplete';
-  }
-  return 'synthesis.complete';
 };
 
 const takeRecentMessagesByTokenBudget = <
@@ -3073,11 +2996,7 @@ const executeLarkVercelTask = async (
     plannerChosenToolId: toolSelection.plannerChosenToolId,
     plannerChosenOperationClass: toolSelection.plannerChosenOperationClass,
   };
-  const executedToolOutcomes: Array<{
-    toolName: string;
-    success: boolean;
-    pendingApproval?: boolean;
-  }> = [];
+  const executedToolOutcomes: RunToolResult[] = [];
   if (toolSelection.clarificationQuestion?.trim()) {
     const clarificationText = toolSelection.clarificationQuestion.trim();
     const delivery = await deliverTerminalResponse({
@@ -3133,9 +3052,15 @@ const executeLarkVercelTask = async (
     onToolFinish: async (toolName, _activityId, title, output) => {
       hotContextStore.push(task.taskId, buildHotContextSlot(toolName, output));
       executedToolOutcomes.push({
+        toolId: output.toolId,
         toolName,
         success: output.success,
+        status: output.status,
+        data: output.data,
+        confirmedAction: output.confirmedAction,
+        ...(output.error ? { error: output.error } : {}),
         pendingApproval: Boolean(output.pendingApprovalAction),
+        summary: output.summary,
       });
       await appendLatestAgentRunLog(task.taskId, 'tool.finish', {
         toolName,
@@ -3463,8 +3388,8 @@ const executeLarkVercelTask = async (
       task.taskId,
     );
     const mutationGuard = resolveMutationGuard({
-      taskId: task.taskId,
       latestUserMessage: resolvedUserMessage,
+      toolResults: executedToolOutcomes,
       childRouterOperationType: childRoute.operationType,
       normalizedIntent: childRoute.normalizedIntent,
       plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
