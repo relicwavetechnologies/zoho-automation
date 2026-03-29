@@ -88,6 +88,20 @@ export const LARK_DOC_TERMS = [
   'documents', 'export', 'save this',
 ] as const;
 
+export const CONTINUATION_PHRASES = [
+  'try again',
+  'retry',
+  'check again',
+  'once more',
+  'do it again',
+  'again',
+  'redo',
+  'repeat',
+  're-check',
+  'recheck',
+  'try once more',
+] as const;
+
 export type OperationClass =
   | 'read'
   | 'write'
@@ -113,10 +127,18 @@ export interface CanonicalIntent {
   isWriteLike: boolean;
   isDestructive: boolean;
   isSendLike: boolean;
+  isContinuation?: boolean;
   matchedVerbs: string[];
   matchedDomainTerms: string[];
   confidence: number;
 }
+
+export type PriorToolResultSignal = {
+  status?: string | null;
+  confirmedAction?: boolean | null;
+  attemptedWrite?: boolean | null;
+  operation?: string | null;
+};
 
 export type NarrowOperationClass =
   | 'read'
@@ -127,6 +149,11 @@ export type NarrowOperationClass =
   | 'search';
 
 const normalizeText = (value: string): string => value.toLowerCase().replace(/\s+/g, ' ').trim();
+
+export const isBareContinuationMessage = (value: string | null | undefined): boolean => {
+  const normalized = normalizeText(value ?? '').replace(/[.!?]+$/g, '').trim();
+  return CONTINUATION_PHRASES.some((phrase) => normalized === phrase);
+};
 
 const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -176,6 +203,7 @@ export function classifyIntent(
     plannerChosenOperationClass?: string | null;
     childRouterDomain?: string | null;
     childRouterOperationType?: string | null;
+    priorToolResults?: PriorToolResultSignal[] | null;
   },
 ): CanonicalIntent {
   const normalized = normalizeText(text);
@@ -194,11 +222,23 @@ export function classifyIntent(
 
   const plannerClass = normalizeText(supplementarySignals?.plannerChosenOperationClass ?? '');
   const childRouterOperationType = normalizeText(supplementarySignals?.childRouterOperationType ?? '');
+  const priorToolResults = supplementarySignals?.priorToolResults ?? [];
+  const bareContinuation = isBareContinuationMessage(text);
 
   let operationClass: OperationClass = 'general';
   let matchedVerbs: string[] = [];
 
-  if (matchedDestructive.length > 0) {
+  if (bareContinuation && priorToolResults.length > 0) {
+    const priorHadWriteAttempt = priorToolResults.some((result) => result.confirmedAction === true || result.attemptedWrite === true);
+    const priorHadSendAttempt = priorToolResults.some((result) =>
+      (result.confirmedAction === true || result.attemptedWrite === true)
+      && normalizeText(result.operation ?? '') === 'send',
+    );
+    operationClass = priorHadWriteAttempt
+      ? (priorHadSendAttempt ? 'send' : 'write')
+      : 'read';
+    matchedVerbs = ['continuation'];
+  } else if (matchedDestructive.length > 0) {
     operationClass = 'destructive';
     matchedVerbs = matchedDestructive;
   } else if (matchedSend.length > 0) {
@@ -289,6 +329,7 @@ export function classifyIntent(
     isWriteLike,
     isDestructive,
     isSendLike,
+    ...(bareContinuation ? { isContinuation: true } : {}),
     matchedVerbs,
     matchedDomainTerms,
     confidence,

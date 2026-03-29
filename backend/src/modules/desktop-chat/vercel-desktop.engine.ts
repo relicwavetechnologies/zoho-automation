@@ -48,7 +48,11 @@ import {
 import { conversationMemoryStore } from '../../company/state/conversation/conversation-memory.store';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { ALIAS_TO_CANONICAL_ID, DOMAIN_ALIASES, TOOL_REGISTRY_MAP } from '../../company/tools/tool-registry';
-import { classifyIntent, toNarrowOperationClass } from '../../company/orchestration/intent/canonical-intent';
+import {
+  classifyIntent,
+  isBareContinuationMessage,
+  toNarrowOperationClass,
+} from '../../company/orchestration/intent/canonical-intent';
 import { logger } from '../../utils/logger';
 import { departmentService } from '../../company/departments/department.service';
 import { prisma } from '../../utils/prisma';
@@ -402,7 +406,15 @@ const inferChildRouteOperationType = (input: {
   normalizedIntent?: string;
   explicitOperationType?: unknown;
   inferredDomain?: string;
+  priorToolResults?: DesktopTaskState['latestToolResults'];
 }): 'read' | 'write' | 'send' | 'inspect' | 'schedule' | 'search' => {
+  if (isBareContinuationMessage(input.message) && (input.priorToolResults?.length ?? 0) > 0) {
+    return toNarrowOperationClass(classifyIntent(input.message, {
+      normalizedIntent: input.normalizedIntent,
+      childRouterDomain: input.inferredDomain,
+      priorToolResults: input.priorToolResults,
+    }));
+  }
   if (typeof input.explicitOperationType === 'string') {
     const explicit = input.explicitOperationType.trim();
     if (['read', 'write', 'send', 'inspect', 'schedule', 'search'].includes(explicit)) {
@@ -510,6 +522,7 @@ const inferAlternativeIntent = (input: {
 const enrichChildRouteMetadata = (
   route: ParsedDesktopChildRoute,
   message: string,
+  taskState?: DesktopTaskState,
 ): DesktopChildRoute => {
   const intentClass = inferChildRouteIntentClass({
     message,
@@ -533,6 +546,7 @@ const enrichChildRouteMetadata = (
     normalizedIntent: route.normalizedIntent,
     explicitOperationType: route.operationType,
     inferredDomain: domain,
+    priorToolResults: taskState?.latestToolResults,
   });
   const alternativeIntent = inferAlternativeIntent({
     message,
@@ -1437,9 +1451,13 @@ export const runDesktopChildRouter = async (input: {
       }),
     );
     const rawJson = extractFirstJsonObject(result.text) ?? result.text.trim();
-    const parsedRoute = enrichChildRouteMetadata(desktopChildRouteSchema.parse(
-      sanitizeChildRouteCandidate(JSON.parse(rawJson)),
-    ), input.message);
+    const parsedRoute = enrichChildRouteMetadata(
+      desktopChildRouteSchema.parse(
+        sanitizeChildRouteCandidate(JSON.parse(rawJson)),
+      ),
+      input.message,
+      input.taskState,
+    );
     await appendLatestAgentRunLog(input.executionId, 'child_router.completed', {
       rawText: result.text,
       parsedRoute,
@@ -1776,14 +1794,6 @@ const buildRequesterIdentityContext = (input: {
     ...lines,
     '- Use this only when it helps with personalization or disambiguation.',
   ].join('\n');
-};
-
-const isBareContinuationMessage = (message?: string): boolean => {
-  const value = message?.trim().toLowerCase();
-  if (!value) return false;
-  return ['continue', 'go on', 'carry on', 'proceed', 'keep going', 'retry', 'try again'].includes(
-    value,
-  );
 };
 
 const buildContinuationHint = (message?: string): string | null => {

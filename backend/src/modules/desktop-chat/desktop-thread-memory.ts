@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { resolveVercelLanguageModel } from '../../company/orchestration/vercel/model-factory';
 import type { PendingApprovalAction, VercelToolEnvelope } from '../../company/orchestration/vercel/types';
+import type { ToolActionGroup } from '../../company/tools/tool-action-groups';
 
 export type DesktopThreadSummary = {
   summary?: string;
@@ -75,6 +76,17 @@ export type DesktopPendingApprovalState = {
   updatedAt: string;
 };
 
+export type DesktopLatestToolResult = {
+  toolId: string;
+  toolName: string;
+  status: VercelToolEnvelope['status'];
+  confirmedAction: boolean;
+  attemptedWrite: boolean;
+  operation?: string;
+  summary: string;
+  updatedAt: string;
+};
+
 export type DesktopTaskState = {
   activeDomain?: string;
   activeModule?: string;
@@ -94,6 +106,7 @@ export type DesktopTaskState = {
     summary: string;
     updatedAt: string;
   };
+  latestToolResults: DesktopLatestToolResult[];
   updatedAt: string;
 };
 
@@ -207,6 +220,7 @@ export const createEmptyTaskState = (): DesktopTaskState => ({
   lastFetchedByModule: {},
   completedMutations: [],
   pendingApproval: null,
+  latestToolResults: [],
   updatedAt: new Date(0).toISOString(),
 });
 
@@ -222,6 +236,25 @@ const asArrayOfRecords = (value: unknown): Record<string, unknown>[] =>
       return record ? [record] : [];
     })
     : [];
+
+const WRITE_LIKE_ACTION_GROUPS = new Set<ToolActionGroup>(['create', 'update', 'delete', 'send', 'execute']);
+
+const isWriteLikeOperation = (value: string | undefined): boolean =>
+  /^(create|update|delete|send|draft|reply|forward|schedule|execute|run|approve|submit|archive|remove|edit|write|save)\b/i.test(value ?? '');
+
+const inferAttemptedWriteFromEnvelope = (output: VercelToolEnvelope): boolean => {
+  const pendingActionGroup = output.pendingApprovalAction?.kind !== 'tool_action'
+    ? undefined
+    : output.pendingApprovalAction.actionGroup;
+  const actionGroup = output.actionGroup ?? pendingActionGroup;
+  if (actionGroup && WRITE_LIKE_ACTION_GROUPS.has(actionGroup)) {
+    return true;
+  }
+  if (output.confirmedAction) {
+    return true;
+  }
+  return isWriteLikeOperation(output.operation);
+};
 
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
@@ -465,6 +498,27 @@ export const parseDesktopTaskState = (value: unknown): DesktopTaskState => {
     : null;
 
   const latestActionResultRecord = asRecord(record.latestActionResult);
+  const latestToolResults = Array.isArray(record.latestToolResults)
+    ? record.latestToolResults.flatMap((entry) => {
+      const candidate = asRecord(entry);
+      const toolId = asString(candidate?.toolId);
+      const toolName = asString(candidate?.toolName);
+      const status = asString(candidate?.status);
+      const summary = asString(candidate?.summary);
+      if (!toolId || !toolName || !status || !summary) return [];
+      if (!['success', 'error', 'empty', 'timeout', 'skipped'].includes(status)) return [];
+      return [{
+        toolId,
+        toolName,
+        status: status as VercelToolEnvelope['status'],
+        confirmedAction: typeof candidate?.confirmedAction === 'boolean' ? candidate.confirmedAction : false,
+        attemptedWrite: typeof candidate?.attemptedWrite === 'boolean' ? candidate.attemptedWrite : false,
+        operation: asString(candidate?.operation),
+        summary,
+        updatedAt: asString(candidate?.updatedAt) ?? new Date().toISOString(),
+      } satisfies DesktopLatestToolResult];
+    }).slice(-8)
+    : [];
 
   return {
     activeDomain: asString(record.activeDomain),
@@ -508,6 +562,7 @@ export const parseDesktopTaskState = (value: unknown): DesktopTaskState => {
         updatedAt: asString(latestActionResultRecord.updatedAt) ?? new Date().toISOString(),
       }
       : undefined,
+    latestToolResults,
     updatedAt: asString(record.updatedAt) ?? new Date(0).toISOString(),
   };
 };
@@ -1068,6 +1123,20 @@ export const updateTaskStateFromToolEnvelope = (input: {
       updatedAt: now,
     };
   }
+
+  next.latestToolResults = [
+    ...next.latestToolResults,
+    {
+      toolId: input.output.toolId,
+      toolName: input.toolName,
+      status: input.output.status,
+      confirmedAction: input.output.confirmedAction,
+      attemptedWrite: inferAttemptedWriteFromEnvelope(input.output),
+      operation: input.output.operation,
+      summary: summarizeText(input.output.summary, 240) ?? input.output.summary,
+      updatedAt: now,
+    },
+  ].slice(-8);
 
   return next;
 };

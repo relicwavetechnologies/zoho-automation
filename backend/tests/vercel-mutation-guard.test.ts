@@ -46,21 +46,25 @@ test('evaluateRunCompletion marks failed attempts without confirmed actions', ()
 });
 
 test('evaluateRunCompletion ignores read-only success results', () => {
-  const completion = __vercelMutationGuardTestUtils.evaluateRunCompletion([
-    {
-      toolId: 'zoho-books-read',
-      toolName: 'booksRead',
-      success: true,
-      status: 'success',
-      data: { invoices: [] },
-      confirmedAction: false,
-      summary: 'Found 0 invoices.',
-    },
-  ]);
+  const completion = __vercelMutationGuardTestUtils.evaluateRunCompletion(
+    [
+      {
+        toolId: 'zoho-books-read',
+        toolName: 'booksRead',
+        success: true,
+        status: 'success',
+        data: { invoices: [] },
+        confirmedAction: false,
+        summary: 'Found 0 invoices.',
+      },
+    ],
+    { isWriteLike: false },
+  );
 
   assert.deepEqual(completion, {
-    status: 'no_action_attempted',
+    status: 'completed',
     confirmedCount: 0,
     failedCount: 0,
+    readOnly: true,
   });
 });

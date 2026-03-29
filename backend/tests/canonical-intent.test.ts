@@ -63,6 +63,41 @@ test('child router domain fills in when keywords are weak', () => {
   assert.equal(intent.domain, 'zoho_books');
 });
 
+test('bare continuation inherits read intent from prior read-only tool results', () => {
+  const intent = classifyIntent('try again', {
+    plannerChosenOperationClass: 'write',
+    childRouterOperationType: 'send',
+    priorToolResults: [
+      {
+        status: 'success',
+        confirmedAction: false,
+        attemptedWrite: false,
+        operation: 'read',
+      },
+    ],
+  });
+  assert.equal(intent.operationClass, 'read');
+  assert.equal(intent.isWriteLike, false);
+  assert.equal(intent.isContinuation, true);
+});
+
+test('bare continuation inherits write intent from prior failed write attempt', () => {
+  const intent = classifyIntent('retry', {
+    childRouterOperationType: 'read',
+    priorToolResults: [
+      {
+        status: 'error',
+        confirmedAction: false,
+        attemptedWrite: true,
+        operation: 'send',
+      },
+    ],
+  });
+  assert.equal(intent.operationClass, 'send');
+  assert.equal(intent.isWriteLike, true);
+  assert.equal(intent.isContinuation, true);
+});
+
 test('compat shims align books requests to write_intent', () => {
   assert.equal(detectRouteIntentCompat('show me all my invoices'), 'write_intent');
   assert.equal(isWriteLikeIntentCompat('email me all my invoices'), true);

@@ -688,11 +688,22 @@ type RunToolResult = {
 };
 
 type RunCompletionState =
-  | { status: 'completed'; confirmedCount: number; failedCount: number }
+  | { status: 'completed'; confirmedCount: number; failedCount: number; readOnly?: boolean }
   | { status: 'attempted_failed'; confirmedCount: 0; failedCount: number; errors: string[] }
   | { status: 'no_action_attempted'; confirmedCount: 0; failedCount: 0 };
 
-const evaluateRunCompletion = (toolResults: RunToolResult[]): RunCompletionState => {
+const evaluateRunCompletion = (
+  toolResults: RunToolResult[],
+  intentClassification?: Pick<ReturnType<typeof classifyIntent>, 'isWriteLike'>,
+): RunCompletionState => {
+  if (intentClassification && !intentClassification.isWriteLike) {
+    return {
+      status: 'completed',
+      confirmedCount: 0,
+      failedCount: 0,
+      readOnly: true,
+    };
+  }
   const actionResults = toolResults.filter((result) => result.confirmedAction === true);
   const errorResults = toolResults.filter(
     (result) => result.status === 'error' || result.status === 'timeout',
@@ -740,6 +751,7 @@ const resolveMutationGuard = (input: {
   childRouterOperationType?: string | null;
   normalizedIntent?: string | null;
   plannerChosenOperationClass?: string | null;
+  priorToolResults?: DesktopTaskState['latestToolResults'];
   pendingApproval: boolean;
   blockingUserInput: boolean;
 }): { node: 'synthesis.complete' | 'execution.incomplete'; forcedFinalText?: string } => {
@@ -754,15 +766,10 @@ const resolveMutationGuard = (input: {
       normalizedIntent: input.normalizedIntent,
       plannerChosenOperationClass: input.plannerChosenOperationClass,
       childRouterOperationType: input.childRouterOperationType,
+      priorToolResults: input.priorToolResults,
     },
   );
-  const writeLikeIntent = canonicalIntent.isWriteLike;
-  if (!writeLikeIntent) {
-    return {
-      node: 'synthesis.complete',
-    };
-  }
-  const completion = evaluateRunCompletion(input.toolResults);
+  const completion = evaluateRunCompletion(input.toolResults, canonicalIntent);
   if (completion.status === 'completed') {
     return {
       node: 'synthesis.complete',
@@ -3393,6 +3400,7 @@ const executeLarkVercelTask = async (
       childRouterOperationType: childRoute.operationType,
       normalizedIntent: childRoute.normalizedIntent,
       plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
+      priorToolResults: activeTaskState.latestToolResults,
       pendingApproval: Boolean(pendingApproval),
       blockingUserInput: Boolean(blockingUserInput),
     });
