@@ -3045,7 +3045,7 @@ export const createLarkWebhookEventHandler = (
         && msgType !== 'file'
         && msgType !== 'media';
 
-      let statusMessageId: string | undefined;
+      let ackMessageId: string | undefined;
       if (shouldSendImmediateAck) {
         try {
           const conversationState = runtimeTaskStore.getConversationExecutionState('lark', tracedMessage.chatId);
@@ -3059,10 +3059,10 @@ export const createLarkWebhookEventHandler = (
             }),
             correlationId: requestId,
             replyToMessageId: tracedMessage.messageId,
-            replyInThread: tracedMessage.chatType === 'group',
+            replyInThread: false,
           });
           if (ack.status !== 'failed') {
-            statusMessageId = ack.messageId ?? undefined;
+            ackMessageId = ack.messageId ?? undefined;
             dependencies.log.info('lark.ingress.ack.sent', {
               ...buildIngressTraceMeta({
                 requestId,
@@ -3072,7 +3072,7 @@ export const createLarkWebhookEventHandler = (
                 larkTenantKey,
                 companyId: scopedCompanyId ?? undefined,
               }),
-              statusMessageId,
+              ackMessageId,
             });
           }
         } catch (error) {
@@ -3094,13 +3094,10 @@ export const createLarkWebhookEventHandler = (
         ...tracedMessage,
         trace: {
           ...(tracedMessage.trace ?? {}),
-          ...(statusMessageId ? { statusMessageId } : {}),
-          ...(statusMessageId
+          ...(ackMessageId ? { ackMessageId } : {}),
+          ...(ackMessageId
             ? {
-                statusReplyModeHint:
-                  tracedMessage.chatType === 'group'
-                    ? 'thread'
-                    : 'reply',
+                ackReplyModeHint: 'reply',
               }
             : {}),
         },

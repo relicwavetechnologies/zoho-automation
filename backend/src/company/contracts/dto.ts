@@ -40,6 +40,10 @@ export type NormalizedIncomingMessageDTO = {
     linkedUserId?: string;
     userRole?: string;
     requesterEmail?: string;
+    /** Initial ingress acknowledgement message id shown before routing decides final placement. */
+    ackMessageId?: string;
+    /** Delivery mode used for the initial ingress acknowledgement message. */
+    ackReplyModeHint?: 'thread' | 'reply' | 'plain' | 'dm';
     /** Runtime-owned progress/status message id for channel UIs that support in-place updates. */
     statusMessageId?: string;
     /** Delivery mode used when the runtime seeded the current status message. */

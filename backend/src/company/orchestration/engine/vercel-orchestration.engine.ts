@@ -213,6 +213,20 @@ const resolveReplyModeChatId = (input: {
   return input.message.chatId;
 };
 
+const buildReplyModeRedirectText = (hint: ReplyModeHint): string => {
+  switch (hint) {
+    case 'thread':
+      return 'Continuing in thread.';
+    case 'dm':
+      return 'Sent you a DM.';
+    case 'plain':
+      return 'Continuing here.';
+    case 'reply':
+    default:
+      return 'Working on it.';
+  }
+};
+
 const hasSensitiveToolResults = (input: {
   childRoute: DesktopChildRoute;
   steps: Array<{ toolResults?: Array<{ toolName?: string; output?: unknown }> }>;
@@ -778,6 +792,20 @@ const buildHotContextSlot = (toolName: string, output: VercelToolEnvelope): HotC
   const resolvedIds: Record<string, string> = {};
   collectResolvedIdsFromValue(output.keyData, resolvedIds);
   collectResolvedIdsFromValue(output.fullPayload, resolvedIds);
+  if (toolName === 'contextSearch') {
+    const citations = asArrayOfRecordsSafe(asRecordSafe(output.fullPayload)?.citations);
+    if (citations.length > 0) {
+      resolvedIds.__contextSearchCitations__ = JSON.stringify(citations.map((citation, index) => ({
+        index: typeof citation.index === 'number' ? citation.index : index + 1,
+        chunkRef: asStringSafe(citation.chunkRef),
+        scope: asStringSafe(citation.scope),
+        sourceType: asStringSafe(citation.sourceType),
+        sourceLabel: asStringSafe(citation.sourceLabel),
+        asOf: asStringSafe(citation.asOf),
+        excerpt: asStringSafe(citation.excerpt),
+      })));
+    }
+  }
   if (output.pendingApprovalAction?.kind === 'tool_action') {
     collectResolvedIdsFromValue(output.pendingApprovalAction.payload, resolvedIds);
     setResolvedId(resolvedIds, 'approvalId', output.pendingApprovalAction.approvalId);
@@ -2135,31 +2163,10 @@ const executeLarkVercelTask = async (
     | 'reply'
     | 'plain'
     | undefined;
-  const initialReplyMode = resolveReplyMode({
-    chatType: message.chatType,
-    incomingMessageId: message.messageId,
-    isProactiveDelivery: false,
-    isSensitiveContent: false,
-    isShortAcknowledgement: false,
-    userExplicitMode: explicitReplyMode,
-  });
-  let activeReplyModeHint = buildReplyModeHint(initialReplyMode);
-  const seededReplyModeHint =
-    message.trace?.statusReplyModeHint
-    ?? (message.trace?.statusMessageId
-      ? (message.chatType === 'group' ? 'thread' : 'reply')
-      : undefined);
-  let statusCoordinator = new LarkStatusCoordinator({
-    adapter,
-    chatId: resolveReplyModeChatId({ replyMode: initialReplyMode, message }),
-    correlationId: task.taskId,
-    initialStatusMessageId:
-      replyModeHintsMatch(seededReplyModeHint, activeReplyModeHint)
-        ? message.trace?.statusMessageId
-        : undefined,
-    replyToMessageId: initialReplyMode.replyToMessageId,
-    replyInThread: initialReplyMode.replyInThread,
-  });
+  const ackMessageId = message.trace?.ackMessageId;
+  const ackReplyModeHint = message.trace?.ackReplyModeHint ?? 'reply';
+  let activeReplyModeHint: ReplyModeHint = ackReplyModeHint;
+  let statusCoordinator: LarkStatusCoordinator | null = null;
   const renderCurrentStatus = (heartbeat = false): { text: string; actions?: ChannelAction[] } => ({
     text: buildLarkStatusText({
       task,
@@ -2173,6 +2180,51 @@ const executeLarkVercelTask = async (
     }),
     actions: currentStatusActions,
   });
+  const maybeRedirectAckMessage = async (targetHint: ReplyModeHint): Promise<void> => {
+    if (!ackMessageId || targetHint === ackReplyModeHint) {
+      return;
+    }
+    try {
+      await adapter.updateMessage({
+        messageId: ackMessageId,
+        text: buildReplyModeRedirectText(targetHint),
+        correlationId: task.taskId,
+        actions: [],
+      });
+    } catch (error) {
+      logger.warn('lark.ack.redirect_failed', {
+        taskId: task.taskId,
+        messageId: message.messageId,
+        ackMessageId,
+        targetHint,
+        error: error instanceof Error ? error.message : 'unknown',
+      });
+    }
+  };
+  const ensureStatusCoordinator = async (replyMode: ReplyModeConfig): Promise<LarkStatusCoordinator> => {
+    const nextHint = buildReplyModeHint(replyMode);
+    if (statusCoordinator && replyModeHintsMatch(activeReplyModeHint, nextHint)) {
+      return statusCoordinator;
+    }
+    if (statusCoordinator) {
+      await statusCoordinator.close();
+      statusCoordinator = null;
+    }
+    await maybeRedirectAckMessage(nextHint);
+    statusCoordinator = new LarkStatusCoordinator({
+      adapter,
+      chatId: resolveReplyModeChatId({ replyMode, message }),
+      correlationId: task.taskId,
+      initialStatusMessageId:
+        ackMessageId && replyModeHintsMatch(ackReplyModeHint, nextHint)
+          ? ackMessageId
+          : undefined,
+      replyToMessageId: replyMode.replyToMessageId,
+      replyInThread: replyMode.replyInThread,
+    });
+    activeReplyModeHint = nextHint;
+    return statusCoordinator;
+  };
   const updateStatus = async (
     phase: typeof currentStatusPhase,
     detail?: string,
@@ -2182,7 +2234,15 @@ const executeLarkVercelTask = async (
     currentStatusPhase = phase;
     currentStatusDetail = detail;
     currentStatusActions = actions;
-    await statusCoordinator.update(renderCurrentStatus(false), options);
+    const coordinator = await ensureStatusCoordinator(resolveReplyMode({
+      chatType: message.chatType,
+      incomingMessageId: message.messageId,
+      isProactiveDelivery: false,
+      isSensitiveContent: false,
+      isShortAcknowledgement: false,
+      userExplicitMode: explicitReplyMode,
+    }));
+    await coordinator.update(renderCurrentStatus(false), options);
   };
   const deliverTerminalResponse = async (input: {
     text: string;
@@ -2200,25 +2260,15 @@ const executeLarkVercelTask = async (
     });
     const finalReplyModeHint = buildReplyModeHint(finalReplyMode);
     if (!replyModeHintsMatch(activeReplyModeHint, finalReplyModeHint)) {
-      await statusCoordinator.close();
-      statusCoordinator = new LarkStatusCoordinator({
-        adapter,
-        chatId: resolveReplyModeChatId({ replyMode: finalReplyMode, message }),
-        correlationId: task.taskId,
-        replyToMessageId: finalReplyMode.replyToMessageId,
-        replyInThread: finalReplyMode.replyInThread,
-      });
-      activeReplyModeHint = finalReplyModeHint;
+      await ensureStatusCoordinator(finalReplyMode);
     }
-    await statusCoordinator.replace(input.text, input.actions ?? []);
+    const coordinator = await ensureStatusCoordinator(finalReplyMode);
+    await coordinator.replace(input.text, input.actions ?? []);
     return {
-      statusMessageId: statusCoordinator.getStatusMessageId(),
+      statusMessageId: coordinator.getStatusMessageId(),
       replyModeHint: finalReplyModeHint,
     };
   };
-
-  await updateStatus('preparing');
-  statusCoordinator.startHeartbeat(() => renderCurrentStatus(true));
   hotContextStore.init(task.taskId);
   const currentAttachments = (message.attachedFiles ?? []) as AttachedFileRef[];
   let groundingAttachments = currentAttachments;
@@ -2717,6 +2767,16 @@ const executeLarkVercelTask = async (
       ? undefined
       : childRoute.acknowledgement?.trim() || 'I’ll handle that now and keep it moving for you.';
   statusHistory.push('Context ready.');
+  const progressReplyMode = resolveReplyMode({
+    chatType: message.chatType,
+    incomingMessageId: message.messageId,
+    isProactiveDelivery: false,
+    isSensitiveContent: false,
+    isShortAcknowledgement: childRoute.route === 'fast_reply',
+    userExplicitMode: explicitReplyMode,
+  });
+  const progressCoordinator = await ensureStatusCoordinator(progressReplyMode);
+  progressCoordinator.startHeartbeat(() => renderCurrentStatus(true));
   await updateStatus(
     'planning',
     routerAcknowledgement ?? 'Choosing the right tools and approach for this request.',
@@ -2832,12 +2892,16 @@ const executeLarkVercelTask = async (
   }> = [];
   if (toolSelection.clarificationQuestion?.trim()) {
     const clarificationText = toolSelection.clarificationQuestion.trim();
-    await statusCoordinator.replace(clarificationText, []);
-    const statusMessageId = statusCoordinator.getStatusMessageId();
+    const delivery = await deliverTerminalResponse({
+      text: clarificationText,
+      actions: [],
+      hasToolResults: false,
+      isSensitiveContent: false,
+    });
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, clarificationText);
     await persistAssistantTurn({
       content: clarificationText,
-      statusMessageId: statusMessageId ?? null,
+      statusMessageId: delivery.statusMessageId ?? null,
     });
     await persistConversationMemorySnapshot(clarificationText);
     await appendLatestAgentRunLog(task.taskId, 'run.completed', {
@@ -3259,7 +3323,7 @@ const executeLarkVercelTask = async (
       deliveredStatusMessageId = delivery.statusMessageId;
     }
 
-    const statusMessageId = deliveredStatusMessageId ?? statusCoordinator.getStatusMessageId();
+    const statusMessageId = deliveredStatusMessageId ?? statusCoordinator?.getStatusMessageId();
     if (!pendingApproval) {
       conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, finalText);
     }
@@ -3373,7 +3437,10 @@ const executeLarkVercelTask = async (
       error: errorMessage,
     });
     statusHistory.push(`Failed: ${errorMessage}`);
-    await statusCoordinator.replace(
+    const failureCoordinator = await ensureStatusCoordinator({
+      replyToMessageId: message.messageId,
+    });
+    await failureCoordinator.replace(
       [
         'I ran into a problem while working on this.',
         '',
@@ -3386,7 +3453,7 @@ const executeLarkVercelTask = async (
     throw error;
   } finally {
     hotContextStore.clear(task.taskId);
-    await statusCoordinator.close();
+    await statusCoordinator?.close();
   }
 };
 
