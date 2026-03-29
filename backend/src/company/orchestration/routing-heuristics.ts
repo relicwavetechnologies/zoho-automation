@@ -64,6 +64,31 @@ const isLarkDocQuery = (text: string): boolean => {
   return /\b(create|make|build|put|save|export|draft|write|edit|update|append|add|remove|delete|rewrite|replace)\b/i.test(text);
 };
 
+export const mapDomainToRouteType = (
+  domain: string,
+): 'zoho_read' | 'write_intent' | 'general' => {
+  switch (domain.trim()) {
+    case 'zoho_crm':
+    case 'outreach':
+      return 'zoho_read';
+    case 'zoho_books':
+    case 'lark_task':
+    case 'lark_message':
+    case 'lark_calendar':
+    case 'lark_meeting':
+    case 'lark_approval':
+    case 'lark_doc':
+    case 'lark_base':
+    case 'gmail':
+    case 'google_drive':
+    case 'google_calendar':
+    case 'workflow':
+      return 'write_intent';
+    default:
+      return 'general';
+  }
+};
+
 export const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {
   const normalized = text.toLowerCase();
   if (classifyIntent(text).isWriteLike) {
@@ -78,7 +103,13 @@ export const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {
   return 2;
 };
 
-export const detectRouteIntent = (text: string): 'zoho_read' | 'write_intent' | 'general' => {
+export const detectRouteIntent = (
+  text: string,
+  childRouterDomain?: string | null,
+): 'zoho_read' | 'write_intent' | 'general' => {
+  if (childRouterDomain && childRouterDomain !== 'general') {
+    return mapDomainToRouteType(childRouterDomain);
+  }
   const intent = classifyIntent(text);
   if (intent.domain === 'zoho_crm' || intent.domain === 'outreach') {
     return 'zoho_read';

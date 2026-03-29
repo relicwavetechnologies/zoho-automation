@@ -39,6 +39,8 @@ test('child router returns fast reply for bare mentions without inferring tools 
   assert.equal(route.route, 'fast_reply');
   assert.equal(route.reply, 'You mentioned me — what would you like me to do?');
   assert.equal(route.normalizedIntent, 'unknown');
+  assert.equal(route.domain, 'general');
+  assert.equal(route.operationType, 'read');
   assert.equal(route.preferredReplyMode, 'reply');
   assert.deepEqual(route.suggestedToolIds, []);
   assert.deepEqual(route.suggestedActions, []);

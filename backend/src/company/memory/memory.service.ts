@@ -142,6 +142,8 @@ class MemoryService {
     allowedToolIds?: string[];
     latestUserMessage: string;
     childRoute?: {
+      domain?: string | null;
+      operationType?: string | null;
       normalizedIntent?: string | null;
       reason?: string | null;
       suggestedToolIds?: string[];
@@ -180,6 +182,8 @@ class MemoryService {
     conversationKey?: string;
     latestUserMessage: string;
     childRoute?: {
+      domain?: string | null;
+      operationType?: string | null;
       normalizedIntent?: string | null;
       reason?: string | null;
       suggestedToolIds?: string[];

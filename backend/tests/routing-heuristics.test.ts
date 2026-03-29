@@ -60,3 +60,7 @@ test('crm read requests still route through the zoho read path', () => {
     'synthesis.compose',
   ]);
 });
+
+test('child-router domain overrides keyword fallback in route intent detection', () => {
+  assert.equal(detectRouteIntent('that one again', 'zoho_books'), 'write_intent');
+});

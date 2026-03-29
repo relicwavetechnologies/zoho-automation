@@ -5,13 +5,16 @@ import { memoryService, normalizeToolRoutingIntent, type ToolRoutingDomain, type
 import { logger } from '../../../utils/logger';
 import { classifyIntent, toNarrowOperationClass } from '../intent/canonical-intent';
 import { resolveVercelChildRouterModel } from '../vercel/model-factory';
-import { TOOL_REGISTRY_MAP } from '../../tools/tool-registry';
+import { ALIAS_TO_CANONICAL_ID, DOMAIN_ALIASES, DOMAIN_TO_TOOL_IDS, TOOL_REGISTRY_MAP } from '../../tools/tool-registry';
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
 
 type OperationClass = ToolRoutingOperationClass;
 type IntentDomain = ToolRoutingDomain;
 
 type ChildRouteHints = {
+  confidence?: number | null;
+  domain?: string | null;
+  operationType?: string | null;
   normalizedIntent?: string | null;
   reason?: string | null;
   suggestedToolIds?: string[];
@@ -72,8 +75,40 @@ const chooseFirstAllowed = (allowed: Set<string>, preferredIds: string[]): strin
   return [];
 };
 
-const chooseSuggestedAllowed = (allowed: Set<string>, suggestedToolIds?: string[]): string[] =>
-  uniq((suggestedToolIds ?? []).map((toolId) => allowed.has(toolId) ? toolId : null));
+const chooseSuggestedAllowed = (
+  allowed: Set<string>,
+  suggestedToolIds?: string[],
+  suggestedDomains?: Array<string | null | undefined>,
+): string[] => {
+  const resolved: string[] = [];
+
+  for (const rawToolId of suggestedToolIds ?? []) {
+    const normalizedToolId = rawToolId.trim();
+    if (!normalizedToolId) continue;
+    const canonical = ALIAS_TO_CANONICAL_ID[normalizedToolId]
+      ?? ALIAS_TO_CANONICAL_ID[normalizedToolId.toLowerCase()]
+      ?? ALIAS_TO_CANONICAL_ID[normalizedToolId.replace(/([a-z0-9])([A-Z])/g, '$1-$2')]
+      ?? ALIAS_TO_CANONICAL_ID[normalizedToolId.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()];
+    if (canonical && allowed.has(canonical)) {
+      resolved.push(canonical);
+    }
+  }
+
+  for (const rawDomain of suggestedDomains ?? []) {
+    const normalizedDomain = rawDomain?.trim();
+    if (!normalizedDomain) continue;
+    const canonicalDomain = DOMAIN_ALIASES[normalizedDomain]
+      ?? DOMAIN_ALIASES[normalizedDomain.toLowerCase()];
+    if (!canonicalDomain) continue;
+    for (const toolId of DOMAIN_TO_TOOL_IDS[canonicalDomain] ?? []) {
+      if (allowed.has(toolId)) {
+        resolved.push(toolId);
+      }
+    }
+  }
+
+  return uniq(resolved);
+};
 
 const isAffirmationFollowUp = (message: string): boolean =>
   /^(yes|yeah|yep|ok|okay|sure|go ahead|continue|proceed|try again|do it)\b/.test(asLower(message));
@@ -113,7 +148,11 @@ const canBypassPlannerWithLearnedPrior = (input: {
 
 const inferOperationClass = (
   message: string,
-  supplementarySignals?: { normalizedIntent?: string | null; plannerChosenOperationClass?: string | null },
+  supplementarySignals?: {
+    normalizedIntent?: string | null;
+    plannerChosenOperationClass?: string | null;
+    childRouterOperationType?: string | null;
+  },
 ): OperationClass => {
   return toNarrowOperationClass(classifyIntent(message, supplementarySignals)) as OperationClass;
 };
@@ -176,7 +215,12 @@ const buildPrimaryBundle = (input: {
   const suggestedActions = (input.childRoute?.suggestedActions ?? []).map((value) => asLower(value)).join('\n');
   const larkHintText = `${lowerMessage}\n${normalizedIntent}\n${suggestedActions}`;
   const requiresGmail = /\bgmail\b/.test(lowerMessage);
-  const suggestedAllowedToolIds = chooseSuggestedAllowed(input.allowed, input.childRoute?.suggestedToolIds);
+  const authoritativeChildRoute = (input.childRoute?.confidence ?? 1) >= 0.7;
+  const suggestedAllowedToolIds = chooseSuggestedAllowed(
+    input.allowed,
+    input.childRoute?.suggestedToolIds,
+    authoritativeChildRoute ? [input.childRoute?.domain] : [],
+  );
   if (isAffirmationFollowUp(input.latestUserMessage) && suggestedAllowedToolIds.length > 0) {
     return suggestedAllowedToolIds.slice(0, 3);
   }
@@ -439,6 +483,7 @@ export const resolveRunScopedToolSelection = async (input: {
 
   const inferredOperationClass = inferOperationClass(queryTextForInference, {
     normalizedIntent: input.childRoute?.normalizedIntent,
+    childRouterOperationType: input.childRoute?.operationType,
   });
   const inferredDomain = inferIntentDomain({
     message: queryTextForInference,
@@ -446,7 +491,11 @@ export const resolveRunScopedToolSelection = async (input: {
     hasWorkspace: input.workspaceAvailable,
     hasArtifacts: input.hasActiveArtifacts,
   });
-  const suggestedAllowedToolIds = chooseSuggestedAllowed(allowed, input.childRoute?.suggestedToolIds)
+  const suggestedAllowedToolIds = chooseSuggestedAllowed(
+    allowed,
+    input.childRoute?.suggestedToolIds,
+    (input.childRoute?.confidence ?? 1) >= 0.7 ? [input.childRoute?.domain] : [],
+  )
     .filter((toolId) => !(allowContextOnlyAnswer && toolId === 'document-ocr-read'));
   const { priors: learnedPriors } = await memoryService.findRoutingPriors({
     companyId: input.companyId,
@@ -462,21 +511,33 @@ export const resolveRunScopedToolSelection = async (input: {
   const learnedToolIds = uniq(learnedPriors
     .filter((prior) => !(allowContextOnlyAnswer && prior.toolId === 'document-ocr-read'))
     .map((prior) => prior.toolId));
-  const primaryBundle = uniq([
-    ...learnedToolIds,
+  const heuristicPrimaryBundle = buildPrimaryBundle({
+    allowed,
+    domain: inferredDomain,
+    operationClass: inferredOperationClass,
+    hasArtifacts: input.hasActiveArtifacts,
+    artifactMode,
+    latestUserMessage: queryTextForInference,
+    childRoute: input.childRoute,
+    allowContextOnlyAnswer,
+  });
+  // ROUTING PRIORITY — do not change order:
+  // 1. Child router suggestions (alias-normalized) — LLM is primary authority
+  // 2. Domain expansion from child router domain output
+  // 3. Learned priors
+  // 4. Keyword/heuristic fallback — only if 1 and 2 both return empty
+  // 5. Global always-on tools (GLOBAL_ALWAYS_ON_IDS) — always appended
+  const childRouterPrimaryBundle = uniq([
     ...suggestedAllowedToolIds,
     ...pinnedAllowedToolIds,
-    ...buildPrimaryBundle({
-      allowed,
-      domain: inferredDomain,
-      operationClass: inferredOperationClass,
-      hasArtifacts: input.hasActiveArtifacts,
-      artifactMode,
-      latestUserMessage: queryTextForInference,
-      childRoute: input.childRoute,
-      allowContextOnlyAnswer,
-    }),
   ]);
+  const primaryBundle = childRouterPrimaryBundle.length > 0
+    ? childRouterPrimaryBundle
+    : uniq([
+      ...learnedToolIds,
+      ...pinnedAllowedToolIds,
+      ...heuristicPrimaryBundle,
+    ]);
   const fallbackBundle = buildFallbackBundle({
     allowed,
     domain: inferredDomain,

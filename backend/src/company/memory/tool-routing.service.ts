@@ -5,6 +5,8 @@ import { memoryContextService } from './memory-context.service';
 import { memoryRetentionService } from './memory-retention.service';
 
 type RoutingChildRouteHints = {
+  domain?: string | null;
+  operationType?: string | null;
   normalizedIntent?: string | null;
   reason?: string | null;
   suggestedToolIds?: string[];
@@ -112,8 +114,14 @@ const detectFollowUpClass = (message: string): ToolRoutingFollowUpClass => {
   return 'fresh_request';
 };
 
-const detectOperationClass = (message: string): ToolRoutingOperationClass => {
-  return toNarrowOperationClass(classifyIntent(normalizePhrase(message))) as ToolRoutingOperationClass;
+const detectOperationClass = (
+  message: string,
+  childRoute?: RoutingChildRouteHints,
+): ToolRoutingOperationClass => {
+  return toNarrowOperationClass(classifyIntent(normalizePhrase(message), {
+    normalizedIntent: childRoute?.normalizedIntent,
+    childRouterOperationType: childRoute?.operationType,
+  })) as ToolRoutingOperationClass;
 };
 
 const hasExactExtractionIntent = (text: string): boolean =>
@@ -137,8 +145,19 @@ const detectScopeHint = (message: string): ToolRoutingScopeHint => {
   return 'unspecified';
 };
 
-const detectDomain = (text: string, hasWorkspace: boolean, hasArtifacts: boolean): ToolRoutingDomain => {
-  const canonicalIntent = classifyIntent(text);
+const detectDomain = (
+  text: string,
+  hasWorkspace: boolean,
+  hasArtifacts: boolean,
+  childRoute?: RoutingChildRouteHints,
+): ToolRoutingDomain => {
+  const canonicalIntent = classifyIntent(text, {
+    normalizedIntent: childRoute?.normalizedIntent,
+    childRouterDomain: childRoute?.domain,
+  });
+  if (childRoute?.domain?.trim()) {
+    return childRoute.domain.trim() as ToolRoutingDomain;
+  }
   if (canonicalIntent.domain === 'zoho_books') {
     return 'zoho_books';
   }
@@ -160,7 +179,10 @@ const detectDomain = (text: string, hasWorkspace: boolean, hasArtifacts: boolean
   if (/\b(base table|bitable|table|record|field|view)\b/.test(text)) {
     return 'lark_base';
   }
-  if (/\b(lark dm|lark direct message|direct message|send dm|message me|message him|message her|message them|ping me|ping him|ping her|ping them)\b/.test(text)) {
+  if (
+    /\b(lark dm|lark direct message|direct message|send dm|message me|message him|message her|message them|ping me|ping him|ping her|ping them)\b/.test(text)
+    || (/\bsend\b/.test(text) && /\bon lark\b/.test(text) && /\b(to me|to him|to her|to them|to [a-z])\b/.test(text))
+  ) {
     return 'lark_message';
   }
   if (/\b(task|assignee|todo|due date)\b/.test(text)) {
@@ -508,8 +530,13 @@ export const normalizeToolRoutingIntent = (input: {
     latestUserMessage: input.latestUserMessage,
     childRoute: input.childRoute,
   });
-  const domain = detectDomain(evidenceText, Boolean(input.hasWorkspace), Boolean(input.hasArtifacts));
-  const operationClass = detectOperationClass(evidenceText);
+  const domain = detectDomain(
+    evidenceText,
+    Boolean(input.hasWorkspace),
+    Boolean(input.hasArtifacts),
+    input.childRoute,
+  );
+  const operationClass = detectOperationClass(evidenceText, input.childRoute);
   const entity = detectEntity(domain, evidenceText);
   const scopeHint = detectScopeHint(evidenceText);
   const followUpClass = detectFollowUpClass(input.latestUserMessage);

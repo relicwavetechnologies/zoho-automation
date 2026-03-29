@@ -26,6 +26,9 @@ export const EXECUTION_TOOL_DEMAND_EVENT = 'analytics.tool_demand';
 export const EXECUTION_CAPABILITY_GAP_EVENT = 'analytics.capability_gap';
 
 type RoutingHints = {
+  confidence?: number | null;
+  domain?: string | null;
+  operationType?: string | null;
   normalizedIntent?: string | null;
   reason?: string | null;
   suggestedToolIds?: string[];

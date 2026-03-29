@@ -46,7 +46,45 @@ const CODING_KEYWORDS = ['code', 'implement', 'fix', 'debug', 'refactor', 'works
 const normalizeDomains = (input: string[]): string[] =>
   Array.from(new Set(input.map((entry) => entry.trim()).filter(Boolean)));
 
-const inferDomains = (text: string): string[] => {
+const hasAuthoritativeChildRoute = (input: {
+  childRouterDomain?: string | null;
+  childRouterConfidence?: number | null;
+}): boolean => Boolean(input.childRouterDomain?.trim()) && (input.childRouterConfidence ?? 0) >= 0.7;
+
+const normalizeRouteContractDomain = (domain: string): string => {
+  switch (domain.trim()) {
+    case 'zoho_crm':
+      return 'zoho';
+    case 'zoho_books':
+      return 'books';
+    case 'lark_task':
+    case 'lark_message':
+    case 'lark_calendar':
+    case 'lark_meeting':
+    case 'lark_approval':
+    case 'lark_doc':
+    case 'lark_base':
+      return 'lark';
+    case 'gmail':
+    case 'google_drive':
+    case 'google_calendar':
+      return 'google';
+    case 'skill':
+    case 'context_search':
+      return 'docs';
+    case 'workspace':
+      return 'coding';
+    case 'document_inspection':
+      return 'docs';
+    default:
+      return domain.trim();
+  }
+};
+
+const inferDomains = (text: string, childRouterDomain?: string | null, childRouterConfidence?: number | null): string[] => {
+  if (hasAuthoritativeChildRoute({ childRouterDomain, childRouterConfidence })) {
+    return normalizeDomains([normalizeRouteContractDomain(childRouterDomain!.trim())]);
+  }
   const normalized = text.toLowerCase();
   const domains: string[] = [];
   if (ZOHO_KEYWORDS.some((keyword) => normalized.includes(keyword))) domains.push('zoho');
@@ -61,8 +99,8 @@ const inferDomains = (text: string): string[] => {
   return normalizeDomains(domains);
 };
 
-const inferComplexity = (text: string): RuntimeComplexity => {
-  if (classifyIntent(text).isWriteLike) {
+const inferComplexity = (text: string, childRouterOperationType?: string | null): RuntimeComplexity => {
+  if (classifyIntent(text, { childRouterOperationType }).isWriteLike) {
     return 'multi_step';
   }
   if (/\b(and|then|after that|also)\b/i.test(text)) {
@@ -74,8 +112,8 @@ const inferComplexity = (text: string): RuntimeComplexity => {
 const inferFreshnessNeed = (text: string): RuntimeFreshnessNeed =>
   FRESHNESS_KEYWORDS.some((keyword) => text.toLowerCase().includes(keyword)) ? 'required' : 'none';
 
-const inferRisk = (text: string): RuntimeRiskLevel => {
-  const intent = classifyIntent(text);
+const inferRisk = (text: string, childRouterOperationType?: string | null): RuntimeRiskLevel => {
+  const intent = classifyIntent(text, { childRouterOperationType });
   if (intent.isWriteLike) {
     return 'high';
   }
@@ -85,9 +123,9 @@ const inferRisk = (text: string): RuntimeRiskLevel => {
   return 'low';
 };
 
-const inferIntent = (text: string, domains: string[]): string => {
+const inferIntent = (text: string, domains: string[], childRouterOperationType?: string | null): string => {
   const normalized = text.toLowerCase();
-  const intent = classifyIntent(text);
+  const intent = classifyIntent(text, { childRouterOperationType });
   if (CODING_KEYWORDS.some((keyword) => normalized.includes(keyword))) return 'coding';
   if (REPO_KEYWORDS.some((keyword) => normalized.includes(keyword))) return 'repo_read';
   if (intent.isWriteLike) return 'write_intent';
@@ -120,15 +158,20 @@ const inferRetrievalMode = (input: {
   return 'none';
 };
 
-const buildHeuristicRoute = (messageText: string): ResolvedRouteContract['route'] => {
-  const domains = inferDomains(messageText);
-  const complexity = inferComplexity(messageText);
-  const freshnessNeed = inferFreshnessNeed(messageText);
-  const risk = inferRisk(messageText);
-  const intent = inferIntent(messageText, domains);
+const buildHeuristicRoute = (input: {
+  messageText: string;
+  childRouterDomain?: string | null;
+  childRouterOperationType?: string | null;
+  childRouterConfidence?: number | null;
+}): ResolvedRouteContract['route'] => {
+  const domains = inferDomains(input.messageText, input.childRouterDomain, input.childRouterConfidence);
+  const complexity = inferComplexity(input.messageText, input.childRouterOperationType);
+  const freshnessNeed = inferFreshnessNeed(input.messageText);
+  const risk = inferRisk(input.messageText, input.childRouterOperationType);
+  const intent = inferIntent(input.messageText, domains, input.childRouterOperationType);
   const retrievalMode = inferRetrievalMode({ domains, freshnessNeed, intent });
   const retrievalPlan = retrievalPlannerService.buildPlan({
-    messageText,
+    messageText: input.messageText,
     intent,
     domains,
     freshnessNeed,
@@ -162,11 +205,17 @@ const parseRawOutput = (rawLlmOutput: string | Record<string, unknown> | null | 
   }
 };
 
-const toRoute = (parsed: RouteSchemaShape, fallbackText: string): ResolvedRouteContract['route'] => {
-  const domains = normalizeDomains(parsed.domains ?? inferDomains(fallbackText));
-  const complexity = parsed.complexity ?? inferComplexity(fallbackText);
+const toRoute = (
+  parsed: RouteSchemaShape,
+  fallbackText: string,
+  childRouterDomain?: string | null,
+  childRouterOperationType?: string | null,
+  childRouterConfidence?: number | null,
+): ResolvedRouteContract['route'] => {
+  const domains = normalizeDomains(parsed.domains ?? inferDomains(fallbackText, childRouterDomain, childRouterConfidence));
+  const complexity = parsed.complexity ?? inferComplexity(fallbackText, childRouterOperationType);
   const freshnessNeed = parsed.freshnessNeed ?? inferFreshnessNeed(fallbackText);
-  const risk = parsed.risk ?? inferRisk(fallbackText);
+  const risk = parsed.risk ?? inferRisk(fallbackText, childRouterOperationType);
   const intent = parsed.intent.trim();
   const retrievalMode = parsed.retrievalMode ?? inferRetrievalMode({ domains, freshnessNeed, intent });
   const retrievalPlan = retrievalPlannerService.buildPlan({
@@ -192,6 +241,9 @@ const toRoute = (parsed: RouteSchemaShape, fallbackText: string): ResolvedRouteC
 export const resolveRouteContract = (input: {
   rawLlmOutput: string | Record<string, unknown> | null | undefined;
   messageText: string;
+  childRouterDomain?: string | null;
+  childRouterOperationType?: string | null;
+  childRouterConfidence?: number | null;
 }): ResolvedRouteContract => {
   const raw = parseRawOutput(input.rawLlmOutput);
   if (!raw) {
@@ -199,7 +251,12 @@ export const resolveRouteContract = (input: {
       source: 'heuristic_fallback',
       fallbackReasonCode: input.rawLlmOutput ? 'llm_invalid_json' : 'llm_empty',
       validationErrors: input.rawLlmOutput ? ['Route classifier returned invalid JSON.'] : ['Route classifier returned no output.'],
-      route: buildHeuristicRoute(input.messageText),
+      route: buildHeuristicRoute({
+        messageText: input.messageText,
+        childRouterDomain: input.childRouterDomain,
+        childRouterOperationType: input.childRouterOperationType,
+        childRouterConfidence: input.childRouterConfidence,
+      }),
     };
   }
 
@@ -209,13 +266,24 @@ export const resolveRouteContract = (input: {
       source: 'heuristic_fallback',
       fallbackReasonCode: 'llm_schema_invalid',
       validationErrors: parsed.error.issues.map((issue) => `${issue.path.join('.') || 'root'}: ${issue.message}`),
-      route: buildHeuristicRoute(input.messageText),
+      route: buildHeuristicRoute({
+        messageText: input.messageText,
+        childRouterDomain: input.childRouterDomain,
+        childRouterOperationType: input.childRouterOperationType,
+        childRouterConfidence: input.childRouterConfidence,
+      }),
     };
   }
 
   return {
     source: 'model',
     validationErrors: [],
-    route: toRoute(parsed.data, input.messageText),
+    route: toRoute(
+      parsed.data,
+      input.messageText,
+      input.childRouterDomain,
+      input.childRouterOperationType,
+      input.childRouterConfidence,
+    ),
   };
 };

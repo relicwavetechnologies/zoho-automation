@@ -47,7 +47,8 @@ import {
 } from '../../company/observability/circuit-breaker';
 import { conversationMemoryStore } from '../../company/state/conversation/conversation-memory.store';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
-import { TOOL_REGISTRY_MAP } from '../../company/tools/tool-registry';
+import { ALIAS_TO_CANONICAL_ID, DOMAIN_ALIASES, TOOL_REGISTRY_MAP } from '../../company/tools/tool-registry';
+import { classifyIntent, toNarrowOperationClass } from '../../company/orchestration/intent/canonical-intent';
 import { logger } from '../../utils/logger';
 import { departmentService } from '../../company/departments/department.service';
 import { prisma } from '../../utils/prisma';
@@ -280,6 +281,9 @@ const truncateString = (value: unknown, maxLength: number): string | undefined =
   return trimmed.length > maxLength ? trimmed.slice(0, maxLength) : trimmed;
 };
 
+const uniq = <T>(values: Array<T | null | undefined>): T[] =>
+  Array.from(new Set(values.filter((value): value is T => value !== null && value !== undefined)));
+
 const CHILD_ROUTER_FAST_REPLY_MAX_LENGTH = 4000;
 const CHILD_ROUTER_INTENT_CLASS_VALUES = [
   'direct_calendar',
@@ -306,6 +310,8 @@ const sanitizeChildRouteCandidate = (value: unknown): unknown => {
       ? { acknowledgement: truncateString(record.acknowledgement, 400) }
       : {}),
     ...(truncateString(record.reason, 200) ? { reason: truncateString(record.reason, 200) } : {}),
+    ...(truncateString(record.domain, 80) ? { domain: truncateString(record.domain, 80) } : {}),
+    ...(typeof record.operationType === 'string' ? { operationType: record.operationType.trim() } : {}),
     ...(truncateString(record.normalizedIntent, 400)
       ? { normalizedIntent: truncateString(record.normalizedIntent, 400) }
       : {}),
@@ -340,6 +346,74 @@ const sanitizeChildRouteCandidate = (value: unknown): unknown => {
         }
       : {}),
   };
+};
+
+const inferChildRouteDomain = (input: {
+  message: string;
+  normalizedIntent?: string;
+  explicitDomain?: string;
+  suggestedToolIds?: string[];
+}): string | undefined => {
+  const explicitDomain = input.explicitDomain?.trim();
+  if (explicitDomain) {
+    return DOMAIN_ALIASES[explicitDomain] ?? DOMAIN_ALIASES[explicitDomain.toLowerCase()] ?? explicitDomain;
+  }
+
+  const suggestedDomains = uniq(
+    (input.suggestedToolIds ?? []).map((toolId) => {
+      const canonicalToolId = ALIAS_TO_CANONICAL_ID[toolId]
+        ?? ALIAS_TO_CANONICAL_ID[toolId.toLowerCase()]
+        ?? ALIAS_TO_CANONICAL_ID[toolId.replace(/([a-z0-9])([A-Z])/g, '$1-$2')]
+        ?? ALIAS_TO_CANONICAL_ID[toolId.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()];
+      return canonicalToolId ? TOOL_REGISTRY_MAP.get(canonicalToolId)?.domain : null;
+    }),
+  );
+  if (suggestedDomains.length > 0) {
+    return suggestedDomains[0];
+  }
+
+  const intent = classifyIntent(input.message, {
+    normalizedIntent: input.normalizedIntent,
+  });
+  switch (intent.domain) {
+    case 'zoho_books':
+      return 'zoho_books';
+    case 'zoho_crm':
+      return 'zoho_crm';
+    case 'gmail':
+      return 'gmail';
+    case 'lark_doc':
+      return 'lark_doc';
+    case 'calendar':
+      return 'lark_calendar';
+    case 'lark':
+      return 'lark_task';
+    case 'outreach':
+      return 'outreach';
+    case 'web_search':
+      return 'web_search';
+    default:
+      return undefined;
+  }
+};
+
+const inferChildRouteOperationType = (input: {
+  message: string;
+  normalizedIntent?: string;
+  explicitOperationType?: unknown;
+  inferredDomain?: string;
+}): 'read' | 'write' | 'send' | 'inspect' | 'schedule' | 'search' => {
+  if (typeof input.explicitOperationType === 'string') {
+    const explicit = input.explicitOperationType.trim();
+    if (['read', 'write', 'send', 'inspect', 'schedule', 'search'].includes(explicit)) {
+      return explicit as 'read' | 'write' | 'send' | 'inspect' | 'schedule' | 'search';
+    }
+  }
+
+  return toNarrowOperationClass(classifyIntent(input.message, {
+    normalizedIntent: input.normalizedIntent,
+    childRouterDomain: input.inferredDomain,
+  }));
 };
 
 const inferChildRouteIntentClass = (input: {
@@ -448,6 +522,18 @@ const enrichChildRouteMetadata = (
     intentClass,
     explicitConfidence: route.confidence,
   });
+  const domain = inferChildRouteDomain({
+    message,
+    normalizedIntent: route.normalizedIntent,
+    explicitDomain: route.domain,
+    suggestedToolIds: route.suggestedToolIds,
+  });
+  const operationType = inferChildRouteOperationType({
+    message,
+    normalizedIntent: route.normalizedIntent,
+    explicitOperationType: route.operationType,
+    inferredDomain: domain,
+  });
   const alternativeIntent = inferAlternativeIntent({
     message,
     intentClass,
@@ -457,6 +543,8 @@ const enrichChildRouteMetadata = (
     ...route,
     intentClass,
     confidence,
+    ...(domain ? { domain } : {}),
+    operationType,
     ...(alternativeIntent ? { alternativeIntent } : {}),
   };
 };
@@ -708,6 +796,8 @@ const desktopChildRouteSchema = z.object({
   reply: z.string().min(1).max(CHILD_ROUTER_FAST_REPLY_MAX_LENGTH).optional(),
   acknowledgement: z.string().min(1).max(400).optional(),
   reason: z.string().min(1).max(200).optional(),
+  domain: z.string().min(1).max(80).optional(),
+  operationType: z.enum(['read', 'write', 'send', 'inspect', 'schedule', 'search']).optional(),
   normalizedIntent: z.string().min(1).max(400).optional(),
   intentClass: z.enum(CHILD_ROUTER_INTENT_CLASS_VALUES).optional(),
   confidence: z.number().min(0).max(1).optional(),
@@ -1090,19 +1180,21 @@ export const buildChildRouterPrompt = (input: {
     'Return exactly one JSON object only.',
     'Do not wrap it in markdown, prose, arrays, or an outer envelope.',
     'Required JSON keys:',
-    'route, reply, acknowledgement, reason, normalizedIntent, intentClass, confidence, alternativeIntent, preferredReplyMode, suggestedToolIds, suggestedSkillQuery, suggestedActions',
+    'route, reply, acknowledgement, reason, domain, operationType, normalizedIntent, intentClass, confidence, alternativeIntent, preferredReplyMode, suggestedToolIds, suggestedSkillQuery, suggestedActions',
     'Allowed route values: fast_reply, direct_execute, handoff',
     'Allowed preferredReplyMode values: thread, reply, plain, dm',
     'Valid examples:',
-    '{"route":"fast_reply","reply":"Hi, how can I help?","reason":"simple greeting","normalizedIntent":"greeting","intentClass":"other","confidence":0.98,"preferredReplyMode":"reply","suggestedToolIds":[],"suggestedActions":[]}',
-    '{"route":"direct_execute","acknowledgement":"Let me check that.","reason":"simple tool-backed request","normalizedIntent":"list saved workflows","intentClass":"saved_workflow_reuse","confidence":0.9,"preferredReplyMode":"thread","suggestedToolIds":["workflowList"],"suggestedActions":["call workflowList"]}',
-    '{"route":"handoff","acknowledgement":"I can set that up.","reason":"multi-step request","normalizedIntent":"schedule a reusable workflow","intentClass":"reusable_workflow","confidence":0.88,"alternativeIntent":"direct_calendar","preferredReplyMode":"thread","suggestedToolIds":["skillSearch","workflowPlan","workflowSchedule"],"suggestedSkillQuery":"workflow scheduling reusable prompt","suggestedActions":["search relevant skill","plan workflow","ask for missing schedule details"]}',
+    '{"route":"fast_reply","reply":"Hi, how can I help?","reason":"simple greeting","domain":"general","operationType":"read","normalizedIntent":"greeting","intentClass":"other","confidence":0.98,"preferredReplyMode":"reply","suggestedToolIds":[],"suggestedActions":[]}',
+    '{"route":"direct_execute","acknowledgement":"Let me check that.","reason":"simple tool-backed request","domain":"workflow","operationType":"read","normalizedIntent":"list saved workflows","intentClass":"saved_workflow_reuse","confidence":0.9,"preferredReplyMode":"thread","suggestedToolIds":["workflowList"],"suggestedActions":["call workflowList"]}',
+    '{"route":"handoff","acknowledgement":"I can set that up.","reason":"multi-step request","domain":"workflow","operationType":"schedule","normalizedIntent":"schedule a reusable workflow","intentClass":"reusable_workflow","confidence":0.88,"alternativeIntent":"direct_calendar","preferredReplyMode":"thread","suggestedToolIds":["skillSearch","workflowPlan","workflowSchedule"],"suggestedSkillQuery":"workflow scheduling reusable prompt","suggestedActions":["search relevant skill","plan workflow","ask for missing schedule details"]}',
     'Routes:',
     '- fast_reply: greetings, thanks, chit-chat, identity/capability questions, short conversational replies that need no tools, or grounded multimodal turns that can be answered directly from the current attached image/media context without external tools.',
     '- direct_execute: straightforward work that should go directly to the main executor. Always include a short natural acknowledgement the user should see immediately.',
     '- handoff: multi-step or heavier work likely to require more than 2-3 tool calls, iteration, or planning. Always include a short natural acknowledgement the user should see immediately.',
     'Rules:',
     '- Do not use tools.',
+    '- `domain` should use the routing-domain taxonomy when possible: zoho_crm, zoho_books, lark_task, lark_message, lark_calendar, lark_meeting, lark_approval, lark_doc, lark_base, gmail, google_drive, google_calendar, workflow, skill, web_search, context_search, workspace, document_inspection, general.',
+    '- `operationType` must be one of: read, write, send, inspect, schedule, search.',
     '- If retrieved conversation memory clearly answers a personal-memory question, prefer fast_reply and answer from that memory.',
     '- When a workspace is active, ambiguous file and folder requests refer to the LOCAL workspace by default, not Google Drive or any other cloud integration, unless the user explicitly names a cloud service.',
     '- If a workspace is active, capability questions about local files, repos, or terminal access should reflect that you can inspect and operate on the active workspace through the coding tool, including approved terminal commands and file operations. The terminal tool gives you direct execution access within the active workspace and can handle most file, directory, script, install, and git tasks the user approves. Do not answer with generic "I only have access to shared/public files" language.',
@@ -1230,6 +1322,8 @@ export const runDesktopChildRouter = async (input: {
       reply: 'You mentioned me — what would you like me to do?',
       reason: 'bare mention without actionable text',
       normalizedIntent: 'unknown',
+      domain: 'general',
+      operationType: 'read',
       intentClass: 'other',
       confidence: 1,
       preferredReplyMode: 'reply',
@@ -1369,6 +1463,8 @@ export const runDesktopChildRouter = async (input: {
         return {
           route: 'direct_execute',
           reason: 'personal memory question should use thread context and conversation retrieval',
+          domain: 'context_search',
+          operationType: 'search',
           intentClass: 'other',
           confidence: 0.95,
         };
@@ -1387,6 +1483,8 @@ export const runDesktopChildRouter = async (input: {
           acknowledgement: 'I’ll check the workflow output configuration for you.',
           reason: 'workflow_output_question_requires_current_workflow_config',
           normalizedIntent: 'workflow output capability question',
+          domain: 'workflow',
+          operationType: 'read',
           intentClass: 'saved_workflow_reuse',
           confidence: 0.9,
           suggestedToolIds: ['workflowList', 'workflowDraft'],
@@ -3037,6 +3135,9 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
     hasActiveArtifacts: input.hasActiveArtifacts,
     childRoute: input.childRouteHints
       ? {
+          confidence: input.childRouteHints.confidence,
+          domain: input.childRouteHints.domain,
+          operationType: input.childRouteHints.operationType,
           normalizedIntent: input.childRouteHints.normalizedIntent,
           reason: input.childRouteHints.reason,
           suggestedToolIds: input.childRouteHints.suggestedToolIds,
@@ -3074,6 +3175,9 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
     enrichedQueryText: input.queryEnrichment?.cleanQuery,
     childRoute: input.childRouteHints
       ? {
+          confidence: input.childRouteHints.confidence,
+          domain: input.childRouteHints.domain,
+          operationType: input.childRouteHints.operationType,
           normalizedIntent: input.childRouteHints.normalizedIntent,
           reason: input.childRouteHints.reason,
           suggestedToolIds: input.childRouteHints.suggestedToolIds,
@@ -4339,6 +4443,8 @@ export class VercelDesktopEngine {
             childRoute: {
               route: childRoute.route,
               reason: childRoute.reason ?? null,
+              domain: childRoute.domain ?? null,
+              operationType: childRoute.operationType ?? null,
               intentClass: childRoute.intentClass,
               confidence: childRoute.confidence,
               alternativeIntent: childRoute.alternativeIntent ?? null,
@@ -4425,6 +4531,8 @@ export class VercelDesktopEngine {
             childRoute: {
               route: childRoute.route,
               reason: childRoute.reason ?? null,
+              domain: childRoute.domain ?? null,
+              operationType: childRoute.operationType ?? null,
             },
           },
         );
@@ -5086,6 +5194,8 @@ export class VercelDesktopEngine {
           latestUserMessage: effectivePromptMessage,
           childRoute: childRoute
             ? {
+                domain: childRoute.domain,
+                operationType: childRoute.operationType,
                 normalizedIntent: childRoute.normalizedIntent,
                 reason: childRoute.reason,
                 suggestedToolIds: childRoute.suggestedToolIds,

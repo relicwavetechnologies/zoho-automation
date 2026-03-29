@@ -732,6 +732,7 @@ const hasConfirmedMutationForIntent = (input: {
 const resolveMutationGuard = (input: {
   taskId: string;
   latestUserMessage: string;
+  childRouterOperationType?: string | null;
   normalizedIntent?: string | null;
   plannerChosenOperationClass?: string | null;
   pendingApproval: boolean;
@@ -747,6 +748,7 @@ const resolveMutationGuard = (input: {
     {
       normalizedIntent: input.normalizedIntent,
       plannerChosenOperationClass: input.plannerChosenOperationClass,
+      childRouterOperationType: input.childRouterOperationType,
     },
   );
   const writeLikeIntent = canonicalIntent.isWriteLike;
@@ -2909,6 +2911,9 @@ const executeLarkVercelTask = async (
       groundingAttachments.length > 0 || activeTaskState.activeSourceArtifacts.length > 0,
     artifactMode: classifyArtifactMode(groundingAttachments),
     childRoute: {
+      confidence: childRoute.confidence,
+      domain: childRoute.domain,
+      operationType: childRoute.operationType,
       normalizedIntent: childRoute.normalizedIntent,
       reason: childRoute.reason,
       suggestedToolIds: childRoute.suggestedToolIds,
@@ -2944,6 +2949,9 @@ const executeLarkVercelTask = async (
     latestUserMessage: resolvedUserMessage,
     enrichedQueryText: queryEnrichment.cleanQuery,
     childRoute: {
+      confidence: childRoute.confidence,
+      domain: childRoute.domain,
+      operationType: childRoute.operationType,
       normalizedIntent: childRoute.normalizedIntent,
       reason: childRoute.reason,
       suggestedToolIds: childRoute.suggestedToolIds,
@@ -3390,6 +3398,7 @@ const executeLarkVercelTask = async (
     const mutationGuard = resolveMutationGuard({
       taskId: task.taskId,
       latestUserMessage: resolvedUserMessage,
+      childRouterOperationType: childRoute.operationType,
       normalizedIntent: childRoute.normalizedIntent,
       plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
       pendingApproval: Boolean(pendingApproval),
@@ -3511,6 +3520,9 @@ const executeLarkVercelTask = async (
       conversationKey,
       latestUserMessage: resolvedUserMessage,
       childRoute: {
+        confidence: childRoute.confidence,
+        domain: childRoute.domain,
+        operationType: childRoute.operationType,
         normalizedIntent: childRoute.normalizedIntent,
         reason: childRoute.reason,
         suggestedToolIds: childRoute.suggestedToolIds,

@@ -26,3 +26,16 @@ test('route contract infers hybrid_web when freshness and internal documents are
   assert.ok(resolved.route.knowledgeNeeds.includes('hybrid_web'));
   assert.equal(resolved.route.preferredStrategy, 'internal_plus_web');
 });
+
+test('route contract trusts authoritative child-router domain before keyword fallback', () => {
+  const resolved = resolveRouteContract({
+    rawLlmOutput: null,
+    messageText: 'that one again',
+    childRouterDomain: 'zoho_books',
+    childRouterOperationType: 'send',
+    childRouterConfidence: 0.9,
+  });
+
+  assert.equal(resolved.route.intent, 'write_intent');
+  assert.ok(resolved.route.domains.includes('books'));
+});

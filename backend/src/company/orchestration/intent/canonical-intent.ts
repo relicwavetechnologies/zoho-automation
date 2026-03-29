@@ -175,6 +175,7 @@ export function classifyIntent(
     normalizedIntent?: string | null;
     plannerChosenOperationClass?: string | null;
     childRouterDomain?: string | null;
+    childRouterOperationType?: string | null;
   },
 ): CanonicalIntent {
   const normalized = normalizeText(text);
@@ -192,6 +193,7 @@ export function classifyIntent(
   const matchedRead = matchTerms(combined, READ_VERBS);
 
   const plannerClass = normalizeText(supplementarySignals?.plannerChosenOperationClass ?? '');
+  const childRouterOperationType = normalizeText(supplementarySignals?.childRouterOperationType ?? '');
 
   let operationClass: OperationClass = 'general';
   let matchedVerbs: string[] = [];
@@ -213,6 +215,24 @@ export function classifyIntent(
     matchedVerbs = matchedRead;
   } else if (['write', 'send', 'execute'].includes(plannerClass)) {
     operationClass = plannerClass === 'send' ? 'send' : 'write';
+  } else if (['write', 'send', 'inspect', 'schedule', 'search', 'read'].includes(childRouterOperationType)) {
+    switch (childRouterOperationType) {
+      case 'send':
+        operationClass = 'send';
+        break;
+      case 'schedule':
+        operationClass = 'action';
+        break;
+      case 'search':
+      case 'inspect':
+      case 'read':
+        operationClass = 'read';
+        break;
+      case 'write':
+      default:
+        operationClass = 'write';
+        break;
+    }
   }
 
   const matchedBooksDomain = matchTerms(combined, BOOKS_DOMAIN_TERMS);
