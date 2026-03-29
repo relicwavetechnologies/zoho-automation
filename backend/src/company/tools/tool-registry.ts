@@ -94,11 +94,11 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: 'workflow-authoring',
     name: 'Workflow Authoring',
-    description: 'Create, plan, save, schedule, list, and run reusable prompts/workflows across desktop and Lark.',
+    description: 'Create, plan, save, schedule, list, run, and archive reusable prompts/workflows across desktop and Lark.',
     category: 'workspace',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-    supportedActionGroups: ['read', 'create', 'update', 'execute'],
+    supportedActionGroups: ['read', 'create', 'update', 'delete', 'execute'],
   },
   {
     id: 'search-zoho-context',

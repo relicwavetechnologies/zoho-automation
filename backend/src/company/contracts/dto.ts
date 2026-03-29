@@ -42,10 +42,14 @@ export type NormalizedIncomingMessageDTO = {
     requesterEmail?: string;
     /** Runtime-owned progress/status message id for channel UIs that support in-place updates. */
     statusMessageId?: string;
+    /** Delivery mode used when the runtime seeded the current status message. */
+    statusReplyModeHint?: 'thread' | 'reply' | 'plain' | 'dm';
     /** Original inbound message id to anchor reply-style bot responses when supported. */
     replyToMessageId?: string;
     /** Referenced inbound message id when the user replies to or quotes an earlier message. */
     referencedMessageId?: string;
+    /** True when the incoming text is only an attention ping like "@Divo" with no actionable content. */
+    attentionOnly?: boolean;
   };
 };
 

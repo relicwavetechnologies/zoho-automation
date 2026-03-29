@@ -24,6 +24,7 @@ import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-
 import {
   applyActionResultToTaskState,
   createEmptyTaskState,
+  isAttentionOnlyText,
   parseDesktopTaskState,
   upsertDesktopSourceArtifacts,
 } from '../../../modules/desktop-chat/desktop-thread-memory';
@@ -364,6 +365,23 @@ const buildIngressAckText = (input: { text: string; queuedBehindActive?: boolean
     ].join('\n');
   }
   return 'Working on it.';
+};
+
+const buildAttachmentAckMessage = (
+  files: NonNullable<NormalizedIncomingMessageDTO['attachedFiles']>,
+): string => {
+  const names = files
+    .map((file) => {
+      const fileName = file.fileName?.trim();
+      if (fileName) return fileName;
+      const mimeLabel = file.mimeType?.split('/').pop()?.trim();
+      return mimeLabel || 'file';
+    })
+    .join(', ');
+  const noun = files.length === 1 ? 'file' : 'files';
+  const pronoun = files.length === 1 ? 'it' : 'them';
+  const subject = names ? ` (${names})` : '';
+  return `Got your ${noun}${subject}. Send me a message and I'll work with ${pronoun}.`;
 };
 
 const buildApprovalContinuationText = (input: {
@@ -1735,6 +1753,7 @@ export const createLarkWebhookEventHandler = (
       });
 
       const textHash = buildLarkTextHash(resolvedText);
+      const attentionOnly = isAttentionOnlyText(resolvedText);
 
       const tracedMessageBase: NonNullable<ReturnType<LarkChannelAdapter['normalizeIncomingEvent']>> = {
         ...normalized,
@@ -1752,6 +1771,7 @@ export const createLarkWebhookEventHandler = (
           linkedUserId,
           userRole,
           requesterEmail,
+          attentionOnly,
           replyToMessageId: normalized.messageId,
         },
       };
@@ -2650,6 +2670,7 @@ export const createLarkWebhookEventHandler = (
           ?? tracedMessage.userId;
         const actionReplyToMessageId = asString(approvalMetadata?.sourceReplyToMessageId);
         const actionStatusMessageId = asString(approvalMetadata?.sourceStatusMessageId);
+        const actionStatusReplyModeHint = asString(approvalMetadata?.sourceStatusReplyModeHint);
         const actionChatType = asString(approvalMetadata?.sourceChatType);
         const continuationTargetMessage: NormalizedLarkMessage =
           actionChatId && actionChatId !== tracedMessage.chatId
@@ -2672,6 +2693,13 @@ export const createLarkWebhookEventHandler = (
                   requesterEmail: actionRequesterEmail ?? tracedMessage.trace?.requesterEmail,
                   replyToMessageId: actionReplyToMessageId ?? tracedMessage.trace?.replyToMessageId,
                   statusMessageId: actionStatusMessageId ?? tracedMessage.trace?.statusMessageId,
+                  statusReplyModeHint:
+                    (actionStatusReplyModeHint === 'thread'
+                      || actionStatusReplyModeHint === 'reply'
+                      || actionStatusReplyModeHint === 'plain'
+                      || actionStatusReplyModeHint === 'dm')
+                      ? actionStatusReplyModeHint
+                      : tracedMessage.trace?.statusReplyModeHint,
                 },
               }
             : {
@@ -2686,6 +2714,13 @@ export const createLarkWebhookEventHandler = (
                   requesterEmail: actionRequesterEmail ?? tracedMessage.trace?.requesterEmail,
                   replyToMessageId: actionReplyToMessageId ?? tracedMessage.trace?.replyToMessageId,
                   statusMessageId: actionStatusMessageId ?? tracedMessage.trace?.statusMessageId,
+                  statusReplyModeHint:
+                    (actionStatusReplyModeHint === 'thread'
+                      || actionStatusReplyModeHint === 'reply'
+                      || actionStatusReplyModeHint === 'plain'
+                      || actionStatusReplyModeHint === 'dm')
+                      ? actionStatusReplyModeHint
+                      : tracedMessage.trace?.statusReplyModeHint,
                 },
               };
         let executionSummary: string | undefined;
@@ -3060,6 +3095,14 @@ export const createLarkWebhookEventHandler = (
         trace: {
           ...(tracedMessage.trace ?? {}),
           ...(statusMessageId ? { statusMessageId } : {}),
+          ...(statusMessageId
+            ? {
+                statusReplyModeHint:
+                  tracedMessage.chatType === 'group'
+                    ? 'thread'
+                    : 'reply',
+              }
+            : {}),
         },
       };
 
@@ -3120,6 +3163,29 @@ export const createLarkWebhookEventHandler = (
       }
 
       if (parsed.kind === 'event_callback_message' && (msgType === 'image' || msgType === 'file' || msgType === 'media')) {
+        try {
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessage.chatId,
+            replyToMessageId: tracedMessage.messageId,
+            replyInThread: tracedMessage.chatType === 'group',
+            correlationId: requestId,
+            text: buildAttachmentAckMessage(attachedFiles),
+          });
+        } catch (error) {
+          dependencies.log.warn('lark.ingress.attachment_ack.failed', {
+            ...buildIngressTraceMeta({
+              requestId,
+              message: tracedMessage,
+              eventId: parsed.eventId,
+              textHash,
+              larkTenantKey,
+              companyId: scopedCompanyId ?? undefined,
+            }),
+            msgType,
+            stagedFileCount: attachedFiles.length,
+            error: error instanceof Error ? error.message : 'unknown_error',
+          });
+        }
         orangeDebug('lark.ingress.attachment_staged', {
           requestId,
           eventId: parsed.eventId,

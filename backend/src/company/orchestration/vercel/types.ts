@@ -88,8 +88,11 @@ export type VercelToolEnvelope = {
   fullPayload?: Record<string, unknown>;
   citations?: VercelCitation[];
   errorKind?: VercelToolErrorKind;
+  errorCode?: string;
   retryable?: boolean;
   userAction?: string;
+  missingFields?: string[];
+  repairHints?: Record<string, string>;
   pendingApprovalAction?: PendingApprovalAction;
 };
 
@@ -116,6 +119,7 @@ export type VercelRuntimeRequestContext = {
   sourceMessageId?: string;
   sourceReplyToMessageId?: string;
   sourceStatusMessageId?: string;
+  sourceStatusReplyModeHint?: 'thread' | 'reply' | 'plain' | 'dm';
   sourceChatType?: 'p2p' | 'group';
   sourceChannelUserId?: string;
   latestUserMessage?: string;
@@ -123,6 +127,7 @@ export type VercelRuntimeRequestContext = {
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentZohoReadScope?: 'personalized' | 'show_all';
+  canFallbackToCompanyScopedBooksRead?: boolean;
   departmentZohoRateLimitConfig?: ZohoRateLimitConfig;
   departmentManagerApprovalConfig?: DepartmentManagerApprovalConfig;
   larkTenantKey?: string;
@@ -137,6 +142,7 @@ export type VercelRuntimeRequestContext = {
   taskState?: {
     activeDomain?: string;
     activeModule?: string;
+    currentWorkflowId?: string;
     currentEntity?: {
       module: string;
       recordId: string;

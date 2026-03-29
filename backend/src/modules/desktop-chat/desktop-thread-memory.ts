@@ -15,6 +15,12 @@ export type DesktopThreadSummary = {
   completedWrites: string[];
   pendingApprovals: string[];
   constraints: string[];
+  recentTaskSummaries: Array<{
+    taskId: string;
+    summary: string;
+    completedAt: string;
+    resolvedIds?: Record<string, string>;
+  }>;
   sourceMessageCount: number;
   updatedAt: string;
 };
@@ -73,6 +79,7 @@ export type DesktopTaskState = {
   activeDomain?: string;
   activeModule?: string;
   activeObjective?: string;
+  currentWorkflowId?: string;
   activeSourceArtifacts: DesktopSourceArtifact[];
   workingSets: Record<string, DesktopWorkingSet>;
   aliases: Record<string, DesktopEntityRef>;
@@ -99,6 +106,23 @@ const isLightweightChatLike = (value: string | null | undefined): boolean =>
 
 const isQueueOrStatusOnlyText = (value: string): boolean =>
   /^(working on it\.?|still working on it\.?|still working through the next step\.?|still gathering the right details\.?|getting things ready\.?|queued your message\.?|send \/q to interrupt the active run\.?|there (?:is|are) \d+ requests ahead of it\.)$/i.test(value);
+
+export const isAttentionOnlyText = (value: string | null | undefined): boolean => {
+  const normalized = (value ?? '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\u00A0/g, ' ')
+    .trim();
+  if (!normalized) {
+    return false;
+  }
+  const stripped = normalized
+    .replace(/@(?:divo(?:\s+ai)?|_user_1)\b/gi, ' ')
+    .replace(/@\S+/g, ' ')
+    .replace(/[\s,.:;!?()[\]{}<>"'`~\-_+/\\|]+/g, ' ')
+    .trim();
+  return stripped.length === 0;
+};
 
 const isRawInternalAssistantText = (value: string): boolean => {
   const normalized = value.replace(/\s+/g, ' ').trim();
@@ -137,6 +161,9 @@ export const shouldOmitFromThreadContext = (message: ThreadMessageLike): boolean
       return true;
     }
   }
+  if (message.role === 'user' && isAttentionOnlyText(normalized)) {
+    return true;
+  }
   if (message.role === 'user' && /^continue from this local action result\./i.test(normalized)) {
     return true;
   }
@@ -167,6 +194,7 @@ const emptySummary = (): DesktopThreadSummary => ({
   completedWrites: [],
   pendingApprovals: [],
   constraints: [],
+  recentTaskSummaries: [],
   sourceMessageCount: 0,
   updatedAt: new Date(0).toISOString(),
 });
@@ -296,6 +324,30 @@ export const parseDesktopThreadSummary = (value: unknown): DesktopThreadSummary 
     completedWrites: Array.isArray(record.completedWrites) ? record.completedWrites.flatMap((entry) => asString(entry) ? [asString(entry)!] : []).slice(0, 10) : [],
     pendingApprovals: Array.isArray(record.pendingApprovals) ? record.pendingApprovals.flatMap((entry) => asString(entry) ? [asString(entry)!] : []).slice(0, 6) : [],
     constraints: Array.isArray(record.constraints) ? record.constraints.flatMap((entry) => asString(entry) ? [asString(entry)!] : []).slice(0, 8) : [],
+    recentTaskSummaries: Array.isArray(record.recentTaskSummaries)
+      ? record.recentTaskSummaries.flatMap((entry) => {
+        const candidate = asRecord(entry);
+        const taskId = asString(candidate?.taskId);
+        const summary = asString(candidate?.summary);
+        const completedAt = asString(candidate?.completedAt);
+        if (!taskId || !summary || !completedAt) {
+          return [];
+        }
+        const resolvedIdsRecord = asRecord(candidate?.resolvedIds) ?? {};
+        const resolvedIds = Object.fromEntries(
+          Object.entries(resolvedIdsRecord).flatMap(([key, value]) => {
+            const normalized = asString(value);
+            return normalized ? [[key, normalized]] : [];
+          }),
+        );
+        return [{
+          taskId,
+          summary,
+          completedAt,
+          ...(Object.keys(resolvedIds).length > 0 ? { resolvedIds } : {}),
+        }];
+      }).slice(0, 10)
+      : [],
     sourceMessageCount: typeof record.sourceMessageCount === 'number' ? record.sourceMessageCount : 0,
     updatedAt: asString(record.updatedAt) ?? new Date(0).toISOString(),
   };
@@ -417,6 +469,7 @@ export const parseDesktopTaskState = (value: unknown): DesktopTaskState => {
     activeDomain: asString(record.activeDomain),
     activeModule: asString(record.activeModule),
     activeObjective: asString(record.activeObjective),
+    currentWorkflowId: asString(record.currentWorkflowId),
     activeSourceArtifacts,
     workingSets: Object.fromEntries(
       Object.entries(workingSets).flatMap(([key, value]) => {
@@ -668,6 +721,14 @@ export const buildThreadSummaryContext = (summary: DesktopThreadSummary): string
   if (summary.constraints.length > 0) {
     lines.push(`Constraints: ${summary.constraints.join(' | ')}`);
   }
+  if (summary.recentTaskSummaries.length > 0) {
+    lines.push(
+      `Recent task summaries: ${summary.recentTaskSummaries
+        .slice(0, 4)
+        .map((entry) => entry.summary)
+        .join(' | ')}`,
+    );
+  }
   return lines.length > 0 ? ['Thread summary:', ...lines].join('\n') : null;
 };
 
@@ -891,7 +952,7 @@ export const updateTaskStateFromToolEnvelope = (input: {
   const next = parseDesktopTaskState(input.taskState);
   const now = new Date().toISOString();
   next.updatedAt = now;
-  if (input.latestObjective?.trim()) {
+  if (input.latestObjective?.trim() && !isAttentionOnlyText(input.latestObjective)) {
     next.activeObjective = summarizeText(input.latestObjective.trim(), 300);
   }
 
@@ -923,6 +984,20 @@ export const updateTaskStateFromToolEnvelope = (input: {
       if (label) {
         next.aliases[label.toLowerCase()] = entity;
       }
+    }
+  }
+
+  if (
+    (input.toolName === 'workflowDraft'
+      || input.toolName === 'workflowBuild'
+      || input.toolName === 'workflowSave')
+    && input.output.success
+  ) {
+    const workflowId = asString(input.output.fullPayload?.workflowId)
+      ?? asString(input.output.fullPayload?.id)
+      ?? asString(input.output.keyData?.workflowId);
+    if (workflowId) {
+      next.currentWorkflowId = workflowId;
     }
   }
 
@@ -1040,6 +1115,7 @@ export const buildDeterministicThreadSummary = (input: {
   const filteredMessages = filterThreadMessagesForContext(input.messages);
   const recentUserGoals = filteredMessages
     .filter((message) => message.role === 'user')
+    .filter((message) => !isAttentionOnlyText(message.content))
     .map((message) => summarizeText(message.content.trim(), 180))
     .filter(Boolean)
     .slice(-4);
@@ -1104,6 +1180,7 @@ export const buildDeterministicThreadSummary = (input: {
     completedWrites,
     pendingApprovals,
     constraints,
+    recentTaskSummaries: input.currentSummary.recentTaskSummaries.slice(0, 10),
     sourceMessageCount: input.messages.length,
     updatedAt: new Date().toISOString(),
   };
@@ -1217,6 +1294,7 @@ export const refreshDesktopThreadSummary = async (input: {
       completedWrites: mergedCompletedWrites,
       pendingApprovals: mergedPendingApprovals,
       constraints: mergedConstraints,
+      recentTaskSummaries: deterministic.recentTaskSummaries.slice(0, 10),
       sourceMessageCount: input.messages.length,
       updatedAt: new Date().toISOString(),
     };

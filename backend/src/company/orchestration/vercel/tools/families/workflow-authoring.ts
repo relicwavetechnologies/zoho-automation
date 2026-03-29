@@ -8,8 +8,10 @@ export const buildWorkflowAuthoringTools = (
   'workflowDraft',
   'workflowPlan',
   'workflowBuild',
+  'workflowValidate',
   'workflowSave',
   'workflowSchedule',
   'workflowList',
+  'workflowArchive',
   'workflowRun',
 ]);

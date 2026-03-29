@@ -281,6 +281,14 @@ const truncateString = (value: unknown, maxLength: number): string | undefined =
 };
 
 const CHILD_ROUTER_FAST_REPLY_MAX_LENGTH = 4000;
+const CHILD_ROUTER_INTENT_CLASS_VALUES = [
+  'direct_calendar',
+  'reusable_workflow',
+  'saved_workflow_reuse',
+  'other',
+] as const;
+
+type ChildRouterIntentClass = (typeof CHILD_ROUTER_INTENT_CLASS_VALUES)[number];
 
 const sanitizeChildRouteCandidate = (value: unknown): unknown => {
   const normalized = normalizeChildRouteResponse(value);
@@ -304,6 +312,13 @@ const sanitizeChildRouteCandidate = (value: unknown): unknown => {
     ...(truncateString(record.suggestedSkillQuery, 300)
       ? { suggestedSkillQuery: truncateString(record.suggestedSkillQuery, 300) }
       : {}),
+    ...(typeof record.intentClass === 'string' ? { intentClass: record.intentClass.trim() } : {}),
+    ...(typeof record.alternativeIntent === 'string'
+      ? { alternativeIntent: truncateString(record.alternativeIntent, 120) }
+      : {}),
+    ...(typeof record.confidence === 'number' && Number.isFinite(record.confidence)
+      ? { confidence: Math.min(1, Math.max(0, record.confidence)) }
+      : {}),
     ...(Array.isArray(record.suggestedToolIds)
       ? {
           suggestedToolIds: record.suggestedToolIds
@@ -325,6 +340,146 @@ const sanitizeChildRouteCandidate = (value: unknown): unknown => {
         }
       : {}),
   };
+};
+
+const inferChildRouteIntentClass = (input: {
+  message: string;
+  normalizedIntent?: string;
+  suggestedToolIds?: string[];
+  explicitIntentClass?: unknown;
+}): ChildRouterIntentClass => {
+  if (typeof input.explicitIntentClass === 'string') {
+    const trimmed = input.explicitIntentClass.trim() as ChildRouterIntentClass;
+    if (CHILD_ROUTER_INTENT_CLASS_VALUES.includes(trimmed)) {
+      return trimmed;
+    }
+  }
+  const haystack = `${input.message}\n${input.normalizedIntent ?? ''}`.toLowerCase();
+  const suggestedToolIds = new Set((input.suggestedToolIds ?? []).map((entry) => entry.trim()));
+  const savedWorkflowSignals =
+    /\b(saved workflow|run workflow|workflow named|workflow called|open workflow|list workflows|show workflows)\b/i.test(haystack)
+    || suggestedToolIds.has('workflowList')
+    || suggestedToolIds.has('workflowRun');
+  if (savedWorkflowSignals) {
+    return 'saved_workflow_reuse';
+  }
+  const workflowSignals =
+    /\b(workflow|recurring|repeat every|save this|save for later|reusable|automation)\b/i.test(haystack)
+    || suggestedToolIds.has('workflowDraft')
+    || suggestedToolIds.has('workflowPlan')
+    || suggestedToolIds.has('workflowBuild')
+    || suggestedToolIds.has('workflowValidate')
+    || suggestedToolIds.has('workflowSave')
+    || suggestedToolIds.has('workflowSchedule');
+  const calendarSignals =
+    /\b(meeting|calendar|event|availability|reschedul|invite|slot|book)\b/i.test(haystack)
+    || suggestedToolIds.has('larkCalendar')
+    || suggestedToolIds.has('googleCalendar');
+  if (workflowSignals && !calendarSignals) {
+    return 'reusable_workflow';
+  }
+  if (calendarSignals && !workflowSignals) {
+    return 'direct_calendar';
+  }
+  return 'other';
+};
+
+const inferChildRouteConfidence = (input: {
+  message: string;
+  intentClass: ChildRouterIntentClass;
+  explicitConfidence?: unknown;
+}): number => {
+  if (typeof input.explicitConfidence === 'number' && Number.isFinite(input.explicitConfidence)) {
+    return Math.min(1, Math.max(0, input.explicitConfidence));
+  }
+  if (input.intentClass === 'other') {
+    return 0.9;
+  }
+  const message = input.message.toLowerCase();
+  const workflowSignals = /\b(workflow|recurring|repeat every|save this|save for later|reusable|automation)\b/.test(message);
+  const calendarSignals = /\b(meeting|calendar|event|availability|reschedul|invite|slot|book)\b/.test(message);
+  if (workflowSignals && calendarSignals) {
+    return 0.55;
+  }
+  if (input.intentClass === 'saved_workflow_reuse') {
+    return 0.85;
+  }
+  if (workflowSignals || calendarSignals) {
+    return 0.82;
+  }
+  return 0.7;
+};
+
+const inferAlternativeIntent = (input: {
+  message: string;
+  intentClass: ChildRouterIntentClass;
+  explicitAlternativeIntent?: unknown;
+}): string | undefined => {
+  if (typeof input.explicitAlternativeIntent === 'string' && input.explicitAlternativeIntent.trim()) {
+    return input.explicitAlternativeIntent.trim().slice(0, 120);
+  }
+  const message = input.message.toLowerCase();
+  const workflowSignals = /\b(workflow|recurring|repeat every|save this|save for later|reusable|automation)\b/.test(message);
+  const calendarSignals = /\b(meeting|calendar|event|availability|reschedul|invite|slot|book)\b/.test(message);
+  if (!(workflowSignals && calendarSignals)) {
+    return undefined;
+  }
+  if (input.intentClass === 'direct_calendar') {
+    return 'reusable_workflow';
+  }
+  if (input.intentClass === 'reusable_workflow' || input.intentClass === 'saved_workflow_reuse') {
+    return 'direct_calendar';
+  }
+  return 'reusable_workflow';
+};
+
+const enrichChildRouteMetadata = (
+  route: ParsedDesktopChildRoute,
+  message: string,
+): DesktopChildRoute => {
+  const intentClass = inferChildRouteIntentClass({
+    message,
+    normalizedIntent: route.normalizedIntent,
+    suggestedToolIds: route.suggestedToolIds,
+    explicitIntentClass: route.intentClass,
+  });
+  const confidence = inferChildRouteConfidence({
+    message,
+    intentClass,
+    explicitConfidence: route.confidence,
+  });
+  const alternativeIntent = inferAlternativeIntent({
+    message,
+    intentClass,
+    explicitAlternativeIntent: route.alternativeIntent,
+  });
+  return {
+    ...route,
+    intentClass,
+    confidence,
+    ...(alternativeIntent ? { alternativeIntent } : {}),
+  };
+};
+
+export const buildSchedulingIntentClarification = (
+  route: Pick<DesktopChildRoute, 'intentClass' | 'confidence' | 'alternativeIntent'>,
+): string | null => {
+  if (
+    !['direct_calendar', 'reusable_workflow', 'saved_workflow_reuse'].includes(route.intentClass)
+    || route.confidence >= 0.75
+  ) {
+    return null;
+  }
+  if (route.intentClass === 'saved_workflow_reuse') {
+    return 'Did you want to run an existing saved workflow, or create a new recurring workflow?';
+  }
+  if (route.intentClass === 'direct_calendar') {
+    return 'Did you want to schedule a one-time meeting, or save this as a reusable recurring workflow?';
+  }
+  if (route.intentClass === 'reusable_workflow') {
+    return 'Did you want to save this as a reusable recurring workflow, or just schedule a one-time meeting/event?';
+  }
+  return 'Did you want to schedule a one-time meeting, or save this as a recurring workflow you can reuse?';
 };
 
 const isWorkflowCapabilityQuestion = (message: string): boolean => {
@@ -448,6 +603,36 @@ const summarizeChildRouterThreadSummary = (threadSummary?: DesktopThreadSummary)
   });
 };
 
+const resolvePinnedWorkflowToolIds = async (input: {
+  companyId: string;
+  workflowId?: string | null;
+  allowedToolIds: string[];
+}): Promise<string[]> => {
+  const workflowId = input.workflowId?.trim();
+  if (!workflowId) {
+    return [];
+  }
+
+  const workflow = await prisma.scheduledWorkflow.findFirst({
+    where: {
+      id: workflowId,
+      companyId: input.companyId,
+    },
+    select: {
+      capabilitySummaryJson: true,
+    },
+  });
+  if (!workflow?.capabilitySummaryJson) {
+    return [];
+  }
+
+  const capabilitySummary = scheduledWorkflowCapabilitySummarySchema.parse(
+    workflow.capabilitySummaryJson,
+  );
+  const allowed = new Set(input.allowedToolIds);
+  return capabilitySummary.requiredTools.filter((toolId) => allowed.has(toolId));
+};
+
 const resolveWorkflowInvocationMessage = async (input: {
   companyId: string;
   userId: string;
@@ -524,12 +709,19 @@ const desktopChildRouteSchema = z.object({
   acknowledgement: z.string().min(1).max(400).optional(),
   reason: z.string().min(1).max(200).optional(),
   normalizedIntent: z.string().min(1).max(400).optional(),
+  intentClass: z.enum(CHILD_ROUTER_INTENT_CLASS_VALUES).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  alternativeIntent: z.string().min(1).max(120).optional(),
   suggestedToolIds: z.array(z.string().min(1).max(80)).max(12).optional(),
   suggestedSkillQuery: z.string().min(1).max(300).optional(),
   suggestedActions: z.array(z.string().min(1).max(200)).max(10).optional(),
 });
 
-export type DesktopChildRoute = z.infer<typeof desktopChildRouteSchema>;
+type ParsedDesktopChildRoute = z.infer<typeof desktopChildRouteSchema>;
+export type DesktopChildRoute = ParsedDesktopChildRoute & {
+  intentClass: ChildRouterIntentClass;
+  confidence: number;
+};
 
 const buildConversationKey = (threadId: string): string => `desktop:${threadId}`;
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
@@ -884,12 +1076,12 @@ export const buildChildRouterPrompt = (input: {
     'Return exactly one JSON object only.',
     'Do not wrap it in markdown, prose, arrays, or an outer envelope.',
     'Required JSON keys:',
-    'route, reply, acknowledgement, reason, normalizedIntent, suggestedToolIds, suggestedSkillQuery, suggestedActions',
+    'route, reply, acknowledgement, reason, normalizedIntent, intentClass, confidence, alternativeIntent, suggestedToolIds, suggestedSkillQuery, suggestedActions',
     'Allowed route values: fast_reply, direct_execute, handoff',
     'Valid examples:',
-    '{"route":"fast_reply","reply":"Hi, how can I help?","reason":"simple greeting","normalizedIntent":"greeting","suggestedToolIds":[],"suggestedActions":[]}',
-    '{"route":"direct_execute","acknowledgement":"I’ll check that for you.","reason":"simple tool-backed request","normalizedIntent":"list saved workflows","suggestedToolIds":["workflowList"],"suggestedActions":["call workflowList"]}',
-    '{"route":"handoff","acknowledgement":"I’ll work through this step by step.","reason":"multi-step request","normalizedIntent":"schedule a reusable workflow","suggestedToolIds":["skillSearch","workflowPlan","workflowSchedule"],"suggestedSkillQuery":"workflow scheduling reusable prompt","suggestedActions":["search relevant skill","plan workflow","ask for missing schedule details"]}',
+    '{"route":"fast_reply","reply":"Hi, how can I help?","reason":"simple greeting","normalizedIntent":"greeting","intentClass":"other","confidence":0.98,"suggestedToolIds":[],"suggestedActions":[]}',
+    '{"route":"direct_execute","acknowledgement":"Let me check that.","reason":"simple tool-backed request","normalizedIntent":"list saved workflows","intentClass":"saved_workflow_reuse","confidence":0.9,"suggestedToolIds":["workflowList"],"suggestedActions":["call workflowList"]}',
+    '{"route":"handoff","acknowledgement":"I can set that up.","reason":"multi-step request","normalizedIntent":"schedule a reusable workflow","intentClass":"reusable_workflow","confidence":0.88,"alternativeIntent":"direct_calendar","suggestedToolIds":["skillSearch","workflowPlan","workflowSchedule"],"suggestedSkillQuery":"workflow scheduling reusable prompt","suggestedActions":["search relevant skill","plan workflow","ask for missing schedule details"]}',
     'Routes:',
     '- fast_reply: greetings, thanks, chit-chat, identity/capability questions, short conversational replies that need no tools, or grounded multimodal turns that can be answered directly from the current attached image/media context without external tools.',
     '- direct_execute: straightforward work that should go directly to the main executor. Always include a short natural acknowledgement the user should see immediately.',
@@ -926,6 +1118,9 @@ export const buildChildRouterPrompt = (input: {
     '- The acknowledgement is always user-visible before execution, so it must sound like one coherent assistant, not an internal router.',
     '- Avoid generic acknowledgements like "I’ll handle this in steps" unless the request itself is vague.',
     '- Do not overuse handoff for tiny requests.',
+    '- intentClass must be one of: direct_calendar, reusable_workflow, saved_workflow_reuse, other.',
+    '- confidence must be a 0-1 score for how confident you are in that intent classification.',
+    '- If the request might mean either a one-time meeting/event or a reusable/recurring workflow, lower confidence and set alternativeIntent.',
     workspaceBlock,
     `Current local date/time: ${getLocalDateTimeContext()} (${LOCAL_TIME_ZONE}).`,
     requesterContext ?? '',
@@ -1093,9 +1288,9 @@ export const runDesktopChildRouter = async (input: {
       }),
     );
     const rawJson = extractFirstJsonObject(result.text) ?? result.text.trim();
-    const parsedRoute = desktopChildRouteSchema.parse(
+    const parsedRoute = enrichChildRouteMetadata(desktopChildRouteSchema.parse(
       sanitizeChildRouteCandidate(JSON.parse(rawJson)),
-    );
+    ), input.message);
     await appendLatestAgentRunLog(input.executionId, 'child_router.completed', {
       rawText: result.text,
       parsedRoute,
@@ -1119,6 +1314,8 @@ export const runDesktopChildRouter = async (input: {
         return {
           route: 'direct_execute',
           reason: 'personal memory question should use thread context and conversation retrieval',
+          intentClass: 'other',
+          confidence: 0.95,
         };
       }
     }
@@ -1135,6 +1332,8 @@ export const runDesktopChildRouter = async (input: {
           acknowledgement: 'I’ll check the workflow output configuration for you.',
           reason: 'workflow_output_question_requires_current_workflow_config',
           normalizedIntent: 'workflow output capability question',
+          intentClass: 'saved_workflow_reuse',
+          confidence: 0.9,
           suggestedToolIds: ['workflowList', 'workflowDraft'],
           suggestedActions: ['inspect current workflow output destinations'],
         },
@@ -1143,16 +1342,20 @@ export const runDesktopChildRouter = async (input: {
     }
     return ensureChildRouteAcknowledgement(parsedRoute, input.message);
   } catch (error) {
-    const fallbackRoute: DesktopChildRoute = shouldPlanDesktopTask(input.message)
+    const fallbackRoute = shouldPlanDesktopTask(input.message)
       ? {
           route: 'handoff',
           acknowledgement: buildTaskAwareRouterAcknowledgement(input.message),
           reason: 'router_fallback_complex',
+          intentClass: 'other',
+          confidence: 0.65,
         }
       : {
           route: 'direct_execute',
           acknowledgement: buildTaskAwareRouterAcknowledgement(input.message),
           reason: 'router_fallback_direct',
+          intentClass: 'other',
+          confidence: 0.75,
         };
     logger.warn('vercel.child_router.failed', {
       executionId: input.executionId,
@@ -2711,6 +2914,7 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
   runtime: VercelRuntimeRequestContext;
   hasActiveArtifacts: boolean;
   childRouteHints?: DesktopChildRoute;
+  pinnedToolIds?: string[];
 }): Promise<{
   runtime: VercelRuntimeRequestContext;
   clarificationQuestion?: string;
@@ -2736,6 +2940,7 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
           suggestedActions: input.childRouteHints.suggestedActions,
         }
       : undefined,
+    pinnedToolIds: input.pinnedToolIds,
   });
   logger.info('vercel.tool_selection.resolved', {
     executionId: input.executionId,
@@ -3422,6 +3627,11 @@ export const executeAutomatedDesktopTurn = async (input: {
       hasLarkUserId: Boolean(input.session.larkUserId),
       allowedToolCount: departmentRuntime.allowedToolIds.length,
     });
+    const pinnedWorkflowToolIds = await resolvePinnedWorkflowToolIds({
+      companyId: input.session.companyId,
+      workflowId: typeof input.metadata?.workflowId === 'string' ? input.metadata.workflowId : undefined,
+      allowedToolIds: departmentRuntime.allowedToolIds,
+    });
 
     let persistedBlocks: PersistedContentBlock[] = [];
     const { history } = await mapHistoryToMessages(input.threadId, input.session);
@@ -3453,6 +3663,7 @@ export const executeAutomatedDesktopTurn = async (input: {
       },
       hasActiveArtifacts:
         grounding.attachments.length > 0 || grounding.taskState.activeSourceArtifacts.length > 0,
+      pinnedToolIds: pinnedWorkflowToolIds,
     });
     if (clarificationQuestion) {
       const assistantText = clarificationQuestion.trim();
@@ -4005,6 +4216,61 @@ export class VercelDesktopEngine {
         role: 'user',
         text: storedUserMessage,
       });
+      const schedulingClarification = buildSchedulingIntentClarification(childRoute);
+      if (schedulingClarification) {
+        logger.info('vercel.child_router.schedule_clarification', {
+          executionId,
+          threadId,
+          intentClass: childRoute.intentClass,
+          confidence: childRoute.confidence,
+          alternativeIntent: childRoute.alternativeIntent ?? null,
+        });
+        await streamChildText(res, schedulingClarification, queueUiEvent);
+        const assistantMessage = await desktopThreadsService.addMessage(
+          threadId,
+          session.userId,
+          'assistant',
+          schedulingClarification,
+          {
+            executionId,
+            childRoute: {
+              route: childRoute.route,
+              reason: childRoute.reason ?? null,
+              intentClass: childRoute.intentClass,
+              confidence: childRoute.confidence,
+              alternativeIntent: childRoute.alternativeIntent ?? null,
+            },
+          },
+        );
+        conversationMemoryStore.addAssistantMessage(
+          buildConversationKey(threadId),
+          assistantMessage.id,
+          schedulingClarification,
+        );
+        maybeStoreConversationTurn({
+          companyId: session.companyId,
+          userId: session.userId,
+          threadId,
+          sourceId: assistantMessage.id,
+          role: 'assistant',
+          text: schedulingClarification,
+        });
+        queueUiEvent('done', {
+          executionId,
+          pendingApproval: null,
+          actionIssued: false,
+          state: 'completed',
+        });
+        sendSseEvent(res, 'done', {
+          message: assistantMessage,
+          executionId,
+          pendingApproval: null,
+          actionIssued: false,
+          state: 'completed',
+        });
+        res.end();
+        return;
+      }
       const history = appendMessageToHistory(preRouterHistory, {
         id: userMessage.id,
         role: userMessage.role,

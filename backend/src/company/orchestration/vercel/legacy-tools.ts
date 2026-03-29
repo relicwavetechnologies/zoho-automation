@@ -3,8 +3,9 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 import { tool } from 'ai';
-import { z } from 'zod';
+import { ZodError, z } from 'zod';
 
+import config from '../../../config';
 import { conversationMemoryStore } from '../../state/conversation';
 import { logger } from '../../../utils/logger';
 import { skillService } from '../../skills/skill.service';
@@ -12,6 +13,7 @@ import { getSupportedToolActionGroups, type ToolActionGroup } from '../../tools/
 import { companyGoogleAuthLinkRepository } from '../../channels/google/company-google-auth-link.repository';
 import { googleOAuthService } from '../../channels/google/google-oauth.service';
 import { googleUserAuthLinkRepository } from '../../channels/google/google-user-auth-link.repository';
+import { hotContextStore } from '../hot-context.store';
 import type {
   PendingApprovalAction,
   VercelCitation,
@@ -200,7 +202,7 @@ const loadEmailComposeService = (): {
 const loadDesktopWorkflowsService = (): {
   createDraft: (
     session: MemberSessionDTO,
-    input?: { name?: string | null; departmentId?: string | null },
+    input?: { name?: string | null; departmentId?: string | null; originChatId?: string | null },
   ) => Promise<Record<string, any>>;
   get: (session: MemberSessionDTO, workflowId: string) => Promise<Record<string, any>>;
   author: (
@@ -242,6 +244,14 @@ const loadDesktopWorkflowsService = (): {
   loadModuleExport(
     '../../../modules/desktop-workflows/desktop-workflows.service',
     'desktopWorkflowsService',
+  );
+
+const loadWorkflowValidatorService = (): {
+  validateDefinition: (input: Record<string, unknown>) => Record<string, unknown>;
+} =>
+  loadModuleExport(
+    '../../scheduled-workflows/workflow-validator.service',
+    'workflowValidatorService',
   );
 
 const loadWorkflowScheduleHelpers = (): {
@@ -463,7 +473,7 @@ const workflowAttachedFileSchema = z
 
 const workflowDestinationSchema = z
   .object({
-    kind: z.enum(['desktop_inbox', 'desktop_thread', 'lark_chat']),
+    kind: z.enum(['desktop_inbox', 'desktop_thread', 'lark_chat', 'lark_current_chat', 'lark_self_dm']),
     label: z.string().trim().max(160).optional(),
     value: z.string().trim().max(200).optional(),
   })
@@ -525,9 +535,8 @@ const buildRuntimeWorkflowDestinations = (
   if (runtime.channel === 'lark' && runtime.chatId) {
     return [
       {
-        kind: 'lark_chat',
+        kind: 'lark_current_chat',
         label: 'Current Lark chat',
-        value: runtime.chatId,
       },
     ];
   }
@@ -540,7 +549,10 @@ const buildRuntimeWorkflowDestinations = (
   ];
 };
 
-const toWorkflowOutputConfig = (destinations: Array<z.infer<typeof workflowDestinationSchema>>) => {
+const toWorkflowOutputConfig = (
+  destinations: Array<z.infer<typeof workflowDestinationSchema>>,
+  runtime: VercelRuntimeRequestContext,
+) => {
   const sourceDestinations =
     destinations.length > 0
       ? destinations
@@ -562,6 +574,22 @@ const toWorkflowOutputConfig = (destinations: Array<z.infer<typeof workflowDesti
         threadId: destination.value || destination.label || 'desktop-thread',
       };
     }
+    if (destination.kind === 'lark_current_chat') {
+      return {
+        id: 'lark_current_chat',
+        kind: 'lark_current_chat' as const,
+        label: destination.label || 'Current Lark chat',
+      };
+    }
+    if (destination.kind === 'lark_self_dm') {
+      return {
+        id: 'lark_self_dm',
+        kind: 'lark_self_dm' as const,
+        label: destination.label || 'My personal Lark DM',
+        openId: destination.value || runtime.larkOpenId || '',
+        ...(runtime.larkTenantKey ? { tenantKey: runtime.larkTenantKey } : {}),
+      };
+    }
     return {
       id: 'lark_chat',
       kind: 'lark_chat' as const,
@@ -575,6 +603,76 @@ const toWorkflowOutputConfig = (destinations: Array<z.infer<typeof workflowDesti
     destinations: normalizedDestinations,
     defaultDestinationIds: normalizedDestinations.map((destination) => destination.id),
   };
+};
+
+const workflowUsesCurrentLarkChat = (outputConfig: unknown): boolean =>
+  asArray(asRecord(outputConfig)?.destinations)
+    .map((entry) => asRecord(entry))
+    .some((entry) => entry?.kind === 'lark_current_chat');
+
+const resolveWorkflowOriginChatId = (input: {
+  runtime: VercelRuntimeRequestContext;
+  current?: Record<string, unknown> | null;
+  outputConfig: ReturnType<typeof toWorkflowOutputConfig> | Record<string, unknown>;
+}): string | null => {
+  if (!workflowUsesCurrentLarkChat(input.outputConfig)) {
+    return asString(input.current?.originChatId) ?? null;
+  }
+  return input.runtime.chatId ?? asString(input.current?.originChatId) ?? null;
+};
+
+const validateWorkflowSaveDestinations = (input: {
+  outputConfig: ReturnType<typeof toWorkflowOutputConfig> | Record<string, unknown>;
+  originChatId?: string | null;
+}) => {
+  const outputRecord = asRecord(input.outputConfig);
+  const destinations = asArray(outputRecord?.destinations)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+  if (destinations.length === 0) {
+    return buildEnvelope({
+      success: false,
+      summary: 'Saving a workflow requires at least one delivery destination.',
+      errorKind: 'missing_input',
+      retryable: false,
+      userAction: 'Ask the user where workflow results should be delivered before saving it.',
+      missingFields: ['destinations'],
+    });
+  }
+  if (
+    destinations.some((destination) => destination.kind === 'lark_current_chat')
+    && !(input.originChatId?.trim())
+  ) {
+    return buildEnvelope({
+      success: false,
+      summary: 'Saving this workflow needs the originating Lark chat so results can be sent back to the current chat.',
+      errorKind: 'missing_input',
+      retryable: false,
+      userAction: 'Ask the user to save this workflow from the intended Lark chat or choose another delivery destination.',
+      missingFields: ['originChatId'],
+    });
+  }
+  if (
+    destinations.some((destination) => destination.kind === 'lark_self_dm' && !asString(destination.openId))
+  ) {
+    return buildEnvelope({
+      success: false,
+      summary: 'Saving this workflow for your personal Lark DM requires the caller Lark identity.',
+      errorKind: 'missing_input',
+      retryable: false,
+      userAction: 'Ask the user to retry this from their Lark account or choose another delivery destination.',
+      missingFields: ['larkOpenId'],
+    });
+  }
+  return null;
+};
+
+const humanizePollInterval = (pollIntervalMs: number): string => {
+  if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+    return 'a polling cycle';
+  }
+  const minutes = Math.max(1, Math.round(pollIntervalMs / 60_000));
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
 };
 
 const buildWorkflowOutputConfigSignature = (value: unknown): string => {
@@ -847,6 +945,35 @@ const inferErrorKind = (summary: string): VercelToolEnvelope['errorKind'] => {
   return 'api_failure';
 };
 
+const inferErrorCode = (message: string): string => {
+  if (/rate.?limit|429|quota/i.test(message)) return 'RATE_LIMITED';
+  if (/unauthorized|401|invalid.?token|auth.*expired/i.test(message)) return 'AUTH_EXPIRED';
+  if (/forbidden|403|permission/i.test(message)) return 'PERMISSION_DENIED';
+  if (/timeout|ECONNRESET|ETIMEDOUT/i.test(message)) return 'NETWORK_TIMEOUT';
+  if (/not.?found|404/i.test(message)) return 'NOT_FOUND';
+  if (/conflict|409|already.?exists/i.test(message)) return 'CONFLICT';
+  return 'UNKNOWN_API_ERROR';
+};
+
+const buildRepairHint = (errorCode: string, toolName: string, raw: string): string => {
+  switch (errorCode) {
+    case 'RATE_LIMITED':
+      return `${toolName} hit a rate limit. Wait 10–30 seconds and retry.`;
+    case 'AUTH_EXPIRED':
+      return `${toolName} auth token expired. Re-authenticate or refresh credentials.`;
+    case 'PERMISSION_DENIED':
+      return `${toolName} was denied. Check the user has the required role or scope.`;
+    case 'NETWORK_TIMEOUT':
+      return `${toolName} timed out. Retry once; if it persists, check the external service.`;
+    case 'NOT_FOUND':
+      return `${toolName} could not find the requested record. Verify the ID and try a read first.`;
+    case 'CONFLICT':
+      return `${toolName} found a conflict. Confirm the current state before retrying.`;
+    default:
+      return `${toolName} failed with: ${raw.slice(0, 120)}`;
+  }
+};
+
 const normalizeCitations = (value: unknown): VercelCitation[] => {
   return asArray(value).flatMap((entry, index) => {
     const record = asRecord(entry);
@@ -914,8 +1041,11 @@ const buildEnvelope = (input: {
   fullPayload?: Record<string, unknown>;
   citations?: VercelCitation[];
   errorKind?: VercelToolEnvelope['errorKind'];
+  errorCode?: string;
   retryable?: boolean;
   userAction?: string;
+  missingFields?: string[];
+  repairHints?: Record<string, string>;
   pendingApprovalAction?: PendingApprovalAction;
 }): VercelToolEnvelope => ({
   success: input.success,
@@ -924,10 +1054,67 @@ const buildEnvelope = (input: {
   ...(input.fullPayload ? { fullPayload: input.fullPayload } : {}),
   ...(input.citations && input.citations.length > 0 ? { citations: input.citations } : {}),
   ...(input.errorKind ? { errorKind: input.errorKind } : {}),
+  ...(input.errorCode ? { errorCode: input.errorCode } : {}),
   ...(input.retryable !== undefined ? { retryable: input.retryable } : {}),
   ...(input.userAction ? { userAction: input.userAction } : {}),
+  ...(input.missingFields && input.missingFields.length > 0
+    ? { missingFields: input.missingFields }
+    : {}),
+  ...(input.repairHints && Object.keys(input.repairHints).length > 0
+    ? { repairHints: input.repairHints }
+    : {}),
   ...(input.pendingApprovalAction ? { pendingApprovalAction: input.pendingApprovalAction } : {}),
 });
+
+const buildZodBoundaryEnvelope = (
+  error: ZodError,
+  toolName: string,
+): VercelToolEnvelope => {
+  const issues = error.issues.map((issue) => ({
+    field: issue.path.join('.'),
+    reason: issue.message,
+  }));
+  const missingFields = Array.from(new Set(
+    issues
+      .filter((issue) =>
+        /required|invalid input|expected|received|type/i.test(issue.reason))
+      .map((issue) => issue.field)
+      .filter((field) => field.length > 0),
+  ));
+  return buildEnvelope({
+    success: false,
+    summary: `${toolName} received invalid input: ${issues.map((issue) => `${issue.field || '<root>'} — ${issue.reason}`).join('; ')}`,
+    errorKind: 'validation',
+    retryable: true,
+    ...(missingFields.length > 0 ? { missingFields } : {}),
+    userAction: missingFields.length > 0
+      ? `Please provide: ${missingFields.join(', ')}`
+      : 'Check the input format and try again.',
+    repairHints: Object.fromEntries(
+      issues
+        .filter((issue) => issue.field.length > 0)
+        .map((issue) => [issue.field, `Expected valid value for ${issue.field}: ${issue.reason}`]),
+    ),
+  });
+};
+
+const enrichApiFailureEnvelope = (
+  envelope: VercelToolEnvelope,
+  error: unknown,
+  toolName: string,
+): VercelToolEnvelope => {
+  const message = error instanceof Error ? error.message : String(error);
+  const errorCode = inferErrorCode(message);
+  const repairHint = buildRepairHint(errorCode, toolName, message);
+  return {
+    ...envelope,
+    errorCode,
+    repairHints: {
+      ...(envelope.repairHints ?? {}),
+      _system: repairHint,
+    },
+  };
+};
 
 const buildZohoGatewayDeniedEnvelope = (
   authResult: Record<string, unknown>,
@@ -963,6 +1150,87 @@ const buildZohoGatewayRequester = (
   requesterAiRole: runtime.requesterAiRole,
   departmentZohoReadScope: runtime.departmentZohoReadScope,
 });
+
+const buildCompanyScopedBooksRequester = (
+  runtime: VercelRuntimeRequestContext,
+): Record<string, unknown> => ({
+  ...buildZohoGatewayRequester(runtime),
+  departmentZohoReadScope: 'show_all',
+});
+
+const shouldRetryBooksReadInCompanyScope = (
+  runtime: VercelRuntimeRequestContext,
+  authResult: Record<string, unknown>,
+): boolean => {
+  if (!runtime.canFallbackToCompanyScopedBooksRead || runtime.departmentZohoReadScope === 'show_all') {
+    return false;
+  }
+  const denialReason = asString(authResult.denialReason);
+  return denialReason === 'books_principal_not_resolved' || denialReason === 'missing_requester_email';
+};
+
+const withBooksReadAuthorizationRetry = async (
+  runtime: VercelRuntimeRequestContext,
+  attempt: (requester: Record<string, unknown>) => Promise<unknown>,
+): Promise<Record<string, unknown>> => {
+  const primaryRequester = buildZohoGatewayRequester(runtime);
+  const primary =
+    asRecord(await attempt(primaryRequester)) ?? {};
+  if (primary.allowed === true || !shouldRetryBooksReadInCompanyScope(runtime, primary)) {
+    return primary;
+  }
+  return asRecord(await attempt(buildCompanyScopedBooksRequester(runtime))) ?? primary;
+};
+
+const buildWorkflowValidationRepairHints = (
+  entries: Array<Record<string, unknown>>,
+): Record<string, string> => Object.fromEntries(
+  entries
+    .map((entry, index) => {
+      const nodeId = asString(entry.nodeId)?.trim();
+      const field = asString(entry.field)?.trim();
+      const humanReadable =
+        asString(entry.humanReadable)?.trim()
+        ?? asString(entry.message)?.trim()
+        ?? asString(entry.reason)?.trim();
+      if (!humanReadable) {
+        return null;
+      }
+      const key = nodeId || field || `issue_${index + 1}`;
+      return [key, humanReadable] as const;
+    })
+    .filter((entry): entry is readonly [string, string] => Boolean(entry)),
+);
+
+const buildBooksWriteRepairHints = (fields: string[]): Record<string, string> => {
+  const hints: Record<string, string> = {
+    module:
+      'Provide the Zoho Books module, or call booksRead first to load the target module context.',
+    recordId:
+      'Call booksRead for the target module first to get the recordId, then retry the mutation.',
+    body:
+      'Provide the mutation payload in body, or reuse the pending write body from the current thread.',
+    accountId: 'Call booksRead with module=bankaccounts to get the accountId first.',
+    transactionId:
+      'Call booksRead with module=banktransactions to get the transactionId first.',
+    invoiceId: 'Call booksRead with module=invoices to get the invoiceId first.',
+    estimateId: 'Call booksRead with module=estimates to get the estimateId first.',
+    creditNoteId: 'Call booksRead with module=creditnotes to get the creditNoteId first.',
+    salesOrderId: 'Call booksRead with module=salesorders to get the salesOrderId first.',
+    purchaseOrderId:
+      'Call booksRead with module=purchaseorders to get the purchaseOrderId first.',
+    billId: 'Call booksRead with module=bills to get the billId first.',
+    contactId: 'Call booksRead with module=contacts to get the contactId first.',
+    vendorPaymentId:
+      'Call booksRead with module=vendorpayments to get the vendorPaymentId first.',
+    commentId: 'List the record comments first to get the commentId, then retry.',
+    templateId: 'List Zoho Books templates for the target module first to get the templateId.',
+    fileName: 'Provide a filename for the attachment upload.',
+    contentBase64: 'Provide the attachment contents as base64.',
+  };
+
+  return Object.fromEntries(fields.flatMap((field) => (hints[field] ? [[field, hints[field]]] : [])));
+};
 
 const buildBooksMutationAuthorizationTarget = (input: {
   operation: string;
@@ -1253,6 +1521,7 @@ const createPendingRemoteApproval = async (input: {
       sourceMessageId: input.runtime.sourceMessageId,
       sourceReplyToMessageId: input.runtime.sourceReplyToMessageId,
       sourceStatusMessageId: input.runtime.sourceStatusMessageId,
+      sourceStatusReplyModeHint: input.runtime.sourceStatusReplyModeHint,
       sourceChatType: input.runtime.sourceChatType,
       sourceChannelUserId: input.runtime.sourceChannelUserId,
       mode: input.runtime.mode,
@@ -1403,6 +1672,7 @@ const createPendingDesktopRemoteApproval = async (input: {
       sourceMessageId: input.runtime.sourceMessageId,
       sourceReplyToMessageId: input.runtime.sourceReplyToMessageId,
       sourceStatusMessageId: input.runtime.sourceStatusMessageId,
+      sourceStatusReplyModeHint: input.runtime.sourceStatusReplyModeHint,
       sourceChatType: input.runtime.sourceChatType,
       sourceChannelUserId: input.runtime.sourceChannelUserId,
       mode: input.runtime.mode,
@@ -2348,7 +2618,25 @@ const resolveZohoBooksRecordIdFromRuntime = (
   if (!moduleName) {
     return undefined;
   }
-  return getRuntimeZohoBooksEntity(runtime, moduleName)?.recordId;
+  const runtimeEntityRecordId = getRuntimeZohoBooksEntity(runtime, moduleName)?.recordId;
+  if (runtimeEntityRecordId?.trim()) {
+    return runtimeEntityRecordId.trim();
+  }
+  const taskId = runtime.executionId;
+  const preferredKeys = moduleName === 'invoices'
+    ? ['invoiceId', 'invoice_id', 'recordId', 'record_id']
+    : moduleName === 'estimates'
+      ? ['estimateId', 'estimate_id', 'recordId', 'record_id']
+      : moduleName === 'contacts'
+        ? ['contactId', 'contact_id', 'recordId', 'record_id']
+        : ['recordId', 'record_id'];
+  for (const key of preferredKeys) {
+    const resolved = hotContextStore.getResolvedId(taskId, key);
+    if (resolved?.trim()) {
+      return resolved.trim();
+    }
+  }
+  return undefined;
 };
 
 const resolvePendingBooksWriteBodyFromRuntime = (input: {
@@ -2455,15 +2743,46 @@ const withLifecycle = async (
     return output;
   } catch (error) {
     const summary = error instanceof Error ? error.message : 'Unknown tool error';
-    const output = buildEnvelope({
+    const output = enrichApiFailureEnvelope(buildEnvelope({
       success: false,
       summary,
       errorKind: 'api_failure',
       retryable: true,
-    });
+    }), error, toolName);
     await hooks.onToolFinish(toolName, activityId, title, output);
     return output;
   }
+};
+
+const wrapToolDefinitionWithBoundaryNormalization = (
+  toolName: string,
+  toolDef: any,
+): any => {
+  if (!toolDef || typeof toolDef.execute !== 'function') {
+    return toolDef;
+  }
+  const inputSchema = toolDef.inputSchema;
+  if (!inputSchema || typeof inputSchema.safeParseAsync !== 'function') {
+    return toolDef;
+  }
+  const originalExecute = toolDef.execute.bind(toolDef);
+  return {
+    ...toolDef,
+    execute: async (args: unknown, context?: unknown) => {
+      const parsed = await inputSchema.safeParseAsync(args);
+      if (!parsed.success) {
+        return buildZodBoundaryEnvelope(parsed.error, toolName);
+      }
+      try {
+        return await originalExecute(parsed.data, context);
+      } catch (error) {
+        if (error instanceof ZodError) {
+          return buildZodBoundaryEnvelope(error, toolName);
+        }
+        throw error;
+      }
+    },
+  };
 };
 
 const resolveWorkspacePath = (runtime: VercelRuntimeRequestContext, candidate: string): string => {
@@ -2568,9 +2887,11 @@ const VERCEL_TOOL_PERMISSION_IDS: Record<string, string[]> = {
   workflowDraft: ['workflow-authoring'],
   workflowPlan: ['workflow-authoring'],
   workflowBuild: ['workflow-authoring'],
+  workflowValidate: ['workflow-authoring'],
   workflowSave: ['workflow-authoring'],
   workflowSchedule: ['workflow-authoring'],
   workflowList: ['workflow-authoring'],
+  workflowArchive: ['workflow-authoring'],
   workflowRun: ['workflow-authoring'],
   skillSearch: ['skill-search'],
   repo: ['repo'],
@@ -2824,6 +3145,7 @@ export const createVercelDesktopTools = (
                     : 'No accessible uploaded files were found.',
               keyData: {
                 fileAssetIds: limited.map((file) => file.fileAssetId),
+                resultCount: limited.length,
               },
               fullPayload: {
                 files: limited,
@@ -2845,8 +3167,9 @@ export const createVercelDesktopTools = (
                   : 'No matching uploaded file was found. Provide fileAssetId or fileName, or upload a document first.',
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['fileAssetId_or_fileName'],
+              userAction: 'Please provide fileAssetId or fileName, or upload a document first.',
               fullPayload: {
-                missingFields: ['fileAssetId_or_fileName'],
                 ...(candidates.length > 0 ? { candidates } : {}),
               },
             });
@@ -2894,6 +3217,10 @@ export const createVercelDesktopTools = (
               summary: `No extractable text was found in ${file.fileName}.`,
               errorKind: 'validation',
               retryable: false,
+              repairHints: {
+                fileAssetId:
+                  'The file may be a scanned image with no selectable text. Try document-ocr-read with a higher-quality scan or a different file.',
+              },
             });
           }
 
@@ -3094,16 +3421,22 @@ export const createVercelDesktopTools = (
           const session = buildRuntimeWorkflowSession(runtime);
           const workflowsService = loadDesktopWorkflowsService();
           const destinations = input.destinations ?? buildRuntimeWorkflowDestinations(runtime);
-          const desiredOutputConfig = toWorkflowOutputConfig(destinations);
+          const desiredOutputConfig = toWorkflowOutputConfig(destinations, runtime);
 
           if (input.workflowId) {
             const existing = await workflowsService.get(session, input.workflowId);
-            const normalized = shouldAdoptRuntimeWorkflowDestinations(
-              existing.outputConfig,
-              desiredOutputConfig,
+            const originChatId = resolveWorkflowOriginChatId({
+              runtime,
+              current: existing,
+              outputConfig: desiredOutputConfig,
+            });
+            const normalized = (
+              shouldAdoptRuntimeWorkflowDestinations(existing.outputConfig, desiredOutputConfig)
+              || (workflowUsesCurrentLarkChat(desiredOutputConfig) && originChatId !== (asString(existing.originChatId) ?? null))
             )
               ? await workflowsService.update(session, input.workflowId, {
                   outputConfig: desiredOutputConfig,
+                  ...(originChatId ? { originChatId } : {}),
                   ...(input.departmentId !== undefined || runtime.departmentId
                     ? { departmentId: input.departmentId ?? runtime.departmentId ?? null }
                     : {}),
@@ -3124,9 +3457,16 @@ export const createVercelDesktopTools = (
           const created = await workflowsService.createDraft(session, {
             name: input.name ?? null,
             departmentId: input.departmentId ?? runtime.departmentId ?? null,
+            originChatId: runtime.chatId ?? null,
+          });
+          const originChatId = resolveWorkflowOriginChatId({
+            runtime,
+            current: created,
+            outputConfig: desiredOutputConfig,
           });
           const normalized = await workflowsService.update(session, created.id as string, {
             outputConfig: desiredOutputConfig,
+            ...(originChatId ? { originChatId } : {}),
             ...(input.departmentId !== undefined || runtime.departmentId
               ? { departmentId: input.departmentId ?? runtime.departmentId ?? null }
               : {}),
@@ -3176,10 +3516,18 @@ export const createVercelDesktopTools = (
           if (!workflowId) {
             const created = await workflowsService.createDraft(session, {
               departmentId: runtime.departmentId ?? null,
+              originChatId: runtime.chatId ?? null,
             });
             const destinations = buildRuntimeWorkflowDestinations(runtime);
+            const outputConfig = toWorkflowOutputConfig(destinations, runtime);
+            const originChatId = resolveWorkflowOriginChatId({
+              runtime,
+              current: created,
+              outputConfig,
+            });
             const normalized = await workflowsService.update(session, created.id as string, {
-              outputConfig: toWorkflowOutputConfig(destinations),
+              outputConfig,
+              ...(originChatId ? { originChatId } : {}),
               ...(runtime.departmentId ? { departmentId: runtime.departmentId } : {}),
             });
             workflowId = asString(normalized.id) ?? asString(created.id);
@@ -3194,11 +3542,20 @@ export const createVercelDesktopTools = (
           }
 
           const runtimeDestinations = buildRuntimeWorkflowDestinations(runtime);
-          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations);
+          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations, runtime);
           const current = await workflowsService.get(session, workflowId);
-          if (shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)) {
+          const originChatId = resolveWorkflowOriginChatId({
+            runtime,
+            current,
+            outputConfig: desiredOutputConfig,
+          });
+          if (
+            shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)
+            || (workflowUsesCurrentLarkChat(desiredOutputConfig) && originChatId !== (asString(current.originChatId) ?? null))
+          ) {
             await workflowsService.update(session, workflowId, {
               outputConfig: desiredOutputConfig,
+              ...(originChatId ? { originChatId } : {}),
               ...(runtime.departmentId ? { departmentId: runtime.departmentId } : {}),
             });
           }
@@ -3269,11 +3626,20 @@ export const createVercelDesktopTools = (
           const session = buildRuntimeWorkflowSession(runtime);
           const workflowsService = loadDesktopWorkflowsService();
           const runtimeDestinations = buildRuntimeWorkflowDestinations(runtime);
-          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations);
+          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations, runtime);
           let current = await workflowsService.get(session, input.workflowId);
-          if (shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)) {
+          const originChatId = resolveWorkflowOriginChatId({
+            runtime,
+            current,
+            outputConfig: desiredOutputConfig,
+          });
+          if (
+            shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)
+            || (workflowUsesCurrentLarkChat(desiredOutputConfig) && originChatId !== (asString(current.originChatId) ?? null))
+          ) {
             current = await workflowsService.update(session, input.workflowId, {
               outputConfig: desiredOutputConfig,
+              ...(originChatId ? { originChatId } : {}),
               ...(runtime.departmentId ? { departmentId: runtime.departmentId } : {}),
             });
           }
@@ -3319,6 +3685,85 @@ export const createVercelDesktopTools = (
         }),
     }),
 
+    workflowValidate: tool({
+      description:
+        'Validate a built workflow before saving or scheduling it. Returns blocking errors plus warnings that should be surfaced to the user before publishing.',
+      inputSchema: z
+        .object({
+          workflowId: z.string().uuid(),
+        })
+        .strict(),
+      execute: async (input) =>
+        withLifecycle(hooks, 'workflowValidate', 'Validating workflow', async () => {
+          const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'read');
+          if (permissionError) {
+            return permissionError;
+          }
+          const session = buildRuntimeWorkflowSession(runtime);
+          const workflowsService = loadDesktopWorkflowsService();
+          const validator = loadWorkflowValidatorService();
+          const current = await workflowsService.get(session, input.workflowId);
+          if (typeof current.compiledPrompt !== 'string' || !current.compiledPrompt.trim()) {
+            return buildEnvelope({
+              success: false,
+              summary: `Workflow "${asString(current.name) ?? input.workflowId}" must be built before validation can run.`,
+              errorKind: 'missing_input',
+              retryable: false,
+              userAction: 'Build the workflow first, then validate it.',
+              missingFields: ['compiledPrompt'],
+              fullPayload: current,
+            });
+          }
+          const validation = validator.validateDefinition({
+            userIntent: current.userIntent,
+            workflowSpec: current.workflowSpec,
+            schedule: current.schedule,
+            outputConfig: current.outputConfig,
+            originChatId: asString(current.originChatId) ?? runtime.chatId ?? null,
+          });
+          const errors = asArray(asRecord(validation)?.errors)
+            .map((entry) => asRecord(entry))
+            .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+          const warnings = asArray(asRecord(validation)?.warnings)
+            .map((entry) => asRecord(entry))
+            .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+          if (errors.length > 0) {
+            return buildEnvelope({
+              success: false,
+              summary: `Workflow "${asString(current.name) ?? input.workflowId}" has ${errors.length} validation error(s) that must be fixed before it can be saved.`,
+              errorKind: 'validation',
+              retryable: false,
+              repairHints: buildWorkflowValidationRepairHints(errors),
+              userAction: errors
+                .map((entry) => asString(entry.humanReadable))
+                .filter((entry): entry is string => Boolean(entry))
+                .slice(0, 4)
+                .join('\n'),
+              keyData: {
+                workflowId: current.id,
+                valid: false,
+                errorCount: errors.length,
+                warningCount: warnings.length,
+              },
+              fullPayload: validation,
+            });
+          }
+          return buildEnvelope({
+            success: true,
+            summary: warnings.length > 0
+              ? `Workflow "${asString(current.name) ?? input.workflowId}" passed validation with ${warnings.length} warning(s).`
+              : `Workflow "${asString(current.name) ?? input.workflowId}" passed validation.`,
+            keyData: {
+              workflowId: current.id,
+              valid: true,
+              warningCount: warnings.length,
+              requiresWarningConfirmation: warnings.length > 0,
+            },
+            fullPayload: validation,
+          });
+        }),
+    }),
+
     workflowSave: tool({
       description:
         'Save or publish a built reusable workflow. Requires explicit confirmation before saving, and never enables a schedule unless explicitly requested.',
@@ -3355,11 +3800,20 @@ export const createVercelDesktopTools = (
           const workflowsService = loadDesktopWorkflowsService();
           const runtimeDestinations =
             input.destinations ?? buildRuntimeWorkflowDestinations(runtime);
-          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations);
+          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations, runtime);
           let current = await workflowsService.get(session, input.workflowId);
-          if (shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)) {
+          const desiredOriginChatId = resolveWorkflowOriginChatId({
+            runtime,
+            current,
+            outputConfig: desiredOutputConfig,
+          });
+          if (
+            shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)
+            || (workflowUsesCurrentLarkChat(desiredOutputConfig) && desiredOriginChatId !== (asString(current.originChatId) ?? null))
+          ) {
             current = await workflowsService.update(session, input.workflowId, {
               outputConfig: desiredOutputConfig,
+              ...(desiredOriginChatId ? { originChatId: desiredOriginChatId } : {}),
               ...(input.departmentId !== undefined || runtime.departmentId
                 ? { departmentId: input.departmentId ?? runtime.departmentId ?? null }
                 : {}),
@@ -3377,8 +3831,49 @@ export const createVercelDesktopTools = (
           }
 
           const outputConfig = input.destinations
-            ? toWorkflowOutputConfig(input.destinations)
+            ? toWorkflowOutputConfig(input.destinations, runtime)
             : current.outputConfig;
+          const originChatId = resolveWorkflowOriginChatId({
+            runtime,
+            current,
+            outputConfig,
+          });
+          const destinationValidationError = validateWorkflowSaveDestinations({
+            outputConfig,
+            originChatId,
+          });
+          if (destinationValidationError) {
+            return destinationValidationError;
+          }
+          const validation = loadWorkflowValidatorService().validateDefinition({
+            userIntent: current.userIntent,
+            workflowSpec: current.workflowSpec,
+            schedule: current.schedule,
+            outputConfig,
+            originChatId,
+          });
+          const validationErrors = asArray(asRecord(validation)?.errors)
+            .map((entry) => asRecord(entry))
+            .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+          if (validationErrors.length > 0) {
+            return buildEnvelope({
+              success: false,
+              summary: `Workflow "${asString(current.name) ?? input.workflowId}" still has validation errors and cannot be saved yet.`,
+              errorKind: 'validation',
+              retryable: false,
+              repairHints: buildWorkflowValidationRepairHints(validationErrors),
+              userAction: validationErrors
+                .map((entry) => asString(entry.humanReadable))
+                .filter((entry): entry is string => Boolean(entry))
+                .slice(0, 4)
+                .join('\n'),
+              keyData: {
+                workflowId: current.id,
+                errorCount: validationErrors.length,
+              },
+              fullPayload: validation,
+            });
+          }
           const published = await workflowsService.publish(session, {
             workflowId: current.id,
             name: current.name,
@@ -3389,6 +3884,7 @@ export const createVercelDesktopTools = (
             schedule: current.schedule,
             scheduleEnabled: input.scheduleEnabled ?? false,
             outputConfig,
+            originChatId,
             departmentId:
               input.departmentId ?? runtime.departmentId ?? current.departmentId ?? null,
           });
@@ -3442,11 +3938,20 @@ export const createVercelDesktopTools = (
           const session = buildRuntimeWorkflowSession(runtime);
           const workflowsService = loadDesktopWorkflowsService();
           const runtimeDestinations = buildRuntimeWorkflowDestinations(runtime);
-          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations);
+          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations, runtime);
           let current = await workflowsService.get(session, input.workflowId);
-          if (shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)) {
+          const desiredOriginChatId = resolveWorkflowOriginChatId({
+            runtime,
+            current,
+            outputConfig: desiredOutputConfig,
+          });
+          if (
+            shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)
+            || (workflowUsesCurrentLarkChat(desiredOutputConfig) && desiredOriginChatId !== (asString(current.originChatId) ?? null))
+          ) {
             current = await workflowsService.update(session, input.workflowId, {
               outputConfig: desiredOutputConfig,
+              ...(desiredOriginChatId ? { originChatId: desiredOriginChatId } : {}),
               ...(runtime.departmentId ? { departmentId: runtime.departmentId } : {}),
             });
           }
@@ -3489,6 +3994,17 @@ export const createVercelDesktopTools = (
                 userAction: 'Build and save the workflow first, then enable its schedule.',
               });
             }
+            const outputDestinationValidation = validateWorkflowSaveDestinations({
+              outputConfig: current.outputConfig,
+              originChatId: resolveWorkflowOriginChatId({
+                runtime,
+                current,
+                outputConfig: current.outputConfig,
+              }),
+            });
+            if (outputDestinationValidation) {
+              return outputDestinationValidation;
+            }
             const scheduled = await workflowsService.setScheduleState(
               session,
               input.workflowId,
@@ -3497,8 +4013,20 @@ export const createVercelDesktopTools = (
             return buildEnvelope({
               success: true,
               summary: `Enabled scheduling for "${asString(current.name) ?? input.workflowId}".`,
-              keyData: scheduled,
-              fullPayload: scheduled,
+              keyData: {
+                ...scheduled,
+                pollIntervalMs: config.DESKTOP_WORKFLOW_DUE_PROCESSOR_POLL_INTERVAL_MS,
+                pollIntervalSummary: humanizePollInterval(
+                  config.DESKTOP_WORKFLOW_DUE_PROCESSOR_POLL_INTERVAL_MS,
+                ),
+              },
+              fullPayload: {
+                ...scheduled,
+                pollIntervalMs: config.DESKTOP_WORKFLOW_DUE_PROCESSOR_POLL_INTERVAL_MS,
+                pollIntervalSummary: humanizePollInterval(
+                  config.DESKTOP_WORKFLOW_DUE_PROCESSOR_POLL_INTERVAL_MS,
+                ),
+              },
             });
           }
 
@@ -3563,6 +4091,83 @@ export const createVercelDesktopTools = (
             },
             fullPayload: {
               workflows: filtered,
+            },
+          });
+        }),
+    }),
+
+    workflowArchive: tool({
+      description:
+        'Archive or delete a saved workflow by id or exact/near-exact name. Requires explicit confirmation before removing it from the active workflow list.',
+      inputSchema: z
+        .object({
+          workflowId: z.string().uuid().optional(),
+          name: z.string().trim().min(1).max(160).optional(),
+          confirm: z.boolean().optional(),
+        })
+        .strict(),
+      execute: async (input) =>
+        withLifecycle(hooks, 'workflowArchive', 'Archiving workflow', async () => {
+          const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'delete');
+          if (permissionError) {
+            return permissionError;
+          }
+          const reference = input.workflowId ?? input.name?.trim();
+          if (!reference) {
+            return buildEnvelope({
+              success: false,
+              summary: 'Workflow archive needs a workflow id or workflow name.',
+              errorKind: 'missing_input',
+              retryable: false,
+              userAction: 'Ask the user which saved workflow should be archived.',
+            });
+          }
+          if (input.confirm !== true) {
+            return buildEnvelope({
+              success: false,
+              summary: 'Archiving a saved workflow requires explicit confirmation.',
+              errorKind: 'missing_input',
+              retryable: false,
+              userAction: 'Ask the user to confirm archiving this workflow.',
+            });
+          }
+          const session = buildRuntimeWorkflowSession(runtime);
+          const workflowsService = loadDesktopWorkflowsService();
+          const resolved = await workflowsService.resolveVisibleWorkflow(session, reference);
+          if (resolved.status === 'not_found') {
+            return buildEnvelope({
+              success: false,
+              summary: `No saved workflow matched "${reference}".`,
+              errorKind: 'missing_input',
+              retryable: false,
+              userAction:
+                'Ask the user for the exact workflow name or tell them to list saved workflows first.',
+            });
+          }
+          if (resolved.status === 'ambiguous') {
+            return buildEnvelope({
+              success: false,
+              summary: `Multiple saved workflows matched "${reference}":\n${summarizeWorkflowCandidates(resolved.candidates as Array<Record<string, unknown>>)}`,
+              errorKind: 'missing_input',
+              retryable: false,
+              userAction: 'Ask the user which exact saved workflow should be archived.',
+              fullPayload: resolved,
+            });
+          }
+          const workflowId = asString(asRecord(resolved.workflow)?.id) ?? reference;
+          const workflowName = asString(asRecord(resolved.workflow)?.name) ?? workflowId;
+          await workflowsService.archive(session, workflowId);
+          return buildEnvelope({
+            success: true,
+            summary: `Archived workflow "${workflowName}".`,
+            keyData: {
+              workflowId,
+              archived: true,
+            },
+            fullPayload: {
+              workflowId,
+              name: workflowName,
+              archived: true,
             },
           });
         }),
@@ -4312,7 +4917,7 @@ export const createVercelDesktopTools = (
             return buildEnvelope({
               success: true,
               summary: `Found ${items.length} message(s).`,
-              keyData: { items },
+              keyData: { items, resultCount: items.length },
               fullPayload: payload,
             });
           }
@@ -4393,7 +4998,8 @@ export const createVercelDesktopTools = (
                 success: false,
                 summary: 'createDraft requires to plus enough content to compose the email.',
                 errorKind: 'missing_input',
-                fullPayload: { missingFields },
+                missingFields,
+                userAction: 'Please provide the recipient plus enough content to compose the email.',
               });
             }
             const attachmentEntries = input.attachments
@@ -4466,7 +5072,8 @@ export const createVercelDesktopTools = (
                 success: false,
                 summary: 'sendDraft requires draftId.',
                 errorKind: 'missing_input',
-                fullPayload: { missingFields: ['draftId'] },
+                missingFields: ['draftId'],
+                userAction: 'Please provide the Gmail draftId to send.',
               });
             }
             return createPendingRemoteApproval({
@@ -4493,7 +5100,8 @@ export const createVercelDesktopTools = (
                 success: false,
                 summary: 'sendMessage requires to plus enough content to compose the email.',
                 errorKind: 'missing_input',
-                fullPayload: { missingFields },
+                missingFields,
+                userAction: 'Please provide the recipient plus enough content to compose the email.',
               });
             }
             const attachmentEntries = input.attachments
@@ -5359,6 +5967,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires a supported Zoho Books module such as contacts, invoices, estimates, creditnotes, bills, salesorders, purchaseorders, customerpayments, vendorpayments, bankaccounts, or banktransactions.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['module'],
+              repairHints: buildBooksWriteRepairHints(['module']),
             });
           }
 
@@ -5639,20 +6249,20 @@ export const createVercelDesktopTools = (
                 summary: 'getInvoiceEmailContent requires invoiceId.',
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['invoiceId'],
               });
             }
             try {
-              const auth =
-                asRecord(
-                  await zohoGateway.getAuthorizedChildResource({
-                    domain: 'books',
-                    module: 'invoices',
-                    recordId: invoiceId,
-                    childType: 'email_content',
-                    requester: gatewayRequester,
-                    organizationId: input.organizationId?.trim(),
-                  }),
-                ) ?? {};
+              const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
+                zohoGateway.getAuthorizedChildResource({
+                  domain: 'books',
+                  module: 'invoices',
+                  recordId: invoiceId,
+                  childType: 'email_content',
+                  requester,
+                  organizationId: input.organizationId?.trim(),
+                }),
+              );
               if (auth.allowed !== true) {
                 return buildZohoGatewayDeniedEnvelope(
                   auth,
@@ -5692,20 +6302,20 @@ export const createVercelDesktopTools = (
                 summary: 'getInvoicePaymentReminderContent requires invoiceId.',
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['invoiceId'],
               });
             }
             try {
-              const auth =
-                asRecord(
-                  await zohoGateway.getAuthorizedChildResource({
-                    domain: 'books',
-                    module: 'invoices',
-                    recordId: invoiceId,
-                    childType: 'payment_reminder_content',
-                    requester: gatewayRequester,
-                    organizationId: input.organizationId?.trim(),
-                  }),
-                ) ?? {};
+              const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
+                zohoGateway.getAuthorizedChildResource({
+                  domain: 'books',
+                  module: 'invoices',
+                  recordId: invoiceId,
+                  childType: 'payment_reminder_content',
+                  requester,
+                  organizationId: input.organizationId?.trim(),
+                }),
+              );
               if (auth.allowed !== true) {
                 return buildZohoGatewayDeniedEnvelope(
                   auth,
@@ -5747,20 +6357,20 @@ export const createVercelDesktopTools = (
                 summary: 'getEstimateEmailContent requires estimateId.',
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['estimateId'],
               });
             }
             try {
-              const auth =
-                asRecord(
-                  await zohoGateway.getAuthorizedChildResource({
-                    domain: 'books',
-                    module: 'estimates',
-                    recordId: estimateId,
-                    childType: 'email_content',
-                    requester: gatewayRequester,
-                    organizationId: input.organizationId?.trim(),
-                  }),
-                ) ?? {};
+              const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
+                zohoGateway.getAuthorizedChildResource({
+                  domain: 'books',
+                  module: 'estimates',
+                  recordId: estimateId,
+                  childType: 'email_content',
+                  requester,
+                  organizationId: input.organizationId?.trim(),
+                }),
+              );
               if (auth.allowed !== true) {
                 return buildZohoGatewayDeniedEnvelope(
                   auth,
@@ -5800,20 +6410,20 @@ export const createVercelDesktopTools = (
                 summary: 'getCreditNoteEmailContent requires creditNoteId.',
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['creditNoteId'],
               });
             }
             try {
-              const auth =
-                asRecord(
-                  await zohoGateway.getAuthorizedChildResource({
-                    domain: 'books',
-                    module: 'creditnotes',
-                    recordId: creditNoteId,
-                    childType: 'email_content',
-                    requester: gatewayRequester,
-                    organizationId: input.organizationId?.trim(),
-                  }),
-                ) ?? {};
+              const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
+                zohoGateway.getAuthorizedChildResource({
+                  domain: 'books',
+                  module: 'creditnotes',
+                  recordId: creditNoteId,
+                  childType: 'email_content',
+                  requester,
+                  organizationId: input.organizationId?.trim(),
+                }),
+              );
               if (auth.allowed !== true) {
                 return buildZohoGatewayDeniedEnvelope(
                   auth,
@@ -5994,20 +6604,20 @@ export const createVercelDesktopTools = (
                 summary: 'getBooksAttachment requires a supported module and recordId.',
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['module', 'recordId'],
               });
             }
             try {
-              const auth =
-                asRecord(
-                  await zohoGateway.getAuthorizedChildResource({
-                    domain: 'books',
-                    module: moduleName,
-                    recordId,
-                    childType: 'attachments',
-                    requester: gatewayRequester,
-                    organizationId: input.organizationId?.trim(),
-                  }),
-                ) ?? {};
+              const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
+                zohoGateway.getAuthorizedChildResource({
+                  domain: 'books',
+                  module: moduleName,
+                  recordId,
+                  childType: 'attachments',
+                  requester,
+                  organizationId: input.organizationId?.trim(),
+                }),
+              );
               if (auth.allowed !== true) {
                 return buildZohoGatewayDeniedEnvelope(
                   auth,
@@ -6051,7 +6661,9 @@ export const createVercelDesktopTools = (
                 summary: 'materializeBooksAttachmentArtifact requires a supported module and recordId.',
                 errorKind: 'missing_input',
                 retryable: false,
-                fullPayload: { missingFields: ['module', 'recordId'] },
+                missingFields: ['module', 'recordId'],
+                userAction:
+                  'Please provide the Zoho Books module and recordId before materializing the attachment artifact.',
               });
             }
             try {
@@ -6100,20 +6712,20 @@ export const createVercelDesktopTools = (
                 summary: 'getRecordDocument requires a supported module and recordId.',
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['module', 'recordId'],
               });
             }
             try {
-              const auth =
-                asRecord(
-                  await zohoGateway.getAuthorizedChildResource({
-                    domain: 'books',
-                    module: moduleName,
-                    recordId,
-                    childType: 'record_document',
-                    requester: gatewayRequester,
-                    organizationId: input.organizationId?.trim(),
-                  }),
-                ) ?? {};
+              const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
+                zohoGateway.getAuthorizedChildResource({
+                  domain: 'books',
+                  module: moduleName,
+                  recordId,
+                  childType: 'record_document',
+                  requester,
+                  organizationId: input.organizationId?.trim(),
+                }),
+              );
               if (auth.allowed !== true) {
                 return buildZohoGatewayDeniedEnvelope(
                   auth,
@@ -6161,7 +6773,9 @@ export const createVercelDesktopTools = (
                 summary: 'materializeRecordDocumentArtifact requires a supported module and recordId.',
                 errorKind: 'missing_input',
                 retryable: false,
-                fullPayload: { missingFields: ['module', 'recordId'] },
+                missingFields: ['module', 'recordId'],
+                userAction:
+                  'Please provide the Zoho Books module and recordId before materializing the document artifact.',
               });
             }
             try {
@@ -6211,20 +6825,20 @@ export const createVercelDesktopTools = (
                 summary: 'getContactStatementEmailContent requires contactId.',
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['contactId'],
               });
             }
             try {
-              const auth =
-                asRecord(
-                  await zohoGateway.getAuthorizedChildResource({
-                    domain: 'books',
-                    module: 'contacts',
-                    recordId: contactId,
-                    childType: 'statement_email_content',
-                    requester: gatewayRequester,
-                    organizationId: input.organizationId?.trim(),
-                  }),
-                ) ?? {};
+              const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
+                zohoGateway.getAuthorizedChildResource({
+                  domain: 'books',
+                  module: 'contacts',
+                  recordId: contactId,
+                  childType: 'statement_email_content',
+                  requester,
+                  organizationId: input.organizationId?.trim(),
+                }),
+              );
               if (auth.allowed !== true) {
                 return buildZohoGatewayDeniedEnvelope(
                   auth,
@@ -6310,20 +6924,20 @@ export const createVercelDesktopTools = (
                 summary: 'listComments requires a supported module and recordId.',
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['module', 'recordId'],
               });
             }
             try {
-              const auth =
-                asRecord(
-                  await zohoGateway.getAuthorizedChildResource({
-                    domain: 'books',
-                    module: moduleName,
-                    recordId,
-                    childType: 'comments',
-                    requester: gatewayRequester,
-                    organizationId: input.organizationId?.trim(),
-                  }),
-                ) ?? {};
+              const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
+                zohoGateway.getAuthorizedChildResource({
+                  domain: 'books',
+                  module: moduleName,
+                  recordId,
+                  childType: 'comments',
+                  requester,
+                  organizationId: input.organizationId?.trim(),
+                }),
+              );
               if (auth.allowed !== true) {
                 return buildZohoGatewayDeniedEnvelope(
                   auth,
@@ -6412,19 +7026,19 @@ export const createVercelDesktopTools = (
                 summary: 'getRecord requires recordId.',
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['recordId'],
               });
             }
             try {
-              const auth =
-                asRecord(
-                  await zohoGateway.getAuthorizedRecord({
-                    domain: 'books',
-                    module: moduleName,
-                    recordId,
-                    requester: gatewayRequester,
-                    organizationId: input.organizationId?.trim(),
-                  }),
-                ) ?? {};
+              const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
+                zohoGateway.getAuthorizedRecord({
+                  domain: 'books',
+                  module: moduleName,
+                  recordId,
+                  requester,
+                  organizationId: input.organizationId?.trim(),
+                }),
+              );
               if (auth.allowed !== true) {
                 return buildZohoGatewayDeniedEnvelope(
                   auth,
@@ -6466,18 +7080,17 @@ export const createVercelDesktopTools = (
           }
 
           try {
-            const auth =
-              asRecord(
-                await zohoGateway.listAuthorizedRecords({
-                  domain: 'books',
-                  module: moduleName,
-                  requester: gatewayRequester,
-                  organizationId: input.organizationId?.trim(),
-                  filters: input.filters,
-                  limit: input.limit,
-                  query: input.query?.trim(),
-                }),
-              ) ?? {};
+            const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
+              zohoGateway.listAuthorizedRecords({
+                domain: 'books',
+                module: moduleName,
+                requester,
+                organizationId: input.organizationId?.trim(),
+                filters: input.filters,
+                limit: input.limit,
+                query: input.query?.trim(),
+              }),
+            );
             if (auth.allowed !== true) {
               return buildZohoGatewayDeniedEnvelope(
                 auth,
@@ -6506,6 +7119,7 @@ export const createVercelDesktopTools = (
                   module: moduleName,
                   organizationId,
                   recordCount: resultItems.length,
+                  resultCount: resultItems.length,
                   statusCounts,
                 },
                 fullPayload: {
@@ -6527,6 +7141,7 @@ export const createVercelDesktopTools = (
                 module: moduleName,
                 organizationId,
                 recordCount: resultItems.length,
+                resultCount: resultItems.length,
               },
               fullPayload: {
                 organizationId,
@@ -6725,6 +7340,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires a supported Zoho Books module such as contacts, invoices, estimates, creditnotes, bills, salesorders, purchaseorders, customerpayments, vendorpayments, bankaccounts, or banktransactions.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['module'],
+              repairHints: buildBooksWriteRepairHints(['module']),
             });
           }
 
@@ -6803,6 +7420,8 @@ export const createVercelDesktopTools = (
                 summary: `${input.operation} requires recordId.`,
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['recordId'],
+                repairHints: buildBooksWriteRepairHints(['recordId']),
               });
             }
           }
@@ -6828,6 +7447,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires body.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['body'],
+              repairHints: buildBooksWriteRepairHints(['body']),
             });
           }
           if (
@@ -6841,6 +7462,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires accountId.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['accountId'],
+              repairHints: buildBooksWriteRepairHints(['accountId']),
             });
           }
           if (
@@ -6863,6 +7486,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires transactionId.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['transactionId'],
+              repairHints: buildBooksWriteRepairHints(['transactionId']),
             });
           }
           if (
@@ -6886,6 +7511,11 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires invoiceId.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['invoiceId'],
+              repairHints: {
+                ...buildBooksWriteRepairHints(['invoiceId']),
+                invoiceId: 'Use the most recent invoice read context or current invoice entity before asking the user.',
+              },
             });
           }
           if (
@@ -6904,6 +7534,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires estimateId.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['estimateId'],
+              repairHints: buildBooksWriteRepairHints(['estimateId']),
             });
           }
           if (
@@ -6917,6 +7549,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires creditNoteId.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['creditNoteId'],
+              repairHints: buildBooksWriteRepairHints(['creditNoteId']),
             });
           }
           if (
@@ -6935,6 +7569,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires salesOrderId.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['salesOrderId'],
+              repairHints: buildBooksWriteRepairHints(['salesOrderId']),
             });
           }
           if (
@@ -6954,6 +7590,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires purchaseOrderId.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['purchaseOrderId'],
+              repairHints: buildBooksWriteRepairHints(['purchaseOrderId']),
             });
           }
           if (
@@ -6965,6 +7603,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires billId.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['billId'],
+              repairHints: buildBooksWriteRepairHints(['billId']),
             });
           }
           if (
@@ -6976,6 +7616,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires contactId.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['contactId'],
+              repairHints: buildBooksWriteRepairHints(['contactId']),
             });
           }
           if (
@@ -6989,6 +7631,8 @@ export const createVercelDesktopTools = (
               summary: `${input.operation} requires contactId.`,
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['contactId'],
+              repairHints: buildBooksWriteRepairHints(['contactId']),
             });
           }
           if (input.operation === 'emailVendorPayment' && !vendorPaymentId) {
@@ -6997,6 +7641,8 @@ export const createVercelDesktopTools = (
               summary: 'emailVendorPayment requires vendorPaymentId.',
               errorKind: 'missing_input',
               retryable: false,
+              missingFields: ['vendorPaymentId'],
+              repairHints: buildBooksWriteRepairHints(['vendorPaymentId']),
             });
           }
           if (
@@ -7010,6 +7656,8 @@ export const createVercelDesktopTools = (
                 summary: `${input.operation} requires a supported module and recordId.`,
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['module', 'recordId'],
+                repairHints: buildBooksWriteRepairHints(['module', 'recordId']),
               });
             }
             if (
@@ -7022,6 +7670,8 @@ export const createVercelDesktopTools = (
                 summary: `${input.operation} requires commentId.`,
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['commentId'],
+                repairHints: buildBooksWriteRepairHints(['commentId']),
               });
             }
           }
@@ -7036,6 +7686,8 @@ export const createVercelDesktopTools = (
                 summary: `${input.operation} requires a supported module and recordId.`,
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['module', 'recordId'],
+                repairHints: buildBooksWriteRepairHints(['module', 'recordId']),
               });
             }
             if (input.operation === 'applyBooksTemplate' && !input.templateId?.trim()) {
@@ -7044,6 +7696,8 @@ export const createVercelDesktopTools = (
                 summary: 'applyBooksTemplate requires templateId.',
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['templateId'],
+                repairHints: buildBooksWriteRepairHints(['templateId']),
               });
             }
             if (
@@ -7055,6 +7709,8 @@ export const createVercelDesktopTools = (
                 summary: 'uploadBooksAttachment requires fileName and contentBase64.',
                 errorKind: 'missing_input',
                 retryable: false,
+                missingFields: ['fileName', 'contentBase64'],
+                repairHints: buildBooksWriteRepairHints(['fileName', 'contentBase64']),
               });
             }
           }
@@ -7519,6 +8175,7 @@ export const createVercelDesktopTools = (
                   : 'No Lark teammates matched the request.',
               keyData: {
                 people: filtered,
+                resultCount: filtered.length,
               },
               fullPayload: {
                 people: filtered,
@@ -7652,6 +8309,10 @@ export const createVercelDesktopTools = (
                 summary: 'Workflow-driven Lark DM sends require fixed recipient open IDs.',
                 errorKind: 'validation',
                 retryable: false,
+                repairHints: {
+                  recipientOpenIds:
+                    'Call larkMessage with operation=resolveRecipients first to obtain openIds, then retry with recipientOpenIds populated.',
+                },
               });
             }
             const larkMessagingService = loadLarkMessagingService();
@@ -10719,9 +11380,9 @@ export const createVercelDesktopTools = (
     }),
   };
 
-  const filteredEntries = Object.entries(tools).filter(([toolName]) =>
-    isVercelToolAllowed(runtime, toolName),
-  );
+  const filteredEntries = Object.entries(tools)
+    .filter(([toolName]) => isVercelToolAllowed(runtime, toolName))
+    .map(([toolName, toolDef]) => [toolName, wrapToolDefinitionWithBoundaryNormalization(toolName, toolDef)] as const);
 
   logger.info('vercel.tools.filtered', {
     threadId: runtime.threadId,

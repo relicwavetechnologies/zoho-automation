@@ -398,9 +398,11 @@ export const resolveRunScopedToolSelection = async (input: {
   hasActiveArtifacts: boolean;
   artifactMode?: ArtifactMode;
   childRoute?: ChildRouteHints;
+  pinnedToolIds?: string[];
 }): Promise<RunScopedToolSelection> => {
   const queryTextForInference = input.enrichedQueryText?.trim() || input.latestUserMessage;
   const allowed = new Set(input.allowedToolIds);
+  const pinnedAllowedToolIds = uniq((input.pinnedToolIds ?? []).filter((toolId) => allowed.has(toolId)));
   const artifactMode = input.artifactMode ?? 'none';
   const allowContextOnlyAnswer = canAnswerFromGroundedContext({
     artifactMode,
@@ -442,6 +444,7 @@ export const resolveRunScopedToolSelection = async (input: {
   const primaryBundle = uniq([
     ...learnedToolIds,
     ...suggestedAllowedToolIds,
+    ...pinnedAllowedToolIds,
     ...buildPrimaryBundle({
       allowed,
       domain: inferredDomain,
@@ -463,10 +466,10 @@ export const resolveRunScopedToolSelection = async (input: {
   });
   const learnedSummary = summarizeLearnedPriors(learnedPriors);
   const selectionReason = primaryBundle.length > 0
-    ? `Primary domain ${inferredDomain} with operation ${inferredOperationClass}.${learnedSummary.length > 0 ? ` Learned routing priors favored ${learnedSummary.join('; ')}.` : ''}`
+    ? `Primary domain ${inferredDomain} with operation ${inferredOperationClass}.${learnedSummary.length > 0 ? ` Learned routing priors favored ${learnedSummary.join('; ')}.` : ''}${pinnedAllowedToolIds.length > 0 ? ` Pinned required tools: ${pinnedAllowedToolIds.join(', ')}.` : ''}`
     : allowContextOnlyAnswer
       ? 'Current grounded multimodal context appears sufficient to answer directly without document extraction tools.'
-      : 'No safe primary domain could be resolved from the latest message; preserving only core and fallback tools.';
+      : `No safe primary domain could be resolved from the latest message; preserving only core and fallback tools.${pinnedAllowedToolIds.length > 0 ? ` Pinned required tools: ${pinnedAllowedToolIds.join(', ')}.` : ''}`;
 
   const initialSelection: RunScopedToolSelection = {
     runExposedToolIds: uniq([...coreToolIds, ...primaryBundle, ...fallbackBundle]),

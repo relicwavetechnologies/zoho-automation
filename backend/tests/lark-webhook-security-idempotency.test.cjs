@@ -316,6 +316,7 @@ test('webhook handler ignores stale message deliveries before enqueue', async ()
 
 test('webhook handler stages attachment-only messages without enqueueing a task', async () => {
   let enqueueCount = 0;
+  const sentMessages = [];
   const handler = createLarkWebhookEventHandler({
     verifyRequest: () => ({ ok: true }),
     parsePayload: () => ({
@@ -337,7 +338,10 @@ test('webhook handler stages attachment-only messages without enqueueing a task'
         messageId: 'om_img_1',
         text: '[User attached an image]',
       }),
-      sendMessage: async () => ({ status: 'sent' }),
+      sendMessage: async (input) => {
+        sentMessages.push(input);
+        return { status: 'sent' };
+      },
       downloadFile: async () => null,
     },
     claimIngressKey: async () => true,
@@ -353,10 +357,14 @@ test('webhook handler stages attachment-only messages without enqueueing a task'
   assert.equal(response.statusCode, 202);
   assert.equal(response.body.message, 'Lark attachment stored for the next text prompt');
   assert.equal(enqueueCount, 0);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].replyToMessageId, 'om_img_1');
+  assert.match(sentMessages[0].text, /Got your file/);
 });
 
 test('webhook handler stages image messages inferred from content when msg_type is missing', async () => {
   let enqueueCount = 0;
+  const sentMessages = [];
   const handler = createLarkWebhookEventHandler({
     verifyRequest: () => ({ ok: true }),
     parsePayload: () => ({
@@ -378,7 +386,10 @@ test('webhook handler stages image messages inferred from content when msg_type 
         messageId: 'om_img_2',
         text: '[User attached an image]',
       }),
-      sendMessage: async () => ({ status: 'sent' }),
+      sendMessage: async (input) => {
+        sentMessages.push(input);
+        return { status: 'sent' };
+      },
       downloadFile: async () => null,
     },
     claimIngressKey: async () => true,
@@ -394,6 +405,9 @@ test('webhook handler stages image messages inferred from content when msg_type 
   assert.equal(response.statusCode, 202);
   assert.equal(response.body.message, 'Lark attachment stored for the next text prompt');
   assert.equal(enqueueCount, 0);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].replyToMessageId, 'om_img_2');
+  assert.match(sentMessages[0].text, /Send me a message and I'll work with it/);
 });
 
 test('buildPrimaryIngressIdempotencyKey uses event key when event id is present', () => {

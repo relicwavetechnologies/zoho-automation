@@ -1064,6 +1064,7 @@ model ScheduledWorkflow {
   nextRunAt             DateTime?
   lastRunAt             DateTime?
   outputConfigJson      Json
+  originChatId          String?
   approvalGrantJson     Json?
   publishedAt           DateTime?
   pausedAt              DateTime?

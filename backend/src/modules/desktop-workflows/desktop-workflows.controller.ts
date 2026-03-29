@@ -64,6 +64,15 @@ const destinationInputSchema = z.discriminatedUnion('kind', [
     label: z.string().trim().max(160).optional(),
     value: z.string().trim().max(160).optional(),
   }).strict(),
+  z.object({
+    kind: z.literal('lark_current_chat'),
+    label: z.string().trim().max(160).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('lark_self_dm'),
+    label: z.string().trim().max(160).optional(),
+    value: z.string().trim().max(160).optional(),
+  }).strict(),
 ]);
 
 const compileWorkflowRequestSchema = z.object({
@@ -172,7 +181,10 @@ const toScheduleConfig = (input: z.infer<typeof uiScheduleSchema>) => {
   };
 };
 
-const toOutputConfig = (destinations: z.infer<typeof destinationInputSchema>[]) => {
+const toOutputConfig = (
+  destinations: z.infer<typeof destinationInputSchema>[],
+  session?: MemberSessionDTO,
+) => {
   const sourceDestinations = destinations.length > 0
     ? destinations
     : [{ kind: 'desktop_inbox', label: 'Desktop inbox' } as const];
@@ -191,6 +203,22 @@ const toOutputConfig = (destinations: z.infer<typeof destinationInputSchema>[]) 
         kind: 'desktop_thread' as const,
         label: destination.label || 'Desktop thread',
         threadId: destination.value || destination.label || 'desktop-thread',
+      };
+    }
+    if (destination.kind === 'lark_current_chat') {
+      return {
+        id: 'lark_current_chat',
+        kind: 'lark_current_chat' as const,
+        label: destination.label || 'Current Lark chat',
+      };
+    }
+    if (destination.kind === 'lark_self_dm') {
+      return {
+        id: 'lark_self_dm',
+        kind: 'lark_self_dm' as const,
+        label: destination.label || 'My personal Lark DM',
+        openId: destination.value || session?.larkOpenId || '',
+        ...(session?.larkTenantKey ? { tenantKey: session.larkTenantKey } : {}),
       };
     }
     return {
@@ -262,7 +290,7 @@ class DesktopWorkflowsController extends BaseController {
       ...(parsed.aiDraft !== undefined ? { aiDraft: parsed.aiDraft } : {}),
       ...(parsed.workflowSpec !== undefined ? { workflowSpec: parsed.workflowSpec } : {}),
       ...(parsed.schedule !== undefined ? { schedule: toScheduleConfig(parsed.schedule) } : {}),
-      ...(parsed.destinations !== undefined ? { outputConfig: toOutputConfig(parsed.destinations) } : {}),
+      ...(parsed.destinations !== undefined ? { outputConfig: toOutputConfig(parsed.destinations, session) } : {}),
       ...(parsed.departmentId !== undefined ? { departmentId: parsed.departmentId } : {}),
     });
     return res.json(ApiResponse.success(result, 'Workflow updated'));
@@ -279,7 +307,7 @@ class DesktopWorkflowsController extends BaseController {
       name: parsed.name,
       userIntent: parsed.userIntent,
       schedule: toScheduleConfig(parsed.schedule),
-      outputConfig: toOutputConfig(parsed.destinations),
+      outputConfig: toOutputConfig(parsed.destinations, session),
       attachedFiles: parsed.attachedFiles,
     });
 
@@ -297,7 +325,7 @@ class DesktopWorkflowsController extends BaseController {
       aiDraft: parsed.aiDraft ?? null,
       schedule: toScheduleConfig(parsed.schedule),
       scheduleEnabled: parsed.scheduleEnabled,
-      outputConfig: toOutputConfig(parsed.destinations),
+      outputConfig: toOutputConfig(parsed.destinations, session),
       workflowSpec: parsed.workflowSpec,
       compiledPrompt: parsed.compiledPrompt,
       capabilitySummary: parsed.capabilitySummary,

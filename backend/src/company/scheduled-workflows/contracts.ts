@@ -306,10 +306,22 @@ const larkChatDestinationSchema = destinationBaseSchema.extend({
   tenantKey: z.string().trim().min(1).max(120).optional(),
 }).strict();
 
+const larkCurrentChatDestinationSchema = destinationBaseSchema.extend({
+  kind: z.literal('lark_current_chat'),
+}).strict();
+
+const larkSelfDmDestinationSchema = destinationBaseSchema.extend({
+  kind: z.literal('lark_self_dm'),
+  openId: z.string().trim().min(1).max(120),
+  tenantKey: z.string().trim().min(1).max(120).optional(),
+}).strict();
+
 export const scheduledWorkflowDestinationSchema = z.discriminatedUnion('kind', [
   desktopInboxDestinationSchema,
   desktopThreadDestinationSchema,
   larkChatDestinationSchema,
+  larkCurrentChatDestinationSchema,
+  larkSelfDmDestinationSchema,
 ]);
 
 export const scheduledWorkflowOutputConfigSchema = z.object({

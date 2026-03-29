@@ -16,7 +16,7 @@ const TOOL_ACTION_GROUPS: Record<string, ToolActionGroup[]> = {
   'document-ocr-read': ['read'],
   'invoice-parser': ['read'],
   'statement-parser': ['read'],
-  'workflow-authoring': ['read', 'create', 'update', 'execute'],
+  'workflow-authoring': ['read', 'create', 'update', 'delete', 'execute'],
   'search-zoho-context': ['read'],
   'read-zoho-records': ['read'],
   'zoho-agent': ['read', 'create', 'update', 'delete'],

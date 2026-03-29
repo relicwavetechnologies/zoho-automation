@@ -15,6 +15,7 @@ import {
   type ScheduledWorkflowOutputConfig,
   type ScheduledWorkflowScheduleConfig,
 } from '../../company/scheduled-workflows/contracts';
+import { validateScheduledWorkflowDefinition } from '../../company/scheduled-workflows/workflow-validator.service';
 import { resolveChannelAdapter } from '../../company/channels/channel-adapter.registry';
 import { larkUserAuthLinkRepository } from '../../company/channels/lark/lark-user-auth-link.repository';
 import { resolveLarkPeople } from '../../company/orchestration/vercel/lark-helpers';
@@ -195,6 +196,7 @@ export type DesktopWorkflowPublishInput = {
   compiledPrompt: string;
   capabilitySummary?: ScheduledWorkflowCapabilitySummary;
   departmentId?: string | null;
+  originChatId?: string | null;
 };
 
 type StoredWorkflowStatus = 'draft' | 'published' | 'active' | 'scheduled_active' | 'paused' | 'archived';
@@ -339,9 +341,33 @@ const buildDestinationSummary = (outputConfig: ScheduledWorkflowOutputConfig): s
     .map((destination) => {
       if (destination.kind === 'desktop_inbox') return `${destination.id}: desktop inbox`;
       if (destination.kind === 'desktop_thread') return `${destination.id}: desktop thread (${destination.threadId})`;
+      if (destination.kind === 'lark_current_chat') return `${destination.id}: current lark chat`;
+      if (destination.kind === 'lark_self_dm') return `${destination.id}: requester personal lark dm (${destination.openId})`;
       return `${destination.id}: lark chat (${destination.chatId})`;
     })
     .join('\n');
+
+const resolveLarkDestinationTarget = (
+  destination: Extract<ScheduledWorkflowOutputConfig['destinations'][number], { kind: 'lark_chat' | 'lark_current_chat' | 'lark_self_dm' }>,
+  originChatId?: string | null,
+): { targetId: string | null; error: string | null } => {
+  if (destination.kind === 'lark_current_chat') {
+    return {
+      targetId: originChatId ?? null,
+      error: originChatId ? null : 'originChatId missing',
+    };
+  }
+  if (destination.kind === 'lark_self_dm') {
+    return {
+      targetId: readString(destination.openId) ?? null,
+      error: readString(destination.openId) ? null : 'requester larkOpenId missing',
+    };
+  }
+  return {
+    targetId: destination.chatId,
+    error: readString(destination.chatId) ? null : 'chatId missing',
+  };
+};
 
 const buildToolFamilyGuide = (allowedToolIds: string[]): string =>
   Object.entries(
@@ -2097,6 +2123,7 @@ class DesktopWorkflowsService {
     nextRunAt: Date | null;
     lastRunAt: Date | null;
     departmentId: string | null;
+    originChatId: string | null;
     updatedAt: Date;
     messages?: Array<{ id: string; role: string; content: string; createdAt: Date; metadata?: unknown }>;
   }) {
@@ -2129,6 +2156,7 @@ class DesktopWorkflowsService {
       nextRunAt: row.nextRunAt?.toISOString() ?? null,
       lastRunAt: row.lastRunAt?.toISOString() ?? null,
       departmentId: row.departmentId ?? null,
+      originChatId: row.originChatId ?? null,
       ownershipScope: 'personal' as const,
       updatedAt: row.updatedAt.toISOString(),
       planningState,
@@ -2164,7 +2192,7 @@ class DesktopWorkflowsService {
 
   async createDraft(
     session: MemberSessionDTO,
-    input?: { name?: string | null; departmentId?: string | null },
+    input?: { name?: string | null; departmentId?: string | null; originChatId?: string | null },
   ) {
     const name = deriveWorkflowName(input?.name);
     const schedule: ScheduledWorkflowScheduleConfig = {
@@ -2202,6 +2230,7 @@ class DesktopWorkflowsService {
         scheduleConfigJson: schedule,
         scheduleEnabled: false,
         outputConfigJson: outputConfig,
+        originChatId: input?.originChatId ?? null,
       },
       include: {
         messages: {
@@ -2426,6 +2455,7 @@ class DesktopWorkflowsService {
       schedule?: ScheduledWorkflowScheduleConfig;
       outputConfig?: ScheduledWorkflowOutputConfig;
       departmentId?: string | null;
+      originChatId?: string | null;
     },
   ) {
     const workflow = await prisma.scheduledWorkflow.findFirst({
@@ -2466,11 +2496,17 @@ class DesktopWorkflowsService {
       schedule: nextSchedule,
       outputConfig: nextOutputConfig,
     });
+    const scheduleEnabled = workflow.scheduleEnabled;
+    const nextRunAt = scheduleEnabled ? getNextScheduledRunAt(nextSchedule, new Date()) : workflow.nextRunAt;
+    if (scheduleEnabled && !nextRunAt) {
+      throw new HttpException(400, 'This workflow has no future run time after the schedule change.');
+    }
 
     const updated = await prisma.scheduledWorkflow.update({
       where: { id: workflowId },
       data: {
         ...(input.departmentId !== undefined ? { departmentId: input.departmentId } : {}),
+        ...(input.originChatId !== undefined ? { originChatId: input.originChatId } : {}),
         name: nextName,
         userIntent: nextIntent,
         aiDraft: input.aiDraft !== undefined ? input.aiDraft : workflow.aiDraft,
@@ -2481,6 +2517,7 @@ class DesktopWorkflowsService {
         scheduleType: nextSchedule.type,
         scheduleConfigJson: nextSchedule,
         outputConfigJson: nextOutputConfig,
+        nextRunAt,
       },
       include: {
         messages: {
@@ -2504,6 +2541,7 @@ class DesktopWorkflowsService {
     primaryThreadId: string;
     primaryThreadTitle: string | null;
     capabilitySummary: ScheduledWorkflowCapabilitySummary;
+    originChatId: string | null;
   }> {
     if (input.workflowId) {
       const existing = await prisma.scheduledWorkflow.findFirst({
@@ -2520,6 +2558,32 @@ class DesktopWorkflowsService {
     }
 
     const normalizedOutputConfig = scheduledWorkflowOutputConfigSchema.parse(input.outputConfig);
+    const usesCurrentLarkChat = normalizedOutputConfig.destinations.some(
+      (destination) => destination.kind === 'lark_current_chat',
+    );
+    const usesSelfLarkDm = normalizedOutputConfig.destinations.some(
+      (destination) => destination.kind === 'lark_self_dm',
+    );
+    if (normalizedOutputConfig.destinations.length === 0) {
+      throw new HttpException(400, 'Scheduled workflows need at least one delivery destination.');
+    }
+    if (usesCurrentLarkChat && !readString(input.originChatId)) {
+      throw new HttpException(
+        400,
+        'Saving a workflow for the current Lark chat requires the originating chat id.',
+      );
+    }
+    if (
+      usesSelfLarkDm
+      && normalizedOutputConfig.destinations.some(
+        (destination) => destination.kind === 'lark_self_dm' && !readString(destination.openId),
+      )
+    ) {
+      throw new HttpException(
+        400,
+        'Saving a workflow for the requester personal Lark DM requires the requester Lark open id.',
+      );
+    }
     const workflowSpec = await bindWorkflowLarkRecipients({
       session,
       workflowSpec: reconcileWorkflowSpecDestinations(scheduledWorkflowSpecSchema.parse({
@@ -2563,6 +2627,19 @@ class DesktopWorkflowsService {
       ...normalizedOutputConfig,
       destinations: normalizedDestinations,
     });
+    const validation = validateScheduledWorkflowDefinition({
+      userIntent: input.userIntent,
+      workflowSpec,
+      schedule: input.schedule,
+      outputConfig,
+      originChatId: input.originChatId ?? null,
+    });
+    if (!validation.valid) {
+      throw new HttpException(
+        400,
+        validation.errors.map((entry) => entry.humanReadable).slice(0, 4).join(' '),
+      );
+    }
 
     const primaryThread = await this.resolvePrimaryExecutionThread({
       workflowName: input.name,
@@ -2577,6 +2654,7 @@ class DesktopWorkflowsService {
         where: { id: input.workflowId },
         data: {
           departmentId: resolvedDepartment?.id ?? null,
+          originChatId: input.originChatId ?? null,
           name: input.name,
           status: nextStatus,
           userIntent: input.userIntent,
@@ -2608,6 +2686,7 @@ class DesktopWorkflowsService {
           companyId: session.companyId,
           departmentId: resolvedDepartment?.id ?? null,
           createdByUserId: session.userId,
+          originChatId: input.originChatId ?? null,
           name: input.name,
           status: nextStatus,
           userIntent: input.userIntent,
@@ -2640,6 +2719,7 @@ class DesktopWorkflowsService {
       primaryThreadId: primaryThread.id,
       primaryThreadTitle: primaryThread.title ?? null,
       capabilitySummary,
+      originChatId: input.originChatId ?? null,
     };
   }
 
@@ -3167,12 +3247,179 @@ class DesktopWorkflowsService {
     };
   }
 
+  private resolveDestinationIdsForNotification(outputConfig: ScheduledWorkflowOutputConfig): string[] {
+    return outputConfig.defaultDestinationIds.length > 0
+      ? outputConfig.defaultDestinationIds
+      : outputConfig.destinations.map((destination) => destination.id);
+  }
+
+  private async deliverTextToConfiguredDestinations(input: {
+    workflowId: string;
+    runId: string;
+    session: MemberSessionDTO;
+    workflowName: string;
+    outputConfig: ScheduledWorkflowOutputConfig;
+    text: string;
+    destinationIds?: string[];
+    originChatId?: string | null;
+  }): Promise<Array<Record<string, unknown>>> {
+    const requestedDestinationIds = new Set(
+      (input.destinationIds && input.destinationIds.length > 0
+        ? input.destinationIds
+        : input.outputConfig.destinations.map((destination) => destination.id)),
+    );
+    const deliveries: Array<Record<string, unknown>> = [];
+    for (const destination of input.outputConfig.destinations) {
+      if (!requestedDestinationIds.has(destination.id)) {
+        continue;
+      }
+
+      if (destination.kind === 'desktop_thread') {
+        const duplicate = await desktopThreadsService.addMessage(
+          destination.threadId,
+          input.session.userId,
+          'assistant',
+          input.text,
+          {
+            workflowExecution: {
+              workflowId: input.workflowId,
+              workflowRunId: input.runId,
+              notificationOnly: true,
+            },
+          },
+        );
+        deliveries.push({
+          kind: 'desktop_thread',
+          target: destination.label ?? destination.threadId,
+          threadId: destination.threadId,
+          messageId: duplicate.id,
+          status: 'delivered',
+        });
+        continue;
+      }
+
+      if (destination.kind === 'desktop_inbox') {
+        const inboxThread = await desktopThreadsService.findOrCreateNamedThread(
+          input.session.userId,
+          input.session.companyId,
+          input.workflowName,
+          input.session.resolvedDepartmentId ?? null,
+        );
+        const duplicate = await desktopThreadsService.addMessage(
+          inboxThread.id,
+          input.session.userId,
+          'assistant',
+          input.text,
+          {
+            workflowExecution: {
+              workflowId: input.workflowId,
+              workflowRunId: input.runId,
+              notificationOnly: true,
+            },
+          },
+        );
+        deliveries.push({
+          kind: 'desktop_inbox',
+          target: inboxThread.title ?? inboxThread.id,
+          threadId: inboxThread.id,
+          messageId: duplicate.id,
+          status: 'delivered',
+        });
+        continue;
+      }
+
+      const { targetId, error } = resolveLarkDestinationTarget(destination, input.originChatId ?? null);
+      if (!targetId) {
+        deliveries.push({
+          kind: destination.kind,
+          target: destination.label ?? destination.id,
+          status: 'failed',
+          error,
+        });
+        continue;
+      }
+      const adapter = resolveChannelAdapter('lark');
+      const outbound = await adapter.sendMessage({
+        chatId: targetId,
+        text: input.text,
+        correlationId: input.runId,
+      });
+      deliveries.push({
+        kind: destination.kind,
+        target: destination.label ?? targetId,
+        chatId: targetId,
+        status: outbound.status,
+        messageId: outbound.messageId ?? null,
+        error: outbound.error ?? null,
+      });
+    }
+    return deliveries;
+  }
+
+  private buildWorkflowFailureNotification(input: {
+    workflowName: string;
+    ranAt: Date;
+    errorSummary: string | null;
+    nextRunAt: Date | null;
+  }): string {
+    return [
+      `Scheduled workflow "${input.workflowName}" failed at ${input.ranAt.toISOString()}.`,
+      `Reason: ${input.errorSummary?.trim() || 'Execution did not complete successfully.'}`,
+      `Next scheduled run: ${input.nextRunAt ? input.nextRunAt.toISOString() : 'none'}`,
+      'To fix or disable this workflow, reply here or open your workflow list.',
+    ].join('\n');
+  }
+
+  private async notifyWorkflowRunOutcome(input: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    trigger: 'manual' | 'scheduled';
+    status: 'succeeded' | 'failed' | 'blocked';
+    session: MemberSessionDTO;
+    outputConfig: ScheduledWorkflowOutputConfig;
+    originChatId?: string | null;
+    scheduledFor: Date;
+    nextRunAt: Date | null;
+    errorSummary: string | null;
+  }): Promise<void> {
+    if (input.trigger !== 'scheduled' || input.status === 'succeeded') {
+      return;
+    }
+    const message = this.buildWorkflowFailureNotification({
+      workflowName: input.workflowName,
+      ranAt: input.scheduledFor,
+      errorSummary: input.errorSummary,
+      nextRunAt: input.nextRunAt,
+    });
+    try {
+      await this.deliverTextToConfiguredDestinations({
+        workflowId: input.workflowId,
+        runId: input.runId,
+        session: input.session,
+        workflowName: input.workflowName,
+        outputConfig: input.outputConfig,
+        text: message,
+        destinationIds: this.resolveDestinationIdsForNotification(input.outputConfig),
+        originChatId: input.originChatId ?? null,
+      });
+    } catch (error) {
+      logger.error('desktop.workflow.notify.failed', {
+        workflowId: input.workflowId,
+        workflowRunId: input.runId,
+        status: input.status,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async deliverResult(input: {
     workflowId: string;
     runId: string;
     session: MemberSessionDTO;
     workflowName: string;
     outputConfig: ScheduledWorkflowOutputConfig;
+    originChatId?: string | null;
     primaryThreadId: string;
     primaryThreadTitle: string | null;
     primaryMessageId: string;
@@ -3244,16 +3491,27 @@ class DesktopWorkflowsService {
         continue;
       }
 
+      const { targetId, error } = resolveLarkDestinationTarget(destination, input.originChatId ?? null);
+      if (!targetId) {
+        deliveries.push({
+          kind: destination.kind,
+          target: destination.label ?? destination.id,
+          status: 'failed',
+          messageId: null,
+          error,
+        });
+        continue;
+      }
       const adapter = resolveChannelAdapter('lark');
       const outbound = await adapter.sendMessage({
-        chatId: destination.chatId,
+        chatId: targetId,
         text: input.text,
         correlationId: input.runId,
       });
       deliveries.push({
-        kind: 'lark_chat',
-        target: destination.label ?? destination.chatId,
-        chatId: destination.chatId,
+        kind: destination.kind,
+        target: destination.label ?? targetId,
+        chatId: targetId,
         status: outbound.status,
         messageId: outbound.messageId ?? null,
         error: outbound.error ?? null,
@@ -3419,6 +3677,7 @@ class DesktopWorkflowsService {
         session,
         workflowName: workflow.name,
         outputConfig,
+        originChatId: workflow.originChatId ?? null,
         primaryThreadId: primaryThread.id,
         primaryThreadTitle: primaryThread.title ?? null,
         primaryMessageId: execution.message.id,
@@ -3467,6 +3726,19 @@ class DesktopWorkflowsService {
             }
             : {}),
         },
+      });
+      await this.notifyWorkflowRunOutcome({
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        runId: run.id,
+        trigger,
+        status,
+        session,
+        outputConfig,
+        originChatId: workflow.originChatId ?? null,
+        scheduledFor,
+        nextRunAt: trigger === 'scheduled' ? nextRunAt : workflow.nextRunAt,
+        errorSummary: status === 'failed' ? summarizeResult(execution.failedToolSummaries.join('\n'), 1200) : null,
       });
       logger.info('desktop.workflow.execute.completed', {
         workflowId: workflow.id,
@@ -3527,6 +3799,19 @@ class DesktopWorkflowsService {
             }
             : {}),
         },
+      });
+      await this.notifyWorkflowRunOutcome({
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        runId: run.id,
+        trigger,
+        status: 'failed',
+        session,
+        outputConfig,
+        originChatId: workflow.originChatId ?? null,
+        scheduledFor,
+        nextRunAt: trigger === 'scheduled' ? nextRunAt : workflow.nextRunAt,
+        errorSummary: summarizeResult(message, 1200),
       });
 
       return {

@@ -35,9 +35,25 @@ export type TextContentPart = {
 
 export type VisionMessageContent = TextContentPart | ImageContentPart;
 
+export type GroundedFilePromptInfo = {
+  fileAssetId: string;
+  fileName: string;
+  mimeType: string;
+  groundingKind: 'image_url' | 'document_excerpt' | 'document_placeholder' | 'media_summary';
+  ingestionPending?: boolean;
+  placeholderText?: string;
+};
+
+export type VisionContentBuildResult = {
+  parts: VisionMessageContent[];
+  groundedFiles: GroundedFilePromptInfo[];
+};
+
 const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
 const VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
+const DOCUMENT_INGESTION_PLACEHOLDER =
+  '(Document content is still being processed. Exact text unavailable for this turn.)';
 
 const fetchIndexedFileChunks = async (input: {
   fileAssetId: string;
@@ -140,14 +156,15 @@ const fetchDirectDocumentText = async (input: {
  *  1. Checks FileAccessPolicy — user's role must be in allowedRoles
  *  2. Qdrant query also filters by allowedRoles at vector level
  */
-export const buildVisionContent = async (input: {
+export const buildVisionContentWithGrounding = async (input: {
   userMessage: string;
   attachedFiles: AttachedFileRef[];
   companyId: string;
   requesterUserId?: string;
   requesterAiRole?: string;
-}): Promise<VisionMessageContent[]> => {
+}): Promise<VisionContentBuildResult> => {
   const parts: VisionMessageContent[] = [];
+  const groundedFiles: GroundedFilePromptInfo[] = [];
 
   // Always put the user's text first
   parts.push({ type: 'text', text: input.userMessage });
@@ -224,6 +241,12 @@ export const buildVisionContent = async (input: {
         image: file.cloudinaryUrl,
         mimeType: file.mimeType,
       });
+      groundedFiles.push({
+        fileAssetId: file.fileAssetId,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        groundingKind: 'image_url',
+      });
     } else {
       const blockLabel = VIDEO_MIME_TYPES.has(file.mimeType)
         ? `Attached media summary from "${file.fileName}"`
@@ -231,6 +254,9 @@ export const buildVisionContent = async (input: {
       const excerptLabel = VIDEO_MIME_TYPES.has(file.mimeType)
         ? `Relevant media excerpts from "${file.fileName}"`
         : `Relevant document excerpts from "${file.fileName}"`;
+      const groundingKind = VIDEO_MIME_TYPES.has(file.mimeType)
+        ? 'media_summary'
+        : 'document_excerpt';
       const relevantContext = await fetchRelevantDocumentChunks({
         fileAssetId: file.fileAssetId,
         companyId: input.companyId,
@@ -248,6 +274,12 @@ export const buildVisionContent = async (input: {
           type: 'text',
           text: `\n\n--- ${excerptLabel} ---\n${relevantContext}\n--- End ${excerptLabel} ---`,
         });
+        groundedFiles.push({
+          fileAssetId: file.fileAssetId,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          groundingKind,
+        });
       } else {
         const fullIndexedContext = await fetchIndexedFileChunks({
           fileAssetId: file.fileAssetId,
@@ -264,6 +296,12 @@ export const buildVisionContent = async (input: {
           parts.push({
             type: 'text',
             text: `\n\n--- ${blockLabel} ---\n${fullIndexedContext}\n--- End ${blockLabel} ---`,
+          });
+          groundedFiles.push({
+            fileAssetId: file.fileAssetId,
+            fileName: file.fileName,
+            mimeType: file.mimeType,
+            groundingKind,
           });
           continue;
         }
@@ -287,6 +325,12 @@ export const buildVisionContent = async (input: {
             type: 'text',
             text: `\n\n--- Direct document content from "${file.fileName}" ---\n${directText}\n--- End direct document content ---`,
           });
+          groundedFiles.push({
+            fileAssetId: file.fileAssetId,
+            fileName: file.fileName,
+            mimeType: file.mimeType,
+            groundingKind,
+          });
           continue;
         }
 
@@ -297,11 +341,30 @@ export const buildVisionContent = async (input: {
         });
         parts.push({
           type: 'text',
-          text: `[Document "${file.fileName}" is being processed or has no accessible content.]`,
+          text: `[Document "${file.fileName}" is being processed or has no accessible content. ${DOCUMENT_INGESTION_PLACEHOLDER}]`,
+        });
+        groundedFiles.push({
+          fileAssetId: file.fileAssetId,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          groundingKind: 'document_placeholder',
+          ingestionPending: true,
+          placeholderText: DOCUMENT_INGESTION_PLACEHOLDER,
         });
       }
     }
   }
 
-  return parts;
+  return { parts, groundedFiles };
+};
+
+export const buildVisionContent = async (input: {
+  userMessage: string;
+  attachedFiles: AttachedFileRef[];
+  companyId: string;
+  requesterUserId?: string;
+  requesterAiRole?: string;
+}): Promise<VisionMessageContent[]> => {
+  const result = await buildVisionContentWithGrounding(input);
+  return result.parts;
 };

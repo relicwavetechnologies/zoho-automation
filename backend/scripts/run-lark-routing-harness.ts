@@ -94,6 +94,40 @@ const resolveLatestLarkContext = async (companyId?: string) => {
   throw new Error('Could not resolve recent Lark context. Pass a company with recent Lark activity first.');
 };
 
+const resolveReplyAnchorMessageId = async (input: {
+  chatId: string;
+  companyId: string;
+}): Promise<string | null> => {
+  const recentMessages = await prisma.desktopMessage.findMany({
+    where: {
+      thread: {
+        channel: 'lark',
+        companyId: input.companyId,
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 100,
+    select: {
+      metadata: true,
+    },
+  });
+
+  for (const recentMessage of recentMessages) {
+    const larkMeta = asRecord(asRecord(recentMessage.metadata)?.lark);
+    const chatId = asString(larkMeta?.chatId);
+    const inboundMessageId = asString(larkMeta?.inboundMessageId);
+    if (chatId !== input.chatId || !inboundMessageId) {
+      continue;
+    }
+    if (inboundMessageId.startsWith('om_harness_')) {
+      continue;
+    }
+    return inboundMessageId;
+  }
+
+  return null;
+};
+
 const main = async (): Promise<void> => {
   const messageText = asString(readArg('--message') || readArg('-m'));
   if (!messageText) {
@@ -104,6 +138,10 @@ const main = async (): Promise<void> => {
   const taskId = randomUUID();
   const messageId = `om_harness_${Date.now()}`;
   const timestamp = new Date().toISOString();
+  const replyAnchorMessageId = await resolveReplyAnchorMessageId({
+    chatId: resolved.chatId,
+    companyId: resolved.companyId,
+  });
 
   const message = {
     channel: 'lark' as const,
@@ -127,6 +165,7 @@ const main = async (): Promise<void> => {
       companyId: resolved.companyId,
       linkedUserId: resolved.linkedUserId,
       requesterEmail: resolved.requesterEmail,
+      ...(replyAnchorMessageId ? { replyToMessageId: replyAnchorMessageId } : {}),
     },
   };
 
@@ -142,6 +181,7 @@ const main = async (): Promise<void> => {
     companyId: resolved.companyId,
     linkedUserId: resolved.linkedUserId,
     chatId: resolved.chatId,
+    replyAnchorMessageId,
     text: messageText,
     result: {
       status: result.status,
