@@ -1193,6 +1193,9 @@ const buildWebCitations = (
 const buildEnvelope = (input: {
   success: boolean;
   summary: string;
+  toolId?: string;
+  actionGroup?: ToolActionGroup;
+  operation?: string;
   keyData?: Record<string, unknown>;
   fullPayload?: Record<string, unknown>;
   citations?: VercelCitation[];
@@ -1206,6 +1209,9 @@ const buildEnvelope = (input: {
 }): VercelToolEnvelope => ({
   success: input.success,
   summary: input.summary,
+  ...(input.toolId ? { toolId: input.toolId } : {}),
+  ...(input.actionGroup ? { actionGroup: input.actionGroup } : {}),
+  ...(input.operation ? { operation: input.operation } : {}),
   ...(input.keyData ? { keyData: input.keyData } : {}),
   ...(input.fullPayload ? { fullPayload: input.fullPayload } : {}),
   ...(input.citations && input.citations.length > 0 ? { citations: input.citations } : {}),
@@ -1608,12 +1614,18 @@ const isRequesterResolvedApprover = async (
 const buildImmediateApprovalExecutionEnvelope = (input: {
   ok: boolean;
   summary: string;
+  toolId?: string;
+  actionGroup?: ToolActionGroup;
+  operation?: string;
   payload?: Record<string, unknown>;
   errorKind?: VercelToolEnvelope['errorKind'];
 }): VercelToolEnvelope =>
   buildEnvelope({
     success: input.ok,
     summary: input.summary,
+    toolId: input.toolId,
+    actionGroup: input.actionGroup,
+    operation: input.operation,
     keyData: input.payload,
     fullPayload: input.payload,
     ...(input.ok
@@ -1698,6 +1710,9 @@ const createPendingRemoteApproval = async (input: {
       return buildImmediateApprovalExecutionEnvelope({
         ok: executionResult.ok,
         summary: executionResult.summary,
+        toolId: input.toolId,
+        actionGroup: input.actionGroup,
+        operation: input.operation,
         payload: executionResult.payload,
         errorKind: executionResult.ok ? undefined : 'api_failure',
       });
@@ -1705,6 +1720,9 @@ const createPendingRemoteApproval = async (input: {
       return buildImmediateApprovalExecutionEnvelope({
         ok: false,
         summary: error instanceof Error ? error.message : 'Failed to execute the approved action.',
+        toolId: input.toolId,
+        actionGroup: input.actionGroup,
+        operation: input.operation,
         errorKind: 'api_failure',
       });
     }
@@ -1777,6 +1795,9 @@ const createPendingDesktopRemoteApproval = async (input: {
       return buildImmediateApprovalExecutionEnvelope({
         ok: result.ok,
         summary: result.summary,
+        toolId: 'coding',
+        actionGroup: input.actionGroup,
+        operation: input.operation,
         payload: result.payload,
         errorKind: result.ok ? undefined : 'api_failure',
       });
@@ -1784,6 +1805,9 @@ const createPendingDesktopRemoteApproval = async (input: {
       return buildImmediateApprovalExecutionEnvelope({
         ok: false,
         summary: error instanceof Error ? error.message : 'Failed to execute the approved desktop action.',
+        toolId: 'coding',
+        actionGroup: input.actionGroup,
+        operation: input.operation,
         errorKind: 'api_failure',
       });
     }

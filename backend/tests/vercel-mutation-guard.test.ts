@@ -13,6 +13,19 @@ test('googleMail send results count as confirmed mutations', () => {
   assert.equal(__vercelMutationGuardTestUtils.isMutationToolResult('googleMail', output), true);
 });
 
+test('structured actionGroup metadata counts as a mutation even when summary text is generic', () => {
+  const output: VercelToolEnvelope = {
+    success: true,
+    summary: 'Completed request.',
+    toolId: 'google-gmail',
+    actionGroup: 'send',
+    operation: 'sendMessage',
+  };
+
+  assert.equal(__vercelMutationGuardTestUtils.resolveToolActionGroup(output), 'send');
+  assert.equal(__vercelMutationGuardTestUtils.isMutationToolResult('googleMail', output), true);
+});
+
 test('googleMail read results do not count as confirmed mutations', () => {
   const output: VercelToolEnvelope = {
     success: true,

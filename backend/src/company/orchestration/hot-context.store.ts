@@ -10,6 +10,8 @@ export type HotContextSlot = {
   success: boolean;
   summary: string;
   errorKind?: string;
+  toolId?: string;
+  actionGroup?: string;
   operation?: string;
   isMutation?: boolean;
   resolvedIds: Record<string, string>;

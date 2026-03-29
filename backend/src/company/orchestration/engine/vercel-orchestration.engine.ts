@@ -82,6 +82,7 @@ import { classifyIntent } from '../intent/canonical-intent';
 import { hotContextStore, type HotContextIndexedEntity, type HotContextSlot } from '../hot-context.store';
 import { resolveOrdinalReferences } from '../utils/resolve-ordinal-references';
 import { desktopWsGateway } from '../../../modules/desktop-live/desktop-ws.gateway';
+import type { ToolActionGroup } from '../../tools/tool-action-groups';
 import {
   appendLatestAgentRunLog,
   resetLatestAgentRunLog,
@@ -113,6 +114,13 @@ const GEMINI_CIRCUIT_BREAKER = {
   windowMs: 60_000,
   openMs: 120_000,
 };
+const MUTATING_ACTION_GROUPS = new Set<ToolActionGroup>([
+  'create',
+  'update',
+  'delete',
+  'send',
+  'execute',
+]);
 
 const larkConversationHydrationVersions = new Map<string, string>();
 
@@ -675,7 +683,43 @@ const buildHotContextEntityIndexes = (
   return undefined;
 };
 
+const resolveToolActionGroup = (
+  output: VercelToolEnvelope,
+): ToolActionGroup | undefined => {
+  const direct = asStringSafe(output.actionGroup)?.toLowerCase();
+  if (
+    direct === 'read'
+    || direct === 'create'
+    || direct === 'update'
+    || direct === 'delete'
+    || direct === 'send'
+    || direct === 'execute'
+  ) {
+    return direct;
+  }
+  if (output.pendingApprovalAction?.kind === 'tool_action') {
+    return output.pendingApprovalAction.actionGroup;
+  }
+  const nested = asStringSafe(output.keyData?.actionGroup)?.toLowerCase()
+    ?? asStringSafe(output.fullPayload?.actionGroup)?.toLowerCase();
+  if (
+    nested === 'read'
+    || nested === 'create'
+    || nested === 'update'
+    || nested === 'delete'
+    || nested === 'send'
+    || nested === 'execute'
+  ) {
+    return nested;
+  }
+  return undefined;
+};
+
 const isMutationToolResult = (toolName: string, output: VercelToolEnvelope): boolean => {
+  const actionGroup = resolveToolActionGroup(output);
+  if (actionGroup) {
+    return MUTATING_ACTION_GROUPS.has(actionGroup);
+  }
   if (
     toolName === 'workflowDraft'
     || toolName === 'workflowPlan'
@@ -690,7 +734,9 @@ const isMutationToolResult = (toolName: string, output: VercelToolEnvelope): boo
     return true;
   }
   if (toolName === 'googleMail') {
-    const operation = asStringSafe(output.keyData?.operation)?.toLowerCase();
+    const operation =
+      asStringSafe(output.operation)?.toLowerCase()
+      ?? asStringSafe(output.keyData?.operation)?.toLowerCase();
     if (operation === 'sendmessage' || operation === 'senddraft' || operation === 'createdraft') {
       return true;
     }
@@ -710,6 +756,7 @@ const isMutationToolResult = (toolName: string, output: VercelToolEnvelope): boo
 
 export const __vercelMutationGuardTestUtils = {
   isMutationToolResult,
+  resolveToolActionGroup,
 };
 
 const hasConfirmedMutationForIntent = (input: {
@@ -729,7 +776,8 @@ const hasConfirmedMutationForIntent = (input: {
       return true;
     }
     if (
-      slot.toolName === 'workflowArchive'
+      slot.actionGroup === 'delete'
+      || slot.toolName === 'workflowArchive'
       || /\b(archive|archived|delete|deleted|remove|removed|clear|cleared)\b/i.test(
         [slot.summary, slot.operation ?? ''].join(' '),
       )
@@ -813,8 +861,16 @@ const buildHotContextSlot = (toolName: string, output: VercelToolEnvelope): HotC
     success: output.success,
     summary: output.summary,
     errorKind: output.errorKind,
+    toolId:
+      asStringSafe(output.toolId)
+      ?? (output.pendingApprovalAction?.kind === 'tool_action'
+        ? output.pendingApprovalAction.toolId
+        : undefined),
+    actionGroup:
+      resolveToolActionGroup(output),
     operation:
-      asStringSafe(output.keyData?.operation)
+      asStringSafe(output.operation)
+      ?? asStringSafe(output.keyData?.operation)
       ?? (output.pendingApprovalAction?.kind === 'tool_action'
         ? output.pendingApprovalAction.operation
         : undefined),

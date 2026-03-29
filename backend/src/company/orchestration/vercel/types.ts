@@ -84,6 +84,9 @@ export type PendingApprovalAction =
 export type VercelToolEnvelope = {
   success: boolean;
   summary: string;
+  toolId?: string;
+  actionGroup?: ToolActionGroup;
+  operation?: string;
   keyData?: Record<string, unknown>;
   fullPayload?: Record<string, unknown>;
   citations?: VercelCitation[];
