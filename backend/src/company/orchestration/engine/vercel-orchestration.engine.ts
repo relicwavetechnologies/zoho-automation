@@ -161,7 +161,9 @@ const resolveExplicitReplyModeFromText = (
   if (/\b(?:reply in thread|thread reply|use thread|in this thread)\b/u.test(normalized)) {
     return 'thread';
   }
-  if (/\b(?:reply to (?:this|that) message|reply here|reply to this)\b/u.test(normalized)) {
+  if (
+    /\b(?:reply to (?:this|that) message|reply here|reply to this|tell me here|answer here|say it here|here itself|in (?:this )?chat)\b/u.test(normalized)
+  ) {
     return 'reply';
   }
   if (/\b(?:plain send|standalone update|send to the channel|post it to the channel|no thread)\b/u.test(normalized)) {
@@ -176,6 +178,7 @@ export const resolveReplyMode = (params: {
   isProactiveDelivery: boolean;
   isSensitiveContent: boolean;
   isShortAcknowledgement: boolean;
+  proposedReplyMode?: ReplyModeHint;
   userExplicitMode?: 'dm' | 'thread' | 'reply' | 'plain';
 }): ReplyModeConfig => {
   const {
@@ -184,6 +187,7 @@ export const resolveReplyMode = (params: {
     isProactiveDelivery,
     isSensitiveContent,
     isShortAcknowledgement,
+    proposedReplyMode,
     userExplicitMode,
   } = params;
   void isSensitiveContent;
@@ -194,6 +198,15 @@ export const resolveReplyMode = (params: {
   if (userExplicitMode === 'plain') return {};
 
   if (isProactiveDelivery) return {};
+
+  if (proposedReplyMode === 'dm') return { chatType: 'p2p' };
+  if (proposedReplyMode === 'thread') {
+    return chatType === 'group'
+      ? { replyInThread: true, replyToMessageId: incomingMessageId }
+      : { replyToMessageId: incomingMessageId };
+  }
+  if (proposedReplyMode === 'reply') return { replyToMessageId: incomingMessageId };
+  if (proposedReplyMode === 'plain') return {};
 
   if (chatType === 'group') {
     if (isShortAcknowledgement) return { replyToMessageId: incomingMessageId };
@@ -216,11 +229,11 @@ const resolveReplyModeChatId = (input: {
 const buildReplyModeRedirectText = (hint: ReplyModeHint): string => {
   switch (hint) {
     case 'thread':
-      return 'Continuing in thread.';
+      return 'Replied in thread.';
     case 'dm':
       return 'Sent you a DM.';
     case 'plain':
-      return 'Continuing here.';
+      return 'Replied here.';
     case 'reply':
     default:
       return 'Working on it.';
@@ -2163,6 +2176,7 @@ const executeLarkVercelTask = async (
     | 'reply'
     | 'plain'
     | undefined;
+  let proposedReplyMode: ReplyModeHint | undefined;
   const ackMessageId = message.trace?.ackMessageId;
   const ackReplyModeHint = message.trace?.ackReplyModeHint ?? 'reply';
   let activeReplyModeHint: ReplyModeHint = ackReplyModeHint;
@@ -2240,6 +2254,7 @@ const executeLarkVercelTask = async (
       isProactiveDelivery: false,
       isSensitiveContent: false,
       isShortAcknowledgement: false,
+      proposedReplyMode,
       userExplicitMode: explicitReplyMode,
     }));
     await coordinator.update(renderCurrentStatus(false), options);
@@ -2249,6 +2264,7 @@ const executeLarkVercelTask = async (
     actions?: ChannelAction[];
     hasToolResults: boolean;
     isSensitiveContent: boolean;
+    proposedReplyMode?: ReplyModeHint;
   }): Promise<{ statusMessageId?: string; replyModeHint: ReplyModeHint }> => {
     const finalReplyMode = resolveReplyMode({
       chatType: message.chatType,
@@ -2256,6 +2272,7 @@ const executeLarkVercelTask = async (
       isProactiveDelivery: false,
       isSensitiveContent: input.isSensitiveContent,
       isShortAcknowledgement: countSentences(input.text) <= 1 && !input.hasToolResults,
+      proposedReplyMode: input.proposedReplyMode ?? proposedReplyMode,
       userExplicitMode: explicitReplyMode,
     });
     const finalReplyModeHint = buildReplyModeHint(finalReplyMode);
@@ -2649,6 +2666,7 @@ const executeLarkVercelTask = async (
     }),
     requesterEmail: message.trace?.requesterEmail,
   });
+  proposedReplyMode = childRoute.preferredReplyMode;
 
   const schedulingClarification = buildSchedulingIntentClarification(childRoute);
   if (schedulingClarification) {
@@ -2658,6 +2676,7 @@ const executeLarkVercelTask = async (
       actions: [],
       hasToolResults: false,
       isSensitiveContent: false,
+      proposedReplyMode,
     });
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, schedulingClarification);
     await persistAssistantTurn({
@@ -2709,6 +2728,7 @@ const executeLarkVercelTask = async (
       actions: [],
       hasToolResults: false,
       isSensitiveContent: false,
+      proposedReplyMode,
     });
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, reply);
     await persistAssistantTurn({
@@ -2773,6 +2793,7 @@ const executeLarkVercelTask = async (
     isProactiveDelivery: false,
     isSensitiveContent: false,
     isShortAcknowledgement: childRoute.route === 'fast_reply',
+    proposedReplyMode,
     userExplicitMode: explicitReplyMode,
   });
   const progressCoordinator = await ensureStatusCoordinator(progressReplyMode);
@@ -2897,6 +2918,7 @@ const executeLarkVercelTask = async (
       actions: [],
       hasToolResults: false,
       isSensitiveContent: false,
+      proposedReplyMode,
     });
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, clarificationText);
     await persistAssistantTurn({
@@ -3311,6 +3333,7 @@ const executeLarkVercelTask = async (
         actions: approvalActions,
         hasToolResults,
         isSensitiveContent,
+        proposedReplyMode,
       });
       deliveredStatusMessageId = delivery.statusMessageId;
     } else {
@@ -3319,6 +3342,7 @@ const executeLarkVercelTask = async (
         actions: [],
         hasToolResults,
         isSensitiveContent,
+        proposedReplyMode,
       });
       deliveredStatusMessageId = delivery.statusMessageId;
     }

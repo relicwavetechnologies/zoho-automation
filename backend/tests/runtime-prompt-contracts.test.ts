@@ -134,6 +134,33 @@ test('shared prompt contract stays identical across Desktop and Lark when inputs
   );
 });
 
+test('reply mode proposal is respected unless the user explicitly overrides it', () => {
+  assert.deepEqual(
+    resolveReplyMode({
+      chatType: 'group',
+      incomingMessageId: 'msg-1',
+      isProactiveDelivery: false,
+      isSensitiveContent: false,
+      isShortAcknowledgement: false,
+      proposedReplyMode: 'reply',
+    }),
+    { replyToMessageId: 'msg-1' },
+  );
+
+  assert.deepEqual(
+    resolveReplyMode({
+      chatType: 'group',
+      incomingMessageId: 'msg-1',
+      isProactiveDelivery: false,
+      isSensitiveContent: false,
+      isShortAcknowledgement: false,
+      proposedReplyMode: 'reply',
+      userExplicitMode: 'thread',
+    }),
+    { replyInThread: true, replyToMessageId: 'msg-1' },
+  );
+});
+
 test('lark read-only runtime context preserves coding when permissions allow it', () => {
   const state = createInitialRuntimeState({
     run: {
