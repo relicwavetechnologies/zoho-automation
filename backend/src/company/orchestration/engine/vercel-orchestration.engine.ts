@@ -689,6 +689,13 @@ const isMutationToolResult = (toolName: string, output: VercelToolEnvelope): boo
   if (toolName === 'booksWrite') {
     return true;
   }
+  if (toolName === 'googleMail') {
+    const operation = asStringSafe(output.keyData?.operation)?.toLowerCase();
+    if (operation === 'sendmessage' || operation === 'senddraft' || operation === 'createdraft') {
+      return true;
+    }
+    return /\b(sent gmail message|created gmail draft|sent|draft)\b/i.test(output.summary);
+  }
   if (toolName === 'larkMessage') {
     return Boolean(output.pendingApprovalAction)
       || /\b(send|sent|dm|message)\b/i.test(output.summary);
@@ -699,6 +706,10 @@ const isMutationToolResult = (toolName: string, output: VercelToolEnvelope): boo
     );
   }
   return false;
+};
+
+export const __vercelMutationGuardTestUtils = {
+  isMutationToolResult,
 };
 
 const hasConfirmedMutationForIntent = (input: {
