@@ -2073,7 +2073,7 @@ const buildLarkStatusText = (input: {
     return withDetail('Fetching results');
   }
   if (input.phase === 'tool_done') {
-    return 'Still working on it.';
+    return withDetail('Still working on it');
   }
   if (input.phase === 'analyzing') {
     return 'Putting the answer together.';
@@ -2248,7 +2248,11 @@ const buildDelegatedLarkStepPrompt = (input: {
     'Upstream step results:',
     upstreamContext,
     '',
+    'Your output is consumed by the supervisor.',
     'Only do the work required for this step. Use only the tools available in this agent family.',
+    'Do not comment on tools owned by other agent families.',
+    'Do not say another tool is unavailable just because it is not in your family.',
+    'If this step is only gathering data for a later step, return that data plainly and stop.',
     'If the step cannot continue because of approval or missing user input, surface that plainly.',
   ].join('\n');
 };
@@ -2261,6 +2265,8 @@ const buildDelegatedAgentSystemPrompt = (baseSystemPrompt: string, agentId: Supe
   'You are not the top-level supervisor.',
   'Complete only the assigned step objective.',
   'Do not claim other steps are complete.',
+  'Do not act like the final user-facing assistant unless this step explicitly asks for a final answer.',
+  'Do not apologize that tools outside your family are unavailable. Another delegated step may handle them.',
   'Treat the "Resolved handoff context" block as authoritative for IDs, emails, invoice numbers, and other concrete entities when it is relevant to this step.',
   'If a required parameter is already present in that block, pass it directly to the tool instead of asking for it again or omitting it.',
 ].join('\n');
@@ -3671,7 +3677,13 @@ const executeLarkVercelTask = async (
               inputRefs: step.inputRefs,
             },
           });
+          statusHistory.push(`Running ${step.agentId}: ${summarizeText(step.objective, 140) ?? step.objective}`);
+          await updateStatus(
+            'planning',
+            `${step.agentId}: ${summarizeText(step.objective, 160) ?? step.objective}`,
+          );
           try {
+          let delegatedStepWatchdog: NodeJS.Timeout | undefined;
           const stepTools = createVercelDesktopTools(stepRuntime, {
             onToolStart: async (toolName, activityId, title) => {
               await appendLatestAgentRunLog(task.taskId, 'tool.start', {
@@ -3718,6 +3730,33 @@ const executeLarkVercelTask = async (
           });
 
           let stepResult;
+          delegatedStepWatchdog = setTimeout(() => {
+            if (stepToolResults.length > 0) {
+              return;
+            }
+            statusHistory.push(`Waiting on ${step.agentId}: ${summarizeText(step.objective, 120) ?? step.objective}`);
+            void updateStatus(
+              'planning',
+              `${step.agentId}: still waiting for this step to start tools.`,
+            );
+            logger.warn('supervisor.step.long_wait', {
+              taskId: task.taskId,
+              executionId,
+              stepId: step.stepId,
+              agentId: step.agentId,
+              objective: summarizeText(step.objective, 240) ?? step.objective,
+              phase: 'model_before_tool',
+            });
+            void appendLatestAgentRunLog(task.taskId, 'supervisor.step.long_wait', {
+              channel: 'lark',
+              threadId: contextStorageId ?? message.chatId,
+              supervisorStepId: step.stepId,
+              supervisorAgentId: step.agentId,
+              objective: step.objective,
+              phase: 'model_before_tool',
+            });
+          }, 15_000);
+          delegatedStepWatchdog.unref?.();
           try {
             stepResult = await runWithModelCircuitBreaker(
               resolvedModel.effectiveProvider,
@@ -3753,6 +3792,9 @@ const executeLarkVercelTask = async (
             );
           } catch (error) {
             if (!isProviderInvalidArgumentError(error)) {
+              if (delegatedStepWatchdog) {
+                clearTimeout(delegatedStepWatchdog);
+              }
               throw error;
             }
             const sanitizedMessages = sanitizeMessagesForProviderRetry(
@@ -3791,6 +3833,9 @@ const executeLarkVercelTask = async (
                   ],
                 }),
             );
+          }
+          if (delegatedStepWatchdog) {
+            clearTimeout(delegatedStepWatchdog);
           }
 
           const rawSteps = stepResult.steps as Array<{
@@ -3868,6 +3913,9 @@ const executeLarkVercelTask = async (
             },
           };
           } catch (error) {
+            if (delegatedStepWatchdog) {
+              clearTimeout(delegatedStepWatchdog);
+            }
             const wasCancelled = isExecutionCancellationError(error);
             const errorMessage = error instanceof Error ? error.message : 'unknown_error';
             const summary = wasCancelled

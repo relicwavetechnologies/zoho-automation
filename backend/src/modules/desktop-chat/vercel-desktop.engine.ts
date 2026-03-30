@@ -3846,7 +3846,12 @@ const buildSupervisorStepMessage = (input: {
     'Dependency results:',
     dependencyBlock,
     '',
-    'Complete only the delegated objective for this step. Treat the resolved handoff context as authoritative when it includes IDs, emails, invoice numbers, or other concrete values relevant to this step. If a required parameter is already present there, pass it directly to the tool instead of asking for it again.',
+    'Your output is consumed by the supervisor.',
+    'Complete only the delegated objective for this step.',
+    'Do not comment on tools owned by other agent families.',
+    'Do not say another tool is unavailable just because it is not in your family.',
+    'If this step is only gathering data for a later step, return that data plainly and stop.',
+    'Treat the resolved handoff context as authoritative when it includes IDs, emails, invoice numbers, or other concrete values relevant to this step. If a required parameter is already present there, pass it directly to the tool instead of asking for it again.',
   ].join('\n');
 };
 
