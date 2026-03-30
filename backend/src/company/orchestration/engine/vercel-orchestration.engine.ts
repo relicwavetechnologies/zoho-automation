@@ -299,6 +299,11 @@ const appendExecutionEventSafe = async (
   }
 };
 
+const resolveCanonicalExecutionId = (
+  task: OrchestrationTaskDTO,
+  message: NormalizedIncomingMessageDTO,
+): string => message.trace?.requestId?.trim() || task.taskId;
+
 const isPersonalMemoryQuestion = (value: string | null | undefined): boolean =>
   /\b(do you know|do you remember|remember|recall|what(?:'s| is) my|my (?:fav|favorite|favourite|preferred)|favorite|favourite|preferred|preference|about me|my name|my email)\b/i.test(
     value ?? '',
@@ -2156,7 +2161,7 @@ const resolveRuntimeContext = async (
     threadId: persistentThreadId ?? buildConversationKey(message),
     chatId: message.chatId,
     attachedFiles: message.attachedFiles,
-    executionId: task.taskId,
+    executionId: resolveCanonicalExecutionId(task, message),
     companyId,
     userId: linkedUserId,
     requesterAiRole,
@@ -2229,6 +2234,7 @@ const executeLarkVercelTask = async (
     !isSharedGroupChat && companyId && linkedUserId
       ? await desktopThreadsService.findOrCreateLarkLifetimeThread(linkedUserId, companyId)
       : null;
+  const executionId = resolveCanonicalExecutionId(task, message);
   const contextStorageId = persistentThread?.id ?? sharedChatContext?.id;
   const conversationKey = persistentThread
     ? buildPersistentLarkConversationKey(persistentThread.id)
@@ -2741,7 +2747,7 @@ const executeLarkVercelTask = async (
   };
 
   const childRoute = await runDesktopChildRouter({
-    executionId: task.taskId,
+    executionId,
     threadId: contextStorageId ?? message.chatId,
     message: resolvedUserMessage,
     queryEnrichment,
@@ -3001,7 +3007,7 @@ const executeLarkVercelTask = async (
     validationFailureReason: toolSelection.validationFailureReason ?? null,
   });
   await appendExecutionEventSafe({
-    executionId: task.taskId,
+    executionId,
     phase: 'planning',
     eventType: EXECUTION_TOOL_DEMAND_EVENT,
     actorType: 'planner',
@@ -3014,7 +3020,7 @@ const executeLarkVercelTask = async (
   const selectionGapPayload = buildCapabilityGapFromSelection(analyticsToolDemandPayload);
   if (selectionGapPayload) {
     await appendExecutionEventSafe({
-      executionId: task.taskId,
+      executionId,
       phase: 'planning',
       eventType: EXECUTION_CAPABILITY_GAP_EVENT,
       actorType: 'planner',
@@ -3117,7 +3123,7 @@ const executeLarkVercelTask = async (
       );
       if (capabilityGapPayload) {
         await appendExecutionEventSafe({
-          executionId: task.taskId,
+          executionId,
           phase: 'tool',
           eventType: EXECUTION_CAPABILITY_GAP_EVENT,
           actorType: 'tool',
@@ -3298,7 +3304,7 @@ const executeLarkVercelTask = async (
     const primaryMessages =
       inputMessages.length > 0 ? inputMessages : [{ role: 'user', content: resolvedUserMessage }];
     await appendExecutionEventSafe({
-      executionId: task.taskId,
+      executionId,
       phase: 'planning',
       eventType: 'model.input',
       actorType: 'model',
