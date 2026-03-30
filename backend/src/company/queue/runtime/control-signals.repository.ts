@@ -29,8 +29,11 @@ class RuntimeControlSignalsRepository {
     return 'running';
   }
 
-  async assertRunnableAtBoundary(taskId: string): Promise<void> {
+  async assertRunnableAtBoundary(taskId: string, abortSignal?: AbortSignal): Promise<void> {
     for (;;) {
+      if (abortSignal?.aborted) {
+        throw new HttpException(409, 'Task cancelled via abort signal');
+      }
       const signal = await this.get(taskId);
       if (signal === 'cancelled') {
         throw new HttpException(409, 'Task cancelled via control signal');
@@ -38,6 +41,9 @@ class RuntimeControlSignalsRepository {
       if (signal === 'paused') {
         await sleep(300);
         continue;
+      }
+      if (abortSignal?.aborted) {
+        throw new HttpException(409, 'Task cancelled via abort signal');
       }
       return;
     }

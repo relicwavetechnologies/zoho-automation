@@ -4,6 +4,7 @@ import type { OrchestrationEngineId } from './engine/types';
 
 export type RuntimeTaskSnapshot = {
   taskId: string;
+  queueJobId?: string;
   messageId: string;
   channel: string;
   userId: string;
@@ -53,6 +54,21 @@ class RuntimeTaskStore {
     return snapshot;
   }
 
+  upsert(input: Omit<RuntimeTaskSnapshot, 'updatedAt' | 'createdAt' | 'controlSignal'>): RuntimeTaskSnapshot {
+    const existing = this.tasks.get(input.taskId);
+    if (!existing) {
+      return this.create(input);
+    }
+
+    const next: RuntimeTaskSnapshot = {
+      ...existing,
+      ...input,
+      updatedAt: new Date().toISOString(),
+    };
+    this.tasks.set(next.taskId, next);
+    return next;
+  }
+
   update(taskId: string, patch: Partial<RuntimeTaskSnapshot>): RuntimeTaskSnapshot | null {
     const existing = this.tasks.get(taskId);
     if (!existing) {
@@ -95,6 +111,12 @@ class RuntimeTaskStore {
       .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0] ?? null;
     const pendingCount = tasks.filter((task) => task.status === 'pending').length;
     return { runningTask, pendingCount };
+  }
+
+  getPendingTasksForChat(channel: string, chatId: string): RuntimeTaskSnapshot[] {
+    return [...this.tasks.values()]
+      .filter((task) => task.channel === channel && task.chatId === chatId && task.status === 'pending')
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
   }
 }
 

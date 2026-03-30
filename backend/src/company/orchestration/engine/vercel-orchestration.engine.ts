@@ -83,6 +83,7 @@ import { enrichQuery, type QueryEnrichment } from '../query-enrichment.service';
 import { classifyIntent } from '../intent/canonical-intent';
 import { hotContextStore, type HotContextIndexedEntity, type HotContextSlot } from '../hot-context.store';
 import { resolveOrdinalReferences } from '../utils/resolve-ordinal-references';
+import { runtimeControlSignalsRepository } from '../../queue/runtime/control-signals.repository';
 import { desktopWsGateway } from '../../../modules/desktop-live/desktop-ws.gateway';
 import {
   appendLatestAgentRunLog,
@@ -283,6 +284,34 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const buildAbortSignalError = (): Error => {
+  const error = new Error('Task cancelled via abort signal');
+  error.name = 'AbortError';
+  return error;
+};
+
+const isExecutionCancellationError = (error: unknown): boolean => {
+  if (error instanceof Error) {
+    return error.name === 'AbortError'
+      || error.message.includes('Task cancelled via control signal')
+      || error.message.includes('Task cancelled via abort signal');
+  }
+  return false;
+};
+
+const assertExecutionRunnable = async (
+  taskId: string,
+  abortSignal?: AbortSignal,
+): Promise<void> => {
+  if (abortSignal?.aborted) {
+    throw buildAbortSignalError();
+  }
+  await runtimeControlSignalsRepository.assertRunnableAtBoundary(taskId, abortSignal);
+  if (abortSignal?.aborted) {
+    throw buildAbortSignalError();
+  }
 };
 
 const appendExecutionEventSafe = async (
@@ -2217,11 +2246,13 @@ const resolveRuntimeContext = async (
 const executeLarkVercelTask = async (
   task: OrchestrationTaskDTO,
   message: NormalizedIncomingMessageDTO,
+  abortSignal?: AbortSignal,
 ): Promise<OrchestrationExecutionResult> => {
   const adapter = resolveChannelAdapter('lark');
   const companyId = message.trace?.companyId;
   const linkedUserId = message.trace?.linkedUserId;
   const isSharedGroupChat = Boolean(companyId && message.chatType === 'group' && message.chatId);
+  await assertExecutionRunnable(task.taskId, abortSignal);
   const sharedChatContext =
     isSharedGroupChat && companyId
       ? await larkChatContextService.load({
@@ -2379,6 +2410,7 @@ const executeLarkVercelTask = async (
   let activeThreadSummary = parseDesktopThreadSummary(null);
   let activeTaskState = createEmptyTaskState();
   if (persistentThread) {
+    await assertExecutionRunnable(task.taskId, abortSignal);
     const threadMemory = await loadLarkThreadMemory(persistentThread.id, linkedUserId);
     activeThreadSummary = threadMemory.summary;
     activeTaskState = threadMemory.taskState;
@@ -2392,6 +2424,7 @@ const executeLarkVercelTask = async (
     });
     activeTaskState = grounding.taskState;
     groundingAttachments = grounding.attachments;
+    await assertExecutionRunnable(task.taskId, abortSignal);
     const userMessage = await desktopThreadsService.addOwnedThreadMessage(
       persistentThread.id,
       linkedUserId,
@@ -2427,6 +2460,7 @@ const executeLarkVercelTask = async (
       chatId: message.chatId,
     });
   } else if (sharedChatContext && companyId) {
+    await assertExecutionRunnable(task.taskId, abortSignal);
     activeThreadSummary = sharedChatContext.summary;
     activeTaskState = sharedChatContext.taskState;
     const grounding = await resolveLarkGroundingAttachments({
@@ -2445,6 +2479,7 @@ const executeLarkVercelTask = async (
     if (existingUserMessage) {
       persistedUserMessageId = existingUserMessage.id;
     } else {
+      await assertExecutionRunnable(task.taskId, abortSignal);
       const storedMessage = await larkChatContextService.appendMessage({
         companyId,
         chatId: message.chatId,
@@ -2488,11 +2523,13 @@ const executeLarkVercelTask = async (
   }
   explicitReplyMode = currentTurnExplicitReplyMode ?? storedReplyMode;
 
+  await assertExecutionRunnable(task.taskId, abortSignal);
   const runtime = await resolveRuntimeContext(task, message, contextStorageId, activeTaskState);
   runtime.attachedFiles =
     groundingAttachments.length > 0 ? groundingAttachments : runtime.attachedFiles;
   const contextMessages = persistentThread
     ? await (async () => {
+        await assertExecutionRunnable(task.taskId, abortSignal);
         const cachedContext = await desktopThreadsService.getCachedOwnedThreadContext(
           persistentThread.id,
           linkedUserId!,
@@ -2527,6 +2564,7 @@ const executeLarkVercelTask = async (
       })()
     : sharedChatContext && companyId
       ? await (async () => {
+          await assertExecutionRunnable(task.taskId, abortSignal);
           const latestSharedContext = await larkChatContextService.load({
             companyId,
             chatId: message.chatId,
@@ -2746,6 +2784,7 @@ const executeLarkVercelTask = async (
     }
   };
 
+  await assertExecutionRunnable(task.taskId, abortSignal);
   const childRoute = await runDesktopChildRouter({
     executionId,
     threadId: contextStorageId ?? message.chatId,
@@ -2781,6 +2820,7 @@ const executeLarkVercelTask = async (
   const schedulingClarification = buildSchedulingIntentClarification(childRoute);
   if (schedulingClarification) {
     statusHistory.push('Child router requested scheduling clarification.');
+    await assertExecutionRunnable(task.taskId, abortSignal);
     const delivery = await deliverTerminalResponse({
       text: schedulingClarification,
       actions: [],
@@ -2789,6 +2829,7 @@ const executeLarkVercelTask = async (
       proposedReplyMode,
     });
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, schedulingClarification);
+    await assertExecutionRunnable(task.taskId, abortSignal);
     await persistAssistantTurn({
       content: schedulingClarification,
       statusMessageId: delivery.statusMessageId ?? null,
@@ -2834,6 +2875,7 @@ const executeLarkVercelTask = async (
   ) {
     const reply = childRoute.reply.trim();
     statusHistory.push('Handled directly by child router.');
+    await assertExecutionRunnable(task.taskId, abortSignal);
     const delivery = await deliverTerminalResponse({
       text: reply,
       actions: [],
@@ -2842,6 +2884,7 @@ const executeLarkVercelTask = async (
       proposedReplyMode,
     });
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, reply);
+    await assertExecutionRunnable(task.taskId, abortSignal);
     await persistAssistantTurn({
       content: reply,
       statusMessageId: delivery.statusMessageId ?? null,
@@ -2915,6 +2958,7 @@ const executeLarkVercelTask = async (
     routerAcknowledgement ?? 'Choosing the right tools and approach for this request.',
   );
 
+  await assertExecutionRunnable(task.taskId, abortSignal);
   const toolSelection = await resolveRunScopedToolSelection({
     channel: 'lark',
     companyId: runtime.companyId,
@@ -3045,6 +3089,7 @@ const executeLarkVercelTask = async (
   const executedToolOutcomes: RunToolResult[] = [];
   if (toolSelection.clarificationQuestion?.trim()) {
     const clarificationText = toolSelection.clarificationQuestion.trim();
+    await assertExecutionRunnable(task.taskId, abortSignal);
     const delivery = await deliverTerminalResponse({
       text: clarificationText,
       actions: [],
@@ -3053,6 +3098,7 @@ const executeLarkVercelTask = async (
       proposedReplyMode,
     });
     conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, clarificationText);
+    await assertExecutionRunnable(task.taskId, abortSignal);
     await persistAssistantTurn({
       content: clarificationText,
       statusMessageId: delivery.statusMessageId ?? null,
@@ -3139,6 +3185,7 @@ const executeLarkVercelTask = async (
       await updateStatus('tool_done', `${title}: ${summary}`);
     },
   });
+  await assertExecutionRunnable(task.taskId, abortSignal);
   const resolvedModel = await resolveVercelLanguageModel(effectiveRuntime.mode);
   const contextClass = chooseLarkContextClass({
     latestUserMessage: resolvedUserMessage,
@@ -3146,6 +3193,7 @@ const executeLarkVercelTask = async (
     threadSummary: activeThreadSummary,
     historyMessageCount: contextMessages.length,
   });
+  await assertExecutionRunnable(task.taskId, abortSignal);
   const memoryPromptContext = await memoryService.getPromptContext({
     companyId: runtime.companyId,
     userId: linkedUserId,
@@ -3174,13 +3222,16 @@ const executeLarkVercelTask = async (
     relevantMemoryFacts: conversationSnippets,
   });
   const visionBuildResult = groundingAttachments.length > 0
-    ? await buildVisionContentWithGrounding({
+    ? await (async () => {
+        await assertExecutionRunnable(task.taskId, abortSignal);
+        return buildVisionContentWithGrounding({
         userMessage: resolvedUserMessage,
         attachedFiles: groundingAttachments,
         companyId: runtime.companyId,
         requesterUserId: runtime.userId,
         requesterAiRole: runtime.requesterAiRole,
-      })
+        });
+      })()
     : null;
   const systemPrompt = buildSystemPrompt({
     conversationKey,
@@ -3364,6 +3415,7 @@ const executeLarkVercelTask = async (
     });
     let result;
     try {
+      await assertExecutionRunnable(task.taskId, abortSignal);
       result = await runWithModelCircuitBreaker(
         resolvedModel.effectiveProvider,
         'lark_generate',
@@ -3382,6 +3434,7 @@ const executeLarkVercelTask = async (
                 },
               },
             },
+            abortSignal,
             stopWhen: [
               stopOnPendingApproval,
               ({ steps }) =>
@@ -3434,6 +3487,7 @@ const executeLarkVercelTask = async (
                 },
               },
             },
+            abortSignal,
             stopWhen: [
               stopOnPendingApproval,
               ({ steps }) =>
@@ -3501,6 +3555,7 @@ const executeLarkVercelTask = async (
 
     let deliveredStatusMessageId: string | undefined;
     if (pendingApproval) {
+      await assertExecutionRunnable(task.taskId, abortSignal);
       const managerApprovalResult = await sendManagerApprovalRequest({
         runtime,
         message,
@@ -3516,6 +3571,7 @@ const executeLarkVercelTask = async (
       currentStatusPhase = 'approval';
       currentStatusDetail = approvalText;
       currentStatusActions = approvalActions;
+      await assertExecutionRunnable(task.taskId, abortSignal);
       const delivery = await deliverTerminalResponse({
         text: approvalText,
         actions: approvalActions,
@@ -3525,6 +3581,7 @@ const executeLarkVercelTask = async (
       });
       deliveredStatusMessageId = delivery.statusMessageId;
     } else {
+      await assertExecutionRunnable(task.taskId, abortSignal);
       const delivery = await deliverTerminalResponse({
         text: finalText,
         actions: [],
@@ -3545,6 +3602,7 @@ const executeLarkVercelTask = async (
       const estimatedInputTokens =
         estimateTokens(systemPrompt) + estimateMessageTokens(effectiveMessages);
       const estimatedOutputTokens = estimateTokens(finalText);
+      await assertExecutionRunnable(task.taskId, abortSignal);
       await aiTokenUsageService.record({
         userId: linkedUserId,
         companyId: runtime.companyId,
@@ -3563,6 +3621,7 @@ const executeLarkVercelTask = async (
       });
     }
 
+    await assertExecutionRunnable(task.taskId, abortSignal);
     await persistAssistantTurn({
       content: finalText,
       statusMessageId: statusMessageId ?? null,
@@ -3586,7 +3645,9 @@ const executeLarkVercelTask = async (
       }
     }
     activeThreadSummary = appendWarmTaskSummary(activeThreadSummary, task.taskId);
+    await assertExecutionRunnable(task.taskId, abortSignal);
     await persistConversationMemorySnapshot(finalText);
+    await assertExecutionRunnable(task.taskId, abortSignal);
     await memoryService.recordToolSelectionOutcome({
       companyId: runtime.companyId,
       userId: linkedUserId,
@@ -3646,6 +3707,28 @@ const executeLarkVercelTask = async (
       },
     };
   } catch (error) {
+    if (isExecutionCancellationError(error)) {
+      await appendLatestAgentRunLog(task.taskId, 'run.cancelled', {
+        channel: 'lark',
+        threadId: contextStorageId ?? message.chatId,
+        error: error instanceof Error ? error.message : 'Execution cancelled.',
+      });
+      statusHistory.push('Cancelled before completion.');
+      return {
+        task,
+        status: 'cancelled',
+        currentStep: 'execution.cancelled',
+        latestSynthesis: 'Execution cancelled.',
+        agentResults: [],
+        runtimeMeta: {
+          engine: 'vercel',
+          threadId: contextStorageId,
+          node: 'execution.cancelled',
+          stepHistory: task.plan,
+          canonicalIntent: task.canonicalIntent,
+        },
+      };
+    }
     const errorMessage = error instanceof Error ? error.message : 'Vercel Lark runtime failed.';
     await appendLatestAgentRunLog(task.taskId, 'run.failed', {
       channel: 'lark',
@@ -3674,19 +3757,18 @@ const executeLarkVercelTask = async (
 };
 
 const executeByChannel = async (
-  task: OrchestrationTaskDTO,
-  message: NormalizedIncomingMessageDTO,
+  input: OrchestrationExecutionInput,
 ): Promise<OrchestrationExecutionResult> => {
-  switch (message.channel) {
+  switch (input.message.channel) {
     case 'lark':
-      return executeLarkVercelTask(task, message);
+      return executeLarkVercelTask(input.task, input.message, input.abortSignal);
     default:
       logger.warn('vercel.engine.channel_fallback', {
-        taskId: task.taskId,
-        messageId: message.messageId,
-        channel: message.channel,
+        taskId: input.task.taskId,
+        messageId: input.message.messageId,
+        channel: input.message.channel,
       });
-      return legacyOrchestrationEngine.executeTask({ task, message });
+      return legacyOrchestrationEngine.executeTask(input);
   }
 };
 
@@ -3697,6 +3779,6 @@ export const vercelOrchestrationEngine: OrchestrationEngine = {
     return adaptPlanForVercel(task);
   },
   async executeTask(input) {
-    return executeByChannel(input.task, input.message);
+    return executeByChannel(input);
   },
 };

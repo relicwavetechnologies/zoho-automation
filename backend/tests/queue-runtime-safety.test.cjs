@@ -48,13 +48,13 @@ test('isTransientQueueInfraError detects known transient infra failures', () => 
 });
 
 test('withTaskTimeout returns result for in-time task', async () => {
-  const result = await withTaskTimeout(Promise.resolve('ok'), 25, { taskId: 'task-1' });
+  const result = await withTaskTimeout(() => Promise.resolve('ok'), 25, { taskId: 'task-1' });
   assert.equal(result, 'ok');
 });
 
 test('withTaskTimeout throws QueueTaskTimeoutError with metadata', async () => {
   await assert.rejects(
-    () => withTaskTimeout(new Promise(() => {}), 20, { taskId: 'task-timeout', channel: 'lark' }),
+    () => withTaskTimeout(() => new Promise(() => {}), 20, { taskId: 'task-timeout', channel: 'lark' }),
     (error) => {
       assert.ok(error instanceof QueueTaskTimeoutError);
       assert.equal(error.timeoutMs, 20);

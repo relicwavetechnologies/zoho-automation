@@ -58,7 +58,7 @@ const enqueueJobWithRetry = async (input: {
   message: NormalizedIncomingMessageDTO;
   jobId: string;
   queueAdd?: QueueAddFn;
-}): Promise<void> => {
+}): Promise<string> => {
   const queueAdd = input.queueAdd ?? defaultQueueAdd;
   const jobOptions = buildQueueAddOptions(input.jobId);
   const trace = {
@@ -78,7 +78,7 @@ const enqueueJobWithRetry = async (input: {
           taskId: input.taskId,
           message: input.message,
         }, jobOptions);
-        return null;
+        return input.jobId;
       },
       shouldRetry: (_result, error) => isTransientQueueInfraError(error),
       onRetry: (attempt, error, _result, delayMs) => {
@@ -107,8 +107,10 @@ export const enqueueOrchestrationTask = async (
   message: NormalizedIncomingMessageDTO,
 ): Promise<RuntimeTaskSnapshot> => {
   const taskId = randomUUID();
+  const queueJobId = buildSafeJobId(message.channel, message.messageId);
   const task = runtimeTaskStore.create({
     taskId,
+    queueJobId,
     messageId: message.messageId,
     channel: message.channel,
     userId: message.userId,
@@ -122,7 +124,7 @@ export const enqueueOrchestrationTask = async (
     await enqueueJobWithRetry({
       taskId,
       message,
-      jobId: buildSafeJobId(message.channel, message.messageId),
+      jobId: queueJobId,
     });
   } catch (error) {
     runtimeTaskStore.update(taskId, { status: 'failed' });
@@ -136,11 +138,13 @@ export const requeueOrchestrationTask = async (
   taskId: string,
   message: NormalizedIncomingMessageDTO,
 ): Promise<RuntimeTaskSnapshot> => {
+  const queueJobId = buildSafeJobId(message.channel, message.messageId, 'recover', taskId, Date.now());
   const existing = runtimeTaskStore.get(taskId);
   const task =
     existing ??
     runtimeTaskStore.create({
       taskId,
+      queueJobId,
       messageId: message.messageId,
       channel: message.channel,
       userId: message.userId,
@@ -150,13 +154,20 @@ export const requeueOrchestrationTask = async (
       plan: [],
     });
 
+  if (existing) {
+    runtimeTaskStore.update(taskId, {
+      queueJobId,
+      status: 'pending',
+    });
+  }
+
   await enqueueJobWithRetry({
     taskId,
     message,
-    jobId: buildSafeJobId(message.channel, message.messageId, 'recover', taskId, Date.now()),
+    jobId: queueJobId,
   });
 
-  return task;
+  return runtimeTaskStore.get(taskId) ?? task;
 };
 
 export const getOrchestrationQueue = () => getOrchestrationQueueSingleton();

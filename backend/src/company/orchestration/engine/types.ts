@@ -33,6 +33,7 @@ export type OrchestrationExecutionInput = {
   task: OrchestrationTaskDTO;
   message: NormalizedIncomingMessageDTO;
   latestCheckpoint?: CheckpointDTO | null;
+  abortSignal?: AbortSignal;
 };
 
 export interface OrchestrationEngine {

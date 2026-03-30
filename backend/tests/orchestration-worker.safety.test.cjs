@@ -36,8 +36,9 @@ const buildJob = () => ({
 test('runOrchestrationJobWithSafety resolves for fast processor', async () => {
   const job = buildJob();
   let invoked = false;
+  const controller = new AbortController();
 
-  await runOrchestrationJobWithSafety(job, async () => {
+  await runOrchestrationJobWithSafety(job, controller, async () => {
     invoked = true;
   });
 
@@ -46,9 +47,10 @@ test('runOrchestrationJobWithSafety resolves for fast processor', async () => {
 
 test('runOrchestrationJobWithSafety throws QueueTaskTimeoutError on timeout', async () => {
   const job = buildJob();
+  const controller = new AbortController();
 
   await assert.rejects(
-    () => runOrchestrationJobWithSafety(job, async () => new Promise(() => {})),
+    () => runOrchestrationJobWithSafety(job, controller, async () => new Promise(() => {})),
     (error) => {
       assert.ok(error instanceof QueueTaskTimeoutError);
       assert.equal(error.timeoutMs, 1000);

@@ -94,16 +94,18 @@ export class QueueTaskTimeoutError extends Error {
 }
 
 export const withTaskTimeout = async <T>(
-  input: Promise<T>,
+  run: (abortSignal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   meta?: Record<string, unknown>,
+  controller = new AbortController(),
 ): Promise<T> =>
   new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
+      controller.abort();
       reject(new QueueTaskTimeoutError(timeoutMs, meta));
     }, timeoutMs);
 
-    input
+    run(controller.signal)
       .then((result) => {
         clearTimeout(timer);
         resolve(result);

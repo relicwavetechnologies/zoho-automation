@@ -1973,28 +1973,52 @@ export const createLarkWebhookEventHandler = (
       if (parsed.kind === 'event_callback_message' && isLarkInterruptCommand(tracedMessageBase.text)) {
         const { orchestrationRuntime } = require('../../queue/runtime') as typeof import('../../queue/runtime');
         const conversationState = runtimeTaskStore.getConversationExecutionState('lark', tracedMessageBase.chatId);
-        if (!conversationState.runningTask) {
-          await sendLarkReply({ text: 'No active run is currently executing in this Lark chat.' });
+        if (!conversationState.runningTask && conversationState.pendingCount === 0) {
+          await sendLarkReply({ text: 'Nothing is currently running or queued in this chat.' });
           return res.status(202).json({
             success: true,
-            message: 'Interrupt command handled with no active run',
+            message: 'Interrupt command handled with no active or queued work',
+          });
+        }
+
+        const pendingCancellation = await orchestrationRuntime.cancelPendingForConversation('lark', tracedMessageBase.chatId);
+
+        if (!conversationState.runningTask) {
+          await sendLarkReply({
+            text: `Cancelled ${pendingCancellation.cancelledCount} queued request${pendingCancellation.cancelledCount === 1 ? '' : 's'}.`,
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Interrupt command cancelled queued work',
+            data: {
+              cancelledQueuedCount: pendingCancellation.cancelledCount,
+            },
           });
         }
 
         await orchestrationRuntime.control(conversationState.runningTask.taskId, 'cancelled');
-        await sendLarkReply({
-          text: [
-            'Interrupt requested.',
+        const interruptLines = [
+          'Stopping the current run. This may take a moment.',
+        ];
+        if (pendingCancellation.cancelledCount > 0) {
+          interruptLines.push(
             '',
-            `Stopped active task ${conversationState.runningTask.taskId}.`,
-            'Any queued message in this chat will continue after cancellation settles.',
-          ].join('\n'),
+            `Cancelled ${pendingCancellation.cancelledCount} queued request${pendingCancellation.cancelledCount === 1 ? '' : 's'}.`,
+          );
+        }
+        interruptLines.push(
+          '',
+          `Active task: ${conversationState.runningTask.taskId}.`,
+        );
+        await sendLarkReply({
+          text: interruptLines.join('\n'),
         });
         return res.status(202).json({
           success: true,
           message: 'Interrupt command handled',
           data: {
             taskId: conversationState.runningTask.taskId,
+            cancelledQueuedCount: pendingCancellation.cancelledCount,
           },
         });
       }
