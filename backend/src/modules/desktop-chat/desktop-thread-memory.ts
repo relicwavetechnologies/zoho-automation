@@ -21,6 +21,8 @@ export type DesktopThreadSummary = {
     summary: string;
     completedAt: string;
     resolvedIds?: Record<string, string>;
+    isPartial?: boolean;
+    interruptedAt?: string;
   }>;
   sourceMessageCount: number;
   updatedAt: string;
@@ -106,6 +108,22 @@ export type DesktopTaskState = {
     summary: string;
     updatedAt: string;
   };
+  supervisorProgress?: {
+    runId: string;
+    updatedAt: string;
+    completedSteps: Array<{
+      stepId: string;
+      agentId: string;
+      objective: string;
+      summary: string;
+      resolvedIds: Record<string, string>;
+      completedAt: string;
+      success: boolean;
+    }>;
+    resolvedIds: Record<string, string>;
+    isPartial?: boolean;
+    interruptedAt?: string;
+  } | null;
   latestToolResults: DesktopLatestToolResult[];
   updatedAt: string;
 };
@@ -379,6 +397,8 @@ export const parseDesktopThreadSummary = (value: unknown): DesktopThreadSummary 
           summary,
           completedAt,
           ...(Object.keys(resolvedIds).length > 0 ? { resolvedIds } : {}),
+          ...(typeof candidate?.isPartial === 'boolean' ? { isPartial: candidate.isPartial } : {}),
+          ...(asString(candidate?.interruptedAt) ? { interruptedAt: asString(candidate?.interruptedAt) } : {}),
         }];
       }).slice(0, 10)
       : [],
@@ -498,6 +518,7 @@ export const parseDesktopTaskState = (value: unknown): DesktopTaskState => {
     : null;
 
   const latestActionResultRecord = asRecord(record.latestActionResult);
+  const supervisorProgressRecord = asRecord(record.supervisorProgress);
   const latestToolResults = Array.isArray(record.latestToolResults)
     ? record.latestToolResults.flatMap((entry) => {
       const candidate = asRecord(entry);
@@ -562,6 +583,50 @@ export const parseDesktopTaskState = (value: unknown): DesktopTaskState => {
         updatedAt: asString(latestActionResultRecord.updatedAt) ?? new Date().toISOString(),
       }
       : undefined,
+    supervisorProgress: supervisorProgressRecord
+      ? {
+        runId: asString(supervisorProgressRecord.runId) ?? '',
+        updatedAt: asString(supervisorProgressRecord.updatedAt) ?? new Date().toISOString(),
+        completedSteps: Array.isArray(supervisorProgressRecord.completedSteps)
+          ? supervisorProgressRecord.completedSteps.flatMap((entry) => {
+            const candidate = asRecord(entry);
+            const stepId = asString(candidate?.stepId);
+            const agentId = asString(candidate?.agentId);
+            const objective = asString(candidate?.objective);
+            const summary = asString(candidate?.summary);
+            const completedAt = asString(candidate?.completedAt);
+            if (!stepId || !agentId || !objective || !summary || !completedAt) {
+              return [];
+            }
+            const resolvedIds = Object.fromEntries(
+              Object.entries(asRecord(candidate?.resolvedIds) ?? {}).flatMap(([key, value]) => {
+                const normalized = asString(value);
+                return normalized ? [[key, normalized]] : [];
+              }),
+            );
+            return [{
+              stepId,
+              agentId,
+              objective,
+              summary,
+              resolvedIds,
+              completedAt,
+              success: typeof candidate?.success === 'boolean' ? candidate.success : false,
+            }];
+          }).slice(0, 12)
+          : [],
+        resolvedIds: Object.fromEntries(
+          Object.entries(asRecord(supervisorProgressRecord.resolvedIds) ?? {}).flatMap(([key, value]) => {
+            const normalized = asString(value);
+            return normalized ? [[key, normalized]] : [];
+          }),
+        ),
+        isPartial: typeof supervisorProgressRecord.isPartial === 'boolean'
+          ? supervisorProgressRecord.isPartial
+          : undefined,
+        interruptedAt: asString(supervisorProgressRecord.interruptedAt),
+      }
+      : null,
     latestToolResults,
     updatedAt: asString(record.updatedAt) ?? new Date(0).toISOString(),
   };

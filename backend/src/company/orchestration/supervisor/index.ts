@@ -100,6 +100,21 @@ export const planSupervisorDelegation = async (
           resolvedIds?: Record<string, string>;
         }>;
         threadSummary?: string;
+        supervisorProgress?: {
+          runId: string;
+          completedSteps: Array<{
+            stepId: string;
+            agentId: string;
+            objective: string;
+            summary: string;
+            resolvedIds: Record<string, string>;
+            completedAt: string;
+            success: boolean;
+          }>;
+          resolvedIds: Record<string, string>;
+          isPartial?: boolean;
+          interruptedAt?: string;
+        } | null;
       }
     | {
         mode: 'fast' | 'high';
@@ -117,6 +132,21 @@ export const planSupervisorDelegation = async (
           resolvedIds?: Record<string, string>;
         }>;
         threadSummary?: string;
+        supervisorProgress?: {
+          runId: string;
+          completedSteps: Array<{
+            stepId: string;
+            agentId: string;
+            objective: string;
+            summary: string;
+            resolvedIds: Record<string, string>;
+            completedAt: string;
+            success: boolean;
+          }>;
+          resolvedIds: Record<string, string>;
+          isPartial?: boolean;
+          interruptedAt?: string;
+        } | null;
       },
 ): Promise<SupervisorPlan> => {
   if ('model' in input) {
@@ -148,6 +178,7 @@ export const planSupervisorDelegation = async (
     childRouteHints: input.childRouteHints ?? undefined,
     recentTaskSummaries: input.recentTaskSummaries,
     threadSummary: input.threadSummary,
+    supervisorProgress: input.supervisorProgress,
   });
 };
 

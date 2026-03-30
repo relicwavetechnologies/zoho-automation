@@ -1002,6 +1002,10 @@ const findUnrepairableBlockingUserInput = (
 const appendWarmTaskSummary = (
   summary: DesktopThreadSummary,
   taskId: string,
+  options?: {
+    isPartial?: boolean;
+    interruptedAt?: string;
+  },
 ): DesktopThreadSummary => {
   const warm = hotContextStore.toWarmSummary(taskId);
   if (!warm.summary.trim()) {
@@ -1016,10 +1020,22 @@ const appendWarmTaskSummary = (
         summary: warm.summary,
         completedAt: new Date().toISOString(),
         ...(Object.keys(warm.resolvedIds).length > 0 ? { resolvedIds: warm.resolvedIds } : {}),
+        ...(options?.isPartial ? { isPartial: true } : {}),
+        ...(options?.interruptedAt ? { interruptedAt: options.interruptedAt } : {}),
       },
       ...existing,
     ].slice(0, 10),
   };
+};
+
+type CompletedSupervisorStep = {
+  stepId: string;
+  agentId: string;
+  objective: string;
+  summary: string;
+  resolvedIds: Record<string, string>;
+  completedAt: string;
+  success: boolean;
 };
 
 const takeRecentMessagesByTokenBudget = <
@@ -2411,6 +2427,8 @@ const executeLarkVercelTask = async (
   let currentStatusDetail: string | undefined;
   let currentStatusActions: ChannelAction[] | undefined;
   let heartbeatIndex = 0;
+  const completedSupervisorSteps = new Map<string, CompletedSupervisorStep>();
+  let runCompletedSuccessfully = false;
   const originalUserMessage = message.text;
   const currentTurnExplicitReplyMode = resolveExplicitReplyModeFromText(originalUserMessage) as
     | 'dm'
@@ -2907,6 +2925,45 @@ const executeLarkVercelTask = async (
         })),
       });
       activeThreadSummary = refreshedSummary;
+    }
+  };
+  const persistSharedChatTaskState = async (taskState: DesktopTaskState): Promise<void> => {
+    if (!sharedChatContext || !companyId) {
+      return;
+    }
+    await larkChatContextService.persistTaskState({
+      companyId,
+      chatId: message.chatId,
+      chatType: message.chatType,
+      taskState,
+    });
+  };
+  const persistIncrementalStepProgress = async (input: {
+    completedStep: CompletedSupervisorStep;
+    allCompletedSteps: CompletedSupervisorStep[];
+  }): Promise<void> => {
+    if (!sharedChatContext || !companyId) {
+      return;
+    }
+    try {
+      activeTaskState = {
+        ...activeTaskState,
+        supervisorProgress: {
+          runId: task.taskId,
+          updatedAt: new Date().toISOString(),
+          completedSteps: input.allCompletedSteps,
+          resolvedIds: input.allCompletedSteps.reduce<Record<string, string>>((acc, step) => ({
+            ...acc,
+            ...(step.resolvedIds ?? {}),
+          }), {}),
+        },
+      };
+      await persistSharedChatTaskState(activeTaskState);
+    } catch (error) {
+      logger.warn('supervisor.step.checkpoint.failed', {
+        taskId: task.taskId,
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
     }
   };
 
@@ -3523,6 +3580,7 @@ const executeLarkVercelTask = async (
       eligibleAgentIds,
       recentTaskSummaries: activeThreadSummary.recentTaskSummaries ?? [],
       threadSummary: activeThreadSummary.summary ?? '',
+      supervisorProgress: activeTaskState.supervisorProgress ?? null,
       abortSignal,
     });
     await appendExecutionEventSafe({
@@ -3774,6 +3832,20 @@ const executeLarkVercelTask = async (
               toolResults: stepToolResults,
             },
           });
+          const completedStep: CompletedSupervisorStep = {
+            stepId: step.stepId,
+            agentId: step.agentId,
+            objective: step.objective,
+            summary: summarizeText(stepText, 240) ?? stepText,
+            resolvedIds: { ...stepResolvedContext },
+            completedAt: new Date().toISOString(),
+            success: stepStatus === 'success',
+          };
+          completedSupervisorSteps.set(step.stepId, completedStep);
+          await persistIncrementalStepProgress({
+            completedStep,
+            allCompletedSteps: Array.from(completedSupervisorSteps.values()),
+          });
           return {
             stepId: step.stepId,
             agentId: step.agentId,
@@ -4004,7 +4076,11 @@ const executeLarkVercelTask = async (
         });
       }
     }
-    activeThreadSummary = appendWarmTaskSummary(activeThreadSummary, task.taskId);
+    if (activeTaskState.supervisorProgress) {
+      const cleanedTaskState: DesktopTaskState = { ...activeTaskState };
+      delete cleanedTaskState.supervisorProgress;
+      activeTaskState = cleanedTaskState;
+    }
     await assertExecutionRunnable(task.taskId, abortSignal);
     await persistConversationMemorySnapshot(finalText);
     await assertExecutionRunnable(task.taskId, abortSignal);
@@ -4052,6 +4128,7 @@ const executeLarkVercelTask = async (
         supervisorPlan,
       },
     );
+    runCompletedSuccessfully = true;
 
     return {
       task,
@@ -4114,6 +4191,38 @@ const executeLarkVercelTask = async (
     );
     throw error;
   } finally {
+    try {
+      const interruptedAt = runCompletedSuccessfully ? undefined : new Date().toISOString();
+      activeThreadSummary = appendWarmTaskSummary(activeThreadSummary, task.taskId, {
+        isPartial: !runCompletedSuccessfully,
+        interruptedAt,
+      });
+      if (!runCompletedSuccessfully && activeTaskState.supervisorProgress) {
+        activeTaskState = {
+          ...activeTaskState,
+          supervisorProgress: {
+            ...activeTaskState.supervisorProgress,
+            updatedAt: interruptedAt ?? new Date().toISOString(),
+            isPartial: true,
+            interruptedAt,
+          },
+        };
+      }
+      if (sharedChatContext && companyId) {
+        await larkChatContextService.updateMemory({
+          companyId,
+          chatId: message.chatId,
+          chatType: message.chatType,
+          summary: activeThreadSummary,
+          taskState: activeTaskState,
+        });
+      }
+    } catch (error) {
+      logger.warn('supervisor.partial.snapshot.failed', {
+        taskId: task.taskId,
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
+    }
     hotContextStore.clear(task.taskId);
     await statusCoordinator?.close();
   }

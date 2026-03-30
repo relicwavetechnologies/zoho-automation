@@ -17,6 +17,21 @@ const buildPlannerPrompt = (input: {
     resolvedIds?: Record<string, string>;
   }>;
   threadSummary?: string;
+  supervisorProgress?: {
+    runId: string;
+    completedSteps: Array<{
+      stepId: string;
+      agentId: string;
+      objective: string;
+      summary: string;
+      resolvedIds: Record<string, string>;
+      completedAt: string;
+      success: boolean;
+    }>;
+    resolvedIds: Record<string, string>;
+    isPartial?: boolean;
+    interruptedAt?: string;
+  } | null;
 }): string => {
   const agentCatalog = input.eligibleAgents.map((agent) => ({
     agentId: agent.id,
@@ -35,7 +50,10 @@ const buildPlannerPrompt = (input: {
       'Keep objectives concrete and executable.',
       'If recentTaskSummaries is present, read it before writing objectives. It contains resolved entities from prior steps in this session — invoice IDs, emails, names, amounts. Embed these values explicitly and verbatim into your delegation objectives. Never write a vague objective like "send invoice to anish" when you have invoiceId=INV21271 and email=anishsuman2305@gmail.com available. Write "Send invoice INV21271 to anishsuman2305@gmail.com" instead. The sub-agent only receives what you write in the objective — it cannot guess what you left out.',
       'If threadSummary is present, use it to understand what has already been resolved in this conversation before deciding how to delegate.',
-    ],
+      input.supervisorProgress && input.supervisorProgress.completedSteps.length > 0
+        ? `PRIOR EXECUTION PROGRESS: A previous run already completed the following steps. Do NOT re-delegate these — their work is done. Build on their results instead:\n${input.supervisorProgress.completedSteps.map((step) => `- Step ${step.stepId} (${step.agentId}): ${step.objective} -> ${step.summary}`).join('\n')}\n\nAlready resolved from prior run: ${Object.entries(input.supervisorProgress.resolvedIds).map(([key, value]) => `${key}=${value}`).join(', ')}\n\n${input.supervisorProgress.isPartial ? 'The prior run was interrupted. Continue from where it left off.' : 'The prior run completed successfully. Use resolved values above.'}`
+        : null,
+    ].filter(Boolean),
     latestUserMessage: input.latestUserMessage,
     preferredAgentIds: input.preferredAgentIds,
     eligibleAgents: agentCatalog,
@@ -49,6 +67,23 @@ const buildPlannerPrompt = (input: {
         }))
       : null,
     threadSummary: input.threadSummary ?? null,
+    supervisorProgress: input.supervisorProgress
+      ? {
+        runId: input.supervisorProgress.runId,
+        completedSteps: input.supervisorProgress.completedSteps.slice(0, 8).map((step) => ({
+          stepId: step.stepId,
+          agentId: step.agentId,
+          objective: step.objective,
+          summary: step.summary,
+          resolvedIds: step.resolvedIds ?? {},
+          completedAt: step.completedAt,
+          success: step.success,
+        })),
+        resolvedIds: input.supervisorProgress.resolvedIds ?? {},
+        isPartial: input.supervisorProgress.isPartial ?? false,
+        interruptedAt: input.supervisorProgress.interruptedAt ?? null,
+      }
+      : null,
   });
 };
 
@@ -60,12 +95,16 @@ const buildFallbackPlan = (input: {
     summary: string;
     resolvedIds?: Record<string, string>;
   }>;
+  supervisorProgress?: {
+    resolvedIds: Record<string, string>;
+  } | null;
 }): SupervisorPlan => {
   const defaultAgent = (input.preferredAgentIds[0] ?? input.eligibleAgents[0]?.id ?? 'context-agent') as SupervisorAgentId;
-  const latestSummary = input.recentTaskSummaries?.[0];
-  const resolvedContext = latestSummary?.resolvedIds
-    && Object.keys(latestSummary.resolvedIds).length > 0
-    ? ` Context from prior step: ${Object.entries(latestSummary.resolvedIds)
+  const resolvedSource = input.supervisorProgress?.resolvedIds && Object.keys(input.supervisorProgress.resolvedIds).length > 0
+    ? input.supervisorProgress.resolvedIds
+    : input.recentTaskSummaries?.[0]?.resolvedIds;
+  const resolvedContext = resolvedSource && Object.keys(resolvedSource).length > 0
+    ? ` Context from prior step: ${Object.entries(resolvedSource)
       .map(([key, value]) => `${key}=${value}`)
       .join(', ')}.`
     : '';
@@ -99,6 +138,21 @@ export const planSupervisorDelegation = async (input: {
     resolvedIds?: Record<string, string>;
   }>;
   threadSummary?: string;
+  supervisorProgress?: {
+    runId: string;
+    completedSteps: Array<{
+      stepId: string;
+      agentId: string;
+      objective: string;
+      summary: string;
+      resolvedIds: Record<string, string>;
+      completedAt: string;
+      success: boolean;
+    }>;
+    resolvedIds: Record<string, string>;
+    isPartial?: boolean;
+    interruptedAt?: string;
+  } | null;
 }): Promise<SupervisorPlan> => {
   try {
     const result = await generateObject({
@@ -117,6 +171,7 @@ export const planSupervisorDelegation = async (input: {
         queryEnrichment: input.queryEnrichment,
         recentTaskSummaries: input.recentTaskSummaries,
         threadSummary: input.threadSummary,
+        supervisorProgress: input.supervisorProgress,
       }),
       temperature: 0,
       providerOptions: input.providerOptions,
@@ -135,6 +190,7 @@ export const planSupervisorDelegation = async (input: {
         preferredAgentIds: input.preferredAgentIds,
         eligibleAgents: input.eligibleAgents,
         recentTaskSummaries: input.recentTaskSummaries,
+        supervisorProgress: input.supervisorProgress,
       });
     }
     return result.object;
@@ -144,6 +200,7 @@ export const planSupervisorDelegation = async (input: {
       preferredAgentIds: input.preferredAgentIds,
       eligibleAgents: input.eligibleAgents,
       recentTaskSummaries: input.recentTaskSummaries,
+      supervisorProgress: input.supervisorProgress,
     });
   }
 };

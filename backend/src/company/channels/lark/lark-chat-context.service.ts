@@ -261,6 +261,20 @@ export class LarkChatContextService {
     });
   }
 
+  async persistTaskState(input: {
+    companyId: string;
+    chatId: string;
+    chatType?: string;
+    taskState: DesktopTaskState | null;
+  }) {
+    await this.updateMemory({
+      companyId: input.companyId,
+      chatId: input.chatId,
+      chatType: input.chatType,
+      taskState: input.taskState,
+    });
+  }
+
   async clear(input: {
     companyId: string;
     chatId: string;
