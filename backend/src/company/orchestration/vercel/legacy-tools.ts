@@ -9013,9 +9013,10 @@ export const createVercelDesktopTools = (
           };
           const taskMatchesCurrentUser = (task: Record<string, unknown>): boolean => {
             if (currentIdentityTokens.length === 0) return false;
-            const candidateValues = uniqueDefinedStrings(
-              readObjectStrings(task).map((value) => value.toLowerCase()),
-            );
+            const candidateValues = uniqueDefinedStrings([
+              ...readObjectStrings(task).map((value) => value.toLowerCase()),
+              ...readObjectStrings(asRecord(task.raw)).map((value) => value.toLowerCase()),
+            ]);
             return currentIdentityTokens.some((token) => candidateValues.includes(token));
           };
           const taskHasAssignmentData = (task: Record<string, unknown>): boolean => {
