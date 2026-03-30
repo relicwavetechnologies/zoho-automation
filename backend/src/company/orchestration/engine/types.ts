@@ -8,6 +8,7 @@ import type {
 } from '../../contracts';
 import type { OrchestrationTaskStatus } from '../../contracts/status';
 import type { CanonicalIntent } from '../intent/canonical-intent';
+import type { DelegatedStepResult, SupervisorPlan } from '../supervisor';
 
 export type OrchestrationEngineId = 'legacy' | 'vercel' | 'langgraph';
 
@@ -25,6 +26,9 @@ export type OrchestrationExecutionResult = {
     stepHistory?: string[];
     routeIntent?: string;
     canonicalIntent?: CanonicalIntent;
+    supervisorPlan?: SupervisorPlan;
+    delegatedAgentResults?: DelegatedStepResult[];
+    supervisorWaveCount?: number;
   };
   errors?: ErrorDTO[];
 };

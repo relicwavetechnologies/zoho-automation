@@ -98,40 +98,46 @@ export class ExecutionRepository {
         ? undefined
         : (JSON.parse(JSON.stringify(input.payload)) as Prisma.InputJsonValue);
 
-    return prisma.$transaction(async (tx) => {
-      const updatedRun = await tx.executionRun.update({
-        where: { id: input.executionId },
-        data: {
-          lastSequence: {
-            increment: 1,
+    return prisma.$transaction(
+      async (tx) => {
+        const updatedRun = await tx.executionRun.update({
+          where: { id: input.executionId },
+          data: {
+            lastSequence: {
+              increment: 1,
+            },
+            ...(input.summary
+              ? {
+                latestSummary: input.summary,
+              }
+              : {}),
           },
-          ...(input.summary
-            ? {
-              latestSummary: input.summary,
-            }
-            : {}),
-        },
-        select: {
-          id: true,
-          lastSequence: true,
-        },
-      });
+          select: {
+            id: true,
+            lastSequence: true,
+          },
+        });
 
-      return tx.executionEvent.create({
-        data: {
-          executionId: updatedRun.id,
-          sequence: updatedRun.lastSequence,
-          phase: input.phase,
-          eventType: input.eventType,
-          actorType: input.actorType,
-          actorKey: input.actorKey ?? null,
-          title: input.title,
-          summary: input.summary ?? null,
-          status: input.status ?? null,
-          payload,
-        },
-      });
-    });
+        return tx.executionEvent.create({
+          data: {
+            executionId: updatedRun.id,
+            sequence: updatedRun.lastSequence,
+            phase: input.phase,
+            eventType: input.eventType,
+            actorType: input.actorType,
+            actorKey: input.actorKey ?? null,
+            title: input.title,
+            summary: input.summary ?? null,
+            status: input.status ?? null,
+            payload,
+          },
+        });
+      },
+      {
+        maxWait: 10_000,
+        timeout: 20_000,
+      },
+    );
   }
 
   completeRun(input: CompleteExecutionRunInput): Promise<ExecutionRunRow> {

@@ -24,8 +24,8 @@ export const resolveVercelLanguageModel = async (
 };
 
 export const resolveVercelChildRouterModel = async () => ({
-  model: googleClient('gemini-3-flash-preview'),
-  effectiveModelId: 'gemini-3-flash-preview',
+  model: googleClient('gemini-3.1-flash-lite-preview'),
+  effectiveModelId: 'gemini-3.1-flash-lite-preview',
   effectiveProvider: 'google' as const,
   thinkingLevel: 'low' as const,
 });

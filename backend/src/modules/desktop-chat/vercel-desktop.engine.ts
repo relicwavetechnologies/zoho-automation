@@ -11,6 +11,18 @@ import {
   resolveVercelLanguageModel,
 } from '../../company/orchestration/vercel/model-factory';
 import { buildSharedAgentSystemPrompt } from '../../company/orchestration/prompting/shared-agent-prompt';
+import {
+  chooseSupervisorPassThroughText,
+  buildSupervisorResolvedContext,
+  deriveEligibleSupervisorAgents,
+  executeSupervisorPlan,
+  formatSupervisorResolvedContext,
+  runSupervisorPlan,
+  runSupervisorSynthesis,
+  SUPERVISOR_AGENT_TOOL_IDS,
+  type DelegatedAgentExecutionResult,
+  type SupervisorStep,
+} from '../../company/orchestration/supervisor';
 import { checkToolSelectionInvariant, resolveRunScopedToolSelection } from '../../company/orchestration/tool-selection/run-scoped-tool-selection.service';
 import { createVercelDesktopTools } from '../../company/orchestration/vercel/tools';
 import {
@@ -3754,6 +3766,265 @@ const runVercelStreamLoop = async (input: {
   );
 };
 
+const buildSupervisorScopedContext = (input: {
+  step: SupervisorStep;
+  conversationSnippets: string[];
+  threadSummary: DesktopThreadSummary;
+  taskState: DesktopTaskState;
+}): string[] => {
+  const queryTerms = new Set(
+    input.step.objective
+      .toLowerCase()
+      .split(/[^a-z0-9]+/u)
+      .filter((term) => term.length > 3),
+  );
+  const scored = input.conversationSnippets
+    .map((snippet) => {
+      const lowered = snippet.toLowerCase();
+      let score = 0;
+      for (const term of queryTerms) {
+        if (lowered.includes(term)) score += 1;
+      }
+      return { snippet, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.snippet)
+    .slice(0, 6);
+  const scoped = scored.length > 0 ? scored : input.conversationSnippets.slice(0, 4);
+  const taskStateContext = buildTaskStateContext(input.taskState);
+  const summaryContext = buildThreadSummaryContext(input.threadSummary);
+  return [
+    ...scoped,
+    ...(taskStateContext ? [taskStateContext] : []),
+    ...(summaryContext ? [summaryContext] : []),
+  ];
+};
+
+const buildSupervisorStepMessage = (input: {
+  originalUserMessage: string;
+  step: SupervisorStep;
+  scopedContext: string[];
+  resolvedContext: Record<string, string>;
+  dependencyInputs: Array<{
+    stepId: string;
+    agentId: string;
+    summary: string;
+    data?: Record<string, unknown>;
+  }>;
+}): string => {
+  const dependencyBlock = input.dependencyInputs.length > 0
+    ? input.dependencyInputs.map((entry) => [
+      `Step ${entry.stepId} from ${entry.agentId}`,
+      `Summary: ${entry.summary}`,
+      entry.data ? `Data: ${JSON.stringify(entry.data)}` : null,
+    ].filter(Boolean).join('\n')).join('\n\n')
+    : 'None';
+  const contextBlock = input.scopedContext.length > 0 ? input.scopedContext.join('\n') : 'None';
+  return [
+    'You are a delegated runtime agent working on one scoped objective.',
+    `Original user request: ${input.originalUserMessage}`,
+    `Current delegated objective: ${input.step.objective}`,
+    '',
+    'Resolved handoff context:',
+    formatSupervisorResolvedContext(input.resolvedContext),
+    '',
+    'Relevant context:',
+    contextBlock,
+    '',
+    'Dependency results:',
+    dependencyBlock,
+    '',
+    'Complete only the delegated objective for this step. Treat the resolved handoff context as authoritative when it includes IDs, emails, invoice numbers, or other concrete values relevant to this step. If a required parameter is already present there, pass it directly to the tool instead of asking for it again.',
+  ].join('\n');
+};
+
+const mapEnvelopeToDelegatedToolResult = (
+  toolName: string,
+  output: VercelToolEnvelope,
+): NonNullable<DelegatedAgentExecutionResult<DesktopTaskState>['toolResults']>[number] => ({
+  toolId: output.toolId,
+  toolName,
+  success: output.success,
+  confirmedAction: output.confirmedAction,
+  status: output.status,
+  summary: output.summary,
+  error: output.error,
+  pendingApproval: Boolean(output.pendingApprovalAction),
+});
+
+const runDesktopDelegatedAgentStep = async (input: {
+  executionId: string;
+  threadId: string;
+  session: MemberSessionDTO;
+  mode: 'fast' | 'high';
+  originalUserMessage: string;
+  step: SupervisorStep;
+  runtime: VercelRuntimeRequestContext;
+  history: ThreadHistorySnapshot;
+  workspace?: { name: string; path: string };
+  approvalPolicySummary?: string;
+  queryEnrichment?: QueryEnrichment;
+  activeAttachments: AttachedFileRef[];
+  threadSummary: DesktopThreadSummary;
+  resolvedUserReferences: string[];
+  childRoute?: DesktopChildRoute;
+  analyticsToolDemandPayload?: ExecutionToolDemandPayload;
+  taskState: DesktopTaskState;
+  scopedContext: string[];
+  dependencyInputs: Array<{
+    stepId: string;
+    agentId: string;
+    summary: string;
+    data?: Record<string, unknown>;
+  }>;
+  onToolStart: (toolName: string, activityId: string, title: string) => Promise<void>;
+  onToolFinish: (toolName: string, activityId: string, title: string, output: VercelToolEnvelope) => Promise<void>;
+}): Promise<DelegatedAgentExecutionResult<DesktopTaskState>> => {
+  const resolvedHandoffContext = buildSupervisorResolvedContext({
+    objective: input.step.objective,
+    recentTaskSummaries: input.threadSummary.recentTaskSummaries,
+    threadSummary: buildThreadSummaryContext(input.threadSummary) ?? input.threadSummary.summary ?? '',
+    scopedContext: input.scopedContext,
+    upstreamResults: input.dependencyInputs.map((entry) => ({
+      summary: entry.summary,
+      data: entry.data,
+    })),
+  });
+  const familyToolIds = SUPERVISOR_AGENT_TOOL_IDS[input.step.agentId]
+    .filter((toolId) => input.runtime.allowedToolIds.includes(toolId));
+  const familyBaseRuntime: VercelRuntimeRequestContext = {
+    ...input.runtime,
+    latestUserMessage: input.step.objective,
+    taskState: input.taskState,
+    allowedToolIds: familyToolIds,
+  };
+  const familySelection = await resolveDesktopRuntimeForRunScopedSelection({
+    executionId: input.executionId,
+    threadId: input.threadId,
+    latestUserMessage: input.step.objective,
+    queryEnrichment: enrichQuery({
+      rawMessage: input.step.objective,
+      attachedFiles: input.activeAttachments,
+      taskState: input.taskState,
+      threadSummary: input.threadSummary,
+    }),
+    runtime: familyBaseRuntime,
+    hasActiveArtifacts:
+      input.activeAttachments.length > 0 || input.taskState.activeSourceArtifacts.length > 0,
+    childRouteHints: input.childRoute,
+    pinnedToolIds: familyToolIds,
+  });
+  let stepTaskState = input.taskState;
+  const contextAssembly = await buildDesktopContextAssembly({
+    executionId: input.executionId,
+    threadId: input.threadId,
+    session: input.session,
+    mode: input.mode,
+    latestUserMessage: input.step.objective,
+    queryEnrichment: enrichQuery({
+      rawMessage: input.step.objective,
+      attachedFiles: input.activeAttachments,
+      taskState: input.taskState,
+      threadSummary: input.threadSummary,
+    }),
+    history: input.history,
+    workspace: input.workspace,
+    approvalPolicySummary: input.approvalPolicySummary,
+    taskState: stepTaskState,
+    threadSummary: input.threadSummary,
+    resolvedUserReferences: input.resolvedUserReferences,
+    routerAcknowledgement: undefined,
+    childRouteHints: input.childRoute,
+    departmentName: input.runtime.departmentName,
+    departmentRoleSlug: input.runtime.departmentRoleSlug,
+    departmentSystemPrompt: input.runtime.departmentSystemPrompt,
+    departmentSkillsMarkdown: input.runtime.departmentSkillsMarkdown,
+    dateScope: familySelection.runtime.dateScope,
+    activeAttachments: input.activeAttachments,
+    allowedToolIds: familySelection.runtime.allowedToolIds,
+    runExposedToolIds: familySelection.runtime.runExposedToolIds,
+    plannerCandidateToolIds: familySelection.runtime.plannerCandidateToolIds,
+    toolSelectionReason: familySelection.runtime.toolSelectionReason,
+    plannerChosenToolId: familySelection.runtime.plannerChosenToolId,
+    plannerChosenOperationClass: familySelection.runtime.plannerChosenOperationClass,
+    allowedActionsByTool: familySelection.runtime.allowedActionsByTool,
+    memoryWriteStatusContext: '',
+  });
+  const stepResolvedContext = { ...resolvedHandoffContext };
+  const delegatedMessage = buildSupervisorStepMessage({
+    originalUserMessage: input.originalUserMessage,
+    step: input.step,
+    scopedContext: input.scopedContext,
+    resolvedContext: resolvedHandoffContext,
+    dependencyInputs: input.dependencyInputs,
+  });
+  const messages: ModelMessage[] = [
+    ...contextAssembly.historyMessages,
+    { role: 'user', content: delegatedMessage },
+  ];
+  const toolOutputs: Array<{ toolName: string; output: VercelToolEnvelope }> = [];
+  const result = await runVercelLoop({
+    runtime: familySelection.runtime,
+    analyticsToolDemandPayload: input.analyticsToolDemandPayload,
+    system: contextAssembly.systemPrompt,
+    messages,
+    onToolStart: input.onToolStart,
+    onToolFinish: async (toolName, activityId, title, output) => {
+      toolOutputs.push({ toolName, output });
+      Object.assign(stepResolvedContext, buildSupervisorResolvedContext({
+        upstreamResults: [{
+          summary: output.summary,
+          data: output.data as Record<string, unknown> | undefined,
+          output: (output.fullPayload ?? output.keyData ?? {}) as Record<string, unknown>,
+        }],
+      }));
+      stepTaskState = updateTaskStateFromToolEnvelope({
+        taskState: stepTaskState,
+        toolName,
+        output,
+        latestObjective: input.step.objective,
+      });
+      await input.onToolFinish(toolName, activityId, title, output);
+    },
+  });
+  const pendingApproval = findPendingApproval(
+    result.steps as Array<{ toolResults?: Array<{ output: unknown }> }>,
+  );
+  const blockingUserInput = findBlockingUserInput(
+    result.steps as Array<{ toolResults?: Array<{ output: unknown }> }>,
+  );
+  const assistantText = blockingUserInput
+    ? (buildMissingInputResponseText(blockingUserInput) ?? result.text.trim()) ||
+      'I need one more detail before I can continue.'
+    : pendingApproval
+      ? `Approval required before this step can continue.`
+      : result.text.trim();
+  return {
+    stepId: input.step.stepId,
+    agentId: input.step.agentId,
+    status: pendingApproval || blockingUserInput
+      ? 'partial'
+      : toolOutputs.some((entry) => entry.output.success === false)
+        ? 'failed'
+        : 'success',
+    summary: summarizeText(assistantText, 600) ?? assistantText,
+    assistantText,
+    data: {
+      text: assistantText,
+      citations: toolOutputs.flatMap((entry) => entry.output.citations ?? []),
+      resolvedContext: stepResolvedContext,
+    },
+    toolResults: toolOutputs.map(({ toolName, output }) => mapEnvelopeToDelegatedToolResult(toolName, output)),
+    pendingApproval,
+    blockingUserInput,
+    taskState: stepTaskState,
+    sourceRefs: toolOutputs.flatMap(({ output }) => (output.citations ?? []).map((citation) => citation.id)),
+    output: {
+      resolvedContext: stepResolvedContext,
+    },
+  };
+};
+
 export const executeAutomatedDesktopTurn = async (input: {
   session: MemberSessionDTO;
   threadId: string;
@@ -4940,208 +5211,304 @@ export class VercelDesktopEngine {
         success: boolean;
         pendingApproval?: boolean;
       }> = [];
-      const result = await runVercelStreamLoop({
-        runtime: effectiveRuntime,
-        analyticsToolDemandPayload,
-        system: contextAssembly.systemPrompt,
-        messages: inputMessages,
-        onToolStart: async (toolName, activityId, title) => {
-          const ownerAgent = resolvePlanOwnerFromToolName(toolName);
-          if (activePlan && ownerAgent) {
-            const nextPlan = ensurePlanTaskRunning(activePlan, ownerAgent);
-            if (nextPlan !== activePlan) {
-              activePlan = nextPlan;
-              await logAndPersistPlan({
-                executionId,
-                threadId,
-                plan: activePlan,
-                eventType: 'plan.updated',
-                emitSse: emitPlan,
-              });
-            }
-          }
-          logger.info('vercel.stream.tool.start', {
-            executionId,
-            threadId,
-            toolName,
-            activityId,
-            title,
-          });
-          sendSseEvent(res, 'activity', {
-            id: activityId,
-            name: toolName,
-            label: title,
-            icon: 'tool',
-          });
-          queueUiEvent('activity', {
-            id: activityId,
-            name: toolName,
-            label: title,
-            icon: 'tool',
-          });
-          persistedBlocks = [
-            ...persistedBlocks,
-            {
-              type: 'tool',
-              id: activityId,
-              name: toolName,
-              label: title,
-              icon: 'tool',
-              status: 'running',
-            },
-          ];
-          await appendEventSafe({
-            executionId,
-            phase: 'tool',
-            eventType: 'tool.started',
-            actorType: 'tool',
-            actorKey: toolName,
-            title,
-            status: 'running',
-          });
-        },
-        onToolFinish: async (toolName, activityId, title, output) => {
-          executedToolOutcomes.push({
-            toolName,
-            success: output.success,
-            pendingApproval: Boolean(output.pendingApprovalAction),
-          });
-          activeTaskState = updateTaskStateFromToolEnvelope({
-            taskState: activeTaskState,
-            toolName,
-            output,
-            latestObjective: storedUserMessage || effectiveMessage,
-          });
-          const ownerAgent = resolvePlanOwnerFromToolName(toolName);
-          if (activePlan && ownerAgent) {
-            activePlan = updateExecutionPlanTask(activePlan, {
-              ownerAgent,
-              ok: output.success && !output.pendingApprovalAction,
-              resultSummary: output.summary,
-            });
+      const handleToolStart = async (toolName: string, activityId: string, title: string) => {
+        const ownerAgent = resolvePlanOwnerFromToolName(toolName);
+        if (activePlan && ownerAgent) {
+          const nextPlan = ensurePlanTaskRunning(activePlan, ownerAgent);
+          if (nextPlan !== activePlan) {
+            activePlan = nextPlan;
             await logAndPersistPlan({
               executionId,
               threadId,
               plan: activePlan,
-              eventType:
-                activePlan.status === 'failed'
-                  ? 'plan.failed'
-                  : activePlan.status === 'completed'
-                    ? 'plan.completed'
-                    : 'plan.updated',
+              eventType: 'plan.updated',
               emitSse: emitPlan,
             });
           }
-          logger.info('vercel.stream.tool.finish', {
+        }
+        logger.info('vercel.stream.tool.start', {
+          executionId,
+          threadId,
+          toolName,
+          activityId,
+          title,
+        });
+        sendSseEvent(res, 'activity', {
+          id: activityId,
+          name: toolName,
+          label: title,
+          icon: 'tool',
+        });
+        queueUiEvent('activity', {
+          id: activityId,
+          name: toolName,
+          label: title,
+          icon: 'tool',
+        });
+        persistedBlocks = [
+          ...persistedBlocks,
+          {
+            type: 'tool',
+            id: activityId,
+            name: toolName,
+            label: title,
+            icon: 'tool',
+            status: 'running',
+          },
+        ];
+        await appendEventSafe({
+          executionId,
+          phase: 'tool',
+          eventType: 'tool.started',
+          actorType: 'tool',
+          actorKey: toolName,
+          title,
+          status: 'running',
+        });
+      };
+      const handleToolFinish = async (
+        toolName: string,
+        activityId: string,
+        title: string,
+        output: VercelToolEnvelope,
+      ) => {
+        executedToolOutcomes.push({
+          toolName,
+          success: output.success,
+          pendingApproval: Boolean(output.pendingApprovalAction),
+        });
+        activeTaskState = updateTaskStateFromToolEnvelope({
+          taskState: activeTaskState,
+          toolName,
+          output,
+          latestObjective: storedUserMessage || effectiveMessage,
+        });
+        const ownerAgent = resolvePlanOwnerFromToolName(toolName);
+        if (activePlan && ownerAgent) {
+          activePlan = updateExecutionPlanTask(activePlan, {
+            ownerAgent,
+            ok: output.success && !output.pendingApprovalAction,
+            resultSummary: output.summary,
+          });
+          await logAndPersistPlan({
             executionId,
             threadId,
-            toolName,
-            activityId,
-            title,
-            success: output.success,
-            summary: summarizeText(output.summary, 280),
-            pendingApproval: output.pendingApprovalAction?.kind ?? null,
+            plan: activePlan,
+            eventType:
+              activePlan.status === 'failed'
+                ? 'plan.failed'
+                : activePlan.status === 'completed'
+                  ? 'plan.completed'
+                  : 'plan.updated',
+            emitSse: emitPlan,
           });
-          sendSseEvent(res, 'activity_done', {
-            id: activityId,
-            name: toolName,
-            label: title,
-            icon: output.success ? 'tool' : 'x-circle',
-            resultSummary: output.summary,
-          });
-          queueUiEvent('activity_done', {
-            id: activityId,
-            name: toolName,
-            label: title,
-            icon: output.success ? 'tool' : 'x-circle',
-            resultSummary: output.summary,
-          });
-          persistedBlocks = persistedBlocks.map((block) =>
-            block.type === 'tool' && block.id === activityId
-              ? {
-                  ...block,
-                  name: toolName,
-                  label: title,
-                  icon: output.success ? 'tool' : 'x-circle',
-                  status: output.success ? 'done' : 'failed',
-                  resultSummary: output.summary,
-                }
-              : block,
-          );
-          await appendEventSafe({
-            executionId,
-            phase: 'tool',
-            eventType: 'tool.completed',
-            actorType: 'tool',
-            actorKey: toolName,
-            title,
-            summary: summarizeText(output.summary, 600),
-            status: output.success ? 'done' : 'failed',
-            payload: {
-              ...buildExecutionToolResultPayload({
-                toolName,
-                title,
-                success: output.success,
+        }
+        logger.info('vercel.stream.tool.finish', {
+          executionId,
+          threadId,
+          toolName,
+          activityId,
+          title,
+          success: output.success,
+          summary: summarizeText(output.summary, 280),
+          pendingApproval: output.pendingApprovalAction?.kind ?? null,
+        });
+        sendSseEvent(res, 'activity_done', {
+          id: activityId,
+          name: toolName,
+          label: title,
+          icon: output.success ? 'tool' : 'x-circle',
+          resultSummary: output.summary,
+        });
+        queueUiEvent('activity_done', {
+          id: activityId,
+          name: toolName,
+          label: title,
+          icon: output.success ? 'tool' : 'x-circle',
+          resultSummary: output.summary,
+        });
+        persistedBlocks = persistedBlocks.map((block) =>
+          block.type === 'tool' && block.id === activityId
+            ? {
+                ...block,
+                name: toolName,
+                label: title,
+                icon: output.success ? 'tool' : 'x-circle',
                 status: output.success ? 'done' : 'failed',
-                summary: output.summary,
-                pendingApprovalAction: output.pendingApprovalAction ?? null,
-                output: output.fullPayload ?? output.keyData ?? output.data ?? null,
-                error: output.error ?? null,
-              }),
-            },
-          });
-        },
+                resultSummary: output.summary,
+              }
+            : block,
+        );
+        await appendEventSafe({
+          executionId,
+          phase: 'tool',
+          eventType: 'tool.completed',
+          actorType: 'tool',
+          actorKey: toolName,
+          title,
+          summary: summarizeText(output.summary, 600),
+          status: output.success ? 'done' : 'failed',
+          payload: {
+            ...buildExecutionToolResultPayload({
+              toolName,
+              title,
+              success: output.success,
+              status: output.success ? 'done' : 'failed',
+              summary: output.summary,
+              pendingApprovalAction: output.pendingApprovalAction ?? null,
+              output: output.fullPayload ?? output.keyData ?? output.data ?? null,
+              error: output.error ?? null,
+            }),
+          },
+        });
+      };
+
+      const eligibleAgentIds = deriveEligibleSupervisorAgents({
+        allowedToolIds: effectiveRuntime.allowedToolIds,
+        runExposedToolIds: effectiveRuntime.runExposedToolIds,
+      });
+      const supervisorPlan = await runSupervisorPlan({
+        mode,
+        latestUserMessage: effectivePromptMessage,
+        systemPrompt: contextAssembly.systemPrompt,
+        selectionReason: effectiveRuntime.toolSelectionReason ?? null,
+        plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass ?? null,
+        eligibleAgentIds,
+        contextSummary: contextAssembly.conversationSnippets,
+      });
+      await appendEventSafe({
+        executionId,
+        phase: 'planning',
+        eventType: 'supervisor.plan',
+        actorType: 'planner',
+        actorKey: 'supervisor',
+        title: 'Supervisor plan created',
+        summary: summarizeText(JSON.stringify(supervisorPlan), 600),
+        status: 'done',
+        payload: supervisorPlan as unknown as Record<string, unknown>,
       });
 
       let streamedText = '';
       let hasReasoningBlock = false;
       let reasoningDeltaCount = 0;
       let reasoningCharCount = 0;
-      for await (const part of result.fullStream) {
-        if (part.type === 'reasoning-start') {
-          hasReasoningBlock = true;
-          sendSseEvent(res, 'thinking', { text: '' });
-          queueUiEvent('thinking', { text: '' });
-          persistedBlocks = ensureThinkingBlock(persistedBlocks);
-          continue;
-        }
+      let delegatedAgentResults: DelegatedAgentExecutionResult<DesktopTaskState>[] = [];
+      let pendingApproval: PendingApprovalAction | null = null;
+      let blockingUserInput: ReturnType<typeof findBlockingUserInput> = null;
+      let citations: VercelToolEnvelope['citations'] = [];
 
-        if (part.type === 'reasoning-delta') {
-          if (!part.text) continue;
-          if (!hasReasoningBlock) {
-            hasReasoningBlock = true;
-            sendSseEvent(res, 'thinking', { text: '' });
-            queueUiEvent('thinking', { text: '' });
-            persistedBlocks = ensureThinkingBlock(persistedBlocks);
-          }
-          reasoningDeltaCount += 1;
-          reasoningCharCount += part.text.length;
-          sendSseEvent(res, 'thinking_token', part.text);
-          queueUiEvent('thinking_token', part.text);
-          persistedBlocks = appendThinkingBlock(persistedBlocks, part.text);
-          continue;
-        }
-
-        if (part.type === 'reasoning-end') {
-          continue;
-        }
-
-        if (part.type === 'text-delta') {
-          if (!part.text) continue;
-          streamedText += part.text;
-          sendSseEvent(res, 'text', part.text);
-          queueUiEvent('text', part.text);
-          persistedBlocks = appendTextBlock(persistedBlocks, part.text);
+      if (supervisorPlan.complexity === 'direct') {
+        streamedText = chooseSupervisorPassThroughText({
+          plan: supervisorPlan,
+          results: [],
+        });
+      } else {
+        const execution = await executeSupervisorPlan({
+          plan: supervisorPlan,
+          originalUserMessage: effectivePromptMessage,
+          initialTaskState: activeTaskState,
+          buildScopedContext: (step) =>
+            buildSupervisorScopedContext({
+              step,
+              conversationSnippets: contextAssembly.conversationSnippets,
+              threadSummary: activeThreadSummary,
+              taskState: activeTaskState,
+            }),
+          executeStep: async (stepInput) => runDesktopDelegatedAgentStep({
+            executionId,
+            threadId,
+            session,
+            mode,
+            originalUserMessage: effectivePromptMessage,
+            step: stepInput.step,
+            runtime: effectiveRuntime,
+            history,
+            workspace,
+            approvalPolicySummary,
+            queryEnrichment: groundedQueryEnrichment,
+            activeAttachments,
+            threadSummary: activeThreadSummary,
+            resolvedUserReferences: resolvedUserContext.resolvedReferences,
+            childRoute,
+            analyticsToolDemandPayload,
+            taskState: stepInput.taskState,
+            scopedContext: stepInput.scopedContext,
+            dependencyInputs: stepInput.dependencyInputs,
+            onToolStart: handleToolStart,
+            onToolFinish: handleToolFinish,
+          }),
+          mergeTaskState: (_currentState, result) => result.taskState,
+          onWaveStart: async (wave, waveIndex) => {
+            await appendEventSafe({
+              executionId,
+              phase: 'planning',
+              eventType: 'supervisor.wave.start',
+              actorType: 'planner',
+              actorKey: 'supervisor',
+              title: `Supervisor wave ${waveIndex + 1}`,
+              summary: wave.readyStepIds.join(', '),
+              status: 'running',
+              payload: wave as unknown as Record<string, unknown>,
+            });
+          },
+          onStepStart: async (step) => {
+            await appendEventSafe({
+              executionId,
+              phase: 'planning',
+              eventType: 'supervisor.step.start',
+              actorType: 'agent',
+              actorKey: step.agentId,
+              title: `Supervisor step ${step.stepId}`,
+              summary: summarizeText(step.objective, 300),
+              status: 'running',
+              payload: step as unknown as Record<string, unknown>,
+            });
+          },
+          onStepComplete: async (result) => {
+            await appendEventSafe({
+              executionId,
+              phase: result.pendingApproval || result.blockingUserInput ? 'control' : 'synthesis',
+              eventType: result.status === 'failed' ? 'supervisor.step.failed' : 'supervisor.step.complete',
+              actorType: 'agent',
+              actorKey: result.agentId,
+              title: `Supervisor step ${result.stepId} completed`,
+              summary: summarizeText(result.summary, 600),
+              status: result.status === 'failed' ? 'failed' : 'done',
+              payload: result as unknown as Record<string, unknown>,
+            });
+          },
+        });
+        delegatedAgentResults = execution.results;
+        activeTaskState = execution.finalTaskState;
+        const controlResult = delegatedAgentResults.find((result) => result.pendingApproval || result.blockingUserInput);
+        pendingApproval = (controlResult?.pendingApproval as PendingApprovalAction | null | undefined) ?? null;
+        blockingUserInput = (controlResult?.blockingUserInput as ReturnType<typeof findBlockingUserInput>) ?? null;
+        citations = delegatedAgentResults.flatMap((result) => (result.data?.citations as VercelToolEnvelope['citations'] | undefined) ?? []);
+        if (supervisorPlan.complexity === 'multi' && !pendingApproval && !blockingUserInput) {
+          streamedText = await runSupervisorSynthesis({
+            mode,
+            systemPrompt: contextAssembly.systemPrompt,
+            latestUserMessage: effectivePromptMessage,
+            agentResults: delegatedAgentResults,
+          });
+          await appendEventSafe({
+            executionId,
+            phase: 'synthesis',
+            eventType: 'supervisor.synthesis',
+            actorType: 'planner',
+            actorKey: 'supervisor',
+            title: 'Supervisor synthesized final response',
+            summary: summarizeText(streamedText, 600),
+            status: 'done',
+          });
+        } else {
+          streamedText = chooseSupervisorPassThroughText({
+            plan: supervisorPlan,
+            results: delegatedAgentResults,
+          });
         }
       }
 
-      const steps = await result.steps;
-      const pendingApproval = findPendingApproval(
-        steps as Array<{ toolResults?: Array<{ output: unknown }> }>,
-      );
-      const blockingUserInput = findBlockingUserInput(
-        steps as Array<{ toolResults?: Array<{ output: unknown }> }>,
-      );
       const pendingAction = pendingApproval ? mapPendingApprovalAction(pendingApproval) : null;
       const combinedText =
         `${routerAcknowledgement ? `${routerAcknowledgement}\n\n` : ''}${streamedText.trim()}`.trim();
@@ -5151,13 +5518,10 @@ export class VercelDesktopEngine {
         : pendingApproval
           ? (routerAcknowledgement ?? '')
           : combinedText;
-      const citations = (steps as Array<{ toolResults?: Array<{ output?: unknown }> }>).flatMap(
-        (step) =>
-          (step.toolResults ?? []).flatMap((toolResult) => {
-            const output = toolResult.output as VercelToolEnvelope | undefined;
-            return output?.citations ?? [];
-          }),
-      );
+      if (streamedText) {
+        await streamChildText(res, streamedText, queueUiEvent);
+        persistedBlocks = appendTextBlock(persistedBlocks, streamedText);
+      }
 
       logger.info('vercel.stream.reasoning.summary', {
         executionId,

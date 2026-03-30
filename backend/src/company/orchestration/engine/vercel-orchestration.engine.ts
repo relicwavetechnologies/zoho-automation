@@ -5,7 +5,6 @@ import type { ChannelAction } from '../../channels/base/channel-adapter';
 import { resolveChannelAdapter } from '../../channels';
 import { larkChatContextService } from '../../channels/lark/lark-chat-context.service';
 import { departmentService } from '../../departments/department.service';
-import { zohoRoleAccessService } from '../../tools/zoho-role-access.service';
 import type {
   AgentResultDTO,
   NormalizedIncomingMessageDTO,
@@ -82,6 +81,17 @@ import { memoryExtractionService, memoryService } from '../../memory';
 import { enrichQuery, type QueryEnrichment } from '../query-enrichment.service';
 import { classifyIntent } from '../intent/canonical-intent';
 import { hotContextStore, type HotContextIndexedEntity, type HotContextSlot } from '../hot-context.store';
+import {
+  type DelegatedAgentExecutionResult,
+  type SupervisorStep,
+  buildSupervisorResolvedContext,
+  executeSupervisorDag,
+  formatSupervisorResolvedContext,
+  getSupervisorAgentToolIds,
+  inferEligibleSupervisorAgentIds,
+  planSupervisorDelegation,
+  synthesizeSupervisorOutcome,
+} from '../supervisor';
 import { resolveOrdinalReferences } from '../utils/resolve-ordinal-references';
 import { runtimeControlSignalsRepository } from '../../queue/runtime/control-signals.repository';
 import { desktopWsGateway } from '../../../modules/desktop-live/desktop-ws.gateway';
@@ -284,6 +294,72 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const buildLarkSupervisorScopedContext = (input: {
+  step: SupervisorStep;
+  conversationSnippets: string[];
+  taskState: DesktopTaskState;
+  threadSummary: DesktopThreadSummary;
+}): string[] => {
+  const queryTerms = new Set(
+    input.step.objective
+      .toLowerCase()
+      .split(/[^a-z0-9]+/u)
+      .filter((term) => term.length > 3),
+  );
+  const scored = input.conversationSnippets
+    .map((snippet) => {
+      const lowered = snippet.toLowerCase();
+      let score = 0;
+      for (const term of queryTerms) {
+        if (lowered.includes(term)) score += 1;
+      }
+      return { snippet, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.snippet)
+    .slice(0, 6);
+  const taskStateContext = buildTaskStateContext(input.taskState);
+  const summaryContext = buildThreadSummaryContext(input.threadSummary);
+  return [
+    ...(scored.length > 0 ? scored : input.conversationSnippets.slice(0, 4)),
+    ...(taskStateContext ? [taskStateContext] : []),
+    ...(summaryContext ? [summaryContext] : []),
+  ];
+};
+
+const buildLarkSupervisorStepMessage = (input: {
+  originalUserMessage: string;
+  step: SupervisorStep;
+  scopedContext: string[];
+  dependencyInputs: Array<{
+    stepId: string;
+    agentId: string;
+    summary: string;
+    data?: Record<string, unknown>;
+  }>;
+}): string => {
+  const dependencyBlock = input.dependencyInputs.length > 0
+    ? input.dependencyInputs.map((entry) => [
+      `Step ${entry.stepId} from ${entry.agentId}`,
+      `Summary: ${entry.summary}`,
+      entry.data ? `Data: ${JSON.stringify(entry.data)}` : null,
+    ].filter(Boolean).join('\n')).join('\n\n')
+    : 'None';
+  return [
+    'You are a delegated runtime agent working on one scoped objective.',
+    `Original user request: ${input.originalUserMessage}`,
+    `Current delegated objective: ${input.step.objective}`,
+    '',
+    'Relevant context:',
+    input.scopedContext.length > 0 ? input.scopedContext.join('\n') : 'None',
+    '',
+    'Dependency results:',
+    dependencyBlock,
+    '',
+    'Complete only the delegated objective for this step. Do not claim unrelated work is done.',
+  ].join('\n');
 };
 
 const buildAbortSignalError = (): Error => {
@@ -2119,6 +2195,60 @@ const mapToolStepsToAgentResults = (
     }),
   );
 
+const buildDelegatedLarkStepPrompt = (input: {
+  step: SupervisorStep;
+  originalUserMessage: string;
+  scopedContext: string[];
+  upstreamResults: DelegatedAgentExecutionResult[];
+  resolvedContext: Record<string, string>;
+}): string => {
+  const upstreamContext = input.upstreamResults.length > 0
+    ? input.upstreamResults.map((result) => [
+      `Step ${result.stepId} (${result.agentId})`,
+      `Objective: ${result.objective}`,
+      `Summary: ${result.summary}`,
+      `Text: ${result.text}`,
+      `Resolved context: ${formatSupervisorResolvedContext((result.data?.resolvedContext as Record<string, string> | undefined) ?? {})}`,
+      `Structured output: ${JSON.stringify(result.output)}`,
+    ].join('\n')).join('\n\n')
+    : 'None.';
+
+  const scopedContext = input.scopedContext.length > 0
+    ? input.scopedContext.join('\n')
+    : 'None.';
+
+  return [
+    `You are executing delegated supervisor step ${input.step.stepId}.`,
+    `Assigned agent family: ${input.step.agentId}.`,
+    `Objective: ${input.step.objective}`,
+    `Original user request: ${input.originalUserMessage}`,
+    '',
+    'Resolved handoff context:',
+    formatSupervisorResolvedContext(input.resolvedContext),
+    '',
+    'Scoped orchestration context:',
+    scopedContext,
+    '',
+    'Upstream step results:',
+    upstreamContext,
+    '',
+    'Only do the work required for this step. Use only the tools available in this agent family.',
+    'If the step cannot continue because of approval or missing user input, surface that plainly.',
+  ].join('\n');
+};
+
+const buildDelegatedAgentSystemPrompt = (baseSystemPrompt: string, agentId: SupervisorStep['agentId']): string => [
+  baseSystemPrompt,
+  '',
+  '## Delegated supervisor execution',
+  `You are running inside delegated agent family: ${agentId}.`,
+  'You are not the top-level supervisor.',
+  'Complete only the assigned step objective.',
+  'Do not claim other steps are complete.',
+  'Treat the "Resolved handoff context" block as authoritative for IDs, emails, invoice numbers, and other concrete entities when it is relevant to this step.',
+  'If a required parameter is already present in that block, pass it directly to the tool instead of asking for it again or omitting it.',
+].join('\n');
+
 const adaptPlanForVercel = (task: OrchestrationTaskDTO): OrchestrationTaskDTO => ({
   ...task,
   plan: task.plan.map((step) =>
@@ -2151,7 +2281,6 @@ const resolveRuntimeContext = async (
   let departmentManagerApprovalConfig: VercelRuntimeRequestContext['departmentManagerApprovalConfig'];
   let departmentSystemPrompt: string | undefined;
   let departmentSkillsMarkdown: string | undefined;
-  let canFallbackToCompanyScopedBooksRead = false;
   let allowedToolIds = fallbackAllowedToolIds;
   let allowedActionsByTool: Record<string, string[]> | undefined;
   const desktopAvailability = linkedUserId
@@ -2181,8 +2310,6 @@ const resolveRuntimeContext = async (
     departmentSkillsMarkdown = resolved.skillsMarkdown;
     allowedToolIds = resolved.allowedToolIds;
     allowedActionsByTool = resolved.allowedActionsByTool;
-    canFallbackToCompanyScopedBooksRead =
-      (await zohoRoleAccessService.resolveScopeMode(companyId, requesterAiRole)) === 'company_scoped';
   }
 
   return {
@@ -2205,7 +2332,6 @@ const resolveRuntimeContext = async (
     departmentName,
     departmentRoleSlug,
     departmentZohoReadScope,
-    canFallbackToCompanyScopedBooksRead,
     departmentZohoRateLimitConfig,
     departmentManagerApprovalConfig,
     larkTenantKey: message.trace?.larkTenantKey,
@@ -3129,62 +3255,6 @@ const executeLarkVercelTask = async (
     };
   }
 
-  const tools = createVercelDesktopTools(effectiveRuntime, {
-    onToolStart: async (_toolName, _activityId, title) => {
-      await appendLatestAgentRunLog(task.taskId, 'tool.start', {
-        toolName: _toolName,
-        activityId: _activityId,
-        title,
-        channel: 'lark',
-        threadId: contextStorageId ?? message.chatId,
-      });
-      statusHistory.push(`Started ${title}`);
-      await updateStatus('tool_running', `Using ${title}.`);
-    },
-    onToolFinish: async (toolName, _activityId, title, output) => {
-      hotContextStore.push(task.taskId, buildHotContextSlot(toolName, output));
-      executedToolOutcomes.push({
-        toolId: output.toolId,
-        toolName,
-        success: output.success,
-        status: output.status,
-        data: output.data,
-        confirmedAction: output.confirmedAction,
-        ...(output.error ? { error: output.error } : {}),
-        pendingApproval: Boolean(output.pendingApprovalAction),
-        summary: output.summary,
-      });
-      await appendLatestAgentRunLog(task.taskId, 'tool.finish', {
-        toolName,
-        activityId: _activityId,
-        title,
-        output,
-        channel: 'lark',
-        threadId: contextStorageId ?? message.chatId,
-      });
-      const capabilityGapPayload = buildCapabilityGapFromToolFailure(
-        analyticsToolDemandPayload,
-        toolName,
-        output,
-      );
-      if (capabilityGapPayload) {
-        await appendExecutionEventSafe({
-          executionId,
-          phase: 'tool',
-          eventType: EXECUTION_CAPABILITY_GAP_EVENT,
-          actorType: 'tool',
-          actorKey: toolName,
-          title: 'capability gap detected',
-          summary: capabilityGapPayload.gapLabel,
-          status: 'failed',
-          payload: capabilityGapPayload as unknown as Record<string, unknown>,
-        });
-      }
-      const summary = summarizeText(output.summary, 180) ?? output.summary;
-      statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${title}: ${summary}`);
-      await updateStatus('tool_done', `${title}: ${summary}`);
-    },
-  });
   await assertExecutionRunnable(task.taskId, abortSignal);
   const resolvedModel = await resolveVercelLanguageModel(effectiveRuntime.mode);
   const contextClass = chooseLarkContextClass({
@@ -3413,114 +3483,341 @@ const executeLarkVercelTask = async (
         contextClass,
       },
     });
-    let result;
-    try {
-      await assertExecutionRunnable(task.taskId, abortSignal);
-      result = await runWithModelCircuitBreaker(
-        resolvedModel.effectiveProvider,
-        'lark_generate',
-        () =>
-          generateText({
-            model: resolvedModel.model,
-            system: systemPrompt,
-            messages: primaryMessages,
-            tools,
-            temperature: config.OPENAI_TEMPERATURE,
-            providerOptions: {
-              google: {
-                thinkingConfig: {
-                  includeThoughts: true,
-                  thinkingLevel: resolvedModel.thinkingLevel,
-                },
-              },
-            },
-            abortSignal,
-            stopWhen: [
-              stopOnPendingApproval,
-              ({ steps }) =>
-                Boolean(
-                  findUnrepairableBlockingUserInput(
-                    steps as Array<{ toolResults?: Array<{ output: unknown }> }>,
-                    task.taskId,
-                  ),
-                ),
-              stepCountIs(20),
-            ],
-          }),
-      );
-    } catch (error) {
-      if (!isProviderInvalidArgumentError(error)) {
-        throw error;
-      }
-
-      const sanitizedMessages = sanitizeMessagesForProviderRetry(
-        primaryMessages,
-        resolvedUserMessage,
-      );
-      logger.warn('lark.generate.retry_with_sanitized_messages', {
-        taskId: task.taskId,
-        messageId: message.messageId,
-        originalMessageCount: primaryMessages.length,
-        sanitizedMessageCount: sanitizedMessages.length,
-        originalLatestUserLength: resolvedUserMessage.length,
-        sanitizedLatestUserLength:
-          typeof sanitizedMessages[sanitizedMessages.length - 1]?.content === 'string'
-            ? sanitizedMessages[sanitizedMessages.length - 1]!.content.length
-            : 0,
-        error: error instanceof Error ? error.message : 'invalid_argument',
-      });
-      result = await runWithModelCircuitBreaker(
-        resolvedModel.effectiveProvider,
-        'lark_generate_sanitized_retry',
-        () =>
-          generateText({
-            model: resolvedModel.model,
-            system: systemPrompt,
-            messages: sanitizedMessages,
-            tools,
-            temperature: config.OPENAI_TEMPERATURE,
-            providerOptions: {
-              google: {
-                thinkingConfig: {
-                  includeThoughts: true,
-                  thinkingLevel: resolvedModel.thinkingLevel,
-                },
-              },
-            },
-            abortSignal,
-            stopWhen: [
-              stopOnPendingApproval,
-              ({ steps }) =>
-                Boolean(
-                  findUnrepairableBlockingUserInput(
-                    steps as Array<{ toolResults?: Array<{ output: unknown }> }>,
-                    task.taskId,
-                  ),
-                ),
-              stepCountIs(20),
-            ],
-          }),
-      );
-    }
-    logger.info('vercel.tool_loop.summary', {
+    const scopedContext = [
+      memoryPromptContext.behaviorProfileContext ?? '',
+      memoryPromptContext.durableTaskContextText ?? '',
+      memoryPromptContext.relevantMemoryFactsText ?? '',
+      buildThreadSummaryContext(activeThreadSummary) ?? '',
+      buildTaskStateContext(activeTaskState) ?? '',
+    ].filter((value): value is string => Boolean(value?.trim()));
+    const eligibleAgentIds = inferEligibleSupervisorAgentIds(
+      effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
+    );
+    const supervisorPlan = await planSupervisorDelegation({
       mode: runtime.mode,
-      modelId: resolvedModel.effectiveModelId,
-      stepCount: Array.isArray(result.steps) ? result.steps.length : 0,
-      stepLimit: 20,
-      hitStepLimit: Array.isArray(result.steps) ? result.steps.length >= 20 : false,
-      channel: 'lark',
+      latestUserMessage: resolvedUserMessage,
+      childRouteHints: {
+        route: childRoute.route,
+        domain: childRoute.domain ?? null,
+        operationType: childRoute.operationType ?? null,
+        normalizedIntent: childRoute.normalizedIntent ?? null,
+        suggestedToolIds: childRoute.suggestedToolIds ?? [],
+      },
+      toolSelectionReason: effectiveRuntime.toolSelectionReason ?? null,
+      inferredDomain: toolSelection.inferredDomain,
+      inferredOperationClass: toolSelection.inferredOperationClass,
+      eligibleAgentIds,
+      recentTaskSummaries: activeThreadSummary.recentTaskSummaries ?? [],
+      threadSummary: activeThreadSummary.summary ?? '',
+      abortSignal,
+    });
+    await appendExecutionEventSafe({
+      executionId,
+      phase: 'planning',
+      eventType: 'supervisor.plan',
+      actorType: 'planner',
+      actorKey: 'supervisor',
+      title: 'Supervisor plan created',
+      summary: `${supervisorPlan.complexity} with ${supervisorPlan.steps.length} step(s)`,
+      status: 'done',
+      payload: {
+        complexity: supervisorPlan.complexity,
+        eligibleAgentIds,
+        steps: supervisorPlan.steps,
+      },
+    });
+    await appendLatestAgentRunLog(task.taskId, 'supervisor.plan', {
+      threadId: contextStorageId ?? message.chatId,
+      complexity: supervisorPlan.complexity,
+      eligibleAgentIds,
+      steps: supervisorPlan.steps,
     });
 
-    const steps = result.steps as Array<{
-      toolResults?: Array<{ toolName?: string; output?: unknown }>;
-    }>;
-    const pendingApproval = findPendingApproval(
-      steps as Array<{ toolResults?: Array<{ output: unknown }> }>,
-    );
-    const blockingUserInput = findUnrepairableBlockingUserInput(
-      steps as Array<{ toolResults?: Array<{ output: unknown }> }>,
-      task.taskId,
-    );
+    let delegatedAgentResults: DelegatedAgentExecutionResult[] = [];
+    let generatedText = supervisorPlan.directAnswer?.trim() ?? '';
+    let steps: Array<{ toolResults?: Array<{ toolName?: string; output?: unknown }> }> = [];
+    let pendingApproval: PendingApprovalAction | null = null;
+    let blockingUserInput: ReturnType<typeof findUnrepairableBlockingUserInput> = null;
+
+    if (supervisorPlan.complexity !== 'direct') {
+      const dagResult = await executeSupervisorDag({
+        steps: supervisorPlan.steps,
+        runStep: async (step, upstreamResults) => {
+          await assertExecutionRunnable(task.taskId, abortSignal);
+          const resolvedHandoffContext = buildSupervisorResolvedContext({
+            objective: step.objective,
+            recentTaskSummaries: activeThreadSummary.recentTaskSummaries,
+            threadSummary: buildThreadSummaryContext(activeThreadSummary) ?? activeThreadSummary.summary ?? '',
+            scopedContext,
+            warmResolvedIds: hotContextStore.toWarmSummary(task.taskId).resolvedIds,
+            upstreamResults: upstreamResults.map((result) => ({
+              summary: result.summary,
+              text: result.text,
+              data: result.data,
+              output: result.output,
+            })),
+          });
+          const familyToolIds = getSupervisorAgentToolIds(
+            step.agentId,
+            effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
+          );
+          const stepRuntime: VercelRuntimeRequestContext = {
+            ...effectiveRuntime,
+            runExposedToolIds: familyToolIds,
+            plannerCandidateToolIds: familyToolIds,
+            toolSelectionReason: `supervisor delegated to ${step.agentId}`,
+          };
+          const stepToolResults: RunToolResult[] = [];
+          const stepResolvedContext = { ...resolvedHandoffContext };
+          const stepMessages: ModelMessage[] = [
+            ...primaryMessages.map(({ role, content }) => ({ role, content })),
+            {
+              role: 'user',
+              content: buildDelegatedLarkStepPrompt({
+                step,
+                originalUserMessage: resolvedUserMessage,
+                scopedContext,
+                upstreamResults,
+                resolvedContext: resolvedHandoffContext,
+              }),
+            },
+          ];
+          await appendExecutionEventSafe({
+            executionId,
+            phase: 'planning',
+            eventType: 'supervisor.step.start',
+            actorType: 'planner',
+            actorKey: step.agentId,
+            title: `Delegated step ${step.stepId}`,
+            summary: summarizeText(step.objective, 300) ?? step.objective,
+            status: 'running',
+            payload: {
+              stepId: step.stepId,
+              agentId: step.agentId,
+              objective: step.objective,
+              dependsOn: step.dependsOn,
+              inputRefs: step.inputRefs,
+            },
+          });
+          const stepTools = createVercelDesktopTools(stepRuntime, {
+            onToolStart: async (toolName, activityId, title) => {
+              await appendLatestAgentRunLog(task.taskId, 'tool.start', {
+                toolName,
+                activityId,
+                title,
+                channel: 'lark',
+                threadId: contextStorageId ?? message.chatId,
+                supervisorStepId: step.stepId,
+                supervisorAgentId: step.agentId,
+              });
+              statusHistory.push(`Started ${title}`);
+              await updateStatus('tool_running', `Using ${title}.`);
+            },
+            onToolFinish: async (toolName, activityId, title, output) => {
+              const hotContextSlot = buildHotContextSlot(toolName, output);
+              hotContextStore.push(task.taskId, hotContextSlot);
+              Object.assign(stepResolvedContext, hotContextSlot.resolvedIds);
+              stepToolResults.push({
+                toolId: output.toolId,
+                toolName,
+                success: output.success,
+                status: output.status,
+                data: output.data,
+                confirmedAction: output.confirmedAction,
+                ...(output.error ? { error: output.error } : {}),
+                pendingApproval: Boolean(output.pendingApprovalAction),
+                summary: output.summary,
+              });
+              await appendLatestAgentRunLog(task.taskId, 'tool.finish', {
+                toolName,
+                activityId,
+                title,
+                output,
+                channel: 'lark',
+                threadId: contextStorageId ?? message.chatId,
+                supervisorStepId: step.stepId,
+                supervisorAgentId: step.agentId,
+              });
+              const summary = summarizeText(output.summary, 180) ?? output.summary;
+              statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${title}: ${summary}`);
+              await updateStatus('tool_done', `${title}: ${summary}`);
+            },
+          });
+
+          let stepResult;
+          try {
+            stepResult = await runWithModelCircuitBreaker(
+              resolvedModel.effectiveProvider,
+              `lark_delegate_${step.agentId}`,
+              () =>
+                generateText({
+                  model: resolvedModel.model,
+                  system: buildDelegatedAgentSystemPrompt(systemPrompt, step.agentId),
+                  messages: stepMessages,
+                  tools: stepTools,
+                  temperature: config.OPENAI_TEMPERATURE,
+                  providerOptions: {
+                    google: {
+                      thinkingConfig: {
+                        includeThoughts: true,
+                        thinkingLevel: resolvedModel.thinkingLevel,
+                      },
+                    },
+                  },
+                  abortSignal,
+                  stopWhen: [
+                    stopOnPendingApproval,
+                    ({ steps: rawSteps }) =>
+                      Boolean(
+                        findUnrepairableBlockingUserInput(
+                          rawSteps as Array<{ toolResults?: Array<{ output: unknown }> }>,
+                          task.taskId,
+                        ),
+                      ),
+                    stepCountIs(20),
+                  ],
+                }),
+            );
+          } catch (error) {
+            if (!isProviderInvalidArgumentError(error)) {
+              throw error;
+            }
+            const sanitizedMessages = sanitizeMessagesForProviderRetry(
+              stepMessages,
+              resolvedUserMessage,
+            );
+            stepResult = await runWithModelCircuitBreaker(
+              resolvedModel.effectiveProvider,
+              `lark_delegate_${step.agentId}_retry`,
+              () =>
+                generateText({
+                  model: resolvedModel.model,
+                  system: buildDelegatedAgentSystemPrompt(systemPrompt, step.agentId),
+                  messages: sanitizedMessages,
+                  tools: stepTools,
+                  temperature: config.OPENAI_TEMPERATURE,
+                  providerOptions: {
+                    google: {
+                      thinkingConfig: {
+                        includeThoughts: true,
+                        thinkingLevel: resolvedModel.thinkingLevel,
+                      },
+                    },
+                  },
+                  abortSignal,
+                  stopWhen: [
+                    stopOnPendingApproval,
+                    ({ steps: rawSteps }) =>
+                      Boolean(
+                        findUnrepairableBlockingUserInput(
+                          rawSteps as Array<{ toolResults?: Array<{ output: unknown }> }>,
+                          task.taskId,
+                        ),
+                      ),
+                    stepCountIs(20),
+                  ],
+                }),
+            );
+          }
+
+          const rawSteps = stepResult.steps as Array<{
+            toolResults?: Array<{ toolName?: string; output?: unknown }>;
+          }>;
+          const stepPendingApproval = findPendingApproval(
+            rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>,
+          );
+          const stepBlockingUserInput = findUnrepairableBlockingUserInput(
+            rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>,
+            task.taskId,
+          );
+          const stepText = stepBlockingUserInput
+            ? (buildMissingInputResponseText(stepBlockingUserInput) ?? stepResult.text.trim()) || 'I need one more detail from you before I can continue.'
+            : stepPendingApproval
+              ? `Approval required before continuing: ${stepPendingApproval.kind === 'run_command' ? stepPendingApproval.command : stepPendingApproval.kind}.`
+              : stepResult.text.trim() || 'Done.';
+          const stepStatus: DelegatedAgentExecutionResult['status'] =
+            stepPendingApproval || stepBlockingUserInput
+              ? 'blocked'
+              : stepToolResults.some((result) => result.status === 'error' || result.status === 'timeout')
+                ? 'failed'
+                : 'success';
+          await appendExecutionEventSafe({
+            executionId,
+            phase: stepStatus === 'success' ? 'tool' : 'error',
+            eventType: stepStatus === 'success' ? 'supervisor.step.complete' : 'supervisor.step.failed',
+            actorType: 'agent',
+            actorKey: step.agentId,
+            title: `Delegated step ${step.stepId}`,
+            summary: summarizeText(stepText, 400) ?? stepText,
+            status: stepStatus === 'success' ? 'done' : 'failed',
+            payload: {
+              stepId: step.stepId,
+              agentId: step.agentId,
+              objective: step.objective,
+              pendingApproval: stepPendingApproval ? { kind: stepPendingApproval.kind } : null,
+              blockingUserInput: stepBlockingUserInput?.userAction ?? null,
+              toolResults: stepToolResults,
+            },
+          });
+          return {
+            stepId: step.stepId,
+            agentId: step.agentId,
+            objective: step.objective,
+            status: stepStatus,
+            text: stepText,
+            summary: summarizeText(stepText, 240) ?? stepText,
+            data: {
+              resolvedContext: stepResolvedContext,
+            },
+            toolResults: stepToolResults,
+            pendingApproval: Boolean(stepPendingApproval),
+            pendingApprovalAction: stepPendingApproval ?? undefined,
+            blockingUserInput: Boolean(stepBlockingUserInput),
+            blockingUserInputPayload: stepBlockingUserInput ?? undefined,
+            output: {
+              rawSteps,
+              text: stepResult.text.trim(),
+              resolvedContext: stepResolvedContext,
+            },
+          };
+        },
+      });
+
+      delegatedAgentResults = dagResult.orderedResults;
+      steps = delegatedAgentResults.flatMap((entry) =>
+        Array.isArray(entry.output.rawSteps)
+          ? (entry.output.rawSteps as Array<{ toolResults?: Array<{ toolName?: string; output?: unknown }> }>)
+          : [],
+      );
+      for (const delegatedResult of delegatedAgentResults) {
+        executedToolOutcomes.push(...delegatedResult.toolResults);
+      }
+      pendingApproval = delegatedAgentResults.find((entry) => entry.pendingApproval)?.pendingApprovalAction as PendingApprovalAction | null ?? null;
+      blockingUserInput =
+        delegatedAgentResults.find((entry) => entry.blockingUserInput)?.blockingUserInputPayload as ReturnType<typeof findUnrepairableBlockingUserInput> ?? null;
+
+      if (supervisorPlan.complexity === 'single') {
+        generatedText = delegatedAgentResults[0]?.text ?? 'Done.';
+      } else {
+        await appendExecutionEventSafe({
+          executionId,
+          phase: 'synthesis',
+          eventType: 'supervisor.synthesis',
+          actorType: 'planner',
+          actorKey: 'supervisor',
+          title: 'Supervisor synthesis',
+          summary: `${delegatedAgentResults.length} delegated result(s)`,
+          status: 'running',
+        });
+        generatedText = await synthesizeSupervisorOutcome({
+          mode: runtime.mode,
+          systemPrompt,
+          latestUserMessage: resolvedUserMessage,
+          results: delegatedAgentResults,
+          abortSignal,
+        });
+      }
+    }
     const mutationGuard = resolveMutationGuard({
       latestUserMessage: resolvedUserMessage,
       toolResults: executedToolOutcomes,
@@ -3532,14 +3829,14 @@ const executeLarkVercelTask = async (
       blockingUserInput: Boolean(blockingUserInput),
     });
     const finalText = mutationGuard.forcedFinalText === 'I did not complete that action because no confirmed action ran successfully.'
-      ? __vercelMutationGuardTestUtils.finalizeNoActionAttemptText(result.text.trim())
+      ? __vercelMutationGuardTestUtils.finalizeNoActionAttemptText(generatedText.trim())
       : mutationGuard.forcedFinalText
       ?? (blockingUserInput
-      ? (buildMissingInputResponseText(blockingUserInput) ?? result.text.trim()) ||
+      ? (buildMissingInputResponseText(blockingUserInput) ?? generatedText.trim()) ||
         'I need one more detail from you before I can continue.'
       : pendingApproval
         ? `Approval required before continuing: ${pendingApproval.kind === 'run_command' ? pendingApproval.command : pendingApproval.kind}.`
-        : result.text.trim() || 'Done.');
+        : generatedText.trim() || 'Done.');
     const hasToolResults =
       steps.length > 0
       || steps.some((step) => (step.toolResults?.length ?? 0) > 0);
@@ -3628,10 +3925,33 @@ const executeLarkVercelTask = async (
       pendingApproval,
     });
 
-    const agentResults = mapToolStepsToAgentResults(steps).map((entry) => ({
-      ...entry,
-      taskId: task.taskId,
-    }));
+    const agentResults = (
+      delegatedAgentResults.length > 0
+        ? delegatedAgentResults.map((entry) => ({
+            taskId: task.taskId,
+            agentKey: entry.agentId,
+            status: entry.status === 'success' ? 'success' : 'failed',
+            message: entry.summary,
+            result: entry.output,
+            error: entry.status === 'success'
+              ? undefined
+              : {
+                  type: 'TOOL_ERROR',
+                  classifiedReason: entry.pendingApproval
+                    ? 'approval_required'
+                    : entry.blockingUserInput
+                      ? 'missing_input'
+                      : 'delegated_step_failed',
+                  rawMessage: entry.text,
+                  retriable: false,
+                },
+            metrics: { apiCalls: Math.max(1, entry.toolResults.length) },
+          }))
+        : mapToolStepsToAgentResults(steps).map((entry) => ({
+            ...entry,
+            taskId: task.taskId,
+          }))
+    ) satisfies AgentResultDTO[];
     for (const step of steps) {
       for (const toolResult of step.toolResults ?? []) {
         const output = toolResult.output as VercelToolEnvelope | undefined;
@@ -3688,7 +4008,8 @@ const executeLarkVercelTask = async (
                 pendingApproval.kind === 'tool_action' ? pendingApproval.approvalId : null,
             }
           : null,
-        stepCount: Array.isArray(result.steps) ? result.steps.length : 0,
+        stepCount: delegatedAgentResults.length > 0 ? delegatedAgentResults.length : steps.length,
+        supervisorPlan,
       },
     );
 
@@ -3704,6 +4025,8 @@ const executeLarkVercelTask = async (
         node: pendingApproval ? 'control.requested' : mutationGuard.node,
         stepHistory: task.plan,
         canonicalIntent: task.canonicalIntent,
+        supervisorPlan,
+        delegatedAgentResults,
       },
     };
   } catch (error) {

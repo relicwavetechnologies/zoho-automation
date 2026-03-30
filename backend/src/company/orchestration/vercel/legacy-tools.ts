@@ -172,6 +172,14 @@ const loadWebSearchService = (): {
   search: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
 } => loadModuleExport('../../integrations/search/web-search.service', 'webSearchService');
 
+const loadChannelIdentityRepository = (): {
+  searchLarkContacts: (input: {
+    companyId: string;
+    query: string;
+    limit?: number;
+  }) => Promise<Array<Record<string, unknown>>>;
+} => loadModuleExport('../../channels/channel-identity.repository', 'channelIdentityRepository');
+
 const loadSearchIntegrationError = (): { new (...args: any[]): Error } =>
   loadModuleExport('../../integrations/search/web-search.service', 'SearchIntegrationError');
 
@@ -1043,8 +1051,8 @@ const uniqueDefinedStrings = (values: Array<string | undefined>): string[] =>
     ),
   );
 
-const CONTEXT_SEARCH_SCOPE_VALUES = ['personal_history', 'files', 'zoho_crm', 'all'] as const;
-const CONTEXT_SEARCH_FETCH_SCOPES = ['personal_history', 'files', 'zoho_crm'] as const;
+const CONTEXT_SEARCH_SCOPE_VALUES = ['personal_history', 'files', 'zoho_crm', 'lark_contacts', 'all'] as const;
+const CONTEXT_SEARCH_FETCH_SCOPES = ['personal_history', 'files', 'zoho_crm', 'lark_contacts'] as const;
 type ContextSearchScope = (typeof CONTEXT_SEARCH_FETCH_SCOPES)[number];
 
 type ContextSearchNormalizedHit = {
@@ -1058,6 +1066,8 @@ type ContextSearchNormalizedHit = {
   documentClass?: string;
   role?: string;
   conversationKey?: string;
+  displayName?: string;
+  email?: string;
   createdAt?: string;
   sourceLabel?: string;
 };
@@ -1084,9 +1094,23 @@ const buildContextSearchSourceLabel = (hit: ContextSearchNormalizedHit): string 
       return `${hit.fileName ?? 'Document'} · ${hit.documentClass ?? 'file'} · ${formatContextSearchDate(hit.createdAt)}`;
     case 'zoho_crm':
       return `Zoho CRM · ${hit.sourceType ?? 'record'} · ${formatContextSearchDate(hit.createdAt)}`;
+    case 'lark_contacts':
+      return `Lark contact · ${hit.displayName ?? hit.email ?? hit.sourceId} · ${formatContextSearchDate(hit.createdAt)}`;
     default:
       return `Unknown source · ${formatContextSearchDate(hit.createdAt)}`;
   }
+};
+
+const buildContextSearchLarkContactText = (person: Record<string, unknown>): string => {
+  const parts = uniqueDefinedStrings([
+    asString(person.displayName),
+    asString(person.email),
+    asString(person.externalUserId),
+    asString(person.larkOpenId),
+    asString(person.larkUserId),
+    asString(person.aiRole),
+  ]);
+  return parts.join('\n');
 };
 
 const parseContextSearchDate = (
@@ -1334,35 +1358,11 @@ const buildZohoGatewayRequester = (
   departmentZohoReadScope: runtime.departmentZohoReadScope,
 });
 
-const buildCompanyScopedBooksRequester = (
-  runtime: VercelRuntimeRequestContext,
-): Record<string, unknown> => ({
-  ...buildZohoGatewayRequester(runtime),
-  departmentZohoReadScope: 'show_all',
-});
-
-const shouldRetryBooksReadInCompanyScope = (
-  runtime: VercelRuntimeRequestContext,
-  authResult: Record<string, unknown>,
-): boolean => {
-  if (!runtime.canFallbackToCompanyScopedBooksRead || runtime.departmentZohoReadScope === 'show_all') {
-    return false;
-  }
-  const denialReason = asString(authResult.denialReason);
-  return denialReason === 'books_principal_not_resolved' || denialReason === 'missing_requester_email';
-};
-
 const withBooksReadAuthorizationRetry = async (
   runtime: VercelRuntimeRequestContext,
   attempt: (requester: Record<string, unknown>) => Promise<unknown>,
 ): Promise<Record<string, unknown>> => {
-  const primaryRequester = buildZohoGatewayRequester(runtime);
-  const primary =
-    asRecord(await attempt(primaryRequester)) ?? {};
-  if (primary.allowed === true || !shouldRetryBooksReadInCompanyScope(runtime, primary)) {
-    return primary;
-  }
-  return asRecord(await attempt(buildCompanyScopedBooksRequester(runtime))) ?? primary;
+  return asRecord(await attempt(buildZohoGatewayRequester(runtime))) ?? {};
 };
 
 const buildWorkflowValidationRepairHints = (
@@ -3445,7 +3445,7 @@ export const createVercelDesktopTools = (
 
     contextSearch: tool({
       description:
-        'Search across personal conversation history, uploaded documents, and Zoho CRM context in one pass, then fetch full chunk content on demand using a chunkRef.',
+        'Search across personal conversation history, uploaded documents, Zoho CRM context, and Lark contacts in one pass, then fetch full chunk content on demand using a chunkRef.',
       inputSchema: z.object({
         operation: z.enum(['search', 'fetch']),
         query: z.string().optional(),
@@ -3508,6 +3508,22 @@ export const createVercelDesktopTools = (
                 chunkIndex,
               });
               fullText = context.text.trim();
+            } else if (scope === 'lark_contacts') {
+              const permissionError = ensureActionPermission(runtime, 'lark-message-read', 'read');
+              if (permissionError) {
+                return permissionError;
+              }
+              const people = await loadListLarkPeople()({
+                companyId: runtime.companyId,
+                appUserId: runtime.userId,
+                requestLarkOpenId: runtime.larkOpenId,
+              });
+              const person = people.find((entry) =>
+                [asString(entry.larkOpenId), asString(entry.externalUserId), asString(entry.larkUserId)]
+                  .filter((value): value is string => Boolean(value))
+                  .includes(sourceId.trim()),
+              );
+              fullText = person ? buildContextSearchLarkContactText(person).trim() : '';
             } else {
               const fetched = await loadVectorDocumentRepository().fetchChunkByKey({
                 companyId: runtime.companyId,
@@ -3674,6 +3690,47 @@ export const createVercelDesktopTools = (
                 return normalizedHit;
               }));
               return normalized.filter((entry): entry is ContextSearchNormalizedHit => Boolean(entry));
+            }
+
+            if (scope === 'lark_contacts') {
+              const permissionError = ensureActionPermission(runtime, 'lark-message-read', 'read');
+              if (permissionError) {
+                throw new Error(permissionError.summary);
+              }
+              const people = await loadChannelIdentityRepository().searchLarkContacts({
+                companyId: runtime.companyId,
+                query,
+                limit,
+              });
+              const normalized = people
+                .map((person, index) => {
+                  const sourceId = asString(person.larkOpenId)
+                    ?? asString(person.externalUserId)
+                    ?? asString(person.larkUserId);
+                  const text = buildContextSearchLarkContactText(person);
+                  if (!sourceId || !text) {
+                    return null;
+                  }
+                  const normalizedHit: ContextSearchNormalizedHit = {
+                    scope,
+                    sourceType: 'lark_contact',
+                    sourceId,
+                    chunkIndex: 0,
+                    score: Math.max(0.95 - index * 0.05, 0.55),
+                    text,
+                    displayName: asString(person.displayName),
+                    email: asString(person.email),
+                    createdAt:
+                      asString(person.updatedAt)
+                      ?? asString(person.createdAt)
+                      ?? asString(person.directorySyncedAt),
+                  };
+                  normalizedHit.sourceLabel = buildContextSearchSourceLabel(normalizedHit);
+                  return normalizedHit;
+                })
+                .filter((entry): entry is ContextSearchNormalizedHit => Boolean(entry))
+                .sort((left, right) => right.score - left.score);
+              return normalized;
             }
 
             const matches = await loadZohoRetrievalService().query({

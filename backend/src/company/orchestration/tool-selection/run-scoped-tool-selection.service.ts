@@ -50,6 +50,12 @@ const plannerDecisionSchema = z.object({
 });
 
 const GLOBAL_ALWAYS_ON_IDS = ['skill-search', 'context-search'] as const;
+const CLARIFICATION_ALLOWED_ONLY_WHEN_DOMAIN_UNKNOWN = [
+  'general',
+  'unknown',
+  'ambiguous',
+  'unspecified',
+] as const;
 const LARK_CHANNEL_BASELINE = [
   'skill-search',
   'context-search',
@@ -252,6 +258,12 @@ const requiresContextSearch = (message: string): boolean => {
   if (/\b(context search|search history|search memory|conversation history|past chats?|past files?)\b/.test(text)) {
     return true;
   }
+  if (
+    /\b(search|find|look up|lookup|look for|find out)\b/.test(text)
+    && /\b(email|mail|contact|contacts|phone|number|address|person|people|teammate|employee|coworker|colleague)\b/.test(text)
+  ) {
+    return true;
+  }
   if (/\b(remember|previous|before|last time|we talked about|we discussed|that file|that document|that csv|earlier)\b/.test(text)) {
     return true;
   }
@@ -436,6 +448,17 @@ const validatePlannerDecision = (input: {
 }): RunScopedToolSelection => {
   const exposed = new Set(input.selection.runExposedToolIds);
   if (input.decision.shouldAskClarification) {
+    if (
+      input.selection.runExposedToolIds.length > 0 &&
+      !CLARIFICATION_ALLOWED_ONLY_WHEN_DOMAIN_UNKNOWN
+        .includes((input.selection.inferredDomain ?? 'unknown') as (typeof CLARIFICATION_ALLOWED_ONLY_WHEN_DOMAIN_UNKNOWN)[number])
+    ) {
+      return {
+        ...input.selection,
+        validationFailureReason: null,
+        plannerChosenOperationClass: input.selection.inferredOperationClass,
+      };
+    }
     return {
       ...input.selection,
       clarificationQuestion: input.decision.clarificationQuestion?.trim() || 'I need one more detail before I can choose the right tool for this request.',

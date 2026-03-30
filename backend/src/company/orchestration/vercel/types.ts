@@ -141,7 +141,6 @@ export type VercelRuntimeRequestContext = {
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentZohoReadScope?: 'personalized' | 'show_all';
-  canFallbackToCompanyScopedBooksRead?: boolean;
   departmentZohoRateLimitConfig?: ZohoRateLimitConfig;
   departmentManagerApprovalConfig?: DepartmentManagerApprovalConfig;
   larkTenantKey?: string;

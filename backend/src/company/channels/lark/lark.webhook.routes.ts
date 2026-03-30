@@ -1754,7 +1754,9 @@ export const createLarkWebhookEventHandler = (
       resolvedMentionNames = mentions
         .map((mention) => resolveLarkMentionDisplayName(mention, mentionDirectory))
         .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
-      botMentioned = mentions.some((mention) => isDivoMention(mention, mentionDirectory))
+      const isDirectBotChat = normalized.chatType === 'p2p';
+      botMentioned = isDirectBotChat
+        || mentions.some((mention) => isDivoMention(mention, mentionDirectory))
         || textDirectlyMentionsDivo(resolvedText);
 
       dependencies.log.info('lark.webhook.message.mentions_resolved', {

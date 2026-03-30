@@ -131,6 +131,12 @@ const hasContextSearchIntent = (text: string): boolean => {
   if (/\b(context search|search history|search memory|conversation history|past chats?|past files?)\b/.test(text)) {
     return true;
   }
+  if (
+    /\b(search|find|look up|lookup|look for|find out)\b/.test(text)
+    && /\b(email|mail|contact|contacts|phone|number|address|person|people|teammate|employee|coworker|colleague)\b/.test(text)
+  ) {
+    return true;
+  }
   if (/\b(remember|previous|before|last time|we talked about|we discussed|that file|that document|that csv|earlier)\b/.test(text)) {
     return true;
   }

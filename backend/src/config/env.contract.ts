@@ -523,8 +523,8 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
     }),
     ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS: parseInteger({
       key: 'ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS',
-      value: readString(parsedRaw.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS, '120000'),
-      defaultValue: 120000,
+      value: readString(parsedRaw.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS, '300000'),
+      defaultValue: 300000,
       min: 1000,
       issues,
     }),
