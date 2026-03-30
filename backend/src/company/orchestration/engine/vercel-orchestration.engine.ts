@@ -870,6 +870,10 @@ export const __vercelMutationGuardTestUtils = {
   },
 };
 
+const delegatedStepLikelyRequiresToolUse = (step: SupervisorStep): boolean =>
+  /\b(find|search|look up|retrieve|read|get|fetch|list|send|mail|email|draft|reply|forward|create|update|delete|schedule|run|save|archive|post|message|verify|inspect|check)\b/i
+    .test(step.objective);
+
 const resolveMutationGuard = (input: {
   latestUserMessage: string;
   toolResults: RunToolResult[];
@@ -3757,97 +3761,137 @@ const executeLarkVercelTask = async (
             });
           }, 15_000);
           delegatedStepWatchdog.unref?.();
-          try {
-            stepResult = await runWithModelCircuitBreaker(
-              resolvedModel.effectiveProvider,
-              `lark_delegate_${step.agentId}`,
-              () =>
-                generateText({
-                  model: resolvedModel.model,
-                  system: buildDelegatedAgentSystemPrompt(systemPrompt, step.agentId),
-                  messages: stepMessages,
-                  tools: stepTools,
-                  temperature: config.OPENAI_TEMPERATURE,
-                  providerOptions: {
-                    google: {
-                      thinkingConfig: {
-                        includeThoughts: true,
-                        thinkingLevel: resolvedModel.thinkingLevel,
+          const runDelegatedStepModel = async (
+            messagesForStep: ModelMessage[],
+            labelSuffix = '',
+          ) => {
+            try {
+              return await runWithModelCircuitBreaker(
+                resolvedModel.effectiveProvider,
+                `lark_delegate_${step.agentId}${labelSuffix}`,
+                () =>
+                  generateText({
+                    model: resolvedModel.model,
+                    system: buildDelegatedAgentSystemPrompt(systemPrompt, step.agentId),
+                    messages: messagesForStep,
+                    tools: stepTools,
+                    temperature: config.OPENAI_TEMPERATURE,
+                    providerOptions: {
+                      google: {
+                        thinkingConfig: {
+                          includeThoughts: true,
+                          thinkingLevel: resolvedModel.thinkingLevel,
+                        },
                       },
                     },
-                  },
-                  abortSignal,
-                  stopWhen: [
-                    stopOnPendingApproval,
-                    ({ steps: rawSteps }) =>
-                      Boolean(
-                        findUnrepairableBlockingUserInput(
-                          rawSteps as Array<{ toolResults?: Array<{ output: unknown }> }>,
-                          task.taskId,
+                    abortSignal,
+                    stopWhen: [
+                      stopOnPendingApproval,
+                      ({ steps: rawSteps }) =>
+                        Boolean(
+                          findUnrepairableBlockingUserInput(
+                            rawSteps as Array<{ toolResults?: Array<{ output: unknown }> }>,
+                            task.taskId,
+                          ),
                         ),
-                      ),
-                    stepCountIs(20),
-                  ],
-                }),
-            );
-          } catch (error) {
-            if (!isProviderInvalidArgumentError(error)) {
-              if (delegatedStepWatchdog) {
-                clearTimeout(delegatedStepWatchdog);
+                      stepCountIs(20),
+                    ],
+                  }),
+              );
+            } catch (error) {
+              if (!isProviderInvalidArgumentError(error)) {
+                throw error;
               }
-              throw error;
-            }
-            const sanitizedMessages = sanitizeMessagesForProviderRetry(
-              stepMessages,
-              resolvedUserMessage,
-            );
-            stepResult = await runWithModelCircuitBreaker(
-              resolvedModel.effectiveProvider,
-              `lark_delegate_${step.agentId}_retry`,
-              () =>
-                generateText({
-                  model: resolvedModel.model,
-                  system: buildDelegatedAgentSystemPrompt(systemPrompt, step.agentId),
-                  messages: sanitizedMessages,
-                  tools: stepTools,
-                  temperature: config.OPENAI_TEMPERATURE,
-                  providerOptions: {
-                    google: {
-                      thinkingConfig: {
-                        includeThoughts: true,
-                        thinkingLevel: resolvedModel.thinkingLevel,
+              const sanitizedMessages = sanitizeMessagesForProviderRetry(
+                messagesForStep,
+                resolvedUserMessage,
+              );
+              return runWithModelCircuitBreaker(
+                resolvedModel.effectiveProvider,
+                `lark_delegate_${step.agentId}${labelSuffix}_provider_retry`,
+                () =>
+                  generateText({
+                    model: resolvedModel.model,
+                    system: buildDelegatedAgentSystemPrompt(systemPrompt, step.agentId),
+                    messages: sanitizedMessages,
+                    tools: stepTools,
+                    temperature: config.OPENAI_TEMPERATURE,
+                    providerOptions: {
+                      google: {
+                        thinkingConfig: {
+                          includeThoughts: true,
+                          thinkingLevel: resolvedModel.thinkingLevel,
+                        },
                       },
                     },
-                  },
-                  abortSignal,
-                  stopWhen: [
-                    stopOnPendingApproval,
-                    ({ steps: rawSteps }) =>
-                      Boolean(
-                        findUnrepairableBlockingUserInput(
-                          rawSteps as Array<{ toolResults?: Array<{ output: unknown }> }>,
-                          task.taskId,
+                    abortSignal,
+                    stopWhen: [
+                      stopOnPendingApproval,
+                      ({ steps: rawSteps }) =>
+                        Boolean(
+                          findUnrepairableBlockingUserInput(
+                            rawSteps as Array<{ toolResults?: Array<{ output: unknown }> }>,
+                            task.taskId,
+                          ),
                         ),
-                      ),
-                    stepCountIs(20),
-                  ],
-                }),
-            );
-          }
+                      stepCountIs(20),
+                    ],
+                  }),
+              );
+            }
+          };
+          stepResult = await runDelegatedStepModel(stepMessages);
           if (delegatedStepWatchdog) {
             clearTimeout(delegatedStepWatchdog);
           }
 
-          const rawSteps = stepResult.steps as Array<{
+          let rawSteps = stepResult.steps as Array<{
             toolResults?: Array<{ toolName?: string; output?: unknown }>;
           }>;
-          const stepPendingApproval = findPendingApproval(
+          let stepPendingApproval = findPendingApproval(
             rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>,
           );
-          const stepBlockingUserInput = findUnrepairableBlockingUserInput(
+          let stepBlockingUserInput = findUnrepairableBlockingUserInput(
             rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>,
             task.taskId,
           );
+          if (
+            stepToolResults.length === 0 &&
+            !stepPendingApproval &&
+            !stepBlockingUserInput &&
+            delegatedStepLikelyRequiresToolUse(step)
+          ) {
+            statusHistory.push(`Retrying ${step.agentId}: first pass completed without any tool use.`);
+            await updateStatus(
+              'planning',
+              `${step.agentId}: retrying because no tool ran in the first pass.`,
+            );
+            await appendLatestAgentRunLog(task.taskId, 'supervisor.step.retry_no_tool_use', {
+              channel: 'lark',
+              threadId: contextStorageId ?? message.chatId,
+              supervisorStepId: step.stepId,
+              supervisorAgentId: step.agentId,
+              objective: step.objective,
+            });
+            stepResult = await runDelegatedStepModel([
+              ...stepMessages,
+              {
+                role: 'user',
+                content:
+                  'Retry this delegated step once. The previous pass finished without using any tools. If this step requires live retrieval or an external action, use one of the available tools in this agent family unless you are blocked by approval or missing input.',
+              },
+            ], '_no_tool_retry');
+            rawSteps = stepResult.steps as Array<{
+              toolResults?: Array<{ toolName?: string; output?: unknown }>;
+            }>;
+            stepPendingApproval = findPendingApproval(
+              rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>,
+            );
+            stepBlockingUserInput = findUnrepairableBlockingUserInput(
+              rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>,
+              task.taskId,
+            );
+          }
           const stepText = stepBlockingUserInput
             ? (buildMissingInputResponseText(stepBlockingUserInput) ?? stepResult.text.trim()) || 'I need one more detail from you before I can continue.'
             : stepPendingApproval
