@@ -38,8 +38,8 @@ const inferSourceFamilyFromCitation = (
     || toolName === 'documentOcrRead'
   ) return 'file';
   if (sourceType === 'chat_turn') return 'chat';
-  if (toolName === 'skillSearch') return 'skill';
-  if (toolName === 'webSearch' || sourceType === 'web') return 'web';
+  if (toolName === 'skillSearch' || sourceType === 'skill') return 'skill';
+  if (toolName === 'webSearch' || sourceType === 'web' || sourceType === 'web_result') return 'web';
   if (toolName === 'invoiceParser' || toolName === 'statementParser') return 'parser';
   return 'file';
 };
@@ -89,9 +89,9 @@ export class RetrievalOrchestratorService {
       }
 
       if (step.need === 'workflow_skill') {
-        pushUnique(toolFamilies, 'skillSearch');
+        pushUnique(toolFamilies, 'contextSearch');
         systemDirectives.push(
-          'This request is workflow-like. Search relevant skills first, read the best matching skill, then continue with the domain tool path.',
+          'This request is workflow-like. Use contextSearch with skill sources first, read the best matching skill, then continue with the domain tool path.',
         );
       }
 
@@ -119,9 +119,9 @@ export class RetrievalOrchestratorService {
       }
 
       if (step.need === 'hybrid_web') {
-        pushUnique(toolFamilies, 'webSearch');
+        pushUnique(toolFamilies, 'contextSearch');
         systemDirectives.push(
-          'Sequence internal retrieval before web retrieval. In the final answer, clearly separate internal evidence from public web evidence.',
+          'Sequence internal retrieval before web retrieval through contextSearch. In the final answer, clearly separate internal evidence from public web evidence.',
         );
       }
     }
@@ -145,8 +145,8 @@ export class RetrievalOrchestratorService {
       }
     }
 
-    if ((input.retrievalMode === 'web' || input.retrievalMode === 'both') && !toolFamilies.includes('webSearch')) {
-      pushUnique(toolFamilies, 'webSearch');
+    if ((input.retrievalMode === 'web' || input.retrievalMode === 'both') && !toolFamilies.includes('contextSearch')) {
+      pushUnique(toolFamilies, 'contextSearch');
     }
 
     return {

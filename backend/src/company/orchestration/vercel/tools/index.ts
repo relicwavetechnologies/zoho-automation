@@ -7,7 +7,6 @@ import { buildLarkMessagingTools } from './families/lark-messaging';
 import { buildLarkTaskTools } from './families/lark-task';
 import { buildOutreachTools } from './families/outreach';
 import { buildRepoCodingTools } from './families/repo-coding';
-import { buildSearchTools } from './families/search';
 import { buildWorkflowAuthoringTools } from './families/workflow-authoring';
 import { buildZohoBooksTools } from './families/zoho-books';
 import { buildZohoCrmTools } from './families/zoho-crm';
@@ -15,23 +14,16 @@ import { buildZohoCrmTools } from './families/zoho-crm';
 export const createVercelDesktopTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
-): Record<string, any> => {
-  const searchTools = buildSearchTools(runtime, hooks);
-  const { skillSearch, ...coreSearchTools } = searchTools;
-
-  return {
-    ...coreSearchTools,
-    ...buildContextSearchTools(runtime, hooks),
-    ...buildDocumentTools(runtime, hooks),
-    ...buildWorkflowAuthoringTools(runtime, hooks),
-    ...(skillSearch ? { skillSearch } : {}),
-    ...buildRepoCodingTools(runtime, hooks),
-    ...buildGoogleTools(runtime, hooks),
-    ...buildZohoBooksTools(runtime, hooks),
-    ...buildLarkTaskTools(runtime, hooks),
-    ...buildLarkMessagingTools(runtime, hooks),
-    ...buildLarkCollabTools(runtime, hooks),
-    ...buildZohoCrmTools(runtime, hooks),
-    ...buildOutreachTools(runtime, hooks),
-  };
-};
+): Record<string, any> => ({
+  ...buildContextSearchTools(runtime, hooks),
+  ...buildDocumentTools(runtime, hooks),
+  ...buildWorkflowAuthoringTools(runtime, hooks),
+  ...buildRepoCodingTools(runtime, hooks),
+  ...buildGoogleTools(runtime, hooks),
+  ...buildZohoBooksTools(runtime, hooks),
+  ...buildLarkTaskTools(runtime, hooks),
+  ...buildLarkMessagingTools(runtime, hooks),
+  ...buildLarkCollabTools(runtime, hooks),
+  ...buildZohoCrmTools(runtime, hooks),
+  ...buildOutreachTools(runtime, hooks),
+});

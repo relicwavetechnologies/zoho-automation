@@ -24,8 +24,8 @@ const AGENT_DOMAIN_MAP: Record<SupervisorAgentId, { label: string; description: 
   },
   'context-agent': {
     label: 'Context Agent',
-    description: 'Handles context search, web search, skill lookup, outreach lookup, and contact/context resolution.',
-    domains: ['context_search', 'web_search', 'skill', 'outreach', 'general'],
+    description: 'Handles all retrieval through the unified context broker, plus outreach lookup and contact/context resolution.',
+    domains: ['context_search', 'outreach', 'general'],
   },
   'workspace-agent': {
     label: 'Workspace Agent',

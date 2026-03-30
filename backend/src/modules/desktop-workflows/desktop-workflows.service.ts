@@ -386,13 +386,10 @@ const buildToolFamilyGuide = (allowedToolIds: string[]): string =>
 const buildPlanningToolGuide = (allowedToolIds: string[]): string => {
   const lines: string[] = [];
   if (allowedToolIds.includes('context-search')) {
-    lines.push('- context-search: search indexed company docs, prior conversations, and Zoho CRM context first.');
+    lines.push('- context-search: unified retrieval for indexed docs, prior conversations, Lark contacts, Zoho context, web research, and skills.');
   }
   if (allowedToolIds.includes('document-ocr-read')) {
     lines.push('- document-ocr-read: read the actual uploaded file directly when exact extraction or OCR is needed.');
-  }
-  if (allowedToolIds.includes('skill-search')) {
-    lines.push('- skill-search: discover and read internal operating skills for ambiguous operational workflows.');
   }
   return lines.join('\n');
 };
@@ -833,18 +830,11 @@ const buildHeuristicPlanningTurn = (input: {
 };
 
 const pickSearchCapability = (allowedToolIds: string[]) => {
-  if (allowedToolIds.includes('search-read')) {
+  if (allowedToolIds.includes('context-search')) {
     return {
-      toolId: 'search-read',
+      toolId: 'context-search',
       actionGroup: 'read' as const,
-      operation: 'search.read.latest',
-    };
-  }
-  if (allowedToolIds.includes('search-agent')) {
-    return {
-      toolId: 'search-agent',
-      actionGroup: 'read' as const,
-      operation: 'search.agent.research',
+      operation: 'context.search.latest',
     };
   }
   return undefined;
@@ -1838,7 +1828,6 @@ class DesktopWorkflowsService {
     const allowedPlanningToolIds = allowedToolIds.filter((toolId) => [
       'context-search',
       'document-ocr-read',
-      'skill-search',
       'share_chat_vectors',
     ].includes(toolId));
     const planningSkillContext = await buildPlanningSkillContext({

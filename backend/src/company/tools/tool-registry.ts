@@ -293,7 +293,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: 'context-search',
     name: 'Context Search',
-    description: 'Search personal conversation history, uploaded documents, Zoho CRM context, and Lark contacts through one unified retrieval interface.',
+    description: 'Unified retrieval broker for conversation history, indexed documents, Lark contacts, Zoho context, workspace lookup, web research, and skill discovery.',
     category: 'search',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },

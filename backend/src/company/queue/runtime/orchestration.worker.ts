@@ -34,8 +34,7 @@ import { redisConnection, stateRedisConnection } from './redis.connection';
 const userLocks = new Map<string, Promise<void>>();
 const taskAbortControllers = new Map<string, AbortController>();
 const CONVERSATION_LOCK_TTL_MS = config.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS + 15_000;
-const CONVERSATION_LOCK_WAIT_MS = 30_000;
-const CONVERSATION_LOCK_RETRY_MS = 400;
+const CONVERSATION_LOCK_REQUEUE_DELAY_MS = 2_000;
 
 const runPerUserDeterministically = async (userId: string, fn: () => Promise<void>): Promise<void> => {
   const previous = userLocks.get(userId) ?? Promise.resolve();
@@ -83,7 +82,6 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
 };
 
 const buildExecutionId = (taskId: string, requestId?: string): string => requestId?.trim() || taskId;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const buildConversationLockKey = (job: Job<OrchestrationJobData>): string =>
   `orchestration:conversation-lock:${job.data.message.channel}:${job.data.message.chatId}`;
 
@@ -134,37 +132,32 @@ const acquireConversationLock = async (job: Job<OrchestrationJobData>): Promise<
   const client = stateRedisConnection.getClient();
   const key = buildConversationLockKey(job);
   const token = randomUUID();
-  const deadline = Date.now() + CONVERSATION_LOCK_WAIT_MS;
-
-  while (Date.now() < deadline) {
-    const acquired = await client.set(key, token, 'PX', CONVERSATION_LOCK_TTL_MS, 'NX');
-    if (acquired === 'OK') {
-      return async () => {
-        try {
-          const current = await client.get(key);
-          if (current === token) {
-            await client.del(key);
-          }
-        } catch (error) {
-          logger.warn('queue.conversation_lock.release_failed', {
-            taskId: job.data.taskId,
-            messageId: job.data.message.messageId,
-            chatId: job.data.message.chatId,
-            jobId: job.id,
-            error: error instanceof Error ? error.message : 'unknown_error',
-          });
+  const acquired = await client.set(key, token, 'PX', CONVERSATION_LOCK_TTL_MS, 'NX');
+  if (acquired === 'OK') {
+    return async () => {
+      try {
+        const current = await client.get(key);
+        if (current === token) {
+          await client.del(key);
         }
-      };
-    }
-    await sleep(CONVERSATION_LOCK_RETRY_MS);
+      } catch (error) {
+        logger.warn('queue.conversation_lock.release_failed', {
+          taskId: job.data.taskId,
+          messageId: job.data.message.messageId,
+          chatId: job.data.message.chatId,
+          jobId: job.id,
+          error: error instanceof Error ? error.message : 'unknown_error',
+        });
+      }
+    };
   }
 
-  logger.warn('queue.conversation_lock.wait_timeout', {
+  logger.warn('queue.conversation_lock.busy', {
     taskId: job.data.taskId,
     messageId: job.data.message.messageId,
     chatId: job.data.message.chatId,
     jobId: job.id,
-    waitMs: CONVERSATION_LOCK_WAIT_MS,
+    requeueDelayMs: CONVERSATION_LOCK_REQUEUE_DELAY_MS,
   });
   return null;
 };
@@ -725,7 +718,7 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
           status: 'pending',
           queueJobId: buildQueueJobId(job),
         });
-        await job.moveToDelayed(Date.now() + 2_000, job.token ?? '');
+        await job.moveToDelayed(Date.now() + CONVERSATION_LOCK_REQUEUE_DELAY_MS, job.token ?? '');
         return;
       }
 

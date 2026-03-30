@@ -8,7 +8,7 @@ import { ZodError, z } from 'zod';
 import config from '../../../config';
 import { conversationMemoryStore } from '../../state/conversation';
 import { logger } from '../../../utils/logger';
-import { skillService } from '../../skills/skill.service';
+import { contextSearchBrokerService } from '../../retrieval/context-search-broker.service';
 import { getSupportedToolActionGroups, type ToolActionGroup } from '../../tools/tool-action-groups';
 import { companyGoogleAuthLinkRepository } from '../../channels/google/company-google-auth-link.repository';
 import { googleOAuthService } from '../../channels/google/google-oauth.service';
@@ -1054,6 +1054,47 @@ const uniqueDefinedStrings = (values: Array<string | undefined>): string[] =>
 const CONTEXT_SEARCH_SCOPE_VALUES = ['personal_history', 'files', 'zoho_crm', 'lark_contacts', 'all'] as const;
 const CONTEXT_SEARCH_FETCH_SCOPES = ['personal_history', 'files', 'zoho_crm', 'lark_contacts'] as const;
 type ContextSearchScope = (typeof CONTEXT_SEARCH_FETCH_SCOPES)[number];
+const CONTEXT_SEARCH_SOURCE_KEYS = [
+  'personalHistory',
+  'files',
+  'larkContacts',
+  'zohoCrmContext',
+  'workspace',
+  'web',
+  'skills',
+] as const;
+
+const normalizeContextSearchSources = (input: {
+  scopes?: Array<(typeof CONTEXT_SEARCH_SCOPE_VALUES)[number]>;
+  sources?: Partial<Record<(typeof CONTEXT_SEARCH_SOURCE_KEYS)[number], boolean>>;
+}): Record<(typeof CONTEXT_SEARCH_SOURCE_KEYS)[number], boolean> | undefined => {
+  if (input.sources) {
+    return {
+      personalHistory: input.sources.personalHistory ?? true,
+      files: input.sources.files ?? true,
+      larkContacts: input.sources.larkContacts ?? true,
+      zohoCrmContext: input.sources.zohoCrmContext ?? true,
+      workspace: input.sources.workspace ?? false,
+      web: input.sources.web ?? false,
+      skills: input.sources.skills ?? false,
+    };
+  }
+
+  const requestedScopes = (input.scopes ?? ['all']).filter((scope) => scope !== 'all');
+  if (requestedScopes.length === 0) {
+    return undefined;
+  }
+
+  return {
+    personalHistory: requestedScopes.includes('personal_history'),
+    files: requestedScopes.includes('files'),
+    larkContacts: requestedScopes.includes('lark_contacts'),
+    zohoCrmContext: requestedScopes.includes('zoho_crm'),
+    workspace: false,
+    web: false,
+    skills: false,
+  };
+};
 
 type ContextSearchNormalizedHit = {
   scope: ContextSearchScope;
@@ -3260,7 +3301,7 @@ export const createVercelDesktopTools = (
   const tools = {
     webSearch: tool({
       description:
-        'Public web and documentation search only. Use for public internet research and exact page context.',
+        'Compatibility shim for public web retrieval. Prefer contextSearch with sources.web=true for all new retrieval.',
       inputSchema: z.object({
         operation: z.enum(['search', 'focusedSearch', 'fetchPageContext']),
         query: z.string().min(1),
@@ -3270,49 +3311,57 @@ export const createVercelDesktopTools = (
       execute: async (input) =>
         withLifecycle(hooks, 'webSearch', 'Searching the web', async () => {
           try {
-            const limit = Math.max(1, Math.min(8, input.limit ?? 5));
-            const isPageContextFetch = input.operation === 'fetchPageContext';
-            const searchResult = await loadWebSearchService().search({
+            const result = await contextSearchBrokerService.search({
+              runtime,
               query: input.query,
-              ...(input.site ? { exactDomain: input.site } : {}),
-              ...(isPageContextFetch ? { crawlUrl: input.query } : {}),
-              searchResultsLimit: limit,
-              pageContextLimit: Math.min(isPageContextFetch ? 4 : 3, limit),
+              limit: input.limit,
+              site: input.site,
+              webMode: input.operation,
+              sources: {
+                personalHistory: false,
+                files: false,
+                larkContacts: false,
+                zohoCrmContext: false,
+                workspace: false,
+                web: true,
+                skills: false,
+              },
             });
-            const record = asRecord(searchResult) ?? {};
-            const items = asArray(record.items)
-              .map((entry) => asRecord(entry))
-              .filter((entry): entry is Record<string, unknown> => Boolean(entry));
-            const citations = buildWebCitations(items, record.sourceRefs);
+            const topResult = result.results[0] ?? null;
+            const citations = contextSearchBrokerService.toVercelCitationsFromSearch(result);
             return buildEnvelope({
               success: true,
               summary:
-                items.length > 0
-                  ? `Found ${items.length} public web result(s) for "${input.query}".`
+                result.results.length > 0
+                  ? `Found ${result.results.length} public web result(s) for "${input.query}".`
                   : `No public web results matched "${input.query}".`,
               keyData: {
-                selectedResult: items[0] ?? null,
+                selectedResult: topResult,
+                resolvedEntities: result.resolvedEntities,
                 urls: uniqueDefinedStrings(citations.map((citation) => citation.url)),
               },
               fullPayload: {
-                query: record.query,
-                exactDomain: record.exactDomain,
-                focusedSiteSearch: record.focusedSiteSearch,
-                crawlUsed: record.crawlUsed,
-                crawlUrl: record.crawlUrl,
-                crawlError: record.crawlError,
-                searchResults: items,
+                query: input.query,
+                exactDomain: input.site?.trim() || undefined,
+                focusedSiteSearch: Boolean(input.site?.trim()),
+                crawlUsed: input.operation === 'fetchPageContext',
+                crawlUrl: input.operation === 'fetchPageContext' ? input.query : undefined,
+                searchResults: result.results,
+                results: result.results,
+                matches: result.matches,
+                resolvedEntities: result.resolvedEntities,
+                sourceCoverage: result.sourceCoverage,
+                nextFetchRefs: result.nextFetchRefs,
+                searchSummary: result.searchSummary,
               },
               citations,
             });
           } catch (error) {
-            const SearchIntegrationError = loadSearchIntegrationError();
             const summary = error instanceof Error ? error.message : 'Web search failed.';
             return buildEnvelope({
               success: false,
               summary,
-              errorKind:
-                error instanceof SearchIntegrationError ? 'api_failure' : inferErrorKind(summary),
+              errorKind: inferErrorKind(summary),
               retryable: true,
             });
           }
@@ -3445,11 +3494,20 @@ export const createVercelDesktopTools = (
 
     contextSearch: tool({
       description:
-        'Search across personal conversation history, uploaded documents, Zoho CRM context, and Lark contacts in one pass, then fetch full chunk content on demand using a chunkRef.',
+        'Unified retrieval broker for conversation history, indexed files, Lark contacts, Zoho context, workspace search, public web search, and skills. Use search first, then fetch with a returned chunkRef when you need the full content.',
       inputSchema: z.object({
         operation: z.enum(['search', 'fetch']),
         query: z.string().optional(),
         scopes: z.array(z.enum(CONTEXT_SEARCH_SCOPE_VALUES)).optional().default(['all']),
+        sources: z.object({
+          personalHistory: z.boolean().optional(),
+          files: z.boolean().optional(),
+          larkContacts: z.boolean().optional(),
+          zohoCrmContext: z.boolean().optional(),
+          workspace: z.boolean().optional(),
+          web: z.boolean().optional(),
+          skills: z.boolean().optional(),
+        }).optional(),
         limit: z.number().int().min(1).max(10).optional().default(5),
         dateFrom: z.string().optional(),
         dateTo: z.string().optional(),
@@ -3470,71 +3528,11 @@ export const createVercelDesktopTools = (
               });
             }
 
-            const parts = chunkRef.split(':');
-            if (parts.length !== 4) {
-              return buildEnvelope({
-                success: false,
-                summary: 'Invalid chunkRef format. Expected scope:sourceType:sourceId:chunkIndex.',
-                errorKind: 'validation',
-                retryable: false,
-                missingFields: ['chunkRef'],
-                userAction: 'Use a chunkRef returned from a contextSearch search call.',
-              });
-            }
-
-            const [scope, sourceType, sourceId, chunkIndexRaw] = parts;
-            const chunkIndex = Number.parseInt(chunkIndexRaw ?? '', 10);
-            if (
-              !CONTEXT_SEARCH_FETCH_SCOPES.includes(scope as ContextSearchScope)
-              || !sourceType?.trim()
-              || !sourceId?.trim()
-              || Number.isNaN(chunkIndex)
-            ) {
-              return buildEnvelope({
-                success: false,
-                summary: 'Invalid chunkRef format. Expected scope:sourceType:sourceId:chunkIndex.',
-                errorKind: 'validation',
-                retryable: false,
-                missingFields: ['chunkRef'],
-                userAction: 'Use a chunkRef returned from a contextSearch search call.',
-              });
-            }
-
-            let fullText = '';
-            if (scope === 'files') {
-              const context = await loadFileRetrievalService().readChunkContext({
-                companyId: runtime.companyId,
-                fileAssetId: sourceId.trim(),
-                chunkIndex,
-              });
-              fullText = context.text.trim();
-            } else if (scope === 'lark_contacts') {
-              const permissionError = ensureActionPermission(runtime, 'lark-message-read', 'read');
-              if (permissionError) {
-                return permissionError;
-              }
-              const people = await loadListLarkPeople()({
-                companyId: runtime.companyId,
-                appUserId: runtime.userId,
-                requestLarkOpenId: runtime.larkOpenId,
-              });
-              const person = people.find((entry) =>
-                [asString(entry.larkOpenId), asString(entry.externalUserId), asString(entry.larkUserId)]
-                  .filter((value): value is string => Boolean(value))
-                  .includes(sourceId.trim()),
-              );
-              fullText = person ? buildContextSearchLarkContactText(person).trim() : '';
-            } else {
-              const fetched = await loadVectorDocumentRepository().fetchChunkByKey({
-                companyId: runtime.companyId,
-                sourceType: sourceType.trim(),
-                sourceId: sourceId.trim(),
-                chunkIndex,
-              });
-              fullText = fetched.text?.trim() ?? '';
-            }
-
-            if (!fullText) {
+            const fetched = await contextSearchBrokerService.fetch({
+              runtime,
+              chunkRef,
+            });
+            if (!fetched?.text.trim()) {
               return buildEnvelope({
                 success: false,
                 summary: `No content found for chunkRef: ${chunkRef}`,
@@ -3549,13 +3547,15 @@ export const createVercelDesktopTools = (
               summary: `Full content retrieved for ${chunkRef}.`,
               keyData: {
                 chunkRef,
-                scope,
-                sourceType: sourceType.trim(),
-                sourceId: sourceId.trim(),
-                chunkIndex,
+                scope: fetched.scope,
+                sourceType: fetched.sourceType,
+                sourceId: fetched.sourceId,
+                chunkIndex: fetched.chunkIndex,
+                resolvedEntities: fetched.resolvedEntities,
               },
               fullPayload: {
-                text: fullText,
+                text: fetched.text,
+                resolvedEntities: fetched.resolvedEntities,
               },
             });
           }
@@ -3568,7 +3568,7 @@ export const createVercelDesktopTools = (
               errorKind: 'missing_input',
               retryable: false,
               missingFields: ['query'],
-              userAction: 'Provide a natural-language query to search your history and context.',
+              userAction: 'Provide a natural-language query to search available context sources.',
             });
           }
 
@@ -3598,242 +3598,41 @@ export const createVercelDesktopTools = (
             });
           }
 
-          const limit = Math.max(1, Math.min(10, input.limit ?? 5));
-          const requestedScopes = (input.scopes ?? ['all']).filter((scope) => scope !== 'all') as ContextSearchScope[];
-          const resolvedScopes = requestedScopes.length > 0
-            ? requestedScopes
-            : [...CONTEXT_SEARCH_FETCH_SCOPES];
-          const vectorRepository = loadVectorDocumentRepository();
-
-          const scopeResults = await Promise.allSettled(resolvedScopes.map(async (scope) => {
-            if (scope === 'personal_history') {
-              const matches = await loadPersonalVectorMemoryService().query({
-                companyId: runtime.companyId,
-                requesterUserId: runtime.userId,
-                text: query,
-                limit,
-              });
-              const normalized = await Promise.all(matches.map(async (match) => {
-                const sourceId = asString(asRecord(match)?.sourceId);
-                const text = asString(asRecord(match)?.content);
-                if (!sourceId || !text) {
-                  return null;
-                }
-                const chunk = await vectorRepository.findChunkByText({
-                  companyId: runtime.companyId,
-                  sourceType: 'chat_turn',
-                  sourceId,
-                  chunkText: text,
-                });
-                if (!chunk) {
-                  return null;
-                }
-                const createdAt = extractContextSearchTimestamp(chunk);
-                if (!contextSearchDateMatches(createdAt, dateFrom, dateTo)) {
-                  return null;
-                }
-                const normalizedHit: ContextSearchNormalizedHit = {
-                  scope,
-                  sourceType: 'chat_turn',
-                  sourceId,
-                  chunkIndex: chunk.chunkIndex,
-                  score: typeof asRecord(match)?.score === 'number' ? asRecord(match)?.score as number : 0,
-                  text,
-                  role: asString(asRecord(match)?.role),
-                  conversationKey: asString(asRecord(match)?.conversationKey),
-                  createdAt,
-                };
-                normalizedHit.sourceLabel = buildContextSearchSourceLabel(normalizedHit);
-                return normalizedHit;
-              }));
-              return normalized.filter((entry): entry is ContextSearchNormalizedHit => Boolean(entry));
-            }
-
-            if (scope === 'files') {
-              const searchResult = await loadFileRetrievalService().search({
-                companyId: runtime.companyId,
-                query,
-                limit,
-                requesterAiRole: runtime.requesterAiRole,
-                preferParentContext: true,
-              });
-              const normalized = await Promise.all(searchResult.matches.map(async (match) => {
-                const payload = asRecord(match) ?? {};
-                const sourceId = asString(payload.sourceId);
-                const chunkIndex = typeof payload.chunkIndex === 'number' ? payload.chunkIndex : undefined;
-                const text = asString(payload.displayText) ?? asString(payload.text);
-                if (!sourceId || chunkIndex === undefined || !text) {
-                  return null;
-                }
-                const chunk = await vectorRepository.fetchChunkByKey({
-                  companyId: runtime.companyId,
-                  sourceType: 'file_document',
-                  sourceId,
-                  chunkIndex,
-                });
-                const createdAt = extractContextSearchTimestamp(chunk);
-                if (!contextSearchDateMatches(createdAt, dateFrom, dateTo)) {
-                  return null;
-                }
-                const normalizedHit: ContextSearchNormalizedHit = {
-                  scope,
-                  sourceType: 'file_document',
-                  sourceId,
-                  chunkIndex,
-                  score: typeof payload.score === 'number' ? payload.score : 0,
-                  text,
-                  fileName: asString(payload.fileName),
-                  documentClass: asString(payload.documentClass),
-                  createdAt,
-                };
-                normalizedHit.sourceLabel = buildContextSearchSourceLabel(normalizedHit);
-                return normalizedHit;
-              }));
-              return normalized.filter((entry): entry is ContextSearchNormalizedHit => Boolean(entry));
-            }
-
-            if (scope === 'lark_contacts') {
-              const permissionError = ensureActionPermission(runtime, 'lark-message-read', 'read');
-              if (permissionError) {
-                throw new Error(permissionError.summary);
-              }
-              const people = await loadChannelIdentityRepository().searchLarkContacts({
-                companyId: runtime.companyId,
-                query,
-                limit,
-              });
-              const normalized = people
-                .map((person, index) => {
-                  const sourceId = asString(person.larkOpenId)
-                    ?? asString(person.externalUserId)
-                    ?? asString(person.larkUserId);
-                  const text = buildContextSearchLarkContactText(person);
-                  if (!sourceId || !text) {
-                    return null;
-                  }
-                  const normalizedHit: ContextSearchNormalizedHit = {
-                    scope,
-                    sourceType: 'lark_contact',
-                    sourceId,
-                    chunkIndex: 0,
-                    score: Math.max(0.95 - index * 0.05, 0.55),
-                    text,
-                    displayName: asString(person.displayName),
-                    email: asString(person.email),
-                    createdAt:
-                      asString(person.updatedAt)
-                      ?? asString(person.createdAt)
-                      ?? asString(person.directorySyncedAt),
-                  };
-                  normalizedHit.sourceLabel = buildContextSearchSourceLabel(normalizedHit);
-                  return normalizedHit;
-                })
-                .filter((entry): entry is ContextSearchNormalizedHit => Boolean(entry))
-                .sort((left, right) => right.score - left.score);
-              return normalized;
-            }
-
-            const matches = await loadZohoRetrievalService().query({
-              companyId: runtime.companyId,
-              requesterUserId: runtime.userId,
-              requesterEmail: runtime.requesterEmail,
-              text: query,
-              limit,
-            });
-            const normalized = await Promise.all(matches.map(async (match) => {
-              const payload = asRecord(match) ?? {};
-              const sourceType = asString(payload.sourceType);
-              const sourceId = asString(payload.sourceId);
-              const chunkIndex = typeof payload.chunkIndex === 'number' ? payload.chunkIndex : undefined;
-              const recordPayload = asRecord(payload.payload);
-              const text = asString(recordPayload?._chunk) ?? asString(recordPayload?.text);
-              if (!sourceType || !sourceId || chunkIndex === undefined || !text) {
-                return null;
-              }
-              const chunk = await vectorRepository.fetchChunkByKey({
-                companyId: runtime.companyId,
-                sourceType,
-                sourceId,
-                chunkIndex,
-              });
-              const createdAt = extractContextSearchTimestamp(chunk);
-              if (!contextSearchDateMatches(createdAt, dateFrom, dateTo)) {
-                return null;
-              }
-              const normalizedHit: ContextSearchNormalizedHit = {
-                scope,
-                sourceType,
-                sourceId,
-                chunkIndex,
-                score: typeof payload.score === 'number' ? payload.score : 0,
-                text,
-                createdAt,
-              };
-              normalizedHit.sourceLabel = buildContextSearchSourceLabel(normalizedHit);
-              return normalizedHit;
-            }));
-            return normalized.filter((entry): entry is ContextSearchNormalizedHit => Boolean(entry));
-          }));
-
-          const hits: ContextSearchNormalizedHit[] = [];
-          const scopeErrors: Array<{ scope: ContextSearchScope; error: string }> = [];
-          scopeResults.forEach((result, index) => {
-            const scope = resolvedScopes[index]!;
-            if (result.status === 'fulfilled') {
-              hits.push(...result.value);
-              return;
-            }
-            const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
-            logger.warn('context.search.scope_failed', {
-              companyId: runtime.companyId,
-              threadId: runtime.threadId,
-              scope,
-              error: message,
-            });
-            scopeErrors.push({ scope, error: message });
+          const result = await contextSearchBrokerService.search({
+            runtime,
+            query,
+            limit: Math.max(1, Math.min(10, input.limit ?? 5)),
+            dateFrom: input.dateFrom,
+            dateTo: input.dateTo,
+            sources: normalizeContextSearchSources({
+              scopes: input.scopes,
+              sources: input.sources,
+            }),
           });
-
-          const topHits = hits
-            .sort((left, right) => right.score - left.score)
-            .slice(0, limit);
-
-          if (topHits.length === 0) {
-            return buildEnvelope({
-              success: true,
-              summary: `No relevant history or documents found for: "${query}"`,
-              keyData: {
-                resultCount: 0,
-                scopesQueried: resolvedScopes,
-              },
-              fullPayload: {
-                citations: [],
-                scopeErrors,
-              },
-            });
-          }
-
-          const citations = topHits.map((hit, index) => ({
-            index: index + 1,
-            chunkRef: `${hit.scope}:${hit.sourceType}:${hit.sourceId}:${hit.chunkIndex}`,
-            scope: hit.scope,
-            sourceType: hit.sourceType,
-            sourceLabel: hit.sourceLabel ?? buildContextSearchSourceLabel(hit),
-            asOf: hit.createdAt,
-            score: hit.score,
-            excerpt: hit.text.length > 280 ? `${hit.text.slice(0, 280)}...` : hit.text,
-          }));
+          const citations = contextSearchBrokerService.toVercelCitationsFromSearch(result);
 
           return buildEnvelope({
             success: true,
-            summary: `Found ${topHits.length} relevant references across ${resolvedScopes.join(', ')}.`,
+            summary: result.searchSummary,
             keyData: {
-              resultCount: topHits.length,
-              scopesQueried: resolvedScopes,
+              resultCount: result.results.length,
+              chunkRefs: result.nextFetchRefs,
+              resolvedEntities: result.resolvedEntities,
+              sourcesQueried: Object.entries(result.sourceCoverage)
+                .filter(([, coverage]) => coverage.enabled)
+                .map(([source]) => source),
             },
             fullPayload: {
-              citations,
-              scopeErrors,
+              query,
+              results: result.results,
+              matches: result.matches,
+              resolvedEntities: result.resolvedEntities,
+              sourceCoverage: result.sourceCoverage,
+              citations: result.citations,
+              nextFetchRefs: result.nextFetchRefs,
+              searchSummary: result.searchSummary,
             },
+            citations,
           });
         }),
     }),
@@ -4932,7 +4731,7 @@ export const createVercelDesktopTools = (
 
     skillSearch: tool({
       description:
-        'Use this before tool execution when a request is workflow-like or the correct tool path is not obvious. searchSkills finds the right workflow guide; readSkill loads the full operating instructions so you can confidently choose the real domain tool and continue the task.',
+        'Compatibility shim for skill retrieval. Prefer contextSearch with sources.skills=true for all new retrieval.',
       inputSchema: z.object({
         operation: z.enum(['searchSkills', 'readSkill']),
         query: z.string().optional(),
@@ -4955,24 +4754,42 @@ export const createVercelDesktopTools = (
                   retryable: false,
                 });
               }
-              const skills = await skillService.searchVisibleSkills({
-                companyId: runtime.companyId,
-                departmentId: runtime.departmentId,
-                query: input.query,
+              const result = await contextSearchBrokerService.search({
+                runtime,
+                query: input.query.trim(),
                 limit: input.limit,
+                sources: {
+                  personalHistory: false,
+                  files: false,
+                  larkContacts: false,
+                  zohoCrmContext: false,
+                  workspace: false,
+                  web: false,
+                  skills: true,
+                },
               });
+              const citations = contextSearchBrokerService.toVercelCitationsFromSearch(result);
               return buildEnvelope({
                 success: true,
                 summary:
-                  skills.length > 0
-                    ? `Found ${skills.length} relevant skill${skills.length === 1 ? '' : 's'}.`
+                  result.results.length > 0
+                    ? `Found ${result.results.length} relevant skill${result.results.length === 1 ? '' : 's'}.`
                     : 'No relevant skills matched the request.',
                 keyData: {
-                  skills,
+                  resultCount: result.results.length,
+                  chunkRefs: result.nextFetchRefs,
+                  resolvedEntities: result.resolvedEntities,
                 },
                 fullPayload: {
-                  skills,
+                  results: result.results,
+                  matches: result.matches,
+                  resolvedEntities: result.resolvedEntities,
+                  sourceCoverage: result.sourceCoverage,
+                  citations: result.citations,
+                  nextFetchRefs: result.nextFetchRefs,
+                  searchSummary: result.searchSummary,
                 },
+                citations,
               });
             }
 
@@ -4985,13 +4802,11 @@ export const createVercelDesktopTools = (
               });
             }
 
-            const skill = await skillService.readVisibleSkill({
-              companyId: runtime.companyId,
-              departmentId: runtime.departmentId,
-              skillId: input.skillId,
-              skillSlug: input.skillSlug,
+            const fetched = await contextSearchBrokerService.fetch({
+              runtime,
+              chunkRef: `skills:skill:${input.skillId ?? input.skillSlug}:0`,
             });
-            if (!skill) {
+            if (!fetched?.text.trim()) {
               return buildEnvelope({
                 success: false,
                 summary:
@@ -5003,21 +4818,13 @@ export const createVercelDesktopTools = (
 
             return buildEnvelope({
               success: true,
-              summary: `Loaded skill "${skill.name}".`,
+              summary: `Loaded skill "${input.skillId ?? input.skillSlug}".`,
               keyData: {
-                skill: {
-                  id: skill.id,
-                  slug: skill.slug,
-                  name: skill.name,
-                  summary: skill.summary,
-                  scope: skill.scope,
-                  departmentName: skill.departmentName,
-                  tags: skill.tags,
-                  source: skill.source,
-                },
+                resolvedEntities: fetched.resolvedEntities,
               },
               fullPayload: {
-                skill,
+                text: fetched.text,
+                resolvedEntities: fetched.resolvedEntities,
               },
             });
           },

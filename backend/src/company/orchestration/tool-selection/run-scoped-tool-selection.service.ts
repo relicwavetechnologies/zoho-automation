@@ -49,7 +49,7 @@ const plannerDecisionSchema = z.object({
   clarificationQuestion: z.string().max(300).optional(),
 });
 
-const GLOBAL_ALWAYS_ON_IDS = ['skill-search', 'context-search'] as const;
+const GLOBAL_ALWAYS_ON_IDS = ['context-search'] as const;
 const CLARIFICATION_ALLOWED_ONLY_WHEN_DOMAIN_UNKNOWN = [
   'general',
   'unknown',
@@ -57,7 +57,6 @@ const CLARIFICATION_ALLOWED_ONLY_WHEN_DOMAIN_UNKNOWN = [
   'unspecified',
 ] as const;
 const LARK_CHANNEL_BASELINE = [
-  'skill-search',
   'context-search',
   'lark-task-read',
   'lark-task-write',
@@ -357,6 +356,8 @@ const buildPrimaryBundle = (input: {
       ]);
     case 'context_search':
       return buildAllowedDomainFamily(input.allowed, 'context_search');
+    case 'skill':
+      return buildAllowedDomainFamily(input.allowed, 'context_search');
     case 'workspace':
       return chooseFirstAllowed(input.allowed, ['coding']);
     case 'document_inspection':
@@ -365,7 +366,7 @@ const buildPrimaryBundle = (input: {
       }
       return buildAllowedDomainFamily(input.allowed, 'document_inspection');
     case 'web_search':
-      return buildAllowedDomainFamily(input.allowed, 'web_search');
+      return buildAllowedDomainFamily(input.allowed, 'context_search');
     default:
       return [];
   }
@@ -388,7 +389,7 @@ const buildFallbackBundle = (input: {
       ...(input.hasArtifacts && !skipArtifactInspectionTools && requiresExplicitExtraction(input.latestUserMessage)
         ? chooseFirstAllowed(input.allowed, ['document-ocr-read'])
         : []),
-      ...chooseFirstAllowed(input.allowed, ['search-read', 'search-agent']),
+      ...chooseFirstAllowed(input.allowed, ['context-search']),
     ]).slice(0, 2);
   }
   if (input.domain === 'document_inspection' && !skipArtifactInspectionTools) {
