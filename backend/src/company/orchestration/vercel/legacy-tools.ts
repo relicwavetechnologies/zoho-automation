@@ -9018,6 +9018,19 @@ export const createVercelDesktopTools = (
             );
             return currentIdentityTokens.some((token) => candidateValues.includes(token));
           };
+          const taskHasAssignmentData = (task: Record<string, unknown>): boolean => {
+            const raw = asRecord(task.raw);
+            return [
+              asArray(task.members),
+              asArray(raw?.members),
+              asArray(task.assignees),
+              asArray(raw?.assignees),
+            ].some((value) => value.length > 0)
+              || Boolean(asRecord(task.owner))
+              || Boolean(asRecord(raw?.owner))
+              || Boolean(asRecord(task.assignee))
+              || Boolean(asRecord(raw?.assignee));
+          };
           const taskIsOpen = (task: Record<string, unknown>): boolean => {
             const completed = task.completed;
             if (typeof completed === 'boolean') {
@@ -9071,6 +9084,51 @@ export const createVercelDesktopTools = (
               await collectFromTasklist(tasklistId);
             }
             return Array.from(seen.values());
+          };
+          const hydrateTasksForCurrentUserFilter = async (
+            items: Array<Record<string, unknown>>,
+          ): Promise<Array<Record<string, unknown>>> => {
+            const hydrated: Array<Record<string, unknown>> = [];
+            for (const item of items) {
+              if (taskMatchesCurrentUser(item) || taskHasAssignmentData(item)) {
+                hydrated.push(item);
+                continue;
+              }
+              const taskGuid = asString(item.taskGuid)
+                ?? asString(asRecord(item.raw)?.guid)
+                ?? asString(asRecord(item.raw)?.task_guid)
+                ?? asString(asRecord(item.raw)?.taskGuid);
+              if (!taskGuid) {
+                hydrated.push(item);
+                continue;
+              }
+              try {
+                const detailed = await withLarkTenantFallback(runtime, (auth) =>
+                  larkTasksService.getTask({
+                    ...auth,
+                    taskGuid,
+                  }),
+                );
+                hydrated.push({
+                  ...item,
+                  ...detailed,
+                  raw: {
+                    ...(asRecord(item.raw) ?? {}),
+                    ...(asRecord(detailed.raw) ?? {}),
+                  },
+                });
+              } catch (error) {
+                logger.warn('vercel.lark.task.hydrate_for_user_filter_failed', {
+                  executionId: runtime.executionId,
+                  companyId: runtime.companyId,
+                  userId: runtime.userId,
+                  taskGuid,
+                  error: error instanceof Error ? error.message : 'unknown_error',
+                });
+                hydrated.push(item);
+              }
+            }
+            return hydrated;
           };
           const filterVisibleTasks = (
             items: Array<Record<string, unknown>>,
@@ -9381,13 +9439,29 @@ export const createVercelDesktopTools = (
             input.operation === 'listOpenMine'
           ) {
             const visibleTasks = await listVisibleTasks(input.tasklistId);
-            const items = filterVisibleTasks(visibleTasks, input.query, {
+            const requiresCurrentUserFilter =
+              input.operation === 'listMine' ||
+              input.operation === 'listOpenMine' ||
+              input.onlyMine;
+            let candidateTasks = visibleTasks;
+            let items = filterVisibleTasks(candidateTasks, input.query, {
               onlyMine:
-                input.operation === 'listMine' ||
-                input.operation === 'listOpenMine' ||
-                input.onlyMine,
+                requiresCurrentUserFilter,
               onlyOpen: input.operation === 'listOpenMine' || input.onlyOpen,
             });
+            if (requiresCurrentUserFilter && items.length === 0 && visibleTasks.length > 0) {
+              logger.info('vercel.lark.task.hydrate_for_user_filter', {
+                executionId: runtime.executionId,
+                companyId: runtime.companyId,
+                userId: runtime.userId,
+                visibleTaskCount: visibleTasks.length,
+              });
+              candidateTasks = await hydrateTasksForCurrentUserFilter(visibleTasks);
+              items = filterVisibleTasks(candidateTasks, input.query, {
+                onlyMine: true,
+                onlyOpen: input.operation === 'listOpenMine' || input.onlyOpen,
+              });
+            }
             items.forEach(rememberTask);
             return buildEnvelope({
               success: true,
