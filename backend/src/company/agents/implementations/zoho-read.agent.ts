@@ -11,6 +11,7 @@ import { zohoGatewayService } from '../../integrations/zoho/zoho-gateway.service
 import { COMPANY_CONTROL_KEYS, isCompanyControlEnabled } from '../../support/runtime-controls';
 import type { ZohoScopeMode } from '../../tools/zoho-role-access.service';
 import { logger } from '../../../utils/logger';
+import { channelIdentityRepository } from '../../channels/channel-identity.repository';
 
 const DEFAULT_RESULT_LIMIT = 3;
 const MAX_ALL_RESULT_LIMIT = 25;
@@ -83,8 +84,18 @@ const invokeSynthesisTarget = async (targetKey: AiControlTargetKey, prompt: stri
 };
 
 type SourceRef = {
-  source: 'vector' | 'rest';
+  source: 'vector' | 'rest' | 'lark_contacts';
   id: string;
+};
+
+type LarkContactRecord = {
+  id: string;
+  displayName: string | null;
+  email: string | null;
+  larkOpenId: string | null;
+  larkUserId: string | null;
+  aiRole: string;
+  sourceRoles: string[];
 };
 
 type LiveRecord = {
@@ -287,6 +298,14 @@ const buildVectorSourceRefs = (
     id: `${m.sourceType}:${m.sourceId}#${m.chunkIndex}`,
   }));
 
+const buildLarkContactSourceRefs = (
+  contacts: LarkContactRecord[],
+): SourceRef[] =>
+  contacts.map((contact) => ({
+    source: 'lark_contacts' as const,
+    id: `lark_contact:${contact.email ?? contact.displayName ?? contact.id}`,
+  }));
+
 const readField = (payload: Record<string, unknown>, keys: string[]): string | undefined => {
   for (const key of keys) {
     const value = payload[key];
@@ -459,6 +478,63 @@ const buildNoDataAnswer = (scopeMode: ZohoScopeMode, reasonMessage?: string): st
   return scopeMode === 'company_scoped'
     ? 'No company-scoped Zoho records matched this query.'
     : 'No email-scoped Zoho records matched this query.';
+};
+
+const shouldSearchLarkContacts = (objective: string): boolean => {
+  const text = normalizeText(objective);
+  return containsAny(text, [
+    'lark contact',
+    'lark contacts',
+    'contact list',
+    'directory',
+    'email resolution',
+    'resolve email',
+    'find email',
+    'contact',
+    'contacts',
+    'email address',
+    'email id',
+  ]);
+};
+
+const buildLarkContactAnswer = (contacts: LarkContactRecord[], objective: string): string => {
+  const limit = Math.min(extractRequestedLimit(objective), contacts.length);
+  const lines = contacts.slice(0, limit).map((contact, index) => {
+    const parts = [contact.displayName ?? contact.email ?? contact.id];
+    if (contact.email) parts.push(`email: ${contact.email}`);
+    if (contact.aiRole) parts.push(`role: ${contact.aiRole}`);
+    if (contact.sourceRoles.length > 0) parts.push(`lark roles: ${contact.sourceRoles.join(', ')}`);
+    return `${index + 1}. ${parts.join(' | ')}`;
+  });
+  return [
+    `I found ${limit} match${limit === 1 ? '' : 'es'} in Lark Contacts.`,
+    lines.join('\n'),
+    '',
+    'Resolved from: Lark Contacts.',
+  ].join('\n');
+};
+
+const buildCombinedSourceNote = (input: {
+  searchedLarkContacts: boolean;
+  larkContactsFound: boolean;
+  zohoFound: boolean;
+}): string | null => {
+  const searched = ['Zoho CRM', 'Zoho Books'];
+  if (input.searchedLarkContacts) {
+    searched.push('Lark Contacts');
+  }
+  const resolvedFrom = [];
+  if (input.zohoFound) {
+    resolvedFrom.push('Zoho');
+  }
+  if (input.larkContactsFound) {
+    resolvedFrom.push('Lark Contacts');
+  }
+  const lines = [`Searched: ${searched.join(', ')}.`];
+  if (resolvedFrom.length > 0) {
+    lines.push(`Resolved from: ${resolvedFrom.join(' + ')}.`);
+  }
+  return lines.join('\n');
 };
 
 const appendReasonNote = (answer: string, reasonMessage?: string): string => {
@@ -725,8 +801,48 @@ export class ZohoReadAgent extends BaseAgent {
         throw new Error('Live Zoho result was not computed');
       }
 
-      if (liveRecords.length === 0) {
-        const answer = buildNoDataAnswer(scopeMode, liveResult.reasonMessage);
+      let vectorMatches: VectorMatch[] = [];
+      let vectorSourceRefs: SourceRef[] = [];
+      let larkContacts: LarkContactRecord[] = [];
+      let larkContactSourceRefs: SourceRef[] = [];
+      const searchedLarkContacts = shouldSearchLarkContacts(input.objective);
+      if (searchedLarkContacts) {
+        try {
+          const matches = await channelIdentityRepository.searchLarkContacts({
+            companyId,
+            query: input.objective,
+            limit: retrievalLimit,
+          });
+          larkContacts = matches.map((row) => ({
+            id: row.id,
+            displayName: row.displayName,
+            email: row.email,
+            larkOpenId: row.larkOpenId,
+            larkUserId: row.larkUserId,
+            aiRole: row.aiRole,
+            sourceRoles: row.sourceRoles,
+          }));
+          larkContactSourceRefs = buildLarkContactSourceRefs(larkContacts);
+          apiCalls++;
+        } catch (contactError) {
+          logger.warn('zoho.agent.lark_contacts.failed', {
+            taskId: input.taskId,
+            companyId,
+            reason: contactError instanceof Error ? contactError.message : 'unknown_error',
+          });
+        }
+      }
+
+      if (liveRecords.length === 0 && larkContacts.length === 0) {
+        const sourceNote = buildCombinedSourceNote({
+          searchedLarkContacts,
+          larkContactsFound: false,
+          zohoFound: false,
+        });
+        const answer = [
+          buildNoDataAnswer(scopeMode, liveResult.reasonMessage),
+          sourceNote,
+        ].filter(Boolean).join('\n\n');
         return this.success(
           input,
           answer,
@@ -738,6 +854,7 @@ export class ZohoReadAgent extends BaseAgent {
             liveProviderMode: 'rest',
             fallbackUsed: false,
             liveRecordCount: 0,
+            larkContactCount: 0,
             vectorRecordCount: 0,
             scopeMode,
             degraded: liveResult.degraded,
@@ -749,9 +866,6 @@ export class ZohoReadAgent extends BaseAgent {
           { latencyMs: Date.now() - startedAt, apiCalls },
         );
       }
-
-      let vectorMatches: VectorMatch[] = [];
-      let vectorSourceRefs: SourceRef[] = [];
       if (VECTOR_CONTEXT_ENABLED) {
         try {
           const requesterUserId =
@@ -784,7 +898,9 @@ export class ZohoReadAgent extends BaseAgent {
       }
 
       let answer: string;
-      if (isListRequest(input.objective)) {
+      if (liveRecords.length === 0 && larkContacts.length > 0) {
+        answer = buildLarkContactAnswer(larkContacts, input.objective);
+      } else if (isListRequest(input.objective)) {
         answer = buildDeterministicListResponse(input.objective, liveRecords);
       } else {
         try {
@@ -803,9 +919,17 @@ export class ZohoReadAgent extends BaseAgent {
           answer = buildPlainTextFallback(input.objective, liveRecords);
         }
       }
+      const sourceNote = buildCombinedSourceNote({
+        searchedLarkContacts,
+        larkContactsFound: larkContacts.length > 0,
+        zohoFound: liveRecords.length > 0,
+      });
+      if (sourceNote && !answer.includes('Resolved from:')) {
+        answer = `${answer}\n\n${sourceNote}`;
+      }
       answer = appendReasonNote(answer, liveResult.reasonMessage);
 
-      const allSourceRefs = [...liveSourceRefs, ...vectorSourceRefs];
+      const allSourceRefs = [...liveSourceRefs, ...larkContactSourceRefs, ...vectorSourceRefs];
       const summarySources = allSourceRefs.slice(0, 4).map((ref) => ref.id);
 
       return this.success(
@@ -819,6 +943,7 @@ export class ZohoReadAgent extends BaseAgent {
           liveProviderMode: 'rest',
           fallbackUsed: false,
           liveRecordCount: liveRecords.length,
+          larkContactCount: larkContacts.length,
           vectorRecordCount: vectorMatches.length,
           scopeMode,
           degraded: liveResult.degraded,

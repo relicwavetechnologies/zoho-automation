@@ -17,6 +17,62 @@ type UpsertChannelIdentityInput = {
 };
 
 class ChannelIdentityRepository {
+  async searchLarkContacts(input: {
+    companyId: string;
+    query: string;
+    limit?: number;
+  }) {
+    const normalized = input.query.trim().toLowerCase();
+    if (!normalized) {
+      return [];
+    }
+
+    const tokens = Array.from(new Set(
+      normalized
+        .split(/[^a-z0-9@._-]+/i)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 2),
+    )).slice(0, 8);
+
+    if (tokens.length === 0) {
+      return [];
+    }
+
+    const rows = await prisma.channelIdentity.findMany({
+      where: {
+        companyId: input.companyId,
+        channel: 'lark',
+        OR: tokens.flatMap((token) => ([
+          { displayName: { contains: token, mode: 'insensitive' as const } },
+          { email: { contains: token, mode: 'insensitive' as const } },
+        ])),
+      },
+      orderBy: [
+        { updatedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
+      take: Math.max(1, Math.min(input.limit ?? 5, 10)),
+    });
+
+    const score = (row: { displayName: string | null; email: string | null }): number => {
+      const haystack = `${row.displayName ?? ''} ${row.email ?? ''}`.toLowerCase();
+      let total = 0;
+      for (const token of tokens) {
+        if (haystack === token) total += 10;
+        else if ((row.email ?? '').toLowerCase() === token) total += 9;
+        else if ((row.displayName ?? '').toLowerCase() === token) total += 8;
+        else if ((row.email ?? '').toLowerCase().includes(token)) total += 5;
+        else if ((row.displayName ?? '').toLowerCase().includes(token)) total += 4;
+      }
+      return total;
+    };
+
+    return rows
+      .map((row) => ({ row, score: score(row) }))
+      .sort((left, right) => right.score - left.score)
+      .map(({ row }) => row);
+  }
+
   async upsert(input: UpsertChannelIdentityInput) {
     const existing =
       (await prisma.channelIdentity.findUnique({
