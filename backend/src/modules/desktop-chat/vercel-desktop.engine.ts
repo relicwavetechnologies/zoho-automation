@@ -11,7 +11,7 @@ import {
   resolveVercelLanguageModel,
 } from '../../company/orchestration/vercel/model-factory';
 import { buildSharedAgentSystemPrompt } from '../../company/orchestration/prompting/shared-agent-prompt';
-import { resolveRunScopedToolSelection } from '../../company/orchestration/tool-selection/run-scoped-tool-selection.service';
+import { checkToolSelectionInvariant, resolveRunScopedToolSelection } from '../../company/orchestration/tool-selection/run-scoped-tool-selection.service';
 import { createVercelDesktopTools } from '../../company/orchestration/vercel/tools';
 import {
   scheduledWorkflowCapabilitySummarySchema,
@@ -3137,6 +3137,7 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
   analyticsToolDemandPayload: ExecutionToolDemandPayload;
 }> => {
   const selection = await resolveRunScopedToolSelection({
+    channel: input.runtime.channel === 'lark' ? 'lark' : 'desktop',
     companyId: input.runtime.companyId,
     userId: input.runtime.userId,
     threadId: input.threadId,
@@ -3160,6 +3161,24 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
       : undefined,
     pinnedToolIds: input.pinnedToolIds,
   });
+  const invariantResult = checkToolSelectionInvariant({
+    intentDomain: input.childRouteHints?.domain ?? selection.inferredDomain,
+    runExposedToolIds: selection.runExposedToolIds,
+    allowedToolIds: input.runtime.allowedToolIds,
+  });
+  if (!invariantResult.passed) {
+    logger.warn('tool.invariant.failed', {
+      channel: input.runtime.channel,
+      executionId: input.executionId,
+      threadId: input.threadId,
+      intentDomain: input.childRouteHints?.domain ?? selection.inferredDomain,
+      runExposedToolIds: selection.runExposedToolIds,
+      missingFamily: invariantResult.missingFamily,
+      widenedToolIds: invariantResult.widenedToolIds,
+    });
+    selection.runExposedToolIds = invariantResult.widenedToolIds;
+    selection.plannerCandidateToolIds = invariantResult.widenedToolIds;
+  }
   logger.info('vercel.tool_selection.resolved', {
     executionId: input.executionId,
     threadId: input.threadId,

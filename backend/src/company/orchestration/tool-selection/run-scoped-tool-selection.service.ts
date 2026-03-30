@@ -34,6 +34,8 @@ export type RunScopedToolSelection = {
   validationFailureReason?: string;
 };
 
+type RuntimeChannel = 'lark' | 'desktop' | 'api';
+
 type ArtifactMode = 'none' | 'image_only' | 'document_only' | 'mixed';
 
 const plannerDecisionSchema = z.object({
@@ -48,8 +50,24 @@ const plannerDecisionSchema = z.object({
 });
 
 const GLOBAL_ALWAYS_ON_IDS = ['skill-search', 'context-search'] as const;
+const LARK_CHANNEL_BASELINE = [
+  'skill-search',
+  'context-search',
+  'lark-task-read',
+  'lark-task-write',
+  'lark-task-agent',
+] as const;
 const WORKSPACE_GLOBAL_IDS = ['coding'] as const;
 const ARTIFACT_GLOBAL_IDS = ['document-ocr-read'] as const;
+const INVARIANT_GUARDED_DOMAINS = new Set<IntentDomain>([
+  'lark_task',
+  'workflow',
+  'context_search',
+  'lark_message',
+  'lark_calendar',
+  'zoho_books',
+  'zoho_crm',
+]);
 
 const asLower = (value?: string | null): string => value?.trim().toLowerCase() ?? '';
 const uniq = (values: Array<string | undefined | null>): string[] =>
@@ -73,6 +91,62 @@ const chooseFirstAllowed = (allowed: Set<string>, preferredIds: string[]): strin
     }
   }
   return [];
+};
+
+const buildAllowedDomainFamily = (
+  allowed: Set<string>,
+  domain?: string | null,
+): string[] => {
+  const normalizedDomain = domain?.trim();
+  if (!normalizedDomain) return [];
+  const canonicalDomain = DOMAIN_ALIASES[normalizedDomain] ?? DOMAIN_ALIASES[normalizedDomain.toLowerCase()];
+  if (!canonicalDomain) return [];
+  return uniq((DOMAIN_TO_TOOL_IDS[canonicalDomain] ?? []).filter((toolId) => allowed.has(toolId)));
+};
+
+const buildChannelBaseline = (input: {
+  channel: RuntimeChannel;
+  allowed: Set<string>;
+  workspaceAvailable: boolean;
+  exposeArtifactTools: boolean;
+}): string[] =>
+  uniq([
+    ...((input.channel === 'lark' ? LARK_CHANNEL_BASELINE : GLOBAL_ALWAYS_ON_IDS)
+      .filter((toolId) => input.allowed.has(toolId))),
+    ...(input.workspaceAvailable ? WORKSPACE_GLOBAL_IDS.filter((toolId) => input.allowed.has(toolId)) : []),
+    ...(input.exposeArtifactTools ? ARTIFACT_GLOBAL_IDS.filter((toolId) => input.allowed.has(toolId)) : []),
+  ]);
+
+export const checkToolSelectionInvariant = (input: {
+  intentDomain?: string | null;
+  runExposedToolIds: string[];
+  allowedToolIds: string[];
+}): { passed: boolean; widenedToolIds: string[]; missingFamily: string[] } => {
+  const normalizedDomain = input.intentDomain?.trim();
+  const canonicalDomain = normalizedDomain
+    ? (DOMAIN_ALIASES[normalizedDomain] ?? DOMAIN_ALIASES[normalizedDomain.toLowerCase()])
+    : undefined;
+  if (!canonicalDomain || !INVARIANT_GUARDED_DOMAINS.has(canonicalDomain)) {
+    return { passed: true, widenedToolIds: input.runExposedToolIds, missingFamily: [] };
+  }
+
+  const allowed = new Set(input.allowedToolIds);
+  const requiredFamily = (DOMAIN_TO_TOOL_IDS[canonicalDomain] ?? []).filter((toolId) => allowed.has(toolId));
+  if (requiredFamily.length === 0) {
+    return { passed: true, widenedToolIds: input.runExposedToolIds, missingFamily: [] };
+  }
+
+  const exposed = new Set(input.runExposedToolIds);
+  const familyCovered = requiredFamily.some((toolId) => exposed.has(toolId));
+  if (familyCovered) {
+    return { passed: true, widenedToolIds: input.runExposedToolIds, missingFamily: [] };
+  }
+
+  return {
+    passed: false,
+    widenedToolIds: uniq([...input.runExposedToolIds, ...requiredFamily]),
+    missingFamily: requiredFamily,
+  };
 };
 
 const chooseSuggestedAllowed = (
@@ -224,121 +298,62 @@ const buildPrimaryBundle = (input: {
   const normalizedIntent = asLower(input.childRoute?.normalizedIntent);
   const suggestedActions = (input.childRoute?.suggestedActions ?? []).map((value) => asLower(value)).join('\n');
   const larkHintText = `${lowerMessage}\n${normalizedIntent}\n${suggestedActions}`;
-  const requiresGmail = /\bgmail\b/.test(lowerMessage);
-  const authoritativeChildRoute = (input.childRoute?.confidence ?? 1) >= 0.7;
-  const suggestedAllowedToolIds = chooseSuggestedAllowed(
-    input.allowed,
-    input.childRoute?.suggestedToolIds,
-    authoritativeChildRoute ? [input.childRoute?.domain] : [],
-  );
-  if (isAffirmationFollowUp(input.latestUserMessage) && suggestedAllowedToolIds.length > 0) {
-    return suggestedAllowedToolIds.slice(0, 3);
-  }
   if (requiresExplicitExtraction(input.latestUserMessage)) {
     return chooseFirstAllowed(input.allowed, ['document-ocr-read']);
   }
   if (requiresContextSearch(input.latestUserMessage)) {
-    return chooseFirstAllowed(input.allowed, ['context-search']);
+    return buildAllowedDomainFamily(input.allowed, 'context_search');
   }
   switch (input.domain) {
     case 'zoho_books':
-      return input.operationClass === 'read' || input.operationClass === 'inspect'
-        ? chooseFirstAllowed(input.allowed, ['zoho-books-read', 'zoho-books-agent'])
-        : uniq([
-          ...chooseFirstAllowed(input.allowed, ['zoho-books-read', 'zoho-books-agent']),
-          ...chooseFirstAllowed(input.allowed, ['zoho-books-write', 'zoho-books-agent']),
-          ...(input.operationClass === 'send' && requiresGmail
-            ? chooseFirstAllowed(input.allowed, ['google-gmail'])
-            : []),
-        ]);
+      return buildAllowedDomainFamily(input.allowed, 'zoho_books');
     case 'zoho_crm':
-      return input.operationClass === 'read' || input.operationClass === 'inspect'
-        ? chooseFirstAllowed(input.allowed, ['zoho-read', 'read-zoho-records', 'zoho-agent', 'search-zoho-context'])
-        : uniq([
-          ...chooseFirstAllowed(input.allowed, ['zoho-read', 'read-zoho-records', 'zoho-agent']),
-          ...chooseFirstAllowed(input.allowed, ['zoho-write', 'zoho-agent']),
-        ]);
+      return buildAllowedDomainFamily(input.allowed, 'zoho_crm');
     case 'gmail':
-      return chooseFirstAllowed(input.allowed, ['google-gmail']);
+      return buildAllowedDomainFamily(input.allowed, 'gmail');
     case 'google_drive':
-      return chooseFirstAllowed(input.allowed, ['google-drive']);
+      return buildAllowedDomainFamily(input.allowed, 'google_drive');
     case 'google_calendar':
-      return chooseFirstAllowed(input.allowed, ['google-calendar']);
+      return buildAllowedDomainFamily(input.allowed, 'google_calendar');
     case 'lark_base':
-      return input.operationClass === 'read' || input.operationClass === 'inspect'
-        ? chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent'])
-        : uniq([
-          ...chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent']),
-          ...chooseFirstAllowed(input.allowed, ['lark-base-write', 'lark-base-agent']),
-        ]);
+      return buildAllowedDomainFamily(input.allowed, 'lark_base');
     case 'lark_task':
-      return input.operationClass === 'read' || input.operationClass === 'inspect'
-        ? chooseFirstAllowed(input.allowed, ['lark-task-read', 'lark-task-agent'])
-        : uniq([
-          ...chooseFirstAllowed(input.allowed, ['lark-task-read', 'lark-task-agent']),
-          ...chooseFirstAllowed(input.allowed, ['lark-task-write', 'lark-task-agent']),
-        ]);
+      return buildAllowedDomainFamily(input.allowed, 'lark_task');
     case 'lark_message':
-      return input.operationClass === 'send' || /\b(dm|direct message|message|ping)\b/.test(larkHintText)
-        ? uniq([
-          ...chooseFirstAllowed(input.allowed, ['lark-message-read']),
-          ...chooseFirstAllowed(input.allowed, ['lark-message-write']),
-        ])
-        : chooseFirstAllowed(input.allowed, ['lark-message-read']);
+      return buildAllowedDomainFamily(input.allowed, 'lark_message');
     case 'lark_doc':
-      return input.operationClass === 'read' || input.operationClass === 'inspect'
-        ? chooseFirstAllowed(input.allowed, ['lark-doc-agent'])
-        : uniq([
-          ...chooseFirstAllowed(input.allowed, ['lark-doc-agent']),
-          ...chooseFirstAllowed(input.allowed, ['create-lark-doc', 'edit-lark-doc']),
-        ]);
+      return buildAllowedDomainFamily(input.allowed, 'lark_doc');
     case 'lark_calendar':
-      return input.operationClass === 'read' || input.operationClass === 'inspect'
-        ? chooseFirstAllowed(input.allowed, ['lark-calendar-read', 'lark-calendar-list', 'lark-calendar-agent'])
-        : uniq([
-          ...chooseFirstAllowed(input.allowed, ['lark-calendar-read', 'lark-calendar-list', 'lark-calendar-agent']),
-          ...chooseFirstAllowed(input.allowed, ['lark-calendar-write', 'lark-calendar-agent']),
-        ]);
+      return buildAllowedDomainFamily(input.allowed, 'lark_calendar');
     case 'lark_approval':
-      return input.operationClass === 'read' || input.operationClass === 'inspect'
-        ? chooseFirstAllowed(input.allowed, ['lark-approval-read', 'lark-approval-agent'])
-        : uniq([
-          ...chooseFirstAllowed(input.allowed, ['lark-approval-read', 'lark-approval-agent']),
-          ...chooseFirstAllowed(input.allowed, ['lark-approval-write', 'lark-approval-agent']),
-        ]);
+      return buildAllowedDomainFamily(input.allowed, 'lark_approval');
     case 'lark_meeting':
-      return chooseFirstAllowed(input.allowed, ['lark-meeting-read', 'lark-meeting-agent']);
+      return buildAllowedDomainFamily(input.allowed, 'lark_meeting');
     case 'lark':
-      if (suggestedAllowedToolIds.length > 0) {
-        return suggestedAllowedToolIds.slice(0, 3);
-      }
       if (/\b(dm|direct message|message|ping)\b/.test(larkHintText)) {
-        return uniq([
-          ...chooseFirstAllowed(input.allowed, ['lark-message-read']),
-          ...chooseFirstAllowed(input.allowed, ['lark-message-write']),
-        ]).slice(0, 3);
+        return buildAllowedDomainFamily(input.allowed, 'lark_message');
       }
       if (/\b(base|bitable|table|tables|record|records|field|fields|view|views)\b/.test(larkHintText)) {
-        return chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent']);
+        return buildAllowedDomainFamily(input.allowed, 'lark_base');
       }
       if (/\b(task|tasks|assignee|assign|due date|todo)\b/.test(larkHintText)) {
-        return chooseFirstAllowed(input.allowed, ['lark-task-read', 'lark-task-agent']);
+        return buildAllowedDomainFamily(input.allowed, 'lark_task');
       }
       return uniq([
-        ...chooseFirstAllowed(input.allowed, ['lark-base-read', 'lark-base-agent']),
-        ...chooseFirstAllowed(input.allowed, ['lark-task-read', 'lark-task-agent']),
-      ]).slice(0, 3);
+        ...buildAllowedDomainFamily(input.allowed, 'lark_base'),
+        ...buildAllowedDomainFamily(input.allowed, 'lark_task'),
+      ]);
     case 'context_search':
-      return chooseFirstAllowed(input.allowed, ['context-search']);
+      return buildAllowedDomainFamily(input.allowed, 'context_search');
     case 'workspace':
       return chooseFirstAllowed(input.allowed, ['coding']);
     case 'document_inspection':
       if (input.allowContextOnlyAnswer) {
         return [];
       }
-      return chooseFirstAllowed(input.allowed, ['document-ocr-read']);
+      return buildAllowedDomainFamily(input.allowed, 'document_inspection');
     case 'web_search':
-      return chooseFirstAllowed(input.allowed, ['search-read', 'search-agent']);
+      return buildAllowedDomainFamily(input.allowed, 'web_search');
     default:
       return [];
   }
@@ -438,20 +453,21 @@ const validatePlannerDecision = (input: {
   }
   const chosenToolId = input.decision.chosenToolId?.trim();
   if (!chosenToolId || !exposed.has(chosenToolId)) {
+    logger.warn('vercel.tool_selection.planner.validation_failed', {
+      chosenToolId: chosenToolId ?? null,
+      runExposedToolIds: input.selection.runExposedToolIds,
+      validationFailureReason: 'planner_tool_outside_run_scope',
+    });
     return {
       ...input.selection,
-      clarificationQuestion: 'I need one more detail before I can safely choose the right tool for this request.',
+      plannerChosenToolId: undefined,
+      plannerChosenOperationClass: input.selection.inferredOperationClass,
       validationFailureReason: 'planner_tool_outside_run_scope',
     };
   }
-  const candidateToolIds = uniq([
-    ...input.coreToolIds,
-    ...(input.decision.candidateToolIds ?? []).filter((toolId) => exposed.has(toolId)),
-    chosenToolId,
-  ]);
+  const candidateToolIds = uniq(input.selection.runExposedToolIds);
   return {
     ...input.selection,
-    runExposedToolIds: candidateToolIds,
     plannerCandidateToolIds: candidateToolIds,
     plannerChosenToolId: chosenToolId,
     plannerChosenOperationClass: input.decision.chosenOperationClass ?? input.selection.inferredOperationClass,
@@ -460,6 +476,7 @@ const validatePlannerDecision = (input: {
 
 export const resolveRunScopedToolSelection = async (input: {
   companyId: string;
+  channel?: RuntimeChannel;
   userId?: string | null;
   threadId?: string;
   conversationKey?: string;
@@ -485,11 +502,13 @@ export const resolveRunScopedToolSelection = async (input: {
   const exposeArtifactTools =
     input.hasActiveArtifacts
     && !allowContextOnlyAnswer;
-  const coreToolIds = uniq([
-    ...GLOBAL_ALWAYS_ON_IDS.filter((toolId) => allowed.has(toolId)),
-    ...(input.workspaceAvailable ? WORKSPACE_GLOBAL_IDS.filter((toolId) => allowed.has(toolId)) : []),
-    ...(exposeArtifactTools ? ARTIFACT_GLOBAL_IDS.filter((toolId) => allowed.has(toolId)) : []),
-  ]);
+  const channel = input.channel ?? 'desktop';
+  const coreToolIds = buildChannelBaseline({
+    channel,
+    allowed,
+    workspaceAvailable: input.workspaceAvailable,
+    exposeArtifactTools,
+  });
 
   const inferredOperationClass = inferOperationClass(queryTextForInference, {
     normalizedIntent: input.childRoute?.normalizedIntent,
@@ -537,13 +556,23 @@ export const resolveRunScopedToolSelection = async (input: {
   // 3. Learned priors
   // 4. Keyword/heuristic fallback — only if 1 and 2 both return empty
   // 5. Global always-on tools (GLOBAL_ALWAYS_ON_IDS) — always appended
+  const authoritativeChildRoute = (input.childRoute?.confidence ?? 1) >= 0.7;
+  const primaryDomainFamily = buildAllowedDomainFamily(allowed, inferredDomain);
+  const childRouteDomainFamily = authoritativeChildRoute
+    ? buildAllowedDomainFamily(allowed, input.childRoute?.domain)
+    : [];
+  const alternateDomainFamilies = uniq([
+    ...childRouteDomainFamily,
+  ]);
   const childRouterPrimaryBundle = uniq([
+    ...childRouteDomainFamily,
     ...suggestedAllowedToolIds,
     ...pinnedAllowedToolIds,
   ]);
   const primaryBundle = childRouterPrimaryBundle.length > 0
     ? childRouterPrimaryBundle
     : uniq([
+      ...primaryDomainFamily,
       ...learnedToolIds,
       ...pinnedAllowedToolIds,
       ...heuristicPrimaryBundle,
@@ -568,8 +597,8 @@ export const resolveRunScopedToolSelection = async (input: {
       : `No safe primary domain could be resolved from the latest message; preserving only core and fallback tools.${pinnedAllowedToolIds.length > 0 ? ` Pinned required tools: ${pinnedAllowedToolIds.join(', ')}.` : ''}`;
 
   const initialSelection: RunScopedToolSelection = {
-    runExposedToolIds: uniq([...coreToolIds, ...primaryBundle, ...fallbackBundle]),
-    plannerCandidateToolIds: uniq([...coreToolIds, ...primaryBundle]),
+    runExposedToolIds: uniq([...coreToolIds, ...primaryBundle, ...alternateDomainFamilies, ...fallbackBundle]),
+    plannerCandidateToolIds: uniq([...coreToolIds, ...primaryBundle, ...alternateDomainFamilies]),
     selectionReason,
     selectionFallbackNeeded: primaryBundle.length === 0 && fallbackBundle.length > 0,
     inferredDomain,

@@ -27,7 +27,7 @@ import {
 } from '../../observability';
 import { resolveVercelChildRouterModel, resolveVercelLanguageModel } from '../vercel/model-factory';
 import { buildSharedAgentSystemPrompt } from '../prompting/shared-agent-prompt';
-import { resolveRunScopedToolSelection } from '../tool-selection/run-scoped-tool-selection.service';
+import { checkToolSelectionInvariant, resolveRunScopedToolSelection } from '../tool-selection/run-scoped-tool-selection.service';
 import { createVercelDesktopTools } from '../vercel/tools';
 import {
   CircuitBreakerOpenError,
@@ -2910,6 +2910,7 @@ const executeLarkVercelTask = async (
   );
 
   const toolSelection = await resolveRunScopedToolSelection({
+    channel: 'lark',
     companyId: runtime.companyId,
     userId: linkedUserId,
     threadId: contextStorageId,
@@ -2932,6 +2933,23 @@ const executeLarkVercelTask = async (
       suggestedActions: childRoute.suggestedActions,
     },
   });
+  const invariantResult = checkToolSelectionInvariant({
+    intentDomain: childRoute.domain ?? toolSelection.inferredDomain,
+    runExposedToolIds: toolSelection.runExposedToolIds,
+    allowedToolIds: runtime.allowedToolIds,
+  });
+  if (!invariantResult.passed) {
+    logger.warn('tool.invariant.failed', {
+      channel: 'lark',
+      taskId: task.taskId,
+      intentDomain: childRoute.domain ?? toolSelection.inferredDomain,
+      runExposedToolIds: toolSelection.runExposedToolIds,
+      missingFamily: invariantResult.missingFamily,
+      widenedToolIds: invariantResult.widenedToolIds,
+    });
+    toolSelection.runExposedToolIds = invariantResult.widenedToolIds;
+    toolSelection.plannerCandidateToolIds = invariantResult.widenedToolIds;
+  }
   logger.info('vercel.tool_selection.resolved', {
     taskId: task.taskId,
     threadId: contextStorageId ?? message.chatId,
