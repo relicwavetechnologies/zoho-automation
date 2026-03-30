@@ -1,5 +1,6 @@
 import config from './config';
 import { larkDirectorySyncScheduler, larkTenantTokenService } from './company/channels/lark';
+import { executionRetentionService } from './company/observability';
 import { initializeOrchestrationRuntime, shutdownOrchestrationRuntime } from './company/queue/runtime';
 import loaders from './loaders';
 import { runBootstrapHealthChecks } from './loaders/bootstrap-health';
@@ -19,6 +20,7 @@ const startServer = async () => {
     desktopWsGateway.attach(httpServer);
     larkDirectorySyncScheduler.start();
     desktopWorkflowsService.startDueProcessor();
+    executionRetentionService.start();
     larkTenantTokenService.getAccessToken().catch((error) => {
       logger.warn('lark.tenant_token.prewarm.failed', { reason: error instanceof Error ? error.message : 'unknown' });
     });
@@ -42,6 +44,7 @@ const gracefulShutdown = async () => {
     logger.info('server.shutdown.start', undefined, { always: true });
     larkDirectorySyncScheduler.stop();
     desktopWorkflowsService.stopDueProcessor();
+    executionRetentionService.stop();
     await shutdownOrchestrationRuntime();
     logger.info('server.shutdown.complete', undefined, { always: true });
   } catch (error) {

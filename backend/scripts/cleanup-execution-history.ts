@@ -13,7 +13,7 @@ type CleanupOptions = {
 };
 
 const DEFAULT_STATUSES = ['completed', 'failed', 'cancelled'];
-const DEFAULT_OLDER_THAN_DAYS = 14;
+const DEFAULT_OLDER_THAN_DAYS = 7;
 const DEFAULT_CHUNK_SIZE = 200;
 
 const readArg = (name: string): string | undefined => {

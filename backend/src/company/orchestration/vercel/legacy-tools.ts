@@ -9024,7 +9024,7 @@ export const createVercelDesktopTools = (
 
     larkTask: tool({
       description:
-        'Lark Tasks tool for personal task lookup, tasklist reads, single-task lookup, and task mutations. For personal reads, prefer listMine for "my tasks", listOpenMine for "my open tasks", list for broader tasklist reads, and current only for the latest referenced or single current task.',
+        'Lark Tasks tool for personal task lookup, tasklist reads, single-task lookup, and task mutations. For personal reads, prefer listMine for "my tasks", listOpenMine for "my open tasks", list for broader tasklist reads, and current only for the latest referenced or single current task. For assignees, use assigneeMode=self or assignToMe=true for "assign to me", assigneeNames for teammate names, and assigneeIds only for canonical Lark ids.',
       inputSchema: z.object({
         operation: z.enum([
           'list',
@@ -9049,9 +9049,14 @@ export const createVercelDesktopTools = (
         onlyMine: z.boolean().optional(),
         onlyOpen: z.boolean().optional(),
         dueTs: z.string().optional(),
-        assigneeIds: z.array(z.string()).optional(),
-        assigneeNames: z.array(z.string()).optional(),
-        assignToMe: z.boolean().optional(),
+        assigneeMode: z.enum(['self', 'named_people', 'canonical_ids']).optional()
+          .describe('Use self for "assign to me", named_people for human names, and canonical_ids only for real Lark ids.'),
+        assigneeIds: z.array(z.string()).optional()
+          .describe('Canonical Lark assignee ids only. Do not put natural-language values here unless they literally came from a prior tool result.'),
+        assigneeNames: z.array(z.string()).optional()
+          .describe('Human assignee names. Use this for teammate names, not for ids.'),
+        assignToMe: z.boolean().optional()
+          .describe('Use true when the task should be assigned to the current caller.'),
         extra: z.record(z.unknown()).optional(),
         customFields: z.array(z.unknown()).optional(),
         repeatRule: z.record(z.unknown()).optional(),
@@ -9075,6 +9080,44 @@ export const createVercelDesktopTools = (
           const conversationKey = buildConversationKey(runtime.threadId);
           const latestTask = conversationMemoryStore.getLatestLarkTask(conversationKey);
           const normalizeLarkTimestamp = loadNormalizeLarkTimestamp();
+          const isFirstPersonAssigneeAlias = (value: string): boolean =>
+            ['me', 'myself', 'self'].includes(value.trim().toLowerCase());
+          const normalizedAssigneeRequest = (() => {
+            if (input.assigneeMode === 'self') {
+              return {
+                assignToMe: true,
+                assigneeNames: [] as string[],
+                assigneeIds: [] as string[],
+              };
+            }
+            if (input.assigneeMode === 'named_people') {
+              return {
+                assignToMe: false,
+                assigneeNames: (input.assigneeNames ?? []).filter((value) => value.trim().length > 0),
+                assigneeIds: [] as string[],
+              };
+            }
+            if (input.assigneeMode === 'canonical_ids') {
+              const rawIds = (input.assigneeIds ?? []).filter((value) => value.trim().length > 0);
+              const selfFromIds = rawIds.some((value) => isFirstPersonAssigneeAlias(value));
+              return {
+                assignToMe: input.assignToMe === true || selfFromIds,
+                assigneeNames: [] as string[],
+                assigneeIds: rawIds.filter((value) => !isFirstPersonAssigneeAlias(value)),
+              };
+            }
+
+            const rawNames = (input.assigneeNames ?? []).filter((value) => value.trim().length > 0);
+            const rawIds = (input.assigneeIds ?? []).filter((value) => value.trim().length > 0);
+            const selfFromNames = rawNames.some((value) => isFirstPersonAssigneeAlias(value));
+            const selfFromIds = rawIds.some((value) => isFirstPersonAssigneeAlias(value));
+
+            return {
+              assignToMe: input.assignToMe === true || selfFromNames || selfFromIds,
+              assigneeNames: rawNames.filter((value) => !isFirstPersonAssigneeAlias(value)),
+              assigneeIds: rawIds.filter((value) => !isFirstPersonAssigneeAlias(value)),
+            };
+          })();
           const currentIdentityTokens = uniqueDefinedStrings([
             runtime.larkOpenId,
             runtime.larkUserId,
@@ -9511,22 +9554,22 @@ export const createVercelDesktopTools = (
 
           const tasklistId = input.tasklistId?.trim() || defaults?.defaultTasklistId;
           const resolvedAssignees =
-            input.assignToMe || (input.assigneeNames?.length ?? 0) > 0
+            normalizedAssigneeRequest.assignToMe || normalizedAssigneeRequest.assigneeNames.length > 0
               ? await loadResolveLarkTaskAssignees()({
                   companyId: runtime.companyId,
                   appUserId: runtime.userId,
                   requestLarkOpenId: runtime.larkOpenId,
-                  assigneeNames: input.assigneeNames,
-                  assignToMe: input.assignToMe,
+                  assigneeNames: normalizedAssigneeRequest.assigneeNames,
+                  assignToMe: normalizedAssigneeRequest.assignToMe,
                 })
               : null;
           const canonicalizedAssigneeIds =
-            (input.assigneeIds?.length ?? 0) > 0
+            normalizedAssigneeRequest.assigneeIds.length > 0
               ? await loadCanonicalizeLarkPersonIds()({
                   companyId: runtime.companyId,
                   appUserId: runtime.userId,
                   requestLarkOpenId: runtime.larkOpenId,
-                  assigneeIds: input.assigneeIds,
+                  assigneeIds: normalizedAssigneeRequest.assigneeIds,
                 })
               : null;
           if (resolvedAssignees?.unresolved.length) {
@@ -9561,6 +9604,9 @@ export const createVercelDesktopTools = (
               summary: `No assignable teammate matched id ${canonicalizedAssigneeIds.unresolvedIds.map((value) => `"${value}"`).join(', ')}.`,
               errorKind: 'validation',
               retryable: false,
+              repairHints: {
+                assigneeMode: 'Use assigneeMode=self or assignToMe=true for "me", assigneeNames for teammate names, and assigneeIds only for canonical Lark ids.',
+              },
             });
           }
           if (canonicalizedAssigneeIds?.ambiguousIds.length) {
@@ -9579,6 +9625,9 @@ export const createVercelDesktopTools = (
               summary: `Assignee id "${first.query}" matched multiple teammates (${options}). Please be more specific.`,
               errorKind: 'validation',
               retryable: false,
+              repairHints: {
+                assigneeMode: 'Use assigneeMode=self or assignToMe=true for "me". Use assigneeNames for teammate names, not assigneeIds.',
+              },
             });
           }
           if (input.operation === 'delete') {

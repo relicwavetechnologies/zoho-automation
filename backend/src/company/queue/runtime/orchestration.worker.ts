@@ -4,7 +4,16 @@ import { Job, Worker } from 'bullmq';
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
 import { orangeDebug } from '../../../utils/orange-debug';
-import { classifyRuntimeError, emitRuntimeTrace, executionService } from '../../observability';
+import {
+  buildExecutionDecisionPayload,
+  buildExecutionFailurePayload,
+  buildExecutionOutcomePayload,
+  buildExecutionRequestPayload,
+  buildExecutionToolResultPayload,
+  classifyRuntimeError,
+  emitRuntimeTrace,
+  executionService,
+} from '../../observability';
 import {
   buildTaskWithConfiguredEngine,
   executeTaskWithConfiguredEngine,
@@ -155,12 +164,16 @@ const startLarkExecutionRun = async (input: {
     summary: summarizeText(input.message.text),
     status: 'running',
     payload: {
-      chatId: input.message.chatId,
+      ...buildExecutionRequestPayload({
+        originalPrompt: input.message.text,
+        channel: 'lark',
+        chatId: input.message.chatId,
+        messageId: input.message.messageId,
+        taskId: input.taskId,
+        linkedUserId: input.userId ?? null,
+      }),
       channel: input.message.channel,
       userId: input.message.userId,
-      linkedUserId: input.userId ?? null,
-      messageId: input.message.messageId,
-      taskId: input.taskId,
     },
   });
 
@@ -374,11 +387,19 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
         summary: summarizeText(typeof agentResult.message === 'string' ? agentResult.message : null, 800),
         status: status ?? null,
         payload: {
-          status: status ?? null,
-          message: typeof agentResult.message === 'string' ? agentResult.message : null,
+          ...buildExecutionToolResultPayload({
+            toolName: typeof agentResult.agentKey === 'string' ? agentResult.agentKey : 'agent',
+            title: `${isFailure ? 'Agent failed' : 'Agent completed'}: ${
+              typeof agentResult.agentKey === 'string' ? agentResult.agentKey : 'agent'
+            }`,
+            success: !isFailure,
+            status: status ?? null,
+            summary: typeof agentResult.message === 'string' ? agentResult.message : null,
+            output: typeof agentResult.result === 'object' ? agentResult.result : null,
+            error: typeof agentResult.error === 'object' ? agentResult.error : null,
+            latencyMs: typeof agentResult.metrics?.latencyMs === 'number' ? agentResult.metrics.latencyMs : null,
+          }),
           metrics: typeof agentResult.metrics === 'object' ? agentResult.metrics : null,
-          error: typeof agentResult.error === 'object' ? agentResult.error : null,
-          result: typeof agentResult.result === 'object' ? agentResult.result : null,
         },
       });
     }
@@ -393,6 +414,14 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
         title: 'Generated final synthesis',
         summary: summarizeText(result.latestSynthesis, 800),
         status: 'done',
+        payload: buildExecutionOutcomePayload({
+          finalText: result.latestSynthesis,
+          deliveryTarget: message.channel,
+          details: {
+            configuredEngine: selectedEngine,
+            engineUsed,
+          },
+        }),
       });
     }
 
@@ -406,6 +435,20 @@ const processTask = async (job: Job<OrchestrationJobData>): Promise<void> => {
       summary: summarizeText(result.latestSynthesis ?? result.currentStep ?? message.text, 400),
       status: result.status,
       payload: {
+        ...buildExecutionDecisionPayload({
+          summary: result.status === 'failed'
+            ? 'Execution delivery completed in a failed state.'
+            : 'Execution delivery completed successfully.',
+          details: {
+            configuredEngine: selectedEngine,
+            engineUsed,
+            rolledBackFrom: rolledBackFrom ?? null,
+            rollbackReasonCode: rollbackReasonCode ?? null,
+            currentStep: result.currentStep ?? null,
+            graphThreadId: result.runtimeMeta?.threadId ?? null,
+            graphNode: result.runtimeMeta?.node ?? null,
+          },
+        }),
         configuredEngine: selectedEngine,
         engineUsed,
         rolledBackFrom: rolledBackFrom ?? null,
@@ -649,6 +692,11 @@ export const startOrchestrationWorker = (): Worker<OrchestrationJobData, void, t
         summary: summarizeText(classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'Runtime worker failure', 400),
         status: 'failed',
         payload: {
+          ...buildExecutionFailurePayload({
+            stage: 'lark_runtime',
+            errorCode: classifiedError.classifiedReason ?? 'lark_runtime_failed',
+            errorMessage: classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'Runtime worker failure',
+          }),
           taskId: job.data.taskId,
           messageId: job.data.message.messageId,
           classifiedError,

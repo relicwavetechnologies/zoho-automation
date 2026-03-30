@@ -16,6 +16,7 @@ import { toolPermissionService } from '../../tools/tool-permission.service';
 import { retrievalOrchestratorService } from '../../retrieval';
 import { logger } from '../../../utils/logger';
 import {
+  buildExecutionModelInputPayload,
   buildCapabilityGapFromSelection,
   buildCapabilityGapFromToolFailure,
   buildExecutionToolDemandPayload,
@@ -3278,6 +3279,40 @@ const executeLarkVercelTask = async (
   try {
     const primaryMessages =
       inputMessages.length > 0 ? inputMessages : [{ role: 'user', content: resolvedUserMessage }];
+    await appendExecutionEventSafe({
+      executionId: task.taskId,
+      phase: 'planning',
+      eventType: 'model.input',
+      actorType: 'model',
+      actorKey: resolvedModel.effectiveModelId,
+      title: 'Prepared model input',
+      summary: summarizeText(resolvedUserMessage, 220) ?? 'Prepared model input for generation.',
+      status: 'done',
+      payload: buildExecutionModelInputPayload({
+        label: 'lark_generate',
+        systemPrompt,
+        messages: primaryMessages,
+        contextSummary: {
+          contextClass,
+          modelId: budget.modelId,
+          usableContextBudget: budget.usableContextBudget,
+          targetContextBudget: budget.targetContextBudget,
+          includedRawMessageCount: historySelection.includedRawMessageCount,
+          includedConversationRetrievalCount: conversationSnippets.length,
+          includedSourceArtifactCount: groundingAttachments.length,
+          includedThreadSummary: activeThreadSummary.sourceMessageCount > 0,
+          compactionTier: historySelection.compactionTier,
+        },
+        toolAvailability: {
+          allowedToolIds: effectiveRuntime.allowedToolIds,
+          runExposedToolIds: effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
+          plannerCandidateToolIds: effectiveRuntime.plannerCandidateToolIds ?? [],
+          plannerChosenToolId: effectiveRuntime.plannerChosenToolId ?? null,
+          plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass ?? null,
+          toolSelectionReason: effectiveRuntime.toolSelectionReason ?? null,
+        },
+      }),
+    });
     await appendLatestAgentRunLog(task.taskId, 'llm.context', {
       phase: 'lark_generate',
       threadId: contextStorageId ?? message.chatId,

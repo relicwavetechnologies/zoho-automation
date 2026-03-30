@@ -40,28 +40,37 @@ import {
 } from './insights';
 
 const REDACTED_KEYS = new Set([
+  'rawEvent',
+  'rawInput',
+  'reasoning',
+  'thinking',
+  'thinkingText',
+  'cot',
+  'chainOfThought',
+]);
+
+const REDACTED_VIEW_KEYS = new Set([
   'prompt',
   'systemPrompt',
   'history',
   'historyContext',
   'memoryContext',
   'requestContext',
-  'rawEvent',
-  'rawInput',
   'fullPrompt',
-  'reasoning',
-  'thinking',
-  'thinkingText',
-  'cot',
-  'chainOfThought',
   'toolInput',
   'inputMessages',
+  'modelInput',
+  'toolCall',
 ]);
+
+const resolvePayloadVisibility = (scope: ExecutionRunScope): 'full' | 'redacted' => (
+  scope.role === 'admin' && scope.adminRole === 'SUPER_ADMIN' ? 'full' : 'redacted'
+);
 
 const sanitizePayloadValue = (value: unknown): unknown => {
   if (value === null || value === undefined) return value;
   if (typeof value === 'string') {
-    return value.length > 6000 ? `${value.slice(0, 6000)}...` : value;
+    return value.length > 20_000 ? `${value.slice(0, 20_000)}...` : value;
   }
   if (typeof value === 'number' || typeof value === 'boolean') return value;
   if (Array.isArray(value)) return value.slice(0, 50).map(sanitizePayloadValue);
@@ -81,6 +90,36 @@ const normalizePayload = (payload?: Record<string, unknown> | null): Record<stri
   const sanitized = sanitizePayloadValue(payload);
   return sanitized && typeof sanitized === 'object' && !Array.isArray(sanitized)
     ? (sanitized as Record<string, unknown>)
+    : null;
+};
+
+const redactPayloadForView = (
+  payload: Record<string, unknown> | null,
+  visibility: 'full' | 'redacted',
+): Record<string, unknown> | null => {
+  if (!payload) return null;
+  if (visibility === 'full') return payload;
+
+  const redactValue = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+      return value.map(redactValue);
+    }
+    if (!value || typeof value !== 'object') {
+      return value;
+    }
+    const next: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (REDACTED_VIEW_KEYS.has(key)) {
+        continue;
+      }
+      next[key] = redactValue(entry);
+    }
+    return next;
+  };
+
+  const redacted = redactValue(payload);
+  return redacted && typeof redacted === 'object' && !Array.isArray(redacted)
+    ? (redacted as Record<string, unknown>)
     : null;
 };
 
@@ -120,7 +159,10 @@ const mapRun = (row: ExecutionRunRow): ExecutionRunDetailDTO => ({
   durationMs: row.finishedAt ? row.finishedAt.getTime() - row.startedAt.getTime() : null,
 });
 
-const mapEvent = (row: ExecutionEventRow): ExecutionEventItemDTO => ({
+const mapEvent = (
+  row: ExecutionEventRow,
+  visibility: 'full' | 'redacted',
+): ExecutionEventItemDTO => ({
   id: row.id,
   executionId: row.executionId,
   sequence: row.sequence,
@@ -131,7 +173,10 @@ const mapEvent = (row: ExecutionEventRow): ExecutionEventItemDTO => ({
   title: row.title,
   summary: row.summary ?? null,
   status: row.status ?? null,
-  payload: normalizePayload((row.payload ?? null) as Record<string, unknown> | null),
+  payload: redactPayloadForView(
+    normalizePayload((row.payload ?? null) as Record<string, unknown> | null),
+    visibility,
+  ),
   createdAt: row.createdAt.toISOString(),
 });
 
@@ -265,7 +310,7 @@ export class ExecutionService extends BaseService {
     return mapEvent(await this.repository.appendEvent({
       ...input,
       payload: normalizePayload(input.payload),
-    }));
+    }), 'full');
   }
 
   async completeRun(input: CompleteExecutionRunInput): Promise<ExecutionRunDetailDTO> {
@@ -456,13 +501,14 @@ export class ExecutionService extends BaseService {
     },
   ): Promise<ExecutionEventListResponse> {
     await this.getRun(scope, executionId);
+    const visibility = resolvePayloadVisibility(scope);
     const items = await this.repository.listEvents({
       where: { executionId },
       phase: input?.phase,
       actorType: input?.actorType,
     });
     return {
-      items: items.map(mapEvent),
+      items: items.map((item) => mapEvent(item, visibility)),
     };
   }
 }

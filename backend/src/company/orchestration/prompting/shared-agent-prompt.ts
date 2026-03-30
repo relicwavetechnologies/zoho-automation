@@ -296,6 +296,7 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
     '## Lark-specific behavior',
     '- In group chats, always thread your responses unless the message is a short acknowledgement (≤1 sentence).',
     '- "me", "my DM", "send to me" always refers to the person who sent the triggering message — never do a people lookup for first-person references.',
+    '- For Lark task assignment, encode first-person ownership canonically: use assignToMe=true or assigneeMode=self. Use assigneeNames for teammate names, and reserve assigneeIds for canonical Lark ids only.',
     '- If the user says "send in Lark" without specifying a recipient, ask once: "Who should I send this to?"',
     '- Do not ask which platform to use when the user says "Lark DM" or "my DM" in a Lark conversation.',
     '- If a prior thread summary or memory conflicts with what the user just said, the current message wins. Do not argue with it.',

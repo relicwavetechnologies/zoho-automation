@@ -36,6 +36,8 @@ export type CanonicalizeLarkIdsResult = {
   ambiguousIds: Array<{ query: string; matches: VercelLarkPerson[] }>;
 };
 
+const FIRST_PERSON_ALIASES = new Set(['me', 'myself', 'self']);
+
 const ISO_WITH_TIMEZONE_PATTERN = /(z|[+-]\d{2}:\d{2})$/i;
 const ISO_LOCAL_PATTERN = /^(\d{4})-(\d{2})-(\d{2})[t\s](\d{2}):(\d{2})(?::(\d{2}))?$/i;
 const TIME_ONLY_12H_PATTERN = /\b(\d{1,2})(?:(?::|\.)(\d{2}))?\s*(am|pm)\b/i;
@@ -225,7 +227,7 @@ export const resolveLarkPeopleFromDirectory = (input: {
     if (!query) {
       continue;
     }
-    if (['me', 'myself', 'self'].includes(query.toLowerCase())) {
+    if (FIRST_PERSON_ALIASES.has(query.toLowerCase())) {
       const currentUser = input.people.find((person) => person.isCurrentUser);
       if (currentUser) {
         resolved.push(currentUser);
@@ -275,6 +277,17 @@ export const canonicalizeLarkPersonIds = async (
   for (const rawValue of input.assigneeIds ?? []) {
     const query = normalize(rawValue);
     if (!query) {
+      continue;
+    }
+
+    if (FIRST_PERSON_ALIASES.has(query.toLowerCase())) {
+      const currentUser = people.find((person) => person.isCurrentUser);
+      const canonicalId = currentUser ? getCanonicalLarkOpenId(currentUser) : undefined;
+      if (canonicalId) {
+        resolvedIds.push(canonicalId);
+      } else {
+        unresolvedIds.push(query);
+      }
       continue;
     }
 

@@ -5,7 +5,15 @@ import type { Request, Response } from 'express';
 
 import config from '../../config';
 import { HttpException } from '../../core/http-exception';
-import { executionService } from '../../company/observability';
+import {
+  buildExecutionFailurePayload,
+  buildExecutionModelInputPayload,
+  buildExecutionOutcomePayload,
+  buildExecutionRequestPayload,
+  buildExecutionToolCallPayload,
+  buildExecutionToolResultPayload,
+  executionService,
+} from '../../company/observability';
 import { retrievalOrchestratorService } from '../../company/retrieval';
 import {
   desktopRuntimeAdapter,
@@ -553,7 +561,17 @@ export class LanggraphDesktopEngine {
         title: 'LangGraph desktop execution started',
         summary: summarizeGraphText(message),
         status: 'running',
-        payload: { threadId, mode },
+        payload: {
+          ...buildExecutionRequestPayload({
+            originalPrompt: message,
+            channel: 'desktop',
+            threadId,
+            chatId: threadId,
+            messageId,
+            taskId: executionId,
+          }),
+          mode,
+        },
       });
       logger.info('langgraph.desktop.execution.bootstrapped', {
         executionId,
@@ -706,6 +724,11 @@ export class LanggraphDesktopEngine {
             actorKey: toolName,
             title,
             status: 'running',
+            payload: buildExecutionToolCallPayload({
+              toolName,
+              title,
+              toolInput,
+            }),
           });
         },
         onToolFinish: async (toolName, activityId, title, output) => {
@@ -784,8 +807,15 @@ export class LanggraphDesktopEngine {
             summary: summarizeGraphText(output.summary, 600),
             status: output.pendingApprovalAction ? 'pending' : output.success ? 'done' : 'failed',
             payload: {
-              success: output.success,
-              pendingApprovalAction: output.pendingApprovalAction ?? null,
+              ...buildExecutionToolResultPayload({
+                toolName,
+                title,
+                success: output.success,
+                status: output.pendingApprovalAction ? 'pending' : output.success ? 'done' : 'failed',
+                summary: output.summary,
+                pendingApprovalAction: output.pendingApprovalAction ?? null,
+                output: output.fullPayload ?? output.keyData ?? null,
+              }),
             },
           });
         },
@@ -800,6 +830,39 @@ export class LanggraphDesktopEngine {
         historyMessages: message.trim()
           ? [...historyMessages, { role: 'user', content: message }]
           : historyMessages,
+      });
+      await appendEventSafe({
+        executionId,
+        phase: 'planning',
+        eventType: 'model.input',
+        actorType: 'model',
+        actorKey: 'langgraph-research',
+        title: 'Prepared model input',
+        summary: summarizeGraphText(message, 220),
+        status: 'done',
+        payload: buildExecutionModelInputPayload({
+          label: 'langgraph_research',
+          systemPrompt: buildResearchSystemPrompt({
+            state,
+            classification: state.classification,
+            retrieval: state.retrieval,
+            toolFamilies: selectedFamilies,
+            additionalInstructions: buildDesktopAdditionalInstructions({
+              threadId,
+              workspace,
+              latestUserMessage: message,
+            }),
+          }),
+          messages: inputMessages,
+          contextSummary: {
+            retrievalMode: state.retrieval.mode,
+            toolFamilies: selectedFamilies,
+            historyMessageCount: inputMessages.length,
+          },
+          toolAvailability: {
+            toolFamilies: selectedFamilies,
+          },
+        }),
       });
       const researchModel = await resolveLanggraphDesktopModel(mode);
       logger.info('langgraph.desktop.research.start', {
@@ -1102,6 +1165,14 @@ export class LanggraphDesktopEngine {
         title: 'Generated assistant response',
         summary: summarizeGraphText(finalText, 600),
         status: 'done',
+        payload: buildExecutionOutcomePayload({
+          finalText,
+          deliveryTarget: 'desktop',
+          details: {
+            evidenceCount: evidence.length,
+            groundedEvidenceCount: groundedEvidence.length,
+          },
+        }),
       });
 
       const finalDedupeKey = `final:${state.run.id}`;
@@ -1176,6 +1247,11 @@ export class LanggraphDesktopEngine {
         title: 'LangGraph desktop stream failed',
         summary: summarizeGraphText(errorMessage),
         status: 'failed',
+        payload: buildExecutionFailurePayload({
+          stage: 'langgraph_desktop',
+          errorCode: 'langgraph_desktop_stream_failed',
+          errorMessage,
+        }),
       });
       await failExecutionRun(executionId, errorMessage).catch(() => undefined);
 

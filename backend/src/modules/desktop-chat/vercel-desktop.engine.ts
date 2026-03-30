@@ -33,6 +33,10 @@ import {
   type CachedDesktopThreadMessage,
 } from './desktop-thread-context.cache';
 import {
+  buildExecutionModelInputPayload,
+  buildExecutionOutcomePayload,
+  buildExecutionRequestPayload,
+  buildExecutionToolResultPayload,
   buildCapabilityGapFromSelection,
   buildCapabilityGapFromToolFailure,
   buildExecutionToolDemandPayload,
@@ -3977,6 +3981,29 @@ export const executeAutomatedDesktopTurn = async (input: {
       threadSummary: threadMemory.summary,
       resolvedUserReferences: resolvedUserContext.resolvedReferences,
     });
+    await appendEventSafe({
+      executionId,
+      phase: 'planning',
+      eventType: 'model.input',
+      actorType: 'model',
+      actorKey: 'workflow',
+      title: 'Prepared model input',
+      summary: summarizeText(resolvedUserContext.message, 220) ?? 'Prepared model input for workflow execution.',
+      status: 'done',
+      payload: buildExecutionModelInputPayload({
+        label: 'desktop_workflow',
+        systemPrompt: contextAssembly.systemPrompt,
+        messages: workflowMessages,
+        contextSummary: contextAssembly.metrics,
+        toolAvailability: {
+          allowedToolIds: effectiveRuntime.allowedToolIds,
+          runExposedToolIds: effectiveRuntime.runExposedToolIds,
+          plannerCandidateToolIds: effectiveRuntime.plannerCandidateToolIds,
+          plannerChosenToolId: effectiveRuntime.plannerChosenToolId,
+          plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
+        },
+      }),
+    });
     let activeWorkflowMessages = workflowMessages;
     let continuationCount = 0;
     let result: Awaited<ReturnType<typeof runVercelLoop>>;
@@ -4350,7 +4377,17 @@ export class VercelDesktopEngine {
       title: 'Vercel desktop execution started',
       summary: summarizeText(storedUserMessage || effectivePromptMessage),
       status: 'running',
-      payload: { threadId, mode },
+      payload: {
+        ...buildExecutionRequestPayload({
+          originalPrompt: storedUserMessage || effectivePromptMessage,
+          channel: 'desktop',
+          threadId,
+          chatId: threadId,
+          messageId,
+          taskId: executionId,
+        }),
+        mode,
+      },
     });
     logger.info('vercel.stream.request.start', {
       executionId,
@@ -4855,6 +4892,29 @@ export class VercelDesktopEngine {
         threadSummary: activeThreadSummary,
         resolvedUserReferences: resolvedUserContext.resolvedReferences,
       });
+      await appendEventSafe({
+        executionId,
+        phase: 'planning',
+        eventType: 'model.input',
+        actorType: 'model',
+        actorKey: 'send',
+        title: 'Prepared model input',
+        summary: summarizeText(effectivePromptMessage, 220) ?? 'Prepared model input for response generation.',
+        status: 'done',
+        payload: buildExecutionModelInputPayload({
+          label: 'desktop_send',
+          systemPrompt: contextAssembly.systemPrompt,
+          messages: inputMessages,
+          contextSummary: contextAssembly.metrics,
+          toolAvailability: {
+            allowedToolIds: effectiveRuntime.allowedToolIds,
+            runExposedToolIds: effectiveRuntime.runExposedToolIds,
+            plannerCandidateToolIds: effectiveRuntime.plannerCandidateToolIds,
+            plannerChosenToolId: effectiveRuntime.plannerChosenToolId,
+            plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
+          },
+        }),
+      });
 
       const executedToolOutcomes: Array<{
         toolName: string;
@@ -4999,8 +5059,16 @@ export class VercelDesktopEngine {
             summary: summarizeText(output.summary, 600),
             status: output.success ? 'done' : 'failed',
             payload: {
-              success: output.success,
-              pendingApprovalAction: output.pendingApprovalAction ?? null,
+              ...buildExecutionToolResultPayload({
+                toolName,
+                title,
+                success: output.success,
+                status: output.success ? 'done' : 'failed',
+                summary: output.summary,
+                pendingApprovalAction: output.pendingApprovalAction ?? null,
+                output: output.fullPayload ?? output.keyData ?? output.data ?? null,
+                error: output.error ?? null,
+              }),
             },
           });
         },
@@ -5257,6 +5325,12 @@ export class VercelDesktopEngine {
             600,
           ),
           status: pendingApproval ? 'pending' : 'done',
+          payload: pendingApproval
+            ? undefined
+            : buildExecutionOutcomePayload({
+              finalText: finalText || approvalSummary || blockingSummary || '',
+              deliveryTarget: 'desktop',
+            }),
         });
 
         if (!pendingApproval) {
@@ -5421,6 +5495,18 @@ export class VercelDesktopEngine {
       ),
       status: 'running',
       payload: {
+        ...buildExecutionRequestPayload({
+          originalPrompt:
+            resolvedUserContext.message ||
+            message ||
+            actionResult?.summary ||
+            'Local action continuation',
+          channel: 'desktop',
+          threadId,
+          chatId: threadId,
+          messageId,
+          taskId: executionId,
+        }),
         threadId,
         workspacePath: workspace?.path ?? null,
         hasActionResult: Boolean(actionResult),
@@ -5668,6 +5754,29 @@ export class VercelDesktopEngine {
         threadSummary: activeThreadSummary,
         resolvedUserReferences: resolvedUserContext.resolvedReferences,
       });
+      await appendEventSafe({
+        executionId,
+        phase: 'planning',
+        eventType: 'model.input',
+        actorType: 'model',
+        actorKey: 'act',
+        title: 'Prepared model input',
+        summary: summarizeText(latestContinuationMessage, 220) ?? 'Prepared model input for action execution.',
+        status: 'done',
+        payload: buildExecutionModelInputPayload({
+          label: 'desktop_act',
+          systemPrompt: contextAssembly.systemPrompt,
+          messages: modelMessages,
+          contextSummary: contextAssembly.metrics,
+          toolAvailability: {
+            allowedToolIds: effectiveRuntime.allowedToolIds,
+            runExposedToolIds: effectiveRuntime.runExposedToolIds,
+            plannerCandidateToolIds: effectiveRuntime.plannerCandidateToolIds,
+            plannerChosenToolId: effectiveRuntime.plannerChosenToolId,
+            plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
+          },
+        }),
+      });
       const result = await runVercelLoop({
         runtime: effectiveRuntime,
         analyticsToolDemandPayload,
@@ -5760,8 +5869,16 @@ export class VercelDesktopEngine {
             summary: summarizeText(output.summary, 600),
             status: output.pendingApprovalAction ? 'pending' : output.success ? 'done' : 'failed',
             payload: {
-              success: output.success,
-              pendingApprovalAction: output.pendingApprovalAction ?? null,
+              ...buildExecutionToolResultPayload({
+                toolName,
+                title,
+                success: output.success,
+                status: output.pendingApprovalAction ? 'pending' : output.success ? 'done' : 'failed',
+                summary: output.summary,
+                pendingApprovalAction: output.pendingApprovalAction ?? null,
+                output: output.fullPayload ?? output.keyData ?? output.data ?? null,
+                error: output.error ?? null,
+              }),
             },
           });
         },
@@ -5922,6 +6039,10 @@ export class VercelDesktopEngine {
           title: 'Generated assistant response',
           summary: summarizeText(assistantText, 600),
           status: 'done',
+          payload: buildExecutionOutcomePayload({
+            finalText: assistantText,
+            deliveryTarget: 'desktop',
+          }),
         });
         await persistUiEvent(executionId, 'done', { executionId, state: 'completed' });
         await appendLatestAgentRunLog(executionId, 'run.completed', {
@@ -6048,6 +6169,18 @@ export class VercelDesktopEngine {
       ),
       status: 'running',
       payload: {
+        ...buildExecutionRequestPayload({
+          originalPrompt:
+            resolvedUserContext.message ||
+            message ||
+            actionResult?.summary ||
+            'Local action continuation',
+          channel: 'desktop',
+          threadId,
+          chatId: threadId,
+          messageId,
+          taskId: executionId,
+        }),
         threadId,
         workspacePath: workspace?.path ?? null,
         hasActionResult: Boolean(actionResult),
@@ -6323,6 +6456,29 @@ export class VercelDesktopEngine {
         threadSummary: activeThreadSummary,
         resolvedUserReferences: resolvedUserContext.resolvedReferences,
       });
+      await appendEventSafe({
+        executionId,
+        phase: 'planning',
+        eventType: 'model.input',
+        actorType: 'model',
+        actorKey: 'streamAct',
+        title: 'Prepared model input',
+        summary: summarizeText(latestContinuationMessage, 220) ?? 'Prepared model input for streamed action execution.',
+        status: 'done',
+        payload: buildExecutionModelInputPayload({
+          label: 'desktop_stream_act',
+          systemPrompt: contextAssembly.systemPrompt,
+          messages: modelMessages,
+          contextSummary: contextAssembly.metrics,
+          toolAvailability: {
+            allowedToolIds: effectiveRuntime.allowedToolIds,
+            runExposedToolIds: effectiveRuntime.runExposedToolIds,
+            plannerCandidateToolIds: effectiveRuntime.plannerCandidateToolIds,
+            plannerChosenToolId: effectiveRuntime.plannerChosenToolId,
+            plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
+          },
+        }),
+      });
       const result = await runVercelStreamLoop({
         runtime: effectiveRuntime,
         analyticsToolDemandPayload,
@@ -6456,8 +6612,16 @@ export class VercelDesktopEngine {
             summary: summarizeText(output.summary, 600),
             status: output.pendingApprovalAction ? 'pending' : output.success ? 'done' : 'failed',
             payload: {
-              success: output.success,
-              pendingApprovalAction: output.pendingApprovalAction ?? null,
+              ...buildExecutionToolResultPayload({
+                toolName,
+                title,
+                success: output.success,
+                status: output.pendingApprovalAction ? 'pending' : output.success ? 'done' : 'failed',
+                summary: output.summary,
+                pendingApprovalAction: output.pendingApprovalAction ?? null,
+                output: output.fullPayload ?? output.keyData ?? output.data ?? null,
+                error: output.error ?? null,
+              }),
             },
           });
         },
@@ -6674,6 +6838,12 @@ export class VercelDesktopEngine {
             600,
           ),
           status: pendingApproval ? 'pending' : 'done',
+          payload: pendingApproval
+            ? undefined
+            : buildExecutionOutcomePayload({
+              finalText: finalText || approvalSummary || blockingSummary || '',
+              deliveryTarget: 'desktop',
+            }),
         });
         if (!pendingApproval) {
           if (activePlan) {
