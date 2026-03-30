@@ -1829,6 +1829,18 @@ const appendEventSafe = async (input: Parameters<typeof executionService.appendE
   }
 };
 
+const isExecutionCancellationError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return error.name === 'AbortError'
+    || message.includes('task cancelled')
+    || message.includes('abort signal')
+    || message.includes('control signal')
+    || message.includes('aborted');
+};
+
 const runInBackground = (label: string, task: () => Promise<void>): void => {
   queueMicrotask(() => {
     void task().catch((error) => {
@@ -5414,29 +5426,55 @@ export class VercelDesktopEngine {
               threadSummary: activeThreadSummary,
               taskState: activeTaskState,
             }),
-          executeStep: async (stepInput) => runDesktopDelegatedAgentStep({
-            executionId,
-            threadId,
-            session,
-            mode,
-            originalUserMessage: effectivePromptMessage,
-            step: stepInput.step,
-            runtime: effectiveRuntime,
-            history,
-            workspace,
-            approvalPolicySummary,
-            queryEnrichment: groundedQueryEnrichment,
-            activeAttachments,
-            threadSummary: activeThreadSummary,
-            resolvedUserReferences: resolvedUserContext.resolvedReferences,
-            childRoute,
-            analyticsToolDemandPayload,
-            taskState: stepInput.taskState,
-            scopedContext: stepInput.scopedContext,
-            dependencyInputs: stepInput.dependencyInputs,
-            onToolStart: handleToolStart,
-            onToolFinish: handleToolFinish,
-          }),
+          executeStep: async (stepInput) => {
+            try {
+              return await runDesktopDelegatedAgentStep({
+                executionId,
+                threadId,
+                session,
+                mode,
+                originalUserMessage: effectivePromptMessage,
+                step: stepInput.step,
+                runtime: effectiveRuntime,
+                history,
+                workspace,
+                approvalPolicySummary,
+                queryEnrichment: groundedQueryEnrichment,
+                activeAttachments,
+                threadSummary: activeThreadSummary,
+                resolvedUserReferences: resolvedUserContext.resolvedReferences,
+                childRoute,
+                analyticsToolDemandPayload,
+                taskState: stepInput.taskState,
+                scopedContext: stepInput.scopedContext,
+                dependencyInputs: stepInput.dependencyInputs,
+                onToolStart: handleToolStart,
+                onToolFinish: handleToolFinish,
+              });
+            } catch (error) {
+              const wasCancelled = isExecutionCancellationError(error);
+              const errorMessage = error instanceof Error ? error.message : 'unknown_error';
+              await appendEventSafe({
+                executionId,
+                phase: wasCancelled ? 'control' : 'error',
+                eventType: wasCancelled ? 'supervisor.step.cancelled' : 'supervisor.step.failed',
+                actorType: 'agent',
+                actorKey: stepInput.step.agentId,
+                title: `Supervisor step ${stepInput.step.stepId}`,
+                summary: wasCancelled
+                  ? 'Execution was cancelled before delegated step completion.'
+                  : summarizeText(errorMessage, 600) ?? 'Delegated step failed before completion.',
+                status: wasCancelled ? 'cancelled' : 'failed',
+                payload: {
+                  stepId: stepInput.step.stepId,
+                  agentId: stepInput.step.agentId,
+                  objective: stepInput.step.objective,
+                  error: errorMessage,
+                },
+              });
+              throw error;
+            }
+          },
           mergeTaskState: (_currentState, result) => result.taskState,
           onWaveStart: async (wave, waveIndex) => {
             await appendEventSafe({

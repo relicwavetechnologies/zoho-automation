@@ -3613,6 +3613,7 @@ const executeLarkVercelTask = async (
               inputRefs: step.inputRefs,
             },
           });
+          try {
           const stepTools = createVercelDesktopTools(stepRuntime, {
             onToolStart: async (toolName, activityId, title) => {
               await appendLatestAgentRunLog(task.taskId, 'tool.start', {
@@ -3794,6 +3795,31 @@ const executeLarkVercelTask = async (
               resolvedContext: stepResolvedContext,
             },
           };
+          } catch (error) {
+            const wasCancelled = isExecutionCancellationError(error);
+            const errorMessage = error instanceof Error ? error.message : 'unknown_error';
+            const summary = wasCancelled
+              ? 'Execution was cancelled before delegated step completion.'
+              : summarizeText(errorMessage, 400) ?? 'Delegated step failed before completion.';
+            await appendExecutionEventSafe({
+              executionId,
+              phase: wasCancelled ? 'control' : 'error',
+              eventType: wasCancelled ? 'supervisor.step.cancelled' : 'supervisor.step.failed',
+              actorType: 'agent',
+              actorKey: step.agentId,
+              title: `Delegated step ${step.stepId}`,
+              summary,
+              status: wasCancelled ? 'cancelled' : 'failed',
+              payload: {
+                stepId: step.stepId,
+                agentId: step.agentId,
+                objective: step.objective,
+                error: errorMessage,
+                toolResults: stepToolResults,
+              },
+            });
+            throw error;
+          }
         },
       });
 
