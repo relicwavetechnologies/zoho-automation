@@ -568,11 +568,11 @@ const buildRuntimeWorkflowSession = (runtime: VercelRuntimeRequestContext): Memb
 const buildRuntimeWorkflowDestinations = (
   runtime: VercelRuntimeRequestContext,
 ): Array<z.infer<typeof workflowDestinationSchema>> => {
-  if (runtime.channel === 'lark' && runtime.chatId) {
+  if (runtime.channel === 'lark') {
     return [
       {
-        kind: 'lark_current_chat',
-        label: 'Current Lark chat',
+        kind: 'lark_self_dm',
+        label: 'My personal Lark DM',
       },
     ];
   }
@@ -650,11 +650,16 @@ const resolveWorkflowOriginChatId = (input: {
   runtime: VercelRuntimeRequestContext;
   current?: Record<string, unknown> | null;
   outputConfig: ReturnType<typeof toWorkflowOutputConfig> | Record<string, unknown>;
+  preferRuntimeForCurrentChat?: boolean;
 }): string | null => {
   if (!workflowUsesCurrentLarkChat(input.outputConfig)) {
     return asString(input.current?.originChatId) ?? null;
   }
-  return input.runtime.chatId ?? asString(input.current?.originChatId) ?? null;
+  const currentOriginChatId = asString(input.current?.originChatId) ?? null;
+  if (input.preferRuntimeForCurrentChat) {
+    return input.runtime.chatId ?? currentOriginChatId;
+  }
+  return currentOriginChatId ?? input.runtime.chatId ?? null;
 };
 
 const validateWorkflowSaveDestinations = (input: {
@@ -732,13 +737,6 @@ const buildWorkflowOutputConfigSignature = (value: unknown): string => {
     .sort();
   return JSON.stringify({ destinations, defaultIds });
 };
-
-const shouldAdoptRuntimeWorkflowDestinations = (
-  currentOutputConfig: unknown,
-  desiredOutputConfig: ReturnType<typeof toWorkflowOutputConfig>,
-): boolean =>
-  buildWorkflowOutputConfigSignature(currentOutputConfig) !==
-  buildWorkflowOutputConfigSignature(desiredOutputConfig);
 
 const parseWorkflowTime = (value: string): { hour: number; minute: number } => {
   const [hour, minute] = value.split(':').map((part) => Number(part));
@@ -4092,23 +4090,30 @@ export const createVercelDesktopTools = (
 
           if (input.workflowId) {
             const existing = await workflowsService.get(session, input.workflowId);
-            const originChatId = resolveWorkflowOriginChatId({
-              runtime,
-              current: existing,
-              outputConfig: desiredOutputConfig,
-            });
-            const normalized = (
-              shouldAdoptRuntimeWorkflowDestinations(existing.outputConfig, desiredOutputConfig)
-              || (workflowUsesCurrentLarkChat(desiredOutputConfig) && originChatId !== (asString(existing.originChatId) ?? null))
-            )
-              ? await workflowsService.update(session, input.workflowId, {
+            const nextOutputConfig = input.destinations ? desiredOutputConfig : existing.outputConfig;
+            const nextOriginChatId = input.destinations
+              ? resolveWorkflowOriginChatId({
+                  runtime,
+                  current: existing,
                   outputConfig: desiredOutputConfig,
-                  ...(originChatId ? { originChatId } : {}),
-                  ...(input.departmentId !== undefined || runtime.departmentId
-                    ? { departmentId: input.departmentId ?? runtime.departmentId ?? null }
-                    : {}),
+                  preferRuntimeForCurrentChat: true,
                 })
-              : existing;
+              : asString(existing.originChatId) ?? null;
+            const updatePayload: Parameters<typeof workflowsService.update>[2] = {};
+            if (input.name?.trim()) {
+              updatePayload.name = input.name.trim();
+            }
+            if (input.destinations) {
+              updatePayload.outputConfig = nextOutputConfig;
+              updatePayload.originChatId = nextOriginChatId;
+            }
+            if (input.departmentId !== undefined || runtime.departmentId) {
+              updatePayload.departmentId = input.departmentId ?? runtime.departmentId ?? null;
+            }
+            const normalized =
+              Object.keys(updatePayload).length > 0
+                ? await workflowsService.update(session, input.workflowId, updatePayload)
+                : existing;
             return buildEnvelope({
               success: true,
               confirmedAction: true,
@@ -4125,7 +4130,7 @@ export const createVercelDesktopTools = (
           const created = await workflowsService.createDraft(session, {
             name: input.name ?? null,
             departmentId: input.departmentId ?? runtime.departmentId ?? null,
-            originChatId: runtime.chatId ?? null,
+            originChatId: null,
           });
           const originChatId = resolveWorkflowOriginChatId({
             runtime,
@@ -4185,7 +4190,7 @@ export const createVercelDesktopTools = (
           if (!workflowId) {
             const created = await workflowsService.createDraft(session, {
               departmentId: runtime.departmentId ?? null,
-              originChatId: runtime.chatId ?? null,
+              originChatId: null,
             });
             const destinations = buildRuntimeWorkflowDestinations(runtime);
             const outputConfig = toWorkflowOutputConfig(destinations, runtime);
@@ -4210,25 +4215,7 @@ export const createVercelDesktopTools = (
             });
           }
 
-          const runtimeDestinations = buildRuntimeWorkflowDestinations(runtime);
-          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations, runtime);
           const current = await workflowsService.get(session, workflowId);
-          const originChatId = resolveWorkflowOriginChatId({
-            runtime,
-            current,
-            outputConfig: desiredOutputConfig,
-          });
-          if (
-            shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)
-            || (workflowUsesCurrentLarkChat(desiredOutputConfig) && originChatId !== (asString(current.originChatId) ?? null))
-          ) {
-            await workflowsService.update(session, workflowId, {
-              outputConfig: desiredOutputConfig,
-              ...(originChatId ? { originChatId } : {}),
-              ...(runtime.departmentId ? { departmentId: runtime.departmentId } : {}),
-            });
-          }
-
           const planned = await workflowsService.author(
             session,
             workflowId,
@@ -4295,24 +4282,7 @@ export const createVercelDesktopTools = (
           }
           const session = buildRuntimeWorkflowSession(runtime);
           const workflowsService = loadDesktopWorkflowsService();
-          const runtimeDestinations = buildRuntimeWorkflowDestinations(runtime);
-          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations, runtime);
-          let current = await workflowsService.get(session, input.workflowId);
-          const originChatId = resolveWorkflowOriginChatId({
-            runtime,
-            current,
-            outputConfig: desiredOutputConfig,
-          });
-          if (
-            shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)
-            || (workflowUsesCurrentLarkChat(desiredOutputConfig) && originChatId !== (asString(current.originChatId) ?? null))
-          ) {
-            current = await workflowsService.update(session, input.workflowId, {
-              outputConfig: desiredOutputConfig,
-              ...(originChatId ? { originChatId } : {}),
-              ...(runtime.departmentId ? { departmentId: runtime.departmentId } : {}),
-            });
-          }
+          const current = await workflowsService.get(session, input.workflowId);
           const planningState = asRecord(current.planningState);
           const openQuestions = asArray(planningState?.openQuestions)
             .map((entry) => asRecord(entry))
@@ -4334,6 +4304,17 @@ export const createVercelDesktopTools = (
               },
               fullPayload: current,
             });
+          }
+          const destinationValidationError = validateWorkflowSaveDestinations({
+            outputConfig: current.outputConfig,
+            originChatId: resolveWorkflowOriginChatId({
+              runtime,
+              current,
+              outputConfig: current.outputConfig,
+            }),
+          });
+          if (destinationValidationError) {
+            return destinationValidationError;
           }
 
           const built = await workflowsService.author(
@@ -4390,7 +4371,7 @@ export const createVercelDesktopTools = (
             workflowSpec: current.workflowSpec,
             schedule: current.schedule,
             outputConfig: current.outputConfig,
-            originChatId: asString(current.originChatId) ?? runtime.chatId ?? null,
+            originChatId: asString(current.originChatId) ?? null,
           });
           const errors = asArray(asRecord(validation)?.errors)
             .map((entry) => asRecord(entry))
@@ -4469,27 +4450,7 @@ export const createVercelDesktopTools = (
 
           const session = buildRuntimeWorkflowSession(runtime);
           const workflowsService = loadDesktopWorkflowsService();
-          const runtimeDestinations =
-            input.destinations ?? buildRuntimeWorkflowDestinations(runtime);
-          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations, runtime);
-          let current = await workflowsService.get(session, input.workflowId);
-          const desiredOriginChatId = resolveWorkflowOriginChatId({
-            runtime,
-            current,
-            outputConfig: desiredOutputConfig,
-          });
-          if (
-            shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)
-            || (workflowUsesCurrentLarkChat(desiredOutputConfig) && desiredOriginChatId !== (asString(current.originChatId) ?? null))
-          ) {
-            current = await workflowsService.update(session, input.workflowId, {
-              outputConfig: desiredOutputConfig,
-              ...(desiredOriginChatId ? { originChatId: desiredOriginChatId } : {}),
-              ...(input.departmentId !== undefined || runtime.departmentId
-                ? { departmentId: input.departmentId ?? runtime.departmentId ?? null }
-                : {}),
-            });
-          }
+          const current = await workflowsService.get(session, input.workflowId);
           if (typeof current.compiledPrompt !== 'string' || !current.compiledPrompt.trim()) {
             return buildEnvelope({
               success: false,
@@ -4508,6 +4469,7 @@ export const createVercelDesktopTools = (
             runtime,
             current,
             outputConfig,
+            preferRuntimeForCurrentChat: Boolean(input.destinations),
           });
           const destinationValidationError = validateWorkflowSaveDestinations({
             outputConfig,
@@ -4609,24 +4571,7 @@ export const createVercelDesktopTools = (
 
           const session = buildRuntimeWorkflowSession(runtime);
           const workflowsService = loadDesktopWorkflowsService();
-          const runtimeDestinations = buildRuntimeWorkflowDestinations(runtime);
-          const desiredOutputConfig = toWorkflowOutputConfig(runtimeDestinations, runtime);
           let current = await workflowsService.get(session, input.workflowId);
-          const desiredOriginChatId = resolveWorkflowOriginChatId({
-            runtime,
-            current,
-            outputConfig: desiredOutputConfig,
-          });
-          if (
-            shouldAdoptRuntimeWorkflowDestinations(current.outputConfig, desiredOutputConfig)
-            || (workflowUsesCurrentLarkChat(desiredOutputConfig) && desiredOriginChatId !== (asString(current.originChatId) ?? null))
-          ) {
-            current = await workflowsService.update(session, input.workflowId, {
-              outputConfig: desiredOutputConfig,
-              ...(desiredOriginChatId ? { originChatId: desiredOriginChatId } : {}),
-              ...(runtime.departmentId ? { departmentId: runtime.departmentId } : {}),
-            });
-          }
           if (input.schedule) {
             const parsedSchedule = toWorkflowScheduleConfig(input.schedule);
             if (!parsedSchedule.ok) {
