@@ -455,6 +455,7 @@ const validatePlannerDecision = (input: {
     ) {
       return {
         ...input.selection,
+        clarificationQuestion: undefined,
         validationFailureReason: null,
         plannerChosenOperationClass: input.selection.inferredOperationClass,
       };

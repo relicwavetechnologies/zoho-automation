@@ -88,10 +88,10 @@ import {
   executeSupervisorDag,
   formatSupervisorResolvedContext,
   getSupervisorAgentToolIds,
-  inferEligibleSupervisorAgentIds,
   planSupervisorDelegation,
   synthesizeSupervisorOutcome,
 } from '../supervisor';
+import { resolveSupervisorEligibleAgents } from '../supervisor/agent-registry';
 import { resolveOrdinalReferences } from '../utils/resolve-ordinal-references';
 import { runtimeControlSignalsRepository } from '../../queue/runtime/control-signals.repository';
 import { desktopWsGateway } from '../../../modules/desktop-live/desktop-ws.gateway';
@@ -3490,9 +3490,23 @@ const executeLarkVercelTask = async (
       buildThreadSummaryContext(activeThreadSummary) ?? '',
       buildTaskStateContext(activeTaskState) ?? '',
     ].filter((value): value is string => Boolean(value?.trim()));
-    const eligibleAgentIds = inferEligibleSupervisorAgentIds(
-      effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
-    );
+    const supervisorEligibility = resolveSupervisorEligibleAgents({
+      runtime: {
+        allowedToolIds: effectiveRuntime.allowedToolIds,
+        runExposedToolIds: effectiveRuntime.allowedToolIds,
+        plannerChosenOperationClass:
+          toolSelection.inferredOperationClass ?? effectiveRuntime.plannerChosenOperationClass ?? undefined,
+        workspace: effectiveRuntime.workspace,
+      },
+      latestUserMessage: resolvedUserMessage,
+      inferredDomain: toolSelection.inferredDomain,
+      inferredOperationClass: toolSelection.inferredOperationClass,
+      normalizedIntent: childRoute.normalizedIntent ?? null,
+    });
+    const eligibleAgentIds = Array.from(new Set([
+      ...supervisorEligibility.preferredAgentIds,
+      ...supervisorEligibility.eligibleAgents.map((agent) => agent.id),
+    ]));
     const supervisorPlan = await planSupervisorDelegation({
       mode: runtime.mode,
       latestUserMessage: resolvedUserMessage,
@@ -3559,7 +3573,7 @@ const executeLarkVercelTask = async (
           });
           const familyToolIds = getSupervisorAgentToolIds(
             step.agentId,
-            effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
+            effectiveRuntime.allowedToolIds,
           );
           const stepRuntime: VercelRuntimeRequestContext = {
             ...effectiveRuntime,

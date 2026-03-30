@@ -3,6 +3,8 @@ import type { VercelRuntimeRequestContext } from '../vercel/types';
 import type { SupervisorAgentDescriptor, SupervisorAgentId } from './types';
 
 const dedupe = (values: string[]): string[] => Array.from(new Set(values));
+const areSameSet = (left: string[], right: string[]): boolean =>
+  left.length === right.length && left.every((value) => right.includes(value));
 
 const AGENT_DOMAIN_MAP: Record<SupervisorAgentId, { label: string; description: string; domains: string[] }> = {
   'lark-ops-agent': {
@@ -57,21 +59,67 @@ export const buildSupervisorAgentCatalog = (input: {
 const isSendLike = (value?: string | null): boolean =>
   /\b(send|email|mail|draft|reply|forward|calendar|meeting|invite)\b/i.test(value ?? '');
 
+const resolveAgentForDomainHint = (domain?: string | null): SupervisorAgentId | null => {
+  switch (domain) {
+    case 'lark_task':
+    case 'lark_message':
+    case 'lark_calendar':
+    case 'lark_meeting':
+    case 'lark_approval':
+    case 'lark_doc':
+    case 'lark_base':
+    case 'lark':
+      return 'lark-ops-agent';
+    case 'gmail':
+    case 'google_calendar':
+    case 'google_drive':
+      return 'google-workspace-agent';
+    case 'zoho_books':
+    case 'zoho_crm':
+      return 'zoho-ops-agent';
+    case 'context_search':
+    case 'web_search':
+    case 'skill':
+    case 'outreach':
+    case 'general':
+      return 'context-agent';
+    case 'workflow':
+    case 'workspace':
+    case 'document_inspection':
+      return 'workspace-agent';
+    default:
+      return null;
+  }
+};
+
 export const resolveSupervisorEligibleAgents = (input: {
   runtime: Pick<
     VercelRuntimeRequestContext,
     'allowedToolIds' | 'runExposedToolIds' | 'plannerChosenOperationClass' | 'workspace'
   >;
   latestUserMessage: string;
+  inferredDomain?: string | null;
+  inferredOperationClass?: string | null;
+  normalizedIntent?: string | null;
 }): {
   eligibleAgents: SupervisorAgentDescriptor[];
   preferredAgentIds: SupervisorAgentId[];
 } => {
   const catalog = buildSupervisorAgentCatalog({ allowedToolIds: input.runtime.allowedToolIds });
   const runScoped = new Set(input.runtime.runExposedToolIds ?? []);
-  const matched = catalog.filter((agent) => agent.toolIds.some((toolId) => runScoped.has(toolId)));
+  const useRunScopedMatch =
+    runScoped.size > 0
+    && !areSameSet(Array.from(runScoped), input.runtime.allowedToolIds);
+  const matched = useRunScopedMatch
+    ? catalog.filter((agent) => agent.toolIds.some((toolId) => runScoped.has(toolId)))
+    : [];
   const eligibleAgents = matched.length > 0 ? matched : catalog;
   const preferred = new Set<SupervisorAgentId>(matched.map((agent) => agent.id));
+
+  const domainHintAgent = resolveAgentForDomainHint(input.inferredDomain);
+  if (domainHintAgent && eligibleAgents.some((agent) => agent.id === domainHintAgent)) {
+    preferred.add(domainHintAgent);
+  }
 
   const contextAgent = eligibleAgents.find((agent) => agent.id === 'context-agent');
   if (contextAgent) {
@@ -84,7 +132,8 @@ export const resolveSupervisorEligibleAgents = (input: {
   const googleAgent = eligibleAgents.find((agent) => agent.id === 'google-workspace-agent');
   if (
     googleAgent &&
-    (input.runtime.plannerChosenOperationClass?.toLowerCase() === 'send'
+    ((input.inferredOperationClass ?? input.runtime.plannerChosenOperationClass)?.toLowerCase() === 'send'
+      || isSendLike(input.normalizedIntent)
       || isSendLike(input.latestUserMessage))
   ) {
     preferred.add(googleAgent.id);
