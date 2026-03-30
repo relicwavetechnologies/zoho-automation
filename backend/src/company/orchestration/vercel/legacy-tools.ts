@@ -9044,8 +9044,12 @@ export const createVercelDesktopTools = (
           };
           const listVisibleTasks = async (
             preferredTasklistId?: string,
+            options?: {
+              includeAllTasklists?: boolean;
+            },
           ): Promise<Array<Record<string, unknown>>> => {
-            const explicitTasklistId = preferredTasklistId?.trim() || defaults?.defaultTasklistId;
+            const explicitTasklistId = preferredTasklistId?.trim()
+              || (options?.includeAllTasklists ? undefined : defaults?.defaultTasklistId);
             const seen = new Map<string, Record<string, unknown>>();
             const collectFromTasklist = async (tasklistId?: string) => {
               const result = await withLarkTenantFallback(runtime, (auth) =>
@@ -9438,11 +9442,13 @@ export const createVercelDesktopTools = (
             input.operation === 'listMine' ||
             input.operation === 'listOpenMine'
           ) {
-            const visibleTasks = await listVisibleTasks(input.tasklistId);
             const requiresCurrentUserFilter =
               input.operation === 'listMine' ||
               input.operation === 'listOpenMine' ||
               input.onlyMine;
+            const visibleTasks = await listVisibleTasks(input.tasklistId, {
+              includeAllTasklists: requiresCurrentUserFilter && !input.tasklistId?.trim(),
+            });
             let candidateTasks = visibleTasks;
             let items = filterVisibleTasks(candidateTasks, input.query, {
               onlyMine:
