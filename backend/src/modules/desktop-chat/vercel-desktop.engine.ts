@@ -27,7 +27,9 @@ import { checkToolSelectionInvariant, resolveRunScopedToolSelection } from '../.
 import { createVercelDesktopTools } from '../../company/orchestration/vercel/tools';
 import {
   scheduledWorkflowCapabilitySummarySchema,
+  scheduledWorkflowOutputConfigSchema,
   scheduledWorkflowScheduleConfigSchema,
+  scheduledWorkflowSpecSchema,
 } from '../../company/scheduled-workflows/contracts';
 import type {
   PendingApprovalAction,
@@ -721,6 +723,170 @@ const summarizeChildRouterThreadSummary = (threadSummary?: DesktopThreadSummary)
   });
 };
 
+const WORKFLOW_DRAFT_INTAKE_NODE_ID = 'draft_intake';
+
+const dedupeStrings = (values: Iterable<string>): string[] => Array.from(new Set(values));
+
+const isPlaceholderScheduledWorkflowSpec = (value: unknown): boolean => {
+  const parsed = scheduledWorkflowSpecSchema.safeParse(value);
+  if (!parsed.success) {
+    return false;
+  }
+  return parsed.data.nodes.length === 1 && parsed.data.nodes[0]?.id === WORKFLOW_DRAFT_INTAKE_NODE_ID;
+};
+
+const buildFallbackWorkflowPinnedToolIds = (input: {
+  userIntent?: string | null;
+  outputConfig?: unknown;
+  allowedToolIds: string[];
+}): string[] => {
+  const allowed = new Set(input.allowedToolIds);
+  const pinned: string[] = [];
+  const intent = input.userIntent?.trim().toLowerCase() ?? '';
+  const parsedOutputConfig = scheduledWorkflowOutputConfigSchema.safeParse(input.outputConfig);
+  const destinationKinds = parsedOutputConfig.success
+    ? parsedOutputConfig.data.destinations.map((destination) => destination.kind)
+    : [];
+
+  if (/\b(gmail|email|mail|inbox)\b/.test(intent) && allowed.has('google-gmail')) {
+    pinned.push('google-gmail');
+  }
+  if (/\b(calendar|meeting|schedule|availability)\b/.test(intent) && allowed.has('google-calendar')) {
+    pinned.push('google-calendar');
+  }
+  if (/\b(drive|folder|spreadsheet|sheet|doc|docs|document)\b/.test(intent) && allowed.has('google-drive')) {
+    pinned.push('google-drive');
+  }
+  if (/\b(invoice|estimate|zoho|books|customer|vendor|payment)\b/.test(intent)) {
+    if (allowed.has('zoho-books-read')) pinned.push('zoho-books-read');
+    if (/\b(send|create|update|write|mark|change)\b/.test(intent) && allowed.has('zoho-books-write')) {
+      pinned.push('zoho-books-write');
+    }
+  }
+  if (
+    (/\b(lark|chat|dm|message)\b/.test(intent) || destinationKinds.some((kind) => kind.startsWith('lark_')))
+    && allowed.has('lark-message-write')
+  ) {
+    pinned.push('lark-message-write');
+  }
+  if (/\b(task|todo|reminder)\b/.test(intent) && allowed.has('lark-task-write')) {
+    pinned.push('lark-task-write');
+  }
+
+  return dedupeStrings(pinned);
+};
+
+const buildRecoveredWorkflowInvocationMessage = (input: {
+  workflowName: string;
+  userIntent: string;
+  schedule: z.infer<typeof scheduledWorkflowScheduleConfigSchema>;
+  outputConfig?: unknown;
+  requiredToolIds: string[];
+  overrideText?: string | null;
+}): string => {
+  const parsedOutputConfig = scheduledWorkflowOutputConfigSchema.safeParse(input.outputConfig);
+  const approvedDestinations = parsedOutputConfig.success
+    ? parsedOutputConfig.data.destinations.map((destination) => destination.id)
+    : [];
+
+  return [
+    'You are executing a published scheduled workflow.',
+    'The saved workflow definition is missing its compiled execution map.',
+    'Recover this run from the original approved intent and approved destinations below.',
+    'Do not report a hard block just because the saved workflow map is incomplete.',
+    `Workflow: ${input.workflowName}`,
+    `Original intent: ${input.userIntent}`,
+    `Schedule type: ${input.schedule.type} (${input.schedule.timezone})`,
+    `Approved destinations: ${approvedDestinations.join(', ') || 'none'}`,
+    ...(input.requiredToolIds.length > 0
+      ? [
+          `Required runtime tools for this recovery run: ${input.requiredToolIds.join(', ')}`,
+          'Use these exact tool ids when relevant and available. Never invent aliases like gmailRead.',
+        ]
+      : []),
+    ...(input.overrideText?.trim()
+      ? [
+          '',
+          'Run-specific override:',
+          input.overrideText.trim(),
+        ]
+      : []),
+    '',
+    'Execution request:',
+    '- Run this workflow now inside the current desktop thread.',
+    '- Treat the original intent and approved destinations as the source of truth for this recovery run.',
+    '- Produce the final deliverable directly in the assistant response.',
+    '- Do not ask follow-up questions.',
+    '- Continue execution until the work is actually complete, an approval is required, or a true runtime hard block remains after using the required tools above.',
+  ].join('\n');
+};
+
+const resolveWorkflowRecoveryInfo = (input: {
+  capabilitySummaryJson?: unknown;
+  compiledPrompt: string;
+  workflowSpecJson?: unknown;
+  userIntent?: string | null;
+  outputConfigJson?: unknown;
+  allowedToolIds: string[];
+}): {
+  shouldRecover: boolean;
+  requiredToolIds: string[];
+} => {
+  const capabilitySummary = input.capabilitySummaryJson
+    ? scheduledWorkflowCapabilitySummarySchema.safeParse(input.capabilitySummaryJson)
+    : null;
+  const requiredToolIds = capabilitySummary?.success && capabilitySummary.data.requiredTools.length > 0
+    ? capabilitySummary.data.requiredTools
+    : buildFallbackWorkflowPinnedToolIds({
+        userIntent: input.userIntent,
+        outputConfig: input.outputConfigJson,
+        allowedToolIds: input.allowedToolIds,
+      });
+  const shouldRecover =
+    isPlaceholderScheduledWorkflowSpec(input.workflowSpecJson)
+    || input.compiledPrompt.includes('Draft intake')
+    || input.compiledPrompt.trim().length === 0;
+
+  return {
+    shouldRecover,
+    requiredToolIds: dedupeStrings(requiredToolIds),
+  };
+};
+
+const enforcePinnedWorkflowRuntimeTools = (input: {
+  runExposedToolIds: string[];
+  plannerCandidateToolIds: string[];
+  pinnedToolIds?: string[];
+  allowedToolIds: string[];
+  selectionReason: string;
+}): {
+  runExposedToolIds: string[];
+  plannerCandidateToolIds: string[];
+  selectionReason: string;
+} => {
+  const pinnedToolIds = (input.pinnedToolIds ?? []).filter((toolId) => input.allowedToolIds.includes(toolId));
+  if (pinnedToolIds.length === 0) {
+    return {
+      runExposedToolIds: input.runExposedToolIds,
+      plannerCandidateToolIds: input.plannerCandidateToolIds,
+      selectionReason: input.selectionReason,
+    };
+  }
+
+  const nextRunExposedToolIds = dedupeStrings([...input.runExposedToolIds, ...pinnedToolIds]);
+  const nextPlannerCandidateToolIds = dedupeStrings([...input.plannerCandidateToolIds, ...pinnedToolIds]);
+  const pinsAdded = pinnedToolIds.filter((toolId) => !input.runExposedToolIds.includes(toolId));
+
+  return {
+    runExposedToolIds: nextRunExposedToolIds,
+    plannerCandidateToolIds: nextPlannerCandidateToolIds,
+    selectionReason:
+      pinsAdded.length > 0
+        ? `${input.selectionReason} Workflow-required pinned tools enforced: ${pinsAdded.join(', ')}.`
+        : input.selectionReason,
+  };
+};
+
 const resolvePinnedWorkflowToolIds = async (input: {
   companyId: string;
   workflowId?: string | null;
@@ -738,17 +904,26 @@ const resolvePinnedWorkflowToolIds = async (input: {
     },
     select: {
       capabilitySummaryJson: true,
+      compiledPrompt: true,
+      userIntent: true,
+      workflowSpecJson: true,
+      outputConfigJson: true,
     },
   });
-  if (!workflow?.capabilitySummaryJson) {
+  if (!workflow) {
     return [];
   }
 
-  const capabilitySummary = scheduledWorkflowCapabilitySummarySchema.parse(
-    workflow.capabilitySummaryJson,
-  );
-  const allowed = new Set(input.allowedToolIds);
-  return capabilitySummary.requiredTools.filter((toolId) => allowed.has(toolId));
+  const recoveryInfo = resolveWorkflowRecoveryInfo({
+    capabilitySummaryJson: workflow.capabilitySummaryJson,
+    compiledPrompt: workflow.compiledPrompt,
+    workflowSpecJson: workflow.workflowSpecJson,
+    userIntent: workflow.userIntent,
+    outputConfigJson: workflow.outputConfigJson,
+    allowedToolIds: input.allowedToolIds,
+  });
+
+  return recoveryInfo.requiredToolIds.filter((toolId) => input.allowedToolIds.includes(toolId));
 };
 
 const resolveWorkflowInvocationMessage = async (input: {
@@ -757,6 +932,7 @@ const resolveWorkflowInvocationMessage = async (input: {
   workflowId: string;
   workflowName?: string;
   overrideText?: string;
+  allowedToolIds?: string[];
 }): Promise<{
   requestMessage: string;
   storedUserMessage: string;
@@ -775,6 +951,9 @@ const resolveWorkflowInvocationMessage = async (input: {
       compiledPrompt: true,
       capabilitySummaryJson: true,
       scheduleConfigJson: true,
+      userIntent: true,
+      workflowSpecJson: true,
+      outputConfigJson: true,
     },
   });
   if (!workflow) {
@@ -793,23 +972,40 @@ const resolveWorkflowInvocationMessage = async (input: {
   }
 
   const workflowName = input.workflowName?.trim() || workflow.name;
-  const requestMessage = [
-    workflow.compiledPrompt.trim(),
-    '',
-    'Manual workflow invocation request:',
-    `- Workflow: ${workflowName}`,
-    `- Schedule type: ${schedule.type} (${schedule.timezone})`,
-    '- Run this workflow now inside the current desktop thread.',
-    '- Keep the saved workflow definition as the source of truth.',
-    ...(overrideText
-      ? [
-          '- Apply this one-time override without mutating the saved workflow definition.',
-          '',
-          'Run-specific override:',
-          overrideText,
-        ]
-      : []),
-  ].join('\n');
+  const recoveryInfo = resolveWorkflowRecoveryInfo({
+    capabilitySummaryJson: workflow.capabilitySummaryJson,
+    compiledPrompt: workflow.compiledPrompt,
+    workflowSpecJson: workflow.workflowSpecJson,
+    userIntent: workflow.userIntent,
+    outputConfigJson: workflow.outputConfigJson,
+    allowedToolIds: input.allowedToolIds ?? [],
+  });
+  const requestMessage = recoveryInfo.shouldRecover
+    ? buildRecoveredWorkflowInvocationMessage({
+        workflowName,
+        userIntent: workflow.userIntent?.trim() || workflowName,
+        schedule,
+        outputConfig: workflow.outputConfigJson,
+        requiredToolIds: recoveryInfo.requiredToolIds,
+        overrideText,
+      })
+    : [
+        workflow.compiledPrompt.trim(),
+        '',
+        'Manual workflow invocation request:',
+        `- Workflow: ${workflowName}`,
+        `- Schedule type: ${schedule.type} (${schedule.timezone})`,
+        '- Run this workflow now inside the current desktop thread.',
+        '- Keep the saved workflow definition as the source of truth.',
+        ...(overrideText
+          ? [
+              '- Apply this one-time override without mutating the saved workflow definition.',
+              '',
+              'Run-specific override:',
+              overrideText,
+            ]
+          : []),
+      ].join('\n');
 
   const storedUserMessage = overrideText
     ? `Run workflow "${workflowName}" with a one-time override.`
@@ -3185,6 +3381,16 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
       : undefined,
     pinnedToolIds: input.pinnedToolIds,
   });
+  const pinnedToolEnforcement = enforcePinnedWorkflowRuntimeTools({
+    runExposedToolIds: selection.runExposedToolIds,
+    plannerCandidateToolIds: selection.plannerCandidateToolIds,
+    pinnedToolIds: input.pinnedToolIds,
+    allowedToolIds: input.runtime.allowedToolIds,
+    selectionReason: selection.selectionReason,
+  });
+  selection.runExposedToolIds = pinnedToolEnforcement.runExposedToolIds;
+  selection.plannerCandidateToolIds = pinnedToolEnforcement.plannerCandidateToolIds;
+  selection.selectionReason = pinnedToolEnforcement.selectionReason;
   const invariantResult = checkToolSelectionInvariant({
     intentDomain: input.childRouteHints?.domain ?? selection.inferredDomain,
     runExposedToolIds: selection.runExposedToolIds,
@@ -4619,6 +4825,7 @@ export class VercelDesktopEngine {
           workflowId: workflowInvocation.workflowId,
           workflowName: workflowInvocation.workflowName,
           overrideText: workflowInvocation.overrideText,
+          allowedToolIds: fallbackAllowedToolIds,
         })
       : null;
     const effectiveMessage = resolvedInvocation?.requestMessage ?? message;

@@ -11,6 +11,7 @@ const WORKFLOW_CONVERSATION_LOCAL_PATTERN =
   /\b(latest|last|current|this)\s+(chat|thread|message|conversation|invoice|estimate|record|event|task)\b|\bthat\s+(invoice|estimate|record|event|task)\b/i;
 const WORKFLOW_TIMEZONE_AMBIGUOUS_PATTERN = /\b(local time|my time|current time|ist)\b/i;
 const HARDCODED_ID_FIELD_PATTERN = /(calendarId|eventId|invoiceId|estimateId|contactId|recordId|taskId|chatId)$/i;
+const WORKFLOW_DRAFT_INTAKE_NODE_ID = 'draft_intake';
 
 export const workflowValidationErrorSchema = z.object({
   nodeId: z.string().trim().min(1).max(80),
@@ -421,6 +422,19 @@ export const validateScheduledWorkflowDefinition = (input: {
     originChatId: input.originChatId,
     errors,
   });
+
+  if (
+    input.workflowSpec.nodes.length === 1
+    && input.workflowSpec.nodes[0]?.id === WORKFLOW_DRAFT_INTAKE_NODE_ID
+  ) {
+    pushError(errors, {
+      nodeId: WORKFLOW_DRAFT_INTAKE_NODE_ID,
+      toolName: 'workflow',
+      field: 'workflowSpec.nodes',
+      reason: 'missing_required',
+      humanReadable: 'This workflow is still a draft intake placeholder. Generate a real execution map before publishing or scheduling it.',
+    });
+  }
 
   for (const node of input.workflowSpec.nodes) {
     const toolName = getNodeToolName(node);

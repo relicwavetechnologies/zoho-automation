@@ -548,6 +548,8 @@ export const compileScheduledWorkflowDefinition = (
     'You are executing a published scheduled workflow.',
     'Treat the structured workflow below as the source of truth.',
     'Do not add capabilities, destinations, or side effects beyond the approved workflow definition.',
+    `Required runtime tools: ${capabilitySummary.requiredTools.length > 0 ? capabilitySummary.requiredTools.join(', ') : 'none explicitly pinned'}`,
+    'When a required runtime tool is listed, use that exact tool id. Never invent aliases or renamed tools.',
     'Follow the workflow steps in order.',
     'If a step says to retrieve source material first, do that before planning or execution.',
     'If a step says to process work items sequentially, complete each item in order and record progress before moving to the next item.',

@@ -5509,7 +5509,7 @@ export const createVercelDesktopTools = (
 
     googleMail: tool({
       description:
-        'Use the connected Google account to list, read, draft, and send Gmail messages.',
+        'Use the connected Google account to list, read, draft, and send Gmail messages. For outbound email, prefer giving purpose, audience, tone, templateFamily, facts, and a clear subject so the composer can generate a polished message.',
       inputSchema: z.object({
         operation: z.enum([
           'listMessages',
@@ -5525,16 +5525,16 @@ export const createVercelDesktopTools = (
         threadId: z.string().optional(),
         draftId: z.string().optional(),
         to: z.string().optional(),
-        subject: z.string().optional(),
-        body: z.string().optional(),
+        subject: z.string().optional().describe('Clear final subject line for the email. Prefer specific, action-oriented subjects.'),
+        body: z.string().optional().describe('Optional raw draft body. Use this when the user provided exact wording to preserve.'),
         cc: z.string().optional(),
         bcc: z.string().optional(),
-        isHtml: z.boolean().optional(),
-        purpose: z.string().optional(),
-        audience: z.string().optional(),
-        tone: z.string().optional(),
-        templateFamily: z.string().optional(),
-        facts: z.array(z.string()).optional(),
+        isHtml: z.boolean().optional().describe('Set true when the email should be presentation-ready HTML instead of plain text.'),
+        purpose: z.string().optional().describe('What the email is trying to accomplish. This is the best primary input for the email composer.'),
+        audience: z.string().optional().describe('Who the email is for, used to personalize greeting and framing.'),
+        tone: z.string().optional().describe('Desired tone such as professional, warm, concise, executive, or friendly.'),
+        templateFamily: z.string().optional().describe('Optional style hint like invoice_followup, audit_delivery, proposal, reminder, or thank_you.'),
+        facts: z.array(z.string()).optional().describe('Key facts, dates, amounts, names, and next steps that must appear in the email.'),
         preserveUserWording: z.boolean().optional(),
         attachments: z
           .array(
