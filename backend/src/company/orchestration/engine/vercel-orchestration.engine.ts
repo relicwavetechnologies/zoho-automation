@@ -3686,8 +3686,8 @@ const executeLarkVercelTask = async (
             'planning',
             `${step.agentId}: ${summarizeText(step.objective, 160) ?? step.objective}`,
           );
-          try {
           let delegatedStepWatchdog: NodeJS.Timeout | undefined;
+          try {
           const stepTools = createVercelDesktopTools(stepRuntime, {
             onToolStart: async (toolName, activityId, title) => {
               await appendLatestAgentRunLog(task.taskId, 'tool.start', {
