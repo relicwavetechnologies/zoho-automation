@@ -186,6 +186,42 @@ const itemMatchesQuery = (item: Record<string, unknown>, query?: string): boolea
   return JSON.stringify(item).toLowerCase().includes(normalized);
 };
 
+const normalizeSearchText = (value?: string): string =>
+  (value ?? '')
+    .trim()
+    .replace(/\s+/g, ' ');
+
+const hasMorePage = (payload: ZohoBooksResponse): boolean => {
+  const pageContext = asRecord(payload.page_context);
+  return asBoolean(pageContext?.has_more_page) ?? false;
+};
+
+const dedupeRecords = (
+  items: Record<string, unknown>[],
+  moduleName: ZohoBooksModule,
+): Record<string, unknown>[] => {
+  const seen = new Set<string>();
+  const deduped: Record<string, unknown>[] = [];
+  for (const item of items) {
+    const recordId = asString(item.id)
+      ?? asString(item.contact_id)
+      ?? asString(item.invoice_id)
+      ?? asString(item.estimate_id)
+      ?? asString(item.creditnote_id)
+      ?? asString(item.bill_id)
+      ?? asString(item.salesorder_id)
+      ?? asString(item.purchaseorder_id)
+      ?? asString(item.payment_id)
+      ?? JSON.stringify([moduleName, item]);
+    if (seen.has(recordId)) {
+      continue;
+    }
+    seen.add(recordId);
+    deduped.push(item);
+  }
+  return deduped;
+};
+
 export class ZohoBooksClient {
   private readonly httpClient: ZohoHttpClient;
 
@@ -240,10 +276,98 @@ export class ZohoBooksClient {
       preferredOrganizationId: input.organizationId,
     });
     const perPage = Math.max(1, Math.min(200, input.perPage ?? input.limit ?? 25));
+    const normalizedQuery = normalizeSearchText(input.query);
+    const hasExplicitNameFilter = Boolean(
+      asString(input.filters?.contact_name) || asString(input.filters?.company_name),
+    );
+
+    if (
+      input.moduleName === 'contacts'
+      && normalizedQuery
+      && !hasExplicitNameFilter
+    ) {
+      const exactContactName = await this.listRecordsPage({
+        companyId: input.companyId,
+        environment,
+        moduleName: input.moduleName,
+        organizationId,
+        filters: {
+          ...(input.filters ?? {}),
+          contact_name: normalizedQuery,
+        },
+        page: 1,
+        perPage,
+      });
+      if (exactContactName.items.length > 0) {
+        return exactContactName;
+      }
+
+      const exactCompanyName = await this.listRecordsPage({
+        companyId: input.companyId,
+        environment,
+        moduleName: input.moduleName,
+        organizationId,
+        filters: {
+          ...(input.filters ?? {}),
+          company_name: normalizedQuery,
+        },
+        page: 1,
+        perPage,
+      });
+      if (exactCompanyName.items.length > 0) {
+        return exactCompanyName;
+      }
+    }
+
+    const startPage = Math.max(1, input.page ?? 1);
+    const maxPages = input.page ? startPage : 20;
+    const collected: Record<string, unknown>[] = [];
+    let lastPayload: ZohoBooksResponse | undefined;
+
+    for (let page = startPage; page <= maxPages; page += 1) {
+      const result = await this.listRecordsPage({
+        companyId: input.companyId,
+        environment,
+        moduleName: input.moduleName,
+        organizationId,
+        filters: input.filters,
+        query: input.query,
+        page,
+        perPage,
+      });
+      lastPayload = result.payload;
+      collected.push(...result.items);
+      const deduped = dedupeRecords(collected, input.moduleName).slice(0, perPage);
+      if (deduped.length >= perPage || !hasMorePage(result.payload)) {
+        return {
+          organizationId,
+          items: deduped,
+          payload: result.payload,
+        };
+      }
+    }
+
+    return {
+      organizationId,
+      items: dedupeRecords(collected, input.moduleName).slice(0, perPage),
+      payload: lastPayload ?? {},
+    };
+  }
+
+  private async listRecordsPage(input: {
+    companyId: string;
+    environment: string;
+    moduleName: ZohoBooksModule;
+    organizationId: string;
+    filters?: Record<string, unknown>;
+    query?: string;
+    page: number;
+    perPage: number;
+  }): Promise<{ organizationId: string; items: Record<string, unknown>[]; payload: ZohoBooksResponse }> {
     const params = new URLSearchParams({
-      organization_id: organizationId,
-      page: String(Math.max(1, input.page ?? 1)),
-      per_page: String(perPage),
+      organization_id: input.organizationId,
+      page: String(Math.max(1, input.page)),
+      per_page: String(input.perPage),
     });
 
     for (const [key, value] of Object.entries(input.filters ?? {})) {
@@ -255,17 +379,17 @@ export class ZohoBooksClient {
 
     const payload = await this.requestWithRefresh<ZohoBooksResponse>({
       companyId: input.companyId,
-      environment,
+      environment: input.environment,
       path: `${buildModulePath(input.moduleName)}?${params.toString()}`,
       method: 'GET',
     });
 
     const filtered = extractListItems(input.moduleName, payload)
       .filter((item) => itemMatchesQuery(item, input.query))
-      .slice(0, perPage);
+      .slice(0, input.perPage);
 
     return {
-      organizationId,
+      organizationId: input.organizationId,
       items: filtered,
       payload,
     };
