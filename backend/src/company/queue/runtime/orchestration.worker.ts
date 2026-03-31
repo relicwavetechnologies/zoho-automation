@@ -26,6 +26,7 @@ import {
   ORCHESTRATION_JOB_NAME,
   ORCHESTRATION_QUEUE_NAME,
   getOrchestrationQueue,
+  requeueOrchestrationTask,
   type OrchestrationJobData,
 } from './orchestration.queue';
 import { pushDeadLetterRecord } from './dead-letter.queue';
@@ -767,11 +768,15 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
 
       const releaseConversationLock = await acquireConversationLock(job);
       if (!releaseConversationLock) {
+        const requeued = await requeueOrchestrationTask(
+          job.data.taskId,
+          job.data.message,
+          CONVERSATION_LOCK_REQUEUE_DELAY_MS,
+        );
         runtimeTaskStore.update(job.data.taskId, {
           status: 'pending',
-          queueJobId: buildQueueJobId(job),
+          queueJobId: requeued.queueJobId,
         });
-        await job.moveToDelayed(Date.now() + CONVERSATION_LOCK_REQUEUE_DELAY_MS, job.token ?? '');
         return;
       }
 

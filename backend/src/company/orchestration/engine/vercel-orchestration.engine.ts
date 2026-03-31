@@ -117,9 +117,10 @@ const LARK_LIGHTWEIGHT_RAW_HISTORY_MAX_MESSAGES = 12;
 const LARK_NORMAL_RAW_HISTORY_MAX_MESSAGES = 60;
 const LARK_LONG_RUNNING_RAW_HISTORY_MAX_MESSAGES = 120;
 const LARK_STATUS_HEARTBEAT_MESSAGES = [
-  'Still working on this.',
-  'Still gathering the right details.',
-  'Still working through the next step.',
+  'Digging through the current scope.',
+  'Tracing the next useful step.',
+  'Checking the latest progress before moving ahead.',
+  'Matching the current findings.',
 ] as const;
 const GEMINI_CIRCUIT_BREAKER = {
   failureThreshold: 5,
@@ -2059,33 +2060,86 @@ const buildLarkStatusText = (input: {
 }) => {
   void input.task;
   void input.message;
-  void input.history;
 
   const detail = input.detail?.trim();
-  const withDetail = (prefix: string): string => (detail ? `${prefix}: ${detail}` : prefix);
-
-  if (input.phase === 'received') {
-    return 'Working on it.';
+  const normalizedHistory = input.history
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const latestHistory = [...normalizedHistory]
+    .reverse()
+    .find((entry) => entry.length > 0);
+  const recentHistory = [...normalizedHistory]
+    .reverse()
+    .filter((entry, index, array) => array.indexOf(entry) === index)
+    .slice(0, 3)
+    .reverse();
+  const phaseLabel = (() => {
+    switch (input.phase) {
+      case 'received':
+        return 'Received';
+      case 'preparing':
+        return 'Preparing';
+      case 'planning':
+        return 'Planning';
+      case 'tool_running':
+        return 'Running tools';
+      case 'tool_done':
+        return 'Processing results';
+      case 'analyzing':
+        return 'Finalizing';
+      case 'approval':
+        return 'Waiting for approval';
+      case 'failed':
+        return 'Failed';
+      default:
+        return 'Working';
+    }
+  })();
+  const phaseHeadline = (() => {
+    switch (input.phase) {
+      case 'received':
+        return 'Thinking';
+      case 'preparing':
+        return 'Resolving the request context';
+      case 'planning':
+        return 'Digging through the next step';
+      case 'tool_running':
+        return 'Fetching the requested data';
+      case 'tool_done':
+        return 'Checking the retrieved results';
+      case 'analyzing':
+        return 'Finalizing the response';
+      case 'approval':
+        return 'Waiting for approval';
+      case 'failed':
+        return 'Something needs attention';
+      default:
+        return 'Thinking';
+    }
+  })();
+  const latestAction = summarizeText(
+    detail && latestHistory && latestHistory !== detail
+      ? `${detail} | ${latestHistory}`
+      : detail ?? latestHistory,
+    220,
+  );
+  const lines = [phaseHeadline, '', `Phase: ${phaseLabel}`];
+  if (latestAction) {
+    lines.push(`Current: ${latestAction}`);
   }
-  if (input.phase === 'preparing') {
-    return 'Getting things ready.';
+  if (recentHistory.length > 1 || (recentHistory.length === 1 && recentHistory[0] !== latestAction)) {
+    lines.push('', 'Recent progress:');
+    for (const entry of recentHistory.slice(-3)) {
+      if (entry === latestAction) {
+        continue;
+      }
+      lines.push(`- ${summarizeText(entry, 180) ?? entry}`);
+    }
   }
-  if (input.phase === 'planning') {
-    return withDetail('Working on it');
+  if (input.heartbeatNote?.trim()) {
+    lines.push('', input.heartbeatNote.trim());
   }
-  if (input.phase === 'tool_running') {
-    return withDetail('Fetching results');
-  }
-  if (input.phase === 'tool_done') {
-    return withDetail('Still working on it');
-  }
-  if (input.phase === 'analyzing') {
-    return 'Putting the answer together.';
-  }
-  if (input.phase === 'approval') {
-    return detail ? `Approval needed: ${detail}` : 'Approval needed.';
-  }
-  return input.heartbeatNote?.trim() || detail || 'Something went wrong.';
+  return lines.join('\n');
 };
 
 const buildLarkApprovalActions = (pendingApproval: PendingApprovalAction): ChannelAction[] => {
@@ -3741,10 +3795,13 @@ const executeLarkVercelTask = async (
             if (stepToolResults.length > 0) {
               return;
             }
-            statusHistory.push(`Waiting on ${step.agentId}: ${summarizeText(step.objective, 120) ?? step.objective}`);
+            const waitingSummary = summarizeText(step.objective, 120) ?? step.objective;
+            statusHistory.push(
+              `${step.agentId} is still reviewing this step before calling tools: ${waitingSummary}`,
+            );
             void updateStatus(
               'planning',
-              `${step.agentId}: still waiting for this step to start tools.`,
+              `${step.agentId} is reviewing the request before calling tools.`,
             );
             logger.warn('supervisor.step.long_wait', {
               taskId: task.taskId,

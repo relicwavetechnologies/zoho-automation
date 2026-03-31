@@ -24,6 +24,7 @@ type QueueAddOptions = {
   timeout: number;
   removeOnComplete: number;
   removeOnFail: number;
+  delay?: number;
 };
 
 type QueueAddFn = (
@@ -45,22 +46,24 @@ const getOrchestrationQueueSingleton = (): Queue<OrchestrationJobData, void, typ
 
 const defaultQueueAdd: QueueAddFn = (jobName, data, opts) => getOrchestrationQueueSingleton().add(jobName, data, opts);
 
-const buildQueueAddOptions = (jobId: string): QueueAddOptions => ({
+const buildQueueAddOptions = (jobId: string, delayMs?: number): QueueAddOptions => ({
   jobId,
   attempts: 1,
   timeout: config.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS,
   removeOnComplete: 500,
   removeOnFail: 500,
+  ...(typeof delayMs === 'number' && delayMs > 0 ? { delay: delayMs } : {}),
 });
 
 const enqueueJobWithRetry = async (input: {
   taskId: string;
   message: NormalizedIncomingMessageDTO;
   jobId: string;
+  delayMs?: number;
   queueAdd?: QueueAddFn;
 }): Promise<string> => {
   const queueAdd = input.queueAdd ?? defaultQueueAdd;
-  const jobOptions = buildQueueAddOptions(input.jobId);
+  const jobOptions = buildQueueAddOptions(input.jobId, input.delayMs);
   const trace = {
     requestId: input.message.trace?.requestId,
     taskId: input.taskId,
@@ -137,6 +140,7 @@ export const enqueueOrchestrationTask = async (
 export const requeueOrchestrationTask = async (
   taskId: string,
   message: NormalizedIncomingMessageDTO,
+  delayMs = 0,
 ): Promise<RuntimeTaskSnapshot> => {
   const queueJobId = buildSafeJobId(message.channel, message.messageId, 'recover', taskId, Date.now());
   const existing = runtimeTaskStore.get(taskId);
@@ -165,6 +169,7 @@ export const requeueOrchestrationTask = async (
     taskId,
     message,
     jobId: queueJobId,
+    delayMs,
   });
 
   return runtimeTaskStore.get(taskId) ?? task;
