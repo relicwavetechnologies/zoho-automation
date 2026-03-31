@@ -1,4 +1,4 @@
-import { TOOL_REGISTRY, TOOL_REGISTRY_MAP } from './tool-registry';
+import { ALIAS_TO_CANONICAL_ID, TOOL_REGISTRY, TOOL_REGISTRY_MAP } from './tool-registry';
 import { ToolPermissionRepository, toolPermissionRepository } from './tool-permission.repository';
 import {
   ToolActionPermissionRepository,
@@ -133,17 +133,28 @@ export class ToolPermissionService {
 
     const allAllowedActions = Object.fromEntries(
       allowedToolIds.map((toolId) => {
+        const canonicalToolId = ALIAS_TO_CANONICAL_ID[toolId] ?? toolId;
         const supported = getSupportedToolActionGroups(toolId);
         const allowed = supported.filter((actionGroup) => {
-          const key = `${toolId}:${actionGroup}`;
-          if (overrideMap.has(key)) {
-            return overrideMap.get(key) as boolean;
+          const exactKey = `${toolId}:${actionGroup}`;
+          if (overrideMap.has(exactKey)) {
+            return overrideMap.get(exactKey) as boolean;
+          }
+          const canonicalKey = `${canonicalToolId}:${actionGroup}`;
+          if (overrideMap.has(canonicalKey)) {
+            return overrideMap.get(canonicalKey) as boolean;
           }
           return true;
         });
         return [toolId, allowed];
       }),
     ) as Record<string, ToolActionGroup[]>;
+
+    for (const [alias, canonicalId] of Object.entries(ALIAS_TO_CANONICAL_ID)) {
+      if (!allAllowedActions[alias] && allAllowedActions[canonicalId]) {
+        allAllowedActions[alias] = allAllowedActions[canonicalId]!;
+      }
+    }
 
     await toolAccessCache.setAllowedActions(companyId, normalizedRole, allAllowedActions);
     return allAllowedActions;

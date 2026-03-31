@@ -11,6 +11,7 @@ import { logger } from '../../../utils/logger';
 import { withProviderRetry } from '../../../utils/provider-retry';
 import { contextSearchBrokerService } from '../../retrieval/context-search-broker.service';
 import { getSupportedToolActionGroups, type ToolActionGroup } from '../../tools/tool-action-groups';
+import { ALIAS_TO_CANONICAL_ID } from '../../tools/tool-registry';
 import { companyGoogleAuthLinkRepository } from '../../channels/google/company-google-auth-link.repository';
 import { googleOAuthService } from '../../channels/google/google-oauth.service';
 import { googleUserAuthLinkRepository } from '../../channels/google/google-user-auth-link.repository';
@@ -1747,12 +1748,18 @@ export const getAllowedActionGroups = (
   runtime: VercelRuntimeRequestContext,
   toolId: string,
 ): ToolActionGroup[] => {
-  const explicit = runtime.allowedActionsByTool?.[toolId];
+  const normalizedToolId = toolId.trim();
+  const canonicalToolId = ALIAS_TO_CANONICAL_ID[normalizedToolId] ?? normalizedToolId;
+  const explicit =
+    runtime.allowedActionsByTool?.[canonicalToolId]
+    ?? runtime.allowedActionsByTool?.[normalizedToolId];
   if (explicit && explicit.length > 0) {
     return explicit;
   }
-  if (runtime.allowedToolIds.includes(toolId)) {
-    return getSupportedToolActionGroups(toolId);
+  const allowedViaCanonical = runtime.allowedToolIds.includes(canonicalToolId);
+  const allowedViaLegacy = runtime.allowedToolIds.includes(normalizedToolId);
+  if (allowedViaCanonical || allowedViaLegacy) {
+    return getSupportedToolActionGroups(canonicalToolId);
   }
   return [];
 };
