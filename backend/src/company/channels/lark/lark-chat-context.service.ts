@@ -297,6 +297,77 @@ export class LarkChatContextService {
     });
   }
 
+  async compactNow(input: {
+    companyId: string;
+    chatId: string;
+    chatType?: string;
+  }): Promise<{
+    compacted: boolean;
+    compactedMessageCount: number;
+    retainedMessageCount: number;
+    retainedTokenCount: number;
+    sourceMessageCount: number;
+  }> {
+    const context = await this.getOrCreate(input);
+    const currentSummary = parseDesktopThreadSummary(context.summaryJson);
+    const currentTaskState = parseDesktopTaskState(context.taskStateJson);
+    const existingMessages = parseStoredChatMessages(context.recentMessagesJson);
+    const {
+      compactedChunk,
+      retainedMessages,
+      retainedTokenCount,
+    } = partitionRecentMessages(existingMessages);
+
+    if (compactedChunk.length === 0) {
+      return {
+        compacted: false,
+        compactedMessageCount: 0,
+        retainedMessageCount: retainedMessages.length,
+        retainedTokenCount,
+        sourceMessageCount: context.sourceMessageCount,
+      };
+    }
+
+    const compactedSummary = await refreshDesktopThreadSummary({
+      messages: toThreadMessages(compactedChunk),
+      taskState: currentTaskState,
+      currentSummary,
+    });
+
+    await prisma.larkChatContext.update({
+      where: { id: context.id },
+      data: {
+        chatType: input.chatType ?? context.chatType,
+        summaryJson: compactedSummary.summary
+          ? JSON.parse(JSON.stringify({
+            ...compactedSummary,
+            sourceMessageCount: undefined,
+          }))
+          : context.summaryJson ?? undefined,
+        summaryUpdatedAt: compactedSummary.updatedAt !== currentSummary.updatedAt ? new Date() : context.summaryUpdatedAt,
+        recentMessagesJson: JSON.parse(JSON.stringify(retainedMessages)),
+        lastMessageAt: new Date(),
+      },
+    });
+
+    logger.info('lark.chat_context.compacted', {
+      companyId: input.companyId,
+      chatId: input.chatId,
+      compactedMessageCount: compactedChunk.length,
+      retainedMessageCount: retainedMessages.length,
+      retainedTokenCount,
+      sourceMessageCount: context.sourceMessageCount,
+    });
+
+    return {
+      compacted: true,
+      compactedMessageCount: compactedChunk.length,
+      retainedMessageCount: retainedMessages.length,
+      retainedTokenCount,
+      sourceMessageCount: context.sourceMessageCount,
+    };
+  }
+
   async getContextMessages(input: {
     companyId: string;
     chatId: string;

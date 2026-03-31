@@ -768,6 +768,11 @@ const parseLarkShareCommand = (
   return null;
 };
 
+const isLarkCompactCommand = (text: string): boolean => {
+  const normalized = normalizeLarkCommandText(text).toLowerCase();
+  return normalized === '/compact' || normalized === '/compress';
+};
+
 const isLarkCommandMenuCommand = (text: string): boolean => {
   const normalized = normalizeLarkCommandText(text).toLowerCase();
   return normalized === '/'
@@ -804,6 +809,9 @@ const buildLarkCommandMenuText = (): string => [
   '',
   '/memory clear --hard',
   'Wipe saved memories and conversation-history recall after confirmation.',
+  '',
+  '/compact',
+  'Compact older chat history into summary memory while keeping recent context intact.',
   '',
   '/share [optional reason]',
   'Share this chat knowledge up to the current point for admin review/approval.',
@@ -2023,6 +2031,69 @@ export const createLarkWebhookEventHandler = (
             cancelledQueuedCount: pendingCancellation.cancelledCount,
           },
         });
+      }
+
+      if (parsed.kind === 'event_callback_message' && isLarkCompactCommand(tracedMessageBase.text)) {
+        if (!scopedCompanyId) {
+          await sendLarkReply({ text: 'This chat is not linked to a company context, so I cannot compact its saved history.' });
+          return res.status(202).json({
+            success: true,
+            message: 'Compact command handled without company context',
+          });
+        }
+
+        try {
+          const result = await larkChatContextService.compactNow({
+            companyId: scopedCompanyId,
+            chatId: tracedMessageBase.chatId,
+            chatType: tracedMessageBase.chatType,
+          });
+
+          if (!result.compacted) {
+            await sendLarkReply({
+              text: [
+                'Nothing needed compaction yet.',
+                '',
+                `Recent context retained: ${result.retainedMessageCount} messages.`,
+              ].join('\n'),
+            });
+            return res.status(202).json({
+              success: true,
+              message: 'Compact command handled with no compaction needed',
+              data: result,
+            });
+          }
+
+          await sendLarkReply({
+            text: [
+              'Earlier chat context compacted successfully.',
+              '',
+              `Compacted older messages: ${result.compactedMessageCount}`,
+              `Recent messages retained: ${result.retainedMessageCount}`,
+              `Estimated retained recent-context tokens: ${result.retainedTokenCount}`,
+            ].join('\n'),
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Compact command handled',
+            data: result,
+          });
+        } catch (error) {
+          dependencies.log.warn('lark.compact_command.failed', {
+            requestId,
+            messageId: tracedMessageBase.messageId,
+            chatId: tracedMessageBase.chatId,
+            companyId: scopedCompanyId,
+            error: error instanceof Error ? error.message : 'unknown_error',
+          });
+          await sendLarkReply({
+            text: `Compact command failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          });
+          return res.status(202).json({
+            success: true,
+            message: 'Compact command failed gracefully',
+          });
+        }
       }
 
       const workflowCommand = parsed.kind === 'event_callback_message'
