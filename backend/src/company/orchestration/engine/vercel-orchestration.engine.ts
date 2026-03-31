@@ -1354,6 +1354,7 @@ const hydrateAttachedFilesForArtifacts = async (input: {
   companyId: string;
   artifacts: Array<{ fileAssetId: string }>;
   requesterUserId?: string;
+  requesterChannelIdentityId?: string;
   requesterAiRole?: string;
 }): Promise<AttachedFileRef[]> => {
   if (input.artifacts.length === 0) {
@@ -1363,14 +1364,22 @@ const hydrateAttachedFilesForArtifacts = async (input: {
   const fileAssetIds = Array.from(new Set(input.artifacts.map((artifact) => artifact.fileAssetId)));
   const isAdmin =
     input.requesterAiRole === 'COMPANY_ADMIN' || input.requesterAiRole === 'SUPER_ADMIN';
+  const ownershipIds = Array.from(
+    new Set(
+      [
+        input.requesterUserId,
+        input.requesterChannelIdentityId,
+      ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0),
+    ),
+  );
   const assets = await prisma.fileAsset.findMany({
     where: {
       companyId: input.companyId,
       id: { in: fileAssetIds },
-      ...(!isAdmin && input.requesterUserId
+      ...(!isAdmin && ownershipIds.length > 0
         ? {
             OR: [
-              { uploaderUserId: input.requesterUserId },
+              { uploaderUserId: { in: ownershipIds } },
               { accessPolicies: { some: { aiRole: input.requesterAiRole, canRead: true } } },
             ],
           }
@@ -1407,6 +1416,7 @@ const resolveLarkGroundingAttachments = async (input: {
   currentAttachedFiles: AttachedFileRef[];
   taskState: DesktopTaskState;
   requesterUserId?: string;
+  requesterChannelIdentityId?: string;
   requesterAiRole?: string;
 }): Promise<{
   attachments: AttachedFileRef[];
@@ -1436,6 +1446,7 @@ const resolveLarkGroundingAttachments = async (input: {
           companyId: input.companyId,
           artifacts: artifactCandidates,
           requesterUserId: input.requesterUserId,
+          requesterChannelIdentityId: input.requesterChannelIdentityId,
           requesterAiRole: input.requesterAiRole,
         })
       : [];
@@ -2404,6 +2415,7 @@ const resolveRuntimeContext = async (
     companyId,
     userId: linkedUserId,
     requesterAiRole,
+    requesterChannelIdentityId: message.trace?.channelIdentityId,
     requesterEmail: message.trace?.requesterEmail,
     sourceMessageId: message.messageId,
     sourceReplyToMessageId: message.trace?.replyToMessageId ?? message.messageId,
@@ -2631,6 +2643,7 @@ const executeLarkVercelTask = async (
       currentAttachedFiles: currentAttachments,
       taskState: activeTaskState,
       requesterUserId: linkedUserId ?? message.userId,
+      requesterChannelIdentityId: message.trace?.channelIdentityId,
       requesterAiRole: message.trace?.userRole ?? 'MEMBER',
     });
     activeTaskState = grounding.taskState;
@@ -2680,6 +2693,7 @@ const executeLarkVercelTask = async (
       currentAttachedFiles: currentAttachments,
       taskState: activeTaskState,
       requesterUserId: linkedUserId ?? message.userId,
+      requesterChannelIdentityId: message.trace?.channelIdentityId,
       requesterAiRole: message.trace?.userRole ?? 'MEMBER',
     });
     activeTaskState = grounding.taskState;

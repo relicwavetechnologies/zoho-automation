@@ -143,6 +143,7 @@ export class FileUploadService {
   async listVisibleFiles(input: {
     companyId: string;
     requesterUserId: string;
+    requesterChannelIdentityId?: string;
     requesterAiRole: string;
     requesterEmail?: string;
     isAdmin?: boolean;
@@ -150,9 +151,33 @@ export class FileUploadService {
     orangeDebug('file.drawer.query.start', {
       companyId: input.companyId,
       requesterUserId: input.requesterUserId,
+      requesterChannelIdentityId: input.requesterChannelIdentityId ?? null,
       requesterAiRole: input.requesterAiRole,
       isAdmin: !!input.isAdmin,
     });
+    const ownershipIds = Array.from(
+      new Set(
+        [
+          input.requesterUserId,
+          input.requesterChannelIdentityId?.trim(),
+        ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0),
+      ),
+    );
+    const requesterEmail = input.requesterEmail?.trim();
+    if (requesterEmail) {
+      const user = await prisma.user.findFirst({
+        where: {
+          email: {
+            equals: requesterEmail,
+            mode: 'insensitive',
+          },
+        },
+        select: { id: true },
+      });
+      if (user?.id && !ownershipIds.includes(user.id)) {
+        ownershipIds.push(user.id);
+      }
+    }
     const files = await prisma.fileAsset.findMany({
       where: {
         companyId: input.companyId,
@@ -160,9 +185,8 @@ export class FileUploadService {
           ? {}
           : {
             OR: [
-              { uploaderUserId: input.requesterUserId },
-              ...(input.requesterEmail?.trim()
-                ? [{ uploader: { email: input.requesterEmail.trim() } }]
+              ...(ownershipIds.length > 0
+                ? [{ uploaderUserId: { in: ownershipIds } }]
                 : []),
               { accessPolicies: { some: { aiRole: input.requesterAiRole, canRead: true } } },
             ],
@@ -175,7 +199,9 @@ export class FileUploadService {
     orangeDebug('file.drawer.query.result', {
       companyId: input.companyId,
       requesterUserId: input.requesterUserId,
+      requesterChannelIdentityId: input.requesterChannelIdentityId ?? null,
       requesterAiRole: input.requesterAiRole,
+      ownershipIds,
       visibleCount: files.length,
       fileAssetIds: files.map((file) => file.id),
     });

@@ -187,7 +187,9 @@ const loadFileUploadService = (): {
   listVisibleFiles: (input: {
     companyId: string;
     requesterUserId: string;
+    requesterChannelIdentityId?: string;
     requesterAiRole: string;
+    requesterEmail?: string;
     isAdmin?: boolean;
   }) => Promise<Array<Record<string, unknown>>>;
 } => loadModuleExport('../../../modules/file-upload/file-upload.service', 'fileUploadService');
@@ -2431,6 +2433,7 @@ const listVisibleRuntimeFiles = async (
   const files = await loadFileUploadService().listVisibleFiles({
     companyId: runtime.companyId,
     requesterUserId: runtime.userId,
+    requesterChannelIdentityId: runtime.requesterChannelIdentityId,
     requesterAiRole: runtime.requesterAiRole,
     requesterEmail: runtime.requesterEmail,
     isAdmin:
