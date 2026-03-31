@@ -29,6 +29,7 @@ export type RuntimeTaskSnapshot = {
   graphNode?: string;
   graphStepHistory?: string[];
   routeIntent?: string;
+  conversationRequeueCount?: number;
   updatedAt: string;
   createdAt: string;
   controlSignal: 'running' | 'paused' | 'cancelled';

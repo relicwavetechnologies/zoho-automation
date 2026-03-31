@@ -37,6 +37,7 @@ const conversationLocks = new Map<string, Promise<void>>();
 const taskAbortControllers = new Map<string, AbortController>();
 const CONVERSATION_LOCK_TTL_MS = config.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS + 15_000;
 const CONVERSATION_LOCK_REQUEUE_DELAY_MS = 2_000;
+const CONVERSATION_LOCK_REQUEUE_MAX_DELAY_MS = 30_000;
 
 const runPerConversationDeterministically = async (
   conversationKey: string,
@@ -91,6 +92,12 @@ const buildConversationRuntimeKey = (channel: string, chatId: string): string =>
   `${channel}:${chatId}`;
 const buildConversationLockKey = (job: Job<OrchestrationJobData>): string =>
   `orchestration:conversation-lock:${buildConversationRuntimeKey(job.data.message.channel, job.data.message.chatId)}`;
+
+const computeConversationRequeueDelayMs = (requeueCount: number): number =>
+  Math.min(
+    CONVERSATION_LOCK_REQUEUE_DELAY_MS * (2 ** Math.max(0, requeueCount)),
+    CONVERSATION_LOCK_REQUEUE_MAX_DELAY_MS,
+  );
 
 const buildQueueJobId = (job: Job<OrchestrationJobData>): string | undefined =>
   typeof job.id === 'string'
@@ -159,12 +166,15 @@ const acquireConversationLock = async (job: Job<OrchestrationJobData>): Promise<
     };
   }
 
+  const existingTask = runtimeTaskStore.get(job.data.taskId);
+  const requeueCount = existingTask?.conversationRequeueCount ?? 0;
   logger.warn('queue.conversation_lock.busy', {
     taskId: job.data.taskId,
     messageId: job.data.message.messageId,
     chatId: job.data.message.chatId,
     jobId: job.id,
-    requeueDelayMs: CONVERSATION_LOCK_REQUEUE_DELAY_MS,
+    requeueDelayMs: computeConversationRequeueDelayMs(requeueCount),
+    requeueCount,
   });
   return null;
 };
@@ -773,17 +783,25 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
 
       const releaseConversationLock = await acquireConversationLock(job);
       if (!releaseConversationLock) {
+        const currentSnapshot = runtimeTaskStore.get(job.data.taskId);
+        const requeueCount = currentSnapshot?.conversationRequeueCount ?? 0;
+        const requeueDelayMs = computeConversationRequeueDelayMs(requeueCount);
         const requeued = await requeueOrchestrationTask(
           job.data.taskId,
           job.data.message,
-          CONVERSATION_LOCK_REQUEUE_DELAY_MS,
+          requeueDelayMs,
         );
         runtimeTaskStore.update(job.data.taskId, {
           status: 'pending',
           queueJobId: requeued.queueJobId,
+          conversationRequeueCount: requeueCount + 1,
+          currentStep: `Waiting for another task in this chat to finish (retry in ${Math.round(requeueDelayMs / 1000)}s).`,
         });
         return;
       }
+      runtimeTaskStore.update(job.data.taskId, {
+        conversationRequeueCount: 0,
+      });
 
       const abortController = new AbortController();
       registerTaskAbortController(job.data.taskId, abortController);
