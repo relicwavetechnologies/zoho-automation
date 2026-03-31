@@ -109,6 +109,16 @@ export type ContextSearchBrokerFetchOutput = {
   resolvedEntities: Record<string, string>;
 };
 
+type SearchScaleStrategy =
+  | 'default'
+  | 'focused_books'
+  | 'focused_crm'
+  | 'focused_files'
+  | 'focused_workspace'
+  | 'focused_web'
+  | 'focused_history'
+  | 'broad_first';
+
 const TEXT_FILE_EXTENSIONS = new Set([
   '.md',
   '.txt',
@@ -151,6 +161,123 @@ const uniqueStrings = (values: Array<string | undefined | null>): string[] =>
   Array.from(new Set(values.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)));
 
 const normalizeText = (value: string): string => value.trim().replace(/\s+/g, ' ');
+const normalizeLookupText = (value: string): string => normalizeText(value).toLowerCase();
+
+const SOURCE_CONSTRAINED_PATTERNS: Array<{ strategy: SearchScaleStrategy; pattern: RegExp }> = [
+  {
+    strategy: 'focused_books',
+    pattern: /\b(?:in|from|inside|within|under)\s+(?:zoho\s+books|books)\b|\b(?:zoho\s+books|books)\s+(?:only|first)\b/i,
+  },
+  {
+    strategy: 'focused_crm',
+    pattern: /\b(?:in|from|inside|within|under)\s+(?:zoho\s+crm|crm)\b|\b(?:zoho\s+crm|crm)\s+(?:only|first)\b/i,
+  },
+  {
+    strategy: 'focused_files',
+    pattern: /\b(?:in|from|inside|within|under)\s+(?:files|docs|documents|pdfs|attachments)\b/i,
+  },
+  {
+    strategy: 'focused_workspace',
+    pattern: /\b(?:in|from|inside|within|under)\s+workspace\b/i,
+  },
+  {
+    strategy: 'focused_web',
+    pattern: /\b(?:on|from|search)\s+(?:the\s+)?(?:web|internet|online)\b|\bgoogle\b/i,
+  },
+  {
+    strategy: 'focused_history',
+    pattern: /\b(?:in|from|inside|within|under)\s+(?:history|memory|chat|conversation)\b/i,
+  },
+];
+
+const GENERIC_SEARCH_VERBS = /\b(search|find|look up|lookup|check|trace|get details|tell me about|show me|who is|what is)\b/i;
+const STRUCTURED_INTERNAL_CUES = /\b(invoice|invoices|statement|statements|payment|payments|overdue|balance|balances|vendor|vendors|customer|customers|contact|contacts|deal|deals|account|accounts|lead|leads)\b/i;
+const ENTITY_SUFFIX_CUES = /\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/i;
+const AMBIGUOUS_SEARCH_NOISE = /\b(please|plz|kindly|search|find|look up|lookup|check|show|me|for|about|details|info|information)\b/gi;
+
+const inferSearchScaleStrategy = (input: {
+  query: string;
+  explicitSourcesProvided: boolean;
+  site?: string;
+}): SearchScaleStrategy => {
+  if (input.explicitSourcesProvided || input.site?.trim()) {
+    return 'default';
+  }
+
+  const normalized = normalizeLookupText(input.query);
+  for (const candidate of SOURCE_CONSTRAINED_PATTERNS) {
+    if (candidate.pattern.test(normalized)) {
+      return candidate.strategy;
+    }
+  }
+
+  const deNoised = normalized.replace(AMBIGUOUS_SEARCH_NOISE, ' ').replace(/\s+/g, ' ').trim();
+  const tokenCount = deNoised.length > 0 ? deNoised.split(/\s+/).length : 0;
+  const genericEntityLookup =
+    GENERIC_SEARCH_VERBS.test(normalized)
+    && !STRUCTURED_INTERNAL_CUES.test(normalized)
+    && (ENTITY_SUFFIX_CUES.test(normalized) || (tokenCount >= 2 && tokenCount <= 8));
+
+  if (genericEntityLookup) {
+    return 'broad_first';
+  }
+
+  return 'default';
+};
+
+const applySearchScaleStrategy = (
+  sources: Record<ContextSearchBrokerSourceKey, boolean>,
+  strategy: SearchScaleStrategy,
+  hasWorkspace: boolean,
+) => {
+  if (strategy === 'default') {
+    return;
+  }
+
+  const resetAllSources = () => {
+    for (const key of Object.keys(sources) as ContextSearchBrokerSourceKey[]) {
+      sources[key] = false;
+    }
+  };
+
+  switch (strategy) {
+    case 'focused_books':
+      resetAllSources();
+      sources.zohoBooksLive = true;
+      break;
+    case 'focused_crm':
+      resetAllSources();
+      sources.zohoCrmContext = true;
+      break;
+    case 'focused_files':
+      resetAllSources();
+      sources.files = true;
+      break;
+    case 'focused_workspace':
+      resetAllSources();
+      sources.workspace = hasWorkspace;
+      break;
+    case 'focused_web':
+      resetAllSources();
+      sources.web = true;
+      break;
+    case 'focused_history':
+      resetAllSources();
+      sources.personalHistory = true;
+      break;
+    case 'broad_first':
+      sources.personalHistory = true;
+      sources.files = true;
+      sources.larkContacts = true;
+      sources.zohoCrmContext = true;
+      sources.zohoBooksLive = true;
+      sources.workspace = hasWorkspace;
+      sources.web = false;
+      break;
+    default:
+      break;
+  }
+};
 
 const parseDate = (value: string | undefined, edge: 'start' | 'end'): Date | null => {
   const trimmed = value?.trim();
@@ -548,6 +675,12 @@ class ContextSearchBrokerService {
     const query = input.query.trim();
     const limit = Math.max(1, Math.min(input.limit ?? 5, 10));
     const sources = this.normalizeSources(input.sources);
+    const searchStrategy = inferSearchScaleStrategy({
+      query,
+      explicitSourcesProvided: Boolean(input.sources),
+      site: input.site,
+    });
+    applySearchScaleStrategy(sources, searchStrategy, Boolean(input.runtime.workspace?.path));
     const dateFrom = parseDate(input.dateFrom, 'start');
     const dateTo = parseDate(input.dateTo, 'end');
     const sourceCoverage = Object.fromEntries(
@@ -557,7 +690,7 @@ class ContextSearchBrokerService {
         resultCount: 0,
       }]),
     ) as Record<ContextSearchBrokerSourceKey, SourceCoverage>;
-    const escalationStages: string[] = [];
+    const escalationStages: string[] = searchStrategy === 'broad_first' ? ['broad_first'] : [];
 
     const results: ContextSearchBrokerResult[] = [];
 

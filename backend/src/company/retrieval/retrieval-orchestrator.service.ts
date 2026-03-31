@@ -17,6 +17,24 @@ type ToolEnvelopeShape = {
   citations?: Array<Record<string, unknown>>;
 };
 
+const EXPLICIT_SOURCE_FOCUS = /\b(?:in|from|inside|within|under)\s+(?:zoho\s+books|books|zoho\s+crm|crm|files|docs|documents|attachments|workspace|history|memory|chat|conversation)\b|\b(?:on|from|search)\s+(?:the\s+)?(?:web|internet|online)\b/i;
+const GENERIC_SEARCH_LOOKUP = /\b(search|find|look up|lookup|check|trace|get details|tell me about|show me|who is|what is)\b/i;
+const GENERIC_ENTITY_SUFFIX = /\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/i;
+const INTERNAL_STRUCTURED_CUES = /\b(invoice|invoices|statement|statements|payment|payments|overdue|balance|balances|vendor|vendors|customer|customers|contact|contacts|deal|deals|account|accounts|lead|leads)\b/i;
+const GENERIC_LOOKUP_NOISE = /\b(please|plz|kindly|search|find|look up|lookup|check|show|me|for|about|details|info|information)\b/gi;
+
+const looksLikeBroadFirstLookup = (messageText: string): boolean => {
+  const normalized = messageText.trim().toLowerCase();
+  if (!normalized || EXPLICIT_SOURCE_FOCUS.test(normalized) || INTERNAL_STRUCTURED_CUES.test(normalized)) {
+    return false;
+  }
+  if (!GENERIC_SEARCH_LOOKUP.test(normalized)) {
+    return false;
+  }
+  const tokenCount = normalized.replace(GENERIC_LOOKUP_NOISE, ' ').replace(/\s+/g, ' ').trim().split(/\s+/).filter(Boolean).length;
+  return GENERIC_ENTITY_SUFFIX.test(normalized) || (tokenCount >= 2 && tokenCount <= 8);
+};
+
 const pushUnique = (values: string[], value: string) => {
   if (!values.includes(value)) {
     values.push(value);
@@ -199,7 +217,17 @@ export class RetrievalOrchestratorService {
   }
 
   buildPromptGuidance(input: OrchestratorInput): string[] {
-    return this.planExecution(input).systemDirectives;
+    const directives = this.planExecution(input).systemDirectives;
+    if (EXPLICIT_SOURCE_FOCUS.test(input.messageText)) {
+      directives.push(
+        'The user named the source or search scope. Start focused in that source first, and broaden only if that focused pass does not resolve the target.',
+      );
+    } else if (looksLikeBroadFirstLookup(input.messageText)) {
+      directives.push(
+        'This is an uncertain entity lookup. Start with a broad first-pass retrieval across internal context and live internal systems, then use web only if that internal broad pass still does not resolve the target.',
+      );
+    }
+    return directives;
   }
 }
 

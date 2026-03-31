@@ -52,11 +52,60 @@ const FILE_REFERENCE_RE =
   /\b(file|files|pdf|document|documents|doc|image|images|picture|pictures|screenshot|attachment|attachments|upload|uploaded|csv|sheet|spreadsheet)\b/i;
 const FILENAME_RE = /\b[\w @()+-]+\.(?:csv|pdf|png|jpg|jpeg|gif|doc|docx|xls|xlsx|txt)\b/gi;
 const QUOTED_RE = /["']([^"']{2,160})["']/g;
+const MONTH_INDEX: Record<string, number> = {
+  january: 1,
+  february: 2,
+  march: 3,
+  april: 4,
+  may: 5,
+  june: 6,
+  july: 7,
+  august: 8,
+  september: 9,
+  october: 10,
+  november: 11,
+  december: 12,
+};
 
 const normalizeWhitespace = (value: string): string =>
   value.trim().replace(/\s+/g, ' ');
 
 const uniq = (values: string[]): string[] => Array.from(new Set(values.filter(Boolean)));
+
+const padDatePart = (value: number): string => value.toString().padStart(2, '0');
+
+const parseNaturalDate = (value: string): string | null => {
+  const match = value.trim().match(/^(\d{1,2})\s+([a-z]+)\s+(\d{4})$/i);
+  if (!match) {
+    return null;
+  }
+  const day = Number.parseInt(match[1] ?? '', 10);
+  const month = MONTH_INDEX[(match[2] ?? '').toLowerCase()];
+  const year = Number.parseInt(match[3] ?? '', 10);
+  if (!month || !Number.isFinite(day) || !Number.isFinite(year)) {
+    return null;
+  }
+  if (day < 1 || day > 31) {
+    return null;
+  }
+  return `${year}-${padDatePart(month)}-${padDatePart(day)}`;
+};
+
+const extractExplicitDateRangeHint = (value: string): string | null => {
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  const hinglishMatch = normalized.match(/(\d{1,2}\s+[A-Za-z]+\s+\d{4})\s+se\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})(?:\s+tak)?/i);
+  const englishMatch = normalized.match(/from\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})\s+to\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})/i);
+  const match = hinglishMatch ?? englishMatch;
+  if (!match) {
+    return null;
+  }
+  const dateFrom = parseNaturalDate(match[1] ?? '');
+  const dateTo = parseNaturalDate(match[2] ?? '');
+  if (!dateFrom || !dateTo) {
+    return null;
+  }
+  return `Explicit date range: ${dateFrom} to ${dateTo}`;
+};
 
 const summarize = (value: string, maxLength = 140): string =>
   value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
@@ -147,6 +196,7 @@ export const enrichQuery = (input: {
     ...extractQuotedTerms(rawMessage),
     ...extractFileNames(rawMessage),
   ]);
+  const explicitDateRangeHint = extractExplicitDateRangeHint(cleanQuery);
 
   const artifactHints = uniq([
     ...(input.attachedFiles ?? []).map((file) => normalizeArtifactName(file.fileName)).filter((value): value is string => Boolean(value)),
@@ -185,6 +235,7 @@ export const enrichQuery = (input: {
   const retrievalQueries = uniq([
     rawMessage,
     cleanQuery !== rawMessage ? cleanQuery : '',
+    explicitDateRangeHint ? `${cleanQuery}\n${explicitDateRangeHint}` : '',
     exactTerms.length > 0 ? `${cleanQuery}\nExact terms: ${exactTerms.join(', ')}` : '',
     prioritizedActionHints.length > 0 ? `${cleanQuery}\nRecent thread refs: ${prioritizedActionHints.join(' | ')}` : '',
     contextHints.length > 0 ? `${cleanQuery}\nContext hints: ${contextHints.join(', ')}` : '',

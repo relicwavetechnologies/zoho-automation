@@ -221,7 +221,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   {
     id: 'zoho-books-read',
     name: 'Zoho Books Read',
-    description: 'Read Zoho Books finance records, contacts, vendor payments, bank accounts, credit notes, sales orders, purchase orders, bank transaction match suggestions, and related invoice/email/statement/document metadata.',
+    description: 'Read Zoho Books finance records, contacts, vendor payments, bank accounts, credit notes, sales orders, purchase orders, bank transaction match suggestions, and related invoice/email/statement/document metadata. Use the overdue-report path for all-overdue or aging-style invoice requests.',
     category: 'crm-read',
     engines: ['vercel'],
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },

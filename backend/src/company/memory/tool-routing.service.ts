@@ -66,6 +66,8 @@ const normalizePhrase = (value: string): string =>
       .replace(/\brecords?\b/g, 'record')
       .replace(/\binvoices?\b/g, 'invoice')
       .replace(/\bestimates?\b/g, 'estimate')
+      .replace(/\bbakaya\b/g, 'overdue payment')
+      .replace(/\bbaaki\b/g, 'balance')
       .replace(/\btasks?\b/g, 'task'),
   );
 
@@ -161,13 +163,19 @@ const detectDomain = (
     normalizedIntent: childRoute?.normalizedIntent,
     childRouterDomain: childRoute?.domain,
   });
-  if (childRoute?.domain?.trim()) {
-    return childRoute.domain.trim() as ToolRoutingDomain;
+  const canonicalDomain = canonicalIntent.domain;
+  const childRouteDomain = childRoute?.domain?.trim() as ToolRoutingDomain | undefined;
+  if (childRouteDomain) {
+    const canonicalIsSpecific = canonicalDomain !== 'general' && canonicalDomain !== 'lark';
+    if (canonicalIsSpecific && childRouteDomain !== canonicalDomain) {
+      return canonicalDomain;
+    }
+    return childRouteDomain;
   }
-  if (canonicalIntent.domain === 'zoho_books') {
+  if (canonicalDomain === 'zoho_books') {
     return 'zoho_books';
   }
-  if (canonicalIntent.domain === 'zoho_crm') {
+  if (canonicalDomain === 'zoho_crm') {
     return 'zoho_crm';
   }
   if (!hasExactExtractionIntent(text) && hasContextSearchIntent(text)) {

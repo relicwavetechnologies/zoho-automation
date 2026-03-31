@@ -42,6 +42,14 @@ const asNumber = (value: unknown): number | undefined => {
   return undefined;
 };
 
+const asBoolean = (value: unknown): boolean | undefined =>
+  typeof value === 'boolean' ? value : undefined;
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+
 const normalizeText = (value?: string): string =>
   (value ?? '')
     .normalize('NFKD')
@@ -56,6 +64,25 @@ const parseDate = (value?: string): Date | undefined => {
   return Number.isNaN(date.getTime()) ? undefined : date;
 };
 
+const hasMoreBooksPage = (payload?: Record<string, unknown>): boolean =>
+  asBoolean(asRecord(payload?.page_context)?.has_more_page) ?? false;
+
+const isWithinDateRange = (value: Date | undefined, from?: Date, to?: Date): boolean => {
+  if (!from && !to) {
+    return true;
+  }
+  if (!value) {
+    return false;
+  }
+  if (from && value.getTime() < from.getTime()) {
+    return false;
+  }
+  if (to && value.getTime() > to.getTime()) {
+    return false;
+  }
+  return true;
+};
+
 const diffInDays = (left?: Date, right?: Date): number | undefined => {
   if (!left || !right) return undefined;
   return Math.round((left.getTime() - right.getTime()) / 86_400_000);
@@ -68,6 +95,9 @@ const absoluteAmountDifference = (left?: number, right?: number): number | undef
 
 const readInvoiceNumber = (record: Record<string, unknown>): string | undefined =>
   asString(record.invoice_number) ?? asString(record.invoiceNumber);
+
+const readInvoiceId = (record: Record<string, unknown>): string | undefined =>
+  asString(record.invoice_id) ?? asString(record.id);
 
 const readCustomerId = (record: Record<string, unknown>): string | undefined =>
   asString(record.customer_id) ?? asString(record.contact_id) ?? asString(record.customerId);
@@ -272,7 +302,14 @@ export class ZohoFinanceOpsService {
     filters?: Record<string, unknown>;
     query?: string;
     limit?: number;
-  }): Promise<{ organizationId?: string; records: Record<string, unknown>[]; raw?: Record<string, unknown> }> {
+    page?: number;
+    perPage?: number;
+  }): Promise<{
+    organizationId?: string;
+    records: Record<string, unknown>[];
+    raw?: Record<string, unknown>;
+    scopeMode?: 'self_scoped' | 'company_scoped';
+  }> {
     const auth = await zohoGatewayService.listAuthorizedRecords({
       domain: 'books',
       module: input.module,
@@ -286,6 +323,8 @@ export class ZohoFinanceOpsService {
       filters: input.filters,
       query: input.query,
       limit: input.limit,
+      page: input.page,
+      perPage: input.perPage,
     });
 
     if (!auth.allowed) {
@@ -296,6 +335,7 @@ export class ZohoFinanceOpsService {
       organizationId: auth.organizationId,
       records: Array.isArray(auth.payload?.records) ? auth.payload.records : [],
       raw: auth.payload?.raw,
+      scopeMode: auth.scopeMode,
     };
   }
 
@@ -308,30 +348,63 @@ export class ZohoFinanceOpsService {
     asOfDate?: string;
     limit?: number;
     minOverdueDays?: number;
+    invoiceDateFrom?: string;
+    invoiceDateTo?: string;
   }) {
     const asOfDate = parseDate(input.asOfDate) ?? new Date();
     const limit = Math.max(1, Math.min(200, input.limit ?? 100));
     const minOverdueDays = Math.max(0, input.minOverdueDays ?? 1);
-    const result = await this.listCompanyScopedBooksRecords({
-      companyId: input.companyId,
-      organizationId: input.organizationId,
-      requesterEmail: input.requesterEmail,
-      requesterAiRole: input.requesterAiRole,
-      departmentZohoReadScope: input.departmentZohoReadScope,
-      module: 'invoices',
-      limit,
-      filters: {
-        status: 'overdue',
-      },
-    });
+    const invoiceDateFrom = parseDate(input.invoiceDateFrom);
+    const invoiceDateTo = parseDate(input.invoiceDateTo);
+    const pageSize = 200;
+    const maxPages = 20;
+    const scannedRecords: Record<string, unknown>[] = [];
+    const seenInvoiceIds = new Set<string>();
+    let organizationId = input.organizationId;
+    let scopeMode: 'self_scoped' | 'company_scoped' | undefined;
+    let sourceTruncated = false;
 
-    const invoices = result.records
+    for (let page = 1; page <= maxPages; page += 1) {
+      const result = await this.listCompanyScopedBooksRecords({
+        companyId: input.companyId,
+        organizationId,
+        requesterEmail: input.requesterEmail,
+        requesterAiRole: input.requesterAiRole,
+        departmentZohoReadScope: input.departmentZohoReadScope,
+        module: 'invoices',
+        limit: pageSize,
+        page,
+        perPage: pageSize,
+        filters: {
+          status: 'overdue',
+        },
+      });
+      organizationId = result.organizationId ?? organizationId;
+      scopeMode = result.scopeMode ?? scopeMode;
+      for (const record of result.records) {
+        const invoiceId = readInvoiceId(record) ?? JSON.stringify(record);
+        if (seenInvoiceIds.has(invoiceId)) {
+          continue;
+        }
+        seenInvoiceIds.add(invoiceId);
+        scannedRecords.push(record);
+      }
+      if (!hasMoreBooksPage(result.raw)) {
+        break;
+      }
+      if (page === maxPages) {
+        sourceTruncated = true;
+      }
+    }
+
+    const matchedInvoices = scannedRecords
       .map((invoice) => {
         const dueDate = parseDate(asString(invoice.due_date));
+        const invoiceDate = parseDate(asString(invoice.date));
         const overdueDays = diffInDays(asOfDate, dueDate) ?? 0;
         const balance = readBalance(invoice);
         return {
-          invoiceId: asString(invoice.invoice_id) ?? asString(invoice.id),
+          invoiceId: readInvoiceId(invoice),
           invoiceNumber: readInvoiceNumber(invoice),
           customerId: readCustomerId(invoice),
           customerName: readCustomerName(invoice),
@@ -341,10 +414,18 @@ export class ZohoFinanceOpsService {
           total: readAmount(invoice),
           balance,
           overdueDays,
+          invoiceDateMatch: isWithinDateRange(invoiceDate, invoiceDateFrom, invoiceDateTo),
         };
       })
-      .filter((invoice) => invoice.balance > 0 && invoice.overdueDays >= minOverdueDays)
+      .filter((invoice) =>
+        invoice.balance > 0
+        && invoice.overdueDays >= minOverdueDays
+        && invoice.invoiceDateMatch,
+      )
+      .map(({ invoiceDateMatch: _invoiceDateMatch, ...invoice }) => invoice)
       .sort((left, right) => right.overdueDays - left.overdueDays);
+
+    const visibleInvoices = matchedInvoices.slice(0, limit);
 
     const bucketTotals = {
       current: 0,
@@ -355,7 +436,7 @@ export class ZohoFinanceOpsService {
     };
     const customerTotals = new Map<string, { customerId?: string; customerName?: string; balance: number; invoiceCount: number }>();
 
-    for (const invoice of invoices) {
+    for (const invoice of matchedInvoices) {
       if (invoice.overdueDays <= 0) bucketTotals.current += invoice.balance;
       else if (invoice.overdueDays <= 30) bucketTotals.days_1_30 += invoice.balance;
       else if (invoice.overdueDays <= 60) bucketTotals.days_31_60 += invoice.balance;
@@ -378,19 +459,38 @@ export class ZohoFinanceOpsService {
       .sort((left, right) => right.balance - left.balance)
       .slice(0, 10);
 
-    const totalOutstanding = invoices.reduce((sum, invoice) => sum + invoice.balance, 0);
+    const totalOutstanding = matchedInvoices.reduce((sum, invoice) => sum + invoice.balance, 0);
+    const limitedResults = visibleInvoices.length < matchedInvoices.length;
+    let summary = matchedInvoices.length > 0
+      ? `Found ${matchedInvoices.length} overdue invoice(s) totaling ${totalOutstanding.toFixed(2)}.`
+      : 'No overdue invoices matched the current criteria.';
+    if (limitedResults) {
+      summary += ` Showing first ${visibleInvoices.length}.`;
+    }
+    if (sourceTruncated) {
+      summary += ' Additional overdue invoices may exist beyond the pagination scan limit.';
+    }
+    if (scopeMode === 'self_scoped') {
+      summary += ' Results are limited to the requester-accessible Zoho Books customers.';
+    }
 
     return {
-      summary: invoices.length > 0
-        ? `Found ${invoices.length} overdue invoice(s) totaling ${totalOutstanding.toFixed(2)}.`
-        : 'No overdue invoices matched the current criteria.',
+      summary,
       asOfDate: asOfDate.toISOString(),
-      organizationId: result.organizationId,
-      invoiceCount: invoices.length,
+      organizationId,
+      scopeMode,
+      invoiceCount: matchedInvoices.length,
+      displayedInvoiceCount: visibleInvoices.length,
       totalOutstanding,
       bucketTotals,
       topCustomers,
-      invoices,
+      sourceTruncated,
+      appliedFilters: {
+        minOverdueDays,
+        invoiceDateFrom: input.invoiceDateFrom,
+        invoiceDateTo: input.invoiceDateTo,
+      },
+      invoices: visibleInvoices,
     };
   }
 

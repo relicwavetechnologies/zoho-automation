@@ -52,6 +52,7 @@ export const BOOKS_DOMAIN_TERMS = [
   'overdue', 'credit note', 'credit notes', 'sales order', 'sales orders',
   'purchase order', 'purchase orders', 'bank statement', 'bank statements',
   'balance', 'receivable', 'payable', 'expense', 'expenses',
+  'bakaya', 'baaki',
 ] as const;
 
 export const ZOHO_CRM_DOMAIN_TERMS = [
@@ -175,6 +176,25 @@ const containsTerm = (text: string, term: string): boolean => {
 const matchTerms = (text: string, terms: readonly string[]): string[] =>
   terms.filter((term) => containsTerm(text, term));
 
+const HINGLISH_BOOKS_DOMAIN_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bbakaya\b/i, label: 'bakaya' },
+  { pattern: /\bbaaki\b/i, label: 'baaki' },
+  { pattern: /\boverdue\s+payment/i, label: 'overdue payment' },
+  { pattern: /\bpending\s+payment/i, label: 'pending payment' },
+  { pattern: /\bpayment\s+list/i, label: 'payment list' },
+  { pattern: /\bcustomer\s+overdue/i, label: 'customer overdue' },
+  { pattern: /\boverdue\s+customer/i, label: 'overdue customer' },
+  { pattern: /\binvoice\s+no\b/i, label: 'invoice no' },
+  { pattern: /\bnikal(?:\s+ke)?\s+de\s+do\b/i, label: 'nikal ke de do' },
+];
+
+const matchRegexTerms = (
+  text: string,
+  patterns: Array<{ pattern: RegExp; label: string }>,
+): string[] => patterns
+  .filter(({ pattern }) => pattern.test(text))
+  .map(({ label }) => label);
+
 export const toNarrowOperationClass = (intent: CanonicalIntent): NarrowOperationClass => {
   switch (intent.operationClass) {
     case 'send':
@@ -275,7 +295,10 @@ export function classifyIntent(
     }
   }
 
-  const matchedBooksDomain = matchTerms(combined, BOOKS_DOMAIN_TERMS);
+  const matchedBooksDomain = [
+    ...matchTerms(combined, BOOKS_DOMAIN_TERMS),
+    ...matchRegexTerms(combined, HINGLISH_BOOKS_DOMAIN_PATTERNS),
+  ].filter((term, index, values) => values.indexOf(term) === index);
   const matchedZohoCrmDomain = matchTerms(combined, ZOHO_CRM_DOMAIN_TERMS);
   const matchedOutreachDomain = matchTerms(combined, OUTREACH_DOMAIN_TERMS);
   const matchedLarkDomain = matchTerms(combined, LARK_DOMAIN_TERMS);

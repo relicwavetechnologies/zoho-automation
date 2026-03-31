@@ -56,11 +56,17 @@ const CLARIFICATION_ALLOWED_ONLY_WHEN_DOMAIN_UNKNOWN = [
   'ambiguous',
   'unspecified',
 ] as const;
-const LARK_CHANNEL_BASELINE = [
-  'context-search',
-  'lark-task-read',
-  'lark-task-write',
-  'lark-task-agent',
+const LARK_CHANNEL_BASELINE_DOMAINS: IntentDomain[] = [
+  'context_search',
+  'lark_base',
+  'lark_task',
+  'lark_message',
+  'lark_doc',
+  'lark_calendar',
+  'lark_approval',
+  'lark_meeting',
+  'zoho_books',
+  'zoho_crm',
 ] as const;
 const WORKSPACE_GLOBAL_IDS = ['coding'] as const;
 const ARTIFACT_GLOBAL_IDS = ['document-ocr-read'] as const;
@@ -116,8 +122,9 @@ const buildChannelBaseline = (input: {
   exposeArtifactTools: boolean;
 }): string[] =>
   uniq([
-    ...((input.channel === 'lark' ? LARK_CHANNEL_BASELINE : GLOBAL_ALWAYS_ON_IDS)
-      .filter((toolId) => input.allowed.has(toolId))),
+    ...(input.channel === 'lark'
+      ? LARK_CHANNEL_BASELINE_DOMAINS.flatMap((domain) => buildAllowedDomainFamily(input.allowed, domain))
+      : GLOBAL_ALWAYS_ON_IDS.filter((toolId) => input.allowed.has(toolId))),
     ...(input.workspaceAvailable ? WORKSPACE_GLOBAL_IDS.filter((toolId) => input.allowed.has(toolId)) : []),
     ...(input.exposeArtifactTools ? ARTIFACT_GLOBAL_IDS.filter((toolId) => input.allowed.has(toolId)) : []),
   ]);
@@ -189,6 +196,15 @@ const chooseSuggestedAllowed = (
   return uniq(resolved);
 };
 
+const domainsConflict = (left?: string | null, right?: string | null): boolean => {
+  const normalizedLeft = left?.trim();
+  const normalizedRight = right?.trim();
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+  return normalizedLeft !== normalizedRight;
+};
+
 const isAffirmationFollowUp = (message: string): boolean =>
   /^(yes|yeah|yep|ok|okay|sure|go ahead|continue|proceed|try again|do it)\b/.test(asLower(message));
 
@@ -252,8 +268,32 @@ const isVisualInspectionRequest = (message: string): boolean =>
 const requiresExplicitExtraction = (message: string): boolean =>
   /\b(ocr|extract text|exact text|read the text|what does it say|copy the text|transcribe|verbatim|all the text|full text)\b/.test(asLower(message));
 
+const EXPLICIT_SOURCE_SCOPE = /\b(?:in|from|inside|within|under)\s+(?:zoho\s+books|books|zoho\s+crm|crm|files|docs|documents|attachments|workspace|history|memory|chat|conversation)\b|\b(?:on|from|search)\s+(?:the\s+)?(?:web|internet|online)\b/;
+const GENERIC_LOOKUP_VERBS = /\b(search|find|look up|lookup|look for|check|trace|get details|tell me about|show me|who is|what is)\b/;
+const GENERIC_ENTITY_SUFFIX = /\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/;
+const INTERNAL_SYSTEM_CUES = /\b(invoice|invoices|statement|statements|payment|payments|overdue|balance|balances|vendor|vendors|customer|customers|contact|contacts|deal|deals|account|accounts|lead|leads)\b/;
+const LOOKUP_NOISE = /\b(please|plz|kindly|search|find|look up|lookup|look for|check|show|me|for|about|details|info|information)\b/g;
+
+const isUncertainEntityLookup = (message: string): boolean => {
+  const text = asLower(message);
+  if (!text || EXPLICIT_SOURCE_SCOPE.test(text) || INTERNAL_SYSTEM_CUES.test(text)) {
+    return false;
+  }
+  if (!GENERIC_LOOKUP_VERBS.test(text)) {
+    return false;
+  }
+  const normalizedEntityCandidate = text.replace(LOOKUP_NOISE, ' ').replace(/\s+/g, ' ').trim();
+  const tokenCount = normalizedEntityCandidate.length > 0
+    ? normalizedEntityCandidate.split(/\s+/).filter(Boolean).length
+    : 0;
+  return GENERIC_ENTITY_SUFFIX.test(text) || (tokenCount >= 2 && tokenCount <= 8);
+};
+
 const requiresContextSearch = (message: string): boolean => {
   const text = asLower(message);
+  if (isUncertainEntityLookup(message)) {
+    return true;
+  }
   if (/\b(context search|search history|search memory|conversation history|past chats?|past files?)\b/.test(text)) {
     return true;
   }
@@ -583,15 +623,26 @@ export const resolveRunScopedToolSelection = async (input: {
   // 5. Global always-on tools (GLOBAL_ALWAYS_ON_IDS) — always appended
   const authoritativeChildRoute = (input.childRoute?.confidence ?? 1) >= 0.7;
   const primaryDomainFamily = buildAllowedDomainFamily(allowed, inferredDomain);
+  const preferInferredDomainOverChildRoute =
+    inferredDomain === 'zoho_books'
+    || inferredDomain === 'zoho_crm';
   const childRouteDomainFamily = authoritativeChildRoute
+    && !(
+      preferInferredDomainOverChildRoute
+      && domainsConflict(input.childRoute?.domain, inferredDomain)
+    )
     ? buildAllowedDomainFamily(allowed, input.childRoute?.domain)
     : [];
+  const filteredSuggestedAllowedToolIds = preferInferredDomainOverChildRoute
+    && domainsConflict(input.childRoute?.domain, inferredDomain)
+    ? suggestedAllowedToolIds.filter((toolId) => primaryDomainFamily.includes(toolId))
+    : suggestedAllowedToolIds;
   const alternateDomainFamilies = uniq([
     ...childRouteDomainFamily,
   ]);
   const childRouterPrimaryBundle = uniq([
     ...childRouteDomainFamily,
-    ...suggestedAllowedToolIds,
+    ...filteredSuggestedAllowedToolIds,
     ...pinnedAllowedToolIds,
   ]);
   const primaryBundle = childRouterPrimaryBundle.length > 0
@@ -621,7 +672,7 @@ export const resolveRunScopedToolSelection = async (input: {
     inferredOperationClass,
   });
   const selectionReason = primaryBundle.length > 0
-    ? `Primary domain ${inferredDomain} with operation ${selectionReasonOperation}.${learnedSummary.length > 0 ? ` Learned routing priors favored ${learnedSummary.join('; ')}.` : ''}${pinnedAllowedToolIds.length > 0 ? ` Pinned required tools: ${pinnedAllowedToolIds.join(', ')}.` : ''}`
+    ? `Primary domain ${inferredDomain} with operation ${selectionReasonOperation}.${preferInferredDomainOverChildRoute && domainsConflict(input.childRoute?.domain, inferredDomain) ? ` Overrode conflicting child-route domain ${input.childRoute?.domain} in favor of source-of-truth finance routing.` : ''}${learnedSummary.length > 0 ? ` Learned routing priors favored ${learnedSummary.join('; ')}.` : ''}${pinnedAllowedToolIds.length > 0 ? ` Pinned required tools: ${pinnedAllowedToolIds.join(', ')}.` : ''}`
     : allowContextOnlyAnswer
       ? 'Current grounded multimodal context appears sufficient to answer directly without document extraction tools.'
       : `No safe primary domain could be resolved from the latest message; preserving only core and fallback tools.${pinnedAllowedToolIds.length > 0 ? ` Pinned required tools: ${pinnedAllowedToolIds.join(', ')}.` : ''}`;

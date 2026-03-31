@@ -7,7 +7,30 @@ import type { AiModelCatalogEntry } from '../company/ai-models/catalog';
  */
 export function estimateTokens(text: string): number {
   if (!text) return 0;
-  return Math.ceil(text.length / 4);
+  return Math.ceil(text.length / 3.2);
+}
+
+export function estimateMessageTokens(
+  messages: Array<{ content: unknown }>,
+): number {
+  return messages.reduce((sum, msg) => {
+    const content = typeof msg.content === 'string'
+      ? msg.content
+      : JSON.stringify(msg.content);
+    return sum + estimateTokens(content) + 4;
+  }, 0);
+}
+
+export function estimatePayloadTokens(payload: {
+  systemPrompt: string;
+  messages: Array<{ content: unknown }>;
+  extraContext?: string;
+}): number {
+  return (
+    estimateTokens(payload.systemPrompt)
+    + estimateMessageTokens(payload.messages)
+    + estimateTokens(payload.extraContext ?? '')
+  );
 }
 
 /**

@@ -74,7 +74,7 @@ import {
 } from '../../../modules/desktop-chat/vercel-desktop.engine';
 import { LarkStatusCoordinator } from './lark-status.coordinator';
 import { aiTokenUsageService } from '../../ai-usage/ai-token-usage.service';
-import { estimateTokens } from '../../../utils/token-estimator';
+import { estimateMessageTokens, estimateTokens } from '../../../utils/token-estimator';
 import { AI_MODEL_CATALOG_MAP } from '../../ai-models';
 import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../integrations/vector';
 import { memoryExtractionService, memoryService } from '../../memory';
@@ -100,6 +100,14 @@ import {
   resetLatestAgentRunLog,
 } from '../../../utils/latest-agent-run-log';
 import { prisma } from '../../../utils/prisma';
+import {
+  estimateFinalPromptTokens,
+  FULL_PROMPT_COMPACTION_USABLE_BUDGET,
+  PROTECTED_RECENT_MESSAGE_COUNT,
+  runLayeredCompaction,
+  type ConversationRetrievalItem,
+  type RetrievalSnippet,
+} from './context-compaction';
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
 const LARK_BLOCKED_TOOL_IDS = new Set<string>();
@@ -1692,6 +1700,15 @@ const inferDateScope = (message?: string): string | undefined => {
   return undefined;
 };
 
+const shouldExposeZohoBooksReadForLarkMessage = (message?: string): boolean => {
+  const text = message?.trim();
+  if (!text) {
+    return false;
+  }
+  const intent = classifyIntent(text);
+  return intent.domain === 'zoho_books' && !intent.isWriteLike;
+};
+
 const buildConversationRefsContext = (conversationKey: string): string | null => {
   const latestDoc = conversationMemoryStore.getLatestLarkDoc(conversationKey);
   const latestEvent = conversationMemoryStore.getLatestLarkCalendarEvent(conversationKey);
@@ -1868,6 +1885,8 @@ const buildSystemPrompt = (input: {
   relevantMemoryFactsContext?: string | null;
   memoryWriteStatusContext?: string | null;
   activeTaskContext?: string | null;
+  threadSummaryContextOverride?: string | null;
+  taskStateContextOverride?: string | null;
 }) => {
   const retrievalGuidance = input.latestUserMessage?.trim()
     ? retrievalOrchestratorService.buildPromptGuidance({
@@ -1905,10 +1924,12 @@ const buildSystemPrompt = (input: {
           contextHints: input.queryEnrichment.contextHints,
         }
       : undefined,
-    threadSummaryContext: input.threadSummary
-      ? buildThreadSummaryContext(input.threadSummary)
-      : null,
-    taskStateContext: input.taskState ? buildTaskStateContext(input.taskState) : null,
+    threadSummaryContext:
+      input.threadSummaryContextOverride
+      ?? (input.threadSummary ? buildThreadSummaryContext(input.threadSummary) : null),
+    taskStateContext:
+      input.taskStateContextOverride
+      ?? (input.taskState ? buildTaskStateContext(input.taskState) : null),
     conversationRefsContext: buildConversationRefsContext(input.conversationKey),
     conversationRetrievalSnippets: input.conversationRetrievalSnippets,
     behaviorProfileContext: input.behaviorProfileContext,
@@ -1925,6 +1946,18 @@ const buildSystemPrompt = (input: {
     groundedFiles: input.groundedFiles,
   });
 };
+
+const buildMinimalLarkSystemPrompt = (input: {
+  taskStateContext?: string | null;
+  latestUserMessage?: string;
+}): string =>
+  [
+    'You are Divo, EMIAC\'s internal AI colleague.',
+    'Use only the tools available in this run.',
+    'Prioritize the latest user request and keep the answer precise.',
+    input.taskStateContext?.trim() ? `Task state:\n${input.taskStateContext.trim()}` : '',
+    input.latestUserMessage?.trim() ? `Latest user message:\n${input.latestUserMessage.trim()}` : '',
+  ].filter(Boolean).join('\n\n');
 
 const findPendingApproval = (
   steps: Array<{ toolResults?: Array<{ output: unknown }> }>,
@@ -2404,6 +2437,10 @@ const resolveRuntimeContext = async (
     departmentSkillsMarkdown = resolved.skillsMarkdown;
     allowedToolIds = resolved.allowedToolIds;
     allowedActionsByTool = resolved.allowedActionsByTool;
+  }
+
+  if (shouldExposeZohoBooksReadForLarkMessage(message.text) && !allowedToolIds.includes('zoho-books-read')) {
+    allowedToolIds = [...allowedToolIds, 'zoho-books-read'];
   }
 
   return {
@@ -3588,6 +3625,153 @@ const executeLarkVercelTask = async (
     }
   }
 
+  const threadSummaryContext = buildThreadSummaryContext(activeThreadSummary) ?? '';
+  const taskStateContext = buildTaskStateContext(activeTaskState) ?? '';
+  const retrievalSnippetsForPrompt: RetrievalSnippet[] = conversationSnippets.map((snippet, index) => ({
+    source: `memory_${index + 1}`,
+    text: snippet,
+    score: Math.max(0.1, 1 - (index * 0.05)),
+  }));
+  const conversationRetrievalForPrompt: ConversationRetrievalItem[] = [];
+  const recentMessagesForCompaction = inputMessages.slice(-PROTECTED_RECENT_MESSAGE_COUNT);
+  const olderMessagesForCompaction = inputMessages.slice(
+    0,
+    Math.max(0, inputMessages.length - PROTECTED_RECENT_MESSAGE_COUNT),
+  );
+  const toolDefinitionsForEstimate = JSON.stringify({
+    allowedToolIds: effectiveRuntime.allowedToolIds,
+    runExposedToolIds: effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
+    allowedActionsByTool: effectiveRuntime.allowedActionsByTool ?? {},
+  });
+  const systemPromptCore = buildSystemPrompt({
+    conversationKey: contextStorageId ?? message.chatId,
+    runtime: effectiveRuntime,
+    routerAcknowledgement,
+    childRouteHints: childRoute,
+    resolvedReplyModeHint: activeReplyModeHint,
+    latestUserMessage: resolvedUserMessage,
+    queryEnrichment: enrichedQueryWithMemory,
+    hasAttachedFiles: groundingAttachments.length > 0,
+    groundedFiles: visionBuildResult?.groundedFiles,
+    threadSummaryContextOverride: '',
+    taskStateContextOverride: taskStateContext,
+    conversationRetrievalSnippets: [],
+    behaviorProfileContext: null,
+    durableMemoryContext: null,
+    relevantMemoryFactsContext: null,
+    memoryWriteStatusContext,
+    activeTaskContext: formatActiveTaskContext(task.taskId),
+  });
+  const compactionResult = runLayeredCompaction({
+    systemPromptCore,
+    toolDefinitions: toolDefinitionsForEstimate,
+    taskState: taskStateContext,
+    behaviorProfileContext: memoryPromptContext.behaviorProfileContext ?? '',
+    threadSummary: threadSummaryContext,
+    retrievalSnippets: retrievalSnippetsForPrompt,
+    memoryFacts: memoryPromptContext.relevantMemoryFactsText
+      ? [memoryPromptContext.relevantMemoryFactsText]
+      : [],
+    durableMemoryText: memoryPromptContext.durableTaskContextText ?? '',
+    recentMessages: recentMessagesForCompaction,
+    olderMessages: olderMessagesForCompaction,
+    conversationRetrieval: conversationRetrievalForPrompt,
+  });
+  if (compactionResult.wasCompacted) {
+    await updateStatus(
+      'planning',
+      'Compacting earlier context to preserve recent details before continuing.',
+      undefined,
+      { force: true },
+    );
+    logger.warn('context_compaction_triggered', {
+      taskId: task.taskId,
+      finalEstimatedTokens: compactionResult.finalEstimatedTokens,
+      compactionLog: compactionResult.compactionLog,
+    });
+  }
+
+  inputMessages = [
+    ...compactionResult.olderMessages,
+    ...compactionResult.recentMessages,
+  ];
+
+  const relevantMemoryFactsContextForPrompt = compactionResult.memoryFacts.join('\n');
+  let compactedSystemPrompt = buildSystemPrompt({
+    conversationKey: contextStorageId ?? message.chatId,
+    runtime: effectiveRuntime,
+    routerAcknowledgement,
+    childRouteHints: childRoute,
+    resolvedReplyModeHint: activeReplyModeHint,
+    latestUserMessage: resolvedUserMessage,
+    queryEnrichment: enrichedQueryWithMemory,
+    hasAttachedFiles: groundingAttachments.length > 0,
+    groundedFiles: visionBuildResult?.groundedFiles,
+    threadSummaryContextOverride: compactionResult.threadSummary,
+    taskStateContextOverride: taskStateContext,
+    conversationRetrievalSnippets: compactionResult.retrievalSnippets.map((snippet) => snippet.text),
+    behaviorProfileContext: compactionResult.behaviorProfileContext,
+    durableMemoryContext: compactionResult.durableMemoryText,
+    relevantMemoryFactsContext: relevantMemoryFactsContextForPrompt,
+    memoryWriteStatusContext,
+    activeTaskContext: formatActiveTaskContext(task.taskId),
+  });
+  let finalPromptEstimate = estimateFinalPromptTokens({
+    systemPrompt: compactedSystemPrompt,
+    messages: inputMessages,
+  });
+  if (finalPromptEstimate > FULL_PROMPT_COMPACTION_USABLE_BUDGET) {
+    logger.error('context_compaction_failed_hard_limit', {
+      taskId: task.taskId,
+      estimatedTokens: finalPromptEstimate,
+    });
+    await updateStatus(
+      'planning',
+      'Compacting context more aggressively to keep the run moving.',
+      undefined,
+      { force: true },
+    );
+    inputMessages = inputMessages.slice(-4);
+    compactedSystemPrompt = buildSystemPrompt({
+      conversationKey: contextStorageId ?? message.chatId,
+      runtime: effectiveRuntime,
+      routerAcknowledgement,
+      childRouteHints: childRoute,
+      resolvedReplyModeHint: activeReplyModeHint,
+      latestUserMessage: resolvedUserMessage,
+      queryEnrichment: enrichedQueryWithMemory,
+      hasAttachedFiles: groundingAttachments.length > 0,
+      groundedFiles: visionBuildResult?.groundedFiles,
+      threadSummaryContextOverride: '',
+      taskStateContextOverride: taskStateContext,
+      conversationRetrievalSnippets: [],
+      behaviorProfileContext: null,
+      durableMemoryContext: null,
+      relevantMemoryFactsContext: null,
+      memoryWriteStatusContext,
+      activeTaskContext: formatActiveTaskContext(task.taskId),
+    });
+    finalPromptEstimate = estimateFinalPromptTokens({
+      systemPrompt: compactedSystemPrompt,
+      messages: inputMessages,
+    });
+    if (finalPromptEstimate > FULL_PROMPT_COMPACTION_USABLE_BUDGET) {
+      compactedSystemPrompt = buildMinimalLarkSystemPrompt({
+        taskStateContext,
+        latestUserMessage: resolvedUserMessage,
+      });
+      inputMessages = inputMessages.slice(-2);
+      finalPromptEstimate = estimateFinalPromptTokens({
+        systemPrompt: compactedSystemPrompt,
+        messages: inputMessages,
+      });
+      logger.error('context_compaction_used_minimal_fallback', {
+        taskId: task.taskId,
+        estimatedTokens: finalPromptEstimate,
+      });
+    }
+  }
+
   try {
     const primaryMessages =
       inputMessages.length > 0 ? inputMessages : [{ role: 'user', content: resolvedUserMessage }];
@@ -3602,7 +3786,7 @@ const executeLarkVercelTask = async (
       status: 'done',
       payload: buildExecutionModelInputPayload({
         label: 'lark_generate',
-        systemPrompt,
+        systemPrompt: compactedSystemPrompt,
         messages: primaryMessages,
         contextSummary: {
           contextClass,
@@ -3628,7 +3812,7 @@ const executeLarkVercelTask = async (
     await appendLatestAgentRunLog(task.taskId, 'llm.context', {
       phase: 'lark_generate',
       threadId: contextStorageId ?? message.chatId,
-      systemPrompt,
+      systemPrompt: compactedSystemPrompt,
       messages: primaryMessages.map((entry, index) => ({
         index,
         role: entry.role,
@@ -3648,19 +3832,21 @@ const executeLarkVercelTask = async (
         threadSummary: activeThreadSummary,
         taskState: activeTaskState,
         contextClass,
+        finalPromptEstimate,
+        compactionLog: compactionResult.compactionLog,
       },
     });
     const scopedContext = [
-      memoryPromptContext.behaviorProfileContext ?? '',
-      memoryPromptContext.durableTaskContextText ?? '',
-      memoryPromptContext.relevantMemoryFactsText ?? '',
-      buildThreadSummaryContext(activeThreadSummary) ?? '',
-      buildTaskStateContext(activeTaskState) ?? '',
+      compactionResult.behaviorProfileContext,
+      compactionResult.durableMemoryText,
+      relevantMemoryFactsContextForPrompt,
+      compactionResult.threadSummary,
+      taskStateContext,
     ].filter((value): value is string => Boolean(value?.trim()));
     const supervisorEligibility = resolveSupervisorEligibleAgents({
       runtime: {
         allowedToolIds: effectiveRuntime.allowedToolIds,
-        runExposedToolIds: effectiveRuntime.allowedToolIds,
+        runExposedToolIds: effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
         plannerChosenOperationClass:
           toolSelection.inferredOperationClass ?? effectiveRuntime.plannerChosenOperationClass ?? undefined,
         workspace: effectiveRuntime.workspace,
@@ -3673,7 +3859,13 @@ const executeLarkVercelTask = async (
     const eligibleAgentIds = Array.from(new Set([
       ...supervisorEligibility.preferredAgentIds,
       ...supervisorEligibility.eligibleAgents.map((agent) => agent.id),
-    ]));
+    ])).filter((agentId) => {
+      const plannerChosenToolId = effectiveRuntime.plannerChosenToolId ?? toolSelection.plannerChosenToolId;
+      if ((plannerChosenToolId === 'zoho-books-read' || plannerChosenToolId === 'zoho-books-agent') && agentId === 'lark-ops-agent') {
+        return false;
+      }
+      return true;
+    });
     const supervisorPlan = await planSupervisorDelegation({
       mode: runtime.mode,
       latestUserMessage: resolvedUserMessage,
@@ -3875,7 +4067,7 @@ const executeLarkVercelTask = async (
                 () =>
                   generateText({
                     model: resolvedModel.model,
-                    system: buildDelegatedAgentSystemPrompt(systemPrompt, step.agentId),
+                    system: buildDelegatedAgentSystemPrompt(compactedSystemPrompt, step.agentId),
                     messages: messagesForStep,
                     tools: stepTools,
                     temperature: config.OPENAI_TEMPERATURE,
@@ -3915,7 +4107,7 @@ const executeLarkVercelTask = async (
                 () =>
                   generateText({
                     model: resolvedModel.model,
-                    system: buildDelegatedAgentSystemPrompt(systemPrompt, step.agentId),
+                    system: buildDelegatedAgentSystemPrompt(compactedSystemPrompt, step.agentId),
                     messages: sanitizedMessages,
                     tools: stepTools,
                     temperature: config.OPENAI_TEMPERATURE,
@@ -4118,7 +4310,7 @@ const executeLarkVercelTask = async (
         });
         generatedText = await synthesizeSupervisorOutcome({
           mode: runtime.mode,
-          systemPrompt,
+          systemPrompt: compactedSystemPrompt,
           latestUserMessage: resolvedUserMessage,
           results: delegatedAgentResults,
           abortSignal,
@@ -4204,7 +4396,7 @@ const executeLarkVercelTask = async (
       const effectiveMessages =
         inputMessages.length > 0 ? inputMessages : [{ role: 'user', content: resolvedUserMessage }];
       const estimatedInputTokens =
-        estimateTokens(systemPrompt) + estimateMessageTokens(effectiveMessages);
+        estimateTokens(compactedSystemPrompt) + estimateMessageTokens(effectiveMessages);
       const estimatedOutputTokens = estimateTokens(finalText);
       await assertExecutionRunnable(task.taskId, abortSignal);
       await aiTokenUsageService.record({

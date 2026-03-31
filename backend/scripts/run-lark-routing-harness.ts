@@ -23,6 +23,76 @@ const asString = (value: unknown): string | undefined => {
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
+const resolveLinkedLarkIdentity = async (input: {
+  companyId: string;
+  linkedUserId?: string;
+  larkOpenId?: string;
+  larkUserId?: string;
+}) => {
+  const authOrClauses = [
+    ...(input.larkOpenId ? [{ larkOpenId: input.larkOpenId }] : []),
+    ...(input.larkUserId ? [{ larkUserId: input.larkUserId }] : []),
+    ...(input.linkedUserId ? [{ userId: input.linkedUserId }] : []),
+  ];
+
+  const matchingLink = authOrClauses.length > 0
+    ? await prisma.larkUserAuthLink.findFirst({
+        where: {
+          revokedAt: null,
+          companyId: input.companyId,
+          OR: authOrClauses,
+        },
+        orderBy: [
+          { lastUsedAt: 'desc' },
+          { updatedAt: 'desc' },
+          { createdAt: 'desc' },
+        ],
+        select: {
+          companyId: true,
+          userId: true,
+          larkTenantKey: true,
+          larkOpenId: true,
+          larkUserId: true,
+          larkEmail: true,
+        },
+      })
+    : null;
+
+  const identityOrClauses = [
+    ...(matchingLink?.larkOpenId ? [{ larkOpenId: matchingLink.larkOpenId }] : []),
+    ...(matchingLink?.larkUserId ? [{ larkUserId: matchingLink.larkUserId }] : []),
+    ...(input.larkOpenId ? [{ larkOpenId: input.larkOpenId }] : []),
+    ...(input.larkUserId ? [{ larkUserId: input.larkUserId }] : []),
+  ];
+
+  const channelIdentity = identityOrClauses.length > 0
+    ? await prisma.channelIdentity.findFirst({
+        where: {
+          companyId: input.companyId,
+          channel: 'lark',
+          OR: identityOrClauses,
+        },
+        orderBy: { updatedAt: 'desc' },
+        select: {
+          id: true,
+          email: true,
+          externalUserId: true,
+          larkOpenId: true,
+          larkUserId: true,
+        },
+      })
+    : null;
+
+  return {
+    linkedUserId: matchingLink?.userId,
+    larkTenantKey: matchingLink?.larkTenantKey,
+    larkOpenId: matchingLink?.larkOpenId ?? channelIdentity?.larkOpenId ?? channelIdentity?.externalUserId,
+    larkUserId: matchingLink?.larkUserId ?? channelIdentity?.larkUserId,
+    requesterEmail: matchingLink?.larkEmail ?? channelIdentity?.email ?? undefined,
+    channelIdentityId: channelIdentity?.id,
+  };
+};
+
 const resolveLatestLarkContext = async (companyId?: string) => {
   const recentMessages = await prisma.desktopMessage.findMany({
     where: {
@@ -104,14 +174,25 @@ const resolveExplicitLarkContext = async () => {
     return null;
   }
 
+  const explicitLinkedUserId = asString(readArg('--linked-user-id'));
+  const explicitLarkUserId = asString(readArg('--lark-user-id')) ?? larkOpenId;
+  const explicitRequesterEmail = asString(readArg('--requester-email'));
+  const explicitChannelIdentityId = asString(readArg('--channel-identity-id'));
+  const resolvedIdentity = await resolveLinkedLarkIdentity({
+    companyId,
+    linkedUserId: explicitLinkedUserId,
+    larkOpenId,
+    larkUserId: explicitLarkUserId,
+  });
+
   return {
     companyId,
-    linkedUserId: asString(readArg('--linked-user-id')),
-    larkTenantKey,
-    larkOpenId,
-    larkUserId: asString(readArg('--lark-user-id')) ?? larkOpenId,
-    requesterEmail: asString(readArg('--requester-email')),
-    channelIdentityId: asString(readArg('--channel-identity-id')),
+    linkedUserId: explicitLinkedUserId ?? resolvedIdentity.linkedUserId,
+    larkTenantKey: larkTenantKey ?? resolvedIdentity.larkTenantKey,
+    larkOpenId: larkOpenId ?? resolvedIdentity.larkOpenId,
+    larkUserId: explicitLarkUserId ?? resolvedIdentity.larkUserId ?? resolvedIdentity.larkOpenId,
+    requesterEmail: explicitRequesterEmail ?? resolvedIdentity.requesterEmail,
+    channelIdentityId: explicitChannelIdentityId ?? resolvedIdentity.channelIdentityId,
     chatId,
   };
 };

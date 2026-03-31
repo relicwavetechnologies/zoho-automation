@@ -962,6 +962,17 @@ const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 
+const asNumber = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value.replace(/,/g, '').trim());
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+};
+
 const summarize = (value: unknown, fallback = 'No summary returned.'): string => {
   if (typeof value === 'string' && value.trim()) {
     return value.trim();
@@ -3561,7 +3572,7 @@ export const createVercelDesktopTools = (
 
     contextSearch: tool({
       description:
-        'Unified retrieval broker for conversation history, indexed files, Lark contacts, Zoho context, workspace search, public web search, and skills. Use search first, then fetch with a returned chunkRef when you need the full content.',
+        'Unified retrieval broker for conversation history, indexed files, Lark contacts, Zoho context, workspace search, public web search, and skills. When the query is an uncertain entity lookup, it automatically searches broadly across internal sources on the first pass and keeps web as a later fallback; when the query explicitly names a source like books, CRM, files, workspace, or web, it focuses there first and expands later. Use search first, then fetch with a returned chunkRef when you need the full content.',
       inputSchema: z.object({
         operation: z.enum(['search', 'fetch']),
         query: z.string().optional(),
@@ -6349,7 +6360,7 @@ export const createVercelDesktopTools = (
 
     booksRead: tool({
       description:
-        'Read Zoho Books organizations, finance records, reports, comments, templates, attachments, record documents, bank data, raw email/report metadata, and materialize sendable document artifacts.',
+        'Read Zoho Books organizations, finance records, reports, comments, templates, attachments, record documents, bank data, raw email/report metadata, and materialize sendable document artifacts. For overdue invoice lists, aging summaries, or requests like "all overdue customers/payments", prefer operation=buildOverdueReport instead of listRecords. If the user specifies a period such as this year, this month, or a custom range, pass invoiceDateFrom and invoiceDateTo so the overdue report is time-bounded before synthesis.',
       inputSchema: z.object({
         operation: z.enum([
           'listOrganizations',
@@ -6397,6 +6408,8 @@ export const createVercelDesktopTools = (
         query: z.string().optional(),
         limit: z.number().int().min(1).max(200).optional(),
         asOfDate: z.string().optional(),
+        invoiceDateFrom: z.string().optional(),
+        invoiceDateTo: z.string().optional(),
         minOverdueDays: z.number().int().min(0).max(3650).optional(),
         amountTolerance: z.number().min(0).max(1_000_000).optional(),
         dateToleranceDays: z.number().int().min(0).max(3650).optional(),
@@ -6641,10 +6654,6 @@ export const createVercelDesktopTools = (
           }
 
           if (input.operation === 'buildOverdueReport') {
-            const companyScopeError = await requireBooksCompanyScope('buildOverdueReport');
-            if (companyScopeError) {
-              return companyScopeError;
-            }
             try {
               const report = await loadZohoFinanceOpsService().buildOverdueReport({
                 companyId: runtime.companyId,
@@ -6653,6 +6662,8 @@ export const createVercelDesktopTools = (
                 requesterAiRole: runtime.requesterAiRole,
                 departmentZohoReadScope: runtime.departmentZohoReadScope,
                 asOfDate: input.asOfDate?.trim(),
+                invoiceDateFrom: input.invoiceDateFrom?.trim(),
+                invoiceDateTo: input.invoiceDateTo?.trim(),
                 limit: input.limit,
                 minOverdueDays: input.minOverdueDays,
               });
@@ -6661,6 +6672,7 @@ export const createVercelDesktopTools = (
                 summary: asString(report.summary) ?? 'Built Zoho overdue report.',
                 keyData: {
                   organizationId: asString(report.organizationId),
+                  scopeMode: asString(report.scopeMode),
                   invoiceCount: asNumber(report.invoiceCount),
                   totalOutstanding: asNumber(report.totalOutstanding),
                 },
