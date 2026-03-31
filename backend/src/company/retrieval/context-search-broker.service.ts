@@ -78,6 +78,9 @@ export type ContextSearchBrokerResult = {
   displayName?: string;
   email?: string;
   organizationId?: string;
+  customerId?: string;
+  invoiceId?: string;
+  invoiceNumber?: string;
   skillId?: string;
   skillSlug?: string;
 };
@@ -597,10 +600,18 @@ const buildResolvedEntities = (results: ContextSearchBrokerResult[]): Record<str
       setResolvedEntity(resolved, 'skillSlug', result.skillSlug ?? result.sourceId);
     }
     if (result.scope === 'zoho_books') {
-      setResolvedEntity(resolved, 'contactId', result.sourceId);
       setResolvedEntity(resolved, 'organizationId', result.organizationId);
       setResolvedEntity(resolved, 'customerName', result.displayName ?? result.title);
       setResolvedEntity(resolved, 'customerEmail', result.email);
+      if (result.sourceType === 'books_contact') {
+        setResolvedEntity(resolved, 'contactId', result.sourceId);
+        setResolvedEntity(resolved, 'customerId', result.customerId ?? result.sourceId);
+      }
+      if (result.sourceType === 'books_invoice') {
+        setResolvedEntity(resolved, 'invoiceId', result.invoiceId ?? result.sourceId);
+        setResolvedEntity(resolved, 'invoiceNumber', result.invoiceNumber);
+        setResolvedEntity(resolved, 'customerId', result.customerId);
+      }
     }
   }
   return resolved;
@@ -729,6 +740,7 @@ const searchZohoBooksLive = async (input: {
       displayName,
       email,
       organizationId: resolvedOrganizationId,
+      customerId: readString(record.customer_id) ?? contactId,
       title: displayName,
     });
   };
@@ -743,6 +755,7 @@ const searchZohoBooksLive = async (input: {
       ?? readString(record.contact_name)
       ?? readString(record.company_name);
     const invoiceNumber = readString(record.invoice_number) ?? invoiceId;
+    const customerId = readString(record.customer_id) ?? readString(record.contact_id);
     const score = scoreZohoBooksInvoiceMatch(record, input.query, rankIndex);
     if (companyLookup && score < 0.45) {
       return;
@@ -779,6 +792,9 @@ const searchZohoBooksLive = async (input: {
       displayName: customerName,
       email: readString(record.email),
       organizationId: resolvedOrganizationId,
+      customerId,
+      invoiceId,
+      invoiceNumber,
       title: customerName ? `${customerName} (${invoiceNumber})` : invoiceNumber,
     });
   };
@@ -1441,12 +1457,13 @@ class ContextSearchBrokerService {
 
     if (parsed.scope === 'zoho_books') {
       const decoded = decodeRefSegment(parsed.sourceId);
-      const [organizationId, contactId] = decoded.split(':');
-      if (!contactId) return null;
+      const [organizationId, recordId] = decoded.split(':');
+      if (!recordId) return null;
+      const moduleName = parsed.sourceType === 'books_invoice' ? 'invoices' : 'contacts';
       const auth = await zohoGatewayService.getAuthorizedRecord({
         domain: 'books',
-        module: 'contacts',
-        recordId: contactId,
+        module: moduleName,
+        recordId,
         organizationId: organizationId || undefined,
         requester: buildZohoGatewayRequester(input.runtime),
       });
@@ -1458,13 +1475,20 @@ class ContextSearchBrokerService {
         chunkRef: input.chunkRef,
         scope: parsed.scope,
         sourceType: parsed.sourceType,
-        sourceId: contactId,
+        sourceId: recordId,
         chunkIndex: parsed.chunkIndex,
         text,
         resolvedEntities: {
-          contactId,
+          ...(parsed.sourceType === 'books_contact' ? { contactId: recordId } : {}),
+          ...(parsed.sourceType === 'books_invoice' ? { invoiceId: recordId } : {}),
           ...(auth.organizationId ? { organizationId: auth.organizationId } : {}),
-          ...(readString(record.contact_name) ? { customerName: readString(record.contact_name)! } : {}),
+          ...(readString(record.customer_id) ? { customerId: readString(record.customer_id)! } : {}),
+          ...(readString(record.invoice_number) ? { invoiceNumber: readString(record.invoice_number)! } : {}),
+          ...(readString(record.customer_name)
+            ? { customerName: readString(record.customer_name)! }
+            : readString(record.contact_name)
+              ? { customerName: readString(record.contact_name)! }
+              : {}),
           ...(readString(record.email) ? { customerEmail: readString(record.email)! } : {}),
         },
       };
