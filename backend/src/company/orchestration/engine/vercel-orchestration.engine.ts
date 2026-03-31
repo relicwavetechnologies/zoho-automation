@@ -2366,7 +2366,23 @@ const resolveRuntimeContext = async (
     companyId,
     requesterAiRole,
   );
-  const linkedUserId = message.trace?.linkedUserId ?? message.userId;
+  let linkedUserId = message.trace?.linkedUserId;
+  if (!linkedUserId && message.trace?.channelIdentityId) {
+    try {
+      const mapped = await departmentService.resolveWorkspaceMemberFromChannelIdentity({
+        companyId,
+        channelIdentityId: message.trace.channelIdentityId,
+      });
+      linkedUserId = mapped.userId;
+    } catch (error) {
+      logger.info('vercel.runtime_context.channel_identity_unresolved', {
+        companyId,
+        channelIdentityId: message.trace.channelIdentityId,
+        requesterEmail: message.trace?.requesterEmail ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   let departmentId: string | undefined;
   let departmentName: string | undefined;
   let departmentRoleSlug: string | undefined;

@@ -454,6 +454,13 @@ class DepartmentService {
     }));
   }
 
+  async resolveWorkspaceMemberFromChannelIdentity(input: {
+    companyId: string;
+    channelIdentityId: string;
+  }): Promise<{ userId: string; workspaceRole: string }> {
+    return this.ensureWorkspaceMemberFromChannelIdentity(input);
+  }
+
   async userManagesAnyDepartment(userId: string, companyId: string): Promise<boolean> {
     const count = await prisma.departmentMembership.count({
       where: {

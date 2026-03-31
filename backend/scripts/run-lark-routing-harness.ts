@@ -94,6 +94,28 @@ const resolveLatestLarkContext = async (companyId?: string) => {
   throw new Error('Could not resolve recent Lark context. Pass a company with recent Lark activity first.');
 };
 
+const resolveExplicitLarkContext = async () => {
+  const companyId = asString(readArg('--company-id'));
+  const chatId = asString(readArg('--chat-id'));
+  const larkOpenId = asString(readArg('--open-id'));
+  const larkTenantKey = asString(readArg('--tenant-key'));
+
+  if (!companyId || !chatId || !larkOpenId || !larkTenantKey) {
+    return null;
+  }
+
+  return {
+    companyId,
+    linkedUserId: asString(readArg('--linked-user-id')),
+    larkTenantKey,
+    larkOpenId,
+    larkUserId: asString(readArg('--lark-user-id')) ?? larkOpenId,
+    requesterEmail: asString(readArg('--requester-email')),
+    channelIdentityId: asString(readArg('--channel-identity-id')),
+    chatId,
+  };
+};
+
 const resolveReplyAnchorMessageId = async (input: {
   chatId: string;
   companyId: string;
@@ -134,14 +156,18 @@ const main = async (): Promise<void> => {
     throw new Error('Pass --message "<text>"');
   }
 
-  const resolved = await resolveLatestLarkContext(asString(readArg('--company-id')));
+  const resolved =
+    (await resolveExplicitLarkContext())
+    ?? (await resolveLatestLarkContext(asString(readArg('--company-id'))));
   const taskId = randomUUID();
   const messageId = `om_harness_${Date.now()}`;
   const timestamp = new Date().toISOString();
-  const replyAnchorMessageId = await resolveReplyAnchorMessageId({
-    chatId: resolved.chatId,
-    companyId: resolved.companyId,
-  });
+  const replyAnchorMessageId = readArg('--skip-execute')
+    ? null
+    : await resolveReplyAnchorMessageId({
+        chatId: resolved.chatId,
+        companyId: resolved.companyId,
+      });
 
   const message = {
     channel: 'lark' as const,
@@ -165,31 +191,40 @@ const main = async (): Promise<void> => {
       companyId: resolved.companyId,
       linkedUserId: resolved.linkedUserId,
       requesterEmail: resolved.requesterEmail,
+      channelIdentityId: resolved.channelIdentityId,
       ...(replyAnchorMessageId ? { replyToMessageId: replyAnchorMessageId } : {}),
     },
   };
 
   const task = await vercelOrchestrationEngine.buildTask(taskId, message);
-  const result = await vercelOrchestrationEngine.executeTask({
-    task,
-    message,
-  });
+  const skipExecute = Boolean(readArg('--skip-execute'));
+  const result = skipExecute
+    ? null
+    : await vercelOrchestrationEngine.executeTask({
+        task,
+        message,
+      });
 
   console.log(JSON.stringify({
     taskId,
     messageId,
     companyId: resolved.companyId,
     linkedUserId: resolved.linkedUserId,
+    channelIdentityId: resolved.channelIdentityId ?? null,
+    requesterEmail: resolved.requesterEmail ?? null,
     chatId: resolved.chatId,
     replyAnchorMessageId,
     text: messageText,
-    result: {
-      status: result.status,
-      currentStep: result.currentStep ?? null,
-      latestSynthesis: result.latestSynthesis ?? null,
-      runtimeMeta: result.runtimeMeta ?? null,
-      errors: result.errors ?? [],
-    },
+    task,
+    result: result
+      ? {
+          status: result.status,
+          currentStep: result.currentStep ?? null,
+          latestSynthesis: result.latestSynthesis ?? null,
+          runtimeMeta: result.runtimeMeta ?? null,
+          errors: result.errors ?? [],
+        }
+      : null,
   }, null, 2));
 };
 
