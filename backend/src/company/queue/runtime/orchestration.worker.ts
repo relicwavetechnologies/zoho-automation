@@ -21,6 +21,7 @@ import {
   getConfiguredOrchestrationEngineId,
 } from '../../orchestration/engine';
 import { runtimeTaskStore } from '../../orchestration/runtime-task.store';
+import { taskFsm } from '../../orchestration/task-fsm';
 import { checkpointRepository } from '../../state/checkpoint';
 import {
   ORCHESTRATION_JOB_NAME,
@@ -348,6 +349,7 @@ const upsertRuntimeSnapshotFromJob = (
     queueJobId: buildQueueJobId(job),
     messageId: job.data.message.messageId,
     channel: job.data.message.channel,
+    conversationKey: job.data.message.chatId,
     userId: job.data.message.userId,
     chatId: job.data.message.chatId,
     companyId: existing?.companyId ?? job.data.message.trace?.companyId,
@@ -467,8 +469,8 @@ const processTask = async (
     });
   }
 
+  await taskFsm.start(taskId);
   runtimeTaskStore.update(taskId, {
-    status: 'running',
     queueJobId: buildQueueJobId(job),
     complexityLevel: task.complexityLevel,
     executionMode: task.executionMode,
@@ -491,12 +493,27 @@ const processTask = async (
   });
 
   const latestCheckpoint = await checkpointRepository.getLatest(taskId);
-  const { result, configuredEngine: selectedEngine, engineUsed } = await executeTaskWithConfiguredEngine({
-    task,
-    message,
-    latestCheckpoint,
-    abortSignal,
-  });
+  const heartbeatInterval = setInterval(() => {
+    void taskFsm.heartbeat(taskId).catch((error) => {
+      logger.warn('task_fsm.heartbeat_failed', {
+        taskId,
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
+    });
+  }, 30_000);
+  let result: Awaited<ReturnType<typeof executeTaskWithConfiguredEngine>>['result'];
+  let selectedEngine: Awaited<ReturnType<typeof executeTaskWithConfiguredEngine>>['configuredEngine'];
+  let engineUsed: Awaited<ReturnType<typeof executeTaskWithConfiguredEngine>>['engineUsed'];
+  try {
+    ({ result, configuredEngine: selectedEngine, engineUsed } = await executeTaskWithConfiguredEngine({
+      task,
+      message,
+      latestCheckpoint,
+      abortSignal,
+    }));
+  } finally {
+    clearInterval(heartbeatInterval);
+  }
   const rolledBackFrom = null;
   const rollbackReasonCode = null;
   const resolvedCompanyId = extractCompanyIdFromAgentResults(result.agentResults as Array<Record<string, unknown>>);
@@ -572,6 +589,16 @@ const processTask = async (
     selectedEngine,
     engineUsed,
   });
+
+  if (result.status === 'done') {
+    await taskFsm.complete(taskId);
+  } else if (result.status === 'failed') {
+    await taskFsm.fail(taskId, result.currentStep ?? result.latestSynthesis ?? 'runtime_failed');
+  } else if (result.status === 'cancelled') {
+    await taskFsm.cancel(taskId);
+  } else if (result.status === 'hitl') {
+    await taskFsm.hitl(taskId, result.currentStep);
+  }
 
   if (executionTrackingEnabled) {
     for (const agentResult of result.agentResults ?? []) {
@@ -792,7 +819,9 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
           requeueDelayMs,
         );
         runtimeTaskStore.update(job.data.taskId, {
-          status: 'pending',
+          conversationKey: job.data.message.chatId,
+        });
+        runtimeTaskStore.update(job.data.taskId, {
           queueJobId: requeued.queueJobId,
           conversationRequeueCount: requeueCount + 1,
           currentStep: `Waiting for another task in this chat to finish (retry in ${Math.round(requeueDelayMs / 1000)}s).`,
@@ -813,7 +842,7 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
             await runOrchestrationJobWithSafety(job, abortController);
           } catch (error) {
             if (isTaskCancellationError(error)) {
-              runtimeTaskStore.update(job.data.taskId, { status: 'cancelled' });
+              await taskFsm.cancel(job.data.taskId);
               await cancelTrackedExecutionRun({
                 taskId: job.data.taskId,
                 message: job.data.message,
@@ -844,7 +873,10 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
               return;
             }
 
-            runtimeTaskStore.update(job.data.taskId, { status: 'failed' });
+            await taskFsm.fail(
+              job.data.taskId,
+              error instanceof Error ? error.message : 'runtime_worker_failure',
+            );
             logger.error('orchestration.task.error', {
               taskId: job.data.taskId,
               messageId: job.data.message.messageId,
@@ -957,6 +989,10 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
     logger.error('queue.worker.error', { error });
   });
 
+  const recovered = await taskFsm.recoverStaleRunning(120_000);
+  if (recovered > 0) {
+    logger.warn('task_fsm_stale_recovery', { count: recovered });
+  }
   await reconcileTaskStateOnStartup();
   void worker.run();
   return worker;

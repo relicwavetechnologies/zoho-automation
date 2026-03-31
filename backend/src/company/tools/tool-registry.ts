@@ -61,6 +61,7 @@ export interface ToolDefinition {
   domain: ToolRoutingDomain;
   aliases: string[];
   supportedActionGroups?: ToolActionGroup[];
+  deprecated?: boolean;
 }
 
 export const TOOL_REGISTRY: ToolDefinition[] = [
@@ -73,6 +74,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'workspace',
     aliases: ['repo', 'repository', 'repositoryInspector', 'githubRepo'],
+    deprecated: true,
   },
   {
     id: 'coding',
@@ -83,6 +85,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'workspace',
     aliases: ['coding', 'code', 'workspaceTool', 'terminal', 'workspace'],
+    deprecated: true,
   },
   {
     id: 'skill-search',
@@ -93,6 +96,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'skill',
     aliases: ['skillSearch', 'skill-search', 'skills', 'searchSkills'],
+    deprecated: true,
   },
   {
     id: 'google-gmail',
@@ -103,6 +107,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'gmail',
     aliases: ['googleMail', 'google-mail', 'gmail', 'email', 'googleGmail'],
+    deprecated: true,
   },
   {
     id: 'google-drive',
@@ -113,6 +118,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'google_drive',
     aliases: ['googleDrive', 'google-drive', 'drive', 'google drive'],
+    deprecated: true,
   },
   {
     id: 'google-calendar',
@@ -123,6 +129,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'google_calendar',
     aliases: ['googleCalendar', 'google-calendar', 'calendar', 'google calendar'],
+    deprecated: true,
   },
   {
     id: 'document-ocr-read',
@@ -133,6 +140,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'document_inspection',
     aliases: ['documentOcrRead', 'document-ocr', 'ocr', 'readDocument', 'extractText'],
+    deprecated: true,
   },
   {
     id: 'invoice-parser',
@@ -143,6 +151,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'document_inspection',
     aliases: ['invoiceParser', 'invoice-parser', 'invoice', 'billParser'],
+    deprecated: true,
   },
   {
     id: 'statement-parser',
@@ -153,6 +162,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'document_inspection',
     aliases: ['statementParser', 'statement-parser', 'statement', 'bankStatementParser'],
+    deprecated: true,
   },
   {
     id: 'workflow-authoring',
@@ -177,6 +187,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
       'workflow',
     ],
     supportedActionGroups: ['read', 'create', 'update', 'delete', 'execute'],
+    deprecated: true,
   },
   {
     id: 'search-zoho-context',
@@ -187,6 +198,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'zoho_crm',
     aliases: ['searchZohoContext', 'search-zoho-context', 'zohoContext', 'zohoSearch'],
+    deprecated: true,
   },
   {
     id: 'read-zoho-records',
@@ -197,6 +209,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'zoho_crm',
     aliases: ['readZohoRecords', 'read-zoho-records', 'zohoRecords', 'zohoReadRecords'],
+    deprecated: true,
   },
   {
     id: 'zoho-agent',
@@ -207,6 +220,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'zoho_crm',
     aliases: ['zohoAgent', 'zoho-agent', 'zoho'],
+    deprecated: true,
   },
   {
     id: 'zoho-write',
@@ -217,6 +231,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'zoho_crm',
     aliases: ['zohoWrite', 'zoho-write', 'zohoAction', 'zoho-action'],
+    deprecated: true,
   },
   {
     id: 'zoho-books-read',
@@ -227,6 +242,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'zoho_books',
     aliases: ['zohoBooksRead', 'zoho-books-read', 'booksRead', 'zohoBooks', 'books'],
+    deprecated: true,
   },
   {
     id: 'zoho-books-write',
@@ -237,6 +253,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'zoho_books',
     aliases: ['zohoBooksWrite', 'zoho-books-write', 'booksWrite', 'zohoBooksAction'],
+    deprecated: true,
   },
   {
     id: 'zoho-books-agent',
@@ -247,6 +264,157 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'zoho_books',
     aliases: ['zohoBooksAgent', 'zoho-books-agent', 'booksAgent'],
+    deprecated: true,
+  },
+  {
+    id: 'zohoBooks',
+    name: 'Zoho Books',
+    description: 'Consolidated Zoho Books finance tool. Choose operation first, then pass module/report specifics.',
+    category: 'crm-read',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'zoho_books',
+    aliases: ['zohoBooks', 'zoho-books', 'zoho-books-read', 'zoho-books-write', 'zoho-books-agent', 'booksRead', 'booksWrite', 'booksAgent'],
+  },
+  {
+    id: 'zohoCrm',
+    name: 'Zoho CRM',
+    description: 'Consolidated Zoho CRM tool. Choose operation first, then pass module/record specifics.',
+    category: 'crm-read',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'zoho_crm',
+    aliases: ['zohoCrm', 'zoho-crm', 'search-zoho-context', 'read-zoho-records', 'zoho-read', 'zoho-agent', 'zoho-write'],
+  },
+  {
+    id: 'outreach',
+    name: 'Outreach',
+    description: 'Consolidated outreach inventory tool. Choose search or read operation first.',
+    category: 'search',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'outreach',
+    aliases: ['outreach', 'read-outreach-publishers', 'outreach-agent'],
+  },
+  {
+    id: 'contextSearch',
+    name: 'Context Search',
+    description: 'Unified retrieval broker. operation=search or fetch.',
+    category: 'search',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'context_search',
+    aliases: ['contextSearch', 'context-search'],
+  },
+  {
+    id: 'larkBase',
+    name: 'Lark Base',
+    description: 'Consolidated Lark Base tool. operation=read or write.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'lark_base',
+    aliases: ['larkBase', 'lark-base-read', 'lark-base-write', 'lark-base-agent'],
+  },
+  {
+    id: 'larkTask',
+    name: 'Lark Task',
+    description: 'Consolidated Lark Tasks tool. operation=read or write.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'lark_task',
+    aliases: ['larkTask', 'lark-task-read', 'lark-task-write', 'lark-task-agent'],
+  },
+  {
+    id: 'larkMessage',
+    name: 'Lark Message',
+    description: 'Consolidated Lark messaging tool. operation=read or write.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'lark_message',
+    aliases: ['larkMessage', 'lark-message-read', 'lark-message-write'],
+  },
+  {
+    id: 'larkCalendar',
+    name: 'Lark Calendar',
+    description: 'Consolidated Lark Calendar tool. operation=list, read, or write.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'lark_calendar',
+    aliases: ['larkCalendar', 'lark-calendar-list', 'lark-calendar-read', 'lark-calendar-write', 'lark-calendar-agent'],
+  },
+  {
+    id: 'larkMeeting',
+    name: 'Lark Meeting',
+    description: 'Consolidated Lark meeting tool. operation=read.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'lark_meeting',
+    aliases: ['larkMeeting', 'lark-meeting-read', 'lark-meeting-agent'],
+  },
+  {
+    id: 'larkApproval',
+    name: 'Lark Approval',
+    description: 'Consolidated Lark approval tool. operation=read or write.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'lark_approval',
+    aliases: ['larkApproval', 'lark-approval-read', 'lark-approval-write', 'lark-approval-agent'],
+  },
+  {
+    id: 'larkDoc',
+    name: 'Lark Doc',
+    description: 'Consolidated Lark doc tool. operation=create or edit.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'lark_doc',
+    aliases: ['larkDoc', 'create-lark-doc', 'edit-lark-doc', 'lark-doc-agent'],
+  },
+  {
+    id: 'googleWorkspace',
+    name: 'Google Workspace',
+    description: 'Consolidated Google Workspace tool. operation=gmail, drive, or calendar.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'workspace',
+    aliases: ['googleWorkspace', 'google-gmail', 'google-drive', 'google-calendar'],
+  },
+  {
+    id: 'documentRead',
+    name: 'Document Read',
+    description: 'Consolidated document-reading tool. operation=ocr, invoiceParse, or statementParse.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'document_inspection',
+    aliases: ['documentRead', 'document-ocr-read', 'invoice-parser', 'statement-parser'],
+  },
+  {
+    id: 'workflow',
+    name: 'Workflow',
+    description: 'Consolidated workflow authoring tool. operation=author.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'workflow',
+    aliases: ['workflow', 'workflow-authoring'],
+  },
+  {
+    id: 'devTools',
+    name: 'Developer Tools',
+    description: 'Consolidated developer tool surface. operation=code, repo, or skillSearch.',
+    category: 'workspace',
+    engines: ['vercel'],
+    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+    domain: 'workspace',
+    aliases: ['devTools', 'coding', 'repo', 'skill-search'],
   },
   {
     id: 'read-outreach-publishers',
@@ -258,6 +426,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'outreach',
     aliases: ['readOutreachPublishers', 'read-outreach-publishers', 'outreachRead', 'publisherSearch'],
+    deprecated: true,
   },
   {
     id: 'outreach-agent',
@@ -269,6 +438,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'outreach',
     aliases: ['outreachAgent', 'outreach-agent', 'outreach'],
+    deprecated: true,
   },
   {
     id: 'search-agent',
@@ -299,6 +469,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'context_search',
     aliases: ['contextSearch', 'context-search', 'memorySearch', 'historySearch'],
+    deprecated: true,
   },
   {
     id: 'lark-base-read',
@@ -309,6 +480,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_base',
     aliases: ['larkBaseRead', 'lark-base-read', 'larkBase', 'baseRead'],
+    deprecated: true,
   },
   {
     id: 'lark-base-write',
@@ -319,6 +491,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_base',
     aliases: ['larkBaseWrite', 'lark-base-write', 'baseWrite'],
+    deprecated: true,
   },
   {
     id: 'lark-base-agent',
@@ -329,6 +502,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_base',
     aliases: ['larkBaseAgent', 'lark-base-agent', 'baseAgent'],
+    deprecated: true,
   },
   {
     id: 'lark-task-read',
@@ -339,6 +513,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_task',
     aliases: ['larkTaskRead', 'lark-task-read', 'larkTask', 'taskRead', 'taskList'],
+    deprecated: true,
   },
   {
     id: 'lark-task-write',
@@ -349,6 +524,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_task',
     aliases: ['larkTaskWrite', 'lark-task-write', 'taskWrite'],
+    deprecated: true,
   },
   {
     id: 'lark-task-agent',
@@ -359,6 +535,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_task',
     aliases: ['larkTaskAgent', 'lark-task-agent', 'taskAgent'],
+    deprecated: true,
   },
   {
     id: 'lark-message-read',
@@ -370,6 +547,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     domain: 'lark_message',
     aliases: ['larkMessageRead', 'lark-message-read', 'larkMessage', 'messageRead'],
     supportedActionGroups: ['read'],
+    deprecated: true,
   },
   {
     id: 'lark-message-write',
@@ -381,6 +559,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     domain: 'lark_message',
     aliases: ['larkMessageWrite', 'lark-message-write', 'messageWrite', 'dmSend'],
     supportedActionGroups: ['send'],
+    deprecated: true,
   },
   {
     id: 'lark-calendar-list',
@@ -391,6 +570,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_calendar',
     aliases: ['larkCalendarList', 'lark-calendar-list', 'larkCalendar', 'calendarList'],
+    deprecated: true,
   },
   {
     id: 'lark-calendar-read',
@@ -401,6 +581,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_calendar',
     aliases: ['larkCalendarRead', 'lark-calendar-read', 'calendarRead'],
+    deprecated: true,
   },
   {
     id: 'lark-calendar-write',
@@ -411,6 +592,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_calendar',
     aliases: ['larkCalendarWrite', 'lark-calendar-write', 'calendarWrite'],
+    deprecated: true,
   },
   {
     id: 'lark-calendar-agent',
@@ -421,6 +603,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_calendar',
     aliases: ['larkCalendarAgent', 'lark-calendar-agent', 'calendarAgent'],
+    deprecated: true,
   },
   {
     id: 'lark-meeting-read',
@@ -431,6 +614,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_meeting',
     aliases: ['larkMeetingRead', 'lark-meeting-read', 'larkMeeting', 'meetingRead'],
+    deprecated: true,
   },
   {
     id: 'lark-meeting-agent',
@@ -441,6 +625,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_meeting',
     aliases: ['larkMeetingAgent', 'lark-meeting-agent', 'meetingAgent'],
+    deprecated: true,
   },
   {
     id: 'lark-approval-read',
@@ -451,6 +636,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_approval',
     aliases: ['larkApprovalRead', 'lark-approval-read', 'larkApproval', 'approvalRead'],
+    deprecated: true,
   },
   {
     id: 'lark-approval-write',
@@ -461,6 +647,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_approval',
     aliases: ['larkApprovalWrite', 'lark-approval-write', 'approvalWrite'],
+    deprecated: true,
   },
   {
     id: 'lark-approval-agent',
@@ -471,6 +658,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_approval',
     aliases: ['larkApprovalAgent', 'lark-approval-agent', 'approvalAgent'],
+    deprecated: true,
   },
   {
     id: 'create-lark-doc',
@@ -481,6 +669,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_doc',
     aliases: ['createLarkDoc', 'create-lark-doc', 'larkDocCreate'],
+    deprecated: true,
   },
   {
     id: 'edit-lark-doc',
@@ -491,6 +680,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_doc',
     aliases: ['editLarkDoc', 'edit-lark-doc', 'larkDocEdit'],
+    deprecated: true,
   },
   {
     id: 'lark-doc-agent',
@@ -501,6 +691,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'lark_doc',
     aliases: ['larkDocAgent', 'lark-doc-agent', 'larkDoc', 'docAgent'],
+    deprecated: true,
   },
   {
     id: 'zoho-read',
@@ -511,6 +702,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'zoho_crm',
     aliases: ['zohoRead', 'zoho-read', 'crmRead'],
+    deprecated: true,
   },
   {
     id: 'zoho-action',
@@ -521,6 +713,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     defaultPermissions: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
     domain: 'zoho_crm',
     aliases: ['zohoAction', 'crmAction'],
+    deprecated: true,
   },
   {
     id: 'response',
@@ -569,6 +762,50 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
 
 export const TOOL_REGISTRY_MAP = new Map(TOOL_REGISTRY.map((t) => [t.id, t]));
 
+const CONSOLIDATED_TOOL_ALIAS_MAP: Record<string, string> = {
+  'zoho-books-read': 'zohoBooks',
+  'zoho-books-write': 'zohoBooks',
+  'zoho-books-agent': 'zohoBooks',
+  'search-zoho-context': 'zohoCrm',
+  'read-zoho-records': 'zohoCrm',
+  'zoho-read': 'zohoCrm',
+  'zoho-agent': 'zohoCrm',
+  'zoho-write': 'zohoCrm',
+  'lark-task-read': 'larkTask',
+  'lark-task-write': 'larkTask',
+  'lark-task-agent': 'larkTask',
+  'lark-base-read': 'larkBase',
+  'lark-base-write': 'larkBase',
+  'lark-base-agent': 'larkBase',
+  'lark-calendar-list': 'larkCalendar',
+  'lark-calendar-read': 'larkCalendar',
+  'lark-calendar-write': 'larkCalendar',
+  'lark-calendar-agent': 'larkCalendar',
+  'lark-approval-read': 'larkApproval',
+  'lark-approval-write': 'larkApproval',
+  'lark-approval-agent': 'larkApproval',
+  'lark-message-read': 'larkMessage',
+  'lark-message-write': 'larkMessage',
+  'create-lark-doc': 'larkDoc',
+  'edit-lark-doc': 'larkDoc',
+  'lark-doc-agent': 'larkDoc',
+  'lark-meeting-read': 'larkMeeting',
+  'lark-meeting-agent': 'larkMeeting',
+  'google-gmail': 'googleWorkspace',
+  'google-drive': 'googleWorkspace',
+  'google-calendar': 'googleWorkspace',
+  'context-search': 'contextSearch',
+  'document-ocr-read': 'documentRead',
+  'invoice-parser': 'documentRead',
+  'statement-parser': 'documentRead',
+  'read-outreach-publishers': 'outreach',
+  'outreach-agent': 'outreach',
+  'workflow-authoring': 'workflow',
+  coding: 'devTools',
+  repo: 'devTools',
+  'skill-search': 'devTools',
+};
+
 const normalizeRegistryLookupKey = (value: string): string =>
   value
     .trim()
@@ -598,6 +835,15 @@ export const DOMAIN_TO_TOOL_IDS: Record<string, string[]> = TOOL_REGISTRY.reduce
   return acc;
 }, {} as Record<string, string[]>);
 
+for (const [domain, toolIds] of Object.entries({
+  gmail: ['googleWorkspace'],
+  google_drive: ['googleWorkspace'],
+  google_calendar: ['googleWorkspace'],
+  skill: ['devTools'],
+} satisfies Record<string, string[]>)) {
+  DOMAIN_TO_TOOL_IDS[domain] = Array.from(new Set([...(DOMAIN_TO_TOOL_IDS[domain] ?? []), ...toolIds]));
+}
+
 export const ALIAS_TO_CANONICAL_ID: Record<string, string> = TOOL_REGISTRY.reduce((acc, tool) => {
   for (const candidate of [tool.id, ...tool.aliases]) {
     for (const normalized of toDomainAliasCandidates(candidate)) {
@@ -606,6 +852,12 @@ export const ALIAS_TO_CANONICAL_ID: Record<string, string> = TOOL_REGISTRY.reduc
   }
   return acc;
 }, {} as Record<string, string>);
+
+for (const [alias, canonical] of Object.entries(CONSOLIDATED_TOOL_ALIAS_MAP)) {
+  for (const normalized of toDomainAliasCandidates(alias)) {
+    ALIAS_TO_CANONICAL_ID[normalized] = canonical;
+  }
+}
 
 export const DOMAIN_ALIASES: Record<string, ToolRoutingDomain> = TOOL_REGISTRY.reduce((acc, tool) => {
   for (const candidate of [tool.domain, tool.id, ...tool.aliases]) {

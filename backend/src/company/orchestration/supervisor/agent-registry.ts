@@ -1,4 +1,4 @@
-import { DOMAIN_TO_TOOL_IDS } from '../../tools/tool-registry';
+import { DOMAIN_TO_TOOL_IDS, TOOL_REGISTRY_MAP } from '../../tools/tool-registry';
 import type { VercelRuntimeRequestContext } from '../vercel/types';
 import type { SupervisorAgentDescriptor, SupervisorAgentId } from './types';
 
@@ -36,6 +36,14 @@ const AGENT_DOMAIN_MAP: Record<SupervisorAgentId, { label: string; description: 
 
 const resolveToolIdsForDomains = (domains: string[], allowedToolIds: string[]): string[] => {
   const allowed = new Set(allowedToolIds);
+  const active = dedupe(
+    domains.flatMap((domain) =>
+      (DOMAIN_TO_TOOL_IDS[domain] ?? []).filter((toolId) =>
+        allowed.has(toolId) && TOOL_REGISTRY_MAP.get(toolId)?.deprecated !== true)),
+  );
+  if (active.length > 0) {
+    return active;
+  }
   return dedupe(
     domains.flatMap((domain) => (DOMAIN_TO_TOOL_IDS[domain] ?? []).filter((toolId) => allowed.has(toolId))),
   );

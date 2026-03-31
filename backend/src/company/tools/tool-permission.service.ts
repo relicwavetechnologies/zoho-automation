@@ -1,7 +1,15 @@
 import { TOOL_REGISTRY, TOOL_REGISTRY_MAP } from './tool-registry';
 import { ToolPermissionRepository, toolPermissionRepository } from './tool-permission.repository';
+import {
+  ToolActionPermissionRepository,
+  toolActionPermissionRepository,
+} from './tool-action-permission.repository';
 import { aiRoleService, type AiRoleDTO } from './ai-role.service';
 import { toolAccessCache } from './tool-access.cache';
+import {
+  getSupportedToolActionGroups,
+  type ToolActionGroup,
+} from './tool-action-groups';
 
 export interface ToolPermissionRow {
   toolId: string;
@@ -18,12 +26,26 @@ export interface ToolPermissionMatrix {
   tools: ToolPermissionRow[];
 }
 
+export interface ToolActionPermissionRow {
+  toolId: string;
+  name: string;
+  actionGroups: Record<string, Record<ToolActionGroup, boolean>>;
+}
+
+export interface ToolActionPermissionMatrix {
+  roles: AiRoleDTO[];
+  tools: ToolActionPermissionRow[];
+}
+
 /** Default MEMBER permission for a tool, used as fallback for custom roles. */
 const memberDefault = (toolId: string): boolean =>
   TOOL_REGISTRY_MAP.get(toolId)?.defaultPermissions['MEMBER'] ?? false;
 
 export class ToolPermissionService {
-  constructor(private readonly repo: ToolPermissionRepository = toolPermissionRepository) {}
+  constructor(
+    private readonly repo: ToolPermissionRepository = toolPermissionRepository,
+    private readonly actionRepo: ToolActionPermissionRepository = toolActionPermissionRepository,
+  ) {}
 
   /**
    * Returns the full permission matrix for a company.
@@ -76,6 +98,114 @@ export class ToolPermissionService {
       throw new Error(`Unknown toolId: ${toolId}`);
     }
     const result = await this.repo.upsert(companyId, toolId, role, enabled, actorId);
+    await toolAccessCache.invalidateCompany(companyId);
+    return result;
+  }
+
+  async getAllowedActionsByTool(
+    companyId: string,
+    role: string,
+    allowedToolIds: string[],
+  ): Promise<Record<string, ToolActionGroup[]>> {
+    const normalizedRole = role.trim().toUpperCase();
+    const cached = await toolAccessCache.getAllowedActions(companyId, normalizedRole);
+    if (cached) {
+      return Object.fromEntries(
+        Object.entries(cached)
+          .filter(([toolId]) => allowedToolIds.includes(toolId))
+          .map(([toolId, actionGroups]) => [toolId, actionGroups as ToolActionGroup[]]),
+      );
+    }
+
+    const [stored, validRoleSlugs] = await Promise.all([
+      this.actionRepo.getForCompany(companyId),
+      aiRoleService.getRoleSlugs(companyId),
+    ]);
+    if (!validRoleSlugs.includes(normalizedRole)) {
+      return {};
+    }
+
+    const overrideMap = new Map(
+      stored
+        .filter((row) => row.role === normalizedRole)
+        .map((row) => [`${row.toolId}:${row.actionGroup}`, row.enabled] as const),
+    );
+
+    const allAllowedActions = Object.fromEntries(
+      allowedToolIds.map((toolId) => {
+        const supported = getSupportedToolActionGroups(toolId);
+        const allowed = supported.filter((actionGroup) => {
+          const key = `${toolId}:${actionGroup}`;
+          if (overrideMap.has(key)) {
+            return overrideMap.get(key) as boolean;
+          }
+          return true;
+        });
+        return [toolId, allowed];
+      }),
+    ) as Record<string, ToolActionGroup[]>;
+
+    await toolAccessCache.setAllowedActions(companyId, normalizedRole, allAllowedActions);
+    return allAllowedActions;
+  }
+
+  async getActionMatrix(companyId: string): Promise<ToolActionPermissionMatrix> {
+    const [roles, rows] = await Promise.all([
+      aiRoleService.listRoles(companyId),
+      this.actionRepo.getForCompany(companyId),
+    ]);
+    const overrideMap = new Map(
+      rows.map((row) => [`${row.toolId}:${row.role}:${row.actionGroup}`, row.enabled] as const),
+    );
+
+    const tools: ToolActionPermissionRow[] = TOOL_REGISTRY.map((tool) => {
+      const supported = getSupportedToolActionGroups(tool.id);
+      const actionGroups = Object.fromEntries(
+        roles.map((role) => {
+          const enabledByAction = Object.fromEntries(
+            supported.map((actionGroup) => {
+              const key = `${tool.id}:${role.slug}:${actionGroup}`;
+              return [
+                actionGroup,
+                overrideMap.has(key) ? (overrideMap.get(key) as boolean) : true,
+              ];
+            }),
+          ) as Record<ToolActionGroup, boolean>;
+          return [role.slug, enabledByAction];
+        }),
+      );
+      return {
+        toolId: tool.id,
+        name: tool.name,
+        actionGroups,
+      };
+    });
+
+    return { roles, tools };
+  }
+
+  async updateActionPermission(
+    companyId: string,
+    toolId: string,
+    role: string,
+    actionGroup: ToolActionGroup,
+    enabled: boolean,
+    actorId?: string,
+  ) {
+    if (!TOOL_REGISTRY_MAP.has(toolId)) {
+      throw new Error(`Unknown toolId: ${toolId}`);
+    }
+    if (!getSupportedToolActionGroups(toolId).includes(actionGroup)) {
+      throw new Error(`Unsupported actionGroup "${actionGroup}" for tool ${toolId}`);
+    }
+    const result = await this.actionRepo.upsert(
+      companyId,
+      toolId,
+      role.trim().toUpperCase(),
+      actionGroup,
+      enabled,
+      actorId,
+    );
     await toolAccessCache.invalidateCompany(companyId);
     return result;
   }

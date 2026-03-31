@@ -5,7 +5,5 @@ export const buildGoogleTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
 ): Record<string, any> => pickTools(getLegacyToolMap(runtime, hooks), [
-  'googleMail',
-  'googleDrive',
-  'googleCalendar',
+  'googleWorkspace',
 ]);

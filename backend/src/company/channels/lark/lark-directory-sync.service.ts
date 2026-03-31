@@ -383,6 +383,7 @@ class LarkDirectorySyncService {
         page_size: MAX_PAGE_SIZE,
         page_token: pageToken,
         user_id_type: 'open_id',
+        fields: 'email,en_name,name,is_tenant_manager,is_tenant_admin',
       });
       const payload = await this.requestJson(
         apiBaseUrl,
@@ -470,6 +471,7 @@ class LarkDirectorySyncService {
           page_size: MAX_PAGE_SIZE,
           page_token: pageToken,
           user_id_type: 'open_id',
+          fields: 'email,en_name,name,is_tenant_manager,is_tenant_admin',
         });
         const payload = await this.requestJson(
           apiBaseUrl,

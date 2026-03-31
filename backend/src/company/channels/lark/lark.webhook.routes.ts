@@ -15,6 +15,7 @@ import { buildLarkTextHash, buildLarkTraceMeta } from './lark-observability';
 import { emitRuntimeTrace } from '../../observability';
 import { larkWorkspaceConfigRepository } from './lark-workspace-config.repository';
 import { larkUserAuthLinkRepository } from './lark-user-auth-link.repository';
+import { LarkTenantTokenService } from './lark-tenant-token.service';
 import { extractLarkMentionsFromMessage, inferLarkMessageType, parseLarkAttachmentKeys, replaceLarkMentionTokens, type LarkMention } from './lark-message-content';
 import { ingestLarkAttachments } from './lark-file-ingestion';
 import { larkRecentFilesStore } from './lark-recent-files.store';
@@ -35,10 +36,12 @@ import type { MemberSessionDTO } from '../../../modules/member-auth/member-auth.
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import { LarkStatusCoordinator } from '../../orchestration/engine/lark-status.coordinator';
 import { runtimeTaskStore } from '../../orchestration/runtime-task.store';
+import { taskFsm } from '../../orchestration/task-fsm';
 import { memoryService } from '../../memory';
 import { resolveAllowedRolesForVisibilityScope } from '../../../modules/file-upload/file-visibility-scope';
 import { knowledgeShareService } from '../../knowledge-share/knowledge-share.service';
 import { departmentService } from '../../departments/department.service';
+import { departmentPreferenceService } from '../../departments/department-preference.service';
 import { stateRedisConnection } from '../../queue/runtime/redis.connection';
 import { personalVectorMemoryService } from '../../integrations/vector';
 
@@ -260,6 +263,54 @@ const getCachedLarkMentionDirectory = async (
   const directory = buildLarkMentionDirectory(await dependencies.listLarkChannelIdentities(companyId));
   larkMentionDirectoryCache.set(companyId, directory);
   return directory;
+};
+
+const resolveLarkUserEmail = async (input: {
+  companyId: string;
+  larkOpenId: string;
+}): Promise<string | null> => {
+  const workspaceConfig = await larkWorkspaceConfigRepository.findByCompanyId(input.companyId);
+  const tokenService = new LarkTenantTokenService({
+    apiBaseUrl: workspaceConfig?.apiBaseUrl ?? config.LARK_API_BASE_URL,
+    appId: workspaceConfig?.appId,
+    appSecret: workspaceConfig?.appSecret,
+    staticToken: workspaceConfig?.staticTenantAccessToken,
+  });
+
+  const token = await tokenService.getAccessToken();
+  const apiBaseUrl = workspaceConfig?.apiBaseUrl ?? config.LARK_API_BASE_URL;
+  const query = new URLSearchParams({
+    user_id_type: 'open_id',
+    fields: 'email,name',
+  });
+
+  const response = await fetch(
+    `${apiBaseUrl}/open-apis/contact/v3/users/${encodeURIComponent(input.larkOpenId)}?${query.toString()}`,
+    {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    },
+  );
+
+  const payload = await response.json().catch(() => ({})) as {
+    code?: number;
+    data?: { user?: { email?: string } };
+    msg?: string;
+  };
+
+  if (!response.ok || payload.code !== 0) {
+    return null;
+  }
+
+  const email = payload.data?.user?.email;
+  if (typeof email !== 'string') {
+    return null;
+  }
+  const trimmed = email.trim();
+  return trimmed.length > 0 ? trimmed : null;
 };
 
 const resolveLarkMentionDisplayName = (mention: LarkMention, directory?: CachedLarkMentionDirectory | null): string | null => {
@@ -773,6 +824,26 @@ const isLarkCompactCommand = (text: string): boolean => {
   return normalized === '/compact' || normalized === '/compress';
 };
 
+const isLarkDeptCommand = (text: string): boolean =>
+  /^\/dept(\s|$)/i.test(text.trim());
+
+const parseLarkDeptCommand = (
+  text: string,
+):
+  | { kind: 'status' }
+  | { kind: 'list' }
+  | { kind: 'switch'; name: string }
+  | { kind: 'unknown' } => {
+  const normalized = text.trim().replace(/^\/dept\s*/i, '');
+  if (!normalized) return { kind: 'status' };
+  if (normalized === '--list') return { kind: 'list' };
+  const switchMatch = normalized.match(/^--switch\s+(.+)$/i);
+  if (switchMatch) {
+    return { kind: 'switch', name: switchMatch[1]!.trim() };
+  }
+  return { kind: 'unknown' };
+};
+
 const isLarkCommandMenuCommand = (text: string): boolean => {
   const normalized = normalizeLarkCommandText(text).toLowerCase();
   return normalized === '/'
@@ -812,6 +883,15 @@ const buildLarkCommandMenuText = (): string => [
   '',
   '/compact',
   'Compact older chat history into summary memory while keeping recent context intact.',
+  '',
+  '/dept',
+  'Show your active department.',
+  '',
+  '/dept --list',
+  'List all your departments.',
+  '',
+  '/dept --switch <name>',
+  'Switch your active department.',
   '',
   '/share [optional reason]',
   'Share this chat knowledge up to the current point for admin review/approval.',
@@ -1682,6 +1762,30 @@ export const createLarkWebhookEventHandler = (
           channelIdentityId = identity.id;
           if (typeof identity.email === 'string' && identity.email.trim().length > 0) {
             requesterEmail = identity.email.trim();
+          } else if (normalized.trace?.larkOpenId) {
+            const resolvedEmail = await resolveLarkUserEmail({
+              companyId: scopedCompanyId,
+              larkOpenId: normalized.trace.larkOpenId,
+            });
+            if (resolvedEmail) {
+              const patchedIdentity = await channelIdentityRepository.upsert({
+                channel: 'lark',
+                externalUserId: normalized.userId,
+                externalTenantId: larkTenantKey,
+                companyId: scopedCompanyId,
+                larkOpenId: normalized.trace?.larkOpenId,
+                larkUserId: normalized.trace?.larkUserId,
+                email: resolvedEmail,
+              });
+              channelIdentityId = patchedIdentity.id;
+              requesterEmail = resolvedEmail;
+            } else {
+              dependencies.log.warn('lark.channel_identity.email_unresolvable', {
+                requestId,
+                companyId: scopedCompanyId,
+                larkOpenId: normalized.trace.larkOpenId,
+              });
+            }
           }
           userRole = identity.aiRole;
           if (identity.isNew) {
@@ -1982,8 +2086,12 @@ export const createLarkWebhookEventHandler = (
 
       if (parsed.kind === 'event_callback_message' && isLarkInterruptCommand(tracedMessageBase.text)) {
         const { orchestrationRuntime } = require('../../queue/runtime') as typeof import('../../queue/runtime');
-        const conversationState = runtimeTaskStore.getConversationExecutionState('lark', tracedMessageBase.chatId);
-        if (!conversationState.runningTask && conversationState.pendingCount === 0) {
+        const activeTask = await taskFsm.getActiveForConversation(
+          tracedMessageBase.trace?.companyId,
+          tracedMessageBase.chatId,
+        );
+        const pendingCancellation = await orchestrationRuntime.cancelPendingForConversation('lark', tracedMessageBase.chatId);
+        if (!activeTask && pendingCancellation.cancelledCount === 0) {
           await sendLarkReply({ text: 'Nothing is currently running or queued in this chat.' });
           return res.status(202).json({
             success: true,
@@ -1991,9 +2099,7 @@ export const createLarkWebhookEventHandler = (
           });
         }
 
-        const pendingCancellation = await orchestrationRuntime.cancelPendingForConversation('lark', tracedMessageBase.chatId);
-
-        if (!conversationState.runningTask) {
+        if (!activeTask || activeTask.status === 'pending') {
           await sendLarkReply({
             text: `Cancelled ${pendingCancellation.cancelledCount} queued request${pendingCancellation.cancelledCount === 1 ? '' : 's'}.`,
           });
@@ -2006,7 +2112,7 @@ export const createLarkWebhookEventHandler = (
           });
         }
 
-        await orchestrationRuntime.control(conversationState.runningTask.taskId, 'cancelled');
+        await orchestrationRuntime.control(activeTask.id, 'cancelled');
         const interruptLines = [
           'Stopping the current run. This may take a moment.',
         ];
@@ -2094,6 +2200,111 @@ export const createLarkWebhookEventHandler = (
             message: 'Compact command failed gracefully',
           });
         }
+      }
+
+      if (parsed.kind === 'event_callback_message' && isLarkDeptCommand(tracedMessageBase.text)) {
+        if (!scopedCompanyId || !linkedUserId) {
+          await sendLarkReply({ text: 'Department commands are not available in this context.' });
+          return res.status(202).json({ success: true, message: 'dept command handled' });
+        }
+
+        const deptCommand = parseLarkDeptCommand(tracedMessageBase.text);
+        const memberships = await departmentService.listUserDepartments(linkedUserId, scopedCompanyId);
+
+        if (deptCommand.kind === 'status') {
+          const activeDeptId = await departmentPreferenceService.getActiveDepartmentId(
+            scopedCompanyId,
+            linkedUserId,
+          );
+          const active = memberships.find((membership) => membership.id === activeDeptId) ?? null;
+          if (!active) {
+            await sendLarkReply({
+              text:
+                memberships.length === 0
+                  ? 'You are not a member of any department.'
+                  : 'No active department selected. Use /dept --switch <name> to select one.',
+            });
+          } else {
+            const runtimeContext = await departmentService.resolveRuntimeContext({
+              userId: linkedUserId,
+              companyId: scopedCompanyId,
+              departmentId: active.id,
+              fallbackAllowedToolIds: await toolPermissionService.getAllowedTools(
+                scopedCompanyId,
+                userRole || 'MEMBER',
+              ),
+              requesterAiRole: userRole || 'MEMBER',
+            });
+            await sendLarkReply({
+              text: [
+                `Active Department: ${active.name}`,
+                `Role: ${active.roleName}`,
+                `Data Scope: ${runtimeContext.departmentZohoReadScope === 'show_all' ? 'Company-wide' : 'Personalized'}`,
+                `Accessible Tools: ${runtimeContext.allowedToolIds.join(', ') || 'Default'}`,
+              ].join('\n'),
+            });
+          }
+        }
+
+        if (deptCommand.kind === 'list') {
+          if (memberships.length === 0) {
+            await sendLarkReply({ text: 'You are not a member of any department.' });
+          } else {
+            const lines = memberships.map((membership) => `• ${membership.name} — ${membership.roleName}`);
+            await sendLarkReply({ text: ['Your departments:', ...lines].join('\n') });
+          }
+        }
+
+        if (deptCommand.kind === 'switch') {
+          const normalizedName = deptCommand.name.toLowerCase();
+          const match = memberships.find(
+            (membership) =>
+              membership.name.toLowerCase() === normalizedName
+              || membership.slug.toLowerCase() === normalizedName,
+          );
+          if (!match) {
+            const names = memberships.map((membership) => membership.name).join(', ');
+            await sendLarkReply({
+              text: `Department "${deptCommand.name}" not found or you are not a member.\nYour departments: ${names}`,
+            });
+          } else {
+            await departmentPreferenceService.setActiveDepartmentId(
+              scopedCompanyId,
+              linkedUserId,
+              match.id,
+            );
+            const runtimeContext = await departmentService.resolveRuntimeContext({
+              userId: linkedUserId,
+              companyId: scopedCompanyId,
+              departmentId: match.id,
+              fallbackAllowedToolIds: await toolPermissionService.getAllowedTools(
+                scopedCompanyId,
+                userRole || 'MEMBER',
+              ),
+              requesterAiRole: userRole || 'MEMBER',
+            });
+            await sendLarkReply({
+              text: [
+                `Switched to ${match.name}.`,
+                `Role: ${match.roleName}`,
+                `Data Scope: ${runtimeContext.departmentZohoReadScope === 'show_all' ? 'Company-wide' : 'Personalized'}`,
+              ].join('\n'),
+            });
+          }
+        }
+
+        if (deptCommand.kind === 'unknown') {
+          await sendLarkReply({
+            text: [
+              'Unknown /dept command. Available commands:',
+              '/dept — show active department',
+              '/dept --list — list all your departments',
+              '/dept --switch <name> — switch active department',
+            ].join('\n'),
+          });
+        }
+
+        return res.status(202).json({ success: true, message: 'dept command handled' });
       }
 
       const workflowCommand = parsed.kind === 'event_callback_message'

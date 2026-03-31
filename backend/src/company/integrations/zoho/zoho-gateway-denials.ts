@@ -46,6 +46,13 @@ export const formatZohoGatewayDeniedMessage = (
     };
   }
 
+  if (denialReason === 'books_module_access_denied') {
+    return {
+      summary: "You don't have access to this data. Contact your admin to enable it.",
+      errorKind: 'permission',
+    };
+  }
+
   if (denialReason === 'record_not_in_self_scope' || denialReason === 'ownership_not_matched') {
     return {
       summary: `${moduleName ?? 'This Zoho record'} does not belong to the requester’s self-scoped Zoho access.`,

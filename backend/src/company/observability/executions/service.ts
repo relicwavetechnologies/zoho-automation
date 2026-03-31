@@ -19,6 +19,7 @@ import {
   type ExecutionRunRow,
   type ExecutionRepository,
 } from './repository';
+import { stepResultRepository, type StepResultRow } from './step-result.repository';
 import type {
   AppendExecutionEventInput,
   CancelExecutionRunInput,
@@ -510,6 +511,10 @@ export class ExecutionService extends BaseService {
     return {
       items: items.map((item) => mapEvent(item, visibility)),
     };
+  }
+
+  async listStepResults(executionId: string): Promise<StepResultRow[]> {
+    return stepResultRepository.listStepResults(executionId);
   }
 }
 

@@ -10,6 +10,7 @@ export type ZohoGatewayPrincipalContext = {
   companyId: string;
   requesterEmail?: string;
   requesterAiRole?: string;
+  departmentRoleId?: string;
   departmentZohoReadScope?: 'personalized' | 'show_all';
   domain: ZohoDomain;
   scopeMode: ZohoGatewayScopeMode;
@@ -52,6 +53,7 @@ export type ZohoGatewayRequester = {
   companyId: string;
   userId?: string;
   departmentId?: string;
+  departmentRoleId?: string;
   departmentRoleSlug?: string;
   requesterEmail?: string;
   requesterAiRole?: string;

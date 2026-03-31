@@ -1,6 +1,8 @@
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
 import type { ZohoRateLimitConfig } from '../../integrations/zoho/zoho-rate-limit.types';
 import type { DepartmentManagerApprovalConfig } from '../../departments/department.service';
+import type { SearchIntent } from '../search-intent-classifier';
+import type { SearchIntent } from '../search-intent-classifier';
 
 export type VercelToolErrorKind =
   | 'missing_input'
@@ -140,6 +142,7 @@ export type VercelRuntimeRequestContext = {
   latestUserMessage?: string;
   departmentId?: string;
   departmentName?: string;
+  departmentRoleId?: string;
   departmentRoleSlug?: string;
   departmentZohoReadScope?: 'personalized' | 'show_all';
   departmentZohoRateLimitConfig?: ZohoRateLimitConfig;
@@ -197,6 +200,8 @@ export type VercelRuntimeRequestContext = {
   allowedActionsByTool?: Record<string, ToolActionGroup[]>;
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
+  searchIntent?: SearchIntent;
+  searchIntentPromise?: Promise<SearchIntent>;
 };
 
 export type VercelRuntimeToolHooks = {

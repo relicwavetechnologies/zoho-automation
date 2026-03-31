@@ -7,6 +7,7 @@ export type RuntimeTaskSnapshot = {
   queueJobId?: string;
   messageId: string;
   channel: string;
+  conversationKey?: string;
   userId: string;
   chatId: string;
   companyId?: string;
@@ -37,6 +38,13 @@ export type RuntimeTaskSnapshot = {
 
 class RuntimeTaskStore {
   private readonly tasks = new Map<string, RuntimeTaskSnapshot>();
+
+  private getActivePriority(task: RuntimeTaskSnapshot): number {
+    if (task.status === 'running') return 3;
+    if (task.status === 'hitl') return 2;
+    if (task.status === 'pending') return 1;
+    return 0;
+  }
 
   private isActive(task: RuntimeTaskSnapshot): boolean {
     return task.status === 'pending' || task.status === 'running';
@@ -95,10 +103,19 @@ class RuntimeTaskStore {
       .slice(0, limit);
   }
 
-  findLatestActiveByConversation(channel: string, chatId: string): RuntimeTaskSnapshot | null {
+  findLatestActiveByConversation(conversationKey: string, companyId?: string): RuntimeTaskSnapshot | null {
     const active = [...this.tasks.values()]
-      .filter((task) => task.channel === channel && task.chatId === chatId && this.isActive(task))
-      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+      .filter((task) =>
+        task.conversationKey === conversationKey
+        && (companyId ? task.companyId === companyId : true)
+        && (task.status === 'pending' || task.status === 'running' || task.status === 'hitl'))
+      .sort((a, b) => {
+        const priorityDiff = this.getActivePriority(b) - this.getActivePriority(a);
+        if (priorityDiff !== 0) {
+          return priorityDiff;
+        }
+        return a.updatedAt < b.updatedAt ? 1 : -1;
+      });
     return active[0] ?? null;
   }
 

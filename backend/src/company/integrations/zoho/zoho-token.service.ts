@@ -2,6 +2,7 @@ import type { ZohoConnection } from '../../../generated/prisma';
 import config from '../../../config';
 import { prisma } from '../../../utils/prisma';
 import { logger } from '../../../utils/logger';
+import { redisTokenCache } from '../../../utils/redis-token-cache';
 import { decryptZohoSecret, encryptZohoSecret } from './zoho-token.crypto';
 import { zohoHttpClient, ZohoHttpClient } from './zoho-http.client';
 import { ZohoIntegrationError } from './zoho.errors';
@@ -88,6 +89,7 @@ const ensureConnected = (connection: ZohoConnection | null): ZohoConnection => {
 };
 
 const connectionKey = (companyId: string, environment: string) => `${companyId}:${environment}`;
+const redisCacheKey = (companyId: string, environment: string) => `zoho:token:${companyId}:${environment}`;
 
 export class ZohoTokenService {
   private readonly httpClient: ZohoHttpClient;
@@ -250,6 +252,15 @@ export class ZohoTokenService {
       return cached.accessToken;
     }
 
+    const redisCached = await redisTokenCache.get(redisCacheKey(companyId, environment));
+    if (redisCached && this.now() + REFRESH_BUFFER_MS < redisCached.expiresAtMs) {
+      this.cache.set(key, {
+        accessToken: redisCached.token,
+        expiresAtMs: redisCached.expiresAtMs,
+      });
+      return redisCached.token;
+    }
+
     const connection = ensureConnected(
       await prisma.zohoConnection.findUnique({
         where: {
@@ -271,6 +282,11 @@ export class ZohoTokenService {
         accessToken: token,
         expiresAtMs: connection.accessTokenExpiresAt.getTime(),
       });
+      await redisTokenCache.set(
+        redisCacheKey(companyId, environment),
+        token,
+        connection.accessTokenExpiresAt.getTime(),
+      );
       return token;
     }
 
@@ -370,6 +386,11 @@ export class ZohoTokenService {
         accessToken: payload.access_token,
         expiresAtMs: accessTokenExpiresAt.getTime(),
       });
+      await redisTokenCache.set(
+        redisCacheKey(companyId, environment),
+        payload.access_token,
+        accessTokenExpiresAt.getTime(),
+      );
 
       logger.info('zoho.oauth.refresh.success', {
         companyId,

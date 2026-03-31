@@ -6,7 +6,7 @@ export const buildZohoCrmTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
 ): Record<string, any> => {
-  const tools = pickTools(getLegacyToolMap(runtime, hooks), ['zoho']);
+  const tools = pickTools(getLegacyToolMap(runtime, hooks), ['zohoCrm']);
   return Object.fromEntries(
     Object.entries(tools).map(([toolName, toolDef]) => [
       toolName,

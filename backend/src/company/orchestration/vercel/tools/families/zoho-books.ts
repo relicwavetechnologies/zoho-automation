@@ -6,7 +6,7 @@ export const buildZohoBooksTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
 ): Record<string, any> => {
-  const tools = pickTools(getLegacyToolMap(runtime, hooks), ['booksRead', 'booksWrite']);
+  const tools = pickTools(getLegacyToolMap(runtime, hooks), ['zohoBooks']);
   return Object.fromEntries(
     Object.entries(tools).map(([toolName, toolDef]) => [
       toolName,

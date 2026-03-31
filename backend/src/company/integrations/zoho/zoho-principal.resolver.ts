@@ -22,6 +22,7 @@ const cacheKeyFor = (input: {
   companyId: string;
   requesterEmail?: string;
   requesterAiRole?: string;
+  departmentRoleId?: string;
   departmentZohoReadScope?: 'personalized' | 'show_all';
   domain: ZohoDomain;
 }) =>
@@ -29,6 +30,7 @@ const cacheKeyFor = (input: {
     input.companyId,
     input.domain,
     input.requesterAiRole ?? '',
+    input.departmentRoleId ?? '',
     input.departmentZohoReadScope ?? 'personalized',
     normalizeEmail(input.requesterEmail) ?? '',
   ].join(':');
@@ -41,6 +43,7 @@ export class ZohoPrincipalResolver {
     companyId: string;
     requesterEmail?: string;
     requesterAiRole?: string;
+    departmentRoleId?: string;
     departmentZohoReadScope?: 'personalized' | 'show_all';
     domain: ZohoDomain;
   }): Promise<ZohoGatewayPrincipalContext> {
@@ -50,6 +53,7 @@ export class ZohoPrincipalResolver {
       companyId: input.companyId,
       requesterEmail: input.requesterEmail,
       requesterAiRole: input.requesterAiRole,
+      departmentRoleId: input.departmentRoleId,
       departmentZohoReadScope: input.departmentZohoReadScope,
       normalizedRequesterEmail,
       domain: input.domain,

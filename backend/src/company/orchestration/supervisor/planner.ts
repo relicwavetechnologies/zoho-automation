@@ -1,7 +1,14 @@
 import { generateObject } from 'ai';
 
 import type { QueryEnrichment } from '../query-enrichment.service';
-import type { SupervisorAgentDescriptor, SupervisorAgentId, SupervisorPlan } from './types';
+import type { SearchIntent } from '../search-intent-classifier';
+import type {
+  SupervisorAgentDescriptor,
+  SupervisorAgentId,
+  SupervisorPlan,
+  SupervisorStep,
+  SupervisorStepObjective,
+} from './types';
 import { supervisorPlanSchema } from './types';
 
 const buildPlannerPrompt = (input: {
@@ -126,6 +133,53 @@ const buildFallbackPlan = (input: {
   };
 };
 
+const inferActionFromObjective = (objective: string): SupervisorStepObjective['action'] => {
+  const lower = objective.toLowerCase();
+  if (/search|find|look|retrieve|get/.test(lower)) return 'search';
+  if (/send|email|message|notify/.test(lower)) return 'send';
+  if (/write|create|update|add/.test(lower)) return 'write';
+  if (/summarize|synthesize|compile/.test(lower)) return 'synthesize';
+  return 'read';
+};
+
+const enrichStepObjective = (
+  step: SupervisorStep,
+  intent?: SearchIntent | null,
+): SupervisorStep => {
+  if (!intent) {
+    return {
+      ...step,
+      structuredObjective: {
+        action: inferActionFromObjective(step.objective),
+        naturalLanguage: step.objective,
+      },
+    };
+  }
+
+  return {
+    ...step,
+    structuredObjective: {
+      action: inferActionFromObjective(step.objective),
+      targetEntity: intent.extractedEntity ?? undefined,
+      targetEntityType:
+        intent.extractedEntityType === 'unknown' || intent.extractedEntityType == null
+          ? undefined
+          : intent.extractedEntityType,
+      targetSource:
+        intent.sourceHint === 'books'
+        || intent.sourceHint === 'crm'
+        || intent.sourceHint === 'files'
+        || intent.sourceHint === 'lark'
+        || intent.sourceHint === 'web'
+          ? intent.sourceHint
+          : undefined,
+      dateRange: intent.dateRange ?? undefined,
+      authorityRequired: intent.queryType === 'company_entity' || intent.queryType === 'financial_record',
+      naturalLanguage: step.objective,
+    },
+  };
+};
+
 export const planSupervisorDelegation = async (input: {
   model: any;
   providerOptions?: Record<string, unknown>;
@@ -142,6 +196,7 @@ export const planSupervisorDelegation = async (input: {
     resolvedIds?: Record<string, string>;
   }>;
   threadSummary?: string;
+  searchIntent?: SearchIntent;
   supervisorProgress?: {
     runId: string;
     completedSteps: Array<{
@@ -197,14 +252,23 @@ export const planSupervisorDelegation = async (input: {
         supervisorProgress: input.supervisorProgress,
       });
     }
-    return result.object;
+    return {
+      ...result.object,
+      steps: result.object.steps.map((step) => enrichStepObjective(step, input.searchIntent)),
+    };
   } catch {
-    return buildFallbackPlan({
+    const fallback = buildFallbackPlan({
       latestUserMessage: input.latestUserMessage,
       preferredAgentIds: input.preferredAgentIds,
       eligibleAgents: input.eligibleAgents,
       recentTaskSummaries: input.recentTaskSummaries,
       supervisorProgress: input.supervisorProgress,
     });
+    return {
+      ...fallback,
+      steps: fallback.steps.map((step) => enrichStepObjective(step, input.searchIntent)),
+    };
   }
 };
+
+export { enrichStepObjective, inferActionFromObjective };

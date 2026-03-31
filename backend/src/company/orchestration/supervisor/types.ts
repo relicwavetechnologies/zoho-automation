@@ -14,10 +14,25 @@ export type SupervisorAgentId = (typeof SUPERVISOR_AGENT_IDS)[number];
 
 export const supervisorAgentIdSchema = z.enum(SUPERVISOR_AGENT_IDS);
 
+export const supervisorStepObjectiveSchema = z.object({
+  action: z.enum(['search', 'read', 'write', 'synthesize', 'send']),
+  targetEntity: z.string().min(1).optional(),
+  targetEntityType: z.enum(['company', 'person', 'record']).nullable().optional(),
+  targetSource: z.enum(['books', 'crm', 'files', 'lark', 'web']).nullable().optional(),
+  dateRange: z.object({
+    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  }).nullable().optional(),
+  fallbackSources: z.array(z.string().min(1)).optional(),
+  authorityRequired: z.boolean().optional(),
+  naturalLanguage: z.string().min(1).max(1_200),
+});
+
 export const supervisorStepSchema = z.object({
   stepId: z.string().min(1).max(80),
   agentId: supervisorAgentIdSchema,
   objective: z.string().min(1).max(1_200),
+  structuredObjective: supervisorStepObjectiveSchema.optional(),
   dependsOn: z.array(z.string().min(1).max(80)).max(8).default([]),
   inputRefs: z.array(z.string().min(1).max(80)).max(8).default([]),
 });
@@ -30,6 +45,7 @@ export const supervisorPlanSchema = z.object({
 
 export type SupervisorStep = z.infer<typeof supervisorStepSchema>;
 export type SupervisorPlan = z.infer<typeof supervisorPlanSchema>;
+export type SupervisorStepObjective = z.infer<typeof supervisorStepObjectiveSchema>;
 
 export type SupervisorAgentDescriptor = {
   id: SupervisorAgentId;
@@ -54,6 +70,19 @@ export type DelegatedStepResult = {
   pendingApprovalAction?: unknown;
   blockingReason?: string | null;
   sourceRefs?: string[];
+};
+
+export type StepResultEnvelope = {
+  resolvedEntity?: {
+    id: string;
+    type: string;
+    name: string;
+    source: string;
+    authorityLevel: 'authoritative' | 'documentary' | 'contextual' | 'public';
+  };
+  resolvedIds: Record<string, string>;
+  authorityLevel: 'confirmed' | 'candidate' | 'not_found';
+  summary: string;
 };
 
 export type DelegatedAgentExecutionResult<TTaskState = unknown> = {

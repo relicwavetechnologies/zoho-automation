@@ -7,6 +7,8 @@ import { classifyIntent, toNarrowOperationClass } from '../intent/canonical-inte
 import { resolveVercelChildRouterModel } from '../vercel/model-factory';
 import { ALIAS_TO_CANONICAL_ID, DOMAIN_ALIASES, DOMAIN_TO_TOOL_IDS, TOOL_REGISTRY_MAP } from '../../tools/tool-registry';
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
+import { getCachedSearchIntent, type SearchIntent } from '../search-intent-classifier';
+import type { VercelRuntimeRequestContext } from '../vercel/types';
 
 type OperationClass = ToolRoutingOperationClass;
 type IntentDomain = ToolRoutingDomain;
@@ -49,7 +51,7 @@ const plannerDecisionSchema = z.object({
   clarificationQuestion: z.string().max(300).optional(),
 });
 
-const GLOBAL_ALWAYS_ON_IDS = ['context-search'] as const;
+const GLOBAL_ALWAYS_ON_IDS = ['contextSearch'] as const;
 const CLARIFICATION_ALLOWED_ONLY_WHEN_DOMAIN_UNKNOWN = [
   'general',
   'unknown',
@@ -68,8 +70,8 @@ const LARK_CHANNEL_BASELINE_DOMAINS: IntentDomain[] = [
   'zoho_books',
   'zoho_crm',
 ] as const;
-const WORKSPACE_GLOBAL_IDS = ['coding'] as const;
-const ARTIFACT_GLOBAL_IDS = ['document-ocr-read'] as const;
+const WORKSPACE_GLOBAL_IDS = ['devTools'] as const;
+const ARTIFACT_GLOBAL_IDS = ['documentRead'] as const;
 const INVARIANT_GUARDED_DOMAINS = new Set<IntentDomain>([
   'lark_task',
   'workflow',
@@ -112,6 +114,11 @@ const buildAllowedDomainFamily = (
   if (!normalizedDomain) return [];
   const canonicalDomain = DOMAIN_ALIASES[normalizedDomain] ?? DOMAIN_ALIASES[normalizedDomain.toLowerCase()];
   if (!canonicalDomain) return [];
+  const activeToolIds = (DOMAIN_TO_TOOL_IDS[canonicalDomain] ?? []).filter((toolId) =>
+    allowed.has(toolId) && TOOL_REGISTRY_MAP.get(toolId)?.deprecated !== true);
+  if (activeToolIds.length > 0) {
+    return uniq(activeToolIds);
+  }
   return uniq((DOMAIN_TO_TOOL_IDS[canonicalDomain] ?? []).filter((toolId) => allowed.has(toolId)));
 };
 
@@ -232,7 +239,7 @@ const canBypassPlannerWithLearnedPrior = (input: {
 }): boolean => {
   const prior = input.prior;
   if (!prior) return false;
-  if (input.allowContextOnlyAnswer && prior.toolId === 'document-ocr-read') {
+  if (input.allowContextOnlyAnswer && prior.toolId === 'documentRead') {
     return false;
   }
   if (input.inferredOperationClass !== 'read' && input.inferredOperationClass !== 'inspect' && input.inferredOperationClass !== 'search') {
@@ -268,25 +275,15 @@ const isVisualInspectionRequest = (message: string): boolean =>
 const requiresExplicitExtraction = (message: string): boolean =>
   /\b(ocr|extract text|exact text|read the text|what does it say|copy the text|transcribe|verbatim|all the text|full text)\b/.test(asLower(message));
 
-const EXPLICIT_SOURCE_SCOPE = /\b(?:in|from|inside|within|under)\s+(?:zoho\s+books|books|zoho\s+crm|crm|files|docs|documents|attachments|workspace|history|memory|chat|conversation)\b|\b(?:on|from|search)\s+(?:the\s+)?(?:web|internet|online)\b/;
 const GENERIC_LOOKUP_VERBS = /\b(search|find|look up|lookup|look for|check|trace|get details|tell me about|show me|who is|what is)\b/;
 const GENERIC_ENTITY_SUFFIX = /\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/;
 const INTERNAL_SYSTEM_CUES = /\b(invoice|invoices|statement|statements|payment|payments|overdue|balance|balances|vendor|vendors|customer|customers|contact|contacts|deal|deals|account|accounts|lead|leads)\b/;
 const LOOKUP_NOISE = /\b(please|plz|kindly|search|find|look up|lookup|look for|check|show|me|for|about|details|info|information)\b/g;
 const REFERENCED_ENTITY_LOOKUP_RE = /\[referenced message\][\s\S]*\b(search|find|look up|lookup|look for|find out)\b[\s\S]*\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/i;
-const COMPANY_ENTITY_LOOKUP_RE = /\b(search|find|look up|lookup|look for|find out|check|trace|show me|tell me about)\b[\s\S]*\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/i;
-
-const hasInternalCompanyEntityLookup = (message: string): boolean => {
-  const text = asLower(message);
-  if (!text || EXPLICIT_SOURCE_SCOPE.test(text) || /\b(web|internet|online|google)\b/.test(text)) {
-    return false;
-  }
-  return COMPANY_ENTITY_LOOKUP_RE.test(message) || REFERENCED_ENTITY_LOOKUP_RE.test(message);
-};
 
 const isUncertainEntityLookup = (message: string): boolean => {
   const text = asLower(message);
-  if (!text || EXPLICIT_SOURCE_SCOPE.test(text) || INTERNAL_SYSTEM_CUES.test(text)) {
+  if (!text || INTERNAL_SYSTEM_CUES.test(text)) {
     return false;
   }
   if (!GENERIC_LOOKUP_VERBS.test(text)) {
@@ -336,11 +333,24 @@ const canAnswerFromGroundedContext = (input: {
 
 const inferIntentDomain = (input: {
   message: string;
+  searchIntent: SearchIntent;
   childRoute?: ChildRouteHints;
   hasWorkspace: boolean;
   hasArtifacts: boolean;
 }): IntentDomain => {
-  if (hasInternalCompanyEntityLookup(input.message)) {
+  if (input.searchIntent.sourceHint === 'books') {
+    return 'zoho_books';
+  }
+  if (input.searchIntent.sourceHint === 'crm') {
+    return 'zoho_crm';
+  }
+  if (['files', 'web', 'history', 'lark'].includes(input.searchIntent.sourceHint ?? '')) {
+    return 'context_search';
+  }
+  if (input.searchIntent.queryType === 'company_entity') {
+    return 'zoho_books';
+  }
+  if (input.searchIntent.queryType === 'financial_record') {
     return 'zoho_books';
   }
   return normalizeToolRoutingIntent({
@@ -358,6 +368,7 @@ const buildPrimaryBundle = (input: {
   hasArtifacts: boolean;
   artifactMode?: ArtifactMode;
   latestUserMessage: string;
+  searchIntent: SearchIntent;
   childRoute?: ChildRouteHints;
   allowContextOnlyAnswer?: boolean;
 }): string[] => {
@@ -365,7 +376,7 @@ const buildPrimaryBundle = (input: {
   const normalizedIntent = asLower(input.childRoute?.normalizedIntent);
   const suggestedActions = (input.childRoute?.suggestedActions ?? []).map((value) => asLower(value)).join('\n');
   const larkHintText = `${lowerMessage}\n${normalizedIntent}\n${suggestedActions}`;
-  if (hasInternalCompanyEntityLookup(input.latestUserMessage)) {
+  if (input.searchIntent.queryType === 'company_entity') {
     return uniq([
       ...buildAllowedDomainFamily(input.allowed, 'zoho_books'),
       ...buildAllowedDomainFamily(input.allowed, 'zoho_crm'),
@@ -373,7 +384,7 @@ const buildPrimaryBundle = (input: {
     ]);
   }
   if (requiresExplicitExtraction(input.latestUserMessage)) {
-    return chooseFirstAllowed(input.allowed, ['document-ocr-read']);
+    return chooseFirstAllowed(input.allowed, ['documentRead']);
   }
   if (requiresContextSearch(input.latestUserMessage)) {
     return buildAllowedDomainFamily(input.allowed, 'context_search');
@@ -422,7 +433,7 @@ const buildPrimaryBundle = (input: {
     case 'skill':
       return buildAllowedDomainFamily(input.allowed, 'context_search');
     case 'workspace':
-      return chooseFirstAllowed(input.allowed, ['coding']);
+      return chooseFirstAllowed(input.allowed, ['devTools']);
     case 'document_inspection':
       if (input.allowContextOnlyAnswer) {
         return [];
@@ -442,21 +453,22 @@ const buildFallbackBundle = (input: {
   artifactMode?: ArtifactMode;
   latestUserMessage: string;
   allowContextOnlyAnswer?: boolean;
+  searchIntent: SearchIntent;
 }): string[] => {
   const skipArtifactInspectionTools = Boolean(input.allowContextOnlyAnswer);
   if (input.domain === 'unknown') {
-    return uniq([
-      ...(requiresContextSearch(input.latestUserMessage)
-        ? chooseFirstAllowed(input.allowed, ['context-search'])
+      return uniq([
+      ...((input.searchIntent.queryType === 'company_entity' || requiresContextSearch(input.latestUserMessage))
+        ? chooseFirstAllowed(input.allowed, ['contextSearch'])
         : []),
       ...(input.hasArtifacts && !skipArtifactInspectionTools && requiresExplicitExtraction(input.latestUserMessage)
-        ? chooseFirstAllowed(input.allowed, ['document-ocr-read'])
+        ? chooseFirstAllowed(input.allowed, ['documentRead'])
         : []),
-      ...chooseFirstAllowed(input.allowed, ['context-search']),
+      ...chooseFirstAllowed(input.allowed, ['contextSearch']),
     ]).slice(0, 2);
   }
   if (input.domain === 'document_inspection' && !skipArtifactInspectionTools) {
-    return chooseFirstAllowed(input.allowed, ['document-ocr-read']);
+    return chooseFirstAllowed(input.allowed, ['documentRead']);
   }
   return [];
 };
@@ -499,10 +511,10 @@ const buildPlannerPrompt = (input: {
   '{"answerFromContextOnly":false, "chosenToolId":"...", "chosenOperationClass":"read|write|send|inspect|schedule|search", "candidateToolIds":["..."], "sourceOfTruthReason":"...", "missingFields":["..."], "shouldAskClarification":false, "clarificationQuestion":"..."}',
   'If a live Zoho Books request mentions invoices, estimates, bills, payments, or Zoho Books, choose Zoho Books tools over cached context or generic search.',
   input.allowContextOnlyAnswer
-    ? 'If current grounded artifacts already provide multimodal image context for this request, set "answerFromContextOnly": true and do not choose document-ocr-read. Use OCR only when the user explicitly asked for exact extracted text.'
+    ? 'If current grounded artifacts already provide multimodal image context for this request, set "answerFromContextOnly": true and do not choose documentRead. Use OCR only when the user explicitly asked for exact extracted text.'
     : (input.artifactMode ?? 'none') === 'image_only'
-      ? 'If active artifacts are images and the user asks what they show, prefer answering from multimodal image context. Do not choose document-ocr-read unless the user explicitly asked for exact extracted text.'
-      : 'For internal retrieval, prefer context-search. Use document-ocr-read only for exact extraction or OCR.',
+      ? 'If active artifacts are images and the user asks what they show, prefer answering from multimodal image context. Do not choose documentRead unless the user explicitly asked for exact extracted text.'
+      : 'For internal retrieval, prefer contextSearch. Use documentRead only for exact extraction or OCR.',
 ].filter(Boolean).join('\n');
 
 const validatePlannerDecision = (input: {
@@ -577,8 +589,13 @@ export const resolveRunScopedToolSelection = async (input: {
   artifactMode?: ArtifactMode;
   childRoute?: ChildRouteHints;
   pinnedToolIds?: string[];
+  requestContext?: VercelRuntimeRequestContext;
 }): Promise<RunScopedToolSelection> => {
   const queryTextForInference = input.enrichedQueryText?.trim() || input.latestUserMessage;
+  const searchIntent = await getCachedSearchIntent({
+    runtime: input.requestContext ?? null,
+    message: queryTextForInference,
+  });
   const allowed = new Set(input.allowedToolIds);
   const pinnedAllowedToolIds = uniq((input.pinnedToolIds ?? []).filter((toolId) => allowed.has(toolId)));
   const artifactMode = input.artifactMode ?? 'none';
@@ -604,6 +621,7 @@ export const resolveRunScopedToolSelection = async (input: {
   });
   const inferredDomain = inferIntentDomain({
     message: queryTextForInference,
+    searchIntent,
     childRoute: input.childRoute,
     hasWorkspace: input.workspaceAvailable,
     hasArtifacts: input.hasActiveArtifacts,
@@ -613,8 +631,8 @@ export const resolveRunScopedToolSelection = async (input: {
     input.childRoute?.suggestedToolIds,
     (input.childRoute?.confidence ?? 1) >= 0.7 ? [input.childRoute?.domain] : [],
   )
-    .filter((toolId) => !(allowContextOnlyAnswer && toolId === 'document-ocr-read'));
-  const { priors: learnedPriors } = await memoryService.findRoutingPriors({
+    .filter((toolId) => !(allowContextOnlyAnswer && toolId === 'documentRead'));
+  const { priors: rawLearnedPriors } = await memoryService.findRoutingPriors({
     companyId: input.companyId,
     userId: input.userId,
     threadId: input.threadId,
@@ -625,8 +643,14 @@ export const resolveRunScopedToolSelection = async (input: {
     hasWorkspace: input.workspaceAvailable,
     hasArtifacts: input.hasActiveArtifacts,
   });
+  const learnedPriors = rawLearnedPriors.map((prior) => ({
+    ...prior,
+    toolId: ALIAS_TO_CANONICAL_ID[prior.toolId] ?? prior.toolId,
+  }));
   const learnedToolIds = uniq(learnedPriors
-    .filter((prior) => !(allowContextOnlyAnswer && prior.toolId === 'document-ocr-read'))
+    .filter((prior) => !(allowContextOnlyAnswer && prior.toolId === 'documentRead'))
+    .filter((prior) => allowed.has(prior.toolId))
+    .filter((prior) => TOOL_REGISTRY_MAP.get(prior.toolId)?.deprecated !== true)
     .map((prior) => prior.toolId));
   const heuristicPrimaryBundle = buildPrimaryBundle({
     allowed,
@@ -635,6 +659,7 @@ export const resolveRunScopedToolSelection = async (input: {
     hasArtifacts: input.hasActiveArtifacts,
     artifactMode,
     latestUserMessage: queryTextForInference,
+    searchIntent,
     childRoute: input.childRoute,
     allowContextOnlyAnswer,
   });
@@ -688,6 +713,7 @@ export const resolveRunScopedToolSelection = async (input: {
     artifactMode,
     latestUserMessage: queryTextForInference,
     allowContextOnlyAnswer,
+    searchIntent,
   });
   const learnedSummary = summarizeLearnedPriors(learnedPriors);
   const selectionReasonOperation = resolveSelectionReasonOperation({
@@ -731,7 +757,7 @@ export const resolveRunScopedToolSelection = async (input: {
   })) {
     return {
       ...initialSelection,
-      plannerChosenToolId: strongestPrior?.toolId,
+      plannerChosenToolId: ALIAS_TO_CANONICAL_ID[strongestPrior?.toolId ?? ''] ?? strongestPrior?.toolId,
       plannerChosenOperationClass: strongestPrior?.operationClass ?? inferredOperationClass,
     };
   }

@@ -5,6 +5,5 @@ export const buildRepoCodingTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
 ): Record<string, any> => pickTools(getLegacyToolMap(runtime, hooks), [
-  'repo',
-  'coding',
+  'devTools',
 ]);

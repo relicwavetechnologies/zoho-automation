@@ -5,23 +5,6 @@ import type { ZohoRecordOwnershipVerdict } from './zoho-gateway.types';
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 
-export const SELF_SCOPABLE_BOOKS_MODULES = new Set<ZohoBooksModule>([
-  'contacts',
-  'estimates',
-  'invoices',
-  'creditnotes',
-  'salesorders',
-  'customerpayments',
-]);
-
-export const FINANCE_ONLY_BOOKS_MODULES = new Set<ZohoBooksModule>([
-  'bills',
-  'purchaseorders',
-  'vendorpayments',
-  'bankaccounts',
-  'banktransactions',
-]);
-
 export const normalizeBooksGatewayModule = (value?: string): ZohoBooksModule | undefined => {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) return undefined;
@@ -39,14 +22,9 @@ export const normalizeBooksGatewayModule = (value?: string): ZohoBooksModule | u
   return undefined;
 };
 
-export const isBooksFinanceOnlyModule = (moduleName: ZohoBooksModule): boolean =>
-  FINANCE_ONLY_BOOKS_MODULES.has(moduleName);
-
-export const canSelfScopeBooksModule = (moduleName: ZohoBooksModule): boolean =>
-  SELF_SCOPABLE_BOOKS_MODULES.has(moduleName);
-
 export const compileBooksNativeFilters = (input: {
   moduleName: ZohoBooksModule;
+  enabled: boolean;
   scopeMode?: 'self_scoped' | 'company_scoped';
   requesterEmail?: string;
   allowedContactIds?: string[];
@@ -62,6 +40,10 @@ export const compileBooksNativeFilters = (input: {
     if (typeof value === 'number' && Number.isFinite(value)) {
       compiled[key] = value;
     }
+  }
+
+  if (!input.enabled) {
+    return compiled;
   }
 
   const allowedContactIds = (input.allowedContactIds ?? []).filter(Boolean);

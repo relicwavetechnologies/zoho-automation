@@ -5,13 +5,5 @@ export const buildWorkflowAuthoringTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
 ): Record<string, any> => pickTools(getLegacyToolMap(runtime, hooks), [
-  'workflowDraft',
-  'workflowPlan',
-  'workflowBuild',
-  'workflowValidate',
-  'workflowSave',
-  'workflowSchedule',
-  'workflowList',
-  'workflowArchive',
-  'workflowRun',
+  'workflow',
 ]);

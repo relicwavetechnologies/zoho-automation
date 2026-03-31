@@ -57,6 +57,7 @@ import {
   EXECUTION_CAPABILITY_GAP_EVENT,
   EXECUTION_TOOL_DEMAND_EVENT,
   executionService,
+  stepResultRepository,
   type ExecutionToolDemandPayload,
 } from '../../company/observability';
 import {
@@ -1892,8 +1893,89 @@ const ensurePlanTaskRunning = (
   };
 };
 
-const sendSseEvent = (res: Response, type: string, data: unknown) => {
+const sendSseEvent = (res: Response, type: string, data: unknown, sequence?: number) => {
+  const executionId =
+    data && typeof data === 'object' && !Array.isArray(data) && typeof (data as { executionId?: unknown }).executionId === 'string'
+      ? ((data as { executionId: string }).executionId)
+      : null;
+  if (typeof sequence === 'number' && Number.isFinite(sequence) && executionId) {
+    res.write(`id: ${executionId}:${sequence}\n`);
+  }
+  res.write(`event: ${type}\n`);
   res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
+};
+
+const sendSseHeartbeat = (res: Response) => {
+  res.write(': heartbeat\n\n');
+};
+
+const parseSseLastEventId = (value: string | string[] | undefined): { executionId: string; sequence: number } | null => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!raw?.trim()) {
+    return null;
+  }
+  const trimmed = raw.trim();
+  const separator = trimmed.lastIndexOf(':');
+  if (separator <= 0 || separator === trimmed.length - 1) {
+    return null;
+  }
+  const executionId = trimmed.slice(0, separator).trim();
+  const sequence = Number(trimmed.slice(separator + 1));
+  if (!executionId || !Number.isInteger(sequence) || sequence < 0) {
+    return null;
+  }
+  return { executionId, sequence };
+};
+
+const toReplaySseData = (item: {
+  executionId: string;
+  payload: Record<string, unknown> | null;
+}): Record<string, unknown> =>
+  item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+    ? { ...item.payload, executionId: item.executionId }
+    : { executionId: item.executionId, payload: item.payload };
+
+const replayMissedSseEvents = async (input: {
+  req: Request;
+  res: Response;
+  executionId: string;
+  session: MemberSessionDTO;
+}): Promise<void> => {
+  const parsed = parseSseLastEventId(input.req.headers['last-event-id']);
+  if (!parsed || parsed.executionId !== input.executionId) {
+    return;
+  }
+  const result = await executionService.listRunEvents(
+    {
+      role: 'member',
+      companyId: input.session.companyId,
+      userId: input.session.userId,
+    },
+    input.executionId,
+  );
+  for (const item of result.items
+    .filter((entry) => entry.sequence > parsed.sequence)
+    .sort((left, right) => left.sequence - right.sequence)) {
+    sendSseEvent(input.res, item.eventType, toReplaySseData(item), item.sequence);
+  }
+};
+
+const setupSseStream = async (input: {
+  req: Request;
+  res: Response;
+  executionId: string;
+  session: MemberSessionDTO;
+}): Promise<() => void> => {
+  const { res } = input;
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  await replayMissedSseEvents(input);
+  const heartbeat = setInterval(() => sendSseHeartbeat(res), 15_000);
+  const cleanup = () => clearInterval(heartbeat);
+  res.on('close', cleanup);
+  return cleanup;
 };
 
 const CHILD_TEXT_STREAM_CHUNK_SIZE = 28;
@@ -2015,13 +2097,53 @@ const buildContinuationHint = (message?: string): string | null => {
 
 const appendEventSafe = async (input: Parameters<typeof executionService.appendEvent>[0]) => {
   try {
-    await executionService.appendEvent(input);
+    return await executionService.appendEvent(input);
   } catch (error) {
     logger.warn('vercel.execution.event.failed', {
       executionId: input.executionId,
       eventType: input.eventType,
       error: error instanceof Error ? error.message : 'unknown_error',
     });
+    return null;
+  }
+};
+
+const writeStepResultSafe = async (input: {
+  executionId: string;
+  sequence?: number | null;
+  toolName: string;
+  actorKey?: string | null;
+  title?: string | null;
+  output: VercelToolEnvelope;
+  status: string;
+}) => {
+  if (typeof input.sequence !== 'number' || !Number.isFinite(input.sequence)) {
+    return null;
+  }
+
+  try {
+    return await stepResultRepository.writeStepResult({
+      executionId: input.executionId,
+      sequence: input.sequence,
+      toolName: input.toolName,
+      actorKey: input.actorKey ?? null,
+      title: input.title ?? null,
+      success: input.output.success,
+      status: input.status,
+      authorityLevel: (input.output as any).authorityLevel ?? null,
+      resolvedIds: ((input.output as any).resolvedIds ?? null) as Record<string, unknown> | null,
+      entityIndexes: ((input.output as any).entityIndexes ?? null) as Record<string, unknown> | null,
+      summary: summarizeText(input.output.summary, 600),
+      rawOutput: JSON.parse(JSON.stringify(input.output)) as Record<string, unknown>,
+    });
+  } catch (error) {
+    logger.warn('vercel.execution.step_result.failed', {
+      executionId: input.executionId,
+      toolName: input.toolName,
+      sequence: input.sequence,
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+    return null;
   }
 };
 
@@ -3380,6 +3502,7 @@ const resolveDesktopRuntimeForRunScopedSelection = async (input: {
         }
       : undefined,
     pinnedToolIds: input.pinnedToolIds,
+    requestContext: input.runtime,
   });
   const pinnedToolEnforcement = enforcePinnedWorkflowRuntimeTools({
     runExposedToolIds: selection.runExposedToolIds,
@@ -3785,7 +3908,7 @@ const logAndPersistPlan = async (input: {
   threadId: string;
   plan: ExecutionPlan;
   eventType: 'plan.created' | 'plan.updated' | 'plan.completed' | 'plan.failed';
-  emitSse?: (plan: ExecutionPlan) => void;
+  emitSse?: (plan: ExecutionPlan, sequence?: number) => void;
   queueUiPlan?: (plan: ExecutionPlan) => void;
 }) => {
   logger.info('vercel.plan.state', {
@@ -3795,7 +3918,7 @@ const logAndPersistPlan = async (input: {
     status: input.plan.status,
     plan: formatExecutionPlanForLog(input.plan),
   });
-  await appendEventSafe({
+  const event = await appendEventSafe({
     executionId: input.executionId,
     phase: 'planning',
     eventType: input.eventType,
@@ -3811,7 +3934,7 @@ const logAndPersistPlan = async (input: {
           : 'running',
     payload: input.plan as unknown as Record<string, unknown>,
   });
-  input.emitSse?.(input.plan);
+  input.emitSse?.(input.plan, event?.sequence);
   input.queueUiPlan?.(input.plan);
 };
 
@@ -4584,7 +4707,7 @@ export const executeAutomatedDesktopTurn = async (input: {
                 }
               : block,
           );
-          await appendEventSafe({
+          const event = await appendEventSafe({
             executionId,
             phase: output.pendingApprovalAction ? 'control' : 'tool',
             eventType: output.pendingApprovalAction ? 'control.requested' : 'tool.completed',
@@ -4597,6 +4720,15 @@ export const executeAutomatedDesktopTurn = async (input: {
               success: output.success,
               pendingApprovalAction: output.pendingApprovalAction ?? null,
             },
+          });
+          await writeStepResultSafe({
+            executionId,
+            sequence: event?.sequence,
+            toolName,
+            actorKey: toolName,
+            title,
+            output,
+            status: output.pendingApprovalAction ? 'pending' : output.success ? 'done' : 'failed',
           });
         },
       });
@@ -4911,10 +5043,7 @@ export class VercelDesktopEngine {
       attachedFileCount: attachedFiles.length,
     });
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders?.();
+    const cleanupSse = await setupSseStream({ req, res, executionId, session });
 
     try {
       let uiEventQueue = Promise.resolve();
@@ -5190,8 +5319,8 @@ export class VercelDesktopEngine {
         });
       }
       let activePlan = await generateExecutionPlan({ message: effectivePromptMessage, workspace });
-      const emitPlan = (plan: ExecutionPlan) => {
-        sendSseEvent(res, 'plan', plan);
+      const emitPlan = (plan: ExecutionPlan, sequence?: number) => {
+        sendSseEvent(res, 'plan', { ...plan, executionId }, sequence);
         queueUiEvent('plan', plan);
       };
       if (activePlan) {
@@ -6031,7 +6160,7 @@ export class VercelDesktopEngine {
         threadId,
         error: errorMessage,
       });
-      await appendEventSafe({
+      const errorEvent = await appendEventSafe({
         executionId,
         phase: 'error',
         eventType: 'execution.failed',
@@ -6043,8 +6172,10 @@ export class VercelDesktopEngine {
       });
       await failRun(executionId, errorMessage);
       await persistUiEvent(executionId, 'error', { message: errorMessage });
-      sendSseEvent(res, 'error', { message: errorMessage });
+      sendSseEvent(res, 'error', { message: errorMessage, executionId }, errorEvent?.sequence);
       res.end();
+    } finally {
+      cleanupSse();
     }
   }
 
@@ -6492,7 +6623,7 @@ export class VercelDesktopEngine {
                 }
               : block,
           );
-          await appendEventSafe({
+          const event = await appendEventSafe({
             executionId,
             phase: output.pendingApprovalAction ? 'control' : 'tool',
             eventType: output.pendingApprovalAction ? 'control.requested' : 'tool.completed',
@@ -6513,6 +6644,15 @@ export class VercelDesktopEngine {
                 error: output.error ?? null,
               }),
             },
+          });
+          await writeStepResultSafe({
+            executionId,
+            sequence: event?.sequence,
+            toolName,
+            actorKey: toolName,
+            title,
+            output,
+            status: output.pendingApprovalAction ? 'pending' : output.success ? 'done' : 'failed',
           });
         },
       });
@@ -6820,10 +6960,7 @@ export class VercelDesktopEngine {
       },
     });
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders?.();
+    const cleanupSse = await setupSseStream({ req, res, executionId, session });
 
     try {
       let uiEventQueue = Promise.resolve();
@@ -6887,8 +7024,8 @@ export class VercelDesktopEngine {
       let persistedBlocks: PersistedContentBlock[] = continuationState.persistedBlocks;
       const { history } = await mapHistoryToMessages(threadId, session);
       let activePlan = continuationState.plan ?? extractLatestExecutionPlan(history);
-      const emitPlan = (plan: ExecutionPlan) => {
-        sendSseEvent(res, 'plan', plan);
+      const emitPlan = (plan: ExecutionPlan, sequence?: number) => {
+        sendSseEvent(res, 'plan', { ...plan, executionId }, sequence);
         queueUiEvent('plan', plan);
       };
       if (activePlan && actionResult) {
@@ -7235,7 +7372,7 @@ export class VercelDesktopEngine {
                 }
               : block,
           );
-          await appendEventSafe({
+          const event = await appendEventSafe({
             executionId,
             phase: output.pendingApprovalAction ? 'control' : 'tool',
             eventType: output.pendingApprovalAction ? 'control.requested' : 'tool.completed',
@@ -7256,6 +7393,15 @@ export class VercelDesktopEngine {
                 error: output.error ?? null,
               }),
             },
+          });
+          await writeStepResultSafe({
+            executionId,
+            sequence: event?.sequence,
+            toolName,
+            actorKey: output.pendingApprovalAction ? output.pendingApprovalAction.kind : toolName,
+            title,
+            output,
+            status: output.pendingApprovalAction ? 'pending' : output.success ? 'done' : 'failed',
           });
         },
       });
@@ -7545,7 +7691,7 @@ export class VercelDesktopEngine {
         threadId,
         error: errorMessage,
       });
-      await appendEventSafe({
+      const errorEvent = await appendEventSafe({
         executionId,
         phase: 'error',
         eventType: 'execution.failed',
@@ -7557,10 +7703,20 @@ export class VercelDesktopEngine {
       });
       await failRun(executionId, errorMessage);
       await persistUiEvent(executionId, 'error', { message: errorMessage });
-      sendSseEvent(res, 'error', { message: errorMessage });
+      sendSseEvent(res, 'error', { message: errorMessage, executionId }, errorEvent?.sequence);
       res.end();
+    } finally {
+      cleanupSse();
     }
   }
 }
 
 export const vercelDesktopEngine = new VercelDesktopEngine();
+
+export const __test__ = {
+  sendSseEvent,
+  sendSseHeartbeat,
+  parseSseLastEventId,
+  replayMissedSseEvents,
+  writeStepResultSafe,
+};

@@ -1,5 +1,7 @@
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
+import { withProviderRetry } from '../../../utils/provider-retry';
+import { redisTokenCache } from '../../../utils/redis-token-cache';
 
 type GoogleTokenResponse = {
   access_token?: string;
@@ -24,6 +26,7 @@ type GoogleUserInfoResponse = {
 const GOOGLE_AUTH_BASE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
+const buildGoogleTokenCacheKey = (companyId: string, userId: string) => `google:token:${companyId}:${userId}`;
 
 const DEFAULT_SCOPES = [
   'openid',
@@ -42,6 +45,28 @@ const readErrorMessage = (payload: GoogleTokenResponse | null | undefined, fallb
   const msg = payload?.error_description || payload?.error || fallback;
   return msg.trim().length > 0 ? msg.trim() : fallback;
 };
+
+const fetchGoogleWithRetry = async (
+  url: string,
+  init: RequestInit,
+  fallbackMessage: string,
+): Promise<Response> =>
+  withProviderRetry('google', async () => {
+    const response = await fetch(url, init);
+    if (!response.ok) {
+      const payload = (await response.clone().json().catch(() => ({}))) as GoogleTokenResponse;
+      const error: Error & {
+        status?: number;
+        headers?: Record<string, string>;
+        payload?: GoogleTokenResponse;
+      } = new Error(readErrorMessage(payload, fallbackMessage));
+      error.status = response.status;
+      error.headers = Object.fromEntries(response.headers.entries());
+      error.payload = payload;
+      throw error;
+    }
+    return response;
+  });
 
 export class GoogleOAuthService {
   private readonly clientId = config.GOOGLE_OAUTH_CLIENT_ID.trim();
@@ -89,35 +114,45 @@ export class GoogleOAuthService {
       throw new Error('Google OAuth is not configured in server env');
     }
 
-    const response = await fetch(GOOGLE_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: this.clientId,
-        client_secret: this.clientSecret,
-        code: code.trim(),
-        grant_type: 'authorization_code',
-        redirect_uri: redirectUri?.trim() || this.getRedirectUri(),
-      }),
-    });
+    try {
+      const response = await fetchGoogleWithRetry(
+        GOOGLE_TOKEN_URL,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            client_id: this.clientId,
+            client_secret: this.clientSecret,
+            code: code.trim(),
+            grant_type: 'authorization_code',
+            redirect_uri: redirectUri?.trim() || this.getRedirectUri(),
+          }),
+        },
+        'Google authorization code exchange failed',
+      );
 
-    const payload = (await response.json().catch(() => ({}))) as GoogleTokenResponse;
-    const accessToken = payload.access_token?.trim();
-    if (!response.ok || !accessToken) {
+      const payload = (await response.json().catch(() => ({}))) as GoogleTokenResponse;
+      const accessToken = payload.access_token?.trim();
+      if (!accessToken) {
+        throw new Error(readErrorMessage(payload, 'Google authorization code exchange failed'));
+      }
+
+      return {
+        accessToken,
+        refreshToken: payload.refresh_token?.trim() || undefined,
+        tokenType: payload.token_type?.trim() || undefined,
+        expiresIn: typeof payload.expires_in === 'number' ? payload.expires_in : undefined,
+        scope: payload.scope?.trim() || undefined,
+      };
+    } catch (error) {
+      const payload = ((error as any)?.payload ?? {}) as GoogleTokenResponse;
+      const status = (error as any)?.status;
       logger.warn('google.oauth.exchange.failed', {
-        status: response.status,
-        reason: readErrorMessage(payload, 'Google authorization code exchange failed'),
+        status,
+        reason: readErrorMessage(payload, error instanceof Error ? error.message : 'Google authorization code exchange failed'),
       });
       throw new Error(readErrorMessage(payload, 'Google authorization code exchange failed'));
     }
-
-    return {
-      accessToken,
-      refreshToken: payload.refresh_token?.trim() || undefined,
-      tokenType: payload.token_type?.trim() || undefined,
-      expiresIn: typeof payload.expires_in === 'number' ? payload.expires_in : undefined,
-      scope: payload.scope?.trim() || undefined,
-    };
   }
 
   async refreshAccessToken(refreshToken: string): Promise<{
@@ -130,33 +165,63 @@ export class GoogleOAuthService {
       throw new Error('Google OAuth is not configured in server env');
     }
 
-    const response = await fetch(GOOGLE_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: this.clientId,
-        client_secret: this.clientSecret,
-        refresh_token: refreshToken.trim(),
-        grant_type: 'refresh_token',
-      }),
-    });
+    try {
+      const response = await fetchGoogleWithRetry(
+        GOOGLE_TOKEN_URL,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            client_id: this.clientId,
+            client_secret: this.clientSecret,
+            refresh_token: refreshToken.trim(),
+            grant_type: 'refresh_token',
+          }),
+        },
+        'Google access token refresh failed',
+      );
 
-    const payload = (await response.json().catch(() => ({}))) as GoogleTokenResponse;
-    const accessToken = payload.access_token?.trim();
-    if (!response.ok || !accessToken) {
+      const payload = (await response.json().catch(() => ({}))) as GoogleTokenResponse;
+      const accessToken = payload.access_token?.trim();
+      if (!accessToken) {
+        throw new Error(readErrorMessage(payload, 'Google access token refresh failed'));
+      }
+
+      return {
+        accessToken,
+        tokenType: payload.token_type?.trim() || undefined,
+        expiresIn: typeof payload.expires_in === 'number' ? payload.expires_in : undefined,
+        scope: payload.scope?.trim() || undefined,
+      };
+    } catch (error) {
+      const payload = ((error as any)?.payload ?? {}) as GoogleTokenResponse;
+      const status = (error as any)?.status;
       logger.warn('google.oauth.refresh.failed', {
-        status: response.status,
-        reason: readErrorMessage(payload, 'Google access token refresh failed'),
+        status,
+        reason: readErrorMessage(payload, error instanceof Error ? error.message : 'Google access token refresh failed'),
       });
       throw new Error(readErrorMessage(payload, 'Google access token refresh failed'));
     }
+  }
 
-    return {
-      accessToken,
-      tokenType: payload.token_type?.trim() || undefined,
-      expiresIn: typeof payload.expires_in === 'number' ? payload.expires_in : undefined,
-      scope: payload.scope?.trim() || undefined,
-    };
+  async getValidAccessToken(
+    companyId: string,
+    userId: string,
+    storedRefreshToken: string,
+  ): Promise<string> {
+    const cached = await redisTokenCache.get(buildGoogleTokenCacheKey(companyId, userId));
+    if (cached) {
+      return cached.token;
+    }
+
+    const refreshed = await this.refreshAccessToken(storedRefreshToken);
+    const expiresAtMs = Date.now() + (refreshed.expiresIn ?? 3600) * 1000;
+    await redisTokenCache.set(
+      buildGoogleTokenCacheKey(companyId, userId),
+      refreshed.accessToken,
+      expiresAtMs,
+    );
+    return refreshed.accessToken;
   }
 
   async fetchUserInfo(accessToken: string): Promise<{
@@ -164,24 +229,33 @@ export class GoogleOAuthService {
     email?: string;
     name?: string;
   }> {
-    const response = await fetch(GOOGLE_USERINFO_URL, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    const payload = (await response.json().catch(() => ({}))) as GoogleUserInfoResponse;
-    const sub = payload.sub?.trim();
-    if (!response.ok || !sub) {
+    try {
+      const response = await fetchGoogleWithRetry(
+        GOOGLE_USERINFO_URL,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+        'Unable to resolve Google user info',
+      );
+      const payload = (await response.json().catch(() => ({}))) as GoogleUserInfoResponse;
+      const sub = payload.sub?.trim();
+      if (!sub) {
+        throw new Error('Unable to resolve Google user info');
+      }
+
+      return {
+        sub,
+        email: payload.email,
+        name: payload.name,
+      };
+    } catch (error) {
+      const status = (error as any)?.status;
       logger.warn('google.oauth.user_info.failed', {
-        status: response.status,
+        status,
         reason: readErrorMessage(undefined, 'Unable to resolve Google user info'),
       });
       throw new Error('Unable to resolve Google user info');
     }
-
-    return {
-      sub,
-      email: payload.email,
-      name: payload.name,
-    };
   }
 
   isConfigured(): boolean {

@@ -12,6 +12,7 @@ import { vectorDocumentRepository } from '../integrations/vector/vector-document
 import { skillService } from '../skills/skill.service';
 import { fileRetrievalService } from './file-retrieval.service';
 import { logger } from '../../utils/logger';
+import { getCachedSearchIntent, type SearchIntent } from '../orchestration/search-intent-classifier';
 
 export type ContextSearchBrokerSourceKey =
   | 'personalHistory'
@@ -44,6 +45,7 @@ type ContextSearchBrokerRuntime = Pick<
   | 'departmentId'
   | 'departmentZohoReadScope'
   | 'workspace'
+  | 'searchIntent'
 >;
 
 export type ContextSearchBrokerSearchInput = {
@@ -83,6 +85,7 @@ export type ContextSearchBrokerResult = {
   invoiceNumber?: string;
   skillId?: string;
   skillSlug?: string;
+  authorityLevel?: 'authoritative' | 'documentary' | 'contextual' | 'public';
 };
 
 type SourceCoverage = {
@@ -111,16 +114,6 @@ export type ContextSearchBrokerFetchOutput = {
   text: string;
   resolvedEntities: Record<string, string>;
 };
-
-type SearchScaleStrategy =
-  | 'default'
-  | 'focused_books'
-  | 'focused_crm'
-  | 'focused_files'
-  | 'focused_workspace'
-  | 'focused_web'
-  | 'focused_history'
-  | 'broad_first';
 
 const TEXT_FILE_EXTENSIONS = new Set([
   '.md',
@@ -167,100 +160,93 @@ const normalizeText = (value: string): string => value.trim().replace(/\s+/g, ' 
 const normalizeLookupText = (value: string): string => normalizeText(value).toLowerCase();
 const normalizeEntityToken = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
-const SOURCE_CONSTRAINED_PATTERNS: Array<{ strategy: SearchScaleStrategy; pattern: RegExp }> = [
-  {
-    strategy: 'focused_books',
-    pattern: /\b(?:in|from|inside|within|under)\s+(?:zoho\s+books|books)\b|\b(?:zoho\s+books|books)\s+(?:only|first)\b/i,
-  },
-  {
-    strategy: 'focused_crm',
-    pattern: /\b(?:in|from|inside|within|under)\s+(?:zoho\s+crm|crm)\b|\b(?:zoho\s+crm|crm)\s+(?:only|first)\b/i,
-  },
-  {
-    strategy: 'focused_files',
-    pattern: /\b(?:in|from|inside|within|under)\s+(?:files|docs|documents|pdfs|attachments)\b/i,
-  },
-  {
-    strategy: 'focused_workspace',
-    pattern: /\b(?:in|from|inside|within|under)\s+workspace\b/i,
-  },
-  {
-    strategy: 'focused_web',
-    pattern: /\b(?:on|from|search)\s+(?:the\s+)?(?:web|internet|online)\b|\bgoogle\b/i,
-  },
-  {
-    strategy: 'focused_history',
-    pattern: /\b(?:in|from|inside|within|under)\s+(?:history|memory|chat|conversation)\b/i,
-  },
-];
-
-const GENERIC_SEARCH_VERBS = /\b(search|find|look up|lookup|check|trace|get details|tell me about|show me|who is|what is)\b/i;
 const STRUCTURED_INTERNAL_CUES = /\b(invoice|invoices|statement|statements|payment|payments|overdue|balance|balances|vendor|vendors|customer|customers|contact|contacts|deal|deals|account|accounts|lead|leads)\b/i;
-const ENTITY_SUFFIX_CUES = /\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/i;
-const PERSON_LOOKUP_CUES = /\b(email|mail|phone|number|address|person|people|teammate|employee|coworker|colleague|open id|openid)\b/i;
-const AMBIGUOUS_SEARCH_NOISE = /\b(please|plz|kindly|search|find|look up|lookup|check|show|me|for|about|details|info|information)\b/gi;
 const AUTHORITATIVE_ENTITY_SCOPES = new Set(['zoho_books', 'zoho_crm', 'files', 'workspace']);
-const SOURCE_PRIORITY_BY_SCOPE: Record<string, number> = {
-  zoho_books: 1.6,
-  zoho_crm: 1.5,
-  files: 1.15,
-  workspace: 1.05,
-  skills: 0.95,
-  web: 0.75,
-  personal_history: 0.15,
-  lark_contacts: 0.1,
+const RESULT_SCOPE_TO_SOURCE_KEY: Record<string, ContextSearchBrokerSourceKey> = {
+  personal_history: 'personalHistory',
+  files: 'files',
+  lark_contacts: 'larkContacts',
+  zoho_crm: 'zohoCrmContext',
+  zoho_books: 'zohoBooksLive',
+  workspace: 'workspace',
+  web: 'web',
+  skills: 'skills',
 };
 
-const inferSearchScaleStrategy = (input: {
-  query: string;
-  explicitSourcesProvided: boolean;
-  site?: string;
-}): SearchScaleStrategy => {
-  if (input.explicitSourcesProvided || input.site?.trim()) {
-    return 'default';
+export function computeSourceWeights(intent: SearchIntent): Record<ContextSearchBrokerSourceKey, number> {
+  switch (intent.queryType) {
+    case 'company_entity':
+      return {
+        zohoBooksLive: 2.0,
+        zohoCrmContext: 1.8,
+        files: 1.1,
+        workspace: 1.0,
+        web: 0.8,
+        personalHistory: 0.0,
+        larkContacts: 0.0,
+        skills: 0.5,
+      };
+    case 'person_entity':
+      return {
+        larkContacts: 2.0,
+        zohoCrmContext: 1.6,
+        zohoBooksLive: 1.2,
+        files: 0.8,
+        workspace: 0.8,
+        personalHistory: 0.3,
+        web: 0.5,
+        skills: 0.3,
+      };
+    case 'financial_record':
+      return {
+        zohoBooksLive: 2.5,
+        zohoCrmContext: 1.0,
+        files: 1.0,
+        workspace: 0.5,
+        larkContacts: 0.0,
+        personalHistory: 0.0,
+        web: 0.0,
+        skills: 0.3,
+      };
+    case 'document':
+      return {
+        files: 2.0,
+        workspace: 1.8,
+        zohoBooksLive: 0.8,
+        zohoCrmContext: 0.6,
+        larkContacts: 0.0,
+        personalHistory: 0.2,
+        web: 0.4,
+        skills: 0.5,
+      };
+    case 'conversation':
+      return {
+        personalHistory: 2.0,
+        files: 0.5,
+        zohoCrmContext: 0.3,
+        zohoBooksLive: 0.3,
+        larkContacts: 0.0,
+        web: 0.0,
+        workspace: 0.3,
+        skills: 0.2,
+      };
+    default:
+      return {
+        zohoBooksLive: 1.6,
+        zohoCrmContext: 1.5,
+        files: 1.15,
+        workspace: 1.05,
+        personalHistory: 0.15,
+        larkContacts: 0.75,
+        web: 0.75,
+        skills: 0.5,
+      };
   }
-
-  const normalized = normalizeLookupText(input.query);
-  for (const candidate of SOURCE_CONSTRAINED_PATTERNS) {
-    if (candidate.pattern.test(normalized)) {
-      return candidate.strategy;
-    }
-  }
-
-  const deNoised = normalized.replace(AMBIGUOUS_SEARCH_NOISE, ' ').replace(/\s+/g, ' ').trim();
-  const tokenCount = deNoised.length > 0 ? deNoised.split(/\s+/).length : 0;
-  const genericEntityLookup =
-    GENERIC_SEARCH_VERBS.test(normalized)
-    && !STRUCTURED_INTERNAL_CUES.test(normalized)
-    && (ENTITY_SUFFIX_CUES.test(normalized) || (tokenCount >= 2 && tokenCount <= 8));
-
-  if (genericEntityLookup) {
-    return 'broad_first';
-  }
-
-  return 'default';
-};
-
-const isCompanyEntityLookupQuery = (query: string): boolean => {
-  const normalized = normalizeLookupText(query);
-  if (!normalized || PERSON_LOOKUP_CUES.test(normalized)) {
-    return false;
-  }
-  if (ENTITY_SUFFIX_CUES.test(normalized)) {
-    return true;
-  }
-  if (!GENERIC_SEARCH_VERBS.test(normalized) || STRUCTURED_INTERNAL_CUES.test(normalized)) {
-    return false;
-  }
-  const deNoised = normalized.replace(AMBIGUOUS_SEARCH_NOISE, ' ').replace(/\s+/g, ' ').trim();
-  const tokenCount = deNoised.length > 0 ? deNoised.split(/\s+/).length : 0;
-  return tokenCount >= 2 && tokenCount <= 6;
-};
+}
 
 const extractEntityTokens = (query: string): string[] =>
   Array.from(new Set(
     normalizeLookupText(query)
-      .replace(AMBIGUOUS_SEARCH_NOISE, ' ')
       .split(/[^a-z0-9]+/g)
       .map((token) => token.trim())
       .filter((token) => token.length >= 2),
@@ -309,12 +295,21 @@ const computeEntityTextMatchScore = (query: string, values: Array<string | undef
   return best;
 };
 
-const rankContextSearchResults = (
+export const rankContextSearchResults = (
   results: ContextSearchBrokerResult[],
-  input: { query: string; limit: number },
+  input: {
+    query: string;
+    limit: number;
+    companyLookup?: boolean;
+    weights: Record<ContextSearchBrokerSourceKey, number>;
+  },
 ): ContextSearchBrokerResult[] => {
-  const companyLookup = isCompanyEntityLookupQuery(input.query);
+  const companyLookup = input.companyLookup ?? false;
   const filtered = results.filter((result) => {
+    const sourceKey = RESULT_SCOPE_TO_SOURCE_KEY[result.scope];
+    if (sourceKey && input.weights[sourceKey] <= 0) {
+      return false;
+    }
     if (!companyLookup) {
       return true;
     }
@@ -337,7 +332,8 @@ const rankContextSearchResults = (
   const hasAuthoritativeEntityHit = filtered.some((result) => AUTHORITATIVE_ENTITY_SCOPES.has(result.scope));
   const ranked = filtered
     .map((result, index) => {
-      const priority = SOURCE_PRIORITY_BY_SCOPE[result.scope] ?? 1;
+      const sourceKey = RESULT_SCOPE_TO_SOURCE_KEY[result.scope];
+      const priority = sourceKey ? input.weights[sourceKey] : 1;
       const authoritativeBoost = companyLookup && AUTHORITATIVE_ENTITY_SCOPES.has(result.scope) ? 0.2 : 0;
       const effectiveScore = (result.score * priority) + authoritativeBoost - (index * 0.0001);
       return {
@@ -352,59 +348,129 @@ const rankContextSearchResults = (
   return ranked;
 };
 
-const applySearchScaleStrategy = (
+export function selectInitialSources(
+  intent: SearchIntent,
+  weights: Record<ContextSearchBrokerSourceKey, number>,
   sources: Record<ContextSearchBrokerSourceKey, boolean>,
-  strategy: SearchScaleStrategy,
-  hasWorkspace: boolean,
-) => {
-  if (strategy === 'default') {
+) {
+  for (const key of Object.keys(sources) as ContextSearchBrokerSourceKey[]) {
+    sources[key] = false;
+  }
+
+  if (intent.sourceHint) {
+    const hintMap: Record<NonNullable<SearchIntent['sourceHint']>, ContextSearchBrokerSourceKey> = {
+      books: 'zohoBooksLive',
+      crm: 'zohoCrmContext',
+      files: 'files',
+      web: 'web',
+      history: 'personalHistory',
+      lark: 'larkContacts',
+    };
+    const key = hintMap[intent.sourceHint];
+    if (key && weights[key] > 0) {
+      sources[key] = true;
+    }
     return;
   }
 
-  const resetAllSources = () => {
-    for (const key of Object.keys(sources) as ContextSearchBrokerSourceKey[]) {
-      sources[key] = false;
+  if (intent.queryType === 'company_entity') {
+    if (weights.zohoBooksLive > 0) {
+      sources.zohoBooksLive = true;
     }
-  };
-
-  switch (strategy) {
-    case 'focused_books':
-      resetAllSources();
-      sources.zohoBooksLive = true;
-      break;
-    case 'focused_crm':
-      resetAllSources();
-      sources.zohoCrmContext = true;
-      break;
-    case 'focused_files':
-      resetAllSources();
-      sources.files = true;
-      break;
-    case 'focused_workspace':
-      resetAllSources();
-      sources.workspace = hasWorkspace;
-      break;
-    case 'focused_web':
-      resetAllSources();
-      sources.web = true;
-      break;
-    case 'focused_history':
-      resetAllSources();
-      sources.personalHistory = true;
-      break;
-    case 'broad_first':
-      sources.personalHistory = true;
-      sources.files = true;
-      sources.larkContacts = true;
-      sources.zohoCrmContext = true;
-      sources.zohoBooksLive = true;
-      sources.workspace = hasWorkspace;
-      sources.web = false;
-      break;
-    default:
-      break;
+    return;
   }
-};
+
+  if (intent.queryType === 'person_entity') {
+    if (weights.larkContacts > 0) {
+      sources.larkContacts = true;
+    }
+    if (weights.zohoBooksLive > 0) {
+      sources.zohoBooksLive = true;
+    }
+    return;
+  }
+
+  if (intent.queryType === 'financial_record') {
+    if (weights.zohoBooksLive > 0) {
+      sources.zohoBooksLive = true;
+    }
+    return;
+  }
+
+  if (intent.queryType === 'document') {
+    if (weights.files > 0) {
+      sources.files = true;
+    }
+    if (weights.workspace > 0) {
+      sources.workspace = true;
+    }
+    return;
+  }
+
+  if (intent.queryType === 'conversation') {
+    if (weights.personalHistory > 0) {
+      sources.personalHistory = true;
+    }
+    return;
+  }
+
+  for (const [key, weight] of Object.entries(weights) as Array<[ContextSearchBrokerSourceKey, number]>) {
+    if (weight > 0 && key !== 'web') {
+      sources[key] = true;
+    }
+  }
+}
+
+export function computeInternalLimit(intent: SearchIntent, requestedLimit: number): number {
+  const minimums: Record<SearchIntent['queryType'], number> = {
+    company_entity: 20,
+    financial_record: 50,
+    person_entity: 15,
+    document: 15,
+    conversation: 10,
+    general: 10,
+  };
+  return Math.max(requestedLimit, minimums[intent.queryType] ?? 10);
+}
+
+export function isEntityConsistentResult(
+  result: ContextSearchBrokerResult,
+  intent: SearchIntent,
+): boolean {
+  if (result.score <= 0) {
+    return false;
+  }
+
+  const text = `${result.title ?? ''} ${result.excerpt ?? ''}`.toLowerCase();
+
+  if (intent.queryType === 'company_entity' && intent.extractedEntity) {
+    const tokens = intent.extractedEntity
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((token) => token.length > 2);
+    const matchCount = tokens.filter((token) => text.includes(token)).length;
+    return matchCount >= Math.min(2, tokens.length);
+  }
+
+  if (intent.queryType === 'financial_record') {
+    return result.scope === 'zoho_books';
+  }
+
+  if (intent.queryType === 'person_entity' && intent.extractedEntity) {
+    const firstName = intent.extractedEntity.toLowerCase().split(/\s+/)[0];
+    return text.includes(firstName);
+  }
+
+  return result.score >= 0.65;
+}
+
+export function getAuthorityLevel(scope: string): 'authoritative' | 'documentary' | 'contextual' | 'public' {
+  if (scope === 'zoho_books' || scope === 'zoho_crm') return 'authoritative';
+  if (scope === 'files' || scope === 'workspace') return 'documentary';
+  if (scope === 'personal_history' || scope === 'lark_contacts') return 'contextual';
+  if (scope === 'web') return 'public';
+  return 'contextual';
+}
 
 const parseDate = (value: string | undefined, edge: 'start' | 'end'): Date | null => {
   const trimmed = value?.trim();
@@ -678,6 +744,7 @@ const searchZohoBooksLive = async (input: {
   runtime: ContextSearchBrokerRuntime;
   query: string;
   limit: number;
+  companyLookup?: boolean;
 }): Promise<ContextSearchBrokerResult[]> => {
   const queries = buildZohoBooksSearchQueries(input.query);
   if (queries.length === 0) return [];
@@ -694,7 +761,7 @@ const searchZohoBooksLive = async (input: {
   const seen = new Set<string>();
   const perPage = 200;
   const maxPages = 20;
-  const companyLookup = isCompanyEntityLookupQuery(input.query);
+  const companyLookup = input.companyLookup ?? false;
 
   const pushCandidate = (record: Record<string, unknown>, resolvedOrganizationId: string | undefined, rankIndex: number) => {
     const contactId = readString(record.contact_id) ?? readString(record.id);
@@ -992,20 +1059,25 @@ class ContextSearchBrokerService {
   }
 
   async search(input: ContextSearchBrokerSearchInput): Promise<ContextSearchBrokerSearchOutput> {
-  const query = input.query.trim();
-  const limit = Math.max(1, Math.min(input.limit ?? 5, 10));
-  const sources = this.normalizeSources(input.sources);
-  const companyEntityLookup = isCompanyEntityLookupQuery(query);
-  if (companyEntityLookup) {
-    sources.larkContacts = false;
-    sources.zohoBooksLive = true;
-  }
-  const searchStrategy = inferSearchScaleStrategy({
-    query,
-    explicitSourcesProvided: Boolean(input.sources),
-      site: input.site,
+    const query = input.query.trim();
+    const requestedLimit = Math.max(1, Math.min(input.limit ?? 5, 10));
+    const sources = this.normalizeSources(input.sources);
+    const searchIntent = await getCachedSearchIntent({
+      runtime: input.runtime,
+      message: query,
     });
-    applySearchScaleStrategy(sources, searchStrategy, Boolean(input.runtime.workspace?.path));
+    const companyEntityLookup = searchIntent.queryType === 'company_entity';
+    const weights = computeSourceWeights(searchIntent);
+    const internalLimit = computeInternalLimit(searchIntent, requestedLimit);
+    if (!input.sources) {
+      selectInitialSources(searchIntent, weights, sources);
+    } else {
+      for (const key of Object.keys(sources) as ContextSearchBrokerSourceKey[]) {
+        if (weights[key] <= 0) {
+          sources[key] = false;
+        }
+      }
+    }
     const dateFrom = parseDate(input.dateFrom, 'start');
     const dateTo = parseDate(input.dateTo, 'end');
     const sourceCoverage = Object.fromEntries(
@@ -1015,58 +1087,17 @@ class ContextSearchBrokerService {
         resultCount: 0,
       }]),
     ) as Record<ContextSearchBrokerSourceKey, SourceCoverage>;
-    const escalationStages: string[] = searchStrategy === 'broad_first' ? ['broad_first'] : [];
+    const escalationStages: string[] = [];
 
     const results: ContextSearchBrokerResult[] = [];
 
-    const runSource = async (
-      key: ContextSearchBrokerSourceKey,
-      fn: () => Promise<ContextSearchBrokerResult[]>,
-    ) => {
-      if (!sources[key]) return;
-      try {
-        const hits = await fn();
-        sourceCoverage[key].resultCount = hits.length;
-        if (hits.length === 0 && key === 'workspace' && !input.runtime.workspace?.path) {
-          sourceCoverage[key].status = 'unavailable';
-          return;
-        }
-        results.push(...hits);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        sourceCoverage[key].status = 'error';
-        sourceCoverage[key].error = message;
-        logger.warn('context.search.broker.source_failed', {
-          companyId: input.runtime.companyId,
-          channel: input.runtime.channel,
-          source: key,
-          error: message,
-        });
-      }
-    };
-
-    const enableSource = (key: ContextSearchBrokerSourceKey, stageLabel: string): boolean => {
-      if (sources[key]) {
-        return false;
-      }
-      sources[key] = true;
-      sourceCoverage[key].enabled = true;
-      sourceCoverage[key].status = 'queried';
-      sourceCoverage[key].resultCount = 0;
-      delete sourceCoverage[key].error;
-      if (!escalationStages.includes(stageLabel)) {
-        escalationStages.push(stageLabel);
-      }
-      return true;
-    };
-
-    await Promise.all([
-      runSource('personalHistory', async () => {
+    const sourceRunners: Record<ContextSearchBrokerSourceKey, () => Promise<ContextSearchBrokerResult[]>> = {
+      personalHistory: async () => {
         const matches = await personalVectorMemoryService.query({
           companyId: input.runtime.companyId,
           requesterUserId: input.runtime.userId,
           text: query,
-          limit,
+          limit: internalLimit,
         });
         const normalized = await Promise.all(matches.map(async (match) => {
           const chunk = await vectorDocumentRepository.findChunkByText({
@@ -1097,12 +1128,12 @@ class ContextSearchBrokerService {
           } satisfies ContextSearchBrokerResult;
         }));
         return normalized.filter((entry): entry is ContextSearchBrokerResult => Boolean(entry));
-      }),
-      runSource('files', async () => {
+      },
+      files: async () => {
         const search = await fileRetrievalService.search({
           companyId: input.runtime.companyId,
           query,
-          limit,
+          limit: internalLimit,
           requesterAiRole: input.runtime.requesterAiRole,
           preferParentContext: true,
         });
@@ -1127,13 +1158,13 @@ class ContextSearchBrokerService {
             fileName: match.fileName,
             title: match.fileName,
           }];
-        }).slice(0, limit);
-      }),
-      runSource('larkContacts', async () => {
+        }).slice(0, internalLimit);
+      },
+      larkContacts: async () => {
         const people = await channelIdentityRepository.searchLarkContacts({
           companyId: input.runtime.companyId,
           query,
-          limit,
+          limit: internalLimit,
         });
         return people.map((person, index) => {
           const sourceId = readString(person.larkOpenId)
@@ -1166,14 +1197,14 @@ class ContextSearchBrokerService {
             title: readString(person.displayName) ?? readString(person.email),
           } satisfies ContextSearchBrokerResult;
         }).filter((entry) => Boolean(entry.sourceId));
-      }),
-      runSource('zohoCrmContext', async () => {
+      },
+      zohoCrmContext: async () => {
         const matches = await zohoRetrievalService.query({
           companyId: input.runtime.companyId,
           requesterUserId: input.runtime.userId,
           requesterEmail: input.runtime.requesterEmail,
           text: query,
-          limit,
+          limit: internalLimit,
         });
         return matches.flatMap((match) => {
           const chunkText = readString(match.payload._chunk) ?? readString(match.payload.text);
@@ -1198,23 +1229,24 @@ class ContextSearchBrokerService {
             title: readString(match.payload.citationTitle) ?? readString(match.payload.title),
           }];
         });
+      },
+      zohoBooksLive: async () => searchZohoBooksLive({
+        runtime: input.runtime,
+        query,
+        limit: internalLimit,
+        companyLookup: companyEntityLookup,
       }),
-      runSource('zohoBooksLive', async () => searchZohoBooksLive({
+      workspace: async () => searchWorkspace({
         runtime: input.runtime,
         query,
-        limit,
-      })),
-      runSource('workspace', async () => searchWorkspace({
-        runtime: input.runtime,
-        query,
-        limit,
-      })),
-      runSource('web', async () => {
+        limit: internalLimit,
+      }),
+      web: async () => {
         const result = await webSearchService.search({
           query,
           exactDomain: input.site?.trim() || undefined,
-          searchResultsLimit: limit,
-          pageContextLimit: Math.min(input.webMode === 'fetchPageContext' ? 4 : 2, limit),
+          searchResultsLimit: internalLimit,
+          pageContextLimit: Math.min(input.webMode === 'fetchPageContext' ? 4 : 2, internalLimit),
           ...(input.webMode === 'fetchPageContext' ? { crawlUrl: query } : {}),
         });
         return result.items.map((item, index) => {
@@ -1240,13 +1272,13 @@ class ContextSearchBrokerService {
             url: item.link,
           } satisfies ContextSearchBrokerResult;
         });
-      }),
-      runSource('skills', async () => {
+      },
+      skills: async () => {
         const skills = await skillService.searchVisibleSkills({
           companyId: input.runtime.companyId,
           departmentId: input.runtime.departmentId,
           query,
-          limit,
+          limit: internalLimit,
         });
         return skills.map((skill, index) => ({
           scope: 'skills',
@@ -1265,112 +1297,122 @@ class ContextSearchBrokerService {
           skillId: skill.id,
           skillSlug: skill.slug,
         }));
-      }),
-    ]);
+      },
+    };
 
-    let topResults = rankContextSearchResults(results, { query, limit });
+    const runSource = async (
+      key: ContextSearchBrokerSourceKey,
+      fn: () => Promise<ContextSearchBrokerResult[]>,
+    ) => {
+      if (!sources[key]) return;
+      try {
+        const hits = await fn();
+        sourceCoverage[key].resultCount = hits.length;
+        if (hits.length === 0 && key === 'workspace' && !input.runtime.workspace?.path) {
+          sourceCoverage[key].status = 'unavailable';
+          return;
+        }
+        results.push(...hits);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        sourceCoverage[key].status = 'error';
+        sourceCoverage[key].error = message;
+        logger.warn('context.search.broker.source_failed', {
+          companyId: input.runtime.companyId,
+          channel: input.runtime.channel,
+          source: key,
+          error: message,
+        });
+      }
+    };
 
-    if (topResults.length === 0) {
-      const enabledBroaderInternal =
-        enableSource('zohoBooksLive', 'broader_internal_live')
-        || enableSource('zohoCrmContext', 'broader_internal_live');
+    const runNewlyEnabledSources = async (keys: ContextSearchBrokerSourceKey[]) => {
+      await Promise.all(keys.map((key) => runSource(key, sourceRunners[key])));
+    };
 
-      if (enabledBroaderInternal) {
-        await Promise.all([
-          runSource('zohoCrmContext', async () => {
-            const matches = await zohoRetrievalService.query({
-              companyId: input.runtime.companyId,
-              requesterUserId: input.runtime.userId,
-              requesterEmail: input.runtime.requesterEmail,
-              text: query,
-              limit,
-            });
-            return matches.flatMap((match) => {
-              const chunkText = readString(match.payload._chunk) ?? readString(match.payload.text);
-              if (!chunkText) return [];
-              const asOf = readString(match.payload.sourceUpdatedAt) ?? readString(match.payload.updatedAt) ?? readString(match.payload.createdAt);
-              if (!dateMatches(asOf, dateFrom, dateTo)) return [];
-              return [{
-                scope: 'zoho_crm',
-                sourceType: match.sourceType,
-                sourceId: match.sourceId,
-                chunkIndex: match.chunkIndex,
-                score: match.score,
-                excerpt: normalizeText(chunkText),
-                chunkRef: buildChunkRef('zoho_crm', match.sourceType, match.sourceId, match.chunkIndex),
-                sourceLabel: buildSourceLabel({
-                  scope: 'zoho_crm',
-                  title: readString(match.payload.citationTitle) ?? readString(match.payload.title),
-                  sourceType: match.sourceType,
-                  asOf,
-                }),
-                asOf,
-                title: readString(match.payload.citationTitle) ?? readString(match.payload.title),
-              }];
-            });
-          }),
-          runSource('zohoBooksLive', async () => searchZohoBooksLive({
-            runtime: input.runtime,
-            query,
-            limit,
-          })),
-        ]);
+    const rerankResults = () => rankContextSearchResults(results, {
+      query,
+      limit: internalLimit,
+      companyLookup: companyEntityLookup,
+      weights,
+    });
 
-        topResults = rankContextSearchResults(results, { query, limit });
+    const enableSource = (key: ContextSearchBrokerSourceKey, stageLabel: string): boolean => {
+      if (sources[key]) {
+        return false;
+      }
+      sources[key] = true;
+      sourceCoverage[key].enabled = true;
+      sourceCoverage[key].status = 'queried';
+      sourceCoverage[key].resultCount = 0;
+      delete sourceCoverage[key].error;
+      if (!escalationStages.includes(stageLabel)) {
+        escalationStages.push(stageLabel);
+      }
+      return true;
+    };
+
+    await runNewlyEnabledSources(
+      (Object.keys(sources) as ContextSearchBrokerSourceKey[]).filter((key) => sources[key]),
+    );
+
+    let topResults = rerankResults();
+    let consistentResults = topResults.filter((result) => isEntityConsistentResult(result, searchIntent));
+
+    if (consistentResults.length === 0) {
+      const round2Sources = ([
+        'zohoBooksLive',
+        'zohoCrmContext',
+        'files',
+        'workspace',
+        'personalHistory',
+        'larkContacts',
+      ] as ContextSearchBrokerSourceKey[]).filter((key) => {
+        const weight = weights[key];
+        return weight > 0 && !sourceCoverage[key].enabled;
+      });
+
+      if (round2Sources.length > 0) {
+        for (const key of round2Sources) {
+          enableSource(key, 'broader_internal');
+        }
+        await runNewlyEnabledSources(round2Sources);
+        topResults = rerankResults();
+        consistentResults = topResults.filter((result) => isEntityConsistentResult(result, searchIntent));
       }
     }
 
-    if (topResults.length === 0 && enableSource('web', 'web_last')) {
-      await runSource('web', async () => {
-        const result = await webSearchService.search({
-          query,
-          exactDomain: input.site?.trim() || undefined,
-          searchResultsLimit: limit,
-          pageContextLimit: Math.min(input.webMode === 'fetchPageContext' ? 4 : 2, limit),
-          ...(input.webMode === 'fetchPageContext' ? { crawlUrl: query } : {}),
-        });
-        return result.items.map((item, index) => {
-          const encodedUrl = encodeRefSegment(item.link);
-          const excerpt = normalizeText(item.pageContext?.excerpt ?? item.snippet ?? '');
-          return {
-            scope: 'web',
-            sourceType: 'web_result',
-            sourceId: encodedUrl,
-            chunkIndex: 0,
-            score: Math.max(1 - index * 0.05, 0.5),
-            excerpt,
-            chunkRef: buildChunkRef('web', 'web_result', encodedUrl, 0),
-            sourceLabel: buildSourceLabel({
-              scope: 'web',
-              title: item.title,
-              sourceType: 'web_result',
-              asOf: item.date,
-              domain: item.domain,
-            }),
-            asOf: item.date,
-            title: item.title,
-            url: item.link,
-          } satisfies ContextSearchBrokerResult;
-        });
-      });
-
-      topResults = rankContextSearchResults(results, { query, limit });
+    if (consistentResults.length === 0 && weights.web > 0 && enableSource('web', 'web_last')) {
+      await runNewlyEnabledSources(['web']);
+      topResults = rerankResults();
+      consistentResults = topResults.filter((result) => isEntityConsistentResult(result, searchIntent));
     }
 
-    const resolvedEntities = buildResolvedEntities(topResults);
-    const citations = this.toCitations(topResults);
+    const finalResults = (consistentResults.length > 0 ? consistentResults : [])
+      .slice(0, requestedLimit)
+      .map((result) => ({
+        ...result,
+        authorityLevel: getAuthorityLevel(result.scope),
+      }));
+
+    const resolvedEntities = buildResolvedEntities(finalResults);
+    const citations = this.toCitations(finalResults);
+    const sourcesChecked = Object.entries(sourceCoverage)
+      .filter(([, value]) => value.enabled)
+      .map(([key]) => key)
+      .join(', ');
+    const searchSummary = finalResults.length > 0
+      ? `Found ${finalResults.length} result(s) matching "${searchIntent.extractedEntity ?? query}" across ${sourcesChecked}.`
+      : `No matching records found for "${searchIntent.extractedEntity ?? query}". Checked: ${sourcesChecked}.`;
 
     return {
-      results: topResults,
-      matches: topResults,
+      results: finalResults,
+      matches: finalResults,
       resolvedEntities,
       sourceCoverage,
       citations,
-      nextFetchRefs: topResults.map((result) => result.chunkRef),
-      searchSummary:
-        topResults.length > 0
-          ? `Found ${topResults.length} result${topResults.length === 1 ? '' : 's'} across ${Object.values(sourceCoverage).filter((entry) => entry.enabled && entry.resultCount > 0).length} source${Object.values(sourceCoverage).filter((entry) => entry.enabled && entry.resultCount > 0).length === 1 ? '' : 's'}${escalationStages.length > 0 ? ` after ${escalationStages.join(' -> ')}.` : '.'}`
-          : `No relevant context was found for "${query}".`,
+      nextFetchRefs: finalResults.map((result) => result.chunkRef),
+      searchSummary,
     };
   }
 

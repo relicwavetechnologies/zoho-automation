@@ -6,6 +6,7 @@ export * from './executor';
 export * from './synthesis';
 
 import type { QueryEnrichment } from '../query-enrichment.service';
+import type { SearchIntent } from '../search-intent-classifier';
 import { resolveVercelLanguageModel } from '../vercel/model-factory';
 import {
   buildSupervisorAgentCatalog,
@@ -100,6 +101,7 @@ export const planSupervisorDelegation = async (
           resolvedIds?: Record<string, string>;
         }>;
         threadSummary?: string;
+        searchIntent?: SearchIntent;
         supervisorProgress?: {
           runId: string;
           completedSteps: Array<{
@@ -132,6 +134,7 @@ export const planSupervisorDelegation = async (
           resolvedIds?: Record<string, string>;
         }>;
         threadSummary?: string;
+        searchIntent?: SearchIntent;
         supervisorProgress?: {
           runId: string;
           completedSteps: Array<{
@@ -178,6 +181,7 @@ export const planSupervisorDelegation = async (
     childRouteHints: input.childRouteHints ?? undefined,
     recentTaskSummaries: input.recentTaskSummaries,
     threadSummary: input.threadSummary,
+    searchIntent: input.searchIntent,
     supervisorProgress: input.supervisorProgress,
   });
 };

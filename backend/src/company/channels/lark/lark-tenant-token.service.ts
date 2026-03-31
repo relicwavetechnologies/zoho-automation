@@ -1,5 +1,6 @@
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
+import { redisTokenCache } from '../../../utils/redis-token-cache';
 
 type LarkTokenServiceOptions = {
   apiBaseUrl?: string;
@@ -47,6 +48,9 @@ const readMessage = (payload: unknown): string => {
   }
   return 'Unknown Lark token response';
 };
+
+const buildTokenCacheKey = (appId: string) => `lark:tenant-token:${appId}`;
+const buildInflightLockKey = (appId: string) => `lark:tenant-token:${appId}:inflight`;
 
 export class LarkTenantTokenService {
   private readonly apiBaseUrl: string;
@@ -98,11 +102,34 @@ export class LarkTenantTokenService {
       return this.cached!.token;
     }
 
+    if (!forceRefresh) {
+      const redisCached = await redisTokenCache.get(buildTokenCacheKey(this.appId));
+      if (redisCached && this.now() + this.refreshBufferMs < redisCached.expiresAtMs) {
+        this.cached = {
+          token: redisCached.token,
+          expiresAtMs: redisCached.expiresAtMs,
+        };
+        return redisCached.token;
+      }
+    }
+
     if (!this.hasAutoCredentials()) {
       return this.resolveStaticFallback('missing_app_credentials');
     }
 
     if (!this.refreshInFlight) {
+      const lockAcquired = await redisTokenCache.acquireLock(buildInflightLockKey(this.appId), 10);
+      if (!lockAcquired && !forceRefresh) {
+        const waited = await redisTokenCache.waitForToken(buildTokenCacheKey(this.appId), 10_000);
+        if (waited && this.now() + this.refreshBufferMs < waited.expiresAtMs) {
+          this.cached = {
+            token: waited.token,
+            expiresAtMs: waited.expiresAtMs,
+          };
+          return waited.token;
+        }
+      }
+
       this.refreshInFlight = this.refreshTokenWithRetry().finally(() => {
         this.refreshInFlight = null;
       });
@@ -233,6 +260,7 @@ export class LarkTenantTokenService {
       token: payload.tenant_access_token,
       expiresAtMs,
     };
+    await redisTokenCache.set(buildTokenCacheKey(this.appId), payload.tenant_access_token, expiresAtMs);
 
     this.log.info('lark.tenant_token.refresh_success', {
       expiresInSeconds: payload.expire,

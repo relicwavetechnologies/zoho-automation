@@ -8,6 +8,7 @@ import { ZodError, z } from 'zod';
 import config from '../../../config';
 import { conversationMemoryStore } from '../../state/conversation';
 import { logger } from '../../../utils/logger';
+import { withProviderRetry } from '../../../utils/provider-retry';
 import { contextSearchBrokerService } from '../../retrieval/context-search-broker.service';
 import { getSupportedToolActionGroups, type ToolActionGroup } from '../../tools/tool-action-groups';
 import { companyGoogleAuthLinkRepository } from '../../channels/google/company-google-auth-link.repository';
@@ -1330,6 +1331,134 @@ const buildEnvelope = (input: {
   };
 };
 
+export const BOOKS_MODULE_PROJECTION: Record<string, string[]> = {
+  invoices: ['invoice_id', 'invoice_number', 'customer_name', 'total', 'balance', 'due_date', 'status', 'currency_code'],
+  contacts: ['contact_id', 'contact_name', 'company_name', 'email', 'outstanding_receivable_amount', 'outstanding_payable_amount', 'status'],
+  bills: ['bill_id', 'bill_number', 'vendor_name', 'total', 'balance', 'due_date', 'status', 'currency_code'],
+  estimates: ['estimate_id', 'estimate_number', 'customer_name', 'total', 'expiry_date', 'status', 'currency_code'],
+  creditnotes: ['creditnote_id', 'creditnote_number', 'customer_name', 'total', 'balance', 'status', 'currency_code'],
+  salesorders: ['salesorder_id', 'salesorder_number', 'customer_name', 'total', 'status', 'shipment_date', 'currency_code'],
+  purchaseorders: ['purchaseorder_id', 'purchaseorder_number', 'vendor_name', 'total', 'status', 'delivery_date', 'currency_code'],
+  payments: ['payment_id', 'payment_number', 'customer_name', 'amount', 'payment_date', 'payment_mode', 'invoice_numbers'],
+  vendorpayments: ['vendorpayment_id', 'payment_number', 'vendor_name', 'amount', 'payment_date', 'payment_mode'],
+  banktransactions: ['transaction_id', 'date', 'payee', 'debit_amount', 'credit_amount', 'status', 'account_name'],
+  accounts: ['account_id', 'account_name', 'account_type', 'current_balance', 'currency_code'],
+  expenses: ['expense_id', 'date', 'vendor_name', 'total', 'status', 'account_name', 'currency_code'],
+};
+
+export const BOOKS_LARGE_RESULT_THRESHOLD = 40;
+
+export const projectRecord = (
+  record: Record<string, unknown>,
+  moduleName: string,
+): Record<string, unknown> => {
+  const fields = BOOKS_MODULE_PROJECTION[moduleName];
+  if (!fields) {
+    return record;
+  }
+  return Object.fromEntries(
+    fields
+      .filter((field) => record[field] !== undefined && record[field] !== null)
+      .map((field) => [field, record[field]]),
+  );
+};
+
+export const buildBooksReadRecordsEnvelope = (input: {
+  moduleName: string;
+  organizationId?: string;
+  resultItems: Array<Record<string, unknown>>;
+  raw?: Record<string, unknown>;
+  summarizeOnly?: boolean;
+}): VercelToolEnvelope => {
+  const isLargeResult = input.resultItems.length > BOOKS_LARGE_RESULT_THRESHOLD;
+  const projectedItems = isLargeResult
+    ? input.resultItems.map((item) => projectRecord(item, input.moduleName))
+    : input.resultItems;
+  const projectionNote = isLargeResult
+    ? ' Results projected to essential fields to stay within context limits.'
+    : '';
+
+  if (input.summarizeOnly) {
+    const statusCounts = input.resultItems.reduce<Record<string, number>>((acc, item) => {
+      const status = asString(item.status) ?? 'unknown';
+      acc[status] = (acc[status] ?? 0) + 1;
+      return acc;
+    }, {});
+    return buildEnvelope({
+      success: true,
+      summary:
+        (input.resultItems.length > 0
+          ? `Summarized ${input.resultItems.length} Zoho Books ${input.moduleName} record(s).`
+          : `No Zoho Books ${input.moduleName} records matched the current filters.`) + projectionNote,
+      keyData: {
+        module: input.moduleName,
+        organizationId: input.organizationId,
+        recordCount: input.resultItems.length,
+        resultCount: input.resultItems.length,
+        statusCounts,
+        ...(isLargeResult
+          ? { projectedFields: BOOKS_MODULE_PROJECTION[input.moduleName] ?? null }
+          : {}),
+      },
+      fullPayload: {
+        organizationId: input.organizationId,
+        statusCounts,
+        records: projectedItems,
+        ...(isLargeResult ? {} : { raw: input.raw }),
+      },
+    });
+  }
+
+  return buildEnvelope({
+    success: true,
+    summary:
+      (input.resultItems.length > 0
+        ? `Found ${input.resultItems.length} Zoho Books ${input.moduleName} record(s).`
+        : `No Zoho Books ${input.moduleName} records matched the current filters.`) + projectionNote,
+    keyData: {
+      module: input.moduleName,
+      organizationId: input.organizationId,
+      recordCount: input.resultItems.length,
+      resultCount: input.resultItems.length,
+      ...(isLargeResult
+        ? { projectedFields: BOOKS_MODULE_PROJECTION[input.moduleName] ?? null }
+        : {}),
+    },
+    fullPayload: {
+      organizationId: input.organizationId,
+      records: projectedItems,
+      ...(isLargeResult ? {} : { raw: input.raw }),
+    },
+    citations: projectedItems.flatMap((record, index) => {
+      const recordId =
+        asString(record.contact_id) ??
+        asString(record.vendor_payment_id) ??
+        asString(record.account_id) ??
+        asString(record.invoice_id) ??
+        asString(record.estimate_id) ??
+        asString(record.creditnote_id) ??
+        asString(record.bill_id) ??
+        asString(record.salesorder_id) ??
+        asString(record.purchaseorder_id) ??
+        asString(record.payment_id) ??
+        asString(record.bank_transaction_id) ??
+        asString(record.transaction_id);
+      if (!recordId) {
+        return [];
+      }
+      return [
+        {
+          id: `books-${input.moduleName}-${index + 1}`,
+          title: `${input.moduleName}:${recordId}`,
+          kind: 'record',
+          sourceType: input.moduleName,
+          sourceId: recordId,
+        },
+      ];
+    }),
+  });
+};
+
 const buildZodBoundaryEnvelope = (
   error: ZodError,
   toolName: string,
@@ -1409,6 +1538,7 @@ const buildZohoGatewayRequester = (
   companyId: runtime.companyId,
   userId: runtime.userId,
   departmentId: runtime.departmentId,
+  departmentRoleId: runtime.departmentRoleId,
   departmentRoleSlug: runtime.departmentRoleSlug,
   requesterEmail: runtime.requesterEmail,
   requesterAiRole: runtime.requesterAiRole,
@@ -1613,7 +1743,7 @@ const buildCrmMutationAuthorizationTarget = (input: {
   recordId: input.recordId,
 });
 
-const getAllowedActionGroups = (
+export const getAllowedActionGroups = (
   runtime: VercelRuntimeRequestContext,
   toolId: string,
 ): ToolActionGroup[] => {
@@ -1627,7 +1757,7 @@ const getAllowedActionGroups = (
   return [];
 };
 
-const ensureActionPermission = (
+export const ensureActionPermission = (
   runtime: VercelRuntimeRequestContext,
   toolId: string,
   actionGroup: ToolActionGroup,
@@ -2436,6 +2566,46 @@ const resolveGoogleAccess = async (
   }
 
   return { accessToken, scopes: link.scopes };
+};
+
+const fetchGoogleApiResponseWithRetry = async (
+  accessToken: string,
+  url: string | URL,
+  init?: RequestInit,
+): Promise<Response> =>
+  withProviderRetry('google', async () => {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(init?.headers ?? {}),
+      },
+    });
+
+    if (!response.ok) {
+      const payload = await response.clone().json().catch(() => ({}));
+      const error: Error & {
+        status?: number;
+        headers?: Record<string, string>;
+        payload?: unknown;
+      } = new Error(`google_api_${response.status}`);
+      error.status = response.status;
+      error.headers = Object.fromEntries(response.headers.entries());
+      error.payload = payload;
+      throw error;
+    }
+
+    return response;
+  });
+
+const fetchGoogleApiJsonWithRetry = async <T = Record<string, unknown>>(
+  accessToken: string,
+  url: string | URL,
+  init?: RequestInit,
+): Promise<{ response: Response; payload: T }> => {
+  const response = await fetchGoogleApiResponseWithRetry(accessToken, url, init);
+  const payload = (await response.json().catch(() => ({}))) as T;
+  return { response, payload };
 };
 
 const listVisibleRuntimeFiles = async (
@@ -3326,41 +3496,47 @@ const summarizeActionResult = (
 
 const VERCEL_TOOL_PERMISSION_IDS: Record<string, string[]> = {
   webSearch: ['search-read', 'search-agent'],
-  contextSearch: ['context-search'],
-  documentOcrRead: ['document-ocr-read'],
+  contextSearch: ['contextSearch', 'context-search'],
+  documentOcrRead: ['documentRead', 'document-ocr-read'],
   invoiceParser: ['invoice-parser'],
   statementParser: ['statement-parser'],
-  workflowDraft: ['workflow-authoring'],
-  workflowPlan: ['workflow-authoring'],
-  workflowBuild: ['workflow-authoring'],
-  workflowValidate: ['workflow-authoring'],
-  workflowSave: ['workflow-authoring'],
-  workflowSchedule: ['workflow-authoring'],
-  workflowList: ['workflow-authoring'],
-  workflowArchive: ['workflow-authoring'],
-  workflowRun: ['workflow-authoring'],
-  skillSearch: ['skill-search'],
-  repo: ['repo'],
-  coding: ['coding'],
-  googleMail: ['google-gmail'],
-  googleDrive: ['google-drive'],
-  googleCalendar: ['google-calendar'],
-  zoho: ['search-zoho-context', 'read-zoho-records', 'zoho-agent', 'zoho-read', 'zoho-write'],
-  booksRead: ['zoho-books-read', 'zoho-books-agent'],
-  booksWrite: ['zoho-books-write', 'zoho-books-agent'],
-  outreach: ['read-outreach-publishers', 'outreach-agent'],
-  larkTask: ['lark-task-read', 'lark-task-write', 'lark-task-agent'],
-  larkMessage: ['lark-message-read', 'lark-message-write'],
+  workflowDraft: ['workflow', 'workflow-authoring'],
+  workflowPlan: ['workflow', 'workflow-authoring'],
+  workflowBuild: ['workflow', 'workflow-authoring'],
+  workflowValidate: ['workflow', 'workflow-authoring'],
+  workflowSave: ['workflow', 'workflow-authoring'],
+  workflowSchedule: ['workflow', 'workflow-authoring'],
+  workflowList: ['workflow', 'workflow-authoring'],
+  workflowArchive: ['workflow', 'workflow-authoring'],
+  workflowRun: ['workflow', 'workflow-authoring'],
+  workflow: ['workflow', 'workflow-authoring'],
+  skillSearch: ['devTools', 'skill-search'],
+  repo: ['devTools', 'repo'],
+  coding: ['devTools', 'coding'],
+  devTools: ['devTools', 'repo', 'coding', 'skill-search'],
+  googleMail: ['googleWorkspace', 'google-gmail'],
+  googleDrive: ['googleWorkspace', 'google-drive'],
+  googleCalendar: ['googleWorkspace', 'google-calendar'],
+  googleWorkspace: ['googleWorkspace', 'google-gmail', 'google-drive', 'google-calendar'],
+  zoho: ['zohoCrm', 'search-zoho-context', 'read-zoho-records', 'zoho-agent', 'zoho-read', 'zoho-write'],
+  zohoCrm: ['zohoCrm', 'search-zoho-context', 'read-zoho-records', 'zoho-agent', 'zoho-read', 'zoho-write'],
+  booksRead: ['zohoBooks', 'zoho-books-read', 'zoho-books-agent'],
+  booksWrite: ['zohoBooks', 'zoho-books-write', 'zoho-books-agent'],
+  zohoBooks: ['zohoBooks', 'zoho-books-read', 'zoho-books-write', 'zoho-books-agent'],
+  outreach: ['outreach', 'read-outreach-publishers', 'outreach-agent'],
+  larkTask: ['larkTask', 'lark-task-read', 'lark-task-write', 'lark-task-agent'],
+  larkMessage: ['larkMessage', 'lark-message-read', 'lark-message-write'],
   larkCalendar: [
+    'larkCalendar',
     'lark-calendar-list',
     'lark-calendar-read',
     'lark-calendar-write',
     'lark-calendar-agent',
   ],
-  larkMeeting: ['lark-meeting-read', 'lark-meeting-agent'],
-  larkApproval: ['lark-approval-read', 'lark-approval-write', 'lark-approval-agent'],
-  larkDoc: ['create-lark-doc', 'edit-lark-doc', 'lark-doc-agent'],
-  larkBase: ['lark-base-read', 'lark-base-write', 'lark-base-agent'],
+  larkMeeting: ['larkMeeting', 'lark-meeting-read', 'lark-meeting-agent'],
+  larkApproval: ['larkApproval', 'lark-approval-read', 'lark-approval-write', 'lark-approval-agent'],
+  larkDoc: ['larkDoc', 'create-lark-doc', 'edit-lark-doc', 'lark-doc-agent'],
+  larkBase: ['larkBase', 'lark-base-read', 'lark-base-write', 'lark-base-agent'],
 };
 
 const isVercelToolAllowed = (runtime: VercelRuntimeRequestContext, toolName: string): boolean => {
@@ -5468,19 +5644,8 @@ export const createVercelDesktopTools = (
 	            const url = new URL(`${baseUrl}/messages`);
             url.searchParams.set('maxResults', String(input.maxResults ?? 10));
             url.searchParams.set('q', input.query?.trim() || 'in:inbox');
-            const response = await fetch(url, {
-              headers: { Authorization: `Bearer ${access.accessToken}` },
-            });
-            const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-	            if (!response.ok) {
-	              return buildGmailEnvelope({
-	                success: false,
-	                summary: `Gmail list failed: ${(payload as any)?.error?.message ?? response.statusText}`,
-	                errorKind: 'api_failure',
-                retryable: true,
-                fullPayload: { status: response.status, payload },
-              });
-            }
+            try {
+              const { payload } = await fetchGoogleApiJsonWithRetry(access.accessToken, url);
 	            const items = asArray(payload.messages)
 	              .map((entry) => asRecord(entry))
 	              .filter(Boolean);
@@ -5502,6 +5667,16 @@ export const createVercelDesktopTools = (
 	                resultSizeEstimate: payload.resultSizeEstimate ?? items.length,
 	              },
 	            });
+            } catch (error) {
+              const payload = ((error as any)?.payload ?? {}) as Record<string, unknown>;
+	              return buildGmailEnvelope({
+	                success: false,
+	                summary: `Gmail list failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
+	                errorKind: 'api_failure',
+                retryable: true,
+                fullPayload: { status: (error as any)?.status, payload },
+              });
+            }
 	          }
 
           if (input.operation === 'getMessage') {
@@ -5515,19 +5690,8 @@ export const createVercelDesktopTools = (
             }
             const url = new URL(`${baseUrl}/messages/${messageId}`);
             url.searchParams.set('format', input.format ?? 'metadata');
-            const response = await fetch(url, {
-              headers: { Authorization: `Bearer ${access.accessToken}` },
-            });
-            const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-	            if (!response.ok) {
-	              return buildGmailEnvelope({
-	                success: false,
-	                summary: `Gmail getMessage failed: ${(payload as any)?.error?.message ?? response.statusText}`,
-	                errorKind: 'api_failure',
-                retryable: true,
-                fullPayload: { status: response.status, payload },
-              });
-            }
+            try {
+              const { payload } = await fetchGoogleApiJsonWithRetry(access.accessToken, url);
 	            const normalizedMessage = normalizeGmailMessage(payload);
 	            const fromLabel = asString(normalizedMessage.from) ?? 'unknown sender';
 	            const subjectLabel = asString(normalizedMessage.subject) ?? 'No subject';
@@ -5538,6 +5702,16 @@ export const createVercelDesktopTools = (
 	              keyData: normalizedMessage,
 	              fullPayload: normalizedMessage,
 	            });
+            } catch (error) {
+              const payload = ((error as any)?.payload ?? {}) as Record<string, unknown>;
+	              return buildGmailEnvelope({
+	                success: false,
+	                summary: `Gmail getMessage failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
+	                errorKind: 'api_failure',
+                retryable: true,
+                fullPayload: { status: (error as any)?.status, payload },
+              });
+            }
 	          }
 
           if (input.operation === 'getThread') {
@@ -5551,19 +5725,8 @@ export const createVercelDesktopTools = (
             }
             const url = new URL(`${baseUrl}/threads/${threadId}`);
             url.searchParams.set('format', input.format ?? 'metadata');
-            const response = await fetch(url, {
-              headers: { Authorization: `Bearer ${access.accessToken}` },
-            });
-            const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-	            if (!response.ok) {
-	              return buildGmailEnvelope({
-	                success: false,
-	                summary: `Gmail getThread failed: ${(payload as any)?.error?.message ?? response.statusText}`,
-	                errorKind: 'api_failure',
-                retryable: true,
-                fullPayload: { status: response.status, payload },
-              });
-            }
+            try {
+              const { payload } = await fetchGoogleApiJsonWithRetry(access.accessToken, url);
 	            return buildGmailEnvelope({
 	              success: true,
 	              summary: `Fetched thread ${threadId}.`,
@@ -5582,6 +5745,16 @@ export const createVercelDesktopTools = (
 	                  .map((entry) => normalizeGmailMessage(entry)),
 	              },
 	            });
+            } catch (error) {
+              const payload = ((error as any)?.payload ?? {}) as Record<string, unknown>;
+	              return buildGmailEnvelope({
+	                success: false,
+	                summary: `Gmail getThread failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
+	                errorKind: 'api_failure',
+                retryable: true,
+                fullPayload: { status: (error as any)?.status, payload },
+              });
+            }
 	          }
 
           if (input.operation === 'createDraft') {
@@ -5834,28 +6007,27 @@ export const createVercelDesktopTools = (
             url.searchParams.set('fields', input.fields ?? defaultFields);
             if (input.query) url.searchParams.set('q', input.query);
             if (input.orderBy) url.searchParams.set('orderBy', input.orderBy);
-            const response = await fetch(url, {
-              headers: { Authorization: `Bearer ${access.accessToken}` },
-            });
-            const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-            if (!response.ok) {
+            try {
+              const { payload } = await fetchGoogleApiJsonWithRetry(access.accessToken, url);
+              const items = asArray(payload.files)
+                .map((entry) => asRecord(entry))
+                .filter(Boolean);
+              return buildEnvelope({
+                success: true,
+                summary: `Found ${items.length} file(s).`,
+                keyData: { items },
+                fullPayload: payload,
+              });
+            } catch (error) {
+              const payload = ((error as any)?.payload ?? {}) as Record<string, unknown>;
               return buildEnvelope({
                 success: false,
-                summary: `Drive list failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+                summary: `Drive list failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
                 errorKind: 'api_failure',
                 retryable: true,
-                fullPayload: { status: response.status, payload },
+                fullPayload: { status: (error as any)?.status, payload },
               });
             }
-            const items = asArray(payload.files)
-              .map((entry) => asRecord(entry))
-              .filter(Boolean);
-            return buildEnvelope({
-              success: true,
-              summary: `Found ${items.length} file(s).`,
-              keyData: { items },
-              fullPayload: payload,
-            });
           }
 
           if (input.operation === 'getFile') {
@@ -5873,25 +6045,24 @@ export const createVercelDesktopTools = (
               input.fields ??
                 'id,name,mimeType,modifiedTime,webViewLink,webContentLink,size,owners(emailAddress,displayName)',
             );
-            const response = await fetch(url, {
-              headers: { Authorization: `Bearer ${access.accessToken}` },
-            });
-            const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-            if (!response.ok) {
+            try {
+              const { payload } = await fetchGoogleApiJsonWithRetry(access.accessToken, url);
+              return buildEnvelope({
+                success: true,
+                summary: `Fetched file ${fileId}.`,
+                keyData: { fileId },
+                fullPayload: payload,
+              });
+            } catch (error) {
+              const payload = ((error as any)?.payload ?? {}) as Record<string, unknown>;
               return buildEnvelope({
                 success: false,
-                summary: `Drive getFile failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+                summary: `Drive getFile failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
                 errorKind: 'api_failure',
                 retryable: true,
-                fullPayload: { status: response.status, payload },
+                fullPayload: { status: (error as any)?.status, payload },
               });
             }
-            return buildEnvelope({
-              success: true,
-              summary: `Fetched file ${fileId}.`,
-              keyData: { fileId },
-              fullPayload: payload,
-            });
           }
 
           if (input.operation === 'downloadFile') {
@@ -5909,67 +6080,62 @@ export const createVercelDesktopTools = (
                 'fields',
                 'id,name,webContentLink,webViewLink,mimeType,size',
               );
-              const metaResponse = await fetch(metaUrl, {
-                headers: { Authorization: `Bearer ${access.accessToken}` },
-              });
-              const metaPayload = (await metaResponse.json().catch(() => ({}))) as Record<
-                string,
-                unknown
-              >;
-              if (!metaResponse.ok) {
+              try {
+                const { payload: metaPayload } = await fetchGoogleApiJsonWithRetry(access.accessToken, metaUrl);
+                return buildEnvelope({
+                  success: true,
+                  summary: 'Generated Drive download link.',
+                  keyData: {
+                    fileId,
+                    name: asString(metaPayload.name),
+                    webContentLink: asString(metaPayload.webContentLink),
+                    webViewLink: asString(metaPayload.webViewLink),
+                  },
+                  fullPayload: metaPayload,
+                });
+              } catch (error) {
+                const metaPayload = ((error as any)?.payload ?? {}) as Record<string, unknown>;
                 return buildEnvelope({
                   success: false,
-                  summary: `Drive metadata failed: ${(metaPayload as any)?.error?.message ?? metaResponse.statusText}`,
+                  summary: `Drive metadata failed: ${(metaPayload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
                   errorKind: 'api_failure',
                   retryable: true,
-                  fullPayload: { status: metaResponse.status, payload: metaPayload },
+                  fullPayload: { status: (error as any)?.status, payload: metaPayload },
                 });
               }
-              return buildEnvelope({
-                success: true,
-                summary: 'Generated Drive download link.',
-                keyData: {
-                  fileId,
-                  name: asString(metaPayload.name),
-                  webContentLink: asString(metaPayload.webContentLink),
-                  webViewLink: asString(metaPayload.webViewLink),
-                },
-                fullPayload: metaPayload,
-              });
             }
 
             const url = new URL(`${baseUrl}/${fileId}`);
             url.searchParams.set('alt', 'media');
-            const response = await fetch(url, {
-              headers: { Authorization: `Bearer ${access.accessToken}` },
-            });
-            if (!response.ok) {
-              const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+            try {
+              const response = await fetchGoogleApiResponseWithRetry(access.accessToken, url);
+              const buffer = Buffer.from(await response.arrayBuffer());
+              const maxBytes = input.maxBytes ?? 2_000_000;
+              if (buffer.length > maxBytes) {
+                return buildEnvelope({
+                  success: false,
+                  summary: `Drive file is too large (${buffer.length} bytes).`,
+                  errorKind: 'validation',
+                  retryable: false,
+                  userAction: `Reduce size or increase maxBytes (<= 5,000,000).`,
+                });
+              }
+              return buildEnvelope({
+                success: true,
+                summary: `Downloaded file ${fileId} (${buffer.length} bytes).`,
+                keyData: { fileId, size: buffer.length },
+                fullPayload: { fileId, base64: buffer.toString('base64') },
+              });
+            } catch (error) {
+              const payload = ((error as any)?.payload ?? {}) as Record<string, unknown>;
               return buildEnvelope({
                 success: false,
-                summary: `Drive download failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+                summary: `Drive download failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
                 errorKind: 'api_failure',
                 retryable: true,
-                fullPayload: { status: response.status, payload },
+                fullPayload: { status: (error as any)?.status, payload },
               });
             }
-            const buffer = Buffer.from(await response.arrayBuffer());
-            const maxBytes = input.maxBytes ?? 2_000_000;
-            if (buffer.length > maxBytes) {
-              return buildEnvelope({
-                success: false,
-                summary: `Drive file is too large (${buffer.length} bytes).`,
-                errorKind: 'validation',
-                retryable: false,
-                userAction: `Reduce size or increase maxBytes (<= 5,000,000).`,
-              });
-            }
-            return buildEnvelope({
-              success: true,
-              summary: `Downloaded file ${fileId} (${buffer.length} bytes).`,
-              keyData: { fileId, size: buffer.length },
-              fullPayload: { fileId, base64: buffer.toString('base64') },
-            });
           }
 
           if (input.operation === 'createFolder') {
@@ -6157,31 +6323,30 @@ export const createVercelDesktopTools = (
           const calendarId = encodeURIComponent(input.calendarId?.trim() || 'primary');
 
           if (input.operation === 'listCalendars') {
-            const response = await fetch(
-              'https://www.googleapis.com/calendar/v3/users/me/calendarList',
-              {
-                headers: { Authorization: `Bearer ${access.accessToken}` },
-              },
-            );
-            const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-            if (!response.ok) {
+            try {
+              const { payload } = await fetchGoogleApiJsonWithRetry(
+                access.accessToken,
+                'https://www.googleapis.com/calendar/v3/users/me/calendarList',
+              );
+              const items = asArray(payload.items)
+                .map((entry) => asRecord(entry))
+                .filter(Boolean);
+              return buildEnvelope({
+                success: true,
+                summary: `Found ${items.length} Google calendar(s).`,
+                keyData: { calendars: items },
+                fullPayload: payload,
+              });
+            } catch (error) {
+              const payload = ((error as any)?.payload ?? {}) as Record<string, unknown>;
               return buildEnvelope({
                 success: false,
-                summary: `Google Calendar list failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+                summary: `Google Calendar list failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
                 errorKind: 'api_failure',
                 retryable: true,
-                fullPayload: { status: response.status, payload },
+                fullPayload: { status: (error as any)?.status, payload },
               });
             }
-            const items = asArray(payload.items)
-              .map((entry) => asRecord(entry))
-              .filter(Boolean);
-            return buildEnvelope({
-              success: true,
-              summary: `Found ${items.length} Google calendar(s).`,
-              keyData: { calendars: items },
-              fullPayload: payload,
-            });
           }
 
           if (input.operation === 'listEvents') {
@@ -6194,28 +6359,27 @@ export const createVercelDesktopTools = (
             url.searchParams.set('singleEvents', 'true');
             url.searchParams.set('maxResults', '50');
             url.searchParams.set('orderBy', 'startTime');
-            const response = await fetch(url, {
-              headers: { Authorization: `Bearer ${access.accessToken}` },
-            });
-            const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-            if (!response.ok) {
+            try {
+              const { payload } = await fetchGoogleApiJsonWithRetry(access.accessToken, url);
+              const items = asArray(payload.items)
+                .map((entry) => asRecord(entry))
+                .filter(Boolean);
+              return buildEnvelope({
+                success: true,
+                summary: `Found ${items.length} Google Calendar event(s).`,
+                keyData: { events: items },
+                fullPayload: payload,
+              });
+            } catch (error) {
+              const payload = ((error as any)?.payload ?? {}) as Record<string, unknown>;
               return buildEnvelope({
                 success: false,
-                summary: `Google Calendar event list failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+                summary: `Google Calendar event list failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
                 errorKind: 'api_failure',
                 retryable: true,
-                fullPayload: { status: response.status, payload },
+                fullPayload: { status: (error as any)?.status, payload },
               });
             }
-            const items = asArray(payload.items)
-              .map((entry) => asRecord(entry))
-              .filter(Boolean);
-            return buildEnvelope({
-              success: true,
-              summary: `Found ${items.length} Google Calendar event(s).`,
-              keyData: { events: items },
-              fullPayload: payload,
-            });
           }
 
           if (input.operation === 'getEvent') {
@@ -6227,28 +6391,27 @@ export const createVercelDesktopTools = (
                 errorKind: 'missing_input',
               });
             }
-            const response = await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}`,
-              {
-                headers: { Authorization: `Bearer ${access.accessToken}` },
-              },
-            );
-            const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-            if (!response.ok) {
+            try {
+              const { payload } = await fetchGoogleApiJsonWithRetry(
+                access.accessToken,
+                `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}`,
+              );
+              return buildEnvelope({
+                success: true,
+                summary: `Fetched Google Calendar event ${eventId}.`,
+                keyData: { event: payload },
+                fullPayload: payload,
+              });
+            } catch (error) {
+              const payload = ((error as any)?.payload ?? {}) as Record<string, unknown>;
               return buildEnvelope({
                 success: false,
-                summary: `Google Calendar getEvent failed: ${(payload as any)?.error?.message ?? response.statusText}`,
+                summary: `Google Calendar getEvent failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
                 errorKind: 'api_failure',
                 retryable: true,
-                fullPayload: { status: response.status, payload },
+                fullPayload: { status: (error as any)?.status, payload },
               });
             }
-            return buildEnvelope({
-              success: true,
-              summary: `Fetched Google Calendar event ${eventId}.`,
-              keyData: { event: payload },
-              fullPayload: payload,
-            });
           }
 
           if (input.operation === 'createEvent') {
@@ -7838,77 +8001,20 @@ export const createVercelDesktopTools = (
             const organizationId = asString(auth.organizationId);
 
             if (input.operation === 'summarizeModule') {
-              const statusCounts = resultItems.reduce<Record<string, number>>((acc, item) => {
-                const status = asString(item.status) ?? 'unknown';
-                acc[status] = (acc[status] ?? 0) + 1;
-                return acc;
-              }, {});
-              return buildEnvelope({
-                success: true,
-                summary:
-                  resultItems.length > 0
-                    ? `Summarized ${resultItems.length} Zoho Books ${moduleName} record(s).`
-                    : `No Zoho Books ${moduleName} records matched the current filters.`,
-                keyData: {
-                  module: moduleName,
-                  organizationId,
-                  recordCount: resultItems.length,
-                  resultCount: resultItems.length,
-                  statusCounts,
-                },
-                fullPayload: {
-                  organizationId,
-                  statusCounts,
-                  records: resultItems,
-                  raw: asRecord(resultPayload.raw),
-                },
+              return buildBooksReadRecordsEnvelope({
+                moduleName,
+                organizationId,
+                resultItems,
+                raw: asRecord(resultPayload.raw) ?? undefined,
+                summarizeOnly: true,
               });
             }
 
-            return buildEnvelope({
-              success: true,
-              summary:
-                resultItems.length > 0
-                  ? `Found ${resultItems.length} Zoho Books ${moduleName} record(s).`
-                  : `No Zoho Books ${moduleName} records matched the current filters.`,
-              keyData: {
-                module: moduleName,
-                organizationId,
-                recordCount: resultItems.length,
-                resultCount: resultItems.length,
-              },
-              fullPayload: {
-                organizationId,
-                records: resultItems,
-                raw: asRecord(resultPayload.raw),
-              },
-              citations: resultItems.flatMap((record, index) => {
-                const recordId =
-                  asString(record.contact_id) ??
-                  asString(record.vendor_payment_id) ??
-                  asString(record.account_id) ??
-                  asString(record.invoice_id) ??
-                  asString(record.estimate_id) ??
-                  asString(record.creditnote_id) ??
-                  asString(record.bill_id) ??
-                  asString(record.salesorder_id) ??
-                  asString(record.purchaseorder_id) ??
-                  asString(record.payment_id) ??
-                  asString(record.bank_transaction_id) ??
-                  asString(record.transaction_id);
-                if (!recordId) {
-                  return [];
-                }
-                return [
-                  {
-                    id: `books-${moduleName}-${index + 1}`,
-                    title: `${moduleName}:${recordId}`,
-                    kind: 'record',
-                    sourceType: moduleName,
-                    sourceId: recordId,
-                  },
-                ];
-              }),
+            return buildBooksReadRecordsEnvelope({
+              moduleName,
+              organizationId,
+              resultItems,
+              raw: asRecord(resultPayload.raw) ?? undefined,
             });
           } catch (error) {
             const summary =
@@ -12256,6 +12362,177 @@ export const createVercelDesktopTools = (
         }),
     }),
   };
+
+  tools.zohoBooks = tool({
+    description: 'Zoho Books finance operations. Prefer this canonical wrapper. @deprecated aliases: zoho-books-read, zoho-books-write, zoho-books-agent',
+    inputSchema: z.object({
+      operation: z.enum(['read', 'write', 'buildOverdueReport', 'listRecords']),
+      module: z.string().optional(),
+      organizationId: z.string().optional(),
+      query: z.string().optional(),
+      recordId: z.string().optional(),
+      filters: z.record(z.unknown()).optional(),
+      reportName: z.string().optional(),
+      invoiceDateFrom: z.string().optional(),
+      invoiceDateTo: z.string().optional(),
+      asOfDate: z.string().optional(),
+      customerId: z.string().optional(),
+      vendorId: z.string().optional(),
+      readOperation: z.string().optional(),
+      writeOperation: z.string().optional(),
+    }).passthrough(),
+    execute: async (input, options) => {
+      if (input.operation === 'write') {
+        return tools.booksWrite.execute({
+          ...input,
+          operation: input.writeOperation ?? 'createRecord',
+        }, options);
+      }
+      if (input.operation === 'buildOverdueReport') {
+        return tools.booksRead.execute({ ...input, operation: 'buildOverdueReport' }, options);
+      }
+      if (input.operation === 'listRecords') {
+        return tools.booksRead.execute({ ...input, operation: 'listRecords' }, options);
+      }
+      return tools.booksRead.execute({
+        ...input,
+        operation: input.readOperation ?? (input.recordId ? 'getRecord' : 'listRecords'),
+      }, options);
+    },
+  });
+
+  tools.zohoCrm = tool({
+    description: 'Zoho CRM operations. Prefer this canonical wrapper. @deprecated aliases: search-zoho-context, read-zoho-records, zoho-read, zoho-agent, zoho-write',
+    inputSchema: z.object({
+      operation: z.enum(['search', 'read', 'write']),
+      module: z.string().optional(),
+      query: z.string().optional(),
+      recordId: z.string().optional(),
+      filters: z.record(z.unknown()).optional(),
+      fields: z.record(z.unknown()).optional(),
+      readOperation: z.string().optional(),
+      writeOperation: z.string().optional(),
+    }).passthrough(),
+    execute: async (input, options) => {
+      if (input.operation === 'search') {
+        return tools.zoho.execute({ ...input, operation: 'searchContext' }, options);
+      }
+      if (input.operation === 'write') {
+        return tools.zoho.execute({
+          ...input,
+          operation: input.writeOperation ?? 'updateRecord',
+        }, options);
+      }
+      return tools.zoho.execute({
+        ...input,
+        operation: input.readOperation ?? (input.recordId ? 'getRecord' : 'readRecords'),
+      }, options);
+    },
+  });
+
+  tools.larkTaskLegacy = tools.larkTask;
+  tools.larkTask = tool({
+    description: 'Lark Tasks operations. operation=read or write.',
+    inputSchema: z.object({
+      operation: z.enum(['read', 'write']),
+      taskOperation: z.enum([
+        'list',
+        'listMine',
+        'listOpenMine',
+        'get',
+        'current',
+        'listTasklists',
+        'listAssignableUsers',
+        'create',
+        'update',
+        'delete',
+        'complete',
+        'reassign',
+      ]).optional(),
+      taskId: z.string().optional(),
+      tasklistId: z.string().optional(),
+      query: z.string().optional(),
+      summary: z.string().optional(),
+      description: z.string().optional(),
+    }).passthrough(),
+    execute: async (input, options) => tools.larkTaskLegacy.execute({
+      ...input,
+      operation: input.operation === 'write'
+        ? (input.taskOperation ?? 'create')
+        : (input.taskOperation ?? 'list'),
+    }, options),
+  });
+
+  tools.googleWorkspace = tool({
+    description: 'Google Workspace operations. operation=gmail, drive, or calendar.',
+    inputSchema: z.object({
+      operation: z.enum(['gmail', 'drive', 'calendar']),
+    }).passthrough(),
+    execute: async (input, options) => {
+      if (input.operation === 'gmail') {
+        return tools.googleMail.execute(input, options);
+      }
+      if (input.operation === 'drive') {
+        return tools.googleDrive.execute(input, options);
+      }
+      return tools.googleCalendar.execute(input, options);
+    },
+  });
+
+  tools.documentRead = tool({
+    description: 'Document reading operations. operation=ocr, invoiceParse, or statementParse.',
+    inputSchema: z.object({
+      operation: z.enum(['ocr', 'invoiceParse', 'statementParse']),
+    }).passthrough(),
+    execute: async (input, options) => {
+      if (input.operation === 'invoiceParse') {
+        return tools.invoiceParser.execute(input, options);
+      }
+      if (input.operation === 'statementParse') {
+        return tools.statementParser.execute(input, options);
+      }
+      return tools.documentOcrRead.execute(input, options);
+    },
+  });
+
+  tools.workflow = tool({
+    description: 'Workflow authoring operations. operation=author.',
+    inputSchema: z.object({
+      operation: z.enum(['author']),
+      workflowOperation: z.enum(['draft', 'plan', 'build', 'validate', 'save', 'schedule', 'list', 'archive', 'run']).optional(),
+    }).passthrough(),
+    execute: async (input, options) => {
+      const workflowOperation = input.workflowOperation ?? 'draft';
+      const workflowToolMap = {
+        draft: tools.workflowDraft,
+        plan: tools.workflowPlan,
+        build: tools.workflowBuild,
+        validate: tools.workflowValidate,
+        save: tools.workflowSave,
+        schedule: tools.workflowSchedule,
+        list: tools.workflowList,
+        archive: tools.workflowArchive,
+        run: tools.workflowRun,
+      } as const;
+      return workflowToolMap[workflowOperation].execute(input, options);
+    },
+  });
+
+  tools.devTools = tool({
+    description: 'Developer tools. operation=code, repo, or skillSearch.',
+    inputSchema: z.object({
+      operation: z.enum(['code', 'repo', 'skillSearch']),
+    }).passthrough(),
+    execute: async (input, options) => {
+      if (input.operation === 'repo') {
+        return tools.repo.execute(input, options);
+      }
+      if (input.operation === 'skillSearch') {
+        return tools.skillSearch.execute(input, options);
+      }
+      return tools.coding.execute(input, options);
+    },
+  });
 
   const filteredEntries = Object.entries(tools)
     .filter(([toolName]) => isVercelToolAllowed(runtime, toolName))

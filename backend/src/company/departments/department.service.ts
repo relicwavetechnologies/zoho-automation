@@ -10,7 +10,10 @@ import { hashPassword } from '../../utils/bcrypt';
 import crypto from 'crypto';
 import { skillService } from '../skills/skill.service';
 import { departmentRuntimeCache } from './department-runtime.cache';
+import { departmentPreferenceService } from './department-preference.service';
 import type { ZohoRateLimitConfig } from '../integrations/zoho/zoho-rate-limit.types';
+import { toolPermissionService } from '../tools/tool-permission.service';
+import { booksModulePermissionService } from '../integrations/zoho/books-module-permission.service';
 
 type DepartmentAdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 
@@ -49,6 +52,7 @@ export type DepartmentCandidateSummary = {
 export type ResolvedDepartmentRuntime = {
   departmentId?: string;
   departmentName?: string;
+  departmentRoleId?: string;
   departmentRoleSlug?: string;
   departmentZohoReadScope?: DepartmentZohoReadScope;
   departmentZohoRateLimitConfig?: ZohoRateLimitConfig;
@@ -72,14 +76,6 @@ export type DepartmentApproverTarget = {
   larkOpenId?: string;
   source: 'department_manager' | 'company_admin';
 };
-
-const DEFAULT_MEMBER_TOOL_IDS = new Set([
-  'search-read',
-  'search-agent',
-  'skill-search',
-  'context-search',
-  'document-ocr-read',
-]);
 
 const normalizeSlug = (value: string): string =>
   value
@@ -509,13 +505,13 @@ class DepartmentService {
     companyId: string;
     departmentId?: string | null;
     fallbackAllowedToolIds: string[];
+    requesterAiRole?: string;
   }): Promise<ResolvedDepartmentRuntime> {
     if (!input.departmentId) {
-      const allowedActionsByTool = Object.fromEntries(
-        input.fallbackAllowedToolIds.map((toolId) => [
-          toolId,
-          getSupportedToolActionGroups(toolId),
-        ]),
+      const allowedActionsByTool = await toolPermissionService.getAllowedActionsByTool(
+        input.companyId,
+        input.requesterAiRole ?? 'MEMBER',
+        input.fallbackAllowedToolIds,
       );
       return { allowedToolIds: input.fallbackAllowedToolIds, allowedActionsByTool };
     }
@@ -567,6 +563,12 @@ class DepartmentService {
       },
     });
 
+    const companyAllowedActionsByTool = await toolPermissionService.getAllowedActionsByTool(
+      input.companyId,
+      membership.role.slug,
+      vercelToolIds,
+    );
+
     const buildActionLookup = <T extends { toolId: string; actionGroup: string; allowed: boolean }>(
       rows: T[],
     ) => {
@@ -581,11 +583,6 @@ class DepartmentService {
 
     const rolePermissionMap = buildActionLookup(rolePermissions);
     const overrideMap = buildActionLookup(userOverrides);
-
-    const defaultAllowed = (toolId: string): boolean => {
-      if (membership.role.slug === 'MANAGER') return true;
-      return DEFAULT_MEMBER_TOOL_IDS.has(toolId);
-    };
 
     const resolveActionAllowed = (toolId: string, actionGroup: ToolActionGroup): boolean => {
       const overrideRows = overrideMap.get(toolId);
@@ -604,7 +601,7 @@ class DepartmentService {
         return roleRows.get(ACTION_GROUP_ALL) as boolean;
       }
 
-      return defaultAllowed(toolId);
+      return (companyAllowedActionsByTool[toolId] ?? []).includes(actionGroup);
     };
 
     const allowedActionsByTool = Object.fromEntries(
@@ -622,6 +619,7 @@ class DepartmentService {
     const resolved: ResolvedDepartmentRuntime = {
       departmentId: membership.department.id,
       departmentName: membership.department.name,
+      departmentRoleId: membership.role.id,
       departmentRoleSlug: membership.role.slug,
       departmentZohoReadScope: normalizeZohoReadScope(
         (membership.role as Record<string, unknown>).zohoReadScope,
@@ -1224,6 +1222,12 @@ class DepartmentService {
       },
     });
     await departmentRuntimeCache.invalidateDepartment(department.companyId, departmentId);
+    if (membership.status !== 'active') {
+      await departmentPreferenceService.clearActiveDepartmentId(
+        department.companyId,
+        membership.userId,
+      );
+    }
 
     return {
       departmentId,
@@ -1334,6 +1338,10 @@ class DepartmentService {
       await this.resolveDepartmentCompanyId(departmentId, session.companyId),
       departmentId,
     );
+    await booksModulePermissionService.invalidateRole(
+      await this.resolveDepartmentCompanyId(departmentId, session.companyId),
+      roleId,
+    );
 
     return {
       id: updated.id,
@@ -1369,6 +1377,10 @@ class DepartmentService {
       throw new HttpException(409, 'Move members off this role before deleting it.');
     }
     await prisma.departmentRole.delete({ where: { id: roleId } });
+    await booksModulePermissionService.invalidateRole(
+      await this.resolveDepartmentCompanyId(departmentId, session.companyId),
+      roleId,
+    );
     return { deleted: true };
   }
 
@@ -1448,6 +1460,7 @@ class DepartmentService {
       },
     });
     await departmentRuntimeCache.invalidateDepartment(department.companyId, departmentId);
+    await booksModulePermissionService.invalidateRole(department.companyId, membership.roleId);
 
     return {
       id: membership.id,
@@ -1467,6 +1480,17 @@ class DepartmentService {
     userId: string,
   ) {
     const department = await this.assertDepartmentAccess(session, departmentId);
+    const existing = await prisma.departmentMembership.findUnique({
+      where: {
+        departmentId_userId: {
+          departmentId,
+          userId,
+        },
+      },
+      select: {
+        roleId: true,
+      },
+    });
     await prisma.departmentMembership.delete({
       where: {
         departmentId_userId: {
@@ -1476,6 +1500,10 @@ class DepartmentService {
       },
     });
     await departmentRuntimeCache.invalidateDepartment(department.companyId, departmentId);
+    if (existing?.roleId) {
+      await booksModulePermissionService.invalidateRole(department.companyId, existing.roleId);
+    }
+    await departmentPreferenceService.clearActiveDepartmentId(department.companyId, userId);
     return { deleted: true };
   }
 
@@ -1529,6 +1557,10 @@ class DepartmentService {
     await departmentRuntimeCache.invalidateDepartment(
       await this.resolveDepartmentCompanyId(departmentId, session.companyId),
       departmentId,
+    );
+    await booksModulePermissionService.invalidateRole(
+      await this.resolveDepartmentCompanyId(departmentId, session.companyId),
+      roleId,
     );
     return {
       id: row.id,

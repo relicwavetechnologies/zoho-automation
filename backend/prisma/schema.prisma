@@ -48,6 +48,15 @@ enum ScheduledWorkflowRunStatus {
   blocked
 }
 
+enum TaskStatus {
+  pending
+  running
+  hitl
+  done
+  failed
+  cancelled
+}
+
 enum UserMemoryKind {
   identity
   response_style
@@ -125,6 +134,7 @@ model User {
   googleAuthLinks                    GoogleUserAuthLink[]
   memoryItems                        UserMemoryItem[]
   memoryProfiles                     UserMemoryProfile[]
+  departmentPreference               UserDepartmentPreference?
 }
 
 model Company {
@@ -148,6 +158,8 @@ model Company {
   mcpActionLogs          McpActionLog[]
   channelIdentities      ChannelIdentity[]
   toolPermissions        ToolPermission[]
+  toolActionPermissions  ToolActionPermission[]
+  booksModulePermissions BooksModulePermission[]
   zohoRoleAccessPolicies ZohoRoleAccessPolicy[]
   aiRoleDefinitions      AiRoleDefinition[]
   vectorDocuments        VectorDocument[]
@@ -165,6 +177,43 @@ model Company {
   outboundArtifacts      OutboundArtifact[]
   userMemoryItems        UserMemoryItem[]
   userMemoryProfiles     UserMemoryProfile[]
+  taskRuns               TaskRun[]
+  userDepartmentPreferences UserDepartmentPreference[]
+}
+
+model UserDepartmentPreference {
+  id                 String   @id @default(uuid())
+  companyId          String
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeDepartmentId String?
+  updatedAt          DateTime @updatedAt
+  createdAt          DateTime @default(now())
+
+  @@unique([companyId, userId])
+  @@index([userId, companyId])
+}
+
+model TaskRun {
+  id              String     @id @default(cuid())
+  companyId       String
+  company         Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversationKey String
+  channel         String
+  status          TaskStatus @default(pending)
+  inputMessage    Json
+  currentStep     String?
+  failureReason   String?
+  requeueCount    Int        @default(0)
+  lastHeartbeatAt DateTime?
+  completedAt     DateTime?
+  failedAt        DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([companyId, conversationKey, status])
+  @@index([status, createdAt])
 }
 
 model UserMemoryItem {
@@ -748,9 +797,26 @@ model DepartmentRole {
   updatedAt       DateTime                   @updatedAt
   memberships     DepartmentMembership[]
   toolPermissions DepartmentToolPermission[]
+  booksModulePermissions BooksModulePermission[]
 
   @@unique([departmentId, slug])
   @@index([departmentId, isSystem, updatedAt])
+}
+
+model BooksModulePermission {
+  id               String         @id @default(uuid())
+  companyId        String
+  company          Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentRoleId String
+  departmentRole   DepartmentRole @relation(fields: [departmentRoleId], references: [id], onDelete: Cascade)
+  module           String
+  enabled          Boolean        @default(true)
+  scopeOverride    String?
+  updatedAt        DateTime       @updatedAt
+  updatedBy        String?
+
+  @@unique([companyId, departmentRoleId, module])
+  @@index([companyId, departmentRoleId])
 }
 
 model DepartmentMembership {
@@ -817,6 +883,22 @@ model ToolPermission {
 
   @@unique([companyId, toolId, role])
   @@index([companyId, toolId])
+}
+
+model ToolActionPermission {
+  id          String   @id @default(uuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  toolId      String
+  role        String
+  actionGroup String
+  enabled     Boolean  @default(true)
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
+
+  @@unique([companyId, toolId, role, actionGroup])
+  @@index([companyId, toolId])
+  @@index([companyId, role])
 }
 
 model ZohoRoleAccessPolicy {
@@ -1167,6 +1249,7 @@ model ExecutionRun {
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
   events        ExecutionEvent[]
+  stepResults   StepResult[]
 
   @@index([companyId, startedAt])
   @@index([userId, startedAt])
@@ -1195,6 +1278,27 @@ model ExecutionEvent {
   @@unique([executionId, sequence])
   @@index([executionId, createdAt])
   @@index([createdAt])
+}
+
+model StepResult {
+  id             String       @id @default(uuid())
+  executionId    String
+  execution      ExecutionRun @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  sequence       Int
+  toolName       String
+  actorKey       String?
+  title          String?
+  success        Boolean
+  status         String?
+  authorityLevel String?
+  resolvedIds    Json?
+  entityIndexes  Json?
+  summary        String?
+  rawOutput      Json?
+  createdAt      DateTime     @default(now())
+
+  @@unique([executionId, sequence])
+  @@index([executionId, createdAt])
 }
 
 model RuntimeConversation {

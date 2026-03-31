@@ -5,7 +5,5 @@ export const buildDocumentTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
 ): Record<string, any> => pickTools(getLegacyToolMap(runtime, hooks), [
-  'documentOcrRead',
-  'invoiceParser',
-  'statementParser',
+  'documentRead',
 ]);

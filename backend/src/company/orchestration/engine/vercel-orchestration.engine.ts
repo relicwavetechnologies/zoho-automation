@@ -5,6 +5,7 @@ import type { ChannelAction } from '../../channels/base/channel-adapter';
 import { resolveChannelAdapter } from '../../channels';
 import { larkChatContextService } from '../../channels/lark/lark-chat-context.service';
 import { departmentService } from '../../departments/department.service';
+import { departmentPreferenceService } from '../../departments/department-preference.service';
 import type {
   AgentResultDTO,
   NormalizedIncomingMessageDTO,
@@ -83,6 +84,7 @@ import { classifyIntent } from '../intent/canonical-intent';
 import { hotContextStore, type HotContextIndexedEntity, type HotContextSlot } from '../hot-context.store';
 import {
   type DelegatedAgentExecutionResult,
+  type StepResultEnvelope,
   type SupervisorStep,
   buildSupervisorResolvedContext,
   executeSupervisorDag,
@@ -136,6 +138,19 @@ const GEMINI_CIRCUIT_BREAKER = {
   openMs: 120_000,
 };
 const larkConversationHydrationVersions = new Map<string, string>();
+
+class DepartmentSelectionRequiredError extends Error {
+  constructor() {
+    super(
+      [
+        'You are a member of multiple departments. Please select one before continuing:',
+        '/dept --list to see your departments',
+        '/dept --switch <name> to activate one',
+      ].join('\n'),
+    );
+    this.name = 'DepartmentSelectionRequiredError';
+  }
+}
 
 const buildConversationKey = (message: NormalizedIncomingMessageDTO): string =>
   `${message.channel}:${message.chatId}`;
@@ -338,7 +353,7 @@ const buildLarkSupervisorScopedContext = (input: {
   ];
 };
 
-const buildLarkSupervisorStepMessage = (input: {
+export const buildLarkSupervisorStepMessage = (input: {
   originalUserMessage: string;
   step: SupervisorStep;
   scopedContext: string[];
@@ -356,10 +371,23 @@ const buildLarkSupervisorStepMessage = (input: {
       entry.data ? `Data: ${JSON.stringify(entry.data)}` : null,
     ].filter(Boolean).join('\n')).join('\n\n')
     : 'None';
-  return [
+  const parts = [
     'You are a delegated runtime agent working on one scoped objective.',
     `Original user request: ${input.originalUserMessage}`,
     `Current delegated objective: ${input.step.objective}`,
+  ];
+  if (input.step.structuredObjective) {
+    const obj = input.step.structuredObjective;
+    parts.push('', '[Structured Task Context]');
+    if (obj.targetEntity) parts.push(`Entity: ${obj.targetEntity}`);
+    if (obj.targetSource) parts.push(`Primary source: ${obj.targetSource}`);
+    if (obj.dateRange) parts.push(`Date range: ${obj.dateRange.from} to ${obj.dateRange.to}`);
+    if (obj.authorityRequired) {
+      parts.push('Authority required: do not answer from chat history or public web unless all internal sources are exhausted and explicitly noted.');
+    }
+    parts.push('[End Structured Task Context]');
+  }
+  parts.push(
     '',
     'Relevant context:',
     input.scopedContext.length > 0 ? input.scopedContext.join('\n') : 'None',
@@ -368,7 +396,8 @@ const buildLarkSupervisorStepMessage = (input: {
     dependencyBlock,
     '',
     'Complete only the delegated objective for this step. Do not claim unrelated work is done.',
-  ].join('\n');
+  );
+  return parts.join('\n');
 };
 
 const buildAbortSignalError = (): Error => {
@@ -950,10 +979,27 @@ const buildHotContextSlot = (toolName: string, output: VercelToolEnvelope): HotC
     collectResolvedIdsFromValue(output.pendingApprovalAction.payload, resolvedIds);
     setResolvedId(resolvedIds, 'approvalId', output.pendingApprovalAction.approvalId);
   }
+  const authorityLevel =
+    asStringSafe(asRecordSafe(output.data)?.authorityLevel)
+    ?? asStringSafe(asRecordSafe(output.keyData)?.authorityLevel)
+    ?? asStringSafe(asRecordSafe(output.fullPayload)?.authorityLevel)
+    ?? (() => {
+      const results = asArrayOfRecordsSafe(asRecordSafe(output.fullPayload)?.results);
+      const firstAuthority = asStringSafe(results[0]?.authorityLevel);
+      return firstAuthority === 'authoritative' || firstAuthority === 'documentary'
+        ? 'confirmed'
+        : firstAuthority === 'contextual' || firstAuthority === 'public'
+          ? 'candidate'
+          : undefined;
+    })();
   return {
     toolName,
     success: output.success,
     summary: output.summary,
+    authorityLevel:
+      authorityLevel === 'confirmed' || authorityLevel === 'candidate' || authorityLevel === 'not_found'
+        ? authorityLevel
+        : undefined,
     errorKind: output.errorKind,
     toolId: asStringSafe(output.toolId),
     actionGroup: asStringSafe(output.actionGroup),
@@ -963,6 +1009,36 @@ const buildHotContextSlot = (toolName: string, output: VercelToolEnvelope): HotC
     fullPayload: output.fullPayload ?? output.keyData ?? {},
     completedAt: Date.now(),
   };
+};
+
+const AGENT_CAPABILITY_PROFILES: Record<string, string> = {
+  'zoho-ops-agent': `
+You are the Zoho specialist. Your job:
+- For entity searches: check Zoho Books first, then Zoho CRM. Never the reverse.
+- For invoice/payment/overdue requests: always use buildOverdueReport, never generic listRecords.
+- If Books returns no entity match with strong token overlap, escalate to CRM.
+- If neither finds it, say clearly: not found in Zoho Books or CRM. Do not invent data.
+- Never answer from chat history or web results unless explicitly instructed.`,
+  'context-agent': `
+You are the internal context specialist. Your job:
+- Search indexed internal context: files, workspace, Zoho CRM vectors.
+- personal_history results are conversation context only — never use them to confirm entity existence.
+- lark_contacts results are people directory only — never use them to confirm a company exists.
+- If authorityRequired is set and you only found contextual/public results, say: not confirmed internally.
+- Always report which sources you checked and what authority level the results have.`,
+  'lark-ops-agent': `
+You are the Lark workspace specialist. Your job:
+- Handle Lark Base, tasks, calendar, approvals, docs, and messages.
+- Do not attempt Zoho or financial operations — delegate those back if needed.
+- For ambiguous requests that mention finance or invoices, clarify before acting.`,
+  'google-workspace-agent': `
+You are the Google Workspace specialist. Your job:
+- Handle Gmail, Drive, and Calendar.
+- Do not attempt Zoho or Lark operations.`,
+  'workspace-agent': `
+You are the file and workspace specialist. Your job:
+- Search and read files, documents, and workspace content.
+- Return authorityLevel with every result so downstream steps know what to trust.`,
 };
 
 const formatActiveTaskContext = (taskId: string): string | null => {
@@ -983,6 +1059,56 @@ const formatActiveTaskContext = (taskId: string): string | null => {
     ...lines,
     'Use these resolved IDs and references directly before asking the user or re-fetching.',
   ].join('\n');
+};
+
+const buildStepResultEnvelope = (
+  resolvedContext: Record<string, string>,
+  stepSummary: string,
+  toolResults: RunToolResult[],
+): StepResultEnvelope => {
+  const firstConfirmedTool = toolResults.find((result) => result.success);
+  const summaryText = `${firstConfirmedTool?.summary ?? ''} ${stepSummary}`.toLowerCase();
+  const authorityLevel: StepResultEnvelope['authorityLevel'] =
+    summaryText.includes('not found')
+      ? 'not_found'
+      : Object.keys(resolvedContext).length > 0
+        ? 'confirmed'
+        : 'candidate';
+
+  const resolvedEntity = (() => {
+    const entityId = resolvedContext.customerId
+      ?? resolvedContext.contactId
+      ?? resolvedContext.invoiceId
+      ?? resolvedContext.recordId;
+    if (!entityId) {
+      return undefined;
+    }
+    const entityType =
+      resolvedContext.customerId ? 'customer'
+        : resolvedContext.contactId ? 'contact'
+          : resolvedContext.invoiceId ? 'invoice'
+            : 'record';
+    const name = resolvedContext.customerName
+      ?? resolvedContext.contactName
+      ?? resolvedContext.companyName
+      ?? resolvedContext.invoiceNumber
+      ?? entityId;
+    const source = resolvedContext.organizationId ? 'zoho' : 'workflow';
+    return {
+      id: entityId,
+      type: entityType,
+      name,
+      source,
+      authorityLevel: source === 'zoho' ? 'authoritative' : 'contextual',
+    } satisfies NonNullable<StepResultEnvelope['resolvedEntity']>;
+  })();
+
+  return {
+    ...(resolvedEntity ? { resolvedEntity } : {}),
+    resolvedIds: { ...resolvedContext },
+    authorityLevel,
+    summary: stepSummary,
+  };
 };
 
 const canResolveFieldFromHotContext = (taskId: string, field: string | null | undefined): boolean => {
@@ -1012,15 +1138,19 @@ const findUnrepairableBlockingUserInput = (
   return unresolvedFields.length > 0 ? blocking : null;
 };
 
-const appendWarmTaskSummary = (
+const appendWarmTaskSummary = async (
   summary: DesktopThreadSummary,
+  executionId: string | null | undefined,
   taskId: string,
   options?: {
     isPartial?: boolean;
     interruptedAt?: string;
   },
-): DesktopThreadSummary => {
-  const warm = hotContextStore.toWarmSummary(taskId);
+): Promise<DesktopThreadSummary> => {
+  const persistedWarm = await getPersistedWarmSummary(executionId);
+  const warm = persistedWarm.summary.trim()
+    ? persistedWarm
+    : hotContextStore.toWarmSummary(taskId);
   if (!warm.summary.trim()) {
     return summary;
   }
@@ -1049,6 +1179,123 @@ type CompletedSupervisorStep = {
   resolvedIds: Record<string, string>;
   completedAt: string;
   success: boolean;
+};
+
+type WarmStepResult = {
+  sequence: number;
+  toolName: string;
+  actorKey?: string | null;
+  summary?: string | null;
+  resolvedIds?: unknown;
+  authorityLevel?: string | null;
+};
+
+const WARM_RESOLVED_AUTHORITY_RANK: Record<string, number> = {
+  confirmed: 3,
+  candidate: 2,
+  not_found: 1,
+};
+
+const normalizeWarmResolvedIds = (value: unknown): Record<string, string> => {
+  const record = asRecordSafe(value);
+  if (!record) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(record)
+      .map(([key, rawValue]) => [key, asStringSafe(rawValue)?.trim()] as const)
+      .filter((entry): entry is readonly [string, string] => Boolean(entry[1])),
+  );
+};
+
+const mergeWarmResolvedIdsFromStepResults = (
+  stepResults: WarmStepResult[],
+): Record<string, string> => {
+  const resolvedIds: Record<string, string> = {};
+  const selectionMeta = new Map<string, { rank: number; sequence: number }>();
+
+  for (const stepResult of stepResults) {
+    const normalizedResolvedIds = normalizeWarmResolvedIds(stepResult.resolvedIds);
+    const rank = WARM_RESOLVED_AUTHORITY_RANK[stepResult.authorityLevel ?? ''] ?? 0;
+    for (const [key, value] of Object.entries(normalizedResolvedIds)) {
+      const current = selectionMeta.get(key);
+      if (!current || rank > current.rank || (rank === current.rank && stepResult.sequence >= current.sequence)) {
+        resolvedIds[key] = value;
+        selectionMeta.set(key, { rank, sequence: stepResult.sequence });
+      }
+    }
+  }
+
+  return resolvedIds;
+};
+
+const buildWarmSummaryFromStepResults = (stepResults: WarmStepResult[]): {
+  summary: string;
+  resolvedIds: Record<string, string>;
+} => ({
+  summary: stepResults
+    .map((stepResult) => {
+      const summary = stepResult.summary?.trim();
+      if (!summary) {
+        return null;
+      }
+      const actorKey = stepResult.actorKey?.trim();
+      return actorKey
+        ? `${stepResult.toolName}(${actorKey}): ${summary}`
+        : `${stepResult.toolName}: ${summary}`;
+    })
+    .filter((entry): entry is string => Boolean(entry))
+    .join('. '),
+  resolvedIds: mergeWarmResolvedIdsFromStepResults(stepResults),
+});
+
+const getPersistedWarmSummary = async (executionId: string | null | undefined): Promise<{
+  summary: string;
+  resolvedIds: Record<string, string>;
+}> => {
+  if (!executionId) {
+    return { summary: '', resolvedIds: {} };
+  }
+  try {
+    const stepResults = (await executionService.listStepResults(executionId)) as WarmStepResult[];
+    if (stepResults.length === 0) {
+      return { summary: '', resolvedIds: {} };
+    }
+    return buildWarmSummaryFromStepResults(stepResults);
+  } catch (error) {
+    logger.warn('supervisor.warm_step_results.failed', {
+      executionId,
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+    return { summary: '', resolvedIds: {} };
+  }
+};
+
+const getWarmResolvedIdsForExecution = async (
+  executionId: string | null | undefined,
+  taskId: string,
+): Promise<Record<string, string>> => {
+  const persisted = await getPersistedWarmSummary(executionId);
+  if (Object.keys(persisted.resolvedIds).length > 0) {
+    return persisted.resolvedIds;
+  }
+  return hotContextStore.toWarmSummary(taskId).resolvedIds;
+};
+
+const ensureAllowedActionsByTool = async (input: {
+  companyId: string;
+  requesterAiRole: string;
+  allowedToolIds: string[];
+  allowedActionsByTool?: Record<string, string[]>;
+}): Promise<Record<string, string[]>> => {
+  if (input.allowedActionsByTool) {
+    return input.allowedActionsByTool;
+  }
+  return toolPermissionService.getAllowedActionsByTool(
+    input.companyId,
+    input.requesterAiRole,
+    input.allowedToolIds,
+  );
 };
 
 const takeRecentMessagesByTokenBudget = <
@@ -2313,7 +2560,7 @@ const mapToolStepsToAgentResults = (
     }),
   );
 
-const buildDelegatedLarkStepPrompt = (input: {
+export const buildDelegatedLarkStepPrompt = (input: {
   step: SupervisorStep;
   originalUserMessage: string;
   scopedContext: string[];
@@ -2335,11 +2582,24 @@ const buildDelegatedLarkStepPrompt = (input: {
     ? input.scopedContext.join('\n')
     : 'None.';
 
-  return [
+  const parts = [
     `You are executing delegated supervisor step ${input.step.stepId}.`,
     `Assigned agent family: ${input.step.agentId}.`,
     `Objective: ${input.step.objective}`,
     `Original user request: ${input.originalUserMessage}`,
+  ];
+  if (input.step.structuredObjective) {
+    const obj = input.step.structuredObjective;
+    parts.push('', '[Structured Task Context]');
+    if (obj.targetEntity) parts.push(`Entity: ${obj.targetEntity}`);
+    if (obj.targetSource) parts.push(`Primary source: ${obj.targetSource}`);
+    if (obj.dateRange) parts.push(`Date range: ${obj.dateRange.from} to ${obj.dateRange.to}`);
+    if (obj.authorityRequired) {
+      parts.push('Authority required: do not answer from chat history or public web unless all internal sources are exhausted and explicitly noted.');
+    }
+    parts.push('[End Structured Task Context]');
+  }
+  parts.push(
     '',
     'Resolved handoff context:',
     formatSupervisorResolvedContext(input.resolvedContext),
@@ -2359,22 +2619,30 @@ const buildDelegatedLarkStepPrompt = (input: {
     'Do not say another tool is unavailable just because it is not in your family.',
     'If this step is only gathering data for a later step, return that data plainly and stop.',
     'If the step cannot continue because of approval or missing user input, surface that plainly.',
-  ].join('\n');
+  );
+  return parts.join('\n');
 };
 
-const buildDelegatedAgentSystemPrompt = (baseSystemPrompt: string, agentId: SupervisorStep['agentId']): string => [
-  baseSystemPrompt,
-  '',
-  '## Delegated supervisor execution',
-  `You are running inside delegated agent family: ${agentId}.`,
-  'You are not the top-level supervisor.',
-  'Complete only the assigned step objective.',
-  'Do not claim other steps are complete.',
-  'Do not act like the final user-facing assistant unless this step explicitly asks for a final answer.',
-  'Do not apologize that tools outside your family are unavailable. Another delegated step may handle them.',
-  'Treat the "Resolved handoff context" block as authoritative for IDs, emails, invoice numbers, and other concrete entities when it is relevant to this step.',
-  'If a required parameter is already present in that block, pass it directly to the tool instead of asking for it again or omitting it.',
-].join('\n');
+export const buildDelegatedAgentSystemPrompt = (baseSystemPrompt: string, agentId: SupervisorStep['agentId']): string => {
+  let systemPrompt = [
+    baseSystemPrompt,
+    '',
+    '## Delegated supervisor execution',
+    `You are running inside delegated agent family: ${agentId}.`,
+    'You are not the top-level supervisor.',
+    'Complete only the assigned step objective.',
+    'Do not claim other steps are complete.',
+    'Do not act like the final user-facing assistant unless this step explicitly asks for a final answer.',
+    'Do not apologize that tools outside your family are unavailable. Another delegated step may handle them.',
+    'Treat the "Resolved handoff context" block as authoritative for IDs, emails, invoice numbers, and other concrete entities when it is relevant to this step.',
+    'If a required parameter is already present in that block, pass it directly to the tool instead of asking for it again or omitting it.',
+  ].join('\n');
+  const profile = AGENT_CAPABILITY_PROFILES[agentId];
+  if (profile) {
+    systemPrompt += `\n\n[Agent Capability Profile]\n${profile.trim()}`;
+  }
+  return systemPrompt;
+};
 
 const adaptPlanForVercel = (task: OrchestrationTaskDTO): OrchestrationTaskDTO => ({
   ...task,
@@ -2402,6 +2670,7 @@ const resolveRuntimeContext = async (
   const linkedUserId = await resolveWorkspaceUserIdForLarkMessage(message);
   let departmentId: string | undefined;
   let departmentName: string | undefined;
+  let departmentRoleId: string | undefined;
   let departmentRoleSlug: string | undefined;
   let departmentZohoReadScope: 'personalized' | 'show_all' | undefined;
   let departmentZohoRateLimitConfig: VercelRuntimeRequestContext['departmentZohoRateLimitConfig'];
@@ -2420,15 +2689,24 @@ const resolveRuntimeContext = async (
 
   if (linkedUserId) {
     const departments = await departmentService.listUserDepartments(linkedUserId, companyId);
-    const autoDepartment = departments.length === 1 ? departments[0] : null;
+    const preferredDepartment = await departmentPreferenceService.resolveForRuntime(
+      companyId,
+      linkedUserId,
+      departments,
+    );
+    if (preferredDepartment.reason === 'needs_selection') {
+      throw new DepartmentSelectionRequiredError();
+    }
     const resolved = await departmentService.resolveRuntimeContext({
       userId: linkedUserId,
       companyId,
-      departmentId: autoDepartment?.id,
+      departmentId: preferredDepartment.departmentId,
       fallbackAllowedToolIds,
+      requesterAiRole,
     });
     departmentId = resolved.departmentId;
     departmentName = resolved.departmentName;
+    departmentRoleId = resolved.departmentRoleId;
     departmentRoleSlug = resolved.departmentRoleSlug;
     departmentZohoReadScope = resolved.departmentZohoReadScope;
     departmentZohoRateLimitConfig = resolved.departmentZohoRateLimitConfig;
@@ -2439,9 +2717,15 @@ const resolveRuntimeContext = async (
     allowedActionsByTool = resolved.allowedActionsByTool;
   }
 
-  if (shouldExposeZohoBooksReadForLarkMessage(message.text) && !allowedToolIds.includes('zoho-books-read')) {
-    allowedToolIds = [...allowedToolIds, 'zoho-books-read'];
+  if (shouldExposeZohoBooksReadForLarkMessage(message.text) && !allowedToolIds.includes('zohoBooks')) {
+    allowedToolIds = [...allowedToolIds, 'zohoBooks'];
   }
+  allowedActionsByTool = await ensureAllowedActionsByTool({
+    companyId,
+    requesterAiRole,
+    allowedToolIds,
+    allowedActionsByTool,
+  });
 
   return {
     channel: 'lark',
@@ -2462,6 +2746,7 @@ const resolveRuntimeContext = async (
     sourceChannelUserId: message.userId,
     departmentId,
     departmentName,
+    departmentRoleId,
     departmentRoleSlug,
     departmentZohoReadScope,
     departmentZohoRateLimitConfig,
@@ -2815,7 +3100,34 @@ const executeLarkVercelTask = async (
   explicitReplyMode = currentTurnExplicitReplyMode ?? storedReplyMode;
 
   await assertExecutionRunnable(task.taskId, abortSignal);
-  const runtime = await resolveRuntimeContext(task, message, contextStorageId, activeTaskState);
+  let runtime: VercelRuntimeRequestContext;
+  try {
+    runtime = await resolveRuntimeContext(task, message, contextStorageId, activeTaskState);
+  } catch (error) {
+    if (error instanceof DepartmentSelectionRequiredError) {
+      await adapter.sendMessage({
+        chatId: message.chatId,
+        text: error.message,
+        correlationId: task.taskId,
+        replyToMessageId: message.messageId,
+      });
+      return {
+        task,
+        status: 'cancelled',
+        currentStep: 'department.selection_required',
+        latestSynthesis: error.message,
+        agentResults: [],
+        runtimeMeta: {
+          engine: 'vercel',
+          threadId: contextStorageId,
+          node: 'department.selection_required',
+          stepHistory: task.plan,
+          canonicalIntent: task.canonicalIntent,
+        },
+      };
+    }
+    throw error;
+  }
   runtime.attachedFiles =
     groundingAttachments.length > 0 ? groundingAttachments : runtime.attachedFiles;
   const contextMessages = persistentThread
@@ -3312,6 +3624,7 @@ const executeLarkVercelTask = async (
       suggestedToolIds: childRoute.suggestedToolIds,
       suggestedActions: childRoute.suggestedActions,
     },
+    requestContext: runtime,
   });
   const invariantResult = checkToolSelectionInvariant({
     intentDomain: childRoute.domain ?? toolSelection.inferredDomain,
@@ -3861,7 +4174,7 @@ const executeLarkVercelTask = async (
       ...supervisorEligibility.eligibleAgents.map((agent) => agent.id),
     ])).filter((agentId) => {
       const plannerChosenToolId = effectiveRuntime.plannerChosenToolId ?? toolSelection.plannerChosenToolId;
-      if ((plannerChosenToolId === 'zoho-books-read' || plannerChosenToolId === 'zoho-books-agent') && agentId === 'lark-ops-agent') {
+      if ((plannerChosenToolId === 'zohoBooks' || plannerChosenToolId === 'zoho-books-read' || plannerChosenToolId === 'zoho-books-agent') && agentId === 'lark-ops-agent') {
         return false;
       }
       return true;
@@ -3880,6 +4193,7 @@ const executeLarkVercelTask = async (
       inferredDomain: toolSelection.inferredDomain,
       inferredOperationClass: toolSelection.inferredOperationClass,
       eligibleAgentIds,
+      searchIntent: effectiveRuntime.searchIntent,
       recentTaskSummaries: activeThreadSummary.recentTaskSummaries ?? [],
       threadSummary: activeThreadSummary.summary ?? '',
       supervisorProgress: activeTaskState.supervisorProgress ?? null,
@@ -3918,12 +4232,13 @@ const executeLarkVercelTask = async (
         steps: supervisorPlan.steps,
         runStep: async (step, upstreamResults) => {
           await assertExecutionRunnable(task.taskId, abortSignal);
+          const warmResolvedIds = await getWarmResolvedIdsForExecution(executionId, task.taskId);
           const resolvedHandoffContext = buildSupervisorResolvedContext({
             objective: step.objective,
             recentTaskSummaries: activeThreadSummary.recentTaskSummaries,
             threadSummary: buildThreadSummaryContext(activeThreadSummary) ?? activeThreadSummary.summary ?? '',
             scopedContext,
-            warmResolvedIds: hotContextStore.toWarmSummary(task.taskId).resolvedIds,
+            warmResolvedIds,
             upstreamResults: upstreamResults.map((result) => ({
               summary: result.summary,
               text: result.text,
@@ -4225,6 +4540,11 @@ const executeLarkVercelTask = async (
             completedAt: new Date().toISOString(),
             success: stepStatus === 'success',
           };
+          const resultEnvelope = buildStepResultEnvelope(
+            stepResolvedContext,
+            summarizeText(stepText, 240) ?? stepText,
+            stepToolResults,
+          );
           completedSupervisorSteps.set(step.stepId, completedStep);
           await persistIncrementalStepProgress({
             completedStep,
@@ -4239,6 +4559,7 @@ const executeLarkVercelTask = async (
             summary: summarizeText(stepText, 240) ?? stepText,
             data: {
               resolvedContext: stepResolvedContext,
+              envelope: resultEnvelope,
             },
             toolResults: stepToolResults,
             pendingApproval: Boolean(stepPendingApproval),
@@ -4249,6 +4570,7 @@ const executeLarkVercelTask = async (
               rawSteps,
               text: stepResult.text.trim(),
               resolvedContext: stepResolvedContext,
+              envelope: resultEnvelope,
             },
           };
           } catch (error) {
@@ -4580,7 +4902,7 @@ const executeLarkVercelTask = async (
   } finally {
     try {
       const interruptedAt = runCompletedSuccessfully ? undefined : new Date().toISOString();
-      activeThreadSummary = appendWarmTaskSummary(activeThreadSummary, task.taskId, {
+      activeThreadSummary = await appendWarmTaskSummary(activeThreadSummary, executionId, task.taskId, {
         isPartial: !runCompletedSuccessfully,
         interruptedAt,
       });
@@ -4640,4 +4962,11 @@ export const vercelOrchestrationEngine: OrchestrationEngine = {
   async executeTask(input) {
     return executeByChannel(input);
   },
+};
+
+export const __test__ = {
+  normalizeWarmResolvedIds,
+  mergeWarmResolvedIdsFromStepResults,
+  buildWarmSummaryFromStepResults,
+  ensureAllowedActionsByTool,
 };

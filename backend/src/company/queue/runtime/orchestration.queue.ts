@@ -1,10 +1,10 @@
 import { Queue } from 'bullmq';
-import { randomUUID } from 'crypto';
 
 import config from '../../../config';
 import { HttpException } from '../../../core/http-exception';
 import { logger } from '../../../utils/logger';
 import type { NormalizedIncomingMessageDTO } from '../../contracts';
+import { taskFsm } from '../../orchestration/task-fsm';
 import { runWithRetryPolicy } from '../../observability';
 import { runtimeTaskStore, type RuntimeTaskSnapshot } from '../../orchestration/runtime-task.store';
 import { redisConnection } from './redis.connection';
@@ -109,16 +109,27 @@ const enqueueJobWithRetry = async (input: {
 export const enqueueOrchestrationTask = async (
   message: NormalizedIncomingMessageDTO,
 ): Promise<RuntimeTaskSnapshot> => {
-  const taskId = randomUUID();
+  const companyId = message.trace?.companyId;
+  if (!companyId?.trim()) {
+    throw new HttpException(400, 'Company scope is required to enqueue orchestration');
+  }
+  const conversationKey = message.chatId;
+  const taskId = await taskFsm.create({
+    companyId,
+    conversationKey,
+    channel: message.channel,
+    inputMessage: message,
+  });
   const queueJobId = buildSafeJobId(message.channel, message.messageId);
   const task = runtimeTaskStore.create({
     taskId,
     queueJobId,
     messageId: message.messageId,
     channel: message.channel,
+    conversationKey,
     userId: message.userId,
     chatId: message.chatId,
-    companyId: message.trace?.companyId,
+    companyId,
     status: 'pending',
     plan: [],
   });
@@ -130,7 +141,7 @@ export const enqueueOrchestrationTask = async (
       jobId: queueJobId,
     });
   } catch (error) {
-    runtimeTaskStore.update(taskId, { status: 'failed' });
+    await taskFsm.fail(taskId, error instanceof Error ? error.message : 'queue_enqueue_failed');
     throw error;
   }
 
@@ -144,6 +155,7 @@ export const requeueOrchestrationTask = async (
 ): Promise<RuntimeTaskSnapshot> => {
   const queueJobId = buildSafeJobId(message.channel, message.messageId, 'recover', taskId, Date.now());
   const existing = runtimeTaskStore.get(taskId);
+  const conversationKey = message.chatId;
   const task =
     existing ??
     runtimeTaskStore.create({
@@ -151,6 +163,7 @@ export const requeueOrchestrationTask = async (
       queueJobId,
       messageId: message.messageId,
       channel: message.channel,
+      conversationKey,
       userId: message.userId,
       chatId: message.chatId,
       companyId: message.trace?.companyId,
@@ -158,9 +171,11 @@ export const requeueOrchestrationTask = async (
       plan: [],
     });
 
+  await taskFsm.requeue(taskId);
   if (existing) {
     runtimeTaskStore.update(taskId, {
       queueJobId,
+      conversationKey,
       status: 'pending',
     });
   }

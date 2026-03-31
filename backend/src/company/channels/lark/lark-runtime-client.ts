@@ -1,5 +1,6 @@
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
+import { withProviderRetry } from '../../../utils/provider-retry';
 import { companyContextResolver } from '../../agents/support/company-context.resolver';
 import { larkOAuthService } from './lark-oauth.service';
 import { larkUserAuthLinkRepository } from './lark-user-auth-link.repository';
@@ -129,20 +130,34 @@ export class LarkRuntimeClient {
     const url = new URL(`${apiBaseUrl}${input.path}`);
     appendQuery(url, input.query);
 
+    const requestInit: RequestInit = {
+      method: input.method,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(input.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(input.headers ?? {}),
+      },
+      body: input.body === undefined
+        ? undefined
+        : typeof input.body === 'string'
+          ? input.body
+          : JSON.stringify(input.body),
+    };
+
     let response: Response;
     try {
-      response = await this.fetchImpl(url, {
-        method: input.method,
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          ...(input.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-          ...(input.headers ?? {}),
-        },
-        body: input.body === undefined
-          ? undefined
-          : typeof input.body === 'string'
-            ? input.body
-            : JSON.stringify(input.body),
+      response = await withProviderRetry('lark', async () => {
+        const nextResponse = await this.fetchImpl(url, requestInit);
+        if (!nextResponse.ok) {
+          const error: Error & {
+            status?: number;
+            headers?: Record<string, string>;
+          } = new Error(`Lark API error ${nextResponse.status}`);
+          error.status = nextResponse.status;
+          error.headers = Object.fromEntries(nextResponse.headers.entries());
+          throw error;
+        }
+        return nextResponse;
       });
     } catch (error) {
       throw new LarkRuntimeClientError(

@@ -9,6 +9,7 @@ export type HotContextSlot = {
   toolName: string;
   success: boolean;
   summary: string;
+  authorityLevel?: 'confirmed' | 'candidate' | 'not_found';
   errorKind?: string;
   toolId?: string;
   actionGroup?: string;
@@ -90,9 +91,9 @@ class HotContextStore {
     }
     const summary = context.slots.map((slot) => `${slot.toolName}: ${slot.summary}`).join('. ');
     const resolvedIds: Record<string, string> = {};
-    for (const slot of context.slots) {
+    for (const slot of [...context.slots].reverse()) {
       for (const [key, value] of Object.entries(slot.resolvedIds)) {
-        if (!resolvedIds[key] && value) {
+        if (value && resolvedIds[key] === undefined) {
           resolvedIds[key] = value;
         }
       }
