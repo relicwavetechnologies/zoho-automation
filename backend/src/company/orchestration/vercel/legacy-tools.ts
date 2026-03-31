@@ -6360,7 +6360,7 @@ export const createVercelDesktopTools = (
 
     booksRead: tool({
       description:
-        'Read Zoho Books organizations, finance records, reports, comments, templates, attachments, record documents, bank data, raw email/report metadata, and materialize sendable document artifacts. For overdue invoice lists, aging summaries, or requests like "all overdue customers/payments", prefer operation=buildOverdueReport instead of listRecords. If the user specifies a period such as this year, this month, or a custom range, pass invoiceDateFrom and invoiceDateTo so the overdue report is time-bounded before synthesis.',
+        'Read Zoho Books organizations, finance records, reports, comments, templates, attachments, record documents, bank data, raw email/report metadata, and materialize sendable document artifacts. For overdue invoice lists, aging summaries, or requests like "all overdue customers/payments", prefer operation=buildOverdueReport instead of listRecords. If the user specifies a period such as this year, this month, or a custom range, pass invoiceDateFrom and invoiceDateTo so the overdue report is time-bounded before synthesis. For search/find/look-up requests in Zoho Books, especially customer or company lookups, this tool should prefer the broker-backed live Books search path before falling back to raw record listing.',
       inputSchema: z.object({
         operation: z.enum([
           'listOrganizations',
@@ -7760,6 +7760,59 @@ export const createVercelDesktopTools = (
           }
 
           try {
+            const normalizedQuery = input.query?.trim();
+            const shouldUseBooksBrokerSearch =
+              input.operation === 'listRecords'
+              && moduleName === 'contacts'
+              && Boolean(normalizedQuery)
+              && !recordId
+              && !input.filters;
+
+            if (shouldUseBooksBrokerSearch && normalizedQuery) {
+              const brokerResult = await contextSearchBrokerService.search({
+                runtime,
+                query: normalizedQuery,
+                limit: Math.max(1, Math.min(input.limit ?? 5, 5)),
+                sources: {
+                  personalHistory: false,
+                  files: false,
+                  larkContacts: false,
+                  zohoCrmContext: false,
+                  zohoBooksLive: true,
+                  workspace: false,
+                  web: false,
+                  skills: false,
+                },
+              });
+              const brokerCitations = contextSearchBrokerService.toVercelCitationsFromSearch(brokerResult);
+              if (brokerResult.results.length > 0) {
+                return buildEnvelope({
+                  success: true,
+                  summary: brokerResult.searchSummary,
+                  keyData: {
+                    module: moduleName,
+                    organizationId: brokerResult.results.find((result) => asString(result.organizationId))?.organizationId,
+                    recordCount: brokerResult.results.length,
+                    resultCount: brokerResult.results.length,
+                    brokerSearch: true,
+                    resolvedEntities: brokerResult.resolvedEntities,
+                  },
+                  fullPayload: {
+                    organizationId: brokerResult.results.find((result) => asString(result.organizationId))?.organizationId,
+                    records: [],
+                    brokerSearch: {
+                      results: brokerResult.results,
+                      matches: brokerResult.matches,
+                      resolvedEntities: brokerResult.resolvedEntities,
+                      sourceCoverage: brokerResult.sourceCoverage,
+                      searchSummary: brokerResult.searchSummary,
+                    },
+                  },
+                  citations: brokerCitations,
+                });
+              }
+            }
+
             const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
               zohoGateway.listAuthorizedRecords({
                 domain: 'books',
@@ -7782,58 +7835,6 @@ export const createVercelDesktopTools = (
               .map((entry) => asRecord(entry))
               .filter((entry): entry is Record<string, unknown> => Boolean(entry));
             const organizationId = asString(auth.organizationId);
-            const normalizedQuery = input.query?.trim();
-
-            if (
-              resultItems.length === 0
-              && input.operation === 'listRecords'
-              && moduleName === 'contacts'
-              && normalizedQuery
-            ) {
-              const escalated = await contextSearchBrokerService.search({
-                runtime,
-                query: normalizedQuery,
-                limit: Math.max(1, Math.min(input.limit ?? 5, 5)),
-                sources: {
-                  personalHistory: false,
-                  files: false,
-                  larkContacts: false,
-                  zohoCrmContext: false,
-                  zohoBooksLive: true,
-                  workspace: false,
-                  web: false,
-                  skills: false,
-                },
-              });
-              const escalationCitations = contextSearchBrokerService.toVercelCitationsFromSearch(escalated);
-              if (escalated.results.length > 0) {
-                return buildEnvelope({
-                  success: true,
-                  summary: `No direct Zoho Books ${moduleName} records matched the current filters. Broader search found ${escalated.results.length} candidate match(es).`,
-                  keyData: {
-                    module: moduleName,
-                    organizationId,
-                    recordCount: 0,
-                    resultCount: 0,
-                    escalatedSearch: true,
-                    resolvedEntities: escalated.resolvedEntities,
-                  },
-                  fullPayload: {
-                    organizationId,
-                    records: resultItems,
-                    raw: asRecord(resultPayload.raw),
-                    fallbackSearch: {
-                      results: escalated.results,
-                      matches: escalated.matches,
-                      resolvedEntities: escalated.resolvedEntities,
-                      sourceCoverage: escalated.sourceCoverage,
-                      searchSummary: escalated.searchSummary,
-                    },
-                  },
-                  citations: escalationCitations,
-                });
-              }
-            }
 
             if (input.operation === 'summarizeModule') {
               const statusCounts = resultItems.reduce<Record<string, number>>((acc, item) => {

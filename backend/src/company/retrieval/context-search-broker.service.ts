@@ -162,6 +162,7 @@ const uniqueStrings = (values: Array<string | undefined | null>): string[] =>
 
 const normalizeText = (value: string): string => value.trim().replace(/\s+/g, ' ');
 const normalizeLookupText = (value: string): string => normalizeText(value).toLowerCase();
+const normalizeEntityToken = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 const SOURCE_CONSTRAINED_PATTERNS: Array<{ strategy: SearchScaleStrategy; pattern: RegExp }> = [
   {
@@ -253,6 +254,58 @@ const isCompanyEntityLookupQuery = (query: string): boolean => {
   return tokenCount >= 2 && tokenCount <= 6;
 };
 
+const extractEntityTokens = (query: string): string[] =>
+  Array.from(new Set(
+    normalizeLookupText(query)
+      .replace(AMBIGUOUS_SEARCH_NOISE, ' ')
+      .split(/[^a-z0-9]+/g)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2),
+  ));
+
+const computeEntityTextMatchScore = (query: string, values: Array<string | undefined>): number => {
+  const normalizedQuery = normalizeLookupText(query);
+  const compactQuery = normalizeEntityToken(normalizedQuery);
+  const haystacks = values
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value))
+    .map((value) => normalizeLookupText(value));
+  if (!compactQuery || haystacks.length === 0) {
+    return 0;
+  }
+
+  let best = 0;
+  const queryTokens = extractEntityTokens(query);
+  for (const haystack of haystacks) {
+    const compactHaystack = normalizeEntityToken(haystack);
+    if (!compactHaystack) {
+      continue;
+    }
+    if (compactHaystack === compactQuery) {
+      best = Math.max(best, 1);
+      continue;
+    }
+    if (compactHaystack.includes(compactQuery) || compactQuery.includes(compactHaystack)) {
+      best = Math.max(best, 0.92);
+    }
+
+    const haystackTokens = new Set(
+      haystack.split(/[^a-z0-9]+/g).map((token) => token.trim()).filter((token) => token.length >= 2),
+    );
+    if (queryTokens.length > 0 && haystackTokens.size > 0) {
+      let overlap = 0;
+      for (const token of queryTokens) {
+        if (haystackTokens.has(token)) {
+          overlap += 1;
+        }
+      }
+      best = Math.max(best, overlap / queryTokens.length);
+    }
+  }
+
+  return best;
+};
+
 const rankContextSearchResults = (
   results: ContextSearchBrokerResult[],
   input: { query: string; limit: number },
@@ -267,6 +320,14 @@ const rankContextSearchResults = (
     }
     if (result.scope === 'lark_contacts') {
       return false;
+    }
+    if (result.scope === 'files') {
+      const fileMatchScore = computeEntityTextMatchScore(input.query, [
+        result.title,
+        result.fileName,
+        result.excerpt,
+      ]);
+      return fileMatchScore >= 0.45;
     }
     return true;
   });
@@ -576,17 +637,30 @@ const buildZohoBooksSearchQueries = (query: string): string[] => {
 };
 
 const scoreZohoBooksContactMatch = (record: Record<string, unknown>, query: string, index: number): number => {
-  const haystack = JSON.stringify(record).toLowerCase();
-  const normalized = query.trim().toLowerCase();
-  const compact = normalized.replace(/\s+/g, ' ');
-  if (!compact) return Math.max(0.6 - index * 0.03, 0.2);
-  if (haystack.includes(`"${compact}"`) || haystack.includes(`:${compact}`)) {
-    return Math.max(0.98 - index * 0.02, 0.5);
-  }
-  if (haystack.includes(compact)) {
-    return Math.max(0.94 - index * 0.03, 0.45);
-  }
-  return Math.max(0.7 - index * 0.04, 0.3);
+  const matchScore = computeEntityTextMatchScore(query, [
+    readString(record.contact_name),
+    readString(record.customer_name),
+    readString(record.company_name),
+    readString(record.email),
+    readString(record.website),
+    JSON.stringify(record),
+  ]);
+  const decay = Math.min(index * 0.01, 0.18);
+  return Math.max(matchScore - decay, matchScore > 0 ? 0.3 : 0);
+};
+
+const scoreZohoBooksInvoiceMatch = (record: Record<string, unknown>, query: string, index: number): number => {
+  const matchScore = computeEntityTextMatchScore(query, [
+    readString(record.customer_name),
+    readString(record.contact_name),
+    readString(record.company_name),
+    readString(record.invoice_number),
+    readString(record.reference_number),
+    readString(record.email),
+    JSON.stringify(record),
+  ]);
+  const decay = Math.min(index * 0.01, 0.18);
+  return Math.max(matchScore - decay, matchScore > 0 ? 0.3 : 0);
 };
 
 const searchZohoBooksLive = async (input: {
@@ -609,6 +683,105 @@ const searchZohoBooksLive = async (input: {
   const seen = new Set<string>();
   const perPage = 200;
   const maxPages = 20;
+  const companyLookup = isCompanyEntityLookupQuery(input.query);
+
+  const pushCandidate = (record: Record<string, unknown>, resolvedOrganizationId: string | undefined, rankIndex: number) => {
+    const contactId = readString(record.contact_id) ?? readString(record.id);
+    if (!contactId) return;
+    const key = `${resolvedOrganizationId ?? ''}:${contactId}`;
+    if (seen.has(key)) return;
+    const displayName =
+      readString(record.contact_name)
+      ?? readString(record.customer_name)
+      ?? readString(record.company_name)
+      ?? readString(record.contact_person)
+      ?? contactId;
+    const email =
+      readString(record.email)
+      ?? readString(record.billing_address_email)
+      ?? readString(record.primary_contact_email);
+    const score = scoreZohoBooksContactMatch(record, input.query, rankIndex);
+    if (companyLookup && score < 0.45) {
+      return;
+    }
+    seen.add(key);
+    const asOf = readString(record.last_modified_time) ?? readString(record.created_time);
+    matches.push({
+      scope: 'zoho_books',
+      sourceType: 'books_contact',
+      sourceId: contactId,
+      chunkIndex: 0,
+      score,
+      excerpt: normalizeText([
+        displayName,
+        email,
+        readString(record.company_name),
+        readString(resolvedOrganizationId),
+      ].filter(Boolean).join('\n')),
+      chunkRef: buildChunkRef('zoho_books', 'books_contact', encodeRefSegment(`${resolvedOrganizationId}:${contactId}`), 0),
+      sourceLabel: buildSourceLabel({
+        scope: 'zoho_books',
+        title: displayName,
+        sourceType: 'books_contact',
+        asOf,
+      }),
+      asOf,
+      displayName,
+      email,
+      organizationId: resolvedOrganizationId,
+      title: displayName,
+    });
+  };
+
+  const pushInvoiceCandidate = (record: Record<string, unknown>, resolvedOrganizationId: string | undefined, rankIndex: number) => {
+    const invoiceId = readString(record.invoice_id) ?? readString(record.id);
+    if (!invoiceId) return;
+    const key = `${resolvedOrganizationId ?? ''}:invoice:${invoiceId}`;
+    if (seen.has(key)) return;
+    const customerName =
+      readString(record.customer_name)
+      ?? readString(record.contact_name)
+      ?? readString(record.company_name);
+    const invoiceNumber = readString(record.invoice_number) ?? invoiceId;
+    const score = scoreZohoBooksInvoiceMatch(record, input.query, rankIndex);
+    if (companyLookup && score < 0.45) {
+      return;
+    }
+    seen.add(key);
+    const asOf =
+      readString(record.last_modified_time)
+      ?? readString(record.updated_time)
+      ?? readString(record.created_time)
+      ?? readString(record.date);
+    matches.push({
+      scope: 'zoho_books',
+      sourceType: 'books_invoice',
+      sourceId: invoiceId,
+      chunkIndex: 0,
+      score,
+      excerpt: normalizeText([
+        customerName,
+        invoiceNumber,
+        readString(record.status),
+        readString(record.amount_due),
+        readString(record.balance),
+        readString(record.due_date),
+        readString(resolvedOrganizationId),
+      ].filter(Boolean).join('\n')),
+      chunkRef: buildChunkRef('zoho_books', 'books_invoice', encodeRefSegment(`${resolvedOrganizationId}:${invoiceId}`), 0),
+      sourceLabel: buildSourceLabel({
+        scope: 'zoho_books',
+        title: customerName ?? invoiceNumber,
+        sourceType: 'books_invoice',
+        asOf,
+      }),
+      asOf,
+      displayName: customerName,
+      email: readString(record.email),
+      organizationId: resolvedOrganizationId,
+      title: customerName ? `${customerName} (${invoiceNumber})` : invoiceNumber,
+    });
+  };
 
   for (const organizationId of organizationIds) {
     for (const queryVariant of queries) {
@@ -631,48 +804,8 @@ const searchZohoBooksLive = async (input: {
           ? payload.records.map((entry) => asRecord(entry)).filter((entry): entry is Record<string, unknown> => Boolean(entry))
           : [];
         for (const [index, record] of records.entries()) {
-          const contactId = readString(record.contact_id) ?? readString(record.id);
-          if (!contactId) continue;
           const resolvedOrganizationId = auth.organizationId ?? organizationId;
-          const key = `${resolvedOrganizationId}:${contactId}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const displayName =
-            readString(record.contact_name)
-            ?? readString(record.customer_name)
-            ?? readString(record.company_name)
-            ?? readString(record.contact_person)
-            ?? contactId;
-          const email =
-            readString(record.email)
-            ?? readString(record.billing_address_email)
-            ?? readString(record.primary_contact_email);
-          const asOf = readString(record.last_modified_time) ?? readString(record.created_time);
-          matches.push({
-            scope: 'zoho_books',
-            sourceType: 'books_contact',
-            sourceId: contactId,
-            chunkIndex: 0,
-            score: scoreZohoBooksContactMatch(record, queryVariant, ((page - 1) * perPage) + index),
-            excerpt: normalizeText([
-              displayName,
-              email,
-              readString(record.company_name),
-              readString(resolvedOrganizationId),
-            ].filter(Boolean).join('\n')),
-            chunkRef: buildChunkRef('zoho_books', 'books_contact', encodeRefSegment(`${resolvedOrganizationId}:${contactId}`), 0),
-            sourceLabel: buildSourceLabel({
-              scope: 'zoho_books',
-              title: displayName,
-              sourceType: 'books_contact',
-              asOf,
-            }),
-            asOf,
-            displayName,
-            email,
-            organizationId: resolvedOrganizationId,
-            title: displayName,
-          });
+          pushCandidate(record, resolvedOrganizationId, ((page - 1) * perPage) + index);
         }
         if (matches.length >= input.limit * 3 || records.length < perPage) {
           break;
@@ -682,6 +815,114 @@ const searchZohoBooksLive = async (input: {
     }
     if (matches.length >= input.limit * 3) {
       break;
+    }
+  }
+
+  if (matches.length === 0 && companyLookup) {
+    const scanPageLimit = 5;
+    const scanPerPage = 200;
+    for (const organizationId of organizationIds) {
+      for (let page = 1; page <= scanPageLimit; page += 1) {
+        const auth = await zohoGatewayService.listAuthorizedRecords({
+          domain: 'books',
+          module: 'contacts',
+          requester,
+          organizationId: organizationId || undefined,
+          limit: scanPerPage,
+          page,
+          perPage: scanPerPage,
+        });
+        if (auth.allowed !== true) {
+          break;
+        }
+        const payload = asRecord(auth.payload) ?? {};
+        const records = Array.isArray(payload.records)
+          ? payload.records.map((entry) => asRecord(entry)).filter((entry): entry is Record<string, unknown> => Boolean(entry))
+          : [];
+        for (const [index, record] of records.entries()) {
+          pushCandidate(record, auth.organizationId ?? organizationId, ((page - 1) * scanPerPage) + index);
+        }
+        if (matches.length >= input.limit * 3 || records.length < scanPerPage) {
+          break;
+        }
+      }
+      if (matches.length >= input.limit * 3) {
+        break;
+      }
+    }
+  }
+
+  if (matches.length < input.limit * 2) {
+    const invoicePerPage = 200;
+    const invoicePageLimit = companyLookup ? 8 : 3;
+    for (const organizationId of organizationIds) {
+      for (const queryVariant of queries) {
+        for (let page = 1; page <= invoicePageLimit; page += 1) {
+          const auth = await zohoGatewayService.listAuthorizedRecords({
+            domain: 'books',
+            module: 'invoices',
+            requester,
+            organizationId: organizationId || undefined,
+            query: queryVariant,
+            limit: invoicePerPage,
+            page,
+            perPage: invoicePerPage,
+          });
+          if (auth.allowed !== true) {
+            break;
+          }
+          const payload = asRecord(auth.payload) ?? {};
+          const records = Array.isArray(payload.records)
+            ? payload.records.map((entry) => asRecord(entry)).filter((entry): entry is Record<string, unknown> => Boolean(entry))
+            : [];
+          for (const [index, record] of records.entries()) {
+            pushInvoiceCandidate(record, auth.organizationId ?? organizationId, ((page - 1) * invoicePerPage) + index);
+          }
+          if (matches.length >= input.limit * 3 || records.length < invoicePerPage) {
+            break;
+          }
+        }
+        if (matches.length >= input.limit * 3) {
+          break;
+        }
+      }
+      if (matches.length >= input.limit * 3) {
+        break;
+      }
+    }
+  }
+
+  if (matches.length === 0 && companyLookup) {
+    const invoiceScanPerPage = 200;
+    const invoiceScanPageLimit = 6;
+    for (const organizationId of organizationIds) {
+      for (let page = 1; page <= invoiceScanPageLimit; page += 1) {
+        const auth = await zohoGatewayService.listAuthorizedRecords({
+          domain: 'books',
+          module: 'invoices',
+          requester,
+          organizationId: organizationId || undefined,
+          limit: invoiceScanPerPage,
+          page,
+          perPage: invoiceScanPerPage,
+        });
+        if (auth.allowed !== true) {
+          break;
+        }
+        const payload = asRecord(auth.payload) ?? {};
+        const records = Array.isArray(payload.records)
+          ? payload.records.map((entry) => asRecord(entry)).filter((entry): entry is Record<string, unknown> => Boolean(entry))
+          : [];
+        for (const [index, record] of records.entries()) {
+          pushInvoiceCandidate(record, auth.organizationId ?? organizationId, ((page - 1) * invoiceScanPerPage) + index);
+        }
+        if (matches.length >= input.limit * 3 || records.length < invoiceScanPerPage) {
+          break;
+        }
+      }
+      if (matches.length >= input.limit * 3) {
+        break;
+      }
     }
   }
 
@@ -741,6 +982,7 @@ class ContextSearchBrokerService {
   const companyEntityLookup = isCompanyEntityLookupQuery(query);
   if (companyEntityLookup) {
     sources.larkContacts = false;
+    sources.zohoBooksLive = true;
   }
   const searchStrategy = inferSearchScaleStrategy({
     query,
