@@ -2254,6 +2254,9 @@ const buildDelegatedLarkStepPrompt = (input: {
     '',
     'Your output is consumed by the supervisor.',
     'Only do the work required for this step. Use only the tools available in this agent family.',
+    delegatedStepLikelyRequiresToolUse(input.step)
+      ? 'This step obviously requires tool use. Do not spend your first turn narrating a plan. Call the relevant tool immediately, then summarize the result.'
+      : 'If a tool is needed, use it directly instead of spending time narrating a plan.',
     'Do not comment on tools owned by other agent families.',
     'Do not say another tool is unavailable just because it is not in your family.',
     'If this step is only gathering data for a later step, return that data plainly and stop.',

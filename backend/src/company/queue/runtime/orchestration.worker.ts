@@ -4,6 +4,7 @@ import { Job, Worker } from 'bullmq';
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
 import { orangeDebug } from '../../../utils/orange-debug';
+import { LarkChannelAdapter } from '../../channels/lark/lark.adapter';
 import {
   buildExecutionDecisionPayload,
   buildExecutionFailurePayload,
@@ -232,6 +233,58 @@ const appendExecutionEventSafe = async (
       executionId,
       eventType: input.eventType,
       error: error instanceof Error ? error.message : 'unknown_execution_event_error',
+    });
+  }
+};
+
+const notifyChannelTimeout = async (input: {
+  taskId: string;
+  message: OrchestrationJobData['message'];
+  timeoutMs: number;
+}): Promise<void> => {
+  if (input.message.channel !== 'lark') {
+    return;
+  }
+
+  const snapshot = runtimeTaskStore.get(input.taskId);
+  const latestProgress =
+    summarizeText(snapshot?.latestSynthesis, 220)
+    ?? summarizeText(snapshot?.currentStep, 220)
+    ?? 'The job was still in progress.';
+  const timeoutText = [
+    `I timed out after ${Math.round(input.timeoutMs / 60000)} minute${input.timeoutMs >= 120000 ? 's' : ''} while working on this.`,
+    '',
+    `Latest progress: ${latestProgress}`,
+    '',
+    'Reply with "continue" to resume from the saved progress.',
+  ].join('\n');
+
+  try {
+    const adapter = new LarkChannelAdapter();
+    const statusMessageId = input.message.trace?.statusMessageId?.trim();
+    if (statusMessageId) {
+      await adapter.updateMessage({
+        messageId: statusMessageId,
+        text: timeoutText,
+        correlationId: input.taskId,
+        actions: [],
+      });
+      return;
+    }
+
+    await adapter.sendMessage({
+      chatId: input.message.chatId,
+      text: timeoutText,
+      correlationId: input.taskId,
+      replyToMessageId: input.message.trace?.replyToMessageId ?? input.message.messageId,
+      replyInThread: input.message.chatType === 'group',
+      actions: [],
+    });
+  } catch (error) {
+    logger.warn('queue.worker.timeout_notify_failed', {
+      taskId: input.taskId,
+      messageId: input.message.messageId,
+      error: error instanceof Error ? error.message : 'unknown_error',
     });
   }
 };
@@ -741,6 +794,13 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
                   ? 'queue_task_timeout'
                   : 'lark_runtime_cancelled',
               });
+              if (error instanceof QueueTaskTimeoutError) {
+                await notifyChannelTimeout({
+                  taskId: job.data.taskId,
+                  message: job.data.message,
+                  timeoutMs: error.timeoutMs,
+                });
+              }
               if (error instanceof QueueTaskTimeoutError) {
                 logger.error('queue.worker.timeout', {
                   taskId: job.data.taskId,
