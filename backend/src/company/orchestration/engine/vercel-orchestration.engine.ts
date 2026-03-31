@@ -3597,7 +3597,7 @@ const executeLarkVercelTask = async (
   progressCoordinator.startHeartbeat(() => renderCurrentStatus(true));
   await updateStatus(
     'planning',
-    routerAcknowledgement ?? 'Choosing the right tools and approach for this request.',
+    routerAcknowledgement ?? 'Figuring out the best way to help…',
   );
 
   await assertExecutionRunnable(task.taskId, abortSignal);
@@ -3993,7 +3993,7 @@ const executeLarkVercelTask = async (
   if (compactionResult.wasCompacted) {
     await updateStatus(
       'planning',
-      'Compacting earlier context to preserve recent details before continuing.',
+      'Breaking this down into steps…',
       undefined,
       { force: true },
     );
@@ -4040,7 +4040,7 @@ const executeLarkVercelTask = async (
     });
     await updateStatus(
       'planning',
-      'Compacting context more aggressively to keep the run moving.',
+      'Breaking this down into steps…',
       undefined,
       { force: true },
     );
@@ -4288,10 +4288,10 @@ const executeLarkVercelTask = async (
               inputRefs: step.inputRefs,
             },
           });
-          statusHistory.push(`Running ${step.agentId}: ${summarizeText(step.objective, 140) ?? step.objective}`);
+          statusHistory.push('Working on a focused step…');
           await updateStatus(
             'planning',
-            `${step.agentId}: ${summarizeText(step.objective, 160) ?? step.objective}`,
+            'Working on it…',
           );
           let delegatedStepWatchdog: NodeJS.Timeout | undefined;
           try {
@@ -4306,8 +4306,8 @@ const executeLarkVercelTask = async (
                 supervisorStepId: step.stepId,
                 supervisorAgentId: step.agentId,
               });
-              statusHistory.push(`Started ${title}`);
-              await updateStatus('tool_running', `Using ${title}.`);
+              statusHistory.push('Pulling the data…');
+              await updateStatus('tool_running', 'Pulling the data…');
             },
             onToolFinish: async (toolName, activityId, title, output) => {
               const hotContextSlot = buildHotContextSlot(toolName, output);
@@ -4334,9 +4334,10 @@ const executeLarkVercelTask = async (
                 supervisorStepId: step.stepId,
                 supervisorAgentId: step.agentId,
               });
-              const summary = summarizeText(output.summary, 180) ?? output.summary;
-              statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${title}: ${summary}`);
-              await updateStatus('tool_done', `${title}: ${summary}`);
+              statusHistory.push(
+                output.success ? 'Got the data, reviewing results…' : 'Hit a snag, trying another way…',
+              );
+              await updateStatus('tool_done', 'Got the data, reviewing results…');
             },
           });
 
@@ -4345,13 +4346,10 @@ const executeLarkVercelTask = async (
             if (stepToolResults.length > 0) {
               return;
             }
-            const waitingSummary = summarizeText(step.objective, 120) ?? step.objective;
-            statusHistory.push(
-              `${step.agentId} is still reviewing this step before calling tools: ${waitingSummary}`,
-            );
+            statusHistory.push('Still thinking — this one needs a moment…');
             void updateStatus(
               'planning',
-              `${step.agentId} is reviewing the request before calling tools.`,
+              'Still thinking — this one needs a moment…',
             );
             logger.warn('supervisor.step.long_wait', {
               taskId: task.taskId,
@@ -4471,10 +4469,10 @@ const executeLarkVercelTask = async (
             !stepBlockingUserInput &&
             delegatedStepLikelyRequiresToolUse(step)
           ) {
-            statusHistory.push(`Retrying ${step.agentId}: first pass completed without any tool use.`);
+            statusHistory.push('Hit a snag, trying another way…');
             await updateStatus(
               'planning',
-              `${step.agentId}: retrying because no tool ran in the first pass.`,
+              'Hit a snag, trying another way…',
             );
             await appendLatestAgentRunLog(task.taskId, 'supervisor.step.retry_no_tool_use', {
               channel: 'lark',
@@ -4668,8 +4666,8 @@ const executeLarkVercelTask = async (
       pendingApproval,
     });
 
-    statusHistory.push('Execution complete. Preparing the final response.');
-    await updateStatus('analyzing', 'Finalizing the response for you.');
+    statusHistory.push('Wrapping up your answer…');
+    await updateStatus('analyzing', 'Wrapping up your answer…');
 
     let deliveredStatusMessageId: string | undefined;
     if (pendingApproval) {
@@ -4679,7 +4677,7 @@ const executeLarkVercelTask = async (
         message,
         pendingApproval,
       });
-      statusHistory.push(`Approval required: ${pendingApproval.kind}`);
+      statusHistory.push('Approval needed before I can continue.');
       const approvalText = managerApprovalResult.sent
         ? `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`
         : pendingApproval.kind === 'tool_action'
@@ -4884,7 +4882,7 @@ const executeLarkVercelTask = async (
       threadId: contextStorageId ?? message.chatId,
       error: errorMessage,
     });
-    statusHistory.push(`Failed: ${errorMessage}`);
+    statusHistory.push('Hit a snag, trying another way…');
     const failureCoordinator = await ensureStatusCoordinator({
       replyToMessageId: message.messageId,
     });
