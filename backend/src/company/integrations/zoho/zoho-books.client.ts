@@ -230,6 +230,8 @@ export class ZohoBooksClient {
     filters?: Record<string, unknown>;
     limit?: number;
     query?: string;
+    page?: number;
+    perPage?: number;
   }): Promise<{ organizationId: string; items: Record<string, unknown>[]; payload: ZohoBooksResponse }> {
     const environment = input.environment ?? 'prod';
     const organizationId = await this.resolveOrganizationId({
@@ -237,10 +239,11 @@ export class ZohoBooksClient {
       environment,
       preferredOrganizationId: input.organizationId,
     });
+    const perPage = Math.max(1, Math.min(200, input.perPage ?? input.limit ?? 25));
     const params = new URLSearchParams({
       organization_id: organizationId,
-      page: '1',
-      per_page: String(Math.max(1, Math.min(200, input.limit ?? 25))),
+      page: String(Math.max(1, input.page ?? 1)),
+      per_page: String(perPage),
     });
 
     for (const [key, value] of Object.entries(input.filters ?? {})) {
@@ -259,7 +262,7 @@ export class ZohoBooksClient {
 
     const filtered = extractListItems(input.moduleName, payload)
       .filter((item) => itemMatchesQuery(item, input.query))
-      .slice(0, Math.max(1, Math.min(200, input.limit ?? 25)));
+      .slice(0, perPage);
 
     return {
       organizationId,

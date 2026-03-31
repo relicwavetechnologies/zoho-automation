@@ -4,6 +4,8 @@ import path from 'path';
 import type { VercelCitation, VercelRuntimeRequestContext } from '../orchestration/vercel/types';
 import { channelIdentityRepository } from '../channels/channel-identity.repository';
 import { zohoRetrievalService } from '../agents/support/zoho-retrieval.service';
+import { zohoBooksClient } from '../integrations/zoho/zoho-books.client';
+import { zohoGatewayService } from '../integrations/zoho/zoho-gateway.service';
 import { webSearchService } from '../integrations/search/web-search.service';
 import { personalVectorMemoryService } from '../integrations/vector/personal-vector-memory.service';
 import { vectorDocumentRepository } from '../integrations/vector/vector-document.repository';
@@ -16,6 +18,7 @@ export type ContextSearchBrokerSourceKey =
   | 'files'
   | 'larkContacts'
   | 'zohoCrmContext'
+  | 'zohoBooksLive'
   | 'workspace'
   | 'web'
   | 'skills';
@@ -25,6 +28,7 @@ export type ContextSearchBrokerSources = {
   files?: boolean;
   larkContacts?: boolean;
   zohoCrmContext?: boolean;
+  zohoBooksLive?: boolean;
   workspace?: boolean;
   web?: boolean;
   skills?: boolean;
@@ -32,7 +36,14 @@ export type ContextSearchBrokerSources = {
 
 type ContextSearchBrokerRuntime = Pick<
   VercelRuntimeRequestContext,
-  'channel' | 'companyId' | 'userId' | 'requesterAiRole' | 'requesterEmail' | 'departmentId' | 'workspace'
+  | 'channel'
+  | 'companyId'
+  | 'userId'
+  | 'requesterAiRole'
+  | 'requesterEmail'
+  | 'departmentId'
+  | 'departmentZohoReadScope'
+  | 'workspace'
 >;
 
 export type ContextSearchBrokerSearchInput = {
@@ -66,6 +77,7 @@ export type ContextSearchBrokerResult = {
   fileName?: string;
   displayName?: string;
   email?: string;
+  organizationId?: string;
   skillId?: string;
   skillSlug?: string;
 };
@@ -196,6 +208,7 @@ const buildSourceLabel = (input: {
   if (input.scope === 'files') return `Company file · ${input.fileName ?? input.title ?? input.sourceType}${asOf}`;
   if (input.scope === 'personal_history') return `Personal history · ${input.title ?? input.sourceType}${asOf}`;
   if (input.scope === 'zoho_crm') return `Zoho CRM context · ${input.title ?? input.sourceType}${asOf}`;
+  if (input.scope === 'zoho_books') return `Zoho Books · ${input.title ?? input.sourceType}${asOf}`;
   if (input.scope === 'web') return `Web · ${input.domain ?? input.title ?? input.sourceType}${asOf}`;
   if (input.scope === 'skills') return `Skill · ${input.title ?? input.sourceType}${asOf}`;
   if (input.scope === 'workspace') return `Workspace · ${input.fileName ?? input.title ?? input.sourceType}${asOf}`;
@@ -332,8 +345,159 @@ const buildResolvedEntities = (results: ContextSearchBrokerResult[]): Record<str
       setResolvedEntity(resolved, 'skillId', result.skillId ?? result.sourceId);
       setResolvedEntity(resolved, 'skillSlug', result.skillSlug ?? result.sourceId);
     }
+    if (result.scope === 'zoho_books') {
+      setResolvedEntity(resolved, 'contactId', result.sourceId);
+      setResolvedEntity(resolved, 'organizationId', result.organizationId);
+      setResolvedEntity(resolved, 'customerName', result.displayName ?? result.title);
+      setResolvedEntity(resolved, 'customerEmail', result.email);
+    }
   }
   return resolved;
+};
+
+const buildZohoGatewayRequester = (runtime: ContextSearchBrokerRuntime) => ({
+  companyId: runtime.companyId,
+  userId: runtime.userId,
+  departmentId: runtime.departmentId,
+  requesterEmail: runtime.requesterEmail,
+  requesterAiRole: runtime.requesterAiRole,
+  departmentZohoReadScope: runtime.departmentZohoReadScope,
+});
+
+const sanitizeZohoBooksSearchVariant = (value: string): string | undefined => {
+  const cleaned = value
+    .replace(/\b(can you|please|share|fetch|get|retrieve|show|reply in thread|in thread|from zoho books|zoho books|customer statement|statement|customer|only)\b/gi, ' ')
+    .replace(/[“”"'`]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > 1 ? cleaned : undefined;
+};
+
+const buildZohoBooksSearchQueries = (query: string): string[] => {
+  const candidates = new Set<string>();
+  const trimmed = query.trim();
+  if (trimmed) candidates.add(trimmed);
+  const forMatch = trimmed.match(/\bfor\s+(.+?)(?:\b(?:from|reply|please|in thread|only)\b|$)/i);
+  const forVariant = sanitizeZohoBooksSearchVariant(forMatch?.[1] ?? '');
+  if (forVariant) candidates.add(forVariant);
+  const sanitized = sanitizeZohoBooksSearchVariant(trimmed);
+  if (sanitized) candidates.add(sanitized);
+  return Array.from(candidates).slice(0, 3);
+};
+
+const scoreZohoBooksContactMatch = (record: Record<string, unknown>, query: string, index: number): number => {
+  const haystack = JSON.stringify(record).toLowerCase();
+  const normalized = query.trim().toLowerCase();
+  const compact = normalized.replace(/\s+/g, ' ');
+  if (!compact) return Math.max(0.6 - index * 0.03, 0.2);
+  if (haystack.includes(`"${compact}"`) || haystack.includes(`:${compact}`)) {
+    return Math.max(0.98 - index * 0.02, 0.5);
+  }
+  if (haystack.includes(compact)) {
+    return Math.max(0.94 - index * 0.03, 0.45);
+  }
+  return Math.max(0.7 - index * 0.04, 0.3);
+};
+
+const searchZohoBooksLive = async (input: {
+  runtime: ContextSearchBrokerRuntime;
+  query: string;
+  limit: number;
+}): Promise<ContextSearchBrokerResult[]> => {
+  const queries = buildZohoBooksSearchQueries(input.query);
+  if (queries.length === 0) return [];
+
+  const requester = buildZohoGatewayRequester(input.runtime);
+  const organizations = await zohoBooksClient.listOrganizations({
+    companyId: input.runtime.companyId,
+  }).catch(() => []);
+  const organizationIds = uniqueStrings([
+    ...organizations.map((organization) => organization.organizationId),
+    '',
+  ]);
+  const matches: ContextSearchBrokerResult[] = [];
+  const seen = new Set<string>();
+  const perPage = 200;
+  const maxPages = 20;
+
+  for (const organizationId of organizationIds) {
+    for (const queryVariant of queries) {
+      for (let page = 1; page <= maxPages; page += 1) {
+        const auth = await zohoGatewayService.listAuthorizedRecords({
+          domain: 'books',
+          module: 'contacts',
+          requester,
+          organizationId: organizationId || undefined,
+          query: queryVariant,
+          limit: perPage,
+          page,
+          perPage,
+        });
+        if (auth.allowed !== true) {
+          break;
+        }
+        const payload = asRecord(auth.payload) ?? {};
+        const records = Array.isArray(payload.records)
+          ? payload.records.map((entry) => asRecord(entry)).filter((entry): entry is Record<string, unknown> => Boolean(entry))
+          : [];
+        for (const [index, record] of records.entries()) {
+          const contactId = readString(record.contact_id) ?? readString(record.id);
+          if (!contactId) continue;
+          const resolvedOrganizationId = auth.organizationId ?? organizationId;
+          const key = `${resolvedOrganizationId}:${contactId}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const displayName =
+            readString(record.contact_name)
+            ?? readString(record.customer_name)
+            ?? readString(record.company_name)
+            ?? readString(record.contact_person)
+            ?? contactId;
+          const email =
+            readString(record.email)
+            ?? readString(record.billing_address_email)
+            ?? readString(record.primary_contact_email);
+          const asOf = readString(record.last_modified_time) ?? readString(record.created_time);
+          matches.push({
+            scope: 'zoho_books',
+            sourceType: 'books_contact',
+            sourceId: contactId,
+            chunkIndex: 0,
+            score: scoreZohoBooksContactMatch(record, queryVariant, ((page - 1) * perPage) + index),
+            excerpt: normalizeText([
+              displayName,
+              email,
+              readString(record.company_name),
+              readString(resolvedOrganizationId),
+            ].filter(Boolean).join('\n')),
+            chunkRef: buildChunkRef('zoho_books', 'books_contact', encodeRefSegment(`${resolvedOrganizationId}:${contactId}`), 0),
+            sourceLabel: buildSourceLabel({
+              scope: 'zoho_books',
+              title: displayName,
+              sourceType: 'books_contact',
+              asOf,
+            }),
+            asOf,
+            displayName,
+            email,
+            organizationId: resolvedOrganizationId,
+            title: displayName,
+          });
+        }
+        if (matches.length >= input.limit * 3 || records.length < perPage) {
+          break;
+        }
+      }
+      if (matches.length >= input.limit * 3) break;
+    }
+    if (matches.length >= input.limit * 3) {
+      break;
+    }
+  }
+
+  return matches
+    .sort((left, right) => right.score - left.score)
+    .slice(0, input.limit);
 };
 
 class ContextSearchBrokerService {
@@ -343,6 +507,7 @@ class ContextSearchBrokerService {
       files: input?.files ?? true,
       larkContacts: input?.larkContacts ?? true,
       zohoCrmContext: input?.zohoCrmContext ?? true,
+      zohoBooksLive: input?.zohoBooksLive ?? false,
       workspace: input?.workspace ?? false,
       web: input?.web ?? false,
       skills: input?.skills ?? false,
@@ -560,6 +725,11 @@ class ContextSearchBrokerService {
           }];
         });
       }),
+      runSource('zohoBooksLive', async () => searchZohoBooksLive({
+        runtime: input.runtime,
+        query,
+        limit,
+      })),
       runSource('workspace', async () => searchWorkspace({
         runtime: input.runtime,
         query,
@@ -721,6 +891,37 @@ class ContextSearchBrokerService {
         resolvedEntities: {
           webUrl: url,
           ...(item?.title ? { webTitle: item.title } : {}),
+        },
+      };
+    }
+
+    if (parsed.scope === 'zoho_books') {
+      const decoded = decodeRefSegment(parsed.sourceId);
+      const [organizationId, contactId] = decoded.split(':');
+      if (!contactId) return null;
+      const auth = await zohoGatewayService.getAuthorizedRecord({
+        domain: 'books',
+        module: 'contacts',
+        recordId: contactId,
+        organizationId: organizationId || undefined,
+        requester: buildZohoGatewayRequester(input.runtime),
+      });
+      if (auth.allowed !== true) return null;
+      const record = asRecord(auth.payload) ?? {};
+      const text = normalizeText(JSON.stringify(record, null, 2));
+      if (!text.trim()) return null;
+      return {
+        chunkRef: input.chunkRef,
+        scope: parsed.scope,
+        sourceType: parsed.sourceType,
+        sourceId: contactId,
+        chunkIndex: parsed.chunkIndex,
+        text,
+        resolvedEntities: {
+          contactId,
+          ...(auth.organizationId ? { organizationId: auth.organizationId } : {}),
+          ...(readString(record.contact_name) ? { customerName: readString(record.contact_name)! } : {}),
+          ...(readString(record.email) ? { customerEmail: readString(record.email)! } : {}),
         },
       };
     }

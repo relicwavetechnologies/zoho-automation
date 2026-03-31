@@ -98,6 +98,8 @@ export class ZohoGatewayService {
     filters?: Record<string, unknown>;
     query?: string;
     limit?: number;
+    page?: number;
+    perPage?: number;
     organizationId?: string;
   }): Promise<ZohoAuthorizationResult<{ records: Record<string, unknown>[]; raw?: Record<string, unknown> }>> {
     const principal = await this.resolveScopeContext({
@@ -188,6 +190,7 @@ export class ZohoGatewayService {
     }
     const compiledFilters = compileBooksNativeFilters({
       moduleName,
+      scopeMode: principal.scopeMode,
       requesterEmail: principal.normalizedRequesterEmail,
       allowedContactIds: principal.books?.contactIds,
       filters: input.filters,
@@ -231,6 +234,8 @@ export class ZohoGatewayService {
           filters: compiledFilters,
           query: input.query,
           limit,
+          page: input.page,
+          perPage: input.perPage,
         });
         const filtered = result.items.filter((record) =>
           verifyBooksRecordOwnership({
@@ -278,6 +283,8 @@ export class ZohoGatewayService {
           },
           query: input.query,
           limit,
+          page: input.page,
+          perPage: input.perPage,
         });
         for (const record of result.items) {
           const verdict = verifyBooksRecordOwnership({
@@ -335,6 +342,8 @@ export class ZohoGatewayService {
       filters: compiledFilters,
       query: input.query,
       limit,
+      page: input.page,
+      perPage: input.perPage,
     });
     logGatewayAudit({
       operation: 'listAuthorizedRecords',

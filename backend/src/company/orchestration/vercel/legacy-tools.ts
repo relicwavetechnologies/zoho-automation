@@ -1059,6 +1059,7 @@ const CONTEXT_SEARCH_SOURCE_KEYS = [
   'files',
   'larkContacts',
   'zohoCrmContext',
+  'zohoBooksLive',
   'workspace',
   'web',
   'skills',
@@ -1074,6 +1075,7 @@ const normalizeContextSearchSources = (input: {
       files: input.sources.files ?? true,
       larkContacts: input.sources.larkContacts ?? true,
       zohoCrmContext: input.sources.zohoCrmContext ?? true,
+      zohoBooksLive: input.sources.zohoBooksLive ?? false,
       workspace: input.sources.workspace ?? false,
       web: input.sources.web ?? false,
       skills: input.sources.skills ?? false,
@@ -1090,6 +1092,7 @@ const normalizeContextSearchSources = (input: {
     files: requestedScopes.includes('files'),
     larkContacts: requestedScopes.includes('lark_contacts'),
     zohoCrmContext: requestedScopes.includes('zoho_crm'),
+    zohoBooksLive: false,
     workspace: false,
     web: false,
     skills: false,
@@ -2967,6 +2970,50 @@ const resolveZohoBooksRecordIdFromRuntime = (
   return undefined;
 };
 
+const resolveZohoBooksModuleScopedExplicitRecordId = (input: {
+  moduleName: ZohoBooksRuntimeModule | undefined;
+  recordId?: string;
+  invoiceId?: string;
+  estimateId?: string;
+  creditNoteId?: string;
+  salesOrderId?: string;
+  purchaseOrderId?: string;
+  billId?: string;
+  contactId?: string;
+  vendorPaymentId?: string;
+  accountId?: string;
+  transactionId?: string;
+}): string | undefined => {
+  const direct = input.recordId?.trim();
+  if (direct) {
+    return direct;
+  }
+  switch (input.moduleName) {
+    case 'invoices':
+      return input.invoiceId?.trim();
+    case 'estimates':
+      return input.estimateId?.trim();
+    case 'creditnotes':
+      return input.creditNoteId?.trim();
+    case 'salesorders':
+      return input.salesOrderId?.trim();
+    case 'purchaseorders':
+      return input.purchaseOrderId?.trim();
+    case 'bills':
+      return input.billId?.trim();
+    case 'contacts':
+      return input.contactId?.trim();
+    case 'vendorpayments':
+      return input.vendorPaymentId?.trim();
+    case 'bankaccounts':
+      return input.accountId?.trim();
+    case 'banktransactions':
+      return input.transactionId?.trim();
+    default:
+      return undefined;
+  }
+};
+
 const resolvePendingBooksWriteBodyFromRuntime = (input: {
   runtime: VercelRuntimeRequestContext;
   operation: string;
@@ -3504,6 +3551,7 @@ export const createVercelDesktopTools = (
           files: z.boolean().optional(),
           larkContacts: z.boolean().optional(),
           zohoCrmContext: z.boolean().optional(),
+          zohoBooksLive: z.boolean().optional(),
           workspace: z.boolean().optional(),
           web: z.boolean().optional(),
           skills: z.boolean().optional(),
@@ -6431,7 +6479,6 @@ export const createVercelDesktopTools = (
             input.module,
             input.operation,
           );
-          const recordId = resolveZohoBooksRecordIdFromRuntime(runtime, moduleName, input.recordId);
           const invoiceId = resolveZohoBooksRecordIdFromRuntime(
             runtime,
             'invoices',
@@ -6466,6 +6513,24 @@ export const createVercelDesktopTools = (
             runtime,
             'vendorpayments',
             input.vendorPaymentId,
+          );
+          const recordId = resolveZohoBooksRecordIdFromRuntime(
+            runtime,
+            moduleName,
+            resolveZohoBooksModuleScopedExplicitRecordId({
+              moduleName,
+              recordId: input.recordId,
+              invoiceId,
+              estimateId,
+              creditNoteId,
+              salesOrderId,
+              purchaseOrderId,
+              billId: input.billId,
+              contactId,
+              vendorPaymentId,
+              accountId: input.accountId,
+              transactionId: input.transactionId,
+            }),
           );
           if (
             input.operation !== 'getLastImportedStatement' &&

@@ -47,6 +47,7 @@ export const canSelfScopeBooksModule = (moduleName: ZohoBooksModule): boolean =>
 
 export const compileBooksNativeFilters = (input: {
   moduleName: ZohoBooksModule;
+  scopeMode?: 'self_scoped' | 'company_scoped';
   requesterEmail?: string;
   allowedContactIds?: string[];
   filters?: Record<string, unknown>;
@@ -65,7 +66,7 @@ export const compileBooksNativeFilters = (input: {
 
   const allowedContactIds = (input.allowedContactIds ?? []).filter(Boolean);
   const normalizedRequesterEmail = normalizeEmail(input.requesterEmail);
-  if (input.moduleName === 'contacts' && normalizedRequesterEmail) {
+  if (input.moduleName === 'contacts' && input.scopeMode === 'self_scoped' && normalizedRequesterEmail) {
     compiled.email = normalizedRequesterEmail;
   } else if (
     ['estimates', 'invoices', 'creditnotes', 'salesorders', 'customerpayments'].includes(input.moduleName)
