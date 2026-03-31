@@ -2366,23 +2366,7 @@ const resolveRuntimeContext = async (
     companyId,
     requesterAiRole,
   );
-  let linkedUserId = message.trace?.linkedUserId;
-  if (!linkedUserId && message.trace?.channelIdentityId) {
-    try {
-      const mapped = await departmentService.resolveWorkspaceMemberFromChannelIdentity({
-        companyId,
-        channelIdentityId: message.trace.channelIdentityId,
-      });
-      linkedUserId = mapped.userId;
-    } catch (error) {
-      logger.info('vercel.runtime_context.channel_identity_unresolved', {
-        companyId,
-        channelIdentityId: message.trace.channelIdentityId,
-        requesterEmail: message.trace?.requesterEmail ?? null,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
+  const linkedUserId = await resolveWorkspaceUserIdForLarkMessage(message);
   let departmentId: string | undefined;
   let departmentName: string | undefined;
   let departmentRoleSlug: string | undefined;
@@ -2480,6 +2464,35 @@ const resolveRuntimeContext = async (
   };
 };
 
+const resolveWorkspaceUserIdForLarkMessage = async (
+  message: NormalizedIncomingMessageDTO,
+): Promise<string | undefined> => {
+  const linkedUserId = message.trace?.linkedUserId;
+  if (linkedUserId) {
+    return linkedUserId;
+  }
+  const companyId = message.trace?.companyId;
+  const channelIdentityId = message.trace?.channelIdentityId;
+  if (!companyId || !channelIdentityId) {
+    return undefined;
+  }
+  try {
+    const mapped = await departmentService.resolveWorkspaceMemberFromChannelIdentity({
+      companyId,
+      channelIdentityId,
+    });
+    return mapped.userId;
+  } catch (error) {
+    logger.info('vercel.runtime_context.channel_identity_unresolved', {
+      companyId,
+      channelIdentityId,
+      requesterEmail: message.trace?.requesterEmail ?? null,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+};
+
 const executeLarkVercelTask = async (
   task: OrchestrationTaskDTO,
   message: NormalizedIncomingMessageDTO,
@@ -2487,7 +2500,7 @@ const executeLarkVercelTask = async (
 ): Promise<OrchestrationExecutionResult> => {
   const adapter = resolveChannelAdapter('lark');
   const companyId = message.trace?.companyId;
-  const linkedUserId = message.trace?.linkedUserId;
+  const linkedUserId = await resolveWorkspaceUserIdForLarkMessage(message);
   const isSharedGroupChat = Boolean(companyId && message.chatType === 'group' && message.chatId);
   await assertExecutionRunnable(task.taskId, abortSignal);
   const sharedChatContext =

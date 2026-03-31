@@ -557,6 +557,7 @@ class ContextSearchBrokerService {
         resultCount: 0,
       }]),
     ) as Record<ContextSearchBrokerSourceKey, SourceCoverage>;
+    const escalationStages: string[] = [];
 
     const results: ContextSearchBrokerResult[] = [];
 
@@ -584,6 +585,21 @@ class ContextSearchBrokerService {
           error: message,
         });
       }
+    };
+
+    const enableSource = (key: ContextSearchBrokerSourceKey, stageLabel: string): boolean => {
+      if (sources[key]) {
+        return false;
+      }
+      sources[key] = true;
+      sourceCoverage[key].enabled = true;
+      sourceCoverage[key].status = 'queried';
+      sourceCoverage[key].resultCount = 0;
+      delete sourceCoverage[key].error;
+      if (!escalationStages.includes(stageLabel)) {
+        escalationStages.push(stageLabel);
+      }
+      return true;
     };
 
     await Promise.all([
@@ -794,9 +810,101 @@ class ContextSearchBrokerService {
       }),
     ]);
 
-    const topResults = results
+    let topResults = results
       .sort((left, right) => right.score - left.score)
       .slice(0, limit);
+
+    if (topResults.length === 0) {
+      const enabledBroaderInternal =
+        enableSource('zohoBooksLive', 'broader_internal_live')
+        || enableSource('zohoCrmContext', 'broader_internal_live');
+
+      if (enabledBroaderInternal) {
+        await Promise.all([
+          runSource('zohoCrmContext', async () => {
+            const matches = await zohoRetrievalService.query({
+              companyId: input.runtime.companyId,
+              requesterUserId: input.runtime.userId,
+              requesterEmail: input.runtime.requesterEmail,
+              text: query,
+              limit,
+            });
+            return matches.flatMap((match) => {
+              const chunkText = readString(match.payload._chunk) ?? readString(match.payload.text);
+              if (!chunkText) return [];
+              const asOf = readString(match.payload.sourceUpdatedAt) ?? readString(match.payload.updatedAt) ?? readString(match.payload.createdAt);
+              if (!dateMatches(asOf, dateFrom, dateTo)) return [];
+              return [{
+                scope: 'zoho_crm',
+                sourceType: match.sourceType,
+                sourceId: match.sourceId,
+                chunkIndex: match.chunkIndex,
+                score: match.score,
+                excerpt: normalizeText(chunkText),
+                chunkRef: buildChunkRef('zoho_crm', match.sourceType, match.sourceId, match.chunkIndex),
+                sourceLabel: buildSourceLabel({
+                  scope: 'zoho_crm',
+                  title: readString(match.payload.citationTitle) ?? readString(match.payload.title),
+                  sourceType: match.sourceType,
+                  asOf,
+                }),
+                asOf,
+                title: readString(match.payload.citationTitle) ?? readString(match.payload.title),
+              }];
+            });
+          }),
+          runSource('zohoBooksLive', async () => searchZohoBooksLive({
+            runtime: input.runtime,
+            query,
+            limit,
+          })),
+        ]);
+
+        topResults = results
+          .sort((left, right) => right.score - left.score)
+          .slice(0, limit);
+      }
+    }
+
+    if (topResults.length === 0 && enableSource('web', 'web_last')) {
+      await runSource('web', async () => {
+        const result = await webSearchService.search({
+          query,
+          exactDomain: input.site?.trim() || undefined,
+          searchResultsLimit: limit,
+          pageContextLimit: Math.min(input.webMode === 'fetchPageContext' ? 4 : 2, limit),
+          ...(input.webMode === 'fetchPageContext' ? { crawlUrl: query } : {}),
+        });
+        return result.items.map((item, index) => {
+          const encodedUrl = encodeRefSegment(item.link);
+          const excerpt = normalizeText(item.pageContext?.excerpt ?? item.snippet ?? '');
+          return {
+            scope: 'web',
+            sourceType: 'web_result',
+            sourceId: encodedUrl,
+            chunkIndex: 0,
+            score: Math.max(1 - index * 0.05, 0.5),
+            excerpt,
+            chunkRef: buildChunkRef('web', 'web_result', encodedUrl, 0),
+            sourceLabel: buildSourceLabel({
+              scope: 'web',
+              title: item.title,
+              sourceType: 'web_result',
+              asOf: item.date,
+              domain: item.domain,
+            }),
+            asOf: item.date,
+            title: item.title,
+            url: item.link,
+          } satisfies ContextSearchBrokerResult;
+        });
+      });
+
+      topResults = results
+        .sort((left, right) => right.score - left.score)
+        .slice(0, limit);
+    }
+
     const resolvedEntities = buildResolvedEntities(topResults);
     const citations = this.toCitations(topResults);
 
@@ -809,7 +917,7 @@ class ContextSearchBrokerService {
       nextFetchRefs: topResults.map((result) => result.chunkRef),
       searchSummary:
         topResults.length > 0
-          ? `Found ${topResults.length} result${topResults.length === 1 ? '' : 's'} across ${Object.values(sourceCoverage).filter((entry) => entry.enabled && entry.resultCount > 0).length} source${Object.values(sourceCoverage).filter((entry) => entry.enabled && entry.resultCount > 0).length === 1 ? '' : 's'}.`
+          ? `Found ${topResults.length} result${topResults.length === 1 ? '' : 's'} across ${Object.values(sourceCoverage).filter((entry) => entry.enabled && entry.resultCount > 0).length} source${Object.values(sourceCoverage).filter((entry) => entry.enabled && entry.resultCount > 0).length === 1 ? '' : 's'}${escalationStages.length > 0 ? ` after ${escalationStages.join(' -> ')}.` : '.'}`
           : `No relevant context was found for "${query}".`,
     };
   }

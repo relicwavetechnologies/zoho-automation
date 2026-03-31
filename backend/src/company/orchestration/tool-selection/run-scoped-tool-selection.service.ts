@@ -595,7 +595,12 @@ export const resolveRunScopedToolSelection = async (input: {
     ...pinnedAllowedToolIds,
   ]);
   const primaryBundle = childRouterPrimaryBundle.length > 0
-    ? childRouterPrimaryBundle
+    ? uniq([
+      ...childRouterPrimaryBundle,
+      ...primaryDomainFamily,
+      ...learnedToolIds,
+      ...heuristicPrimaryBundle,
+    ])
     : uniq([
       ...primaryDomainFamily,
       ...learnedToolIds,

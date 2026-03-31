@@ -2795,6 +2795,23 @@ const normalizeZohoBooksModule = (
   return undefined;
 };
 
+const isZohoBooksContactStatementModuleAlias = (value?: string): boolean => {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return [
+    'statement',
+    'statements',
+    'contactstatement',
+    'contactstatements',
+    'customerstatement',
+    'customerstatements',
+    'accountstatement',
+    'accountstatements',
+  ].includes(normalized);
+};
+
 type ZohoBooksRuntimeModule = NonNullable<ReturnType<typeof normalizeZohoBooksModule>>;
 
 const getRuntimeZohoBooksEntity = (
@@ -6477,6 +6494,70 @@ export const createVercelDesktopTools = (
             }
           }
 
+          if (
+            ['listRecords', 'getRecord'].includes(input.operation)
+            && isZohoBooksContactStatementModuleAlias(input.module)
+          ) {
+            const statementContactId = resolveZohoBooksRecordIdFromRuntime(
+              runtime,
+              'contacts',
+              input.contactId?.trim() ?? input.customerId?.trim(),
+            );
+            if (!statementContactId) {
+              return buildEnvelope({
+                success: false,
+                summary: 'Contact statements require contactId or customerId.',
+                errorKind: 'missing_input',
+                retryable: false,
+                missingFields: ['contactId'],
+                repairHints: buildBooksWriteRepairHints(['contactId']),
+              });
+            }
+            try {
+              const auth = await withBooksReadAuthorizationRetry(runtime, async (requester) =>
+                zohoGateway.getAuthorizedChildResource({
+                  domain: 'books',
+                  module: 'contacts',
+                  recordId: statementContactId,
+                  childType: 'statement_email_content',
+                  requester,
+                  organizationId: input.organizationId?.trim(),
+                }),
+              );
+              if (auth.allowed !== true) {
+                return buildZohoGatewayDeniedEnvelope(
+                  auth,
+                  'You are not allowed to access this contact statement email content.',
+                );
+              }
+              const result = await loadZohoBooksClient().getContactStatementEmailContent({
+                companyId: runtime.companyId,
+                organizationId: input.organizationId?.trim(),
+                contactId: statementContactId,
+              });
+              return buildEnvelope({
+                success: true,
+                summary: `Fetched contact statement email content for ${statementContactId}.`,
+                keyData: {
+                  contactId: statementContactId,
+                  organizationId: result.organizationId,
+                },
+                fullPayload: result.payload,
+              });
+            } catch (error) {
+              const summary =
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to fetch contact statement email content.';
+              return buildEnvelope({
+                success: false,
+                summary,
+                errorKind: inferErrorKind(summary),
+                retryable: true,
+              });
+            }
+          }
+
           const moduleName = resolveZohoBooksModuleFromRuntime(
             runtime,
             input.module,
@@ -7689,6 +7770,58 @@ export const createVercelDesktopTools = (
               .map((entry) => asRecord(entry))
               .filter((entry): entry is Record<string, unknown> => Boolean(entry));
             const organizationId = asString(auth.organizationId);
+            const normalizedQuery = input.query?.trim();
+
+            if (
+              resultItems.length === 0
+              && input.operation === 'listRecords'
+              && moduleName === 'contacts'
+              && normalizedQuery
+            ) {
+              const escalated = await contextSearchBrokerService.search({
+                runtime,
+                query: normalizedQuery,
+                limit: Math.max(1, Math.min(input.limit ?? 5, 5)),
+                sources: {
+                  personalHistory: false,
+                  files: false,
+                  larkContacts: false,
+                  zohoCrmContext: false,
+                  zohoBooksLive: true,
+                  workspace: false,
+                  web: false,
+                  skills: false,
+                },
+              });
+              const escalationCitations = contextSearchBrokerService.toVercelCitationsFromSearch(escalated);
+              if (escalated.results.length > 0) {
+                return buildEnvelope({
+                  success: true,
+                  summary: `No direct Zoho Books ${moduleName} records matched the current filters. Broader search found ${escalated.results.length} candidate match(es).`,
+                  keyData: {
+                    module: moduleName,
+                    organizationId,
+                    recordCount: 0,
+                    resultCount: 0,
+                    escalatedSearch: true,
+                    resolvedEntities: escalated.resolvedEntities,
+                  },
+                  fullPayload: {
+                    organizationId,
+                    records: resultItems,
+                    raw: asRecord(resultPayload.raw),
+                    fallbackSearch: {
+                      results: escalated.results,
+                      matches: escalated.matches,
+                      resolvedEntities: escalated.resolvedEntities,
+                      sourceCoverage: escalated.sourceCoverage,
+                      searchSummary: escalated.searchSummary,
+                    },
+                  },
+                  citations: escalationCitations,
+                });
+              }
+            }
 
             if (input.operation === 'summarizeModule') {
               const statusCounts = resultItems.reduce<Record<string, number>>((acc, item) => {

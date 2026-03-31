@@ -48,8 +48,10 @@ const buildPlannerPrompt = (input: {
       'Never choose tools directly. You may only choose agents.',
       'For dependent work, use dependsOn and inputRefs.',
       'Keep objectives concrete and executable.',
-      'All retrieval belongs to context-agent. For any search, lookup, contact resolution, history recall, document recall, web research, or skill discovery, delegate that step to context-agent first.',
-      'Do not assign independent search work to google-workspace-agent, zoho-ops-agent, lark-ops-agent, or workspace-agent. Those agents should consume resolved facts from upstream context-agent steps.',
+      'Use context-agent first only for cross-source retrieval, history recall, document recall, web research, or skill discovery when the system of record is unclear or spans multiple systems.',
+      'When the current request already names the system of record, let the owning domain agent perform both the lookup and the follow-up read in one step when that agent can do so directly.',
+      'For explicit Zoho Books or Zoho CRM requests, prefer zoho-ops-agent over context-agent unless a separate upstream context step is genuinely required.',
+      'Do not split a straightforward system-specific lookup into context-agent followed by a domain agent unless the first step must resolve facts unavailable to the domain agent.',
       'If recentTaskSummaries is present, read it before writing objectives. It contains resolved entities from prior steps in this session — invoice IDs, emails, names, amounts. Embed these values explicitly and verbatim into your delegation objectives. Never write a vague objective like "send invoice to anish" when you have invoiceId=INV21271 and email=anishsuman2305@gmail.com available. Write "Send invoice INV21271 to anishsuman2305@gmail.com" instead. The sub-agent only receives what you write in the objective — it cannot guess what you left out.',
       'If threadSummary is present, use it to understand what has already been resolved in this conversation before deciding how to delegate.',
       input.supervisorProgress && input.supervisorProgress.completedSteps.length > 0

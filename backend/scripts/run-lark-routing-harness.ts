@@ -155,6 +155,7 @@ const main = async (): Promise<void> => {
   if (!messageText) {
     throw new Error('Pass --message "<text>"');
   }
+  const chatType = readArg('--chat-type') === 'group' ? 'group' : 'p2p';
 
   const resolved =
     (await resolveExplicitLarkContext())
@@ -173,7 +174,7 @@ const main = async (): Promise<void> => {
     channel: 'lark' as const,
     userId: resolved.larkOpenId,
     chatId: resolved.chatId,
-    chatType: 'p2p' as const,
+    chatType,
     messageId,
     timestamp,
     text: messageText,
