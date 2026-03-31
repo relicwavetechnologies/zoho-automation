@@ -129,7 +129,13 @@ const detectOperationClass = (
 const hasExactExtractionIntent = (text: string): boolean =>
   /\b(ocr|extract text|exact text|read the text|what does it say|copy the text|transcribe|verbatim|all the text|full text)\b/.test(text);
 
+const hasReferencedBusinessEntityLookup = (text: string): boolean =>
+  /\[referenced message\][\s\S]*\b(search|find|look up|lookup|look for|find out)\b[\s\S]*\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/.test(text);
+
 const hasContextSearchIntent = (text: string): boolean => {
+  if (hasReferencedBusinessEntityLookup(text)) {
+    return false;
+  }
   if (/\b(context search|search history|search memory|conversation history|past chats?|past files?)\b/.test(text)) {
     return true;
   }

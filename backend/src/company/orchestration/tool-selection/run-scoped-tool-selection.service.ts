@@ -273,6 +273,16 @@ const GENERIC_LOOKUP_VERBS = /\b(search|find|look up|lookup|look for|check|trace
 const GENERIC_ENTITY_SUFFIX = /\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/;
 const INTERNAL_SYSTEM_CUES = /\b(invoice|invoices|statement|statements|payment|payments|overdue|balance|balances|vendor|vendors|customer|customers|contact|contacts|deal|deals|account|accounts|lead|leads)\b/;
 const LOOKUP_NOISE = /\b(please|plz|kindly|search|find|look up|lookup|look for|check|show|me|for|about|details|info|information)\b/g;
+const REFERENCED_ENTITY_LOOKUP_RE = /\[referenced message\][\s\S]*\b(search|find|look up|lookup|look for|find out)\b[\s\S]*\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/i;
+const COMPANY_ENTITY_LOOKUP_RE = /\b(search|find|look up|lookup|look for|find out|check|trace|show me|tell me about)\b[\s\S]*\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/i;
+
+const hasInternalCompanyEntityLookup = (message: string): boolean => {
+  const text = asLower(message);
+  if (!text || EXPLICIT_SOURCE_SCOPE.test(text) || /\b(web|internet|online|google)\b/.test(text)) {
+    return false;
+  }
+  return COMPANY_ENTITY_LOOKUP_RE.test(message) || REFERENCED_ENTITY_LOOKUP_RE.test(message);
+};
 
 const isUncertainEntityLookup = (message: string): boolean => {
   const text = asLower(message);
@@ -291,6 +301,9 @@ const isUncertainEntityLookup = (message: string): boolean => {
 
 const requiresContextSearch = (message: string): boolean => {
   const text = asLower(message);
+  if (REFERENCED_ENTITY_LOOKUP_RE.test(message)) {
+    return false;
+  }
   if (isUncertainEntityLookup(message)) {
     return true;
   }
@@ -327,6 +340,9 @@ const inferIntentDomain = (input: {
   hasWorkspace: boolean;
   hasArtifacts: boolean;
 }): IntentDomain => {
+  if (hasInternalCompanyEntityLookup(input.message)) {
+    return 'zoho_books';
+  }
   return normalizeToolRoutingIntent({
     latestUserMessage: input.message,
     childRoute: input.childRoute,
@@ -349,6 +365,13 @@ const buildPrimaryBundle = (input: {
   const normalizedIntent = asLower(input.childRoute?.normalizedIntent);
   const suggestedActions = (input.childRoute?.suggestedActions ?? []).map((value) => asLower(value)).join('\n');
   const larkHintText = `${lowerMessage}\n${normalizedIntent}\n${suggestedActions}`;
+  if (hasInternalCompanyEntityLookup(input.latestUserMessage)) {
+    return uniq([
+      ...buildAllowedDomainFamily(input.allowed, 'zoho_books'),
+      ...buildAllowedDomainFamily(input.allowed, 'zoho_crm'),
+      ...buildAllowedDomainFamily(input.allowed, 'context_search'),
+    ]);
+  }
   if (requiresExplicitExtraction(input.latestUserMessage)) {
     return chooseFirstAllowed(input.allowed, ['document-ocr-read']);
   }

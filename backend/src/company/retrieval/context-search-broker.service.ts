@@ -193,7 +193,19 @@ const SOURCE_CONSTRAINED_PATTERNS: Array<{ strategy: SearchScaleStrategy; patter
 const GENERIC_SEARCH_VERBS = /\b(search|find|look up|lookup|check|trace|get details|tell me about|show me|who is|what is)\b/i;
 const STRUCTURED_INTERNAL_CUES = /\b(invoice|invoices|statement|statements|payment|payments|overdue|balance|balances|vendor|vendors|customer|customers|contact|contacts|deal|deals|account|accounts|lead|leads)\b/i;
 const ENTITY_SUFFIX_CUES = /\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/i;
+const PERSON_LOOKUP_CUES = /\b(email|mail|phone|number|address|person|people|teammate|employee|coworker|colleague|open id|openid)\b/i;
 const AMBIGUOUS_SEARCH_NOISE = /\b(please|plz|kindly|search|find|look up|lookup|check|show|me|for|about|details|info|information)\b/gi;
+const AUTHORITATIVE_ENTITY_SCOPES = new Set(['zoho_books', 'zoho_crm', 'files', 'workspace']);
+const SOURCE_PRIORITY_BY_SCOPE: Record<string, number> = {
+  zoho_books: 1.6,
+  zoho_crm: 1.5,
+  files: 1.15,
+  workspace: 1.05,
+  skills: 0.95,
+  web: 0.75,
+  personal_history: 0.15,
+  lark_contacts: 0.1,
+};
 
 const inferSearchScaleStrategy = (input: {
   query: string;
@@ -223,6 +235,57 @@ const inferSearchScaleStrategy = (input: {
   }
 
   return 'default';
+};
+
+const isCompanyEntityLookupQuery = (query: string): boolean => {
+  const normalized = normalizeLookupText(query);
+  if (!normalized || PERSON_LOOKUP_CUES.test(normalized)) {
+    return false;
+  }
+  if (ENTITY_SUFFIX_CUES.test(normalized)) {
+    return true;
+  }
+  if (!GENERIC_SEARCH_VERBS.test(normalized) || STRUCTURED_INTERNAL_CUES.test(normalized)) {
+    return false;
+  }
+  const deNoised = normalized.replace(AMBIGUOUS_SEARCH_NOISE, ' ').replace(/\s+/g, ' ').trim();
+  const tokenCount = deNoised.length > 0 ? deNoised.split(/\s+/).length : 0;
+  return tokenCount >= 2 && tokenCount <= 6;
+};
+
+const rankContextSearchResults = (
+  results: ContextSearchBrokerResult[],
+  input: { query: string; limit: number },
+): ContextSearchBrokerResult[] => {
+  const companyLookup = isCompanyEntityLookupQuery(input.query);
+  const filtered = results.filter((result) => {
+    if (!companyLookup) {
+      return true;
+    }
+    if (result.scope === 'personal_history' && result.sourceType === 'chat_turn') {
+      return false;
+    }
+    if (result.scope === 'lark_contacts') {
+      return false;
+    }
+    return true;
+  });
+  const hasAuthoritativeEntityHit = filtered.some((result) => AUTHORITATIVE_ENTITY_SCOPES.has(result.scope));
+  const ranked = filtered
+    .map((result, index) => {
+      const priority = SOURCE_PRIORITY_BY_SCOPE[result.scope] ?? 1;
+      const authoritativeBoost = companyLookup && AUTHORITATIVE_ENTITY_SCOPES.has(result.scope) ? 0.2 : 0;
+      const effectiveScore = (result.score * priority) + authoritativeBoost - (index * 0.0001);
+      return {
+        result,
+        effectiveScore,
+      };
+    })
+    .filter(({ result }) => !(companyLookup && hasAuthoritativeEntityHit && (result.scope === 'web' || result.scope === 'skills')))
+    .sort((left, right) => right.effectiveScore - left.effectiveScore)
+    .slice(0, input.limit)
+    .map(({ result }) => result);
+  return ranked;
 };
 
 const applySearchScaleStrategy = (
@@ -672,12 +735,16 @@ class ContextSearchBrokerService {
   }
 
   async search(input: ContextSearchBrokerSearchInput): Promise<ContextSearchBrokerSearchOutput> {
-    const query = input.query.trim();
-    const limit = Math.max(1, Math.min(input.limit ?? 5, 10));
-    const sources = this.normalizeSources(input.sources);
-    const searchStrategy = inferSearchScaleStrategy({
-      query,
-      explicitSourcesProvided: Boolean(input.sources),
+  const query = input.query.trim();
+  const limit = Math.max(1, Math.min(input.limit ?? 5, 10));
+  const sources = this.normalizeSources(input.sources);
+  const companyEntityLookup = isCompanyEntityLookupQuery(query);
+  if (companyEntityLookup) {
+    sources.larkContacts = false;
+  }
+  const searchStrategy = inferSearchScaleStrategy({
+    query,
+    explicitSourcesProvided: Boolean(input.sources),
       site: input.site,
     });
     applySearchScaleStrategy(sources, searchStrategy, Boolean(input.runtime.workspace?.path));
@@ -943,9 +1010,7 @@ class ContextSearchBrokerService {
       }),
     ]);
 
-    let topResults = results
-      .sort((left, right) => right.score - left.score)
-      .slice(0, limit);
+    let topResults = rankContextSearchResults(results, { query, limit });
 
     if (topResults.length === 0) {
       const enabledBroaderInternal =
@@ -993,9 +1058,7 @@ class ContextSearchBrokerService {
           })),
         ]);
 
-        topResults = results
-          .sort((left, right) => right.score - left.score)
-          .slice(0, limit);
+        topResults = rankContextSearchResults(results, { query, limit });
       }
     }
 
@@ -1033,9 +1096,7 @@ class ContextSearchBrokerService {
         });
       });
 
-      topResults = results
-        .sort((left, right) => right.score - left.score)
-        .slice(0, limit);
+      topResults = rankContextSearchResults(results, { query, limit });
     }
 
     const resolvedEntities = buildResolvedEntities(topResults);
