@@ -6360,7 +6360,7 @@ export const createVercelDesktopTools = (
 
     booksRead: tool({
       description:
-        'Read Zoho Books organizations, finance records, reports, comments, templates, attachments, record documents, bank data, raw email/report metadata, and materialize sendable document artifacts. For overdue invoice lists, aging summaries, or requests like "all overdue customers/payments", prefer operation=buildOverdueReport instead of listRecords. If the user specifies a period such as this year, this month, or a custom range, pass invoiceDateFrom and invoiceDateTo so the overdue report is time-bounded before synthesis. For search/find/look-up requests in Zoho Books, especially customer or company lookups, this tool should prefer the broker-backed live Books search path before falling back to raw record listing.',
+        'Read Zoho Books organizations, finance records, reports, comments, templates, attachments, record documents, bank data, raw email/report metadata, and materialize sendable document artifacts. For overdue invoice lists, aging summaries, or requests like "all overdue customers/payments", prefer operation=buildOverdueReport instead of listRecords. If the user specifies a period such as this year, this month, or a custom range, pass invoiceDateFrom and invoiceDateTo so the overdue report is time-bounded before synthesis. Use operation=getReport only for actual Zoho Books report requests; for record-specific email, reminder, or statement content, prefer the dedicated get*EmailContent operation for that record type instead of getReport. For search/find/look-up requests in Zoho Books, especially customer or company lookups, this tool should prefer the broker-backed live Books search path before falling back to raw record listing.',
       inputSchema: z.object({
         operation: z.enum([
           'listOrganizations',
@@ -6637,6 +6637,7 @@ export const createVercelDesktopTools = (
             input.operation !== 'getEstimateEmailContent' &&
             input.operation !== 'getContactStatementEmailContent' &&
             input.operation !== 'getVendorPaymentEmailContent' &&
+            input.operation !== 'getReport' &&
             input.operation !== 'buildOverdueReport' &&
             input.operation !== 'mapCustomerPayments' &&
             input.operation !== 'reconcileVendorStatement' &&
