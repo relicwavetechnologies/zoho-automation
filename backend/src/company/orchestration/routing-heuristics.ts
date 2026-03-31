@@ -13,9 +13,6 @@ const OUTREACH_QUERY_KEYWORDS = [
   'dr ',
 ];
 const WEB_SEARCH_QUERY_KEYWORDS = [
-  'search',
-  'look up',
-  'lookup',
   'google',
   'web',
   'website',
@@ -52,6 +49,12 @@ const isWebSearchQuery = (text: string): boolean => {
   }
   if (/\b[a-z0-9][a-z0-9.-]*\.[a-z]{2,}\b/i.test(text) && normalized.includes('website')) {
     return true;
+  }
+  if (/\b(search|look up|lookup|research)\b/i.test(text)) {
+    if (/\b(web|website|site|domain|google|news)\b/i.test(text)) {
+      return true;
+    }
+    return false;
   }
   return WEB_SEARCH_QUERY_KEYWORDS.some((keyword) => normalized.includes(keyword));
 };

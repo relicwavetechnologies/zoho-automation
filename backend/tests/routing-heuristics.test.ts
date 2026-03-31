@@ -64,3 +64,33 @@ test('crm read requests still route through the zoho read path', () => {
 test('child-router domain overrides keyword fallback in route intent detection', () => {
   assert.equal(detectRouteIntent('that one again', 'zoho_books'), 'write_intent');
 });
+
+test('generic search wording does not force the web-search route', () => {
+  const text = 'search for humani ai llc please';
+  const intent = detectRouteIntent(text);
+  const complexity = classifyComplexityLevel(text);
+  const plan = buildPlanFromIntent(intent, complexity, text);
+
+  assert.equal(intent, 'general');
+  assert.deepEqual(plan, [
+    'route.classify',
+    'agent.invoke.response',
+    'agent.invoke.lark-response',
+    'synthesis.compose',
+  ]);
+});
+
+test('explicit web-search wording still routes to the web-search agent', () => {
+  const text = 'search the web for latest human ai news';
+  const intent = detectRouteIntent(text);
+  const complexity = classifyComplexityLevel(text);
+  const plan = buildPlanFromIntent(intent, complexity, text);
+
+  assert.equal(intent, 'general');
+  assert.deepEqual(plan, [
+    'route.classify',
+    'agent.invoke.search-read',
+    'agent.invoke.lark-response',
+    'synthesis.compose',
+  ]);
+});
