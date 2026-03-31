@@ -33,22 +33,25 @@ import { pushDeadLetterRecord } from './dead-letter.queue';
 import { QueueTaskTimeoutError, withTaskTimeout } from './queue-safety';
 import { redisConnection, stateRedisConnection } from './redis.connection';
 
-const userLocks = new Map<string, Promise<void>>();
+const conversationLocks = new Map<string, Promise<void>>();
 const taskAbortControllers = new Map<string, AbortController>();
 const CONVERSATION_LOCK_TTL_MS = config.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS + 15_000;
 const CONVERSATION_LOCK_REQUEUE_DELAY_MS = 2_000;
 
-const runPerUserDeterministically = async (userId: string, fn: () => Promise<void>): Promise<void> => {
-  const previous = userLocks.get(userId) ?? Promise.resolve();
+const runPerConversationDeterministically = async (
+  conversationKey: string,
+  fn: () => Promise<void>,
+): Promise<void> => {
+  const previous = conversationLocks.get(conversationKey) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
     .then(fn)
     .finally(() => {
-      if (userLocks.get(userId) === next) {
-        userLocks.delete(userId);
+      if (conversationLocks.get(conversationKey) === next) {
+        conversationLocks.delete(conversationKey);
       }
     });
-  userLocks.set(userId, next);
+  conversationLocks.set(conversationKey, next);
   return next;
 };
 
@@ -84,8 +87,10 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
 };
 
 const buildExecutionId = (taskId: string, requestId?: string): string => requestId?.trim() || taskId;
+const buildConversationRuntimeKey = (channel: string, chatId: string): string =>
+  `${channel}:${chatId}`;
 const buildConversationLockKey = (job: Job<OrchestrationJobData>): string =>
-  `orchestration:conversation-lock:${job.data.message.channel}:${job.data.message.chatId}`;
+  `orchestration:conversation-lock:${buildConversationRuntimeKey(job.data.message.channel, job.data.message.chatId)}`;
 
 const buildQueueJobId = (job: Job<OrchestrationJobData>): string | undefined =>
   typeof job.id === 'string'
@@ -783,7 +788,9 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
       const abortController = new AbortController();
       registerTaskAbortController(job.data.taskId, abortController);
       try {
-        await runPerUserDeterministically(job.data.message.userId, async () => {
+        await runPerConversationDeterministically(
+          buildConversationRuntimeKey(job.data.message.channel, job.data.message.chatId),
+          async () => {
           try {
             await runOrchestrationJobWithSafety(job, abortController);
           } catch (error) {
@@ -827,7 +834,8 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
             });
             throw error;
           }
-        });
+          },
+        );
       } finally {
         unregisterTaskAbortController(job.data.taskId, abortController);
         await releaseConversationLock();
