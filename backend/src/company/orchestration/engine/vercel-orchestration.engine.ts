@@ -2261,6 +2261,8 @@ const buildSystemPrompt = (input: {
     plannerChosenToolId: input.runtime.plannerChosenToolId,
     plannerChosenOperationClass: input.runtime.plannerChosenOperationClass,
     allowedActionsByTool: input.runtime.allowedActionsByTool,
+    requesterName: input.runtime.requesterName,
+    requesterEmail: input.runtime.requesterEmail,
     departmentName: input.runtime.departmentName,
     departmentRoleSlug: input.runtime.departmentRoleSlug,
     departmentSystemPrompt: input.runtime.departmentSystemPrompt,
@@ -2847,6 +2849,7 @@ const resolveRuntimeContext = async (
     userId: linkedUserId,
     requesterAiRole,
     requesterChannelIdentityId: message.trace?.channelIdentityId,
+    requesterName: message.trace?.requesterName,
     requesterEmail: message.trace?.requesterEmail,
     sourceMessageId: message.messageId,
     sourceReplyToMessageId: message.trace?.replyToMessageId ?? message.messageId,
@@ -3565,6 +3568,7 @@ const executeLarkVercelTask = async (
       tokenBudget: LARK_CHILD_ROUTER_HISTORY_TOKEN_BUDGET,
       maxMessages: LARK_CHILD_ROUTER_HISTORY_MAX_MESSAGES,
     }),
+    requesterName: message.trace?.requesterName,
     requesterEmail: message.trace?.requesterEmail,
   });
   proposedReplyMode = childRoute.preferredReplyMode;

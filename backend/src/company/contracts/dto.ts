@@ -40,6 +40,7 @@ export type NormalizedIncomingMessageDTO = {
     /** Internal User.id if this Lark sender has linked their account via LarkUserAuthLink. */
     linkedUserId?: string;
     userRole?: string;
+    requesterName?: string;
     requesterEmail?: string;
     /** Initial ingress acknowledgement message id shown before routing decides final placement. */
     ackMessageId?: string;

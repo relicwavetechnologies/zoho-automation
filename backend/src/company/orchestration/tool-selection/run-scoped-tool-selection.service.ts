@@ -136,6 +136,14 @@ const buildChannelBaseline = (input: {
     ...(input.exposeArtifactTools ? ARTIFACT_GLOBAL_IDS.filter((toolId) => input.allowed.has(toolId)) : []),
   ]);
 
+const buildBroadAllowedToolSurface = (allowed: Set<string>): string[] => {
+  const active = Array.from(allowed).filter((toolId) => TOOL_REGISTRY_MAP.get(toolId)?.deprecated !== true);
+  if (active.length > 0) {
+    return uniq(active);
+  }
+  return uniq(Array.from(allowed));
+};
+
 export const checkToolSelectionInvariant = (input: {
   intentDomain?: string | null;
   runExposedToolIds: string[];
@@ -758,10 +766,11 @@ export const resolveRunScopedToolSelection = async (input: {
     : allowContextOnlyAnswer
       ? 'Current grounded multimodal context appears sufficient to answer directly without document extraction tools.'
       : `No safe primary domain could be resolved from the latest message; preserving only core and fallback tools.${pinnedAllowedToolIds.length > 0 ? ` Pinned required tools: ${pinnedAllowedToolIds.join(', ')}.` : ''}`;
+  const broadAllowedToolSurface = buildBroadAllowedToolSurface(allowed);
 
   const initialSelection: RunScopedToolSelection = {
-    runExposedToolIds: uniq([...coreToolIds, ...primaryBundle, ...alternateDomainFamilies, ...fallbackBundle]),
-    plannerCandidateToolIds: uniq([...coreToolIds, ...primaryBundle, ...alternateDomainFamilies]),
+    runExposedToolIds: broadAllowedToolSurface,
+    plannerCandidateToolIds: broadAllowedToolSurface,
     selectionReason,
     selectionFallbackNeeded: primaryBundle.length === 0 && fallbackBundle.length > 0,
     inferredDomain,
@@ -769,14 +778,7 @@ export const resolveRunScopedToolSelection = async (input: {
   };
 
   if (primaryBundle.length === 0 && fallbackBundle.length === 0) {
-    if (allowContextOnlyAnswer) {
-      return initialSelection;
-    }
-    return {
-      ...initialSelection,
-      clarificationQuestion: 'I need one more detail before I can choose the right tool for this request.',
-      validationFailureReason: 'no_safe_primary_bundle',
-    };
+    return initialSelection;
   }
 
   const strongestPrior = learnedPriors[0];

@@ -3551,7 +3551,7 @@ const isVercelToolAllowed = (runtime: VercelRuntimeRequestContext, toolName: str
   if (!requiredIds || requiredIds.length === 0) {
     return false;
   }
-  const allowed = new Set(runtime.runExposedToolIds ?? runtime.allowedToolIds);
+  const allowed = new Set(runtime.allowedToolIds);
   return requiredIds.some((toolId) => allowed.has(toolId));
 };
 

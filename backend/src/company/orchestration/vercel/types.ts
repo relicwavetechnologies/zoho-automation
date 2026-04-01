@@ -132,6 +132,7 @@ export type VercelRuntimeRequestContext = {
   userId: string;
   requesterChannelIdentityId?: string;
   requesterAiRole: string;
+  requesterName?: string;
   requesterEmail?: string;
   sourceMessageId?: string;
   sourceReplyToMessageId?: string;

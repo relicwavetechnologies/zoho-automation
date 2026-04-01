@@ -119,7 +119,7 @@ type LarkWebhookRouteDependencies = {
   ) => Promise<{ signingSecret?: string; verificationToken?: string; maxSkewSeconds?: number } | null>;
   upsertChannelIdentity: (
     input: UpsertChannelIdentityInput,
-  ) => Promise<{ id: string; isNew: boolean; aiRole: string; email?: string | null }>;
+  ) => Promise<{ id: string; isNew: boolean; aiRole: string; displayName?: string | null; email?: string | null }>;
   /**
    * Looks up whether the Lark sender has an active linked Desktop account.
    * Returns the internal User.id if found, or null otherwise.
@@ -1731,6 +1731,7 @@ export const createLarkWebhookEventHandler = (
       }
 
       let channelIdentityId: string | undefined;
+      let requesterName: string | undefined;
       let requesterEmail: string | undefined;
       let userRole = 'MEMBER';
       let mentionDirectory: CachedLarkMentionDirectory | null = null;
@@ -1760,6 +1761,9 @@ export const createLarkWebhookEventHandler = (
             larkUserId: normalized.trace?.larkUserId,
           });
           channelIdentityId = identity.id;
+          if (typeof identity.displayName === 'string' && identity.displayName.trim().length > 0) {
+            requesterName = identity.displayName.trim();
+          }
           if (typeof identity.email === 'string' && identity.email.trim().length > 0) {
             requesterEmail = identity.email.trim();
           } else if (normalized.trace?.larkOpenId) {
@@ -1901,6 +1905,7 @@ export const createLarkWebhookEventHandler = (
           channelIdentityId,
           linkedUserId,
           userRole,
+          requesterName,
           requesterEmail,
           attentionOnly,
           replyToMessageId: normalized.messageId,
