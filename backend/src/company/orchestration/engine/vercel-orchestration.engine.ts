@@ -391,7 +391,7 @@ const buildRichDelegatedResultSummary = (
 
   const lines: string[] = [];
   for (const result of results.slice(0, 5)) {
-    const firstToolName = result.toolResults.find((entry) => entry.toolName)?.toolName;
+    const firstToolName = (result.toolResults ?? []).find((entry) => entry.toolName)?.toolName;
     const sourceLabel = describeSupervisorSource(firstToolName);
     const outcome =
       summarizeText(result.summary, 120)
@@ -4900,7 +4900,7 @@ const executeLarkVercelTask = async (
           : [],
       );
       for (const delegatedResult of delegatedAgentResults) {
-        executedToolOutcomes.push(...delegatedResult.toolResults);
+        executedToolOutcomes.push(...(delegatedResult.toolResults ?? []));
       }
       pendingApproval = delegatedAgentResults.find((entry) => entry.pendingApproval)?.pendingApprovalAction as PendingApprovalAction | null ?? null;
       blockingUserInput =
