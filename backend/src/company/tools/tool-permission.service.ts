@@ -1,4 +1,5 @@
-import { ACTIVE_TOOL_REGISTRY, ALIAS_TO_CANONICAL_ID, CONSOLIDATED_TOOL_ALIAS_MAP, TOOL_REGISTRY, TOOL_REGISTRY_MAP, resolveCanonicalToolId } from './tool-registry';
+import { ACTIVE_TOOL_REGISTRY, ALIAS_TO_CANONICAL_ID, TOOL_REGISTRY, TOOL_REGISTRY_MAP, resolveCanonicalToolId } from './tool-registry';
+import { toCanonicalToolId } from './canonical-tool-id';
 import { ToolPermissionRepository, toolPermissionRepository } from './tool-permission.repository';
 import {
   ToolActionPermissionRepository,
@@ -137,7 +138,7 @@ export class ToolPermissionService {
       stored
         .filter((row) => row.role === normalizedRole)
         .map((row) => {
-          const resolvedToolId = CONSOLIDATED_TOOL_ALIAS_MAP[row.toolId] ?? row.toolId;
+          const resolvedToolId = toCanonicalToolId(row.toolId);
           return [`${resolvedToolId}:${row.actionGroup}`, row.enabled] as const;
         }),
     );

@@ -244,6 +244,12 @@ const memberLabel = (member: {
   userId: string;
 }) => member.name?.trim() || member.email?.trim() || member.userId;
 
+const toolDisplayName = (
+  toolId: string,
+  availableTools?: DepartmentAvailableTool[],
+): string =>
+  availableTools?.find((tool) => tool.toolId === toolId)?.name ?? toolId;
+
 const createDefaultZohoRateLimitConfig = (): ZohoRateLimitConfig => ({
   enabled: false,
   windowSeconds: 60,
@@ -1861,7 +1867,7 @@ export const DepartmentsPage = () => {
                                               <div className="text-sm font-semibold text-foreground">{tool.name}</div>
                                               <div className="text-xs text-muted-foreground">{tool.description}</div>
                                               <div className="text-[10px] font-mono uppercase text-muted-foreground">
-                                                {tool.toolId} • {tool.supportedActionGroups.filter((group) => group !== "read").join(", ")}
+                                                {toolDisplayName(tool.toolId, detail?.availableTools)} • {tool.supportedActionGroups.filter((group) => group !== "read").join(", ")}
                                               </div>
                                             </div>
                                             <Button
@@ -2327,7 +2333,7 @@ export const DepartmentsPage = () => {
                                           {tool.name}
                                         </div>
                                         <div className="text-[10px] font-mono text-muted-foreground mt-0.5 uppercase tracking-tighter">
-                                          {tool.toolId}
+                                          {toolDisplayName(tool.toolId, detail?.availableTools)}
                                         </div>
                                         <div className="mt-2 flex flex-wrap gap-1.5">
                                           {tool.supportedActionGroups.map(
@@ -2548,7 +2554,7 @@ export const DepartmentsPage = () => {
                                         on
                                       </span>
                                       <span className="font-mono text-primary">
-                                        {override.toolId}
+                                        {toolDisplayName(override.toolId, detail?.availableTools)}
                                       </span>
                                       <span className="text-muted-foreground mx-2">
                                         /

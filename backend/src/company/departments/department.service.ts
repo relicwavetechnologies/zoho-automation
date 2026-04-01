@@ -1,6 +1,7 @@
 import { HttpException } from '../../core/http-exception';
 import { prisma } from '../../utils/prisma';
-import { ACTIVE_TOOL_REGISTRY, CONSOLIDATED_TOOL_ALIAS_MAP, resolveCanonicalToolId } from '../tools/tool-registry';
+import { ACTIVE_TOOL_REGISTRY, resolveCanonicalToolId } from '../tools/tool-registry';
+import { toCanonicalToolId } from '../tools/canonical-tool-id';
 import {
   getSupportedToolActionGroups,
   isSupportedToolActionGroup,
@@ -575,7 +576,7 @@ class DepartmentService {
     ) => {
       const map = new Map<string, Map<string, boolean>>();
       for (const row of rows) {
-        const resolvedToolId = CONSOLIDATED_TOOL_ALIAS_MAP[row.toolId] ?? row.toolId;
+        const resolvedToolId = toCanonicalToolId(row.toolId);
         const existing = map.get(resolvedToolId) ?? new Map<string, boolean>();
         existing.set(row.actionGroup, row.allowed);
         map.set(resolvedToolId, existing);
@@ -873,14 +874,14 @@ class DepartmentService {
       toolPermissions: department.toolPermissions.map((row) => ({
         id: row.id,
         roleId: row.roleId,
-        toolId: row.toolId,
+        toolId: toCanonicalToolId(row.toolId),
         actionGroup: row.actionGroup,
         allowed: row.allowed,
       })),
       userOverrides: department.userToolOverrides.map((row) => ({
         id: row.id,
         userId: row.userId,
-        toolId: row.toolId,
+        toolId: toCanonicalToolId(row.toolId),
         actionGroup: row.actionGroup,
         allowed: row.allowed,
       })),
