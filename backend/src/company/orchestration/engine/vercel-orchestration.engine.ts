@@ -3783,6 +3783,7 @@ const executeLarkVercelTask = async (
   );
 
   await assertExecutionRunnable(task.taskId, abortSignal);
+  const toolSelectionStartMs = Date.now();
   const toolSelection = await resolveRunScopedToolSelection({
     channel: 'lark',
     companyId: runtime.companyId,
@@ -3884,8 +3885,13 @@ const executeLarkVercelTask = async (
     title: 'tool demand inferred',
     summary: `${analyticsToolDemandPayload.intendedToolFamily} (${analyticsToolDemandPayload.inferredOperationClass})`,
     status: 'completed',
-    payload: analyticsToolDemandPayload as unknown as Record<string, unknown>,
+    payload: {
+      ...(analyticsToolDemandPayload as unknown as Record<string, unknown>),
+      durationMs: Date.now() - toolSelectionStartMs,
+    },
   });
+  const toolSelectionMs = Date.now() - toolSelectionStartMs;
+  const modelInputPrepStartMs = Date.now();
   const selectionGapPayload = buildCapabilityGapFromSelection(analyticsToolDemandPayload);
   if (selectionGapPayload) {
     await appendExecutionEventSafe({
@@ -3912,6 +3918,10 @@ const executeLarkVercelTask = async (
     plannerChosenOperationClass: toolSelection.plannerChosenOperationClass,
   };
   const executedToolOutcomes: RunToolResult[] = [];
+  let modelInputPrepMs = 0;
+  let planningMs = 0;
+  let executionMs = 0;
+  let synthesisMs = 0;
   if (toolSelection.clarificationQuestion?.trim()) {
     const clarificationText = toolSelection.clarificationQuestion.trim();
     await assertExecutionRunnable(task.taskId, abortSignal);
@@ -3937,6 +3947,26 @@ const executeLarkVercelTask = async (
       pendingApproval: null,
       stepCount: 0,
       validationFailureReason: toolSelection.validationFailureReason ?? null,
+    });
+    await appendExecutionEventSafe({
+      executionId,
+      phase: 'delivery',
+      eventType: 'run.timing.summary',
+      actorType: 'system',
+      actorKey: 'orchestration-engine',
+      title: 'Run timing breakdown',
+      summary: 'Timing summary recorded.',
+      status: 'done',
+      payload: {
+        totalMs: Date.now() - runStartedAt,
+        phases: {
+          toolSelectionMs,
+          modelInputPrepMs,
+          planningMs,
+          executionMs,
+          synthesisMs,
+        },
+      },
     });
     return {
       task,
@@ -4270,6 +4300,18 @@ const executeLarkVercelTask = async (
   try {
     const primaryMessages =
       inputMessages.length > 0 ? inputMessages : [{ role: 'user', content: resolvedUserMessage }];
+    modelInputPrepMs = Date.now() - modelInputPrepStartMs;
+    const modelInputContextSummary = {
+      contextClass,
+      modelId: budget.modelId,
+      usableContextBudget: budget.usableContextBudget,
+      targetContextBudget: budget.targetContextBudget,
+      includedRawMessageCount: historySelection.includedRawMessageCount,
+      includedConversationRetrievalCount: conversationSnippets.length,
+      includedSourceArtifactCount: groundingAttachments.length,
+      includedThreadSummary: activeThreadSummary.sourceMessageCount > 0,
+      compactionTier: historySelection.compactionTier,
+    };
     await appendExecutionEventSafe({
       executionId,
       phase: 'planning',
@@ -4279,21 +4321,12 @@ const executeLarkVercelTask = async (
       title: 'Prepared model input',
       summary: summarizeText(resolvedUserMessage, 220) ?? 'Prepared model input for generation.',
       status: 'done',
-      payload: buildExecutionModelInputPayload({
+      payload: {
+        ...buildExecutionModelInputPayload({
         label: 'lark_generate',
         systemPrompt: compactedSystemPrompt,
         messages: primaryMessages,
-        contextSummary: {
-          contextClass,
-          modelId: budget.modelId,
-          usableContextBudget: budget.usableContextBudget,
-          targetContextBudget: budget.targetContextBudget,
-          includedRawMessageCount: historySelection.includedRawMessageCount,
-          includedConversationRetrievalCount: conversationSnippets.length,
-          includedSourceArtifactCount: groundingAttachments.length,
-          includedThreadSummary: activeThreadSummary.sourceMessageCount > 0,
-          compactionTier: historySelection.compactionTier,
-        },
+        contextSummary: modelInputContextSummary,
         toolAvailability: {
           allowedToolIds: effectiveRuntime.allowedToolIds,
           runExposedToolIds: effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
@@ -4303,6 +4336,11 @@ const executeLarkVercelTask = async (
           toolSelectionReason: effectiveRuntime.toolSelectionReason ?? null,
         },
       }),
+        durationMs: modelInputPrepMs,
+        systemPromptLength: compactedSystemPrompt.length,
+        contextClass: modelInputContextSummary.contextClass,
+        compactionTier: modelInputContextSummary.compactionTier,
+      },
     });
     await appendLatestAgentRunLog(task.taskId, 'llm.context', {
       phase: 'lark_generate',
@@ -4403,6 +4441,7 @@ const executeLarkVercelTask = async (
         steps: supervisorPlan.steps,
       },
     });
+    planningMs = Date.now() - supervisorPlanStartedAt;
     await appendLatestAgentRunLog(task.taskId, 'supervisor.plan', {
       threadId: contextStorageId ?? message.chatId,
       complexity: supervisorPlan.complexity,
@@ -4473,6 +4512,7 @@ const executeLarkVercelTask = async (
             summary: summarizeText(step.objective, 300) ?? step.objective,
             status: 'running',
             payload: {
+              queuedAtMs: Date.now(),
               stepId: step.stepId,
               agentId: step.agentId,
               objective: step.objective,
@@ -4572,6 +4612,22 @@ const executeLarkVercelTask = async (
               agentId: step.agentId,
               objective: summarizeText(step.objective, 240) ?? step.objective,
               phase: 'model_before_tool',
+            });
+            void appendExecutionEventSafe({
+              executionId,
+              phase: 'planning',
+              eventType: 'supervisor.step.long_wait',
+              actorType: 'planner',
+              actorKey: step.agentId,
+              title: `Delegated step ${step.stepId}`,
+              summary: waitingSummary,
+              status: 'running',
+              payload: {
+                stepId: step.stepId,
+                agentId: step.agentId,
+                objective: step.objective,
+                waitedMs: Date.now() - delegatedStepStartedAt,
+              },
             });
             void appendLatestAgentRunLog(task.taskId, 'supervisor.step.long_wait', {
               channel: 'lark',
@@ -4747,6 +4803,7 @@ const executeLarkVercelTask = async (
               toolResults: stepToolResults,
             },
           });
+          executionMs += Date.now() - delegatedStepStartedAt;
           const completedStep: CompletedSupervisorStep = {
             stepId: step.stepId,
             agentId: step.agentId,
@@ -4819,6 +4876,7 @@ const executeLarkVercelTask = async (
                 toolResults: stepToolResults,
               },
             });
+            executionMs += Date.now() - delegatedStepStartedAt;
             throw error;
           }
         },
@@ -4840,6 +4898,15 @@ const executeLarkVercelTask = async (
       if (supervisorPlan.complexity === 'single') {
         generatedText = delegatedAgentResults[0]?.text ?? 'Done.';
       } else {
+        const synthesisStartMs = Date.now();
+        generatedText = await synthesizeSupervisorOutcome({
+          mode: runtime.mode,
+          systemPrompt: compactedSystemPrompt,
+          latestUserMessage: resolvedUserMessage,
+          results: delegatedAgentResults,
+          abortSignal,
+        });
+        synthesisMs = Date.now() - synthesisStartMs;
         await appendExecutionEventSafe({
           executionId,
           phase: 'synthesis',
@@ -4848,14 +4915,11 @@ const executeLarkVercelTask = async (
           actorKey: 'supervisor',
           title: 'Supervisor synthesis',
           summary: `${delegatedAgentResults.length} delegated result(s)`,
-          status: 'running',
-        });
-        generatedText = await synthesizeSupervisorOutcome({
-          mode: runtime.mode,
-          systemPrompt: compactedSystemPrompt,
-          latestUserMessage: resolvedUserMessage,
-          results: delegatedAgentResults,
-          abortSignal,
+          status: 'done',
+          payload: {
+            durationMs: synthesisMs,
+            stepCount: delegatedAgentResults.length,
+          },
         });
       }
     }
@@ -5072,6 +5136,26 @@ const executeLarkVercelTask = async (
         supervisorPlan,
       },
     );
+    await appendExecutionEventSafe({
+      executionId,
+      phase: 'delivery',
+      eventType: 'run.timing.summary',
+      actorType: 'system',
+      actorKey: 'orchestration-engine',
+      title: 'Run timing breakdown',
+      summary: 'Timing summary recorded.',
+      status: 'done',
+      payload: {
+        totalMs: Date.now() - runStartedAt,
+        phases: {
+          toolSelectionMs,
+          modelInputPrepMs,
+          planningMs,
+          executionMs,
+          synthesisMs,
+        },
+      },
+    });
     runCompletedSuccessfully = true;
 
     return {
