@@ -1394,11 +1394,31 @@ class ContextSearchBrokerService {
       consistentResults = topResults.filter((result) => isEntityConsistentResult(result, searchIntent));
     }
 
+    // Person-entity lark contacts fallback
+    if (
+      consistentResults.length === 0 &&
+      searchIntent?.queryType === 'person_entity' &&
+      sourceCoverage.larkContacts?.resultCount > 0
+    ) {
+      const larkFallback = results
+        .filter((result) => result.scope === 'lark_contacts')
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3)
+        .map((result) => ({
+          ...result,
+          authorityLevel: 'low_confidence' as const,
+        }));
+
+      if (larkFallback.length > 0) {
+        consistentResults = larkFallback;
+      }
+    }
+
     const finalResults = (consistentResults.length > 0 ? consistentResults : [])
       .slice(0, requestedLimit)
       .map((result) => ({
         ...result,
-        authorityLevel: getAuthorityLevel(result.scope),
+        authorityLevel: result.authorityLevel ?? getAuthorityLevel(result.scope),
       }));
 
     const resolvedEntities = buildResolvedEntities(finalResults);
