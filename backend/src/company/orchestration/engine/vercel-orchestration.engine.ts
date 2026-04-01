@@ -398,6 +398,28 @@ const buildRichDelegatedResultSummary = (
   return lines.slice(0, 5).join('\n');
 };
 
+const TOOL_PROGRESS_LABELS: Record<string, { start: string; done: string; failed: string }> = {
+  larkTask: { start: 'Searching Lark tasks…', done: 'Lark tasks checked', failed: 'Lark task search failed' },
+  larkCalendar: { start: 'Checking your calendar…', done: 'Calendar checked', failed: 'Calendar lookup failed' },
+  larkMeeting: { start: 'Looking up meetings…', done: 'Meetings checked', failed: 'Meeting lookup failed' },
+  larkDoc: { start: 'Reading the document…', done: 'Document read', failed: 'Document read failed' },
+  larkMessage: { start: 'Searching messages…', done: 'Messages scanned', failed: 'Message search failed' },
+  zohoBooks: { start: 'Pulling financial records…', done: 'Financial data retrieved', failed: 'Finance data unavailable' },
+  zohoCrm: { start: 'Checking CRM records…', done: 'CRM data retrieved', failed: 'CRM lookup failed' },
+  zohoSearch: { start: 'Searching across Zoho…', done: 'Zoho search complete', failed: 'Zoho search failed' },
+  contextSearch: { start: 'Searching past context…', done: 'Context retrieved', failed: 'Context search failed' },
+  outreach: { start: 'Preparing outreach…', done: 'Outreach ready', failed: 'Outreach failed' },
+  webSearch: { start: 'Searching the web…', done: 'Web results in', failed: 'Web search failed' },
+  booksRead: { start: 'Pulling financial records…', done: 'Financial data retrieved', failed: 'Finance data unavailable' },
+  zohoRead: { start: 'Reading Zoho data…', done: 'Zoho data retrieved', failed: 'Zoho read failed' },
+};
+
+const TOOL_PROGRESS_DEFAULT = {
+  start: 'Working on it…',
+  done: 'Step complete',
+  failed: 'Step failed',
+};
+
 const buildLarkSupervisorScopedContext = (input: {
   step: SupervisorStep;
   conversationSnippets: string[];
@@ -2438,10 +2460,10 @@ const buildLarkStatusText = (input: {
     .reverse()
     .find((entry) => entry.length > 0);
   const recentHistory = [...normalizedHistory]
+    .slice(-3)
     .reverse()
-    .filter((entry, index, array) => array.indexOf(entry) === index)
-    .slice(0, 3)
-    .reverse();
+    .map((s) => `▸ ${s.length > 80 ? `${s.slice(0, 79)}…` : s}`)
+    .join('\n');
   const phaseLabel = (() => {
     switch (input.phase) {
       case 'received':
@@ -2496,14 +2518,9 @@ const buildLarkStatusText = (input: {
   if (latestAction) {
     lines.push(`Current: ${latestAction}`);
   }
-  if (recentHistory.length > 1 || (recentHistory.length === 1 && recentHistory[0] !== latestAction)) {
+  if (recentHistory) {
     lines.push('', 'Recent progress:');
-    for (const entry of recentHistory.slice(-3)) {
-      if (entry === latestAction) {
-        continue;
-      }
-      lines.push(`- ${summarizeText(entry, 180) ?? entry}`);
-    }
+    lines.push(recentHistory);
   }
   if (input.heartbeatNote?.trim()) {
     lines.push('', input.heartbeatNote.trim());
@@ -4118,7 +4135,7 @@ const executeLarkVercelTask = async (
     });
     await updateStatus(
       'planning',
-      'Working on it…',
+      'Breaking this down into steps…',
       undefined,
       { force: true },
     );
@@ -4389,8 +4406,9 @@ const executeLarkVercelTask = async (
                 supervisorStepId: step.stepId,
                 supervisorAgentId: step.agentId,
               });
-              statusHistory.push(`Started ${title}`);
-              await updateStatus('tool_running', 'Pulling the data…');
+              const startLabel = (TOOL_PROGRESS_LABELS[toolName] ?? TOOL_PROGRESS_DEFAULT).start;
+              statusHistory.push(startLabel);
+              await updateStatus('tool_running', startLabel);
             },
             onToolFinish: async (toolName, activityId, title, output) => {
               const hotContextSlot = buildHotContextSlot(toolName, output);
@@ -4417,9 +4435,11 @@ const executeLarkVercelTask = async (
                 supervisorStepId: step.stepId,
                 supervisorAgentId: step.agentId,
               });
-              const summary = summarizeText(output.summary, 180) ?? output.summary;
-              statusHistory.push(`${output.success ? 'Completed' : 'Failed'} ${title}: ${summary}`);
-              await updateStatus('tool_done', 'Got the data, reviewing results…');
+              const finishLabels = TOOL_PROGRESS_LABELS[toolName] ?? TOOL_PROGRESS_DEFAULT;
+              const finishLabel = output.success ? finishLabels.done : finishLabels.failed;
+              const summary = summarizeText(output.summary, 100) ?? output.summary;
+              statusHistory.push(`${finishLabel}: ${summary}`);
+              await updateStatus('tool_done', finishLabel);
             },
           });
 
