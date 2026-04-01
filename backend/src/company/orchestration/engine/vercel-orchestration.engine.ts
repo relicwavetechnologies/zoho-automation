@@ -1306,7 +1306,7 @@ const findUnrepairableBlockingUserInput = (
   if (!blocking.missingFields || blocking.missingFields.length === 0) {
     return blocking;
   }
-  const unresolvedFields = blocking.missingFields.filter(
+  const unresolvedFields = (blocking.missingFields ?? []).filter(
     (field) => !canResolveFieldFromHotContext(taskId, field),
   );
   return unresolvedFields.length > 0 ? blocking : null;
@@ -4733,7 +4733,7 @@ const executeLarkVercelTask = async (
             clearTimeout(delegatedStepWatchdog);
           }
 
-          let rawSteps = stepResult.steps as Array<{
+          let rawSteps = (stepResult.steps ?? []) as Array<{
             toolResults?: Array<{ toolName?: string; output?: unknown }>;
           }>;
           let stepPendingApproval = findPendingApproval(
@@ -4769,7 +4769,7 @@ const executeLarkVercelTask = async (
                   'Retry this delegated step once. The previous pass finished without using any tools. If this step requires live retrieval or an external action, use one of the available tools in this agent family unless you are blocked by approval or missing input.',
               },
             ], '_no_tool_retry');
-            rawSteps = stepResult.steps as Array<{
+            rawSteps = (stepResult.steps ?? []) as Array<{
               toolResults?: Array<{ toolName?: string; output?: unknown }>;
             }>;
             stepPendingApproval = findPendingApproval(
@@ -4780,11 +4780,12 @@ const executeLarkVercelTask = async (
               task.taskId,
             );
           }
+          const stepTextValue = (stepResult.text ?? '').trim();
           const stepText = stepBlockingUserInput
-            ? (buildMissingInputResponseText(stepBlockingUserInput) ?? stepResult.text.trim()) || 'I need one more detail from you before I can continue.'
+            ? (buildMissingInputResponseText(stepBlockingUserInput) ?? stepTextValue) || 'I need one more detail from you before I can continue.'
             : stepPendingApproval
               ? `Approval required before continuing: ${stepPendingApproval.kind === 'run_command' ? stepPendingApproval.command : stepPendingApproval.kind}.`
-              : stepResult.text.trim() || 'Done.';
+              : stepTextValue || 'Done.';
           const stepStatus: DelegatedAgentExecutionResult['status'] =
             stepPendingApproval || stepBlockingUserInput
               ? 'blocked'
@@ -4851,7 +4852,7 @@ const executeLarkVercelTask = async (
             blockingUserInputPayload: stepBlockingUserInput ?? undefined,
             output: {
               rawSteps,
-              text: stepResult.text.trim(),
+              text: stepTextValue,
               resolvedContext: stepResolvedContext,
               envelope: resultEnvelope,
             },
