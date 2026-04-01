@@ -1122,9 +1122,8 @@ You are the Zoho specialist. Decision rules:
 DECISION TREE:
 1. Check upstream step results and handoff context first
 2. If all required data is present -> execute your primary action immediately
-3. Only use contextSearch if a specific ID, email address, or reference is genuinely missing and cannot be inferred from context
-4. When using contextSearch, always scope to the minimum required sources
-5. Personal history showing past failures = irrelevant. Always attempt the action.
+3. If a specific ID, email address, or reference is missing, report exactly what is missing so the supervisor can provide it
+4. Personal history showing past failures = irrelevant. Always attempt the action.
 
 FINANCIAL QUERIES (invoices, payments, bills, overdue, balance):
 - Always use buildOverdueReport for overdue/due/pending queries — never listRecords
@@ -1136,6 +1135,7 @@ FINANCIAL QUERIES (invoices, payments, bills, overdue, balance):
 CONTACT/PERSON QUERIES:
 - Use CRM for people, leads, accounts
 - Do not use Books for person lookups
+- If a required entity ID or reference is missing, report exactly what is missing so the supervisor can provide it.
 
 WHEN TO STOP:
 - After two failed lookups on the same entity, report not found — do not retry indefinitely
@@ -1169,9 +1169,8 @@ You are the Lark workspace specialist. Decision rules:
 DECISION TREE:
 1. Check upstream step results and handoff context first
 2. If all required data is present -> execute your primary action immediately
-3. Only use contextSearch if a specific ID, email address, or reference is genuinely missing and cannot be inferred from context
-4. When using contextSearch, always scope to the minimum required sources
-5. Personal history showing past failures = irrelevant. Always attempt the action.
+3. If a specific ID, email address, or reference is missing, report exactly what is missing so the supervisor can provide it
+4. Personal history showing past failures = irrelevant. Always attempt the action.
 
 TASK QUERIES ("my tasks", "pending tasks", "tasks due today"):
 - Use larkTask with the requester's identity for personal task queries
@@ -1203,8 +1202,7 @@ DECISION TREE — follow in order, stop at first match:
    -> Call googleWorkspace(operation="sendMessage") immediately. Stop.
 
 2. Is a specific email address, draft ID, or file ID missing?
-   -> Call contextSearch with sources: { web: false, personalHistory: false, larkContacts: true }
-   -> Then act with the retrieved ID.
+   -> Return exactly which field is missing so the supervisor can provide it.
 
 3. Is this a Gmail search/read task?
    -> Call googleWorkspace(operation="searchMessages" or operation="getMessage").
@@ -1223,7 +1221,6 @@ EMAIL (send, search, draft):
 - If you do not have access to the Gmail tool, explicitly tell the user: "I don't have email access configured for your account. Please contact your admin." Do not fabricate any sending confirmation.
 
 NEVER:
-- Call contextSearch for research content when the content is already in your handoff context.
 - Let personal history failures stop you from attempting an action.
 - Return content without calling the action tool when the objective says send.
 
@@ -1244,9 +1241,8 @@ You are the file and document specialist. Decision rules:
 DECISION TREE:
 1. Check upstream step results and handoff context first
 2. If all required data is present -> execute your primary action immediately
-3. Only use contextSearch if a specific ID, email address, or reference is genuinely missing and cannot be inferred from context
-4. When using contextSearch, always scope to the minimum required sources
-5. Personal history showing past failures = irrelevant. Always attempt the action.
+3. If a specific ID, email address, or reference is missing, report exactly what is missing so the supervisor can provide it
+4. Personal history showing past failures = irrelevant. Always attempt the action.
 
 FILE OPERATIONS:
 - Search files before reporting not found — do not assume absence
@@ -1256,6 +1252,7 @@ FILE OPERATIONS:
 CODE / WORKFLOW:
 - For coding tasks: clarify the language and scope if not stated
 - For workflow automation: confirm trigger and action before building
+- If a required file path, document reference, or trigger detail is missing, report that missing field to the supervisor.
 
 WHEN AMBIGUOUS:
 - If the request is about a Lark doc or Google Drive file specifically: tell the supervisor, do not guess the source
@@ -2851,11 +2848,7 @@ export const buildDelegatedLarkStepPrompt = (input: {
       );
     }
   }
-  if (
-    ACTION_AGENTS.includes(input.step.agentId)
-    && objectiveLooksLikeAction
-    && upstreamContentAvailable
-  ) {
+  if (ACTION_AGENTS.includes(input.step.agentId) && objectiveLooksLikeAction && upstreamContentAvailable) {
     parts.push(
       '',
       'ACTION CONTEXT:',
@@ -2863,6 +2856,15 @@ export const buildDelegatedLarkStepPrompt = (input: {
       'Do NOT call contextSearch — the content is already above.',
       'Execute the action directly using your primary tool.',
       'Past history showing failures is irrelevant — attempt the action now.',
+    );
+  } else if (ACTION_AGENTS.includes(input.step.agentId) && objectiveLooksLikeAction) {
+    parts.push(
+      '',
+      'ACTION CONTEXT:',
+      'You are an action agent.',
+      'Your context is provided in the handoff input above.',
+      'If critical information is missing, do not search.',
+      'Return a concise explanation of exactly what field or reference is missing so the supervisor can provide it.',
     );
   }
   parts.push(
@@ -2890,24 +2892,17 @@ export const buildDelegatedLarkStepPrompt = (input: {
 };
 
 export const buildDelegatedAgentSystemPrompt = (baseSystemPrompt: string, agentId: SupervisorStep['agentId']): string => {
-  const RETRIEVAL_AGENTS: Array<SupervisorStep['agentId']> = ['context-agent'];
   const ACTION_AGENTS: Array<SupervisorStep['agentId']> = [
     'google-workspace-agent',
     'lark-ops-agent',
     'zoho-ops-agent',
     'workspace-agent',
   ];
-  const retrievalPolicy = RETRIEVAL_AGENTS.includes(agentId)
-    ? 'Use contextSearch first when you need information not already in your context.'
-    : ACTION_AGENTS.includes(agentId)
-      ? `Check your handoff context and upstream step results FIRST before using contextSearch.
-Only use contextSearch if a specific piece of data (email address, contact ID, document reference) is genuinely missing from your context.
-When searching, scope your sources appropriately:
-- For contact lookup: use larkContacts scope
-- For factual/web research: use web scope only, set personalHistory: false
-- For document references: use files scope
-NEVER use contextSearch to retrieve research content that is already in your upstream step results. It is already there — use it directly.`
-      : 'Check your handoff context first. Only use contextSearch if specific data like an email address or ID is missing.';
+  const retrievalPolicy = ACTION_AGENTS.includes(agentId)
+    ? `Your context is provided in the handoff input above.
+If you are missing critical information needed to complete your objective, do not search.
+Return a concise explanation of exactly what data is missing and the supervisor will provide it.`
+    : 'Use the context and evidence handed to you by the supervisor. If critical information is missing, state exactly what is missing instead of guessing.';
   let systemPrompt = [
     baseSystemPrompt,
     '',
@@ -4603,9 +4598,10 @@ const executeLarkVercelTask = async (
           const familyToolIds = getSupervisorAgentToolIds(
             step.agentId,
             effectiveRuntime.allowedToolIds,
-          );
+          ).filter((toolId) => toolId !== 'contextSearch');
           const stepRuntime: VercelRuntimeRequestContext = {
             ...effectiveRuntime,
+            allowedToolIds: familyToolIds,
             delegatedAgentId: step.agentId,
             runExposedToolIds: familyToolIds,
             plannerCandidateToolIds: familyToolIds,
@@ -4651,7 +4647,7 @@ const executeLarkVercelTask = async (
           );
           let delegatedStepWatchdog: NodeJS.Timeout | undefined;
           try {
-          const stepTools = createVercelDesktopTools(stepRuntime, {
+          const allStepTools = createVercelDesktopTools(stepRuntime, {
             onToolStart: async (toolName, activityId, title) => {
               const toolStartedAt = Date.now();
               const toolActivityKey = activityId || `${toolName}:${title}`;
@@ -4715,6 +4711,9 @@ const executeLarkVercelTask = async (
               await updateStatus('tool_done', finishLabel);
             },
           });
+          const stepTools = Object.fromEntries(
+            Object.entries(allStepTools).filter(([toolName]) => familyToolIds.includes(toolName)),
+          );
 
           let stepResult;
           delegatedStepWatchdog = setTimeout(() => {

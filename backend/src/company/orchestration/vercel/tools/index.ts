@@ -15,7 +15,7 @@ export const createVercelDesktopTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
 ): Record<string, any> => ({
-  ...buildContextSearchTools(runtime, hooks),
+  ...(runtime.delegatedAgentId ? {} : buildContextSearchTools(runtime, hooks)),
   ...buildDocumentTools(runtime, hooks),
   ...buildWorkflowAuthoringTools(runtime, hooks),
   ...buildRepoCodingTools(runtime, hooks),
