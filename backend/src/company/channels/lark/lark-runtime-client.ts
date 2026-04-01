@@ -37,6 +37,17 @@ export class LarkRuntimeClientError extends Error {
   }
 }
 
+const PROVIDER_REQUEST_TIMEOUT_MS = 12_000;
+
+export class ProviderTimeoutError extends Error {
+  readonly provider = 'lark';
+
+  constructor(message = 'Lark request timed out') {
+    super(message);
+    this.name = 'ProviderTimeoutError';
+  }
+}
+
 export const readLarkRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
 
@@ -88,6 +99,16 @@ const appendQuery = (
     url.searchParams.set(key, normalized);
   }
 };
+
+const isTimeoutError = (error: unknown): boolean =>
+  error instanceof ProviderTimeoutError
+  || (error instanceof Error
+    && (
+      error.name === 'TimeoutError'
+      || error.name === 'AbortError'
+      || error.message.toLowerCase().includes('timed out')
+      || error.message.toLowerCase().includes('timeout')
+    ));
 
 export class LarkRuntimeClient {
   private readonly fetchImpl: typeof fetch;
@@ -142,6 +163,7 @@ export class LarkRuntimeClient {
         : typeof input.body === 'string'
           ? input.body
           : JSON.stringify(input.body),
+      signal: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS),
     };
 
     let response: Response;
@@ -160,6 +182,11 @@ export class LarkRuntimeClient {
         return nextResponse;
       });
     } catch (error) {
+      if (isTimeoutError(error)) {
+        throw new ProviderTimeoutError(
+          `Lark request timed out after ${Math.round(PROVIDER_REQUEST_TIMEOUT_MS / 1000)}s`,
+        );
+      }
       throw new LarkRuntimeClientError(
         `Lark request failed: ${error instanceof Error ? error.message : 'unknown_network_error'}`,
         'lark_runtime_unavailable',

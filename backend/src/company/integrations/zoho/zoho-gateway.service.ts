@@ -313,20 +313,25 @@ export class ZohoGatewayService {
         };
       }
 
-      for (const contactId of allowedContactIds) {
-        const result = await zohoBooksClient.listRecords({
-          companyId: input.requester.companyId,
-          moduleName,
-          organizationId: input.organizationId,
-          filters: {
-            ...compiledFilters,
-            customer_id: contactId,
-          },
-          query: input.query,
-          limit,
-          page: input.page,
-          perPage: input.perPage,
-        });
+      const results = await Promise.all(
+        allowedContactIds.map((contactId) =>
+          zohoBooksClient.listRecords({
+            companyId: input.requester.companyId,
+            moduleName,
+            organizationId: input.organizationId,
+            filters: {
+              ...compiledFilters,
+              customer_id: contactId,
+            },
+            query: input.query,
+            limit,
+            page: input.page,
+            perPage: input.perPage,
+          }),
+        ),
+      );
+
+      for (const result of results) {
         for (const record of result.items) {
           const verdict = verifyBooksRecordOwnership({
             moduleName,

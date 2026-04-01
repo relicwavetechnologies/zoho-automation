@@ -33,6 +33,7 @@
     "harness:dept-preference": "tsx scripts/run-dept-preference-harness.ts",
     "harness:tool-action-permission": "tsx scripts/run-tool-action-permission-harness.ts",
     "harness:books-scope": "tsx scripts/run-books-scope-harness.ts",
+    "benchmark:gemini": "ts-node scripts/benchmark-gemini-latency.ts",
     "admin:bootstrap:default": "prisma generate && node scripts/bootstrap-super-admin.cjs",
     "lark:token": "node scripts/generate-lark-tenant-token.cjs",
     "lark:debug:agent": "node scripts/debug-lark-agent-run.cjs",

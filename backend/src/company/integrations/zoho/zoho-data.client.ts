@@ -495,18 +495,23 @@ export class ZohoDataClient {
           break;
         }
 
-        for (const sourceId of ids) {
-          if (records.length >= input.limit || seenSourceIds.has(sourceId)) {
-            continue;
-          }
-
-          const payload = await this.fetchRecordBySource({
-            companyId: input.companyId,
-            environment,
-            sourceType: input.sourceType,
+        const candidateIds = ids.filter((sourceId) =>
+          records.length < input.limit && !seenSourceIds.has(sourceId),
+        );
+        const payloads = await Promise.all(
+          candidateIds.map(async (sourceId) => ({
             sourceId,
-          });
-          if (!payload) {
+            payload: await this.fetchRecordBySource({
+              companyId: input.companyId,
+              environment,
+              sourceType: input.sourceType,
+              sourceId,
+            }),
+          })),
+        );
+
+        for (const { sourceId, payload } of payloads) {
+          if (records.length >= input.limit || !payload) {
             continue;
           }
           if (!payloadReferencesEmail(payload, normalizedRequesterEmail)) {

@@ -38,6 +38,17 @@ export type ZohoRawResponse = {
   sizeBytes: number;
 };
 
+const PROVIDER_REQUEST_TIMEOUT_MS = 12_000;
+
+export class ProviderTimeoutError extends Error {
+  readonly provider = 'zoho';
+
+  constructor(message = 'Zoho request timed out') {
+    super(message);
+    this.name = 'ProviderTimeoutError';
+  }
+}
+
 const readRetryAfterMs = (value: string | null): number | undefined => {
   if (!value) {
     return undefined;
@@ -60,6 +71,16 @@ const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
+
+const isTimeoutError = (error: unknown): boolean =>
+  error instanceof ProviderTimeoutError
+  || (error instanceof Error
+    && (
+      error.name === 'TimeoutError'
+      || error.name === 'AbortError'
+      || error.message.toLowerCase().includes('timed out')
+      || error.message.toLowerCase().includes('timeout')
+    ));
 
 const redactBody = (
   body: URLSearchParams | FormData | Record<string, unknown> | undefined,
@@ -194,6 +215,7 @@ export class ZohoHttpClient {
           method,
           headers,
           body,
+          signal: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS),
         });
 
         const raw = await response.text();
@@ -283,6 +305,11 @@ export class ZohoHttpClient {
 
         return (payload ?? {}) as T;
       } catch (error) {
+        if (isTimeoutError(error)) {
+          throw new ProviderTimeoutError(
+            `Zoho request timed out after ${Math.round(PROVIDER_REQUEST_TIMEOUT_MS / 1000)}s`,
+          );
+        }
         const retriable =
           error instanceof ZohoIntegrationError
             ? error.retriable
@@ -376,6 +403,7 @@ export class ZohoHttpClient {
           method,
           headers,
           body,
+          signal: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS),
         });
 
         if (!response.ok) {
@@ -474,6 +502,11 @@ export class ZohoHttpClient {
           sizeBytes: buffer.byteLength,
         };
       } catch (error) {
+        if (isTimeoutError(error)) {
+          throw new ProviderTimeoutError(
+            `Zoho request timed out after ${Math.round(PROVIDER_REQUEST_TIMEOUT_MS / 1000)}s`,
+          );
+        }
         const retriable =
           error instanceof ZohoIntegrationError
             ? error.retriable

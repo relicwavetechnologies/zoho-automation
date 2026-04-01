@@ -14,6 +14,7 @@ import { departmentPreferenceService } from './department-preference.service';
 import type { ZohoRateLimitConfig } from '../integrations/zoho/zoho-rate-limit.types';
 import { toolPermissionService } from '../tools/tool-permission.service';
 import { booksModulePermissionService } from '../integrations/zoho/books-module-permission.service';
+import { logger } from '../../utils/logger';
 
 type DepartmentAdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 
@@ -615,6 +616,14 @@ class DepartmentService {
         .filter(([, actions]) => actions.length > 0),
     );
     const allowedToolIds = Object.keys(allowedActionsByTool);
+    logger.debug('department.runtime.resolved', {
+      userId: input.userId,
+      departmentId: membership.departmentId,
+      membershipRoleId: membership.roleId,
+      membershipRoleSlug: membership.role.slug,
+      allowedToolIds,
+      hasGoogleGmail: allowedToolIds.includes('google-gmail'),
+    });
 
     const resolved: ResolvedDepartmentRuntime = {
       departmentId: membership.department.id,
