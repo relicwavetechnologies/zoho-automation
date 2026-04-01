@@ -2349,11 +2349,7 @@ export const DepartmentsPage = () => {
                                         ) =>
                                           role.slug === "MANAGER"
                                             ? true
-                                            : (tool.toolId === "search-read" ||
-                                                tool.toolId ===
-                                                  "search-agent" ||
-                                                tool.toolId ===
-                                                  "skill-search") &&
+                                            : tool.toolId === "contextSearch" &&
                                               actionGroup === "read";
                                         return (
                                           <TableCell

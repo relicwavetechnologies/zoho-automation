@@ -1,4 +1,4 @@
-import { ALIAS_TO_CANONICAL_ID, CONSOLIDATED_TOOL_ALIAS_MAP, TOOL_REGISTRY, TOOL_REGISTRY_MAP } from './tool-registry';
+import { ACTIVE_TOOL_REGISTRY, ALIAS_TO_CANONICAL_ID, CONSOLIDATED_TOOL_ALIAS_MAP, TOOL_REGISTRY, TOOL_REGISTRY_MAP, resolveCanonicalToolId } from './tool-registry';
 import { ToolPermissionRepository, toolPermissionRepository } from './tool-permission.repository';
 import {
   ToolActionPermissionRepository,
@@ -63,9 +63,11 @@ export class ToolPermissionService {
       this.repo.getForCompany(companyId),
     ]);
 
-    const overrideMap = new Map(stored.map((r) => [`${r.toolId}:${r.role}`, r.enabled]));
+    const overrideMap = new Map(
+      stored.map((r) => [`${resolveCanonicalToolId(r.toolId)}:${r.role}`, r.enabled]),
+    );
 
-    const tools: ToolPermissionRow[] = TOOL_REGISTRY.map((tool) => {
+    const tools: ToolPermissionRow[] = ACTIVE_TOOL_REGISTRY.map((tool) => {
       const permissions: Record<string, boolean> = {};
       for (const role of roles) {
         const key = `${tool.id}:${role.slug}`;
@@ -99,10 +101,11 @@ export class ToolPermissionService {
     enabled: boolean,
     actorId: string,
   ) {
-    if (!TOOL_REGISTRY_MAP.has(toolId)) {
+    const canonicalToolId = resolveCanonicalToolId(toolId);
+    if (!TOOL_REGISTRY_MAP.has(canonicalToolId)) {
       throw new Error(`Unknown toolId: ${toolId}`);
     }
-    const result = await this.repo.upsert(companyId, toolId, role, enabled, actorId);
+    const result = await this.repo.upsert(companyId, canonicalToolId, role, enabled, actorId);
     await toolAccessCache.invalidateCompany(companyId);
     return result;
   }
@@ -174,10 +177,13 @@ export class ToolPermissionService {
       this.actionRepo.getForCompany(companyId),
     ]);
     const overrideMap = new Map(
-      rows.map((row) => [`${row.toolId}:${row.role}:${row.actionGroup}`, row.enabled] as const),
+      rows.map((row) => [
+        `${resolveCanonicalToolId(row.toolId)}:${row.role}:${row.actionGroup}`,
+        row.enabled,
+      ] as const),
     );
 
-    const tools: ToolActionPermissionRow[] = TOOL_REGISTRY.map((tool) => {
+    const tools: ToolActionPermissionRow[] = ACTIVE_TOOL_REGISTRY.map((tool) => {
       const supported = getSupportedToolActionGroups(tool.id);
       const actionGroups = Object.fromEntries(
         roles.map((role) => {
@@ -211,15 +217,16 @@ export class ToolPermissionService {
     enabled: boolean,
     actorId?: string,
   ) {
-    if (!TOOL_REGISTRY_MAP.has(toolId)) {
+    const canonicalToolId = resolveCanonicalToolId(toolId);
+    if (!TOOL_REGISTRY_MAP.has(canonicalToolId)) {
       throw new Error(`Unknown toolId: ${toolId}`);
     }
-    if (!getSupportedToolActionGroups(toolId).includes(actionGroup)) {
-      throw new Error(`Unsupported actionGroup "${actionGroup}" for tool ${toolId}`);
+    if (!getSupportedToolActionGroups(canonicalToolId).includes(actionGroup)) {
+      throw new Error(`Unsupported actionGroup "${actionGroup}" for tool ${canonicalToolId}`);
     }
     const result = await this.actionRepo.upsert(
       companyId,
-      toolId,
+      canonicalToolId,
       role.trim().toUpperCase(),
       actionGroup,
       enabled,
@@ -243,9 +250,11 @@ export class ToolPermissionService {
     if (!validRoleSlugs.includes(normalizedRole)) {
       return [];
     }
-    const overrideMap = new Map(stored.map((r) => [`${r.toolId}:${r.role}`, r.enabled]));
+    const overrideMap = new Map(
+      stored.map((r) => [`${resolveCanonicalToolId(r.toolId)}:${r.role}`, r.enabled]),
+    );
 
-    const allowedCanonicalToolIds = TOOL_REGISTRY.filter((tool) => {
+    const allowedCanonicalToolIds = ACTIVE_TOOL_REGISTRY.filter((tool) => {
       const key = `${tool.id}:${normalizedRole}`;
       if (overrideMap.has(key)) {
         return overrideMap.get(key) as boolean;
@@ -267,7 +276,8 @@ export class ToolPermissionService {
 
   /** Quick single-tool permission check. */
   async isAllowed(companyId: string, toolId: string, role: string): Promise<boolean> {
-    const tool = TOOL_REGISTRY_MAP.get(toolId);
+    const canonicalToolId = resolveCanonicalToolId(toolId);
+    const tool = TOOL_REGISTRY_MAP.get(canonicalToolId);
     if (!tool) return false;
     const normalizedRole = role.trim().toUpperCase();
     const validRoleSlugs = await aiRoleService.getRoleSlugs(companyId);
@@ -276,7 +286,9 @@ export class ToolPermissionService {
     }
 
     const stored = await this.repo.getForCompany(companyId);
-    const row = stored.find((r) => r.toolId === toolId && r.role === normalizedRole);
+    const row = stored.find(
+      (r) => resolveCanonicalToolId(r.toolId) === canonicalToolId && r.role === normalizedRole,
+    );
     if (row !== undefined) return row.enabled;
 
     if (['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN'].includes(normalizedRole)) {

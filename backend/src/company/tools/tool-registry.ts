@@ -762,6 +762,9 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
 
 export const TOOL_REGISTRY_MAP = new Map(TOOL_REGISTRY.map((t) => [t.id, t]));
 
+/** Subset of TOOL_REGISTRY with deprecated entries excluded. */
+export const ACTIVE_TOOL_REGISTRY = TOOL_REGISTRY.filter((t) => t.deprecated !== true);
+
 export const CONSOLIDATED_TOOL_ALIAS_MAP: Record<string, string> = {
   'zoho-books-read': 'zohoBooks',
   'zoho-books-write': 'zohoBooks',
@@ -805,6 +808,13 @@ export const CONSOLIDATED_TOOL_ALIAS_MAP: Record<string, string> = {
   repo: 'devTools',
   'skill-search': 'devTools',
 };
+
+/**
+ * Resolves any tool ID (canonical or legacy alias) to its canonical form.
+ * Returns the input unchanged when it is already canonical.
+ */
+export const resolveCanonicalToolId = (id: string): string =>
+  CONSOLIDATED_TOOL_ALIAS_MAP[id] ?? id;
 
 const normalizeRegistryLookupKey = (value: string): string =>
   value

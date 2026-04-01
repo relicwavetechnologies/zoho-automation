@@ -12,6 +12,7 @@ import { withProviderRetry } from '../../../utils/provider-retry';
 import { contextSearchBrokerService } from '../../retrieval/context-search-broker.service';
 import { getSupportedToolActionGroups, type ToolActionGroup } from '../../tools/tool-action-groups';
 import { ALIAS_TO_CANONICAL_ID } from '../../tools/tool-registry';
+import { type CanonicalToolId, toCanonicalToolId } from '../../tools/canonical-tool-id';
 import { companyGoogleAuthLinkRepository } from '../../channels/google/company-google-auth-link.repository';
 import { googleOAuthService } from '../../channels/google/google-oauth.service';
 import { googleUserAuthLinkRepository } from '../../channels/google/google-user-auth-link.repository';
@@ -1767,7 +1768,7 @@ export const getAllowedActionGroups = (
 
 export const ensureActionPermission = (
   runtime: VercelRuntimeRequestContext,
-  toolId: string,
+  toolId: CanonicalToolId,
   actionGroup: ToolActionGroup,
 ): VercelToolEnvelope | null => {
   const allowed = getAllowedActionGroups(runtime, toolId);
@@ -1784,7 +1785,7 @@ export const ensureActionPermission = (
 
 const ensureAnyActionPermission = (
   runtime: VercelRuntimeRequestContext,
-  toolIds: string[],
+  toolIds: CanonicalToolId[],
   actionGroup: ToolActionGroup,
   label?: string,
 ): VercelToolEnvelope | null => {
@@ -4286,7 +4287,7 @@ export const createVercelDesktopTools = (
         .strict(),
       execute: async (input) =>
         withLifecycle(hooks, 'workflowDraft', 'Preparing workflow draft', async () => {
-          const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'create');
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('workflow-authoring'), 'create');
           if (permissionError) {
             return permissionError;
           }
@@ -4378,7 +4379,7 @@ export const createVercelDesktopTools = (
         .strict(),
       execute: async (input) =>
         withLifecycle(hooks, 'workflowPlan', 'Planning workflow', async () => {
-          const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'create');
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('workflow-authoring'), 'create');
           if (permissionError) {
             return permissionError;
           }
@@ -4483,7 +4484,7 @@ export const createVercelDesktopTools = (
         .strict(),
       execute: async (input) =>
         withLifecycle(hooks, 'workflowBuild', 'Building workflow', async () => {
-          const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'update');
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('workflow-authoring'), 'update');
           if (permissionError) {
             return permissionError;
           }
@@ -4554,7 +4555,7 @@ export const createVercelDesktopTools = (
         .strict(),
       execute: async (input) =>
         withLifecycle(hooks, 'workflowValidate', 'Validating workflow', async () => {
-          const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'read');
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('workflow-authoring'), 'read');
           if (permissionError) {
             return permissionError;
           }
@@ -4637,7 +4638,7 @@ export const createVercelDesktopTools = (
         .strict(),
       execute: async (input) =>
         withLifecycle(hooks, 'workflowSave', 'Saving workflow', async () => {
-          const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'update');
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('workflow-authoring'), 'update');
           if (permissionError) {
             return permissionError;
           }
@@ -4760,7 +4761,7 @@ export const createVercelDesktopTools = (
         .strict(),
       execute: async (input) =>
         withLifecycle(hooks, 'workflowSchedule', 'Updating workflow schedule', async () => {
-          const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'update');
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('workflow-authoring'), 'update');
           if (permissionError) {
             return permissionError;
           }
@@ -4894,7 +4895,7 @@ export const createVercelDesktopTools = (
         .strict(),
       execute: async (input) =>
         withLifecycle(hooks, 'workflowList', 'Listing workflows', async () => {
-          const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'read');
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('workflow-authoring'), 'read');
           if (permissionError) {
             return permissionError;
           }
@@ -4935,7 +4936,7 @@ export const createVercelDesktopTools = (
         .strict(),
       execute: async (input) =>
         withLifecycle(hooks, 'workflowArchive', 'Archiving workflow', async () => {
-          const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'delete');
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('workflow-authoring'), 'delete');
           if (permissionError) {
             return permissionError;
           }
@@ -5013,7 +5014,7 @@ export const createVercelDesktopTools = (
         .strict(),
       execute: async (input) =>
         withLifecycle(hooks, 'workflowRun', 'Running saved workflow', async () => {
-          const permissionError = ensureActionPermission(runtime, 'workflow-authoring', 'execute');
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('workflow-authoring'), 'execute');
           if (permissionError) {
             return permissionError;
           }
@@ -5735,7 +5736,7 @@ export const createVercelDesktopTools = (
               : input.operation === 'sendMessage' || input.operation === 'sendDraft'
                 ? 'send'
                 : 'read';
-          const permissionError = ensureActionPermission(runtime, 'google-gmail', actionGroup);
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('google-gmail'), actionGroup);
           if (permissionError) {
             return permissionError;
           }
@@ -6103,7 +6104,7 @@ export const createVercelDesktopTools = (
                 : input.operation === 'deleteFile'
                   ? 'delete'
                   : 'read';
-          const permissionError = ensureActionPermission(runtime, 'google-drive', actionGroup);
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('google-drive'), actionGroup);
           if (permissionError) {
             return permissionError;
           }
@@ -6425,7 +6426,7 @@ export const createVercelDesktopTools = (
                 : input.operation === 'deleteEvent'
                   ? 'delete'
                   : 'read';
-          const permissionError = ensureActionPermission(runtime, 'google-calendar', actionGroup);
+          const permissionError = ensureActionPermission(runtime, toCanonicalToolId('google-calendar'), actionGroup);
           if (permissionError) {
             return permissionError;
           }
@@ -6722,7 +6723,7 @@ export const createVercelDesktopTools = (
         withLifecycle(hooks, 'booksRead', 'Running Zoho Books read workflow', async () => {
           const readPermissionError = ensureAnyActionPermission(
             runtime,
-            ['zoho-books-read', 'zoho-books-agent'],
+            [toCanonicalToolId('zoho-books-read')],
             'read',
             'booksRead',
           );
@@ -8365,7 +8366,7 @@ export const createVercelDesktopTools = (
                   : 'send';
           const permissionError = ensureAnyActionPermission(
             runtime,
-            ['zoho-books-write', 'zoho-books-agent'],
+            [toCanonicalToolId('zoho-books-write')],
             actionGroup,
             'booksWrite',
           );
@@ -9110,7 +9111,7 @@ export const createVercelDesktopTools = (
           };
 
           if (input.operation === 'searchUsers') {
-            const permissionError = ensureActionPermission(runtime, 'lark-message-read', 'read');
+            const permissionError = ensureActionPermission(runtime, toCanonicalToolId('lark-message-read'), 'read');
             if (permissionError) {
               return permissionError;
             }
@@ -9144,7 +9145,7 @@ export const createVercelDesktopTools = (
           }
 
           if (input.operation === 'resolveRecipients') {
-            const permissionError = ensureActionPermission(runtime, 'lark-message-read', 'read');
+            const permissionError = ensureActionPermission(runtime, toCanonicalToolId('lark-message-read'), 'read');
             if (permissionError) {
               return permissionError;
             }
@@ -9188,7 +9189,7 @@ export const createVercelDesktopTools = (
             });
           }
 
-          const sendPermissionError = ensureActionPermission(runtime, 'lark-message-write', 'send');
+          const sendPermissionError = ensureActionPermission(runtime, toCanonicalToolId('lark-message-write'), 'send');
           if (sendPermissionError) {
             return sendPermissionError;
           }
@@ -11623,7 +11624,7 @@ export const createVercelDesktopTools = (
         withLifecycle(hooks, 'zoho', 'Running Zoho workflow', async () => {
           const readPermissionError = ensureAnyActionPermission(
             runtime,
-            ['search-zoho-context', 'read-zoho-records', 'zoho-agent', 'zoho-read'],
+            [toCanonicalToolId('search-zoho-context')],
             'read',
             'zoho',
           );
@@ -12209,7 +12210,7 @@ export const createVercelDesktopTools = (
                   : 'delete';
             const permissionError = ensureAnyActionPermission(
               runtime,
-              ['zoho-write', 'zoho-agent'],
+              [toCanonicalToolId('zoho-write')],
               actionGroup,
               'zoho',
             );

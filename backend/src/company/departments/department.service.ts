@@ -1,6 +1,6 @@
 import { HttpException } from '../../core/http-exception';
 import { prisma } from '../../utils/prisma';
-import { CONSOLIDATED_TOOL_ALIAS_MAP, TOOL_REGISTRY } from '../tools/tool-registry';
+import { ACTIVE_TOOL_REGISTRY, CONSOLIDATED_TOOL_ALIAS_MAP, resolveCanonicalToolId } from '../tools/tool-registry';
 import {
   getSupportedToolActionGroups,
   isSupportedToolActionGroup,
@@ -94,7 +94,7 @@ const normalizeRoleSlug = (value: string): string =>
     .replace(/[^A-Z0-9_]/g, '')
     .slice(0, 40);
 
-const vercelToolIds = TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel')).map(
+const vercelToolIds = ACTIVE_TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel')).map(
   (tool) => tool.id,
 );
 const ACTION_GROUP_ALL = 'all';
@@ -623,7 +623,7 @@ class DepartmentService {
       membershipRoleId: membership.roleId,
       membershipRoleSlug: membership.role.slug,
       allowedToolIds,
-      hasGoogleGmail: allowedToolIds.includes('google-gmail'),
+      hasGoogleWorkspace: allowedToolIds.includes('googleWorkspace'),
     });
 
     const resolved: ResolvedDepartmentRuntime = {
@@ -887,7 +887,7 @@ class DepartmentService {
       globalSkills: skillBundle.globalSkills,
       departmentSkills: skillBundle.departmentSkills,
       availableMembers,
-      availableTools: TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel')).map(
+      availableTools: ACTIVE_TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel')).map(
         (tool) => ({
           toolId: tool.id,
           name: tool.name,
@@ -1532,13 +1532,14 @@ class DepartmentService {
     if (!role) {
       throw new HttpException(404, 'Department role not found.');
     }
-    if (!vercelToolIds.includes(toolId)) {
+    const canonicalToolId = resolveCanonicalToolId(toolId);
+    if (!vercelToolIds.includes(canonicalToolId)) {
       throw new HttpException(404, 'Unknown or unsupported tool.');
     }
     const normalizedActionGroup = actionGroup.trim().toLowerCase();
     if (
       normalizedActionGroup !== ACTION_GROUP_ALL &&
-      !getSupportedToolActionGroups(toolId).includes(normalizedActionGroup as ToolActionGroup)
+      !getSupportedToolActionGroups(canonicalToolId).includes(normalizedActionGroup as ToolActionGroup)
     ) {
       throw new HttpException(400, 'Unsupported action group for this tool.');
     }
@@ -1547,7 +1548,7 @@ class DepartmentService {
         departmentId_roleId_toolId_actionGroup: {
           departmentId,
           roleId,
-          toolId,
+          toolId: canonicalToolId,
           actionGroup: normalizedActionGroup,
         },
       },
@@ -1558,7 +1559,7 @@ class DepartmentService {
       create: {
         departmentId,
         roleId,
-        toolId,
+        toolId: canonicalToolId,
         actionGroup: normalizedActionGroup,
         allowed,
         updatedBy: session.userId,
@@ -1590,13 +1591,14 @@ class DepartmentService {
     allowed: boolean,
   ) {
     await this.assertDepartmentAccess(session, departmentId);
-    if (!vercelToolIds.includes(toolId)) {
+    const canonicalToolId = resolveCanonicalToolId(toolId);
+    if (!vercelToolIds.includes(canonicalToolId)) {
       throw new HttpException(404, 'Unknown or unsupported tool.');
     }
     const normalizedActionGroup = actionGroup.trim().toLowerCase();
     if (
       normalizedActionGroup !== ACTION_GROUP_ALL &&
-      !getSupportedToolActionGroups(toolId).includes(normalizedActionGroup as ToolActionGroup)
+      !getSupportedToolActionGroups(canonicalToolId).includes(normalizedActionGroup as ToolActionGroup)
     ) {
       throw new HttpException(400, 'Unsupported action group for this tool.');
     }
@@ -1605,7 +1607,7 @@ class DepartmentService {
         departmentId_userId_toolId_actionGroup: {
           departmentId,
           userId,
-          toolId,
+          toolId: canonicalToolId,
           actionGroup: normalizedActionGroup,
         },
       },
@@ -1616,7 +1618,7 @@ class DepartmentService {
       create: {
         departmentId,
         userId,
-        toolId,
+        toolId: canonicalToolId,
         actionGroup: normalizedActionGroup,
         allowed,
         updatedBy: session.userId,
