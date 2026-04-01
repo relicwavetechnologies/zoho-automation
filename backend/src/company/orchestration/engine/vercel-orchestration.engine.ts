@@ -4938,7 +4938,7 @@ const executeLarkVercelTask = async (
     const preferredGeneratedText = (() => {
       if (delegatedAgentResults.length === 1) {
         const singleResult = delegatedAgentResults[0];
-        const singleResultText = singleResult?.text.trim() ?? '';
+        const singleResultText = (singleResult?.text ?? '').trim();
         if (singleResult?.status === 'success' && singleResultText) {
           return singleResultText;
         }
@@ -5075,7 +5075,7 @@ const executeLarkVercelTask = async (
                   rawMessage: entry.text,
                   retriable: false,
                 },
-            metrics: { apiCalls: Math.max(1, entry.toolResults.length) },
+            metrics: { apiCalls: Math.max(1, (entry.toolResults ?? []).length) },
           }))
         : mapToolStepsToAgentResults(steps).map((entry) => ({
             ...entry,

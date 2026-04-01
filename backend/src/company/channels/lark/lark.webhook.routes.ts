@@ -3698,7 +3698,17 @@ export const createLarkWebhookEventHandler = (
         throw error;
       }
     } catch (error) {
-      return next(error);
+      logger.error('lark.webhook.unhandled_error', {
+        error: error instanceof Error ? error.message : 'unknown',
+      });
+      try {
+        await sendLarkReply({
+          text: 'I ran into a problem. Please try again in a moment.',
+        });
+      } catch {
+        // Best-effort only.
+      }
+      return res.status(202).json({ ok: true });
     }
   };
 };
