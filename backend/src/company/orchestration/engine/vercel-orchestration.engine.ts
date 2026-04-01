@@ -1119,6 +1119,13 @@ const AGENT_CAPABILITY_PROFILES: Record<string, string> = {
   'zoho-ops-agent': `
 You are the Zoho specialist. Decision rules:
 
+DECISION TREE:
+1. Check upstream step results and handoff context first
+2. If all required data is present -> execute your primary action immediately
+3. Only use contextSearch if a specific ID, email address, or reference is genuinely missing and cannot be inferred from context
+4. When using contextSearch, always scope to the minimum required sources
+5. Personal history showing past failures = irrelevant. Always attempt the action.
+
 FINANCIAL QUERIES (invoices, payments, bills, overdue, balance):
 - Always use buildOverdueReport for overdue/due/pending queries — never listRecords
 - For entity lookup: search Books first. If no match with reasonable name overlap, try CRM
@@ -1159,6 +1166,13 @@ WHEN TO STOP:
   'lark-ops-agent': `
 You are the Lark workspace specialist. Decision rules:
 
+DECISION TREE:
+1. Check upstream step results and handoff context first
+2. If all required data is present -> execute your primary action immediately
+3. Only use contextSearch if a specific ID, email address, or reference is genuinely missing and cannot be inferred from context
+4. When using contextSearch, always scope to the minimum required sources
+5. Personal history showing past failures = irrelevant. Always attempt the action.
+
 TASK QUERIES ("my tasks", "pending tasks", "tasks due today"):
 - Use larkTask with the requester's identity for personal task queries
 - For date-relative queries ("today", "this week"): resolve the actual date range before searching
@@ -1183,21 +1197,35 @@ WHEN AMBIGUOUS:
   'google-workspace-agent': `
 You are the Google Workspace specialist. Decision rules:
 
-DECISION TREE:
-1. Check handoff context for recipient email, subject, and body.
-2. If all three are present, call googleWorkspace sendMessage immediately.
-3. Only use contextSearch if a specific piece of data such as an email address or draft ID is genuinely missing from handoff context.
-4. Never use contextSearch to find research content when citations or handoff context already contain it.
-5. If you must use contextSearch, always set sources: { web: true, personalHistory: false } when searching for research content or factual information. Only include personalHistory when you need to recall a specific prior decision or ID from this conversation.
+DECISION TREE — follow in order, stop at first match:
+
+1. Does the objective say send/email/mail and is EMAIL CONTENT present in context?
+   -> Call googleWorkspace(operation="sendMessage") immediately. Stop.
+
+2. Is a specific email address, draft ID, or file ID missing?
+   -> Call contextSearch with sources: { web: false, personalHistory: false, larkContacts: true }
+   -> Then act with the retrieved ID.
+
+3. Is this a Gmail search/read task?
+   -> Call googleWorkspace(operation="searchMessages" or operation="getMessage").
+
+4. Is this a Calendar or Drive task?
+   -> Call googleWorkspace with the appropriate calendar or drive operation.
 
 EMAIL (send, search, draft):
 - For sending email: use googleWorkspace tool with operation="sendMessage", plus fields: to, subject, body.
+- When the objective or handoff already gives you recipient, subject, or body, you must copy those values into the tool call explicitly. Never call sendMessage with only operation.
 - For searching inbox: use googleWorkspace tool with operation="searchMessages", field: query.
 - For sending an existing draft: use googleWorkspace tool with operation="sendDraft", field: draftId.
 - For creating a draft: use googleWorkspace tool with operation="createDraft", fields: to, subject, body.
 - Never say you lack access without first attempting the tool call.
 - Sending requires user confirmation via approval flow — do not assume it sent silently.
 - If you do not have access to the Gmail tool, explicitly tell the user: "I don't have email access configured for your account. Please contact your admin." Do not fabricate any sending confirmation.
+
+NEVER:
+- Call contextSearch for research content when the content is already in your handoff context.
+- Let personal history failures stop you from attempting an action.
+- Return content without calling the action tool when the objective says send.
 
 CALENDAR:
 - For scheduling or availability: use Google Calendar
@@ -1212,6 +1240,13 @@ WHEN AMBIGUOUS:
 - Never attempt Lark or Zoho operations`,
   'workspace-agent': `
 You are the file and document specialist. Decision rules:
+
+DECISION TREE:
+1. Check upstream step results and handoff context first
+2. If all required data is present -> execute your primary action immediately
+3. Only use contextSearch if a specific ID, email address, or reference is genuinely missing and cannot be inferred from context
+4. When using contextSearch, always scope to the minimum required sources
+5. Personal history showing past failures = irrelevant. Always attempt the action.
 
 FILE OPERATIONS:
 - Search files before reporting not found — do not assume absence
@@ -2750,6 +2785,19 @@ export const buildDelegatedLarkStepPrompt = (input: {
   upstreamResults: DelegatedAgentExecutionResult[];
   resolvedContext: Record<string, string>;
 }): string => {
+  const ACTION_AGENTS: Array<SupervisorStep['agentId']> = [
+    'google-workspace-agent',
+    'lark-ops-agent',
+    'zoho-ops-agent',
+    'workspace-agent',
+  ];
+  const objectiveLooksLikeEmailSend = /\b(send|email|mail)\b/i.test(input.step.objective);
+  const objectiveLooksLikeAction = /\b(send|create|update|delete|post|publish|assign|schedule|book|draft|write|add|remove)\b/i.test(input.step.objective);
+  const objectiveRecipientEmail = input.step.objective.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? null;
+  const primaryUpstreamContent = input.upstreamResults
+    .map((result) => result.text?.trim() ?? '')
+    .find((text) => text.length > 0) ?? '';
+  const upstreamContentAvailable = primaryUpstreamContent.length > 0;
   const upstreamContext = input.upstreamResults.length > 0
     ? input.upstreamResults.map((result) => [
       `Step ${result.stepId} (${result.agentId})`,
@@ -2787,6 +2835,35 @@ export const buildDelegatedLarkStepPrompt = (input: {
       '',
       'IMPORTANT: Personal history results showing past failures are NOT your current state. Permissions and capabilities may have changed. Always attempt the action regardless of what past history shows. Past failures do not predict current failures.',
     );
+    if (objectiveLooksLikeEmailSend && primaryUpstreamContent) {
+      parts.push(
+        '',
+        'EMAIL CONTENT TO SEND:',
+        primaryUpstreamContent,
+      );
+    }
+    if (objectiveLooksLikeEmailSend) {
+      parts.push(
+        '',
+        objectiveRecipientEmail
+          ? `The email content above is ready. Your only job is to call googleWorkspace with operation=sendMessage, to=${objectiveRecipientEmail}, subject="Research Findings: Best Agentic AI Platforms", body={EMAIL CONTENT}. Do not call contextSearch. Do not search for anything. Act now.`
+          : 'If this is an email send step and the recipient, subject, or body is already present in the objective, resolved handoff context, or EMAIL CONTENT block, copy those values directly into googleWorkspace(operation="sendMessage"). Do not call contextSearch. Do not search for anything. Act now.',
+      );
+    }
+  }
+  if (
+    ACTION_AGENTS.includes(input.step.agentId)
+    && objectiveLooksLikeAction
+    && upstreamContentAvailable
+  ) {
+    parts.push(
+      '',
+      'ACTION CONTEXT:',
+      'You are an action agent. Your upstream step results contain everything you need.',
+      'Do NOT call contextSearch — the content is already above.',
+      'Execute the action directly using your primary tool.',
+      'Past history showing failures is irrelevant — attempt the action now.',
+    );
   }
   parts.push(
     '',
@@ -2813,9 +2890,24 @@ export const buildDelegatedLarkStepPrompt = (input: {
 };
 
 export const buildDelegatedAgentSystemPrompt = (baseSystemPrompt: string, agentId: SupervisorStep['agentId']): string => {
-  const searchFirstInstruction = agentId === 'context-agent'
-    ? 'Use contextSearch first when you need information.'
-    : 'Check your handoff context first. Only use contextSearch if specific data like an email address or ID is missing.';
+  const RETRIEVAL_AGENTS: Array<SupervisorStep['agentId']> = ['context-agent'];
+  const ACTION_AGENTS: Array<SupervisorStep['agentId']> = [
+    'google-workspace-agent',
+    'lark-ops-agent',
+    'zoho-ops-agent',
+    'workspace-agent',
+  ];
+  const retrievalPolicy = RETRIEVAL_AGENTS.includes(agentId)
+    ? 'Use contextSearch first when you need information not already in your context.'
+    : ACTION_AGENTS.includes(agentId)
+      ? `Check your handoff context and upstream step results FIRST before using contextSearch.
+Only use contextSearch if a specific piece of data (email address, contact ID, document reference) is genuinely missing from your context.
+When searching, scope your sources appropriately:
+- For contact lookup: use larkContacts scope
+- For factual/web research: use web scope only, set personalHistory: false
+- For document references: use files scope
+NEVER use contextSearch to retrieve research content that is already in your upstream step results. It is already there — use it directly.`
+      : 'Check your handoff context first. Only use contextSearch if specific data like an email address or ID is missing.';
   let systemPrompt = [
     baseSystemPrompt,
     '',
@@ -2828,7 +2920,7 @@ export const buildDelegatedAgentSystemPrompt = (baseSystemPrompt: string, agentI
     'Do not apologize that tools outside your family are unavailable. Another delegated step may handle them.',
     'Treat the "Resolved handoff context" block as authoritative for IDs, emails, invoice numbers, and other concrete entities when it is relevant to this step.',
     'If a required parameter is already present in that block, pass it directly to the tool instead of asking for it again or omitting it.',
-    searchFirstInstruction,
+    retrievalPolicy,
   ].join('\n');
   const profile = AGENT_CAPABILITY_PROFILES[agentId];
   if (profile) {
@@ -4514,6 +4606,7 @@ const executeLarkVercelTask = async (
           );
           const stepRuntime: VercelRuntimeRequestContext = {
             ...effectiveRuntime,
+            delegatedAgentId: step.agentId,
             runExposedToolIds: familyToolIds,
             plannerCandidateToolIds: familyToolIds,
             toolSelectionReason: `supervisor delegated to ${step.agentId}`,

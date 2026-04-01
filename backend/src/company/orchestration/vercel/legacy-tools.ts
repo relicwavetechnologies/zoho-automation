@@ -1081,6 +1081,36 @@ const CONTEXT_SEARCH_SOURCE_KEYS = [
   'skills',
 ] as const;
 
+const ACTION_AGENT_IDS = new Set([
+  'google-workspace-agent',
+  'lark-ops-agent',
+  'zoho-ops-agent',
+  'workspace-agent',
+]);
+
+const queryExplicitlyNeedsConversationRecall = (query: string): boolean =>
+  /\b(last time|previous|previously|earlier|remember|we discussed|we talked about|from this conversation|from earlier|prior attempt|that id|that email|that contact|that draft)\b/i.test(query);
+
+const scopeContextSearchSourcesForAgent = (input: {
+  runtime: VercelRuntimeRequestContext;
+  query: string;
+  sources?: Record<(typeof CONTEXT_SEARCH_SOURCE_KEYS)[number], boolean>;
+}): Record<(typeof CONTEXT_SEARCH_SOURCE_KEYS)[number], boolean> | undefined => {
+  if (!input.sources) {
+    return input.sources;
+  }
+  if (!ACTION_AGENT_IDS.has(input.runtime.delegatedAgentId ?? '')) {
+    return input.sources;
+  }
+  if (queryExplicitlyNeedsConversationRecall(input.query)) {
+    return input.sources;
+  }
+  return {
+    ...input.sources,
+    personalHistory: false,
+  };
+};
+
 const normalizeContextSearchSources = (input: {
   scopes?: Array<(typeof CONTEXT_SEARCH_SCOPE_VALUES)[number]>;
   sources?: Partial<Record<(typeof CONTEXT_SEARCH_SOURCE_KEYS)[number], boolean>>;
@@ -3950,16 +3980,21 @@ export const createVercelDesktopTools = (
             });
           }
 
+          const normalizedSources = scopeContextSearchSourcesForAgent({
+            runtime,
+            query,
+            sources: normalizeContextSearchSources({
+              scopes: input.scopes,
+              sources: input.sources,
+            }),
+          });
           const result = await contextSearchBrokerService.search({
             runtime,
             query,
             limit: Math.max(1, Math.min(10, input.limit ?? 5)),
             dateFrom: input.dateFrom,
             dateTo: input.dateTo,
-            sources: normalizeContextSearchSources({
-              scopes: input.scopes,
-              sources: input.sources,
-            }),
+            sources: normalizedSources,
           });
           const citations = contextSearchBrokerService.toVercelCitationsFromSearch(result);
 

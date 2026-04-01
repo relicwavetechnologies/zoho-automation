@@ -203,6 +203,7 @@ export type VercelRuntimeRequestContext = {
   departmentSkillsMarkdown?: string;
   searchIntent?: SearchIntent;
   searchIntentPromise?: Promise<SearchIntent>;
+  delegatedAgentId?: string;
 };
 
 export type VercelRuntimeToolHooks = {
