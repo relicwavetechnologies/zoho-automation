@@ -122,6 +122,19 @@ const buildAllowedDomainFamily = (
   return uniq((DOMAIN_TO_TOOL_IDS[canonicalDomain] ?? []).filter((toolId) => allowed.has(toolId)));
 };
 
+const buildRegistryDomainFamily = (domain?: string | null): string[] => {
+  const normalizedDomain = domain?.trim();
+  if (!normalizedDomain) return [];
+  const canonicalDomain = DOMAIN_ALIASES[normalizedDomain] ?? DOMAIN_ALIASES[normalizedDomain.toLowerCase()];
+  if (!canonicalDomain) return [];
+  const activeToolIds = (DOMAIN_TO_TOOL_IDS[canonicalDomain] ?? []).filter((toolId) =>
+    TOOL_REGISTRY_MAP.get(toolId)?.deprecated !== true);
+  if (activeToolIds.length > 0) {
+    return uniq(activeToolIds);
+  }
+  return uniq(DOMAIN_TO_TOOL_IDS[canonicalDomain] ?? []);
+};
+
 const buildChannelBaseline = (input: {
   channel: RuntimeChannel;
   allowed: Set<string>;
@@ -441,7 +454,18 @@ const buildPrimaryBundle = (input: {
     case 'zoho_crm':
       return buildAllowedDomainFamily(input.allowed, 'zoho_crm');
     case 'gmail':
-      return buildAllowedDomainFamily(input.allowed, 'gmail');
+      {
+        const gmailFamily = buildAllowedDomainFamily(input.allowed, 'gmail');
+        if (gmailFamily.length > 0) {
+          return gmailFamily;
+        }
+        logger.warn('tool_selection.domain_tool_missing', {
+          inferredDomain: input.domain,
+          expectedTool: 'google-gmail',
+          allowedToolIds: [...input.allowed],
+        });
+        return buildRegistryDomainFamily('gmail');
+      }
     case 'google_drive':
       return buildAllowedDomainFamily(input.allowed, 'google_drive');
     case 'google_calendar':
