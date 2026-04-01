@@ -11,6 +11,7 @@ import {
   getSupportedToolActionGroups,
   type ToolActionGroup,
 } from './tool-action-groups';
+import { logger } from '../../utils/logger';
 
 const CANONICAL_TO_ALIASES = TOOL_REGISTRY.reduce<Record<string, string[]>>((acc, tool) => {
   acc[tool.id] = Array.from(new Set(tool.aliases));
@@ -139,6 +140,14 @@ export class ToolPermissionService {
         .filter((row) => row.role === normalizedRole)
         .map((row) => {
           const resolvedToolId = toCanonicalToolId(row.toolId);
+          logger.debug('permission.row.read', {
+            rawToolId: row.toolId,
+            canonicalToolId: resolvedToolId,
+            actionGroup: row.actionGroup,
+            allowed: row.enabled,
+            departmentId: row.departmentId,
+            roleId: row.roleId,
+          });
           return [`${resolvedToolId}:${row.actionGroup}`, row.enabled] as const;
         }),
     );
@@ -168,6 +177,10 @@ export class ToolPermissionService {
       }
     }
 
+    logger.info('permission.actions.built', {
+      toolCount: Object.keys(allAllowedActions).length,
+      tools: Object.keys(allAllowedActions),
+    });
     await toolAccessCache.setAllowedActions(companyId, normalizedRole, allAllowedActions);
     return allAllowedActions;
   }

@@ -618,16 +618,16 @@ class DepartmentService {
         .filter(([, actions]) => actions.length > 0),
     );
     const allowedToolIds = Object.keys(allowedActionsByTool);
-    logger.info('runtime.allowedActionsByTool.keys', {
-      keys: Object.keys(allowedActionsByTool),
-    });
-    logger.debug('department.runtime.resolved', {
+    logger.info('runtime.permission.resolved', {
       userId: input.userId,
       departmentId: membership.departmentId,
-      membershipRoleId: membership.roleId,
-      membershipRoleSlug: membership.role.slug,
-      allowedToolIds,
-      hasGoogleWorkspace: allowedToolIds.includes('googleWorkspace'),
+      roleId: membership.roleId,
+      allowedToolIds: Array.from(allowedToolIds),
+      allowedActionsByTool: Object.entries(allowedActionsByTool).reduce((acc, [toolId, actions]) => {
+        acc[toolId] = Array.isArray(actions) ? actions : Object.keys(actions);
+        return acc;
+      }, {} as Record<string, string[]>),
+      source: 'department_runtime_context',
     });
 
     const resolved: ResolvedDepartmentRuntime = {

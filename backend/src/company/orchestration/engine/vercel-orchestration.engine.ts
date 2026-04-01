@@ -4607,6 +4607,17 @@ const executeLarkVercelTask = async (
             plannerCandidateToolIds: familyToolIds,
             toolSelectionReason: `supervisor delegated to ${step.agentId}`,
           };
+          if (step.agentId === 'google-workspace-agent') {
+            logger.info('agent.google_workspace.step.start', {
+              stepId: step.stepId,
+              objective: step.objective,
+              familyToolIds: stepRuntime.runExposedToolIds,
+              allowedToolIds: stepRuntime.allowedToolIds,
+              allowedActionsByTool: stepRuntime.allowedActionsByTool,
+              hasGoogleWorkspace: stepRuntime.allowedToolIds?.includes('googleWorkspace'),
+              googleWorkspaceActions: stepRuntime.allowedActionsByTool?.googleWorkspace ?? null,
+            });
+          }
           const stepToolResults: RunToolResult[] = [];
           const stepResolvedContext = { ...resolvedHandoffContext };
           const stepMessages: ModelMessage[] = [

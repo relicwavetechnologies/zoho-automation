@@ -46,6 +46,7 @@ type ContextSearchBrokerRuntime = Pick<
   | 'departmentZohoReadScope'
   | 'workspace'
   | 'searchIntent'
+  | 'delegatedAgentId'
 >;
 
 export type ContextSearchBrokerSearchInput = {
@@ -1420,6 +1421,15 @@ class ContextSearchBrokerService {
         ...result,
         authorityLevel: result.authorityLevel ?? getAuthorityLevel(result.scope),
       }));
+    logger.info('contextSearch.scope.used', {
+      agentId: input.runtime.delegatedAgentId ?? 'unknown',
+      queryText: query,
+      sourcesEnabled: Object.entries(sourceCoverage)
+        .filter(([, value]) => value.enabled)
+        .map(([key]) => key),
+      personalHistoryIncluded: sourceCoverage.personalHistory?.enabled ?? false,
+      resultCount: finalResults.length,
+    });
 
     const resolvedEntities = buildResolvedEntities(finalResults);
     const citations = this.toCitations(finalResults);

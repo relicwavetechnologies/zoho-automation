@@ -1801,8 +1801,23 @@ export const ensureActionPermission = (
   toolId: CanonicalToolId,
   actionGroup: ToolActionGroup,
 ): VercelToolEnvelope | null => {
+  const canonicalToolId = toCanonicalToolId(toolId);
+  const normalizedToolId = toolId.trim();
+  const allowedActions = runtime.allowedActionsByTool?.[canonicalToolId]
+    ?? runtime.allowedActionsByTool?.[normalizedToolId];
   const allowed = getAllowedActionGroups(runtime, toolId);
-  if (allowed.includes(actionGroup)) {
+  const isAllowed = allowed.includes(actionGroup);
+  logger.info('tool.permission.check', {
+    toolId,
+    canonicalToolId,
+    actionGroup,
+    allowed: isAllowed,
+    foundInAllowedActions: Boolean(allowedActions),
+    allowedActionsForTool: allowedActions ?? null,
+    allowedToolIds: runtime.allowedToolIds,
+    verdict: isAllowed ? 'PASS' : 'DENY',
+  });
+  if (isAllowed) {
     return null;
   }
   return buildEnvelope({
