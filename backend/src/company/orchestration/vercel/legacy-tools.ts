@@ -1348,6 +1348,7 @@ export const BOOKS_MODULE_PROJECTION: Record<string, string[]> = {
 };
 
 export const BOOKS_LARGE_RESULT_THRESHOLD = 40;
+export const LARK_LARGE_RESULT_THRESHOLD = 20;
 
 export const projectRecord = (
   record: Record<string, unknown>,
@@ -1962,6 +1963,94 @@ const createPendingRemoteApproval = async (input: {
       subject: input.subject,
       explanation: input.explanation,
       payload: input.payload,
+    },
+  });
+};
+
+export const projectLarkItem = (
+  item: Record<string, unknown>,
+): Record<string, unknown> => {
+  const projected: Record<string, unknown> = {};
+  const id =
+    item.id
+    ?? item.taskId
+    ?? item.taskGuid
+    ?? item.eventId
+    ?? item.meetingId
+    ?? item.instanceCode
+    ?? item.recordId
+    ?? item.tableId
+    ?? item.viewId
+    ?? item.fieldId
+    ?? item.tasklistId
+    ?? item.appToken
+    ?? item.openId
+    ?? item.externalUserId
+    ?? item.assigneeId;
+  const title =
+    item.title
+    ?? item.summary
+    ?? item.topic
+    ?? item.name
+    ?? item.displayName;
+  const status = item.status;
+  const dueDate =
+    item.dueDate
+    ?? item.due
+    ?? item.dueTs
+    ?? item.dueTime;
+  const startTime =
+    item.startTime
+    ?? item.start_date
+    ?? item.startDate;
+  const assignee =
+    item.assignee
+    ?? item.assignees
+    ?? item.assigneeId
+    ?? item.owner;
+  const url =
+    item.url
+    ?? item.link
+    ?? item.permalink;
+
+  if (id !== undefined && id !== null) projected.id = id;
+  if (title !== undefined && title !== null) projected.title = title;
+  if (status !== undefined && status !== null) projected.status = status;
+  if (dueDate !== undefined && dueDate !== null) projected.dueDate = dueDate;
+  if (startTime !== undefined && startTime !== null) projected.startTime = startTime;
+  if (assignee !== undefined && assignee !== null) projected.assignee = assignee;
+  if (url !== undefined && url !== null) projected.url = url;
+  return projected;
+};
+
+export const buildLarkItemsEnvelope = (input: {
+  summary: string;
+  emptySummary: string;
+  items: Array<Record<string, unknown>>;
+  fullPayload?: Record<string, unknown>;
+  keyData?: Record<string, unknown>;
+}): VercelToolEnvelope => {
+  const isLargeResult = input.items.length > LARK_LARGE_RESULT_THRESHOLD;
+  const projectedItems = isLargeResult
+    ? input.items.map((item) => projectLarkItem(item))
+    : input.items;
+  const projectionNote = isLargeResult
+    ? ' Results projected to essential fields to stay within context limits.'
+    : '';
+
+  return buildEnvelope({
+    success: true,
+    summary: (input.items.length > 0 ? input.summary : input.emptySummary) + projectionNote,
+    keyData: {
+      ...(input.keyData ?? {}),
+      items: projectedItems,
+      ...(isLargeResult
+        ? { projectedFields: ['id', 'title', 'status', 'dueDate', 'startTime', 'assignee', 'url'] }
+        : {}),
+    },
+    fullPayload: {
+      ...(input.fullPayload ?? {}),
+      items: projectedItems,
     },
   });
 };
@@ -9231,6 +9320,7 @@ export const createVercelDesktopTools = (
           'delete',
           'complete',
           'reassign',
+          'assign',
         ]),
         taskId: z.string().optional(),
         tasklistId: z.string().optional(),
@@ -9641,17 +9731,11 @@ export const createVercelDesktopTools = (
                   return haystack.includes(normalizedQuery);
                 })
               : tasklistsResult.items;
-            return buildEnvelope({
-              success: true,
-              summary:
-                items.length > 0
-                  ? `Found ${items.length} Lark tasklist(s).`
-                  : 'No Lark tasklists matched the request.',
-              keyData: {
-                items,
-              },
+            return buildLarkItemsEnvelope({
+              summary: `Found ${items.length} Lark tasklist(s).`,
+              emptySummary: 'No Lark tasklists matched the request.',
+              items,
               fullPayload: {
-                items,
                 pageToken: tasklistsResult.pageToken,
                 hasMore: tasklistsResult.hasMore,
               },
@@ -9684,16 +9768,22 @@ export const createVercelDesktopTools = (
                 ...(assigneeId ? { assigneeId } : {}),
               };
             });
-            return buildEnvelope({
-              success: true,
-              summary:
-                enriched.length > 0
-                  ? `Found ${enriched.length} assignable Lark teammate(s).`
-                  : 'No assignable Lark teammates matched the request.',
+            return buildLarkItemsEnvelope({
+              summary: `Found ${enriched.length} assignable Lark teammate(s).`,
+              emptySummary: 'No assignable Lark teammates matched the request.',
+              items: enriched,
               keyData: {
-                people: enriched,
+                people:
+                  enriched.length > LARK_LARGE_RESULT_THRESHOLD
+                    ? enriched.map((person) => projectLarkItem(person))
+                    : enriched,
               },
-              fullPayload: { people: enriched },
+              fullPayload: {
+                people:
+                  enriched.length > LARK_LARGE_RESULT_THRESHOLD
+                    ? enriched.map((person) => projectLarkItem(person))
+                    : enriched,
+              },
             });
           }
 
@@ -9798,23 +9888,21 @@ export const createVercelDesktopTools = (
               });
             }
             items.forEach(rememberTask);
-            return buildEnvelope({
-              success: true,
+            return buildLarkItemsEnvelope({
               summary:
-                items.length > 0
-                  ? input.operation === 'listOpenMine' || input.onlyOpen
-                    ? `Found ${items.length} open Lark task(s) for the current user.`
-                    : input.operation === 'listMine' || input.onlyMine
-                      ? `Found ${items.length} Lark task(s) for the current user.`
-                      : `Found ${items.length} Lark task(s).`
-                  : input.operation === 'listOpenMine' || input.onlyOpen
-                    ? 'No open Lark tasks matched the request for the current user.'
-                    : input.operation === 'listMine' || input.onlyMine
-                      ? 'No Lark tasks matched the request for the current user.'
-                      : 'No Lark tasks matched the request.',
-              keyData: { items },
+                input.operation === 'listOpenMine' || input.onlyOpen
+                  ? `Found ${items.length} open Lark task(s) for the current user.`
+                  : input.operation === 'listMine' || input.onlyMine
+                    ? `Found ${items.length} Lark task(s) for the current user.`
+                    : `Found ${items.length} Lark task(s).`,
+              emptySummary:
+                input.operation === 'listOpenMine' || input.onlyOpen
+                  ? 'No open Lark tasks matched the request for the current user.'
+                  : input.operation === 'listMine' || input.onlyMine
+                    ? 'No Lark tasks matched the request for the current user.'
+                    : 'No Lark tasks matched the request.',
+              items,
               fullPayload: {
-                items,
                 filteredForCurrentUser:
                   input.operation === 'listMine' ||
                   input.operation === 'listOpenMine' ||
@@ -9942,8 +10030,15 @@ export const createVercelDesktopTools = (
             ...resolvedMembers.map((person) => person.id),
             ...(canonicalizedAssigneeIds?.resolvedIds ?? []),
           ]);
-          const assigneeChangeRequested = desiredAssigneeIds.length > 0;
-          const desiredAssigneeMembers = desiredAssigneeIds.map((id) => ({
+          const fallbackSelfAssigneeId = runtime.larkOpenId?.trim();
+          const effectiveDesiredAssigneeIds =
+            desiredAssigneeIds.length > 0
+              ? desiredAssigneeIds
+              : fallbackSelfAssigneeId
+                ? [fallbackSelfAssigneeId]
+                : [];
+          const assigneeChangeRequested = effectiveDesiredAssigneeIds.length > 0;
+          const effectiveDesiredAssigneeMembers = effectiveDesiredAssigneeIds.map((id) => ({
             id,
             role: 'assignee',
             type: 'user',
@@ -9966,6 +10061,15 @@ export const createVercelDesktopTools = (
             ...(input.customFields ? { custom_fields: input.customFields } : {}),
             ...(input.repeatRule ? { repeat_rule: input.repeatRule } : {}),
           };
+
+          if (input.operation === 'create') {
+            if (!input.summary && input.taskId?.trim() && assigneeChangeRequested) {
+              input = {
+                ...input,
+                operation: 'assign',
+              };
+            }
+          }
 
           if (input.operation === 'create') {
             if (!input.summary) {
@@ -10005,7 +10109,7 @@ export const createVercelDesktopTools = (
               if (existingTaskGuid && assigneeChangeRequested) {
                 const assigneeSync = await syncTaskAssignees({
                   taskGuid: existingTaskGuid,
-                  desiredAssigneeIds,
+                  desiredAssigneeIds: effectiveDesiredAssigneeIds,
                 });
                 task = assigneeSync.task;
                 assigneeSyncSummary =
@@ -10026,7 +10130,7 @@ export const createVercelDesktopTools = (
               ...getLarkAuthInput(runtime),
               body: {
                 ...baseBody,
-                ...(desiredAssigneeMembers.length > 0 ? { members: desiredAssigneeMembers } : {}),
+                ...(effectiveDesiredAssigneeMembers.length > 0 ? { members: effectiveDesiredAssigneeMembers } : {}),
               },
             });
             let assigneeSyncSummary: string | null = null;
@@ -10035,7 +10139,7 @@ export const createVercelDesktopTools = (
             if (createdTaskGuid && assigneeChangeRequested) {
               const assigneeSync = await syncTaskAssignees({
                 taskGuid: createdTaskGuid,
-                desiredAssigneeIds,
+                desiredAssigneeIds: effectiveDesiredAssigneeIds,
               });
               task = assigneeSync.task;
               assigneeSyncSummary =
@@ -10110,7 +10214,7 @@ export const createVercelDesktopTools = (
           if (assigneeChangeRequested) {
             const assigneeSync = await syncTaskAssignees({
               taskGuid,
-              desiredAssigneeIds,
+              desiredAssigneeIds: effectiveDesiredAssigneeIds,
             });
             task = assigneeSync.task;
             assigneeSyncSummary =
@@ -10122,7 +10226,7 @@ export const createVercelDesktopTools = (
           return buildEnvelope({
             success: true,
             confirmedAction: true,
-            summary: `${input.operation === 'reassign' ? 'Reassigned' : 'Updated'} Lark task: ${asString(task.summary) ?? asString(task.taskId) ?? 'task'}${assigneeSyncSummary ? ` (${assigneeSyncSummary})` : ''}.`,
+            summary: `${input.operation === 'reassign' || input.operation === 'assign' ? 'Reassigned' : 'Updated'} Lark task: ${asString(task.summary) ?? asString(task.taskId) ?? 'task'}${assigneeSyncSummary ? ` (${assigneeSyncSummary})` : ''}.`,
             keyData: { task },
             fullPayload: { task },
           });
@@ -10416,18 +10520,15 @@ export const createVercelDesktopTools = (
                 url: asString(item.url),
               });
             });
-            return buildEnvelope({
-              success: true,
-              summary:
-                events.length > 0
-                  ? `Found ${events.length} Lark calendar event(s).`
-                  : 'No Lark calendar events matched the request.',
+            return buildLarkItemsEnvelope({
+              summary: `Found ${events.length} Lark calendar event(s).`,
+              emptySummary: 'No Lark calendar events matched the request.',
+              items: events,
               keyData: {
                 calendar: { calendarId: resolvedCalendarId },
-                events,
                 event: events[0],
               },
-              fullPayload: { ...result, items: events },
+              fullPayload: { ...result },
             });
           }
           if (input.operation === 'listAvailability' || attendeeAwareScheduling) {
@@ -10879,14 +10980,11 @@ export const createVercelDesktopTools = (
                   .includes(normalizedQuery),
               )
             : result.items;
-          return buildEnvelope({
-            success: true,
-            summary:
-              items.length > 0
-                ? `Found ${items.length} Lark meeting(s).`
-                : 'No Lark meetings matched the request.',
-            keyData: { items },
-            fullPayload: { ...result, items },
+          return buildLarkItemsEnvelope({
+            summary: `Found ${items.length} Lark meeting(s).`,
+            emptySummary: 'No Lark meetings matched the request.',
+            items,
+            fullPayload: { ...result },
           });
         }),
     }),
@@ -10951,13 +11049,10 @@ export const createVercelDesktopTools = (
                   pageSize: input.pageSize,
                 }),
               );
-              return buildEnvelope({
-                success: true,
-                summary:
-                  result.items.length > 0
-                    ? `Found ${result.items.length} Lark approval instance(s).`
-                    : 'No Lark approval instances matched the request.',
-                keyData: { items: result.items },
+              return buildLarkItemsEnvelope({
+                summary: `Found ${result.items.length} Lark approval instance(s).`,
+                emptySummary: 'No Lark approval instances matched the request.',
+                items: result.items as Array<Record<string, unknown>>,
                 fullPayload: result as unknown as Record<string, unknown>,
               });
             } catch (error) {
@@ -11090,11 +11185,10 @@ export const createVercelDesktopTools = (
                     : 'Provided Lark Base app',
                 raw: { app_token: token },
               }));
-              return buildEnvelope({
-                success: true,
+              return buildLarkItemsEnvelope({
                 summary: `Resolved ${items.length} Lark Base app token(s) from configured defaults or provided input.`,
-                keyData: { items },
-                fullPayload: { items },
+                emptySummary: 'No Lark Base app tokens were resolved.',
+                items,
               });
             }
 
@@ -11113,13 +11207,11 @@ export const createVercelDesktopTools = (
                   pageSize: 50,
                 }),
               );
-              return buildEnvelope({
-                success: true,
-                summary:
-                  result.items.length > 0
-                    ? `Found ${result.items.length} Lark Base table(s).`
-                    : 'No Lark Base tables were found.',
-                keyData: { app: { appToken }, items: result.items },
+              return buildLarkItemsEnvelope({
+                summary: `Found ${result.items.length} Lark Base table(s).`,
+                emptySummary: 'No Lark Base tables were found.',
+                items: result.items as Array<Record<string, unknown>>,
+                keyData: { app: { appToken } },
                 fullPayload: result as unknown as Record<string, unknown>,
               });
             }
@@ -11140,13 +11232,11 @@ export const createVercelDesktopTools = (
                   pageSize: 50,
                 }),
               );
-              return buildEnvelope({
-                success: true,
-                summary:
-                  result.items.length > 0
-                    ? `Found ${result.items.length} Lark Base view(s).`
-                    : 'No Lark Base views were found.',
-                keyData: { app: { appToken }, table: { tableId }, items: result.items },
+              return buildLarkItemsEnvelope({
+                summary: `Found ${result.items.length} Lark Base view(s).`,
+                emptySummary: 'No Lark Base views were found.',
+                items: result.items as Array<Record<string, unknown>>,
+                keyData: { app: { appToken }, table: { tableId } },
                 fullPayload: result as unknown as Record<string, unknown>,
               });
             }
@@ -11177,14 +11267,12 @@ export const createVercelDesktopTools = (
                       ),
                     )
                   : result.items;
-              return buildEnvelope({
-                success: true,
-                summary:
-                  filteredItems.length > 0
-                    ? `Found ${filteredItems.length} Lark Base field(s).`
-                    : 'No Lark Base fields matched the request.',
-                keyData: { app: { appToken }, table: { tableId }, items: filteredItems },
-                fullPayload: { ...result, items: filteredItems },
+              return buildLarkItemsEnvelope({
+                summary: `Found ${filteredItems.length} Lark Base field(s).`,
+                emptySummary: 'No Lark Base fields matched the request.',
+                items: filteredItems,
+                keyData: { app: { appToken }, table: { tableId } },
+                fullPayload: { ...result },
               });
             }
 
@@ -11267,19 +11355,16 @@ export const createVercelDesktopTools = (
                       .includes(normalizedQuery),
                   )
                 : result.items;
-              return buildEnvelope({
-                success: true,
-                summary:
-                  items.length > 0
-                    ? `Found ${items.length} Lark Base record(s).`
-                    : 'No Lark Base records matched the request.',
+              return buildLarkItemsEnvelope({
+                summary: `Found ${items.length} Lark Base record(s).`,
+                emptySummary: 'No Lark Base records matched the request.',
+                items,
                 keyData: {
                   app: { appToken },
                   table: { tableId },
                   view: viewId ? { viewId } : undefined,
-                  items,
                 },
-                fullPayload: { ...result, items },
+                fullPayload: { ...result },
               });
             }
 
