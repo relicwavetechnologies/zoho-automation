@@ -118,6 +118,7 @@ const LARK_THREAD_CONTEXT_MESSAGE_LIMIT = DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT;
 const LARK_CONTEXT_TARGET_RATIO = 0.6;
 const LARK_LIGHT_CONTEXT_TARGET_RATIO = 0.12;
 const LARK_NORMAL_CONTEXT_TARGET_RATIO = 0.28;
+const SUPERVISOR_PROMPT_MAX_CHARS = 8_000;
 const LARK_CHILD_ROUTER_HISTORY_TOKEN_BUDGET = 8_000;
 const LARK_CHILD_ROUTER_HISTORY_MAX_MESSAGES = 16;
 const LARK_LIGHTWEIGHT_RAW_HISTORY_TOKEN_BUDGET = 6_000;
@@ -318,6 +319,83 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
   const trimmed = value?.trim();
   if (!trimmed) return null;
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const trimSupervisorSystemPrompt = (prompt: string): string => {
+  if (prompt.length <= SUPERVISOR_PROMPT_MAX_CHARS) {
+    return prompt;
+  }
+  const headChars = 5_000;
+  const tailChars = SUPERVISOR_PROMPT_MAX_CHARS - headChars - 48;
+  return [
+    prompt.slice(0, headChars).trimEnd(),
+    '[Tool details trimmed for planning speed]',
+    prompt.slice(-tailChars).trimStart(),
+  ].join('\n\n');
+};
+
+const describeSupervisorSource = (toolName?: string): string => {
+  switch (toolName?.trim()) {
+    case 'larkTask':
+    case 'lark-task-read':
+    case 'lark-task-write':
+      return 'Lark Tasks';
+    case 'zohoBooks':
+    case 'booksRead':
+    case 'zoho-books-read':
+      return 'Zoho Books';
+    case 'zohoCrm':
+    case 'zoho-read':
+    case 'search-zoho-context':
+      return 'Zoho CRM';
+    case 'contextSearch':
+    case 'context-search':
+      return 'internal context';
+    case 'googleWorkspace':
+    case 'google-gmail':
+    case 'google-drive':
+    case 'google-calendar':
+      return 'Google Workspace';
+    case 'larkBase':
+    case 'lark-base-read':
+    case 'lark-base-write':
+      return 'Lark Base';
+    case 'larkMessage':
+    case 'lark-message-read':
+    case 'lark-message-write':
+      return 'Lark messages';
+    case 'larkCalendar':
+    case 'lark-calendar-read':
+    case 'lark-calendar-write':
+    case 'lark-calendar-list':
+      return 'Lark Calendar';
+    default:
+      return 'the records';
+  }
+};
+
+const buildRichDelegatedResultSummary = (
+  results: DelegatedAgentExecutionResult[],
+): string | null => {
+  if (results.length === 0) {
+    return null;
+  }
+  const lines: string[] = ['What I checked:'];
+  const searchedAcross = new Set<string>();
+  for (const result of results.slice(0, 3)) {
+    const firstToolName = result.toolResults.find((entry) => entry.toolName)?.toolName;
+    const sourceLabel = describeSupervisorSource(firstToolName);
+    searchedAcross.add(sourceLabel);
+    const outcome =
+      summarizeText(result.summary, 120)
+      ?? summarizeText(result.text, 120)
+      ?? 'Checked but found nothing useful.';
+    lines.push(`- Checked ${sourceLabel} — ${outcome}`);
+  }
+  if (searchedAcross.size > 0 && lines.length < 5) {
+    lines.push(`Searched across: ${Array.from(searchedAcross).join(', ')}`);
+  }
+  return lines.slice(0, 5).join('\n');
 };
 
 const buildLarkSupervisorScopedContext = (input: {
@@ -4179,6 +4257,11 @@ const executeLarkVercelTask = async (
       }
       return true;
     });
+    const supervisorPlanningHint = trimSupervisorSystemPrompt([
+      effectiveRuntime.toolSelectionReason ? `Tool-selection reason: ${effectiveRuntime.toolSelectionReason}` : '',
+      toolSelection.inferredDomain ? `Inferred domain: ${toolSelection.inferredDomain}` : '',
+      toolSelection.inferredOperationClass ? `Inferred operation class: ${toolSelection.inferredOperationClass}` : '',
+    ].filter(Boolean).join('\n'));
     const supervisorPlan = await planSupervisorDelegation({
       mode: runtime.mode,
       latestUserMessage: resolvedUserMessage,
@@ -4189,7 +4272,7 @@ const executeLarkVercelTask = async (
         normalizedIntent: childRoute.normalizedIntent ?? null,
         suggestedToolIds: childRoute.suggestedToolIds ?? [],
       },
-      toolSelectionReason: effectiveRuntime.toolSelectionReason ?? null,
+      toolSelectionReason: supervisorPlanningHint || null,
       inferredDomain: toolSelection.inferredDomain,
       inferredOperationClass: toolSelection.inferredOperationClass,
       eligibleAgentIds,
@@ -4639,6 +4722,18 @@ const executeLarkVercelTask = async (
         });
       }
     }
+    const richDelegatedSummary = buildRichDelegatedResultSummary(delegatedAgentResults);
+    const trimmedGeneratedText = generatedText.trim();
+    const preferredGeneratedText =
+      richDelegatedSummary
+      && delegatedAgentResults.length > 0
+      && (
+        trimmedGeneratedText.length < 140
+        || delegatedAgentResults.some((result) => result.text.trim() === trimmedGeneratedText)
+      )
+        ? richDelegatedSummary
+        : trimmedGeneratedText;
+
     const mutationGuard = resolveMutationGuard({
       latestUserMessage: resolvedUserMessage,
       toolResults: executedToolOutcomes,
@@ -4650,14 +4745,14 @@ const executeLarkVercelTask = async (
       blockingUserInput: Boolean(blockingUserInput),
     });
     const finalText = mutationGuard.forcedFinalText === 'I did not complete that action because no confirmed action ran successfully.'
-      ? __vercelMutationGuardTestUtils.finalizeNoActionAttemptText(generatedText.trim())
+      ? __vercelMutationGuardTestUtils.finalizeNoActionAttemptText(preferredGeneratedText)
       : mutationGuard.forcedFinalText
       ?? (blockingUserInput
-      ? (buildMissingInputResponseText(blockingUserInput) ?? generatedText.trim()) ||
+      ? (buildMissingInputResponseText(blockingUserInput) ?? preferredGeneratedText) ||
         'I need one more detail from you before I can continue.'
       : pendingApproval
         ? `Approval required before continuing: ${pendingApproval.kind === 'run_command' ? pendingApproval.command : pendingApproval.kind}.`
-        : generatedText.trim() || 'Done.');
+        : preferredGeneratedText || 'Done.');
     const hasToolResults =
       steps.length > 0
       || steps.some((step) => (step.toolResults?.length ?? 0) > 0);
