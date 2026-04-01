@@ -3039,6 +3039,7 @@ const executeLarkVercelTask = async (
   let heartbeatIndex = 0;
   const completedSupervisorSteps = new Map<string, CompletedSupervisorStep>();
   let runCompletedSuccessfully = false;
+  const runStartedAt = Date.now();
   const originalUserMessage = message.text;
   const currentTurnExplicitReplyMode = resolveExplicitReplyModeFromText(originalUserMessage) as
     | 'dm'
@@ -4365,6 +4366,7 @@ const executeLarkVercelTask = async (
       toolSelection.inferredDomain ? `Inferred domain: ${toolSelection.inferredDomain}` : '',
       toolSelection.inferredOperationClass ? `Inferred operation class: ${toolSelection.inferredOperationClass}` : '',
     ].filter(Boolean).join('\n'));
+    const supervisorPlanStartedAt = Date.now();
     const supervisorPlan = await planSupervisorDelegation({
       mode: runtime.mode,
       latestUserMessage: resolvedUserMessage,
@@ -4395,6 +4397,7 @@ const executeLarkVercelTask = async (
       summary: `${supervisorPlan.complexity} with ${supervisorPlan.steps.length} step(s)`,
       status: 'done',
       payload: {
+        durationMs: Date.now() - supervisorPlanStartedAt,
         complexity: supervisorPlan.complexity,
         eligibleAgentIds,
         steps: supervisorPlan.steps,
@@ -4418,6 +4421,9 @@ const executeLarkVercelTask = async (
         steps: supervisorPlan.steps,
         runStep: async (step, upstreamResults) => {
           await assertExecutionRunnable(task.taskId, abortSignal);
+          const delegatedStepStartedAt = Date.now();
+          let delegatedStepFirstToolStartedAt: number | null = null;
+          const toolStartedAtByActivity = new Map<string, number>();
           const warmResolvedIds = await getWarmResolvedIdsForExecution(executionId, task.taskId);
           const resolvedHandoffContext = buildSupervisorResolvedContext({
             objective: step.objective,
@@ -4483,10 +4489,19 @@ const executeLarkVercelTask = async (
           try {
           const stepTools = createVercelDesktopTools(stepRuntime, {
             onToolStart: async (toolName, activityId, title) => {
+              const toolStartedAt = Date.now();
+              const toolActivityKey = activityId || `${toolName}:${title}`;
+              toolStartedAtByActivity.set(toolActivityKey, toolStartedAt);
+              if (delegatedStepFirstToolStartedAt == null) {
+                delegatedStepFirstToolStartedAt = toolStartedAt;
+              }
               await appendLatestAgentRunLog(task.taskId, 'tool.start', {
                 toolName,
                 activityId,
                 title,
+                durationMs: delegatedStepFirstToolStartedAt == null
+                  ? null
+                  : toolStartedAt - delegatedStepStartedAt,
                 channel: 'lark',
                 threadId: contextStorageId ?? message.chatId,
                 supervisorStepId: step.stepId,
@@ -4497,6 +4512,13 @@ const executeLarkVercelTask = async (
               await updateStatus('tool_running', startLabel);
             },
             onToolFinish: async (toolName, activityId, title, output) => {
+              const toolFinishedAt = Date.now();
+              const toolActivityKey = activityId || `${toolName}:${title}`;
+              const toolStartedAt = toolStartedAtByActivity.get(toolActivityKey) ?? null;
+              const toolDurationMs = toolStartedAt == null ? null : toolFinishedAt - toolStartedAt;
+              if (toolStartedAt != null) {
+                toolStartedAtByActivity.delete(toolActivityKey);
+              }
               const hotContextSlot = buildHotContextSlot(toolName, output);
               hotContextStore.push(task.taskId, hotContextSlot);
               Object.assign(stepResolvedContext, hotContextSlot.resolvedIds);
@@ -4516,6 +4538,7 @@ const executeLarkVercelTask = async (
                 activityId,
                 title,
                 output,
+                durationMs: toolDurationMs,
                 channel: 'lark',
                 threadId: contextStorageId ?? message.chatId,
                 supervisorStepId: step.stepId,
@@ -4578,7 +4601,8 @@ const executeLarkVercelTask = async (
                     providerOptions: {
                       google: {
                         thinkingConfig: {
-                          includeThoughts: true,
+                          includeThoughts: resolvedModel.includeThoughts,
+                          thinkingBudget: resolvedModel.thinkingBudget,
                           thinkingLevel: resolvedModel.thinkingLevel,
                         },
                       },
@@ -4618,7 +4642,8 @@ const executeLarkVercelTask = async (
                     providerOptions: {
                       google: {
                         thinkingConfig: {
-                          includeThoughts: true,
+                          includeThoughts: resolvedModel.includeThoughts,
+                          thinkingBudget: resolvedModel.thinkingBudget,
                           thinkingLevel: resolvedModel.thinkingLevel,
                         },
                       },
@@ -4712,6 +4737,10 @@ const executeLarkVercelTask = async (
             summary: summarizeText(stepText, 400) ?? stepText,
             status: stepStatus === 'success' ? 'done' : 'failed',
             payload: {
+              durationMs: Date.now() - delegatedStepStartedAt,
+              ttftMs: delegatedStepFirstToolStartedAt == null
+                ? null
+                : delegatedStepFirstToolStartedAt - delegatedStepStartedAt,
               stepId: step.stepId,
               agentId: step.agentId,
               objective: step.objective,
@@ -4781,6 +4810,10 @@ const executeLarkVercelTask = async (
               summary,
               status: wasCancelled ? 'cancelled' : 'failed',
               payload: {
+                durationMs: Date.now() - delegatedStepStartedAt,
+                ttftMs: delegatedStepFirstToolStartedAt == null
+                  ? null
+                  : delegatedStepFirstToolStartedAt - delegatedStepStartedAt,
                 stepId: step.stepId,
                 agentId: step.agentId,
                 objective: step.objective,
@@ -5028,6 +5061,7 @@ const executeLarkVercelTask = async (
         channel: 'lark',
         route: childRoute.route,
         threadId: contextStorageId ?? message.chatId,
+        durationMs: Date.now() - runStartedAt,
         finalText,
         pendingApproval: pendingApproval
           ? {

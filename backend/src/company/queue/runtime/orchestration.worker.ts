@@ -403,6 +403,7 @@ const processTask = async (
 ): Promise<void> => {
   const { taskId, message } = job.data;
   const executionId = buildExecutionId(taskId, message.trace?.requestId);
+  const runStartedAt = Date.now();
   const linkedUserId = typeof message.trace?.linkedUserId === 'string' ? message.trace.linkedUserId : undefined;
   let trackedCompanyId = message.trace?.companyId;
   let executionTrackingEnabled = false;
@@ -649,6 +650,7 @@ const processTask = async (
           details: {
             configuredEngine: selectedEngine,
             engineUsed,
+            durationMs: Date.now() - runStartedAt,
           },
         }),
       });
@@ -676,8 +678,10 @@ const processTask = async (
             currentStep: result.currentStep ?? null,
             graphThreadId: result.runtimeMeta?.threadId ?? null,
             graphNode: result.runtimeMeta?.node ?? null,
+            durationMs: Date.now() - runStartedAt,
           },
         }),
+        durationMs: Date.now() - runStartedAt,
         configuredEngine: selectedEngine,
         engineUsed,
         rolledBackFrom: rolledBackFrom ?? null,
@@ -813,6 +817,23 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
         const currentSnapshot = runtimeTaskStore.get(job.data.taskId);
         const requeueCount = currentSnapshot?.conversationRequeueCount ?? 0;
         const requeueDelayMs = computeConversationRequeueDelayMs(requeueCount);
+        const executionId = buildExecutionId(job.data.taskId, job.data.message.trace?.requestId);
+        await appendExecutionEventSafe(executionId, {
+          executionId,
+          phase: 'queued',
+          eventType: 'queue.conversation_lock.waiting',
+          actorType: 'worker',
+          actorKey: 'orchestration-worker',
+          title: 'Waiting for active conversation to finish',
+          summary: `Requeued (attempt ${requeueCount + 1}), retrying in ${Math.round(requeueDelayMs / 1000)}s`,
+          status: 'running',
+          payload: {
+            requeueCount: requeueCount + 1,
+            requeueDelayMs,
+            chatId: job.data.message.chatId,
+            channel: job.data.message.channel,
+          },
+        });
         const requeued = await requeueOrchestrationTask(
           job.data.taskId,
           job.data.message,

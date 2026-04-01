@@ -254,6 +254,7 @@ export const planSupervisorDelegation = async (input: {
     const result = await generateObject({
       model: input.model,
       schema: supervisorPlanSchema,
+      maxOutputTokens: 1024,
       system: [
         input.systemPrompt,
         'You are the top-level multi-agent supervisor planner.',
