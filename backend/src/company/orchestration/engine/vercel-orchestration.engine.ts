@@ -4602,7 +4602,6 @@ const executeLarkVercelTask = async (
                       google: {
                         thinkingConfig: {
                           includeThoughts: resolvedModel.includeThoughts,
-                          thinkingBudget: resolvedModel.thinkingBudget,
                           thinkingLevel: resolvedModel.thinkingLevel,
                         },
                       },
@@ -4643,7 +4642,6 @@ const executeLarkVercelTask = async (
                       google: {
                         thinkingConfig: {
                           includeThoughts: resolvedModel.includeThoughts,
-                          thinkingBudget: resolvedModel.thinkingBudget,
                           thinkingLevel: resolvedModel.thinkingLevel,
                         },
                       },

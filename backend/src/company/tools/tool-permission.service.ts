@@ -11,6 +11,11 @@ import {
   type ToolActionGroup,
 } from './tool-action-groups';
 
+const CANONICAL_TO_ALIASES = TOOL_REGISTRY.reduce<Record<string, string[]>>((acc, tool) => {
+  acc[tool.id] = Array.from(new Set(tool.aliases));
+  return acc;
+}, {});
+
 export interface ToolPermissionRow {
   toolId: string;
   name: string;
@@ -237,7 +242,7 @@ export class ToolPermissionService {
     }
     const overrideMap = new Map(stored.map((r) => [`${r.toolId}:${r.role}`, r.enabled]));
 
-    const allowedToolIds = TOOL_REGISTRY.filter((tool) => {
+    const allowedCanonicalToolIds = TOOL_REGISTRY.filter((tool) => {
       const key = `${tool.id}:${normalizedRole}`;
       if (overrideMap.has(key)) {
         return overrideMap.get(key) as boolean;
@@ -248,6 +253,10 @@ export class ToolPermissionService {
       }
       return memberDefault(tool.id);
     }).map((t) => t.id);
+
+    const allowedToolIds = Array.from(new Set(
+      allowedCanonicalToolIds.flatMap((toolId) => [toolId, ...(CANONICAL_TO_ALIASES[toolId] ?? [])]),
+    ));
 
     await toolAccessCache.set(companyId, normalizedRole, allowedToolIds);
     return allowedToolIds;

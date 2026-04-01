@@ -12,20 +12,17 @@ const VERCEL_MODELS: Record<
     modelId: string;
     thinkingLevel: 'minimal' | 'low' | 'medium' | 'high';
     includeThoughts: boolean;
-    thinkingBudget: number;
   }
 > = {
   fast: {
     modelId: 'gemini-3.1-flash-lite-preview',
     thinkingLevel: 'minimal',
     includeThoughts: false,
-    thinkingBudget: 0,
   },
   high: {
     modelId: 'gemini-3.1-flash-lite-preview',
     thinkingLevel: 'minimal',
     includeThoughts: false,
-    thinkingBudget: 0,
   },
 };
 
@@ -39,7 +36,6 @@ export const resolveVercelLanguageModel = async (
     effectiveProvider: 'google',
     thinkingLevel: configForMode.thinkingLevel,
     includeThoughts: configForMode.includeThoughts,
-    thinkingBudget: configForMode.thinkingBudget,
   };
 };
 
@@ -49,5 +45,4 @@ export const resolveVercelChildRouterModel = async () => ({
   effectiveProvider: 'google' as const,
   thinkingLevel: 'minimal' as const,
   includeThoughts: false as const,
-  thinkingBudget: 0 as const,
 });
