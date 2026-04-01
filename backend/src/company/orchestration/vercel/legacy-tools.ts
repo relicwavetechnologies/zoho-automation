@@ -5713,15 +5713,17 @@ export const createVercelDesktopTools = (
             'sendMessage',
             'sendDraft',
           ] as const;
+          const operation = input?.operation;
           if (
-            input.operation === 'gmail'
-            || !VALID_GMAIL_OPERATIONS.includes(input.operation as (typeof VALID_GMAIL_OPERATIONS)[number])
+            !operation
+            || operation === 'gmail'
+            || !VALID_GMAIL_OPERATIONS.includes(operation as (typeof VALID_GMAIL_OPERATIONS)[number])
           ) {
             return {
               success: false,
               status: 'error',
               errorKind: 'unsupported',
-              error: `Invalid Gmail operation "${input.operation}". Valid operations: sendMessage (requires: to, subject, body), searchMessages (requires: query), getDraft, sendDraft (requires: draftId).`,
+              error: `Invalid Gmail operation "${operation ?? 'undefined'}". Valid operations: sendMessage (requires: to, subject, body), searchMessages (requires: query), getDraft, sendDraft (requires: draftId).`,
               retryable: false,
             } as const;
           }

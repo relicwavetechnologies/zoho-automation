@@ -463,14 +463,20 @@ const buildPrimaryBundle = (input: {
       {
         const gmailFamily = buildAllowedDomainFamily(input.allowed, 'gmail');
         if (gmailFamily.length > 0) {
-          return gmailFamily;
+          return uniq([
+            ...gmailFamily,
+            ...(input.allowed.has('google-gmail') ? ['google-gmail'] : []),
+          ]);
         }
         logger.warn('tool_selection.domain_tool_missing', {
           inferredDomain: input.domain,
           expectedTool: 'google-gmail',
           allowedToolIds: [...input.allowed],
         });
-        return buildRegistryDomainFamily('gmail');
+        return uniq([
+          ...buildRegistryDomainFamily('gmail'),
+          ...(input.allowed.has('google-gmail') ? ['google-gmail'] : []),
+        ]);
       }
     case 'google_drive':
       return buildAllowedDomainFamily(input.allowed, 'google_drive');
