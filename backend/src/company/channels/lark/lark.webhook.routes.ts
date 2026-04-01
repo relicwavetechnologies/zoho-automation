@@ -2198,7 +2198,7 @@ export const createLarkWebhookEventHandler = (
             error: error instanceof Error ? error.message : 'unknown_error',
           });
           await sendLarkReply({
-            text: `Compact command failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            text: 'I ran into a problem. Please try again in a moment.',
           });
           return res.status(202).json({
             success: true,
@@ -2641,9 +2641,7 @@ export const createLarkWebhookEventHandler = (
             },
           });
         } catch (error) {
-          await statusCoordinator.replace(
-            `Share command failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          );
+          await statusCoordinator.replace('I ran into a problem. Please try again in a moment.');
           await statusCoordinator.close();
           return res.status(202).json({
             success: true,
@@ -2779,7 +2777,7 @@ export const createLarkWebhookEventHandler = (
             command: tracedMessageBase.text,
             error: error instanceof Error ? error.message : 'unknown_error',
           });
-          await sendLarkReply({ text: `Workflow command failed: ${error instanceof Error ? error.message : 'Unknown error'}` });
+          await sendLarkReply({ text: 'I ran into a problem. Please try again in a moment.' });
           return res.status(202).json({
             success: true,
             message: 'Workflow command failed gracefully',

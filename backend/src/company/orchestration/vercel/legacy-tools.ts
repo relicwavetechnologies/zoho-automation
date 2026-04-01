@@ -12586,7 +12586,15 @@ export const createVercelDesktopTools = (
     }).passthrough(),
     execute: async (input, options) => {
       if (input.operation === 'gmail') {
-        return tools.googleMail.execute(input, options);
+        return {
+          success: false,
+          status: 'error' as const,
+          errorKind: 'unsupported',
+          error: 'Use the googleMail tool directly for Gmail operations (sendMessage, searchMessages, createDraft). Do not use googleWorkspace with operation="gmail".',
+          retryable: false,
+          data: null,
+          confirmedAction: false,
+        };
       }
       if (input.operation === 'drive') {
         return tools.googleDrive.execute(input, options);
