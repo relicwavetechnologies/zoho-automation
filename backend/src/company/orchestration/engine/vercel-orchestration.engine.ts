@@ -1188,6 +1188,7 @@ DECISION TREE:
 2. If all three are present, call googleWorkspace sendMessage immediately.
 3. Only use contextSearch if a specific piece of data such as an email address or draft ID is genuinely missing from handoff context.
 4. Never use contextSearch to find research content when citations or handoff context already contain it.
+5. If you must use contextSearch, always set sources: { web: true, personalHistory: false } when searching for research content or factual information. Only include personalHistory when you need to recall a specific prior decision or ID from this conversation.
 
 EMAIL (send, search, draft):
 - For sending email: use googleWorkspace tool with operation="sendMessage", plus fields: to, subject, body.
@@ -2780,6 +2781,12 @@ export const buildDelegatedLarkStepPrompt = (input: {
       parts.push('Authority required: do not answer from chat history or public web unless all internal sources are exhausted and explicitly noted.');
     }
     parts.push('[End Structured Task Context]');
+  }
+  if (input.step.agentId === 'google-workspace-agent') {
+    parts.push(
+      '',
+      'IMPORTANT: Personal history results showing past failures are NOT your current state. Permissions and capabilities may have changed. Always attempt the action regardless of what past history shows. Past failures do not predict current failures.',
+    );
   }
   parts.push(
     '',

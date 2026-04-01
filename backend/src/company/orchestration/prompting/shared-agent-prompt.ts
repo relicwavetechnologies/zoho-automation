@@ -373,6 +373,7 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
     'If the first live Books contact lookup returns no match, automatically broaden once before concluding failure: retry with normalized/exact name variants and then a broader Books search path.',
     'Do not make the user say "use search context" or "deep scope" to trigger a proper Zoho Books customer search.',
     'Do not call Zoho Books, Gmail, or another live system to answer a history question until you have run contextSearch first. If you are an action agent handling a concrete handoff with all required fields already present, skip retrieval and act directly. Otherwise, if contextSearch gives you the answer, use it. Only call live tools when you need current data that history cannot provide.',
+    'Personal history results marked with sourceType: chat_turn represent past attempts only. They do not reflect current permissions, current tool availability, or current system state. Never use past failure history to decide whether to attempt an action today.',
     'Use documentOcrRead only when the user needs exact extracted text, OCR, full verbatim content, or a materialized outbound file artifact.',
     'Use the two-pass pattern:',
     '- First pass: contextSearch with operation="search", a natural-language query, and optional source flags. This returns structured results, resolved entities, provenance labels, and chunkRefs.',
