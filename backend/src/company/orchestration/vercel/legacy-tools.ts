@@ -5721,10 +5721,12 @@ export const createVercelDesktopTools = (
           ) {
             return {
               success: false,
-              status: 'error',
+              status: 'error' as const,
               errorKind: 'unsupported',
               error: `Invalid Gmail operation "${operation ?? 'undefined'}". Valid operations: sendMessage (requires: to, subject, body), searchMessages (requires: query), getDraft, sendDraft (requires: draftId).`,
               retryable: false,
+              data: null,
+              confirmedAction: false,
             } as const;
           }
           const actionGroup: ToolActionGroup =

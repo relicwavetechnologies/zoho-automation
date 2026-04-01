@@ -920,6 +920,9 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
   });
   worker.on('failed', (job, error) => {
     const classifiedError = classifyRuntimeError(error);
+    const userFacingErrorMessage = classifiedError.classifiedReason === 'unclassified_runtime_error'
+      ? 'Something went wrong on my end. The team has been notified. Please try again in a moment.'
+      : (classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'unknown_runtime_failure');
     void pushDeadLetterRecord({
       queue: 'orchestration',
       failedAt: new Date().toISOString(),
@@ -932,7 +935,7 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
       chatId: job?.data.message.chatId,
       userId: job?.data.message.userId,
       error: {
-        message: classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'unknown_runtime_failure',
+        message: userFacingErrorMessage,
       },
     });
     orangeDebug('queue.job.failed', {
@@ -940,7 +943,7 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
       jobId: job?.id,
       messageId: job?.data.message.messageId,
       chatId: job?.data.message.chatId,
-      error: classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'unknown_error',
+      error: userFacingErrorMessage,
     });
     logger.error('Orchestration task failed', {
       taskId: job?.data.taskId,
@@ -984,13 +987,13 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
         actorType: 'system',
         actorKey: job.data.message.channel,
         title: 'Lark execution failed',
-        summary: summarizeText(classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'Runtime worker failure', 400),
+        summary: summarizeText(userFacingErrorMessage, 400),
         status: 'failed',
         payload: {
           ...buildExecutionFailurePayload({
             stage: 'lark_runtime',
             errorCode: classifiedError.classifiedReason ?? 'lark_runtime_failed',
-            errorMessage: classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'Runtime worker failure',
+            errorMessage: userFacingErrorMessage,
           }),
           taskId: job.data.taskId,
           messageId: job.data.message.messageId,
@@ -999,9 +1002,9 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
       }).then(async () => {
         await executionService.failRun({
           executionId,
-          latestSummary: summarizeText(classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'Runtime worker failure', 400),
+          latestSummary: summarizeText(userFacingErrorMessage, 400),
           errorCode: classifiedError.classifiedReason ?? 'lark_runtime_failed',
-          errorMessage: summarizeText(classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'Runtime worker failure', 400),
+          errorMessage: summarizeText(userFacingErrorMessage, 400),
         });
       }).catch(() => undefined);
     }
