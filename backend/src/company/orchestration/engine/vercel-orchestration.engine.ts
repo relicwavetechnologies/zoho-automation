@@ -1183,6 +1183,7 @@ EMAIL QUERIES (send, draft, reply, search inbox):
 - For send/reply: confirm recipient and content before acting if either is ambiguous
 - For search: use the most specific terms from the user's query — do not broaden without reason
 - "Send again" or "resend" always means email action — do not route to contextSearch
+- If you do not have access to the Gmail tool, explicitly tell the user: "I don't have email access configured for your account. Please contact your admin." Do not fabricate any sending confirmation
 
 CALENDAR:
 - For scheduling or availability: use Google Calendar
@@ -2848,6 +2849,13 @@ const resolveRuntimeContext = async (
   let departmentSkillsMarkdown: string | undefined;
   let allowedToolIds = fallbackAllowedToolIds;
   let allowedActionsByTool: Record<string, string[]> | undefined;
+  if (!linkedUserId) {
+    logger.warn('lark.runtime.department_skipped', {
+      channelIdentityId: message.trace?.channelIdentityId ?? null,
+      requesterEmail: message.trace?.requesterEmail ?? null,
+      reason: 'linkedUserId_not_resolved',
+    });
+  }
   const desktopAvailability = linkedUserId
     ? desktopWsGateway.getRemoteExecutionAvailability(linkedUserId, companyId)
     : { status: 'none' as const };
