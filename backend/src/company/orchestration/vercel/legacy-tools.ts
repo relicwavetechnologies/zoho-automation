@@ -5705,6 +5705,26 @@ export const createVercelDesktopTools = (
       }),
       execute: async (input) =>
         withLifecycle(hooks, 'googleMail', 'Running Gmail workflow', async () => {
+          const VALID_GMAIL_OPERATIONS = [
+            'listMessages',
+            'getMessage',
+            'getThread',
+            'createDraft',
+            'sendMessage',
+            'sendDraft',
+          ] as const;
+          if (
+            input.operation === 'gmail'
+            || !VALID_GMAIL_OPERATIONS.includes(input.operation as (typeof VALID_GMAIL_OPERATIONS)[number])
+          ) {
+            return {
+              success: false,
+              status: 'error',
+              errorKind: 'unsupported',
+              error: `Invalid Gmail operation "${input.operation}". Valid operations: sendMessage (requires: to, subject, body), searchMessages (requires: query), getDraft, sendDraft (requires: draftId).`,
+              retryable: false,
+            } as const;
+          }
           const actionGroup: ToolActionGroup =
             input.operation === 'createDraft'
               ? 'create'
