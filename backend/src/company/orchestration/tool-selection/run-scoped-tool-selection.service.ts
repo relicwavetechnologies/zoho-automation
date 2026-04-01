@@ -114,12 +114,18 @@ const buildAllowedDomainFamily = (
   if (!normalizedDomain) return [];
   const canonicalDomain = DOMAIN_ALIASES[normalizedDomain] ?? DOMAIN_ALIASES[normalizedDomain.toLowerCase()];
   if (!canonicalDomain) return [];
+  const canonicalAllowed = new Set(
+    Array.from(allowed).map((toolId) =>
+      ALIAS_TO_CANONICAL_ID[toolId]
+      ?? ALIAS_TO_CANONICAL_ID[toolId.toLowerCase()]
+      ?? toolId),
+  );
   const activeToolIds = (DOMAIN_TO_TOOL_IDS[canonicalDomain] ?? []).filter((toolId) =>
-    allowed.has(toolId) && TOOL_REGISTRY_MAP.get(toolId)?.deprecated !== true);
+    canonicalAllowed.has(toolId) && TOOL_REGISTRY_MAP.get(toolId)?.deprecated !== true);
   if (activeToolIds.length > 0) {
     return uniq(activeToolIds);
   }
-  return uniq((DOMAIN_TO_TOOL_IDS[canonicalDomain] ?? []).filter((toolId) => allowed.has(toolId)));
+  return uniq((DOMAIN_TO_TOOL_IDS[canonicalDomain] ?? []).filter((toolId) => canonicalAllowed.has(toolId)));
 };
 
 const buildRegistryDomainFamily = (domain?: string | null): string[] => {

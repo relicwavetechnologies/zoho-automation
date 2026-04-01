@@ -1183,6 +1183,7 @@ EMAIL QUERIES (send, draft, reply, search inbox):
 - For send/reply: confirm recipient and content before acting if either is ambiguous
 - For search: use the most specific terms from the user's query — do not broaden without reason
 - "Send again" or "resend" always means email action — do not route to contextSearch
+- For sending email: use the Google mail tool with operation="sendMessage" and fields `to`, `subject`, and `body`. Never use operation="gmail"
 - If you do not have access to the Gmail tool, explicitly tell the user: "I don't have email access configured for your account. Please contact your admin." Do not fabricate any sending confirmation
 
 CALENDAR:
