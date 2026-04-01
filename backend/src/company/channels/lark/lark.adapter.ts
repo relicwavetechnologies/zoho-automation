@@ -165,13 +165,13 @@ const MAX_LARK_MARKDOWN_ELEMENT_LENGTH = 1200;
 const MAX_LARK_CARD_ELEMENT_COUNT = 30;
 
 const normalizeLarkMarkdown = (value: string): string =>
-  value
+  (value ?? '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .trim();
 
 const stripMarkdownForSummary = (value: string): string =>
-  value
+  (value ?? '')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/[*_~`>#-]+/g, ' ')
     .replace(/\[(.*?)\]\((.*?)\)/g, '$1')

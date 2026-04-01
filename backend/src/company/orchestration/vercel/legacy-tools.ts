@@ -12580,21 +12580,14 @@ export const createVercelDesktopTools = (
   });
 
   tools.googleWorkspace = tool({
-    description: 'Google Workspace operations. operation=gmail, drive, or calendar.',
+    description: 'Google Workspace operations for Gmail (sendMessage, searchMessages, createDraft, sendDraft, listMessages, getMessage, getThread), Drive (listFiles, getFile, downloadFile, createFolder, uploadFile, updateFile, deleteFile), and Calendar. Use operation="sendMessage" to send email, operation="searchMessages" to search inbox, operation="createDraft" to draft, operation="drive" for Drive, operation="calendar" for Calendar.',
     inputSchema: z.object({
-      operation: z.enum(['gmail', 'drive', 'calendar']),
+      operation: z.enum(['gmail', 'drive', 'calendar', 'sendMessage', 'searchMessages', 'createDraft', 'sendDraft', 'listMessages', 'getMessage', 'getThread']),
     }).passthrough(),
     execute: async (input, options) => {
-      if (input.operation === 'gmail') {
-        return {
-          success: false,
-          status: 'error' as const,
-          errorKind: 'unsupported',
-          error: 'Use the googleMail tool directly for Gmail operations (sendMessage, searchMessages, createDraft). Do not use googleWorkspace with operation="gmail".',
-          retryable: false,
-          data: null,
-          confirmedAction: false,
-        };
+      const GMAIL_OPERATIONS = ['gmail', 'sendMessage', 'searchMessages', 'createDraft', 'sendDraft', 'listMessages', 'getMessage', 'getThread'] as const;
+      if ((GMAIL_OPERATIONS as readonly string[]).includes(input.operation)) {
+        return tools.googleMail.execute(input, options);
       }
       if (input.operation === 'drive') {
         return tools.googleDrive.execute(input, options);
