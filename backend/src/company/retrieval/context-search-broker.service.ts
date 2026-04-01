@@ -381,6 +381,12 @@ export function selectInitialSources(
   }
 
   if (intent.queryType === 'person_entity') {
+    if (intent.lookupTarget === 'contact_info') {
+      if (weights.larkContacts > 0) {
+        sources.larkContacts = true;
+      }
+      return;
+    }
     if (weights.larkContacts > 0) {
       sources.larkContacts = true;
     }

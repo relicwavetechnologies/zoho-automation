@@ -2735,6 +2735,7 @@ export const buildDelegatedAgentSystemPrompt = (baseSystemPrompt: string, agentI
     'Do not apologize that tools outside your family are unavailable. Another delegated step may handle them.',
     'Treat the "Resolved handoff context" block as authoritative for IDs, emails, invoice numbers, and other concrete entities when it is relevant to this step.',
     'If a required parameter is already present in that block, pass it directly to the tool instead of asking for it again or omitting it.',
+    'If you need information you do not already have, use contextSearch first before guessing or asking for clarification, unless the missing detail requires user confirmation.',
   ].join('\n');
   const profile = AGENT_CAPABILITY_PROFILES[agentId];
   if (profile) {
@@ -2816,6 +2817,10 @@ const resolveRuntimeContext = async (
     allowedActionsByTool = resolved.allowedActionsByTool;
   }
 
+  if (!allowedToolIds.includes('contextSearch')) {
+    allowedToolIds = [...allowedToolIds, 'contextSearch'];
+  }
+
   if (shouldExposeZohoBooksReadForLarkMessage(message.text) && !allowedToolIds.includes('zohoBooks')) {
     allowedToolIds = [...allowedToolIds, 'zohoBooks'];
   }
@@ -2825,6 +2830,12 @@ const resolveRuntimeContext = async (
     allowedToolIds,
     allowedActionsByTool,
   });
+  if (!allowedActionsByTool.contextSearch?.includes('read')) {
+    allowedActionsByTool = {
+      ...allowedActionsByTool,
+      contextSearch: ['read'],
+    };
+  }
 
   return {
     channel: 'lark',

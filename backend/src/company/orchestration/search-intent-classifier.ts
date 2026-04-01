@@ -8,6 +8,7 @@ export type SearchIntent = {
   queryType: 'company_entity' | 'person_entity' | 'financial_record' | 'document' | 'conversation' | 'general';
   extractedEntity: string | null;
   extractedEntityType: 'company' | 'person' | 'unknown' | null;
+  lookupTarget: 'contact_info' | 'entity_info' | 'general';
   sourceHint: 'books' | 'crm' | 'files' | 'web' | 'history' | 'lark' | null;
   language: 'en' | 'hi' | 'mixed';
   dateRange: { from: string; to: string } | null;
@@ -31,6 +32,7 @@ You are a search intent classifier. Return ONLY a JSON object, no other text.
 queryType: company_entity | person_entity | financial_record | document | conversation | general
 extractedEntity: the name being searched, or null
 extractedEntityType: company | person | unknown | null
+lookupTarget: contact_info | entity_info | general
 sourceHint: books | crm | files | web | history | lark | null — ONLY if user explicitly named a source
 language: en | hi | mixed
 dateRange: {from: "YYYY-MM-DD", to: "YYYY-MM-DD"} or null
@@ -41,6 +43,7 @@ confidence: 0.0-1.0
 
 Rules:
 - company_entity: searching for a company/vendor/customer by name (LLC/Inc/Ltd/Pvt are strong signals)
+- contact_info: email/phone/mobile/contact number/address/contact info for a person
 - financial_record: invoice/payment/overdue/statement/balance/bakaya/due
 - extractedEntity: strip all search verbs, extract only the name
 - sourceHint: null unless user says "in books", "from crm", "books mein", "on web" explicitly
@@ -53,6 +56,7 @@ const searchIntentSchema = z.object({
   queryType: z.enum(['company_entity', 'person_entity', 'financial_record', 'document', 'conversation', 'general']),
   extractedEntity: z.string().trim().min(1).nullable(),
   extractedEntityType: z.enum(['company', 'person', 'unknown']).nullable(),
+  lookupTarget: z.enum(['contact_info', 'entity_info', 'general']),
   sourceHint: z.enum(['books', 'crm', 'files', 'web', 'history', 'lark']).nullable(),
   language: z.enum(['en', 'hi', 'mixed']),
   dateRange: z.object({
@@ -92,6 +96,7 @@ const CONTINUATION_RE = /\b(retry|fir se|phir|wahi|same|again|continue)\b/i;
 const INHERIT_ENTITY_RE = /\b(it|this|that|same|wahi|phir|again|continue)\b/i;
 const SEARCH_REFERENCE_RE = /\b(search|search context|context|lookup|look up|find|use search context)\b/i;
 const COMPANY_SUFFIX_RE = /\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/i;
+const CONTACT_LOOKUP_RE = /\b(contact|contact info|email|mail|phone|mobile|number|address)\b/i;
 
 const stripMentions = (message: string): string =>
   message.replace(/@[a-z0-9._-]+/gi, ' ').replace(/\s+/g, ' ').trim();
@@ -119,6 +124,7 @@ const buildFallbackIntent = (message: string): SearchIntent => ({
   queryType: 'general',
   extractedEntity: null,
   extractedEntityType: null,
+  lookupTarget: 'general',
   sourceHint: null,
   language: inferFallbackLanguage(message),
   dateRange: null,
@@ -144,11 +150,15 @@ const normalizeIntent = (intent: SearchIntent, message: string): SearchIntent =>
   const extractedEntityType = sanitizedExtractedEntity
     ? (intent.extractedEntityType ?? (COMPANY_SUFFIX_RE.test(sanitizedExtractedEntity) ? 'company' : 'unknown'))
     : null;
+  const lookupTarget = intent.lookupTarget === 'general' && CONTACT_LOOKUP_RE.test(message)
+    ? 'contact_info'
+    : intent.lookupTarget;
 
   return {
     ...intent,
     extractedEntity: sanitizedExtractedEntity,
     extractedEntityType,
+    lookupTarget,
     language,
     isBareMention,
     isContinuation,

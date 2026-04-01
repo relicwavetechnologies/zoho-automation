@@ -321,6 +321,16 @@ const requiresContextSearch = (message: string): boolean => {
     && !requiresExplicitExtraction(text);
 };
 
+const isPersonContactLookup = (input: {
+  searchIntent: SearchIntent;
+  latestUserMessage: string;
+}): boolean =>
+  input.searchIntent.queryType === 'person_entity'
+  && (
+    input.searchIntent.lookupTarget === 'contact_info'
+    || /\b(contact|contact info|email|mail|phone|mobile|number|address)\b/.test(asLower(input.latestUserMessage))
+  );
+
 const canAnswerFromGroundedContext = (input: {
   artifactMode?: ArtifactMode;
   hasActiveArtifacts: boolean;
@@ -345,6 +355,12 @@ const inferIntentDomain = (input: {
     return 'zoho_crm';
   }
   if (['files', 'web', 'history', 'lark'].includes(input.searchIntent.sourceHint ?? '')) {
+    return 'context_search';
+  }
+  if (isPersonContactLookup({
+    searchIntent: input.searchIntent,
+    latestUserMessage: input.message,
+  })) {
     return 'context_search';
   }
   if (input.searchIntent.queryType === 'company_entity') {
@@ -376,6 +392,17 @@ const buildPrimaryBundle = (input: {
   const normalizedIntent = asLower(input.childRoute?.normalizedIntent);
   const suggestedActions = (input.childRoute?.suggestedActions ?? []).map((value) => asLower(value)).join('\n');
   const larkHintText = `${lowerMessage}\n${normalizedIntent}\n${suggestedActions}`;
+  if (isPersonContactLookup({
+    searchIntent: input.searchIntent,
+    latestUserMessage: input.latestUserMessage,
+  })) {
+    return uniq([
+      ...buildAllowedDomainFamily(input.allowed, 'context_search'),
+      ...((input.searchIntent.sourceHint === 'lark' || /\b(lark|directory)\b/.test(larkHintText))
+        ? buildAllowedDomainFamily(input.allowed, 'lark_message')
+        : []),
+    ]);
+  }
   if (input.searchIntent.queryType === 'company_entity') {
     return uniq([
       ...buildAllowedDomainFamily(input.allowed, 'zoho_books'),
@@ -456,6 +483,12 @@ const buildFallbackBundle = (input: {
   searchIntent: SearchIntent;
 }): string[] => {
   const skipArtifactInspectionTools = Boolean(input.allowContextOnlyAnswer);
+  if (isPersonContactLookup({
+    searchIntent: input.searchIntent,
+    latestUserMessage: input.latestUserMessage,
+  })) {
+    return chooseFirstAllowed(input.allowed, ['contextSearch']);
+  }
   if (input.domain === 'unknown') {
       return uniq([
       ...((input.searchIntent.queryType === 'company_entity' || requiresContextSearch(input.latestUserMessage))
