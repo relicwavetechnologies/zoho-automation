@@ -374,28 +374,32 @@ const describeSupervisorSource = (toolName?: string): string => {
   }
 };
 
+const hasNaturalLanguageAnswer = (text: string): boolean =>
+  text.trim().split(/\s+/u).filter(Boolean).length > 20;
+
 const buildRichDelegatedResultSummary = (
   results: DelegatedAgentExecutionResult[],
 ): string | null => {
   if (results.length === 0) {
     return null;
   }
-  const lines: string[] = ['What I checked:'];
-  const searchedAcross = new Set<string>();
   for (const result of results.slice(0, 3)) {
+    if (result.status === 'success' && hasNaturalLanguageAnswer(result.text)) {
+      return result.text.trim();
+    }
+  }
+
+  const lines: string[] = [];
+  for (const result of results.slice(0, 5)) {
     const firstToolName = result.toolResults.find((entry) => entry.toolName)?.toolName;
     const sourceLabel = describeSupervisorSource(firstToolName);
-    searchedAcross.add(sourceLabel);
     const outcome =
       summarizeText(result.summary, 120)
       ?? summarizeText(result.text, 120)
       ?? 'Checked but found nothing useful.';
-    lines.push(`- Checked ${sourceLabel} — ${outcome}`);
+    lines.push(`Checked ${sourceLabel} — ${outcome}`);
   }
-  if (searchedAcross.size > 0 && lines.length < 5) {
-    lines.push(`Searched across: ${Array.from(searchedAcross).join(', ')}`);
-  }
-  return lines.slice(0, 5).join('\n');
+  return lines.join('\n');
 };
 
 const TOOL_PROGRESS_LABELS: Record<string, { start: string; done: string; failed: string }> = {
@@ -4742,17 +4746,18 @@ const executeLarkVercelTask = async (
         });
       }
     }
-    const richDelegatedSummary = buildRichDelegatedResultSummary(delegatedAgentResults);
     const trimmedGeneratedText = generatedText.trim();
-    const preferredGeneratedText =
-      richDelegatedSummary
-      && delegatedAgentResults.length > 0
-      && (
-        trimmedGeneratedText.length < 140
-        || delegatedAgentResults.some((result) => result.text.trim() === trimmedGeneratedText)
-      )
-        ? richDelegatedSummary
-        : trimmedGeneratedText;
+    const preferredGeneratedText = (() => {
+      if (delegatedAgentResults.length === 1) {
+        const singleResultText = delegatedAgentResults[0]?.text.trim() ?? '';
+        if (hasNaturalLanguageAnswer(singleResultText)) {
+          return singleResultText;
+        }
+        return trimmedGeneratedText || singleResultText;
+      }
+      const richDelegatedSummary = buildRichDelegatedResultSummary(delegatedAgentResults);
+      return richDelegatedSummary || trimmedGeneratedText;
+    })();
 
     const mutationGuard = resolveMutationGuard({
       latestUserMessage: resolvedUserMessage,
