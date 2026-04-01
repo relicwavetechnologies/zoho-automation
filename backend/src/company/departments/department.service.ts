@@ -618,6 +618,9 @@ class DepartmentService {
         .filter(([, actions]) => actions.length > 0),
     );
     const allowedToolIds = Object.keys(allowedActionsByTool);
+    logger.info('runtime.allowedActionsByTool.keys', {
+      keys: Object.keys(allowedActionsByTool),
+    });
     logger.debug('department.runtime.resolved', {
       userId: input.userId,
       departmentId: membership.departmentId,
