@@ -2,6 +2,7 @@ import { generateObject } from 'ai';
 
 import type { QueryEnrichment } from '../query-enrichment.service';
 import type { SearchIntent } from '../search-intent-classifier';
+import { logger } from '../../../utils/logger';
 import type {
   SupervisorAgentDescriptor,
   SupervisorAgentId,
@@ -250,8 +251,9 @@ export const planSupervisorDelegation = async (input: {
     interruptedAt?: string;
   } | null;
 }): Promise<SupervisorPlan> => {
+  let result: { object: SupervisorPlan } | undefined;
   try {
-    const result = await generateObject({
+    result = (await generateObject({
       model: input.model,
       schema: supervisorPlanSchema,
       maxOutputTokens: 1024,
@@ -272,7 +274,7 @@ export const planSupervisorDelegation = async (input: {
       }),
       temperature: 0,
       providerOptions: input.providerOptions,
-    });
+    })) as { object: SupervisorPlan };
 
     if (result.object.complexity === 'direct') {
       return {
@@ -281,7 +283,7 @@ export const planSupervisorDelegation = async (input: {
         steps: [],
       };
     }
-    if (result.object.steps.length === 0) {
+    if (!result.object.steps?.length) {
       return buildFallbackPlan({
         latestUserMessage: input.latestUserMessage,
         preferredAgentIds: input.preferredAgentIds,
@@ -302,7 +304,12 @@ export const planSupervisorDelegation = async (input: {
       ...constrainedPlan,
       steps: constrainedPlan.steps.map((step) => enrichStepObjective(step, input.searchIntent)),
     };
-  } catch {
+  } catch (error) {
+    logger.warn('supervisor.planner.failed', {
+      hasSteps: Array.isArray(result?.object?.steps),
+      stepsLength: result?.object?.steps?.length,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
     const fallback = buildFallbackPlan({
       latestUserMessage: input.latestUserMessage,
       preferredAgentIds: input.preferredAgentIds,
