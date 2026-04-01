@@ -762,7 +762,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
 
 export const TOOL_REGISTRY_MAP = new Map(TOOL_REGISTRY.map((t) => [t.id, t]));
 
-const CONSOLIDATED_TOOL_ALIAS_MAP: Record<string, string> = {
+export const CONSOLIDATED_TOOL_ALIAS_MAP: Record<string, string> = {
   'zoho-books-read': 'zohoBooks',
   'zoho-books-write': 'zohoBooks',
   'zoho-books-agent': 'zohoBooks',

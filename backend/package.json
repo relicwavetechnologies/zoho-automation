@@ -41,6 +41,7 @@
     "debug:lark-user": "ts-node scripts/debug-lark-user-profile.ts",
     "backfill:lark-email": "ts-node scripts/backfill-channel-identity-email.ts",
     "backfill:lark-identity-email": "ts-node scripts/backfill-lark-identity-email-via-api.ts",
+    "normalize:tool-permissions": "ts-node scripts/normalize-department-tool-permissions.ts",
     "test:unit:config": "node --test tests/env-contract.test.cjs && node --test tests/bootstrap-health.test.cjs",
     "test:unit:lark": "node --test tests/lark-*.test.cjs",
     "test:unit:zoho": "node --test tests/zoho-*.test.cjs tests/qdrant*.test.cjs tests/embedding*.test.cjs tests/google-ranking*.test.cjs",

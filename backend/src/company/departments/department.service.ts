@@ -1,6 +1,6 @@
 import { HttpException } from '../../core/http-exception';
 import { prisma } from '../../utils/prisma';
-import { TOOL_REGISTRY } from '../tools/tool-registry';
+import { CONSOLIDATED_TOOL_ALIAS_MAP, TOOL_REGISTRY } from '../tools/tool-registry';
 import {
   getSupportedToolActionGroups,
   isSupportedToolActionGroup,
@@ -575,9 +575,10 @@ class DepartmentService {
     ) => {
       const map = new Map<string, Map<string, boolean>>();
       for (const row of rows) {
-        const existing = map.get(row.toolId) ?? new Map<string, boolean>();
+        const resolvedToolId = CONSOLIDATED_TOOL_ALIAS_MAP[row.toolId] ?? row.toolId;
+        const existing = map.get(resolvedToolId) ?? new Map<string, boolean>();
         existing.set(row.actionGroup, row.allowed);
-        map.set(row.toolId, existing);
+        map.set(resolvedToolId, existing);
       }
       return map;
     };
