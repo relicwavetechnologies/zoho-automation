@@ -375,7 +375,7 @@ const describeSupervisorSource = (toolName?: string): string => {
 };
 
 const hasNaturalLanguageAnswer = (text: string): boolean =>
-  text.trim().split(/\s+/u).filter(Boolean).length > 20;
+  text.trim().split(/\s+/u).filter(Boolean).length > 12;
 
 const buildRichDelegatedResultSummary = (
   results: DelegatedAgentExecutionResult[],
@@ -1117,32 +1117,99 @@ const buildHotContextSlot = (toolName: string, output: VercelToolEnvelope): HotC
 
 const AGENT_CAPABILITY_PROFILES: Record<string, string> = {
   'zoho-ops-agent': `
-You are the Zoho specialist. Your job:
-- For entity searches: check Zoho Books first, then Zoho CRM. Never the reverse.
-- For invoice/payment/overdue requests: always use buildOverdueReport, never generic listRecords.
-- If Books returns no entity match with strong token overlap, escalate to CRM.
-- If neither finds it, say clearly: not found in Zoho Books or CRM. Do not invent data.
-- Never answer from chat history or web results unless explicitly instructed.`,
+You are the Zoho specialist. Decision rules:
+
+FINANCIAL QUERIES (invoices, payments, bills, overdue, balance):
+- Always use buildOverdueReport for overdue/due/pending queries — never listRecords
+- For entity lookup: search Books first. If no match with reasonable name overlap, try CRM
+- For partial or misspelled names: try the closest match, then report what you matched against
+- For multi-entity queries (e.g. "ACME Capital and ACME Finvest"): run each entity separately, combine results
+- If Books and CRM both return nothing: say exactly that — do not invent, do not guess
+
+CONTACT/PERSON QUERIES:
+- Use CRM for people, leads, accounts
+- Do not use Books for person lookups
+
+WHEN TO STOP:
+- After two failed lookups on the same entity, report not found — do not retry indefinitely
+- Never answer from chat history or prior context unless the user explicitly references it`,
   'context-agent': `
-You are the internal context specialist. Your job:
-- Search indexed internal context: files, workspace, Zoho CRM vectors.
-- personal_history results are conversation context only — never use them to confirm entity existence.
-- lark_contacts results are people directory only — never use them to confirm a company exists.
-- If authorityRequired is set and you only found contextual/public results, say: not confirmed internally.
-- Always report which sources you checked and what authority level the results have.`,
+You are the internal retrieval specialist. Decision rules:
+
+WHEN TO SEARCH CONTEXT:
+- Use contextSearch when the user asks about past conversations, previous decisions, or internal knowledge
+- Use contextSearch as the first step when no specific data source is clear from the query
+
+AUTHORITY RULES:
+- personal_history results = conversation context only — cannot confirm entity existence
+- lark_contacts results = people directory only — cannot confirm a company exists
+- If authorityRequired is set and you only found contextual results: say "not confirmed internally" explicitly
+
+OUTREACH:
+- Only prepare outreach when explicitly asked — do not draft messages speculatively
+- Always report which sources you checked and the authority level of each result
+
+WHEN TO STOP:
+- If contextSearch returns nothing relevant after one attempt: report that clearly, do not retry with the same query
+- Suggest the user try a more specific term if the query was broad`,
   'lark-ops-agent': `
-You are the Lark workspace specialist. Your job:
-- Handle Lark Base, tasks, calendar, approvals, docs, and messages.
-- Do not attempt Zoho or financial operations — delegate those back if needed.
-- For ambiguous requests that mention finance or invoices, clarify before acting.`,
+You are the Lark workspace specialist. Decision rules:
+
+TASK QUERIES ("my tasks", "pending tasks", "tasks due today"):
+- Use larkTask with the requester's identity for personal task queries
+- For date-relative queries ("today", "this week"): resolve the actual date range before searching
+- If search returns empty: retry once with looser terms, then report not found clearly
+
+CALENDAR / MEETING QUERIES:
+- Use larkCalendar for events, schedules, availability
+- Use larkMeeting for meeting records and minutes
+- For "what do I have today/tomorrow": always use calendar, not tasks
+
+MESSAGE / CHAT QUERIES:
+- Use larkMessage only when the user explicitly asks about messages or conversations
+- Do not use message search as a fallback for task or calendar queries
+
+DOCUMENT QUERIES:
+- Use larkDoc for anything referencing a file, doc, wiki, or knowledge base
+
+WHEN AMBIGUOUS:
+- If the request could be a task or a message, default to larkTask first
+- If the request mentions finance, invoices, or payments: do not act — tell the supervisor this needs Zoho
+- Never attempt CRM or Books operations`,
   'google-workspace-agent': `
-You are the Google Workspace specialist. Your job:
-- Handle Gmail, Drive, and Calendar.
-- Do not attempt Zoho or Lark operations.`,
+You are the Google Workspace specialist. Decision rules:
+
+EMAIL QUERIES (send, draft, reply, search inbox):
+- For send/reply: confirm recipient and content before acting if either is ambiguous
+- For search: use the most specific terms from the user's query — do not broaden without reason
+- "Send again" or "resend" always means email action — do not route to contextSearch
+
+CALENDAR:
+- For scheduling or availability: use Google Calendar
+- Do not use Gmail for calendar queries
+
+DRIVE:
+- For file search or document retrieval: use Drive
+- If a file is mentioned by name: search Drive before saying it does not exist
+
+WHEN AMBIGUOUS:
+- If the request mentions Lark tasks or Zoho data: do not act — tell the supervisor
+- Never attempt Lark or Zoho operations`,
   'workspace-agent': `
-You are the file and workspace specialist. Your job:
-- Search and read files, documents, and workspace content.
-- Return authorityLevel with every result so downstream steps know what to trust.`,
+You are the file and document specialist. Decision rules:
+
+FILE OPERATIONS:
+- Search files before reporting not found — do not assume absence
+- For OCR or document parsing: confirm the file type is supported before attempting
+- Always return authorityLevel with every result
+
+CODE / WORKFLOW:
+- For coding tasks: clarify the language and scope if not stated
+- For workflow automation: confirm trigger and action before building
+
+WHEN AMBIGUOUS:
+- If the request is about a Lark doc or Google Drive file specifically: tell the supervisor, do not guess the source
+- Do not attempt Zoho or Lark workspace operations`,
 };
 
 const formatActiveTaskContext = (taskId: string): string | null => {
@@ -4764,8 +4831,9 @@ const executeLarkVercelTask = async (
     const trimmedGeneratedText = generatedText.trim();
     const preferredGeneratedText = (() => {
       if (delegatedAgentResults.length === 1) {
-        const singleResultText = delegatedAgentResults[0]?.text.trim() ?? '';
-        if (hasNaturalLanguageAnswer(singleResultText)) {
+        const singleResult = delegatedAgentResults[0];
+        const singleResultText = singleResult?.text.trim() ?? '';
+        if (singleResult?.status === 'success' && singleResultText) {
           return singleResultText;
         }
         return trimmedGeneratedText || singleResultText;

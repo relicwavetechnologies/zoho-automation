@@ -48,21 +48,28 @@ const buildPlannerPrompt = (input: {
   }));
   return JSON.stringify({
     instructions: [
-      'You are the supervisor planner.',
-      'Choose direct when no delegated tool work is needed.',
-      'Choose single when one agent can complete the task alone.',
-      'Choose multi when the task must be decomposed across agents or dependency steps.',
-      'Never choose tools directly. You may only choose agents.',
-      'For dependent work, use dependsOn and inputRefs.',
-      'Keep objectives concrete and executable.',
-      'Use context-agent first only for cross-source retrieval, history recall, document recall, web research, or skill discovery when the system of record is unclear or spans multiple systems.',
-      'When the current request already names the system of record, let the owning domain agent perform both the lookup and the follow-up read in one step when that agent can do so directly.',
-      'For explicit Zoho Books or Zoho CRM requests, prefer zoho-ops-agent over context-agent unless a separate upstream context step is genuinely required.',
-      'Do not split a straightforward system-specific lookup into context-agent followed by a domain agent unless the first step must resolve facts unavailable to the domain agent.',
-      'If recentTaskSummaries is present, read it before writing objectives. It contains resolved entities from prior steps in this session — invoice IDs, emails, names, amounts. Embed these values explicitly and verbatim into your delegation objectives. Never write a vague objective like "send invoice to anish" when you have invoiceId=INV21271 and email=anishsuman2305@gmail.com available. Write "Send invoice INV21271 to anishsuman2305@gmail.com" instead. The sub-agent only receives what you write in the objective — it cannot guess what you left out.',
-      'If threadSummary is present, use it to understand what has already been resolved in this conversation before deciding how to delegate.',
+      'You are the supervisor planner. Your only job is to produce a valid orchestration plan.',
+      'ROUTING RULES — apply these in order, top to bottom, stop at first match:',
+      '1. LARK requests (tasks, calendar, meetings, approvals, docs, messages, Lark Base): use lark-ops-agent',
+      '2. FINANCIAL requests (invoices, bills, payments, overdue, balance, Zoho Books): use zoho-ops-agent',
+      '3. CRM requests (contacts, leads, accounts, deals, Zoho CRM): use zoho-ops-agent',
+      '4. EMAIL requests (send email, draft, reply, search inbox, Gmail): use google-workspace-agent',
+      '5. DRIVE / GOOGLE CALENDAR requests: use google-workspace-agent',
+      '6. FILE / DOCUMENT / CODE / OCR requests where source is a local file or repo: use workspace-agent',
+      '7. CROSS-SOURCE or UNCLEAR requests (history recall, "what did we discuss", internal knowledge, no clear system of record): use context-agent',
+      '8. If none of the above match clearly: use context-agent as safe fallback',
+      'For multi-step plans: only split into multiple steps when the second step genuinely depends on output from the first. Do not split a single-source lookup into two steps.',
+      'Do not route to context-agent first and then domain agent second unless context-agent must resolve an entity ID that the domain agent cannot find on its own.',
+      'Keep objectives concrete and executable. If recentTaskSummaries contains resolved IDs (invoiceId, email, name), embed them verbatim in the objective. Never write vague objectives like "send invoice to anish" when you have invoiceId=INV21271 and email=anish@example.com.',
+      'Choose direct when no tool work is needed and you can answer from context alone.',
+      'Choose single when one agent can complete the full task.',
+      'Choose multi only when steps have genuine dependencies.',
+      'Never assign tools directly. Only assign agentId.',
       input.supervisorProgress && input.supervisorProgress.completedSteps.length > 0
-        ? `PRIOR EXECUTION PROGRESS: A previous run already completed the following steps. Do NOT re-delegate these — their work is done. Build on their results instead:\n${input.supervisorProgress.completedSteps.map((step) => `- Step ${step.stepId} (${step.agentId}): ${step.objective} -> ${step.summary}`).join('\n')}\n\nAlready resolved from prior run: ${Object.entries(input.supervisorProgress.resolvedIds).map(([key, value]) => `${key}=${value}`).join(', ')}\n\n${input.supervisorProgress.isPartial ? 'The prior run was interrupted. Continue from where it left off.' : 'The prior run completed successfully. Use resolved values above.'}`
+        ? `PRIOR EXECUTION: These steps already completed — do NOT re-delegate them:\n${input.supervisorProgress.completedSteps.map((s) => `- ${s.stepId} (${s.agentId}): ${s.objective} -> ${s.summary}`).join('\n')}\nResolved: ${Object.entries(input.supervisorProgress.resolvedIds).map(([k, v]) => `${k}=${v}`).join(', ')}\n${input.supervisorProgress.isPartial ? 'Run was interrupted — continue from here.' : 'Run completed — use resolved values above.'}`
+        : null,
+      input.threadSummary
+        ? 'threadSummary contains what has already been resolved in this conversation. Read it before planning.'
         : null,
     ].filter(Boolean),
     latestUserMessage: input.latestUserMessage,
@@ -131,6 +138,36 @@ const buildFallbackPlan = (input: {
       },
     ],
   };
+};
+
+const constrainPlanToEligibleAgents = (input: {
+  plan: SupervisorPlan;
+  eligibleAgents: SupervisorAgentDescriptor[];
+  preferredAgentIds: string[];
+  latestUserMessage: string;
+  recentTaskSummaries?: Array<{
+    summary: string;
+    resolvedIds?: Record<string, string>;
+  }>;
+  supervisorProgress?: {
+    resolvedIds: Record<string, string>;
+  } | null;
+}): SupervisorPlan => {
+  const eligibleAgentIds = new Set(input.eligibleAgents.map((agent) => agent.id));
+  if (input.plan.complexity === 'direct') {
+    return input.plan;
+  }
+  const hasInvalidStep = input.plan.steps.some((step) => !eligibleAgentIds.has(step.agentId));
+  if (!hasInvalidStep) {
+    return input.plan;
+  }
+  return buildFallbackPlan({
+    latestUserMessage: input.latestUserMessage,
+    preferredAgentIds: input.preferredAgentIds,
+    eligibleAgents: input.eligibleAgents,
+    recentTaskSummaries: input.recentTaskSummaries,
+    supervisorProgress: input.supervisorProgress,
+  });
 };
 
 const inferActionFromObjective = (objective: string): SupervisorStepObjective['action'] => {
@@ -252,9 +289,17 @@ export const planSupervisorDelegation = async (input: {
         supervisorProgress: input.supervisorProgress,
       });
     }
+    const constrainedPlan = constrainPlanToEligibleAgents({
+      plan: result.object,
+      eligibleAgents: input.eligibleAgents,
+      preferredAgentIds: input.preferredAgentIds,
+      latestUserMessage: input.latestUserMessage,
+      recentTaskSummaries: input.recentTaskSummaries,
+      supervisorProgress: input.supervisorProgress,
+    });
     return {
-      ...result.object,
-      steps: result.object.steps.map((step) => enrichStepObjective(step, input.searchIntent)),
+      ...constrainedPlan,
+      steps: constrainedPlan.steps.map((step) => enrichStepObjective(step, input.searchIntent)),
     };
   } catch {
     const fallback = buildFallbackPlan({

@@ -223,6 +223,14 @@ const domainsConflict = (left?: string | null, right?: string | null): boolean =
 const isAffirmationFollowUp = (message: string): boolean =>
   /^(yes|yeah|yep|ok|okay|sure|go ahead|continue|proceed|try again|do it)\b/.test(asLower(message));
 
+const isRetrySendFollowUp = (message: string): boolean => {
+  const text = asLower(message);
+  return (
+    /\b(try again|retry|again|send again|sending .* again)\b/.test(text)
+    && /\b(send|mail|email|gmail)\b/.test(text)
+  );
+};
+
 const summarizeLearnedPriors = (priors: ToolRoutingPriorMatch[]): string[] =>
   priors.slice(0, 3).map((prior) =>
     `${prior.toolId} via ${prior.matchedBy} (${prior.scope}, confidence ${prior.confidenceScore.toFixed(2)})`);
@@ -356,6 +364,9 @@ const inferIntentDomain = (input: {
   hasWorkspace: boolean;
   hasArtifacts: boolean;
 }): IntentDomain => {
+  if (isRetrySendFollowUp(input.message) && /\b(gmail|email|mail)\b/.test(asLower(input.message))) {
+    return 'gmail';
+  }
   if (input.searchIntent.sourceHint === 'books') {
     return 'zoho_books';
   }
@@ -562,8 +573,9 @@ const validatePlannerDecision = (input: {
   decision: z.infer<typeof plannerDecisionSchema>;
   selection: RunScopedToolSelection;
   coreToolIds: string[];
+  allowedToolIds: string[];
 }): RunScopedToolSelection => {
-  const exposed = new Set(input.selection.runExposedToolIds);
+  const allowed = new Set(input.allowedToolIds);
   if (input.decision.shouldAskClarification) {
     if (
       input.selection.runExposedToolIds.length > 0 &&
@@ -593,17 +605,17 @@ const validatePlannerDecision = (input: {
     };
   }
   const chosenToolId = input.decision.chosenToolId?.trim();
-  if (!chosenToolId || !exposed.has(chosenToolId)) {
+  if (!chosenToolId || !allowed.has(chosenToolId)) {
     logger.warn('vercel.tool_selection.planner.validation_failed', {
       chosenToolId: chosenToolId ?? null,
-      runExposedToolIds: input.selection.runExposedToolIds,
-      validationFailureReason: 'planner_tool_outside_run_scope',
+      allowedToolIds: input.allowedToolIds,
+      validationFailureReason: 'planner_tool_outside_permission_scope',
     });
     return {
       ...input.selection,
       plannerChosenToolId: undefined,
       plannerChosenOperationClass: input.selection.inferredOperationClass,
-      validationFailureReason: 'planner_tool_outside_run_scope',
+      validationFailureReason: 'planner_tool_outside_permission_scope',
     };
   }
   const candidateToolIds = uniq(input.selection.runExposedToolIds);
@@ -829,6 +841,7 @@ export const resolveRunScopedToolSelection = async (input: {
       decision,
       selection: initialSelection,
       coreToolIds,
+      allowedToolIds: input.allowedToolIds,
     });
   } catch (error) {
     logger.warn('vercel.tool_selection.planner.failed', {
