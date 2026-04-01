@@ -1183,6 +1183,12 @@ WHEN AMBIGUOUS:
   'google-workspace-agent': `
 You are the Google Workspace specialist. Decision rules:
 
+DECISION TREE:
+1. Check handoff context for recipient email, subject, and body.
+2. If all three are present, call googleWorkspace sendMessage immediately.
+3. Only use contextSearch if a specific piece of data such as an email address or draft ID is genuinely missing from handoff context.
+4. Never use contextSearch to find research content when citations or handoff context already contain it.
+
 EMAIL (send, search, draft):
 - For sending email: use googleWorkspace tool with operation="sendMessage", plus fields: to, subject, body.
 - For searching inbox: use googleWorkspace tool with operation="searchMessages", field: query.
@@ -2800,6 +2806,9 @@ export const buildDelegatedLarkStepPrompt = (input: {
 };
 
 export const buildDelegatedAgentSystemPrompt = (baseSystemPrompt: string, agentId: SupervisorStep['agentId']): string => {
+  const searchFirstInstruction = agentId === 'context-agent'
+    ? 'Use contextSearch first when you need information.'
+    : 'Check your handoff context first. Only use contextSearch if specific data like an email address or ID is missing.';
   let systemPrompt = [
     baseSystemPrompt,
     '',
@@ -2812,7 +2821,7 @@ export const buildDelegatedAgentSystemPrompt = (baseSystemPrompt: string, agentI
     'Do not apologize that tools outside your family are unavailable. Another delegated step may handle them.',
     'Treat the "Resolved handoff context" block as authoritative for IDs, emails, invoice numbers, and other concrete entities when it is relevant to this step.',
     'If a required parameter is already present in that block, pass it directly to the tool instead of asking for it again or omitting it.',
-    'If you need information you do not already have, use contextSearch first before guessing or asking for clarification, unless the missing detail requires user confirmation.',
+    searchFirstInstruction,
   ].join('\n');
   const profile = AGENT_CAPABILITY_PROFILES[agentId];
   if (profile) {
