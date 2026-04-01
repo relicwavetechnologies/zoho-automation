@@ -581,6 +581,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
   }
 
   public async sendMessage(input: ChannelOutboundMessage): Promise<ChannelOutboundResult> {
+    const safeText = input.text ?? '';
     // Lark open_id values start with "ou_"; chat IDs start with "oc_".
     // When targeting a user directly (DM), switch the receive_id_type accordingly.
     const receiveIdType = input.chatId.startsWith('ou_') ? 'open_id' : 'chat_id';
@@ -595,8 +596,8 @@ export class LarkChannelAdapter implements ChannelAdapter {
       ...(isReply ? { reply_in_thread: input.replyInThread ?? true } : {}),
       content: JSON.stringify(
         format === 'text'
-          ? { text: input.text }
-          : buildLarkCardContent(input.text, input.actions),
+          ? { text: safeText }
+          : buildLarkCardContent(safeText, input.actions),
       ),
     };
     logger.info('lark.egress.send.start', {
@@ -609,7 +610,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       replyInThread: isReply ? (input.replyInThread ?? true) : null,
       format,
       requestPath,
-      textLength: input.text.length,
+      textLength: safeText.length,
       contentLength: typeof body.content === 'string' ? body.content.length : 0,
     });
     orangeDebug('lark.egress.send.start', {
@@ -617,7 +618,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       correlationId: input.correlationId,
       receiveIdType,
       format,
-      textPreview: input.text.slice(0, 120),
+      textPreview: safeText.slice(0, 120),
     });
 
     const result = await this.requestWithTokenRetry({
@@ -682,6 +683,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
   }
 
   public async updateMessage(input: ChannelUpdateMessage): Promise<ChannelOutboundResult> {
+    const safeText = input.text ?? '';
     const format = input.format ?? 'interactive';
     logger.info('lark.egress.update.start', {
       ...buildEgressTraceMeta({
@@ -690,17 +692,17 @@ export class LarkChannelAdapter implements ChannelAdapter {
       }),
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
       format,
-      textLength: input.text.length,
+      textLength: safeText.length,
       contentLength:
         format === 'text'
-          ? JSON.stringify({ text: input.text }).length
-          : JSON.stringify(buildLarkCardContent(input.text, input.actions)).length,
+          ? JSON.stringify({ text: safeText }).length
+          : JSON.stringify(buildLarkCardContent(safeText, input.actions)).length,
     });
     orangeDebug('lark.egress.update.start', {
       messageId: input.messageId,
       correlationId: input.correlationId,
       format,
-      textPreview: input.text.slice(0, 120),
+      textPreview: safeText.slice(0, 120),
     });
     const result = await this.requestWithTokenRetry({
       method: 'PATCH',
@@ -709,8 +711,8 @@ export class LarkChannelAdapter implements ChannelAdapter {
         msg_type: format === 'text' ? 'text' : 'interactive',
         content: JSON.stringify(
           format === 'text'
-            ? { text: input.text }
-            : buildLarkCardContent(input.text, input.actions),
+            ? { text: safeText }
+            : buildLarkCardContent(safeText, input.actions),
         ),
       },
       context: 'update',

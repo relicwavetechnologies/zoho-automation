@@ -4969,13 +4969,14 @@ const executeLarkVercelTask = async (
       : pendingApproval
         ? `Approval required before continuing: ${pendingApproval.kind === 'run_command' ? pendingApproval.command : pendingApproval.kind}.`
         : preferredGeneratedText || 'Done.');
+    const deliveryText = (finalText ?? preferredGeneratedText ?? 'Done.').trim() || 'Done.';
     const hasToolResults =
       steps.length > 0
       || steps.some((step) => (step.toolResults?.length ?? 0) > 0);
     const isSensitiveContent = hasSensitiveToolResults({
       childRoute,
       steps,
-      finalText,
+      finalText: deliveryText,
       pendingApproval,
     });
 
@@ -4992,10 +4993,10 @@ const executeLarkVercelTask = async (
       });
       statusHistory.push(`Approval required: ${pendingApproval.kind}`);
       const approvalText = managerApprovalResult.sent
-        ? `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`
-        : pendingApproval.kind === 'tool_action'
-          ? (summarizeText(pendingApproval.summary, 220) ?? finalText)
-          : finalText;
+          ? `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`
+          : pendingApproval.kind === 'tool_action'
+          ? (summarizeText(pendingApproval.summary, 220) ?? deliveryText)
+          : deliveryText;
       const approvalActions = managerApprovalResult.sent ? [] : buildLarkApprovalActions(pendingApproval);
       currentStatusPhase = 'approval';
       currentStatusDetail = approvalText;
@@ -5012,7 +5013,7 @@ const executeLarkVercelTask = async (
     } else {
       await assertExecutionRunnable(task.taskId, abortSignal);
       const delivery = await deliverTerminalResponse({
-        text: finalText,
+        text: deliveryText,
         actions: [],
         hasToolResults,
         isSensitiveContent,
@@ -5023,14 +5024,14 @@ const executeLarkVercelTask = async (
 
     const statusMessageId = deliveredStatusMessageId ?? statusCoordinator?.getStatusMessageId();
     if (!pendingApproval) {
-      conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, finalText);
+      conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, deliveryText);
     }
     if (linkedUserId) {
       const effectiveMessages =
         inputMessages.length > 0 ? inputMessages : [{ role: 'user', content: resolvedUserMessage }];
       const estimatedInputTokens =
         estimateTokens(compactedSystemPrompt) + estimateMessageTokens(effectiveMessages);
-      const estimatedOutputTokens = estimateTokens(finalText);
+      const estimatedOutputTokens = estimateTokens(deliveryText);
       await assertExecutionRunnable(task.taskId, abortSignal);
       await aiTokenUsageService.record({
         userId: linkedUserId,
@@ -5052,7 +5053,7 @@ const executeLarkVercelTask = async (
 
     await assertExecutionRunnable(task.taskId, abortSignal);
     await persistAssistantTurn({
-      content: finalText,
+      content: deliveryText,
       statusMessageId: statusMessageId ?? null,
       pendingApproval,
     });
