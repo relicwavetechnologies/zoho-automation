@@ -14,12 +14,7 @@ import { buildLarkTraceMeta } from './lark-observability';
 import { larkTenantTokenService, LarkTenantTokenService } from './lark-tenant-token.service';
 import { emitRuntimeTrace } from '../../observability';
 import type { LarkAttachmentKey, LarkMention } from './lark-message-content';
-import {
-  extractLarkMentionsFromMessage,
-  inferLarkMessageType,
-  parseLarkAttachmentKeys,
-  parseLarkMessageContent,
-} from './lark-message-content';
+import { extractLarkMentionsFromMessage, inferLarkMessageType, parseLarkAttachmentKeys, parseLarkMessageContent } from './lark-message-content';
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (typeof value !== 'object' || value === null) {
@@ -50,13 +45,13 @@ const readString = (value: unknown): string | undefined => {
 };
 
 const readTenantKey = (envelope: LarkWebhookEnvelope): string | undefined =>
-  readString(envelope.header?.tenant_key) ??
-  readString(envelope.header?.tenantKey) ??
-  readString(envelope.event?.tenant_key) ??
-  readString(envelope.event?.tenantKey) ??
-  readString(envelope.tenant_key) ??
-  readString(envelope.tenantKey) ??
-  readString(envelope.tenantKeyId);
+  readString(envelope.header?.tenant_key)
+  ?? readString(envelope.header?.tenantKey)
+  ?? readString(envelope.event?.tenant_key)
+  ?? readString(envelope.event?.tenantKey)
+  ?? readString(envelope.tenant_key)
+  ?? readString(envelope.tenantKey)
+  ?? readString(envelope.tenantKeyId);
 
 const toIsoTimestamp = (source?: string): string => {
   if (!source) {
@@ -78,7 +73,8 @@ const toIsoTimestamp = (source?: string): string => {
 };
 
 const readReferencedMessageId = (message: Record<string, unknown>): string | undefined =>
-  readString(message.parent_id) ?? readString(message.root_id);
+  readString(message.parent_id)
+  ?? readString(message.root_id);
 
 const readFirstRecord = (value: unknown): Record<string, unknown> | null => {
   if (Array.isArray(value)) {
@@ -92,13 +88,14 @@ const readFirstRecord = (value: unknown): Record<string, unknown> | null => {
   return asRecord(value);
 };
 
-const extractFetchedMessageRecord = (
-  payload: Record<string, unknown>,
-): Record<string, unknown> | null => {
+const extractFetchedMessageRecord = (payload: Record<string, unknown>): Record<string, unknown> | null => {
   const data = asRecord(payload.data);
   if (!data) return null;
   return (
-    asRecord(data.message) ?? readFirstRecord(data.items) ?? asRecord(data.item) ?? asRecord(data)
+    asRecord(data.message)
+    ?? readFirstRecord(data.items)
+    ?? asRecord(data.item)
+    ?? asRecord(data)
   );
 };
 
@@ -135,10 +132,7 @@ const buildApiErrorResult = (input: {
   },
 });
 
-const isTokenInvalidFailure = (
-  response: LarkResponseLike,
-  payload: Record<string, unknown>,
-): boolean => {
+const isTokenInvalidFailure = (response: LarkResponseLike, payload: Record<string, unknown>): boolean => {
   if (response.status === 401) {
     return true;
   }
@@ -149,10 +143,7 @@ const isTokenInvalidFailure = (
   }
 
   const message = (readString(payload.msg) ?? '').toLowerCase();
-  return (
-    message.includes('tenant_access_token') &&
-    (message.includes('invalid') || message.includes('expired'))
-  );
+  return message.includes('tenant_access_token') && (message.includes('invalid') || message.includes('expired'));
 };
 
 const buildEgressTraceMeta = (input: {
@@ -177,29 +168,18 @@ const normalizeLarkMarkdown = (value: string): string =>
   (value ?? '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    // Lark card markdown elements do not render "* item" bullets — convert to "- item"
-    .replace(/^(\s*)\* /gm, '$1- ')
-    // H2/H3/H4+ headings render as large block elements that push content below Lark's
-    // visible threshold causing card collapse. Convert to bold inline text instead.
-    // H1 is left alone — it's extracted as the card title by extractTitleAndBodyFromMarkdown.
-    .replace(/^#{2,6}\s+(.+)$/gm, '**$1**')
-    // Blockquotes (>) are not rendered in Lark card markdown — strip the marker
-    .replace(/^>\s?/gm, '')
     .trim();
 
 const stripMarkdownForSummary = (value: string): string =>
   (value ?? '')
     .replace(/^#{1,6}\s+/gm, '')
-    .replace(/[*_~`>#|\-]+/g, ' ')
+    .replace(/[*_~`>#-]+/g, ' ')
     .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/[\u2022\u2023\u25AA\u25B8]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 
-const extractTitleAndBodyFromMarkdown = (
-  markdown: string,
-): {
+const extractTitleAndBodyFromMarkdown = (markdown: string): {
   title: string;
   body: string;
 } => {
@@ -242,21 +222,17 @@ const extractTitleAndBodyFromMarkdown = (
 };
 
 const buildLarkCardSummary = (title: string, body: string): string => {
-  const summarySource =
-    stripMarkdownForSummary(body) || stripMarkdownForSummary(title) || DEFAULT_LARK_CARD_TITLE;
+  const summarySource = stripMarkdownForSummary(body) || stripMarkdownForSummary(title) || DEFAULT_LARK_CARD_TITLE;
   if (summarySource.length <= MAX_LARK_CARD_SUMMARY_LENGTH) {
     return summarySource;
   }
   return `${summarySource.slice(0, MAX_LARK_CARD_SUMMARY_LENGTH - 3)}...`;
 };
 
-const buildLarkMarkdownElementV2 = (
-  content: string,
-  options?: {
-    textSize?: string;
-    margin?: string;
-  },
-): Record<string, unknown> => ({
+const buildLarkMarkdownElementV2 = (content: string, options?: {
+  textSize?: string;
+  margin?: string;
+}): Record<string, unknown> => ({
   tag: 'markdown',
   content,
   text_size: options?.textSize ?? 'normal',
@@ -300,6 +276,7 @@ const splitMarkdownTableBlock = (block: string): string[] => {
       current = candidate;
       continue;
     }
+
     chunks.push(current);
     current = `${prefix}\n${row}`;
   }
@@ -393,10 +370,7 @@ const splitLarkMarkdownIntoElements = (content: string): string[] => {
   return kept;
 };
 
-const buildLarkButtonElementV2 = (
-  action: ChannelAction,
-  index: number,
-): Record<string, unknown> => ({
+const buildLarkButtonElementV2 = (action: ChannelAction, index: number): Record<string, unknown> => ({
   tag: 'button',
   element_id: `action_${index + 1}`,
   text: {
@@ -418,37 +392,25 @@ const buildLarkButtonElementV2 = (
   ],
 });
 
-const buildLarkBodyElements = (body: string): Array<Record<string, unknown>> => {
+const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<string, unknown> => {
+  const { title, body } = extractTitleAndBodyFromMarkdown(text);
   const normalizedBody = normalizeLarkMarkdown(body);
-  if (!normalizedBody) {
-    return [buildLarkMarkdownElementV2('No content available.')];
-  }
-
-  // Match the Feishu/OpenClaw card strategy first: preserve the full markdown body
-  // as a single card element when it fits. This keeps markdown tables intact instead
-  // of splitting them across multiple card elements.
-  if (normalizedBody.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
-    return [buildLarkMarkdownElementV2(normalizedBody)];
-  }
-
-  return splitLarkMarkdownIntoElements(normalizedBody).map((chunk, index) =>
+  const elements: Array<Record<string, unknown>> = splitLarkMarkdownIntoElements(normalizedBody).map((chunk, index) =>
     buildLarkMarkdownElementV2(chunk, {
       textSize: 'normal',
       ...(index === 0 ? {} : { margin: '8px 0 0 0' }),
     }));
-};
-
-const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<string, unknown> => {
-  const { title, body } = extractTitleAndBodyFromMarkdown(text);
-  const normalizedBody = normalizeLarkMarkdown(body);
-  const elements: Array<Record<string, unknown>> = buildLarkBodyElements(normalizedBody);
 
   if (actions && actions.length > 0) {
-    elements.push(buildLarkMarkdownElementV2('---', { margin: '8px 0 4px 0' }));
+    elements.push(
+      buildLarkMarkdownElementV2('---', { margin: '8px 0 4px 0' }),
+    );
     elements.push(
       buildLarkMarkdownElementV2('**Actions**', { textSize: 'heading', margin: '0 0 4px 0' }),
     );
-    elements.push(...actions.map((action, index) => buildLarkButtonElementV2(action, index)));
+    elements.push(
+      ...actions.map((action, index) => buildLarkButtonElementV2(action, index)),
+    );
   }
 
   return {
@@ -469,11 +431,11 @@ const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<s
       },
       ...(title !== DEFAULT_LARK_CARD_TITLE
         ? {
-            subtitle: {
-              tag: 'plain_text',
-              content: title,
-            },
-          }
+          subtitle: {
+            tag: 'plain_text',
+            content: title,
+          },
+        }
         : {}),
       text_tag_list: [
         {
@@ -491,34 +453,6 @@ const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<s
       padding: '12px 12px 12px 12px',
       elements,
     },
-  };
-};
-
-const extractCardDiagnostics = (card: Record<string, unknown>): {
-  elementCount: number;
-  markdownElementCount: number;
-  tableElementCount: number;
-  summaryPreview: string;
-  firstElementPreview: string;
-  cardJsonLength: number;
-} => {
-  const body = asRecord(card.body);
-  const elements = Array.isArray(body?.elements) ? (body.elements as unknown[]) : [];
-  const markdownElements = elements.filter((el) => asRecord(el)?.tag === 'markdown');
-  const tableElements = markdownElements.filter((el) => {
-    const content = readString(asRecord(el)?.content as string);
-    return content !== undefined && content.includes('|');
-  });
-  const configSummary = asRecord(asRecord(card.config)?.summary as Record<string, unknown>);
-  const summaryContent = readString(configSummary?.content as string) ?? '';
-  const firstContent = readString(asRecord(markdownElements[0])?.content as string) ?? '';
-  return {
-    elementCount: elements.length,
-    markdownElementCount: markdownElements.length,
-    tableElementCount: tableElements.length,
-    summaryPreview: summaryContent.slice(0, 100),
-    firstElementPreview: firstContent.slice(0, 120),
-    cardJsonLength: JSON.stringify(card).length,
   };
 };
 
@@ -545,34 +479,33 @@ export class LarkChannelAdapter implements ChannelAdapter {
 
     // Check if it's a card action
     const eventType = readString(envelope.header?.event_type);
-    const nestedAction =
-      envelope.event && typeof envelope.event === 'object' ? asRecord(envelope.event.action) : null;
+    const nestedAction = envelope.event && typeof envelope.event === 'object' ? asRecord(envelope.event.action) : null;
     const cardAction = asRecord(envelope.action) ?? nestedAction;
     if (eventType === 'card.action.trigger' && cardAction) {
       const context = envelope.event?.context;
       const operator = envelope.event?.operator;
       const openId =
-        readString(envelope.open_id) ??
-        readString(operator?.open_id) ??
-        readString(envelope.event?.operator?.operator_id?.open_id);
+        readString(envelope.open_id)
+        ?? readString(operator?.open_id)
+        ?? readString(envelope.event?.operator?.operator_id?.open_id);
       const userId =
-        readString(envelope.user_id) ??
-        readString(operator?.user_id) ??
-        readString(envelope.event?.operator?.operator_id?.user_id) ??
-        openId;
+        readString(envelope.user_id)
+        ?? readString(operator?.user_id)
+        ?? readString(envelope.event?.operator?.operator_id?.user_id)
+        ?? openId;
       const messageId =
-        readString(envelope.open_message_id) ??
-        readString(context?.open_message_id) ??
-        readString((context as Record<string, unknown> | undefined)?.message_id) ??
-        readString((envelope.event as Record<string, unknown> | undefined)?.open_message_id) ??
-        readString(envelope.header?.event_id);
+        readString(envelope.open_message_id)
+        ?? readString(context?.open_message_id)
+        ?? readString((context as Record<string, unknown> | undefined)?.message_id)
+        ?? readString((envelope.event as Record<string, unknown> | undefined)?.open_message_id)
+        ?? readString(envelope.header?.event_id);
       const chatId =
-        readString(envelope.open_chat_id) ??
-        readString(context?.open_chat_id) ??
-        readString((context as Record<string, unknown> | undefined)?.chat_id) ??
-        readString((envelope.event as Record<string, unknown> | undefined)?.open_chat_id) ??
-        messageId ??
-        userId;
+        readString(envelope.open_chat_id)
+        ?? readString(context?.open_chat_id)
+        ?? readString((context as Record<string, unknown> | undefined)?.chat_id)
+        ?? readString((envelope.event as Record<string, unknown> | undefined)?.open_chat_id)
+        ?? messageId
+        ?? userId;
 
       if (!userId || !chatId || !messageId) {
         return null;
@@ -592,7 +525,9 @@ export class LarkChannelAdapter implements ChannelAdapter {
         trace: {
           larkTenantKey: readTenantKey(envelope),
           larkOpenId: openId,
-          larkUserId: readString(envelope.user_id) ?? readString(operator?.user_id),
+          larkUserId:
+            readString(envelope.user_id)
+            ?? readString(operator?.user_id),
         },
       };
 
@@ -655,31 +590,16 @@ export class LarkChannelAdapter implements ChannelAdapter {
       ? `/open-apis/im/v1/messages/${input.replyToMessageId!.trim()}/reply`
       : `/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`;
     const format = input.format ?? 'interactive';
-    const card = format !== 'text' ? buildLarkCardContent(safeText, input.actions) : null;
     const body = {
       ...(isReply ? {} : { receive_id: input.chatId }),
       msg_type: format === 'text' ? 'text' : 'interactive',
       ...(isReply ? { reply_in_thread: input.replyInThread ?? true } : {}),
-      content: JSON.stringify(format === 'text' ? { text: safeText } : card),
+      content: JSON.stringify(
+        format === 'text'
+          ? { text: safeText }
+          : buildLarkCardContent(safeText, input.actions),
+      ),
     };
-    if (card) {
-      const diag = extractCardDiagnostics(card);
-      emitRuntimeTrace({
-        event: 'lark.card.render',
-        level: 'info',
-        taskId: input.correlationId,
-        metadata: {
-          context: 'send',
-          textLength: safeText.length,
-          elementCount: diag.elementCount,
-          markdownElementCount: diag.markdownElementCount,
-          tableElementCount: diag.tableElementCount,
-          cardJsonLength: diag.cardJsonLength,
-          summaryPreview: diag.summaryPreview,
-          firstElementPreview: diag.firstElementPreview,
-        },
-      });
-    }
     logger.info('lark.egress.send.start', {
       ...buildEgressTraceMeta({
         chatId: input.chatId,
@@ -740,14 +660,11 @@ export class LarkChannelAdapter implements ChannelAdapter {
       messageId: readString(data?.message_id),
       providerResponse: result.payload,
     };
-    logger.success(
-      'lark.egress.send.success',
-      buildEgressTraceMeta({
-        chatId: input.chatId,
-        messageId: outbound.messageId,
-        correlationId: input.correlationId,
-      }),
-    );
+    logger.success('lark.egress.send.success', buildEgressTraceMeta({
+      chatId: input.chatId,
+      messageId: outbound.messageId,
+      correlationId: input.correlationId,
+    }));
     orangeDebug('lark.egress.send.success', {
       chatId: input.chatId,
       messageId: outbound.messageId,
@@ -768,27 +685,6 @@ export class LarkChannelAdapter implements ChannelAdapter {
   public async updateMessage(input: ChannelUpdateMessage): Promise<ChannelOutboundResult> {
     const safeText = input.text ?? '';
     const format = input.format ?? 'interactive';
-    const card = format !== 'text' ? buildLarkCardContent(safeText, input.actions) : null;
-    const content = JSON.stringify(format === 'text' ? { text: safeText } : card);
-    if (card) {
-      const diag = extractCardDiagnostics(card);
-      emitRuntimeTrace({
-        event: 'lark.card.render',
-        level: 'info',
-        taskId: input.correlationId,
-        messageId: input.messageId,
-        metadata: {
-          context: 'update',
-          textLength: safeText.length,
-          elementCount: diag.elementCount,
-          markdownElementCount: diag.markdownElementCount,
-          tableElementCount: diag.tableElementCount,
-          cardJsonLength: diag.cardJsonLength,
-          summaryPreview: diag.summaryPreview,
-          firstElementPreview: diag.firstElementPreview,
-        },
-      });
-    }
     logger.info('lark.egress.update.start', {
       ...buildEgressTraceMeta({
         messageId: input.messageId,
@@ -797,7 +693,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
       format,
       textLength: safeText.length,
-      contentLength: content.length,
+      contentLength:
+        format === 'text'
+          ? JSON.stringify({ text: safeText }).length
+          : JSON.stringify(buildLarkCardContent(safeText, input.actions)).length,
     });
     orangeDebug('lark.egress.update.start', {
       messageId: input.messageId,
@@ -810,7 +709,11 @@ export class LarkChannelAdapter implements ChannelAdapter {
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
       body: {
         msg_type: format === 'text' ? 'text' : 'interactive',
-        content,
+        content: JSON.stringify(
+          format === 'text'
+            ? { text: safeText }
+            : buildLarkCardContent(safeText, input.actions),
+        ),
       },
       context: 'update',
       messageId: input.messageId,
@@ -844,13 +747,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
       messageId: input.messageId,
       providerResponse: result.payload,
     };
-    logger.success(
-      'lark.egress.update.success',
-      buildEgressTraceMeta({
-        messageId: input.messageId,
-        correlationId: input.correlationId,
-      }),
-    );
+    logger.success('lark.egress.update.success', buildEgressTraceMeta({
+      messageId: input.messageId,
+      correlationId: input.correlationId,
+    }));
     orangeDebug('lark.egress.update.success', {
       messageId: input.messageId,
       correlationId: input.correlationId,
@@ -872,7 +772,8 @@ export class LarkChannelAdapter implements ChannelAdapter {
     chatId?: string;
     messageId?: string;
   }): Promise<
-    { ok: true; payload: Record<string, unknown> } | { ok: false; result: ChannelOutboundResult }
+    | { ok: true; payload: Record<string, unknown> }
+    | { ok: false; result: ChannelOutboundResult }
   > {
     let token: string;
     try {
@@ -902,10 +803,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
     }
 
     let firstAttempt = await this.performRequest(input, token);
-    if (
-      !firstAttempt.response.ok &&
-      isTokenInvalidFailure(firstAttempt.response, firstAttempt.payload)
-    ) {
+    if (!firstAttempt.response.ok && isTokenInvalidFailure(firstAttempt.response, firstAttempt.payload)) {
       logger.warn('lark.token.refresh.required', {
         context: input.context,
         statusCode: firstAttempt.response.status,
@@ -1015,11 +913,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
     try {
       token = await this.tokenService.getAccessToken();
     } catch (error) {
-      logger.warn('lark.file.download.token_failed', {
-        messageId: input.messageId,
-        fileKey: input.fileKey,
-        error,
-      });
+      logger.warn('lark.file.download.token_failed', { messageId: input.messageId, fileKey: input.fileKey, error });
       return null;
     }
 
@@ -1044,16 +938,14 @@ export class LarkChannelAdapter implements ChannelAdapter {
       const arrayBuffer = await response.arrayBuffer();
       return { buffer: Buffer.from(arrayBuffer), contentType };
     } catch (error) {
-      logger.warn('lark.file.download.error', {
-        messageId: input.messageId,
-        fileKey: input.fileKey,
-        error,
-      });
+      logger.warn('lark.file.download.error', { messageId: input.messageId, fileKey: input.fileKey, error });
       return null;
     }
   }
 
-  public async getMessage(input: { messageId: string }): Promise<LarkFetchedMessage | null> {
+  public async getMessage(input: {
+    messageId: string;
+  }): Promise<LarkFetchedMessage | null> {
     let token: string;
     try {
       token = await this.tokenService.getAccessToken();
