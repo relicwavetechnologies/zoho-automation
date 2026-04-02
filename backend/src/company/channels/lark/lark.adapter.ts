@@ -418,14 +418,30 @@ const buildLarkButtonElementV2 = (
   ],
 });
 
-const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<string, unknown> => {
-  const { title, body } = extractTitleAndBodyFromMarkdown(text);
+const buildLarkBodyElements = (body: string): Array<Record<string, unknown>> => {
   const normalizedBody = normalizeLarkMarkdown(body);
-  const elements: Array<Record<string, unknown>> = splitLarkMarkdownIntoElements(normalizedBody).map((chunk, index) =>
+  if (!normalizedBody) {
+    return [buildLarkMarkdownElementV2('No content available.')];
+  }
+
+  // Match the Feishu/OpenClaw card strategy first: preserve the full markdown body
+  // as a single card element when it fits. This keeps markdown tables intact instead
+  // of splitting them across multiple card elements.
+  if (normalizedBody.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+    return [buildLarkMarkdownElementV2(normalizedBody)];
+  }
+
+  return splitLarkMarkdownIntoElements(normalizedBody).map((chunk, index) =>
     buildLarkMarkdownElementV2(chunk, {
       textSize: 'normal',
       ...(index === 0 ? {} : { margin: '8px 0 0 0' }),
     }));
+};
+
+const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<string, unknown> => {
+  const { title, body } = extractTitleAndBodyFromMarkdown(text);
+  const normalizedBody = normalizeLarkMarkdown(body);
+  const elements: Array<Record<string, unknown>> = buildLarkBodyElements(normalizedBody);
 
   if (actions && actions.length > 0) {
     elements.push(buildLarkMarkdownElementV2('---', { margin: '8px 0 4px 0' }));
