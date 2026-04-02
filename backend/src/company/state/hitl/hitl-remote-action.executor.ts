@@ -16,6 +16,7 @@ import { isSupportedToolActionGroup, type ToolActionGroup } from '../../tools/to
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import { logger } from '../../../utils/logger';
 import type { HydratedStoredHitlAction } from './hitl-action.repository';
+import type { CanonicalToolOperation, MutationExecutionResult } from '../../orchestration/vercel/types';
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -58,6 +59,8 @@ type StoredRuntimeMetadata = {
 type ActionExecutionResult = {
   ok: boolean;
   summary: string;
+  canonicalOperation?: CanonicalToolOperation;
+  mutationResult?: MutationExecutionResult;
   payload?: Record<string, unknown>;
 };
 
@@ -676,6 +679,21 @@ const executeGoogleMailAction = async (
     return {
       ok: true,
       summary: `Created Gmail draft "${asString(payload.subject) ?? 'draft'}"${attachments.length > 0 ? ` with ${attachments.length} attachment(s)` : ''}.`,
+      canonicalOperation: {
+        provider: 'google',
+        product: 'gmail',
+        operation: 'createDraft',
+        actionGroup: 'create',
+      },
+      mutationResult: {
+        attempted: true,
+        succeeded: true,
+        provider: 'google',
+        operation: 'createDraft',
+        messageId: asString(result.id),
+        threadId: asString(asRecord(result.message)?.threadId),
+        pendingApproval: false,
+      },
       payload: result,
     };
   }
@@ -705,6 +723,21 @@ const executeGoogleMailAction = async (
     return {
       ok: true,
       summary: `Sent Gmail draft ${draftId}.`,
+      canonicalOperation: {
+        provider: 'google',
+        product: 'gmail',
+        operation: 'sendDraft',
+        actionGroup: 'send',
+      },
+      mutationResult: {
+        attempted: true,
+        succeeded: true,
+        provider: 'google',
+        operation: 'sendDraft',
+        messageId: asString(result.id),
+        threadId: asString(result.threadId),
+        pendingApproval: false,
+      },
       payload: result,
     };
   }
@@ -743,6 +776,21 @@ const executeGoogleMailAction = async (
     return {
       ok: true,
       summary: `Sent Gmail message "${asString(payload.subject) ?? 'message'}"${attachments.length > 0 ? ` with ${attachments.length} attachment(s)` : ''}.`,
+      canonicalOperation: {
+        provider: 'google',
+        product: 'gmail',
+        operation: 'sendMessage',
+        actionGroup: 'send',
+      },
+      mutationResult: {
+        attempted: true,
+        succeeded: true,
+        provider: 'google',
+        operation: 'sendMessage',
+        messageId: asString(result.id),
+        threadId: asString(result.threadId),
+        pendingApproval: false,
+      },
       payload: result,
     };
   }
@@ -2536,6 +2584,54 @@ export const executeStoredRemoteToolAction = async (
   });
 
   await enforceCurrentToolPermission(action, { toolId, actionGroup });
+
+  const canonicalOperationRecord = asRecord(action.payload?.canonicalOperation);
+  const canonicalProvider = asString(canonicalOperationRecord?.provider);
+  const canonicalProduct = asString(canonicalOperationRecord?.product);
+  const canonicalOperation = asString(canonicalOperationRecord?.operation);
+  const googleWorkspaceOperation = canonicalOperation ?? asString(action.payload?.operation);
+  if (canonicalProvider === 'google' && canonicalProduct === 'gmail') {
+    return executeGoogleMailAction(action);
+  }
+  if (canonicalProvider === 'google' && canonicalProduct === 'drive') {
+    return executeGoogleDriveAction(action);
+  }
+  if (canonicalProvider === 'google' && canonicalProduct === 'calendar') {
+    return executeGoogleCalendarAction(action);
+  }
+  if (toolId === 'googleWorkspace') {
+    switch (googleWorkspaceOperation) {
+      case 'sendMessage':
+      case 'createDraft':
+      case 'sendDraft':
+      case 'listMessages':
+      case 'getMessage':
+      case 'getThread':
+      case 'searchMessages':
+      case 'gmail':
+        return executeGoogleMailAction(action);
+      case 'listFiles':
+      case 'getFile':
+      case 'downloadFile':
+      case 'createFolder':
+      case 'uploadFile':
+      case 'updateFile':
+      case 'deleteFile':
+      case 'drive':
+        return executeGoogleDriveAction(action);
+      case 'calendar':
+      case 'listEvents':
+      case 'createEvent':
+      case 'updateEvent':
+      case 'deleteEvent':
+      case 'searchEvents':
+        return executeGoogleCalendarAction(action);
+      default:
+        throw new Error(
+          `Unsupported remote HITL googleWorkspace operation: ${googleWorkspaceOperation ?? 'undefined'}`,
+        );
+    }
+  }
 
   switch (toolId) {
     case 'google-gmail':

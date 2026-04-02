@@ -20,11 +20,12 @@ import {
 } from './routing-heuristics';
 import { toolPermissionService } from '../tools/tool-permission.service';
 import { LEGACY_AGENT_TOOL_MAP, TOOL_REGISTRY_MAP, type AiRole } from '../tools/tool-registry';
-import { classifyIntent } from './intent/canonical-intent';
+import { resolveCanonicalIntent } from './intent/canonical-intent';
 
 export class OrchestratorService {
-  requiresHumanConfirmation(messageText: string): boolean {
-    return requiresHumanConfirmation(messageText);
+  async requiresHumanConfirmation(messageText: string): Promise<boolean> {
+    const canonicalIntent = await resolveCanonicalIntent({ message: messageText });
+    return requiresHumanConfirmation(messageText, canonicalIntent);
   }
 
   buildHitlSummary(messageText: string): string {
@@ -32,9 +33,9 @@ export class OrchestratorService {
   }
 
   async buildTask(taskId: string, message: NormalizedIncomingMessageDTO): Promise<OrchestrationTaskDTO> {
-    const complexityLevel = classifyComplexityLevel(message.text);
-    const intent = detectRouteIntent(message.text);
-    const canonicalIntent = classifyIntent(message.text);
+    const canonicalIntent = await resolveCanonicalIntent({ message: message.text });
+    const complexityLevel = classifyComplexityLevel(message.text, canonicalIntent);
+    const intent = detectRouteIntent(message.text, undefined, canonicalIntent);
     return {
       taskId,
       messageId: message.messageId,
@@ -43,7 +44,7 @@ export class OrchestratorService {
       status: 'running',
       complexityLevel,
       orchestratorModel: 'v0-rule-router',
-      plan: buildPlanFromIntent(intent, complexityLevel, message.text),
+      plan: buildPlanFromIntent(intent, complexityLevel, message.text, canonicalIntent),
       executionMode: 'sequential',
       canonicalIntent,
     };

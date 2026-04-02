@@ -13,6 +13,7 @@ import type {
 } from '../../contracts';
 import { conversationMemoryStore } from '../../state/conversation';
 import { toolPermissionService } from '../../tools/tool-permission.service';
+import { DOMAIN_TO_TOOL_IDS } from '../../tools/tool-registry';
 import { retrievalOrchestratorService } from '../../retrieval';
 import { logger } from '../../../utils/logger';
 import {
@@ -80,10 +81,14 @@ import { AI_MODEL_CATALOG_MAP } from '../../ai-models';
 import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../integrations/vector';
 import { memoryExtractionService, memoryService } from '../../memory';
 import { enrichQuery, type QueryEnrichment } from '../query-enrichment.service';
-import { classifyIntent } from '../intent/canonical-intent';
+import { classifyIntent, resolveCanonicalIntent, type CanonicalIntent } from '../intent/canonical-intent';
 import { hotContextStore, type HotContextIndexedEntity, type HotContextSlot } from '../hot-context.store';
 import {
+  type CompiledDelegatedAction,
   type DelegatedAgentExecutionResult,
+  type StepArtifact,
+  type StepFailureEnvelope,
+  type StepRepairHistoryEntry,
   type StepResultEnvelope,
   type SupervisorStep,
   buildSupervisorResolvedContext,
@@ -114,7 +119,6 @@ import {
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
 const LARK_BLOCKED_TOOL_IDS = new Set<string>();
-const DELEGATED_RETRIEVAL_AGENTS = new Set(['context-agent', 'workspace-agent']);
 const LARK_VERCEL_MODE: VercelRuntimeRequestContext['mode'] = 'high';
 const LARK_THREAD_CONTEXT_MESSAGE_LIMIT = DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT;
 const LARK_CONTEXT_TARGET_RATIO = 0.6;
@@ -402,6 +406,31 @@ const buildRichDelegatedResultSummary = (
     lines.push(`Checked ${sourceLabel} — ${outcome}`);
   }
   return lines.join('\n');
+};
+
+const getPreferredSuccessfulActionText = (
+  results: DelegatedAgentExecutionResult[],
+): string | null => {
+  for (const result of [...results].reverse()) {
+    const hasSuccessfulMutation = (result.toolResults ?? []).some(
+      (entry) => entry.mutationResult?.succeeded === true || entry.confirmedAction === true,
+    );
+    if (!hasSuccessfulMutation) {
+      continue;
+    }
+    const candidates = [
+      result.text?.trim(),
+      result.summary?.trim(),
+      result.assistantText?.trim(),
+    ];
+    for (const candidate of candidates) {
+      if (candidate && candidate !== 'Done.') {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
 };
 
 const TOOL_PROGRESS_LABELS: Record<string, { start: string; done: string; failed: string }> = {
@@ -937,10 +966,19 @@ type RunToolResult = {
   status: VercelToolResultStatus;
   data: unknown;
   confirmedAction: boolean;
+  canonicalOperation?: NonNullable<VercelToolEnvelope['canonicalOperation']>;
+  mutationResult?: NonNullable<VercelToolEnvelope['mutationResult']>;
   error?: string;
+  errorKind?: VercelToolEnvelope['errorKind'];
   pendingApproval?: boolean;
   summary?: string;
+  userAction?: string;
+  missingFields?: string[];
+  repairHints?: Record<string, string>;
 };
+
+const SUPERVISOR_MAX_REPAIR_ATTEMPTS = 2;
+const SUPERVISOR_LARK_BULK_TASK_THRESHOLD = 20;
 
 type RunCompletionState =
   | { status: 'completed'; confirmedCount: number; failedCount: number; readOnly?: boolean }
@@ -949,7 +987,7 @@ type RunCompletionState =
 
 const evaluateRunCompletion = (
   toolResults: RunToolResult[],
-  intentClassification?: Pick<ReturnType<typeof classifyIntent>, 'isWriteLike'>,
+  intentClassification?: Pick<CanonicalIntent, 'isWriteLike'>,
 ): RunCompletionState => {
   if (intentClassification && !intentClassification.isWriteLike) {
     return {
@@ -959,13 +997,16 @@ const evaluateRunCompletion = (
       readOnly: true,
     };
   }
-  const actionResults = toolResults.filter((result) => result.confirmedAction === true);
+  const actionResults = toolResults.filter(
+    (result) => result.mutationResult?.succeeded === true || result.confirmedAction === true,
+  );
   const errorResults = toolResults.filter(
     (result) => result.status === 'error' || result.status === 'timeout',
   );
   const attemptedActions = toolResults.filter(
     (result) =>
-      result.confirmedAction === true
+      result.mutationResult?.attempted === true
+      || result.confirmedAction === true
       || result.status === 'error'
       || result.status === 'timeout',
   );
@@ -1018,9 +1059,65 @@ const delegatedStepLikelyRequiresToolUse = (step: SupervisorStep): boolean =>
   /\b(find|search|look up|retrieve|read|get|fetch|list|send|mail|email|draft|reply|forward|create|update|delete|schedule|run|save|archive|post|message|verify|inspect|check)\b/i
     .test(step.objective);
 
+const getPlanningToolIdsForInferredDomain = (domain?: string | null): string[] => {
+  switch (domain) {
+    case 'zoho_books':
+      return ['zohoBooks'];
+    case 'zoho_crm':
+      return ['zohoCrm'];
+    case 'gmail':
+    case 'google_drive':
+    case 'google_calendar':
+      return ['googleWorkspace'];
+    case 'lark':
+    case 'lark_task':
+      return ['larkTask'];
+    case 'lark_message':
+      return ['larkMessage'];
+    case 'context_search':
+    case 'web_search':
+    case 'general':
+      return ['contextSearch'];
+    case 'workspace':
+    case 'workflow':
+    case 'document_inspection':
+      return DOMAIN_TO_TOOL_IDS.workspace ?? [];
+    default:
+      return [];
+  }
+};
+
+const getRequiredToolIdsForSupervisorStep = (step: SupervisorStep): string[] => {
+  switch (step.sourceSystem) {
+    case 'zoho_books':
+      return ['zohoBooks'];
+    case 'zoho_crm':
+      return ['zohoCrm'];
+    case 'gmail':
+    case 'google_drive':
+    case 'google_calendar':
+      return ['googleWorkspace'];
+    case 'lark':
+      if (step.action === 'create_task') {
+        return ['larkTask'];
+      }
+      if (step.action === 'post_message') {
+        return ['larkMessage'];
+      }
+      return ['larkTask', 'larkMessage'];
+    case 'context':
+      return ['contextSearch'];
+    case 'workspace':
+      return DOMAIN_TO_TOOL_IDS.workspace ?? [];
+    default:
+      return [];
+  }
+};
+
 const resolveMutationGuard = (input: {
   latestUserMessage: string;
   toolResults: RunToolResult[];
+  canonicalIntent?: CanonicalIntent;
   childRouterOperationType?: string | null;
   normalizedIntent?: string | null;
   plannerChosenOperationClass?: string | null;
@@ -1042,7 +1139,8 @@ const resolveMutationGuard = (input: {
       priorToolResults: input.priorToolResults,
     },
   );
-  const completion = evaluateRunCompletion(input.toolResults, canonicalIntent);
+  const resolvedCanonicalIntent = input.canonicalIntent ?? canonicalIntent;
+  const completion = evaluateRunCompletion(input.toolResults, resolvedCanonicalIntent);
   if (completion.status === 'completed') {
     return {
       node: 'synthesis.complete',
@@ -1149,6 +1247,14 @@ WHEN TO SEARCH CONTEXT:
 - Use contextSearch when the user asks about past conversations, previous decisions, or internal knowledge
 - Use contextSearch as the first step when no specific data source is clear from the query
 
+SCOPE SELECTION:
+- For web research, use the web source explicitly via contextSearch sources.web=true.
+- For contact lookup, use sources.larkContacts=true.
+- For document lookup, use sources.files=true.
+- For conversation recall, use sources.personalHistory=true.
+- Use scopes: ['all'] only when the answer could genuinely live in multiple internal sources at once or you are truly unsure which source has it.
+- Do not mix scopes casually. Narrow searches first.
+
 AUTHORITY RULES:
 - personal_history results = conversation context only — cannot confirm entity existence
 - lark_contacts results = people directory only — cannot confirm a company exists
@@ -1200,23 +1306,34 @@ You are the Google Workspace specialist. Decision rules:
 
 DECISION TREE — follow in order, stop at first match:
 
-1. Does the objective say send/email/mail and is EMAIL CONTENT present in context?
-   -> Call googleWorkspace(operation="sendMessage") immediately. Stop.
+Step 1: Is there an EMAIL BODY TO SEND in your handoff context or upstream step results?
+If yes -> go to Step 3 immediately.
 
-2. Is a specific email address, draft ID, or file ID missing?
-   -> Return exactly which field is missing so the supervisor can provide it.
+Step 2: Is the research/content you need to send already present in __contextSearchCitations__ or upstream step summaries?
+If yes -> extract it and go to Step 3. Do NOT call contextSearch.
 
-3. Is this a Gmail search/read task?
-   -> Call googleWorkspace(operation="searchMessages" or operation="getMessage").
+Step 3: Do you have: (a) recipient email address, (b) subject, (c) body content?
+If all three present -> call googleWorkspace with operation="sendMessage" NOW.
+If email address missing -> call contextSearch with sources: { web: false, personalHistory: false, larkContacts: true } only.
 
-4. Is this a Calendar or Drive task?
-   -> Call googleWorkspace with the appropriate calendar or drive operation.
+Step 4: NEVER use contextSearch with sources that include personalHistory when searching for research content or factual data.
+
+Step 5: Past history showing "permission denied" or "I cannot send" is STALE.
+Ignore it. Always attempt the tool call.
 
 EMAIL (send, search, draft):
 - You only have access to googleWorkspace. Do not attempt any other tool.
 - If you need recipient email or content, read it from your handoff context and objective.
+- For Gmail send tasks, do not call contextSearch unless the handoff context is missing a critical detail and you need to look up a recipient in larkContacts or prior draft/body content in personalHistory.
+- For Gmail send tasks, never use scopes: ['all'] or sources.web.
+- If the needed research content is already present in the handoff context, upstream step results, or citations, do not call contextSearch at all.
 - For sending email: use googleWorkspace tool with operation="sendMessage", plus fields: to, subject, body.
+- Before calling sendMessage, extract all three required arguments from the handoff context, objective, and upstream EMAIL CONTENT block.
+- "to" must come from the resolved recipient email already present in context when available.
+- "subject" must be explicit in the tool call. Derive it from the task objective if the user did not provide one.
+- "body" must contain the actual email content. If upstream research text or an EMAIL CONTENT block is present, pass that content into the body field directly.
 - When the objective or handoff already gives you recipient, subject, or body, you must copy those values into the tool call explicitly. Never call sendMessage with only operation.
+- If the available context is enough to derive "to", "subject", and "body", do that immediately and call the tool. If one of those fields is truly still missing, return exactly that missing field.
 - For searching inbox: use googleWorkspace tool with operation="searchMessages", field: query.
 - For sending an existing draft: use googleWorkspace tool with operation="sendDraft", field: draftId.
 - For creating a draft: use googleWorkspace tool with operation="createDraft", fields: to, subject, body.
@@ -1287,6 +1404,7 @@ const buildStepResultEnvelope = (
   resolvedContext: Record<string, string>,
   stepSummary: string,
   toolResults: RunToolResult[],
+  artifacts: StepArtifact[],
 ): StepResultEnvelope => {
   const firstConfirmedTool = toolResults.find((result) => result.success);
   const summaryText = `${firstConfirmedTool?.summary ?? ''} ${stepSummary}`.toLowerCase();
@@ -1330,7 +1448,431 @@ const buildStepResultEnvelope = (
     resolvedIds: { ...resolvedContext },
     authorityLevel,
     summary: stepSummary,
+    artifacts,
   };
+};
+
+const getBestSupervisorStepNarrative = (input: {
+  text?: string | null;
+  summary?: string | null;
+}): string => {
+  const text = input.text?.trim() ?? '';
+  if (isMeaningfulSupervisorStepText(text)) {
+    return text;
+  }
+  const summary = input.summary?.trim() ?? '';
+  if (isMeaningfulSupervisorStepText(summary)) {
+    return summary;
+  }
+  return text || summary;
+};
+
+const collectStepUsage = (
+  rawSteps: Array<Record<string, unknown>>,
+): { totalInputTokens: number; totalOutputTokens: number; modelCalls: number } =>
+  rawSteps.reduce(
+    (acc, step) => {
+      const usage = asRecordSafe(step.usage);
+      const inputTokens = typeof usage?.inputTokens === 'number' ? usage.inputTokens : 0;
+      const outputTokens = typeof usage?.outputTokens === 'number' ? usage.outputTokens : 0;
+      return {
+        totalInputTokens: acc.totalInputTokens + inputTokens,
+        totalOutputTokens: acc.totalOutputTokens + outputTokens,
+        modelCalls: acc.modelCalls + 1,
+      };
+    },
+    { totalInputTokens: 0, totalOutputTokens: 0, modelCalls: 0 },
+  );
+
+const collectStepContentEntries = (
+  rawSteps: Array<Record<string, unknown>>,
+  type: 'tool-call' | 'tool-result',
+): Array<Record<string, unknown>> =>
+  rawSteps.flatMap((step) =>
+    asArrayOfRecordsSafe(step.content).filter((entry) => asStringSafe(entry.type) === type),
+  );
+
+const summarizeUpstreamStepOutputs = (
+  upstreamResults: DelegatedAgentExecutionResult[],
+): string[] =>
+  upstreamResults
+    .map((result) => getBestSupervisorStepNarrative({
+      text: result.text,
+      summary: result.summary,
+    }))
+    .filter((value) => isMeaningfulSupervisorStepText(value));
+
+const collectArtifactsFromResult = (result: DelegatedAgentExecutionResult): StepArtifact[] => {
+  if (Array.isArray(result.artifacts) && result.artifacts.length > 0) {
+    return result.artifacts;
+  }
+  const envelope = asRecordSafe(result.data?.envelope);
+  return asArrayOfRecordsSafe(envelope?.artifacts)
+    .filter((artifact): artifact is StepArtifact => Boolean(artifact.id && artifact.kind));
+};
+
+const collectUpstreamArtifacts = (
+  upstreamResults: DelegatedAgentExecutionResult[],
+): StepArtifact[] => upstreamResults.flatMap((result) => collectArtifactsFromResult(result));
+
+const findUpstreamArtifact = <TKind extends StepArtifact['kind']>(
+  artifacts: StepArtifact[],
+  kind: TKind,
+): Extract<StepArtifact, { kind: TKind }> | undefined =>
+  artifacts.find((artifact): artifact is Extract<StepArtifact, { kind: TKind }> => artifact.kind === kind);
+
+const deriveResearchArtifactTitle = (objective: string): string => {
+  const cleaned = objective
+    .replace(/\b(search|find|look up|research|email|send|mail|the findings|currently available)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\.$/, '');
+  return cleaned || 'Research Findings';
+};
+
+const buildStepArtifacts = (input: {
+  step: SupervisorStep;
+  stepText: string;
+  resolvedContext: Record<string, string>;
+  toolResults: RunToolResult[];
+}): StepArtifact[] => {
+  const artifacts: StepArtifact[] = [];
+
+  if (input.step.agentId === 'context-agent' && isMeaningfulSupervisorStepText(input.stepText)) {
+    artifacts.push({
+      id: `${input.step.stepId}:research_summary`,
+      kind: 'research_summary',
+      title: deriveResearchArtifactTitle(input.step.objective),
+      bodyMarkdown: input.stepText,
+      readyForEmail: true,
+    });
+  }
+
+  const recipientEmail =
+    input.resolvedContext.recipientEmail
+    ?? input.resolvedContext.recipient_email
+    ?? input.resolvedContext.email;
+  if (recipientEmail) {
+    artifacts.push({
+      id: `${input.step.stepId}:contact_resolution`,
+      kind: 'contact_resolution',
+      email: recipientEmail,
+      name:
+        input.resolvedContext.recipientName
+        ?? input.resolvedContext.recipient_name
+        ?? undefined,
+      externalId:
+        input.resolvedContext.contactId
+        ?? input.resolvedContext.recordId
+        ?? undefined,
+      authorityLevel: 'contextual',
+    });
+  }
+
+  for (const result of input.toolResults) {
+    const mutation = result.mutationResult;
+    if (!mutation?.attempted) {
+      continue;
+    }
+    if (mutation.provider === 'google' && mutation.operation === 'sendMessage') {
+      artifacts.push({
+        id: `${input.step.stepId}:gmail_send_result`,
+        kind: 'message_delivery_result',
+        provider: 'gmail',
+        operation: 'send',
+        messageId: mutation.messageId,
+        threadId: mutation.threadId,
+        success: mutation.succeeded,
+      });
+    }
+    if (mutation.provider === 'google' && mutation.operation === 'createDraft') {
+      artifacts.push({
+        id: `${input.step.stepId}:gmail_draft_result`,
+        kind: 'message_delivery_result',
+        provider: 'gmail',
+        operation: 'draft',
+        messageId: mutation.messageId,
+        threadId: mutation.threadId,
+        success: mutation.succeeded,
+      });
+    }
+  }
+
+  return artifacts;
+};
+
+const deriveEmailSubject = (input: {
+  step: SupervisorStep;
+  researchArtifact?: Extract<StepArtifact, { kind: 'research_summary' }>;
+  draftArtifact?: Extract<StepArtifact, { kind: 'email_draft' }>;
+}): string => {
+  if (input.draftArtifact?.subject?.trim()) {
+    return input.draftArtifact.subject.trim();
+  }
+  if (input.researchArtifact?.title?.trim()) {
+    return `Research Findings: ${input.researchArtifact.title.trim()}`;
+  }
+  if (/\bagentic ai platforms\b/i.test(input.step.objective)) {
+    return 'Research Findings: Best Agentic AI Platforms';
+  }
+  return 'Research Findings';
+};
+
+type OverdueInvoiceArtifact = {
+  invoiceId?: string;
+  invoiceNumber?: string;
+  customerId?: string;
+  customerName?: string;
+  dueDate?: string;
+  invoiceDate?: string;
+  total?: number;
+  balance?: number;
+  overdueDays?: number;
+};
+
+const coerceNumber = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+};
+
+const extractToolEnvelopesFromRawSteps = (
+  rawSteps: Array<{ toolResults?: Array<{ output?: unknown }> }> | undefined,
+): VercelToolEnvelope[] =>
+  (rawSteps ?? []).flatMap((step) =>
+    (step.toolResults ?? [])
+      .map((result) => result.output as VercelToolEnvelope | undefined)
+      .filter((output): output is VercelToolEnvelope => Boolean(output)),
+  );
+
+const extractOverdueInvoicesFromUpstreamResults = (
+  upstreamResults: DelegatedAgentExecutionResult[],
+): OverdueInvoiceArtifact[] => {
+  const invoices: OverdueInvoiceArtifact[] = [];
+  for (const result of upstreamResults) {
+    const rawSteps = Array.isArray(result.output?.rawSteps)
+      ? (result.output.rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>)
+      : [];
+    const envelopes = extractToolEnvelopesFromRawSteps(rawSteps);
+    for (const envelope of envelopes) {
+      const fullPayload = asRecordSafe(envelope.fullPayload);
+      const items = asArrayOfRecordsSafe(fullPayload?.invoices);
+      for (const item of items) {
+        invoices.push({
+          invoiceId: asStringSafe(item.invoiceId),
+          invoiceNumber: asStringSafe(item.invoiceNumber),
+          customerId: asStringSafe(item.customerId),
+          customerName: asStringSafe(item.customerName),
+          dueDate: asStringSafe(item.dueDate),
+          invoiceDate: asStringSafe(item.invoiceDate),
+          total: typeof item.total === 'number' ? item.total : coerceNumber(item.total),
+          balance: typeof item.balance === 'number' ? item.balance : coerceNumber(item.balance),
+          overdueDays: typeof item.overdueDays === 'number' ? item.overdueDays : coerceNumber(item.overdueDays),
+        });
+      }
+    }
+  }
+  return invoices;
+};
+
+const parseNamedAssigneeFromObjective = (objective: string): string | undefined => {
+  const explicitAssigned = objective.match(
+    /\bassigned to\s+([A-Za-z][A-Za-z .'-]{1,80}?)(?=\s+(?:to\b|for\b|on\b|about\b|regarding\b|who\b|$)|[.,;:]|$)/i,
+  )?.[1]?.trim();
+  if (explicitAssigned) {
+    return explicitAssigned.replace(/[.,;:]$/, '').trim();
+  }
+  const explicitFor = objective.match(/\bfor\s+([A-Z][A-Za-z .'-]{1,80})(?=\s+(?:to|for|on|about|regarding|who|$))/)?.[1]?.trim();
+  if (explicitFor && !/\b(invoice|invoices|follow[- ]?up|review|finance team)\b/i.test(explicitFor)) {
+    return explicitFor.replace(/[.,;:]$/, '').trim();
+  }
+  return undefined;
+};
+
+const objectiveAssignsToSelf = (objective: string): boolean =>
+  /\b(assign(?:ed)? to me|for me|my task|myself)\b/i.test(objective);
+
+const buildInvoiceTaskSummary = (invoice: OverdueInvoiceArtifact): string => {
+  const invoiceNumber = invoice.invoiceNumber?.trim() || invoice.invoiceId?.trim() || 'invoice';
+  const customerName = invoice.customerName?.trim();
+  const overdueSuffix =
+    typeof invoice.overdueDays === 'number' && Number.isFinite(invoice.overdueDays)
+      ? ` (${invoice.overdueDays} day${invoice.overdueDays === 1 ? '' : 's'} overdue)`
+      : '';
+  return customerName
+    ? `Follow up on overdue invoice ${invoiceNumber} for ${customerName}${overdueSuffix}`
+    : `Follow up on overdue invoice ${invoiceNumber}${overdueSuffix}`;
+};
+
+const buildInvoiceTaskDescription = (invoice: OverdueInvoiceArtifact, objective: string): string => {
+  const lines = [
+    `Invoice: ${invoice.invoiceNumber ?? invoice.invoiceId ?? 'unknown'}`,
+    invoice.customerName ? `Customer: ${invoice.customerName}` : null,
+    invoice.dueDate ? `Due date: ${invoice.dueDate}` : null,
+    typeof invoice.balance === 'number' ? `Outstanding balance: ${invoice.balance.toFixed(2)}` : null,
+    typeof invoice.total === 'number' ? `Invoice total: ${invoice.total.toFixed(2)}` : null,
+    typeof invoice.overdueDays === 'number' ? `Overdue days: ${invoice.overdueDays}` : null,
+    '',
+    `Requested follow-up: ${objective.trim()}`,
+  ].filter((line): line is string => line !== null);
+  return lines.join('\n');
+};
+
+const inferMissingFieldsFromEnvelope = (output: VercelToolEnvelope): string[] => {
+  if (Array.isArray(output.missingFields) && output.missingFields.length > 0) {
+    return output.missingFields;
+  }
+  const haystack = `${output.summary} ${output.userAction ?? ''}`.toLowerCase();
+  const inferred = [
+    haystack.includes(' requires summary') || haystack.includes('title') ? 'summary' : null,
+    haystack.includes('requires an assignee') || haystack.includes('who it should be assigned') ? 'assignee' : null,
+    haystack.includes('recipient') || haystack.includes('email') ? 'to' : null,
+    haystack.includes('subject') ? 'subject' : null,
+    haystack.includes('body') || haystack.includes('content') ? 'body' : null,
+  ].filter((field): field is string => Boolean(field));
+  return Array.from(new Set(inferred));
+};
+
+const compileDelegatedAction = (input: {
+  step: SupervisorStep;
+  resolvedContext: Record<string, string>;
+  upstreamArtifacts: StepArtifact[];
+  upstreamResults: DelegatedAgentExecutionResult[];
+}): {
+  compiledAction?: CompiledDelegatedAction;
+  missingFields?: string[];
+  blockingFailure?: StepFailureEnvelope;
+} => {
+  const plannedAction = input.step.action;
+  if (input.step.agentId === 'google-workspace-agent') {
+    if (plannedAction !== 'send_email' && plannedAction !== 'create_draft') {
+      return {};
+    }
+
+    const objectiveRecipient =
+      input.step.objective.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? undefined;
+    const contactArtifact = findUpstreamArtifact(input.upstreamArtifacts, 'contact_resolution');
+    const researchArtifact = findUpstreamArtifact(input.upstreamArtifacts, 'research_summary');
+    const draftArtifact = findUpstreamArtifact(input.upstreamArtifacts, 'email_draft');
+    const recipient =
+      input.resolvedContext.recipientEmail
+      ?? input.resolvedContext.recipient_email
+      ?? input.resolvedContext.email
+      ?? contactArtifact?.email
+      ?? objectiveRecipient;
+    const bodyText =
+      draftArtifact?.bodyText?.trim()
+      ?? researchArtifact?.bodyMarkdown?.trim()
+      ?? undefined;
+    const bodyHtml = draftArtifact?.bodyHtml?.trim() ?? undefined;
+    const subject = deriveEmailSubject({
+      step: input.step,
+      researchArtifact,
+      draftArtifact,
+    });
+
+    const missingFields = [
+      !recipient ? 'to' : null,
+      !subject ? 'subject' : null,
+      !bodyText && !bodyHtml ? 'body' : null,
+    ].filter((field): field is string => Boolean(field));
+
+    if (missingFields.length > 0) {
+      return { missingFields };
+    }
+
+    return {
+      compiledAction: {
+        kind: plannedAction === 'create_draft' ? 'create_draft' : 'send_email',
+        provider: 'google',
+        to: [recipient!],
+        subject,
+        ...(bodyText ? { bodyText } : {}),
+        ...(bodyHtml ? { bodyHtml } : {}),
+        sourceArtifactIds: input.upstreamArtifacts.map((artifact) => artifact.id),
+      },
+    };
+  }
+
+  if (input.step.agentId === 'lark-ops-agent' && plannedAction === 'create_task') {
+    const invoices = extractOverdueInvoicesFromUpstreamResults(input.upstreamResults);
+    const namedAssignee = parseNamedAssigneeFromObjective(input.step.objective);
+    const assignToSelf = objectiveAssignsToSelf(input.step.objective) || !namedAssignee;
+    const assignee = namedAssignee
+      ? { name: namedAssignee }
+      : assignToSelf
+        ? { name: 'me' }
+        : undefined;
+    const createsPerInvoice = /\b(each|every)\b/i.test(input.step.objective) && invoices.length > 0;
+
+    if (createsPerInvoice && invoices.length > SUPERVISOR_LARK_BULK_TASK_THRESHOLD) {
+      return {
+        blockingFailure: {
+          classification: 'ambiguous_request',
+          retryable: false,
+          rawSummary: `Creating ${invoices.length} Lark tasks is a bulk action and needs confirmation or narrowing.`,
+          userQuestion:
+            `I found ${invoices.length} overdue invoices. Should I create tasks for all of them, only the top ${SUPERVISOR_LARK_BULK_TASK_THRESHOLD}, or should I narrow the set first?`,
+          suggestedRepair: {
+            strategy: 'ask_user',
+            notes: 'Bulk task creation threshold exceeded.',
+          },
+        },
+      };
+    }
+
+    if (createsPerInvoice && invoices.length > 0) {
+      return {
+        compiledAction: {
+          kind: 'create_task',
+          provider: 'lark',
+          summary: buildInvoiceTaskSummary(invoices[0]!),
+          description: buildInvoiceTaskDescription(invoices[0]!, input.step.objective),
+          ...(assignee ? { assignee } : {}),
+          tasks: invoices.map((invoice) => ({
+            summary: buildInvoiceTaskSummary(invoice),
+            description: buildInvoiceTaskDescription(invoice, input.step.objective),
+            ...(assignee ? { assignee } : {}),
+          })),
+          sourceArtifactIds: input.upstreamArtifacts.map((artifact) => artifact.id),
+        },
+      };
+    }
+
+    const primaryInvoice = invoices[0];
+    const genericSummary =
+      primaryInvoice
+        ? buildInvoiceTaskSummary(primaryInvoice)
+        : summarizeText(input.step.objective.replace(/\bcreate lark tasks?\b/i, '').trim(), 120)
+          ?? 'Follow up on requested item';
+    const description = primaryInvoice
+      ? buildInvoiceTaskDescription(primaryInvoice, input.step.objective)
+      : summarizeUpstreamStepOutputs(input.upstreamResults).join('\n\n').trim() || undefined;
+
+    if (!genericSummary.trim()) {
+      return {
+        missingFields: ['summary'],
+      };
+    }
+
+    return {
+      compiledAction: {
+        kind: 'create_task',
+        provider: 'lark',
+        summary: genericSummary.trim(),
+        ...(description ? { description } : {}),
+        ...(assignee ? { assignee } : {}),
+        sourceArtifactIds: input.upstreamArtifacts.map((artifact) => artifact.id),
+      },
+    };
+  }
+
+  return {};
 };
 
 const canResolveFieldFromHotContext = (taskId: string, field: string | null | undefined): boolean => {
@@ -1341,6 +1883,135 @@ const canResolveFieldFromHotContext = (taskId: string, field: string | null | un
   return normalizeResolvedIdVariants(trimmed).some((variant) =>
     Boolean(hotContextStore.getResolvedId(taskId, variant)),
   );
+};
+
+const hasResolvedContextField = (
+  resolvedContext: Record<string, string>,
+  field: string | null | undefined,
+): boolean => {
+  const trimmed = field?.trim();
+  if (!trimmed) {
+    return false;
+  }
+  return normalizeResolvedIdVariants(trimmed).some((variant) =>
+    Boolean(resolvedContext[variant]?.trim()),
+  );
+};
+
+const canRepairDelegatedFieldFromContext = (input: {
+  taskId: string;
+  field: string;
+  resolvedContext: Record<string, string>;
+  objective: string;
+  upstreamText: string;
+  upstreamResults?: DelegatedAgentExecutionResult[];
+}): boolean => {
+  const normalized = input.field.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  if (canResolveFieldFromHotContext(input.taskId, input.field)) {
+    return true;
+  }
+
+  if (hasResolvedContextField(input.resolvedContext, input.field)) {
+    return true;
+  }
+
+  if (
+    normalized === 'to'
+    || normalized.includes('recipient')
+    || normalized.includes('email')
+  ) {
+    return Boolean(
+      input.objective.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
+      || input.resolvedContext.recipientEmail
+      || input.resolvedContext.recipient_email
+      || input.resolvedContext.email,
+    );
+  }
+
+  if (normalized.includes('subject')) {
+    return /\b(send|email|mail)\b/i.test(input.objective);
+  }
+
+  if (
+    normalized.includes('body')
+    || normalized.includes('purpose')
+    || normalized.includes('facts')
+    || normalized.includes('content')
+  ) {
+    return isMeaningfulSupervisorStepText(input.upstreamText);
+  }
+
+  if (
+    normalized.includes('summary')
+    || normalized.includes('title')
+    || normalized.includes('description')
+  ) {
+    return isMeaningfulSupervisorStepText(input.upstreamText)
+      || extractOverdueInvoicesFromUpstreamResults(input.upstreamResults ?? []).length > 0
+      || input.objective.trim().length > 0;
+  }
+
+  if (normalized.includes('assignee') || normalized.includes('owner')) {
+    return objectiveAssignsToSelf(input.objective)
+      || Boolean(parseNamedAssigneeFromObjective(input.objective));
+  }
+
+  return false;
+};
+
+const findRecoverableDelegatedToolFailure = (input: {
+  steps: Array<{ toolResults?: Array<{ output: unknown }> }>;
+  taskId: string;
+  resolvedContext: Record<string, string>;
+  objective: string;
+  upstreamText: string;
+}): VercelToolEnvelope | null => {
+  for (const step of input.steps) {
+    for (const result of step.toolResults ?? []) {
+      const output = result.output as VercelToolEnvelope | undefined;
+      if (!output || output.success) {
+        continue;
+      }
+
+      if (output.errorKind === 'missing_input') {
+        const missingFields = output.missingFields ?? [];
+        const repairable =
+          missingFields.length === 0
+          || missingFields.every((field) =>
+            canRepairDelegatedFieldFromContext({
+              taskId: input.taskId,
+              field,
+              resolvedContext: input.resolvedContext,
+              objective: input.objective,
+              upstreamText: input.upstreamText,
+              upstreamResults: [],
+            }),
+          );
+        if (repairable) {
+          return output;
+        }
+      }
+
+      if (
+        output.errorKind === 'validation'
+        && /\b(send|email|mail)\b/i.test(input.objective)
+        && Boolean(
+          input.objective.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
+          || input.resolvedContext.recipientEmail
+          || input.resolvedContext.recipient_email
+        )
+        && isMeaningfulSupervisorStepText(input.upstreamText)
+      ) {
+        return output;
+      }
+    }
+  }
+
+  return null;
 };
 
 const findUnrepairableBlockingUserInput = (
@@ -2169,12 +2840,15 @@ const inferDateScope = (message?: string): string | undefined => {
   return undefined;
 };
 
-const shouldExposeZohoBooksReadForLarkMessage = (message?: string): boolean => {
+const shouldExposeZohoBooksReadForLarkMessage = (
+  message?: string,
+  canonicalIntent?: CanonicalIntent,
+): boolean => {
   const text = message?.trim();
   if (!text) {
     return false;
   }
-  const intent = classifyIntent(text);
+  const intent = canonicalIntent ?? classifyIntent(text);
   return intent.domain === 'zoho_books' && !intent.isWriteLike;
 };
 
@@ -2557,6 +3231,292 @@ const buildMissingInputResponseText = (
   return null;
 };
 
+const buildFailureFingerprint = (failure: StepFailureEnvelope): string =>
+  JSON.stringify({
+    classification: failure.classification,
+    missingFields: [...(failure.missingFields ?? [])].sort(),
+    missingEntities: (failure.missingEntities ?? []).map((entry) => `${entry.kind}:${entry.label}`).sort(),
+    attemptedTool: failure.attemptedTool ?? null,
+    attemptedOperation: failure.attemptedOperation ?? null,
+    rawSummary: failure.rawSummary,
+  });
+
+const buildBlockingEnvelopeFromFailure = (failure: StepFailureEnvelope): VercelToolEnvelope => ({
+  toolId: failure.attemptedTool ?? 'supervisor',
+  status: 'error',
+  data: {},
+  confirmedAction: false,
+  success: false,
+  summary: failure.rawSummary,
+  errorKind:
+    failure.classification === 'missing_input'
+    || failure.classification === 'ambiguous_request'
+    || failure.classification === 'resolution_failed'
+      ? 'missing_input'
+      : failure.classification === 'schema_error'
+        ? 'validation'
+        : failure.classification === 'permission_denied'
+          ? 'permission'
+          : failure.classification === 'policy_blocked'
+            ? 'policy_blocked'
+            : failure.classification === 'rate_limited'
+              ? 'rate_limited'
+              : failure.classification === 'not_found'
+                ? 'not_found'
+                : 'api_failure',
+  error: failure.rawSummary,
+  retryable: failure.retryable,
+  ...(failure.userQuestion ? { userAction: failure.userQuestion } : {}),
+  ...(failure.missingFields && failure.missingFields.length > 0
+    ? { missingFields: failure.missingFields }
+    : {}),
+});
+
+const classifyToolEnvelopeFailure = (input: {
+  output: VercelToolEnvelope;
+  step: SupervisorStep;
+  taskId: string;
+  resolvedContext: Record<string, string>;
+  upstreamText: string;
+  upstreamResults: DelegatedAgentExecutionResult[];
+}): StepFailureEnvelope | null => {
+  const missingFields = inferMissingFieldsFromEnvelope(input.output);
+  const repairable =
+    missingFields.length > 0
+      && missingFields.every((field) =>
+        canRepairDelegatedFieldFromContext({
+          taskId: input.taskId,
+          field,
+          resolvedContext: input.resolvedContext,
+          objective: input.step.objective,
+          upstreamText: input.upstreamText,
+          upstreamResults: input.upstreamResults,
+        }),
+      );
+
+  if (input.output.errorKind === 'missing_input') {
+    return {
+      classification: repairable ? 'missing_input' : 'ambiguous_request',
+      missingFields,
+      attemptedTool: input.output.toolId,
+      attemptedOperation: input.output.operation,
+      retryable: repairable,
+      suggestedRepair: repairable
+        ? {
+            strategy: input.step.agentId === 'context-agent' ? 'derive_from_upstream' : 'compile_action',
+            notes: 'Tool reported missing required input that may be derivable from available context.',
+          }
+        : {
+            strategy: 'ask_user',
+          },
+      ...(repairable
+        ? {}
+        : { userQuestion: toClarificationQuestion(input.output.userAction) ?? input.output.userAction ?? input.output.summary }),
+      rawSummary: input.output.summary,
+    };
+  }
+
+  if (input.output.errorKind === 'validation') {
+    const lowerSummary = `${input.output.summary} ${input.output.userAction ?? ''}`.toLowerCase();
+    const ambiguous =
+      lowerSummary.includes('please tell me which teammate')
+      || lowerSummary.includes('matched multiple')
+      || lowerSummary.includes('be more specific');
+    if (ambiguous) {
+      return {
+        classification: 'ambiguous_request',
+        attemptedTool: input.output.toolId,
+        attemptedOperation: input.output.operation,
+        retryable: false,
+        suggestedRepair: { strategy: 'ask_user' },
+        userQuestion: toClarificationQuestion(input.output.userAction) ?? input.output.userAction ?? input.output.summary,
+        rawSummary: input.output.summary,
+      };
+    }
+    if (repairable) {
+      return {
+        classification: 'schema_error',
+        missingFields,
+        attemptedTool: input.output.toolId,
+        attemptedOperation: input.output.operation,
+        retryable: true,
+        suggestedRepair: { strategy: 'compile_action' },
+        rawSummary: input.output.summary,
+      };
+    }
+  }
+
+  if (input.output.errorKind === 'resolution_failed' || input.output.errorKind === 'not_found') {
+    return {
+      classification: input.output.errorKind,
+      attemptedTool: input.output.toolId,
+      attemptedOperation: input.output.operation,
+      retryable: false,
+      suggestedRepair: { strategy: 'ask_user' },
+      userQuestion: toClarificationQuestion(input.output.userAction) ?? input.output.userAction ?? input.output.summary,
+      rawSummary: input.output.summary,
+    };
+  }
+
+  if (input.output.errorKind === 'permission') {
+    return {
+      classification: 'permission_denied',
+      attemptedTool: input.output.toolId,
+      attemptedOperation: input.output.operation,
+      retryable: false,
+      suggestedRepair: { strategy: 'ask_user' },
+      userQuestion: toClarificationQuestion(input.output.userAction) ?? input.output.userAction ?? input.output.summary,
+      rawSummary: input.output.summary,
+    };
+  }
+
+  if (input.output.errorKind === 'policy_blocked') {
+    return {
+      classification: 'policy_blocked',
+      attemptedTool: input.output.toolId,
+      attemptedOperation: input.output.operation,
+      retryable: false,
+      suggestedRepair: { strategy: 'ask_user' },
+      userQuestion: toClarificationQuestion(input.output.userAction) ?? input.output.userAction ?? input.output.summary,
+      rawSummary: input.output.summary,
+    };
+  }
+
+  if (input.output.errorKind === 'rate_limited') {
+    return {
+      classification: 'rate_limited',
+      attemptedTool: input.output.toolId,
+      attemptedOperation: input.output.operation,
+      retryable: false,
+      suggestedRepair: { strategy: 'switch_tool_mode' },
+      rawSummary: input.output.summary,
+    };
+  }
+
+  return null;
+};
+
+const classifyDelegatedFailure = (input: {
+  step: SupervisorStep;
+  rawSteps: Array<{ toolResults?: Array<{ output?: unknown }> }>;
+  taskId: string;
+  resolvedContext: Record<string, string>;
+  upstreamText: string;
+  upstreamResults: DelegatedAgentExecutionResult[];
+  compiledAction?: CompiledDelegatedAction;
+}): StepFailureEnvelope | null => {
+  const blocking = findBlockingUserInput(input.rawSteps);
+  if (blocking) {
+    return classifyToolEnvelopeFailure({
+      output: blocking,
+      step: input.step,
+      taskId: input.taskId,
+      resolvedContext: input.resolvedContext,
+      upstreamText: input.upstreamText,
+      upstreamResults: input.upstreamResults,
+    });
+  }
+
+  const envelopes = extractToolEnvelopesFromRawSteps(input.rawSteps);
+  for (let index = envelopes.length - 1; index >= 0; index -= 1) {
+    const candidate = envelopes[index];
+    if (!candidate || candidate.success) {
+      continue;
+    }
+    const classified = classifyToolEnvelopeFailure({
+      output: candidate,
+      step: input.step,
+      taskId: input.taskId,
+      resolvedContext: input.resolvedContext,
+      upstreamText: input.upstreamText,
+      upstreamResults: input.upstreamResults,
+    });
+    if (classified) {
+      return classified;
+    }
+    return {
+      classification: 'unknown',
+      attemptedTool: candidate.toolId,
+      attemptedOperation: candidate.operation,
+      retryable: false,
+      rawSummary: candidate.summary,
+    };
+  }
+
+  return null;
+};
+
+const attemptSupervisorRepair = (input: {
+  step: SupervisorStep;
+  failure: StepFailureEnvelope;
+  resolvedContext: Record<string, string>;
+  upstreamArtifacts: StepArtifact[];
+  upstreamResults: DelegatedAgentExecutionResult[];
+  activeCompiledAction?: CompiledDelegatedAction;
+}): {
+  kind: 'retry' | 'requires_user_input' | 'stop';
+  compiledAction?: CompiledDelegatedAction;
+  repairedFields: string[];
+  resolverToolsUsed: string[];
+  blockingFailure?: StepFailureEnvelope;
+} => {
+  if (!input.failure.retryable) {
+    if (input.failure.userQuestion) {
+      return {
+        kind: 'requires_user_input',
+        repairedFields: [],
+        resolverToolsUsed: [],
+        blockingFailure: input.failure,
+      };
+    }
+    return {
+      kind: 'stop',
+      repairedFields: [],
+      resolverToolsUsed: [],
+    };
+  }
+
+  const compiled = compileDelegatedAction({
+    step: input.step,
+    resolvedContext: input.resolvedContext,
+    upstreamArtifacts: input.upstreamArtifacts,
+    upstreamResults: input.upstreamResults,
+  });
+
+  if (compiled.blockingFailure) {
+    return {
+      kind: 'requires_user_input',
+      repairedFields: [],
+      resolverToolsUsed: [],
+      blockingFailure: compiled.blockingFailure,
+    };
+  }
+
+  if (compiled.compiledAction) {
+    return {
+      kind: 'retry',
+      compiledAction: compiled.compiledAction,
+      repairedFields: input.failure.missingFields ?? [],
+      resolverToolsUsed: [],
+    };
+  }
+
+  if (input.failure.userQuestion) {
+    return {
+      kind: 'requires_user_input',
+      repairedFields: [],
+      resolverToolsUsed: [],
+      blockingFailure: input.failure,
+    };
+  }
+
+  return {
+    kind: 'stop',
+    repairedFields: [],
+    resolverToolsUsed: [],
+  };
+};
+
 const buildLarkStatusText = (input: {
   task: OrchestrationTaskDTO;
   message: NormalizedIncomingMessageDTO;
@@ -2785,6 +3745,8 @@ export const buildDelegatedLarkStepPrompt = (input: {
   scopedContext: string[];
   upstreamResults: DelegatedAgentExecutionResult[];
   resolvedContext: Record<string, string>;
+  inputArtifacts: StepArtifact[];
+  compiledAction?: CompiledDelegatedAction;
 }): string => {
   const ACTION_AGENTS: Array<SupervisorStep['agentId']> = [
     'google-workspace-agent',
@@ -2792,20 +3754,19 @@ export const buildDelegatedLarkStepPrompt = (input: {
     'zoho-ops-agent',
     'workspace-agent',
   ];
-  const objectiveLooksLikeEmailSend = /\b(send|email|mail)\b/i.test(input.step.objective);
-  const objectiveLooksLikeAction = /\b(send|create|update|delete|post|publish|assign|schedule|book|draft|write|add|remove)\b/i.test(input.step.objective);
-  const objectiveRecipientEmail = input.step.objective.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? null;
-  const primaryUpstreamContent = input.upstreamResults
-    .map((result) => result.text?.trim() ?? '')
-    .find((text) => isMeaningfulSupervisorStepText(text)) ?? '';
-  const upstreamContentAvailable = isMeaningfulSupervisorStepText(primaryUpstreamContent);
+  const upstreamContentAvailable = input.inputArtifacts.length > 0
+    || summarizeUpstreamStepOutputs(input.upstreamResults).some((text) => text.length > 50);
+  const isContextLookupStep = input.step.agentId === 'context-agent' && input.step.action === 'cross_source_lookup';
+  const retrievalInstruction = isContextLookupStep
+    ? 'Use contextSearch for this cross-source lookup.'
+    : 'Use the typed handoff inputs first. Only search if a specific identifier or record reference is genuinely missing.';
   const upstreamContext = input.upstreamResults.length > 0
     ? input.upstreamResults.map((result) => [
       `Step ${result.stepId} (${result.agentId})`,
       `Objective: ${result.objective}`,
       `Summary: ${result.summary}`,
-      `Text: ${result.text}`,
       `Resolved context: ${formatSupervisorResolvedContext((result.data?.resolvedContext as Record<string, string> | undefined) ?? {})}`,
+      `Artifacts: ${JSON.stringify(collectArtifactsFromResult(result))}`,
       `Structured output: ${JSON.stringify(result.output)}`,
     ].join('\n')).join('\n\n')
     : 'None.';
@@ -2817,9 +3778,13 @@ export const buildDelegatedLarkStepPrompt = (input: {
   const parts = [
     `You are executing delegated supervisor step ${input.step.stepId}.`,
     `Assigned agent family: ${input.step.agentId}.`,
+    `Planned action: ${input.step.action}.`,
+    `Source system: ${input.step.sourceSystem}.`,
     `Objective: ${input.step.objective}`,
     `Original user request: ${input.originalUserMessage}`,
   ];
+  parts.push('', 'The typed action and source system above are authoritative. Do not reinterpret the objective into a different action or source.');
+  parts.push('', `Retrieval instruction: ${retrievalInstruction}`);
   if (input.step.structuredObjective) {
     const obj = input.step.structuredObjective;
     parts.push('', '[Structured Task Context]');
@@ -2836,38 +3801,27 @@ export const buildDelegatedLarkStepPrompt = (input: {
       '',
       'IMPORTANT: Personal history results showing past failures are NOT your current state. Permissions and capabilities may have changed. Always attempt the action regardless of what past history shows. Past failures do not predict current failures.',
     );
-    if (objectiveLooksLikeEmailSend && primaryUpstreamContent) {
-      parts.push(
-        '',
-        'EMAIL CONTENT TO SEND:',
-        primaryUpstreamContent,
-      );
-    }
-    if (objectiveLooksLikeEmailSend) {
-      parts.push(
-        '',
-        objectiveRecipientEmail
-          ? `The email content above is ready. Your only job is to call googleWorkspace with operation=sendMessage, to=${objectiveRecipientEmail}, subject="Research Findings: Best Agentic AI Platforms", body={EMAIL CONTENT}. Do not call contextSearch. Do not search for anything. Act now.`
-          : 'If this is an email send step and the recipient, subject, or body is already present in the objective, resolved handoff context, or EMAIL CONTENT block, copy those values directly into googleWorkspace(operation="sendMessage"). Do not call contextSearch. Do not search for anything. Act now.',
-      );
-    }
   }
-  if (ACTION_AGENTS.includes(input.step.agentId) && objectiveLooksLikeAction && upstreamContentAvailable) {
+  if (ACTION_AGENTS.includes(input.step.agentId) && upstreamContentAvailable) {
     parts.push(
       '',
       'ACTION CONTEXT:',
       'You are an action agent. Your upstream step results contain everything you need.',
-      'Do NOT call contextSearch — the content is already above.',
+      'Do NOT reinterpret this as a generic search step.',
+      'Do NOT call contextSearch when the required content is already present in artifacts, resolved context, or compiled action.',
+      'If you truly must call contextSearch for a missing detail, always pass explicit scopes or sources. Never use scopes: ["all"] unless you genuinely need multiple sources simultaneously.',
       'Execute the action directly using your primary tool.',
       'Past history showing failures is irrelevant — attempt the action now.',
     );
-  } else if (ACTION_AGENTS.includes(input.step.agentId) && objectiveLooksLikeAction) {
+  } else if (ACTION_AGENTS.includes(input.step.agentId)) {
     parts.push(
       '',
       'ACTION CONTEXT:',
       'You are an action agent.',
       'Your context is provided in the handoff input above.',
-      'If critical information is missing, do not search.',
+      'Do not reinterpret the task or downgrade to a generic search.',
+      'If critical information is missing, do not search broadly.',
+      'If you must use contextSearch, always pass explicit scopes or sources. Never use scopes: ["all"] unless you genuinely need multiple sources simultaneously.',
       'Return a concise explanation of exactly what field or reference is missing so the supervisor can provide it.',
     );
   }
@@ -2875,6 +3829,12 @@ export const buildDelegatedLarkStepPrompt = (input: {
     '',
     'Resolved handoff context:',
     formatSupervisorResolvedContext(input.resolvedContext),
+    '',
+    'Input artifacts:',
+    JSON.stringify(input.inputArtifacts, null, 2),
+    '',
+    'Compiled action:',
+    input.compiledAction ? JSON.stringify(input.compiledAction, null, 2) : 'None.',
     '',
     'Scoped orchestration context:',
     scopedContext,
@@ -2884,6 +3844,7 @@ export const buildDelegatedLarkStepPrompt = (input: {
     '',
     'Your output is consumed by the supervisor.',
     'Only do the work required for this step. Use only the tools available in this agent family.',
+    'If the user named a specific person, assignee, or recipient, preserve that identity exactly. Do not replace a named person with a generic team or department label.',
     delegatedStepLikelyRequiresToolUse(input.step)
       ? 'This step obviously requires tool use. Do not spend your first turn narrating a plan. Call the relevant tool immediately, then summarize the result.'
       : 'If a tool is needed, use it directly instead of spending time narrating a plan.',
@@ -2945,6 +3906,9 @@ const resolveRuntimeContext = async (
   if (!companyId) {
     throw new Error('Missing companyId for Vercel runtime.');
   }
+  const canonicalIntent = task.canonicalIntent ?? await resolveCanonicalIntent({
+    message: message.text,
+  });
 
   const requesterAiRole = message.trace?.userRole ?? 'MEMBER';
   const fallbackAllowedToolIds = await toolPermissionService.getAllowedTools(
@@ -3012,7 +3976,13 @@ const resolveRuntimeContext = async (
     allowedToolIds = [...allowedToolIds, 'contextSearch'];
   }
 
-  if (shouldExposeZohoBooksReadForLarkMessage(message.text) && !allowedToolIds.includes('zohoBooks')) {
+  for (const toolId of getPlanningToolIdsForInferredDomain(canonicalIntent.domain)) {
+    if (!allowedToolIds.includes(toolId)) {
+      allowedToolIds = [...allowedToolIds, toolId];
+    }
+  }
+
+  if (shouldExposeZohoBooksReadForLarkMessage(message.text, canonicalIntent) && !allowedToolIds.includes('zohoBooks')) {
     allowedToolIds = [...allowedToolIds, 'zohoBooks'];
   }
   allowedActionsByTool = await ensureAllowedActionsByTool({
@@ -4498,33 +5468,34 @@ const executeLarkVercelTask = async (
       compactionResult.threadSummary,
       taskStateContext,
     ].filter((value): value is string => Boolean(value?.trim()));
+    const supervisorDomainHint = toolSelection.inferredDomain ?? task.canonicalIntent?.domain ?? null;
+    const supervisorOperationHint =
+      toolSelection.inferredOperationClass ?? task.canonicalIntent?.operationClass ?? null;
+    const supervisorPlanningToolIds = Array.from(new Set([
+      ...effectiveRuntime.allowedToolIds,
+      ...getPlanningToolIdsForInferredDomain(supervisorDomainHint),
+    ]));
     const supervisorEligibility = resolveSupervisorEligibleAgents({
       runtime: {
-        allowedToolIds: effectiveRuntime.allowedToolIds,
-        runExposedToolIds: effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
+        allowedToolIds: supervisorPlanningToolIds,
+        runExposedToolIds: supervisorPlanningToolIds,
         plannerChosenOperationClass:
-          toolSelection.inferredOperationClass ?? effectiveRuntime.plannerChosenOperationClass ?? undefined,
+          supervisorOperationHint ?? effectiveRuntime.plannerChosenOperationClass ?? undefined,
         workspace: effectiveRuntime.workspace,
       },
       latestUserMessage: resolvedUserMessage,
-      inferredDomain: toolSelection.inferredDomain,
-      inferredOperationClass: toolSelection.inferredOperationClass,
+      inferredDomain: supervisorDomainHint,
+      inferredOperationClass: supervisorOperationHint,
       normalizedIntent: childRoute.normalizedIntent ?? null,
     });
     const eligibleAgentIds = Array.from(new Set([
       ...supervisorEligibility.preferredAgentIds,
       ...supervisorEligibility.eligibleAgents.map((agent) => agent.id),
-    ])).filter((agentId) => {
-      const plannerChosenToolId = effectiveRuntime.plannerChosenToolId ?? toolSelection.plannerChosenToolId;
-      if ((plannerChosenToolId === 'zohoBooks' || plannerChosenToolId === 'zoho-books-read' || plannerChosenToolId === 'zoho-books-agent') && agentId === 'lark-ops-agent') {
-        return false;
-      }
-      return true;
-    });
+    ]));
     const supervisorPlanningHint = trimSupervisorSystemPrompt([
       effectiveRuntime.toolSelectionReason ? `Tool-selection reason: ${effectiveRuntime.toolSelectionReason}` : '',
-      toolSelection.inferredDomain ? `Inferred domain: ${toolSelection.inferredDomain}` : '',
-      toolSelection.inferredOperationClass ? `Inferred operation class: ${toolSelection.inferredOperationClass}` : '',
+      supervisorDomainHint ? `Inferred domain: ${supervisorDomainHint}` : '',
+      supervisorOperationHint ? `Inferred operation class: ${supervisorOperationHint}` : '',
     ].filter(Boolean).join('\n'));
     const supervisorPlanStartedAt = Date.now();
     const supervisorPlan = await planSupervisorDelegation({
@@ -4538,8 +5509,8 @@ const executeLarkVercelTask = async (
         suggestedToolIds: childRoute.suggestedToolIds ?? [],
       },
       toolSelectionReason: supervisorPlanningHint || null,
-      inferredDomain: toolSelection.inferredDomain,
-      inferredOperationClass: toolSelection.inferredOperationClass,
+      inferredDomain: supervisorDomainHint,
+      inferredOperationClass: supervisorOperationHint,
       eligibleAgentIds,
       searchIntent: effectiveRuntime.searchIntent,
       recentTaskSummaries: activeThreadSummary.recentTaskSummaries ?? [],
@@ -4599,23 +5570,38 @@ const executeLarkVercelTask = async (
               output: result.output,
             })),
           });
-          let familyToolIds = getSupervisorAgentToolIds(
-            step.agentId,
-            effectiveRuntime.allowedToolIds,
-          );
-          if (DELEGATED_RETRIEVAL_AGENTS.has(step.agentId)) {
-            if (
-              effectiveRuntime.allowedToolIds.includes('contextSearch')
-              && !familyToolIds.includes('contextSearch')
-            ) {
-              familyToolIds = [...familyToolIds, 'contextSearch'];
-            }
-          } else {
+          const inputArtifacts = collectUpstreamArtifacts(upstreamResults);
+          const compiledActionResult = compileDelegatedAction({
+            step,
+            resolvedContext: resolvedHandoffContext,
+            upstreamArtifacts: inputArtifacts,
+            upstreamResults,
+          });
+          let compiledAction = compiledActionResult.compiledAction;
+          const compiledActionBlockingFailure = compiledActionResult.blockingFailure;
+          let familyToolIds = getRequiredToolIdsForSupervisorStep(step);
+          if (familyToolIds.length === 0) {
+            familyToolIds = getSupervisorAgentToolIds(
+              step.agentId,
+              supervisorPlanningToolIds,
+            );
+          }
+          if (step.sourceSystem !== 'context') {
             familyToolIds = familyToolIds.filter((toolId) => toolId !== 'contextSearch');
+          }
+          familyToolIds = Array.from(new Set(familyToolIds));
+          const stepAllowedActionsByTool = await ensureAllowedActionsByTool({
+            companyId: effectiveRuntime.companyId,
+            requesterAiRole: effectiveRuntime.requesterAiRole,
+            allowedToolIds: familyToolIds,
+          });
+          if (step.sourceSystem === 'context' && !stepAllowedActionsByTool.contextSearch?.includes('read')) {
+            stepAllowedActionsByTool.contextSearch = ['read'];
           }
           const stepRuntime: VercelRuntimeRequestContext = {
             ...effectiveRuntime,
             allowedToolIds: familyToolIds,
+            allowedActionsByTool: stepAllowedActionsByTool,
             delegatedAgentId: step.agentId,
             runExposedToolIds: familyToolIds,
             plannerCandidateToolIds: familyToolIds,
@@ -4634,22 +5620,17 @@ const executeLarkVercelTask = async (
           }
           const stepToolResults: RunToolResult[] = [];
           const stepResolvedContext = { ...resolvedHandoffContext };
-          const objectiveLooksLikeEmailSend = /\b(send|email|mail)\b/i.test(step.objective);
-          const upstreamEmailContent = upstreamResults
-            .map((result) => result.text?.trim() ?? '')
-            .find((text) => isMeaningfulSupervisorStepText(text)) ?? '';
-          const objectiveHasInlineBody =
-            /\bwith the body\b/i.test(step.objective)
-            || /\bbody\s*[:=]/i.test(step.objective)
-            || /\bsubject\s*[:=]/i.test(step.objective);
-          if (
-            step.agentId === 'google-workspace-agent'
-            && objectiveLooksLikeEmailSend
-            && upstreamResults.length > 0
-            && !isMeaningfulSupervisorStepText(upstreamEmailContent)
-            && !objectiveHasInlineBody
-          ) {
-            const blockedText = 'Upstream step did not produce email content to send.';
+          let activeAttemptToolResults: RunToolResult[] = stepToolResults;
+          const upstreamEmailContent =
+            findUpstreamArtifact(inputArtifacts, 'research_summary')?.bodyMarkdown
+            ?? summarizeUpstreamStepOutputs(upstreamResults).find((text) => isMeaningfulSupervisorStepText(text))
+            ?? '';
+          if (compiledActionBlockingFailure) {
+            const blockedEnvelope = buildBlockingEnvelopeFromFailure(compiledActionBlockingFailure);
+            const blockedText =
+              buildMissingInputResponseText(blockedEnvelope)
+              ?? compiledActionBlockingFailure.userQuestion
+              ?? compiledActionBlockingFailure.rawSummary;
             await appendExecutionEventSafe({
               executionId,
               phase: 'error',
@@ -4666,7 +5647,7 @@ const executeLarkVercelTask = async (
                 agentId: step.agentId,
                 objective: step.objective,
                 pendingApproval: null,
-                blockingUserInput: null,
+                blockingUserInput: blockedEnvelope.userAction ?? null,
                 toolResults: [],
               },
             });
@@ -4675,14 +5656,19 @@ const executeLarkVercelTask = async (
               stepId: step.stepId,
               agentId: step.agentId,
               objective: step.objective,
-              status: 'failed',
+              status: 'blocked',
               summary: blockedText,
               assistantText: blockedText,
               text: blockedText,
               toolResults: [],
+              failure: compiledActionBlockingFailure,
+              blockingUserInput: true,
+              blockingUserInputPayload: blockedEnvelope,
               taskState: {},
             } satisfies DelegatedAgentExecutionResult;
           }
+          const stepSystemPrompt = buildDelegatedAgentSystemPrompt(compactedSystemPrompt, step.agentId);
+          const upstreamStepSummaries = summarizeUpstreamStepOutputs(upstreamResults);
           const stepMessages: ModelMessage[] = [
             ...primaryMessages.map(({ role, content }) => ({ role, content })),
             {
@@ -4693,6 +5679,8 @@ const executeLarkVercelTask = async (
                 scopedContext,
                 upstreamResults,
                 resolvedContext: resolvedHandoffContext,
+                inputArtifacts,
+                compiledAction,
               }),
             },
           ];
@@ -4756,17 +5744,27 @@ const executeLarkVercelTask = async (
               const hotContextSlot = buildHotContextSlot(toolName, output);
               hotContextStore.push(task.taskId, hotContextSlot);
               Object.assign(stepResolvedContext, hotContextSlot.resolvedIds);
-              stepToolResults.push({
+              const normalizedToolResult: RunToolResult = {
                 toolId: output.toolId,
                 toolName,
                 success: output.success,
                 status: output.status,
                 data: output.data,
                 confirmedAction: output.confirmedAction,
+                canonicalOperation: output.canonicalOperation,
+                mutationResult: output.mutationResult,
                 ...(output.error ? { error: output.error } : {}),
+                ...(output.errorKind ? { errorKind: output.errorKind } : {}),
                 pendingApproval: Boolean(output.pendingApprovalAction),
                 summary: output.summary,
-              });
+                ...(output.userAction ? { userAction: output.userAction } : {}),
+                ...(output.missingFields ? { missingFields: output.missingFields } : {}),
+                ...(output.repairHints ? { repairHints: output.repairHints } : {}),
+              };
+              stepToolResults.push(normalizedToolResult);
+              if (activeAttemptToolResults !== stepToolResults) {
+                activeAttemptToolResults.push(normalizedToolResult);
+              }
               await appendLatestAgentRunLog(task.taskId, 'tool.finish', {
                 toolName,
                 activityId,
@@ -4789,7 +5787,100 @@ const executeLarkVercelTask = async (
             Object.entries(allStepTools).filter(([toolName]) => familyToolIds.includes(toolName)),
           );
 
+          const executeCompiledActionDirectly = async () => {
+            if (!compiledAction) {
+              return null;
+            }
+            if (
+              compiledAction.provider === 'google'
+              && (compiledAction.kind === 'send_email' || compiledAction.kind === 'create_draft')
+            ) {
+              const toolInput = {
+                operation: compiledAction.kind === 'create_draft' ? 'createDraft' : 'sendMessage',
+                to: compiledAction.to.join(', '),
+                subject: compiledAction.subject,
+                body: compiledAction.bodyText ?? compiledAction.bodyHtml ?? '',
+                ...(compiledAction.bodyHtml && !compiledAction.bodyText ? { isHtml: true } : {}),
+              };
+              const output = await allStepTools.googleWorkspace.execute(toolInput);
+              return {
+                text: asStringSafe(output?.summary) ?? '',
+                steps: [
+                  {
+                    toolResults: [
+                      {
+                        toolName: 'googleWorkspace',
+                        output,
+                      },
+                    ],
+                    content: [
+                      { type: 'tool-call', toolName: 'googleWorkspace', input: toolInput },
+                      { type: 'tool-result', toolName: 'googleWorkspace', output },
+                    ],
+                  },
+                ],
+              };
+            }
+            if (compiledAction.provider === 'lark' && compiledAction.kind === 'create_task') {
+              const compiledTasks = compiledAction.tasks?.length
+                ? compiledAction.tasks
+                : [{
+                    summary: compiledAction.summary,
+                    description: compiledAction.description,
+                    assignee: compiledAction.assignee,
+                  }];
+              const stepEntries: Array<Record<string, unknown>> = [];
+              let latestText = '';
+              for (const taskInput of compiledTasks) {
+                const assignee = taskInput.assignee;
+                const toolInput = {
+                  operation: 'write',
+                  taskOperation: 'create',
+                  summary: taskInput.summary,
+                  ...(taskInput.description ? { description: taskInput.description } : {}),
+                  ...(assignee?.name?.toLowerCase() === 'me'
+                    ? { assignToMe: true }
+                    : assignee?.name
+                      ? { assigneeNames: [assignee.name] }
+                      : assignee?.openId
+                        ? { assigneeIds: [assignee.openId] }
+                        : {}),
+                };
+                const output = await allStepTools.larkTask.execute(toolInput);
+                latestText = asStringSafe(output?.summary) ?? latestText;
+                stepEntries.push({
+                  toolResults: [
+                    {
+                      toolName: 'larkTask',
+                      output,
+                    },
+                  ],
+                  content: [
+                    { type: 'tool-call', toolName: 'larkTask', input: toolInput },
+                    { type: 'tool-result', toolName: 'larkTask', output },
+                  ],
+                });
+                if (!output?.success) {
+                  break;
+                }
+              }
+              return {
+                text: latestText,
+                steps: stepEntries,
+              };
+            }
+            return null;
+          };
+
           let stepResult;
+          let rawSteps: Array<{ toolResults?: Array<{ toolName?: string; output?: unknown }> }> = [];
+          let stepPendingApproval: PendingApprovalAction | null = null;
+          let stepBlockingUserInput: VercelToolEnvelope | null = null;
+          let stepFailure: StepFailureEnvelope | null = null;
+          let repairAttempts = 0;
+          const repairHistory: StepRepairHistoryEntry[] = [];
+          const seenFailureFingerprints = new Set<string>();
+          let noToolUseRetried = false;
           delegatedStepWatchdog = setTimeout(() => {
             if (stepToolResults.length > 0) {
               return;
@@ -4847,7 +5938,7 @@ const executeLarkVercelTask = async (
                 () =>
                   generateText({
                     model: resolvedModel.model,
-                    system: buildDelegatedAgentSystemPrompt(compactedSystemPrompt, step.agentId),
+                    system: stepSystemPrompt,
                     messages: messagesForStep,
                     tools: stepTools,
                     temperature: config.OPENAI_TEMPERATURE,
@@ -4887,7 +5978,7 @@ const executeLarkVercelTask = async (
                 () =>
                   generateText({
                     model: resolvedModel.model,
-                    system: buildDelegatedAgentSystemPrompt(compactedSystemPrompt, step.agentId),
+                    system: stepSystemPrompt,
                     messages: sanitizedMessages,
                     tools: stepTools,
                     temperature: config.OPENAI_TEMPERATURE,
@@ -4915,47 +6006,25 @@ const executeLarkVercelTask = async (
               );
             }
           };
-          stepResult = await runDelegatedStepModel(stepMessages);
-          if (delegatedStepWatchdog) {
-            clearTimeout(delegatedStepWatchdog);
-          }
-
-          let rawSteps = (stepResult.steps ?? []) as Array<{
-            toolResults?: Array<{ toolName?: string; output?: unknown }>;
-          }>;
-          let stepPendingApproval = findPendingApproval(
-            rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>,
-          );
-          let stepBlockingUserInput = findUnrepairableBlockingUserInput(
-            rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>,
-            task.taskId,
-          );
-          if (
-            stepToolResults.length === 0 &&
-            !stepPendingApproval &&
-            !stepBlockingUserInput &&
-            delegatedStepLikelyRequiresToolUse(step)
-          ) {
-            statusHistory.push(`Retrying ${step.agentId}: first pass completed without any tool use.`);
-            await updateStatus(
-              'planning',
-              'Hit a snag, trying another way…',
+          const runDelegatedStepAttempt = async (
+            messagesForStep: ModelMessage[],
+            labelSuffix = '',
+          ) => {
+            activeAttemptToolResults = [];
+            const attemptResult = compiledAction
+              ? await executeCompiledActionDirectly() ?? await runDelegatedStepModel(messagesForStep, labelSuffix)
+              : await runDelegatedStepModel(messagesForStep, labelSuffix);
+            return {
+              stepResult: attemptResult,
+              attemptToolResults: activeAttemptToolResults,
+            };
+          };
+          for (let attemptIndex = 0; attemptIndex <= SUPERVISOR_MAX_REPAIR_ATTEMPTS; attemptIndex += 1) {
+            const attemptOutcome = await runDelegatedStepAttempt(
+              stepMessages,
+              attemptIndex === 0 ? '' : `_repair_${attemptIndex}`,
             );
-            await appendLatestAgentRunLog(task.taskId, 'supervisor.step.retry_no_tool_use', {
-              channel: 'lark',
-              threadId: contextStorageId ?? message.chatId,
-              supervisorStepId: step.stepId,
-              supervisorAgentId: step.agentId,
-              objective: step.objective,
-            });
-            stepResult = await runDelegatedStepModel([
-              ...stepMessages,
-              {
-                role: 'user',
-                content:
-                  'Retry this delegated step once. The previous pass finished without using any tools. If this step requires live retrieval or an external action, use one of the available tools in this agent family unless you are blocked by approval or missing input.',
-              },
-            ], '_no_tool_retry');
+            stepResult = attemptOutcome.stepResult;
             rawSteps = (stepResult.steps ?? []) as Array<{
               toolResults?: Array<{ toolName?: string; output?: unknown }>;
             }>;
@@ -4966,6 +6035,190 @@ const executeLarkVercelTask = async (
               rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>,
               task.taskId,
             );
+            if (
+              attemptOutcome.attemptToolResults.length === 0
+              && !stepPendingApproval
+              && !stepBlockingUserInput
+              && delegatedStepLikelyRequiresToolUse(step)
+              && !noToolUseRetried
+              && !compiledAction
+            ) {
+              noToolUseRetried = true;
+              statusHistory.push(`Retrying ${step.agentId}: first pass completed without any tool use.`);
+              await updateStatus(
+                'planning',
+                'Hit a snag, trying another way…',
+              );
+              await appendLatestAgentRunLog(task.taskId, 'supervisor.step.retry_no_tool_use', {
+                channel: 'lark',
+                threadId: contextStorageId ?? message.chatId,
+                supervisorStepId: step.stepId,
+                supervisorAgentId: step.agentId,
+                objective: step.objective,
+              });
+              const retryOutcome = await runDelegatedStepAttempt([
+                ...stepMessages,
+                {
+                  role: 'user',
+                  content:
+                    'Retry this delegated step once. The previous pass finished without using any tools. If this step requires live retrieval or an external action, use one of the available tools in this agent family unless you are blocked by approval or missing input.',
+                },
+              ], '_no_tool_retry');
+              stepResult = retryOutcome.stepResult;
+              rawSteps = (stepResult.steps ?? []) as Array<{
+                toolResults?: Array<{ toolName?: string; output?: unknown }>;
+              }>;
+              stepPendingApproval = findPendingApproval(
+                rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>,
+              );
+              stepBlockingUserInput = findUnrepairableBlockingUserInput(
+                rawSteps as Array<{ toolResults?: Array<{ output?: unknown }> }>,
+                task.taskId,
+              );
+            }
+
+            if (stepPendingApproval || stepBlockingUserInput) {
+              break;
+            }
+
+            stepFailure = classifyDelegatedFailure({
+              step,
+              rawSteps,
+              taskId: task.taskId,
+              resolvedContext: stepResolvedContext,
+              upstreamText: upstreamEmailContent,
+              upstreamResults,
+              compiledAction,
+            });
+            if (!stepFailure) {
+              break;
+            }
+
+            const fingerprint = buildFailureFingerprint(stepFailure);
+            if (
+              repairAttempts >= SUPERVISOR_MAX_REPAIR_ATTEMPTS
+              || seenFailureFingerprints.has(fingerprint)
+            ) {
+              await appendExecutionEventSafe({
+                executionId,
+                phase: 'error',
+                eventType: 'supervisor.step.repair.exhausted',
+                actorType: 'planner',
+                actorKey: step.agentId,
+                title: `Repair exhausted: ${step.stepId}`,
+                summary: stepFailure.rawSummary,
+                status: 'failed',
+                payload: {
+                  stepId: step.stepId,
+                  agentId: step.agentId,
+                  attempts: repairAttempts,
+                  classification: stepFailure.classification,
+                  missingFields: stepFailure.missingFields ?? [],
+                },
+              });
+              if (stepFailure.userQuestion) {
+                stepBlockingUserInput = buildBlockingEnvelopeFromFailure(stepFailure);
+              }
+              break;
+            }
+
+            await appendExecutionEventSafe({
+              executionId,
+              phase: 'planning',
+              eventType: 'supervisor.step.repair.start',
+              actorType: 'planner',
+              actorKey: step.agentId,
+              title: `Repair start: ${step.stepId}`,
+              summary: stepFailure.rawSummary,
+              status: 'running',
+              payload: {
+                stepId: step.stepId,
+                agentId: step.agentId,
+                classification: stepFailure.classification,
+                missingFields: stepFailure.missingFields ?? [],
+                attempts: repairAttempts,
+              },
+            });
+            const repairDecision = attemptSupervisorRepair({
+              step,
+              failure: stepFailure,
+              resolvedContext: stepResolvedContext,
+              upstreamArtifacts: inputArtifacts,
+              upstreamResults,
+              activeCompiledAction: compiledAction,
+            });
+            if (repairDecision.kind === 'requires_user_input') {
+              const blockingFailure = repairDecision.blockingFailure ?? stepFailure;
+              stepFailure = blockingFailure;
+              stepBlockingUserInput = buildBlockingEnvelopeFromFailure(blockingFailure);
+              await appendExecutionEventSafe({
+                executionId,
+                phase: 'planning',
+                eventType: 'supervisor.step.user_input.required',
+                actorType: 'planner',
+                actorKey: step.agentId,
+                title: `User input required: ${step.stepId}`,
+                summary: blockingFailure.rawSummary,
+                status: 'blocked',
+                payload: {
+                  stepId: step.stepId,
+                  agentId: step.agentId,
+                  classification: blockingFailure.classification,
+                  question: blockingFailure.userQuestion ?? null,
+                },
+              });
+              break;
+            }
+            if (repairDecision.kind !== 'retry') {
+              break;
+            }
+            seenFailureFingerprints.add(fingerprint);
+            repairAttempts += 1;
+            repairHistory.push({
+              classification: stepFailure.classification,
+              repairedFields: repairDecision.repairedFields,
+              resolverToolsUsed: repairDecision.resolverToolsUsed,
+            });
+            compiledAction = repairDecision.compiledAction ?? compiledAction;
+            statusHistory.push(`Retrying ${step.agentId}: repairing ${repairDecision.repairedFields.join(', ') || 'step inputs'}.`);
+            await appendExecutionEventSafe({
+              executionId,
+              phase: 'planning',
+              eventType: 'supervisor.step.repair.resolve',
+              actorType: 'planner',
+              actorKey: step.agentId,
+              title: `Repair resolved: ${step.stepId}`,
+              summary: `Prepared retry with ${repairDecision.repairedFields.join(', ') || 'recompiled inputs'}.`,
+              status: 'done',
+              payload: {
+                stepId: step.stepId,
+                agentId: step.agentId,
+                repairedFields: repairDecision.repairedFields,
+                resolverToolsUsed: repairDecision.resolverToolsUsed,
+              },
+            });
+            await appendExecutionEventSafe({
+              executionId,
+              phase: 'planning',
+              eventType: 'supervisor.step.repair.retry',
+              actorType: 'planner',
+              actorKey: step.agentId,
+              title: `Repair retry: ${step.stepId}`,
+              summary: stepFailure.rawSummary,
+              status: 'running',
+              payload: {
+                stepId: step.stepId,
+                agentId: step.agentId,
+                attempts: repairAttempts,
+                classification: stepFailure.classification,
+              },
+            });
+          }
+          if (delegatedStepWatchdog) {
+            clearTimeout(delegatedStepWatchdog);
+          }
+          if (!stepResult) {
+            throw new Error(`Delegated step ${step.stepId} did not produce a result.`);
           }
           const stepTextValue = (stepResult.text ?? '').trim();
           const stepLikelyMalformedNoResult = (
@@ -4983,13 +6236,24 @@ const executeLarkVercelTask = async (
                 ? 'Step produced no results.'
                 : stepTextValue || 'Done.';
           const stepStatus: DelegatedAgentExecutionResult['status'] =
-            stepPendingApproval || stepBlockingUserInput
+            stepPendingApproval
+              ? 'approval_required'
+            : stepBlockingUserInput
               ? 'blocked'
               : stepLikelyMalformedNoResult
                 ? 'failed'
               : stepToolResults.some((result) => result.status === 'error' || result.status === 'timeout')
                 ? 'failed'
                 : 'success';
+          const stepArtifacts = buildStepArtifacts({
+            step,
+            stepText,
+            resolvedContext: stepResolvedContext,
+            toolResults: stepToolResults,
+          });
+          const stepDurationMs = Date.now() - delegatedStepStartedAt;
+          const rawStepRecords = rawSteps.map((step) => asRecordSafe(step) ?? {});
+          const usageSummary = collectStepUsage(rawStepRecords);
           await appendExecutionEventSafe({
             executionId,
             phase: stepStatus === 'success' ? 'tool' : 'error',
@@ -5000,7 +6264,7 @@ const executeLarkVercelTask = async (
             summary: summarizeText(stepText, 400) ?? stepText,
             status: stepStatus === 'success' ? 'done' : 'failed',
             payload: {
-              durationMs: Date.now() - delegatedStepStartedAt,
+              durationMs: stepDurationMs,
               ttftMs: delegatedStepFirstToolStartedAt == null
                 ? null
                 : delegatedStepFirstToolStartedAt - delegatedStepStartedAt,
@@ -5010,9 +6274,71 @@ const executeLarkVercelTask = async (
               pendingApproval: stepPendingApproval ? { kind: stepPendingApproval.kind } : null,
               blockingUserInput: stepBlockingUserInput?.userAction ?? null,
               toolResults: stepToolResults,
+              failure: stepFailure,
+              repairAttempts,
+              repairHistory,
             },
           });
-          executionMs += Date.now() - delegatedStepStartedAt;
+          await appendExecutionEventSafe({
+            executionId,
+            phase: 'tool',
+            eventType: 'agent.step.io',
+            actorType: 'agent',
+            actorKey: step.agentId,
+            title: `Step IO: ${step.agentId}`,
+            summary: summarizeText(stepText, 240) ?? stepText,
+            status: stepStatus === 'success' ? 'done' : stepStatus === 'blocked' ? 'blocked' : 'failed',
+            payload: {
+              stepId: step.stepId,
+              agentId: step.agentId,
+              input: {
+                objective: step.objective,
+                handoffContext: resolvedHandoffContext,
+                upstreamSummaries: upstreamStepSummaries,
+                inputArtifacts,
+                compiledAction: compiledAction ?? null,
+                toolsAvailable: stepRuntime.runExposedToolIds,
+                systemPromptLength: stepSystemPrompt.length,
+              },
+              processing: {
+                toolCallsMade: collectStepContentEntries(rawStepRecords, 'tool-call').map((entry) => ({
+                  tool: asStringSafe(entry.toolName) ?? 'unknown',
+                  input: entry.input ?? null,
+                })),
+                toolResultsReceived: collectStepContentEntries(rawStepRecords, 'tool-result').map((entry) => {
+                  const output = asRecordSafe(entry.output);
+                  return {
+                    tool: asStringSafe(entry.toolName) ?? 'unknown',
+                    status: asStringSafe(output?.status) ?? null,
+                    summary: asStringSafe(output?.summary) ?? null,
+                  };
+                }),
+                modelCalls: usageSummary.modelCalls,
+                totalInputTokens: usageSummary.totalInputTokens,
+                totalOutputTokens: usageSummary.totalOutputTokens,
+                durationMs: stepDurationMs,
+                repairAttempts,
+                repairHistory,
+              },
+              output: {
+                status: stepStatus,
+                text: (stepText ?? '').slice(0, 500),
+                toolResultsCount: (stepToolResults ?? []).length,
+                toolResults: (stepToolResults ?? []).map((result) => ({
+                  tool: result.toolName,
+                  success: result.success,
+                  status: result.status,
+                  summary: result.summary,
+                  error: result.error ?? null,
+                  pendingApproval: result.pendingApproval ?? false,
+                })),
+                pendingApproval: stepPendingApproval ?? null,
+                blockingUserInput: stepBlockingUserInput ?? null,
+                failure: stepFailure ?? null,
+              },
+            },
+          });
+          executionMs += stepDurationMs;
           const completedStep: CompletedSupervisorStep = {
             stepId: step.stepId,
             agentId: step.agentId,
@@ -5026,6 +6352,7 @@ const executeLarkVercelTask = async (
             stepResolvedContext,
             summarizeText(stepText, 240) ?? stepText,
             stepToolResults,
+            stepArtifacts,
           );
           completedSupervisorSteps.set(step.stepId, completedStep);
           await persistIncrementalStepProgress({
@@ -5043,6 +6370,11 @@ const executeLarkVercelTask = async (
               resolvedContext: stepResolvedContext,
               envelope: resultEnvelope,
             },
+            artifacts: stepArtifacts,
+            compiledAction,
+            failure: stepFailure ?? undefined,
+            repairAttempts,
+            repairHistory,
             toolResults: stepToolResults,
             pendingApproval: Boolean(stepPendingApproval),
             pendingApprovalAction: stepPendingApproval ?? undefined,
@@ -5053,6 +6385,7 @@ const executeLarkVercelTask = async (
               text: stepTextValue,
               resolvedContext: stepResolvedContext,
               envelope: resultEnvelope,
+              compiledAction,
             },
           };
           } catch (error) {
@@ -5093,7 +6426,7 @@ const executeLarkVercelTask = async (
 
       delegatedAgentResults = dagResult.orderedResults;
       steps = delegatedAgentResults.flatMap((entry) =>
-        Array.isArray(entry.output.rawSteps)
+        Array.isArray(entry.output?.rawSteps)
           ? (entry.output.rawSteps as Array<{ toolResults?: Array<{ toolName?: string; output?: unknown }> }>)
           : [],
       );
@@ -5134,6 +6467,10 @@ const executeLarkVercelTask = async (
     }
     const trimmedGeneratedText = generatedText.trim();
     const preferredGeneratedText = (() => {
+      const successfulActionText = getPreferredSuccessfulActionText(delegatedAgentResults);
+      if (successfulActionText) {
+        return successfulActionText;
+      }
       if (delegatedAgentResults.length === 1) {
         const singleResult = delegatedAgentResults[0];
         const singleResultText = (singleResult?.text ?? '').trim();
@@ -5143,12 +6480,13 @@ const executeLarkVercelTask = async (
         return trimmedGeneratedText || singleResultText;
       }
       const richDelegatedSummary = buildRichDelegatedResultSummary(delegatedAgentResults);
-      return richDelegatedSummary || trimmedGeneratedText;
+      return trimmedGeneratedText || richDelegatedSummary;
     })();
 
     const mutationGuard = resolveMutationGuard({
       latestUserMessage: resolvedUserMessage,
       toolResults: executedToolOutcomes,
+      canonicalIntent: task.canonicalIntent,
       childRouterOperationType: childRoute.operationType,
       normalizedIntent: childRoute.normalizedIntent,
       plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
@@ -5364,6 +6702,40 @@ const executeLarkVercelTask = async (
           executionMs,
           synthesisMs,
         },
+      },
+    });
+    const delegatedRawSteps = delegatedAgentResults.flatMap((entry) =>
+      Array.isArray(entry.output?.rawSteps)
+        ? (entry.output.rawSteps as Array<Record<string, unknown>>)
+        : [],
+    );
+    const delegatedUsageSummary = collectStepUsage(
+      delegatedRawSteps.map((step) => asRecordSafe(step) ?? {}),
+    );
+    await appendExecutionEventSafe({
+      executionId,
+      phase: 'delivery',
+      eventType: 'run.io.summary',
+      actorType: 'system',
+      actorKey: 'orchestration-engine',
+      title: 'Run IO Summary',
+      summary: 'Run IO summary recorded.',
+      status: 'done',
+      payload: {
+        userQuery: resolvedUserMessage,
+        agentSteps: delegatedAgentResults.map((result) => ({
+          agentId: result.agentId,
+          status: result.status,
+          toolsUsed: (result.toolResults ?? []).map((tool) => tool.toolName),
+          succeeded: (result.toolResults ?? []).filter((tool) => tool.success).length,
+          failed: (result.toolResults ?? []).filter((tool) => !tool.success).length,
+          pendingApproval: result.pendingApproval ?? false,
+        })),
+        finalText: finalText?.slice(0, 300),
+        totalTokensUsed: delegatedUsageSummary.totalInputTokens + delegatedUsageSummary.totalOutputTokens,
+        totalDurationMs: Date.now() - runStartedAt,
+        graphNode: mutationGuard.node,
+        deliveryTarget: 'lark',
       },
     });
     runCompletedSuccessfully = true;

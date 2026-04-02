@@ -1,4 +1,5 @@
 import type { AgentResultDTO, NormalizedIncomingMessageDTO, OrchestrationTaskDTO } from '../contracts';
+import type { CanonicalIntent } from './intent/canonical-intent';
 import { ALL_WRITE_LIKE_VERBS, classifyIntent } from './intent/canonical-intent';
 
 /** @deprecated Use classifyIntent() from canonical-intent instead */
@@ -92,9 +93,12 @@ export const mapDomainToRouteType = (
   }
 };
 
-export const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {
+export const classifyComplexityLevel = (
+  text: string,
+  canonicalIntent?: CanonicalIntent,
+): 1 | 2 | 3 | 4 | 5 => {
   const normalized = text.toLowerCase();
-  if (classifyIntent(text).isWriteLike) {
+  if ((canonicalIntent ?? classifyIntent(text)).isWriteLike) {
     return 4;
   }
   if (normalized.includes('sync') || normalized.includes('onboard') || normalized.includes('workflow')) {
@@ -109,11 +113,12 @@ export const classifyComplexityLevel = (text: string): 1 | 2 | 3 | 4 | 5 => {
 export const detectRouteIntent = (
   text: string,
   childRouterDomain?: string | null,
+  canonicalIntent?: CanonicalIntent,
 ): 'zoho_read' | 'write_intent' | 'general' => {
   if (childRouterDomain && childRouterDomain !== 'general') {
     return mapDomainToRouteType(childRouterDomain);
   }
-  const intent = classifyIntent(text);
+  const intent = canonicalIntent ?? classifyIntent(text);
   if (intent.domain === 'zoho_crm' || intent.domain === 'outreach') {
     return 'zoho_read';
   }
@@ -130,6 +135,7 @@ export const buildPlanFromIntent = (
   intent: 'zoho_read' | 'write_intent' | 'general',
   complexityLevel: 1 | 2 | 3 | 4 | 5,
   text: string,
+  canonicalIntent?: CanonicalIntent,
 ): string[] => {
   const normalized = text.toLowerCase();
 
@@ -145,8 +151,8 @@ export const buildPlanFromIntent = (
   }
 
   if (intent === 'write_intent') {
-    const canonicalIntent = classifyIntent(text);
-    if (canonicalIntent.domain === 'zoho_books') {
+    const resolvedCanonicalIntent = canonicalIntent ?? classifyIntent(text);
+    if (resolvedCanonicalIntent.domain === 'zoho_books') {
       return [
         'route.classify',
         'agent.invoke.risk-check',
@@ -185,8 +191,11 @@ export const buildPlanFromIntent = (
   return ['route.classify', 'agent.invoke.response', 'agent.invoke.lark-response', 'synthesis.compose'];
 };
 
-export const requiresHumanConfirmation = (text: string): boolean => {
-  return classifyIntent(text).isWriteLike;
+export const requiresHumanConfirmation = (
+  text: string,
+  canonicalIntent?: CanonicalIntent,
+): boolean => {
+  return (canonicalIntent ?? classifyIntent(text)).isWriteLike;
 };
 
 export const buildHitlSummary = (text: string): string => {

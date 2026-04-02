@@ -261,6 +261,9 @@ const isWriteLikeOperation = (value: string | undefined): boolean =>
   /^(create|update|delete|send|draft|reply|forward|schedule|execute|run|approve|submit|archive|remove|edit|write|save)\b/i.test(value ?? '');
 
 const inferAttemptedWriteFromEnvelope = (output: VercelToolEnvelope): boolean => {
+  if (output.mutationResult?.attempted) {
+    return true;
+  }
   const pendingActionGroup = output.pendingApprovalAction?.kind !== 'tool_action'
     ? undefined
     : output.pendingApprovalAction.actionGroup;
@@ -1202,6 +1205,21 @@ export const updateTaskStateFromToolEnvelope = (input: {
       updatedAt: now,
     },
   ].slice(-8);
+
+  if (input.output.mutationResult?.attempted) {
+    const mutation = input.output.mutationResult;
+    next.completedMutations = [
+      ...next.completedMutations,
+      {
+        operation: mutation.operation,
+        module: input.output.canonicalOperation?.product ?? input.output.toolId,
+        recordId: mutation.entityId ?? mutation.messageId ?? mutation.threadId,
+        summary: summarizeText(input.output.summary, 280) ?? input.output.summary,
+        ok: mutation.succeeded,
+        updatedAt: now,
+      },
+    ].slice(-12);
+  }
 
   return next;
 };

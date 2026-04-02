@@ -11,6 +11,7 @@ import type { ChannelAdapter } from '../../channels/base/channel-adapter';
 import type { AgentResultDTO, NormalizedIncomingMessageDTO, OrchestrationTaskDTO } from '../../contracts';
 import { conversationMemoryStore } from '../../state/conversation';
 import type { OrchestrationExecutionResult } from '../engine/types';
+import { resolveCanonicalIntent } from '../intent/canonical-intent';
 import { resolveVercelLanguageModel } from '../vercel/model-factory';
 import type { VercelRuntimeRequestContext } from '../vercel/types';
 import {
@@ -235,6 +236,9 @@ export class RuntimeGraphExecutor {
 
     await updateStatus('processing');
 
+    const canonicalIntent = await resolveCanonicalIntent({
+      message: message.text,
+    });
     const classifierModel = await resolveVercelLanguageModel(LARK_VERCEL_MODE);
     const classifierOutput = await runWithModelCircuitBreaker(classifierModel.effectiveProvider, 'langgraph_classifier', () => generateText({
       model: classifierModel.model,
@@ -261,6 +265,7 @@ export class RuntimeGraphExecutor {
     const routeContract = resolveRouteContract({
       rawLlmOutput: classifierOutput?.text ?? null,
       messageText: message.text,
+      canonicalIntent,
     });
 
     state.classification = {

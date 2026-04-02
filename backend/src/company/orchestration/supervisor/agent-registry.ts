@@ -130,7 +130,13 @@ export const resolveSupervisorEligibleAgents = (input: {
   }
 
   const contextAgent = eligibleAgents.find((agent) => agent.id === 'context-agent');
-  if (contextAgent) {
+  if (
+    contextAgent
+    && (
+      domainHintAgent === 'context-agent'
+      || (!domainHintAgent && preferred.size === 0)
+    )
+  ) {
     preferred.add(contextAgent.id);
   }
   const workspaceAgent = eligibleAgents.find((agent) => agent.id === 'workspace-agent');

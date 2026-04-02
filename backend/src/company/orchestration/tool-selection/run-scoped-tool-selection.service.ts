@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import { memoryService, normalizeToolRoutingIntent, type ToolRoutingDomain, type ToolRoutingOperationClass, type ToolRoutingPriorMatch } from '../../memory';
 import { logger } from '../../../utils/logger';
-import { classifyIntent, toNarrowOperationClass } from '../intent/canonical-intent';
+import { resolveCanonicalIntent, toNarrowOperationClass, type CanonicalIntent } from '../intent/canonical-intent';
 import { resolveVercelChildRouterModel } from '../vercel/model-factory';
 import { ALIAS_TO_CANONICAL_ID, DOMAIN_ALIASES, DOMAIN_TO_TOOL_IDS, TOOL_REGISTRY_MAP } from '../../tools/tool-registry';
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
@@ -294,14 +294,9 @@ const canBypassPlannerWithLearnedPrior = (input: {
 };
 
 const inferOperationClass = (
-  message: string,
-  supplementarySignals?: {
-    normalizedIntent?: string | null;
-    plannerChosenOperationClass?: string | null;
-    childRouterOperationType?: string | null;
-  },
+  canonicalIntent: CanonicalIntent,
 ): OperationClass => {
-  return toNarrowOperationClass(classifyIntent(message, supplementarySignals)) as OperationClass;
+  return toNarrowOperationClass(canonicalIntent) as OperationClass;
 };
 
 const isVisualInspectionRequest = (message: string): boolean =>
@@ -378,6 +373,7 @@ const canAnswerFromGroundedContext = (input: {
 
 const inferIntentDomain = (input: {
   message: string;
+  canonicalIntent: CanonicalIntent;
   searchIntent: SearchIntent;
   childRoute?: ChildRouteHints;
   hasWorkspace: boolean;
@@ -412,6 +408,7 @@ const inferIntentDomain = (input: {
     childRoute: input.childRoute,
     hasWorkspace: input.hasWorkspace,
     hasArtifacts: input.hasArtifacts,
+    canonicalIntent: input.canonicalIntent,
   }).domain;
 };
 
@@ -685,6 +682,15 @@ export const resolveRunScopedToolSelection = async (input: {
     runtime: input.requestContext ?? null,
     message: queryTextForInference,
   });
+  const canonicalIntent = await resolveCanonicalIntent({
+    runtime: input.requestContext ?? null,
+    message: queryTextForInference,
+    supplementarySignals: {
+      normalizedIntent: input.childRoute?.normalizedIntent,
+      childRouterDomain: input.childRoute?.domain,
+      childRouterOperationType: input.childRoute?.operationType,
+    },
+  });
   const allowed = new Set(input.allowedToolIds);
   const pinnedAllowedToolIds = uniq((input.pinnedToolIds ?? []).filter((toolId) => allowed.has(toolId)));
   const artifactMode = input.artifactMode ?? 'none';
@@ -704,12 +710,10 @@ export const resolveRunScopedToolSelection = async (input: {
     exposeArtifactTools,
   });
 
-  const inferredOperationClass = inferOperationClass(queryTextForInference, {
-    normalizedIntent: input.childRoute?.normalizedIntent,
-    childRouterOperationType: input.childRoute?.operationType,
-  });
+  const inferredOperationClass = inferOperationClass(canonicalIntent);
   const inferredDomain = inferIntentDomain({
     message: queryTextForInference,
+    canonicalIntent,
     searchIntent,
     childRoute: input.childRoute,
     hasWorkspace: input.workspaceAvailable,

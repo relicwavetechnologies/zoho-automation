@@ -366,10 +366,22 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
     'Your context is provided in the handoff input above.',
     'If you are missing critical information needed to complete your objective, do not search.',
     'Return a concise explanation of exactly what data is missing and the supervisor will provide it.',
+    'CRITICAL — PERSONAL HISTORY INTERPRETATION:',
+    'Personal history results (sourceType: chat_turn) represent past attempts only.',
+    'They do NOT reflect current permissions, current tool availability, or current system state.',
+    'A past failure does not mean the action will fail today.',
+    'Never use past failure history to decide whether to attempt an action.',
+    'Always attempt the action regardless of what history shows.',
     'PERSONAL HISTORY RULE (applies to all agents):',
     '- Results with sourceType: "chat_turn" from personal_history represent past attempts only. They do not reflect current permissions, current tool availability, or current system state.',
     '- A past failure does not mean the action will fail now. Permissions change and systems get fixed. Always attempt the action regardless of what history shows.',
     '- Never cite a past failure as a reason to not attempt an action today.',
+    'RETRIEVAL POLICY (read carefully — it depends on your agent type):',
+    '- If you are context-agent: use contextSearch first before acting. This is your primary function.',
+    '- If you are an action agent (google-workspace-agent, lark-ops-agent, zoho-ops-agent, workspace-agent): check your handoff context FIRST.',
+    '- If the data you need is already there, act immediately.',
+    '- Only use contextSearch if a specific piece of data (email address, contact ID, draft ID) is genuinely missing from your handoff context.',
+    '- NEVER use contextSearch to find content that was already passed to you in citations or upstream step results.',
     'Use documentOcrRead only when the user needs exact extracted text, OCR, full verbatim content, or a materialized outbound file artifact.',
     'Do not claim you lack access to an entire product area like Lark, Zoho, or Gmail unless that product is absent from both the full allowed tool set and the run-exposed tool set for this run.',
     'If the current run-exposed tool set is narrower than the full allowed tool set, describe that as the current tool selection for this request, not as a permanent session capability limit.',
@@ -523,6 +535,21 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
       'Do not keep retrying alternate workflow/tool routes inside the delegated step.',
     );
   }
+
+  parts.push(
+    '## contextSearch scope discipline',
+    '- If you are context-agent, use contextSearch first when information is needed.',
+    '- If you are an action agent, check handoff context first and search only when specific IDs or recipients are genuinely missing.',
+    '- Always pass explicit scopes or sources to contextSearch when you know what kind of answer you need.',
+    '- Use the narrowest scope that can answer the question; broad mixed-source searches can pollute your context with irrelevant results.',
+    '- Use all only when you genuinely need multiple internal sources simultaneously or the source is truly unclear.',
+    '- For conversation recall, prefer personal_history.',
+    '- For document/file lookup, prefer files.',
+    '- For people/recipient lookup, prefer lark_contacts.',
+    '- For CRM records, prefer zoho_crm.',
+    '- For public web research, use the web source via sources.web=true rather than broad internal scopes when possible.',
+    '- If the answer is already present in handoff context, retrieved citations, or upstream step output, do not call contextSearch again.',
+  );
 
   const untrustedBlocks = [
     input.conversationRefsContext

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { KNOWLEDGE_NEEDS, RETRIEVAL_STRATEGIES, retrievalPlannerService } from '../../retrieval';
-import { classifyIntent } from '../intent/canonical-intent';
+import { classifyIntent, type CanonicalIntent } from '../intent/canonical-intent';
 import type {
   RuntimeClassificationResult,
   RuntimeComplexity,
@@ -81,6 +81,20 @@ const normalizeRouteContractDomain = (domain: string): string => {
   }
 };
 
+const canonicalIntentToRouteDomains = (
+  canonicalIntent?: CanonicalIntent,
+  childRouterDomain?: string | null,
+  childRouterConfidence?: number | null,
+): string[] => {
+  if (hasAuthoritativeChildRoute({ childRouterDomain, childRouterConfidence })) {
+    return normalizeDomains([normalizeRouteContractDomain(childRouterDomain!.trim())]);
+  }
+  if (!canonicalIntent || canonicalIntent.domain === 'general') {
+    return [];
+  }
+  return normalizeDomains([normalizeRouteContractDomain(canonicalIntent.domain)]);
+};
+
 const inferDomains = (text: string, childRouterDomain?: string | null, childRouterConfidence?: number | null): string[] => {
   if (hasAuthoritativeChildRoute({ childRouterDomain, childRouterConfidence })) {
     return normalizeDomains([normalizeRouteContractDomain(childRouterDomain!.trim())]);
@@ -99,8 +113,12 @@ const inferDomains = (text: string, childRouterDomain?: string | null, childRout
   return normalizeDomains(domains);
 };
 
-const inferComplexity = (text: string, childRouterOperationType?: string | null): RuntimeComplexity => {
-  if (classifyIntent(text, { childRouterOperationType }).isWriteLike) {
+const inferComplexity = (
+  text: string,
+  childRouterOperationType?: string | null,
+  canonicalIntent?: CanonicalIntent,
+): RuntimeComplexity => {
+  if ((canonicalIntent ?? classifyIntent(text, { childRouterOperationType })).isWriteLike) {
     return 'multi_step';
   }
   if (/\b(and|then|after that|also)\b/i.test(text)) {
@@ -112,8 +130,12 @@ const inferComplexity = (text: string, childRouterOperationType?: string | null)
 const inferFreshnessNeed = (text: string): RuntimeFreshnessNeed =>
   FRESHNESS_KEYWORDS.some((keyword) => text.toLowerCase().includes(keyword)) ? 'required' : 'none';
 
-const inferRisk = (text: string, childRouterOperationType?: string | null): RuntimeRiskLevel => {
-  const intent = classifyIntent(text, { childRouterOperationType });
+const inferRisk = (
+  text: string,
+  childRouterOperationType?: string | null,
+  canonicalIntent?: CanonicalIntent,
+): RuntimeRiskLevel => {
+  const intent = canonicalIntent ?? classifyIntent(text, { childRouterOperationType });
   if (intent.isWriteLike) {
     return 'high';
   }
@@ -123,9 +145,14 @@ const inferRisk = (text: string, childRouterOperationType?: string | null): Runt
   return 'low';
 };
 
-const inferIntent = (text: string, domains: string[], childRouterOperationType?: string | null): string => {
+const inferIntent = (
+  text: string,
+  domains: string[],
+  childRouterOperationType?: string | null,
+  canonicalIntent?: CanonicalIntent,
+): string => {
   const normalized = text.toLowerCase();
-  const intent = classifyIntent(text, { childRouterOperationType });
+  const intent = canonicalIntent ?? classifyIntent(text, { childRouterOperationType });
   if (CODING_KEYWORDS.some((keyword) => normalized.includes(keyword))) return 'coding';
   if (REPO_KEYWORDS.some((keyword) => normalized.includes(keyword))) return 'repo_read';
   if (intent.isWriteLike) return 'write_intent';
@@ -163,12 +190,20 @@ const buildHeuristicRoute = (input: {
   childRouterDomain?: string | null;
   childRouterOperationType?: string | null;
   childRouterConfidence?: number | null;
+  canonicalIntent?: CanonicalIntent;
 }): ResolvedRouteContract['route'] => {
-  const domains = inferDomains(input.messageText, input.childRouterDomain, input.childRouterConfidence);
-  const complexity = inferComplexity(input.messageText, input.childRouterOperationType);
+  const canonicalDomains = canonicalIntentToRouteDomains(
+    input.canonicalIntent,
+    input.childRouterDomain,
+    input.childRouterConfidence,
+  );
+  const domains = canonicalDomains.length > 0
+    ? canonicalDomains
+    : inferDomains(input.messageText, input.childRouterDomain, input.childRouterConfidence);
+  const complexity = inferComplexity(input.messageText, input.childRouterOperationType, input.canonicalIntent);
   const freshnessNeed = inferFreshnessNeed(input.messageText);
-  const risk = inferRisk(input.messageText, input.childRouterOperationType);
-  const intent = inferIntent(input.messageText, domains, input.childRouterOperationType);
+  const risk = inferRisk(input.messageText, input.childRouterOperationType, input.canonicalIntent);
+  const intent = inferIntent(input.messageText, domains, input.childRouterOperationType, input.canonicalIntent);
   const retrievalMode = inferRetrievalMode({ domains, freshnessNeed, intent });
   const retrievalPlan = retrievalPlannerService.buildPlan({
     messageText: input.messageText,
@@ -211,12 +246,27 @@ const toRoute = (
   childRouterDomain?: string | null,
   childRouterOperationType?: string | null,
   childRouterConfidence?: number | null,
+  canonicalIntent?: CanonicalIntent,
 ): ResolvedRouteContract['route'] => {
-  const domains = normalizeDomains(parsed.domains ?? inferDomains(fallbackText, childRouterDomain, childRouterConfidence));
-  const complexity = parsed.complexity ?? inferComplexity(fallbackText, childRouterOperationType);
+  const canonicalDomains = canonicalIntentToRouteDomains(
+    canonicalIntent,
+    childRouterDomain,
+    childRouterConfidence,
+  );
+  const domains = normalizeDomains(
+    (canonicalDomains.length > 0
+      ? canonicalDomains
+      : parsed.domains)
+    ?? (canonicalDomains.length > 0
+      ? canonicalDomains
+      : inferDomains(fallbackText, childRouterDomain, childRouterConfidence)),
+  );
+  const complexity = parsed.complexity ?? inferComplexity(fallbackText, childRouterOperationType, canonicalIntent);
   const freshnessNeed = parsed.freshnessNeed ?? inferFreshnessNeed(fallbackText);
-  const risk = parsed.risk ?? inferRisk(fallbackText, childRouterOperationType);
-  const intent = parsed.intent.trim();
+  const risk = parsed.risk ?? inferRisk(fallbackText, childRouterOperationType, canonicalIntent);
+  const intent = canonicalIntent
+    ? inferIntent(fallbackText, domains, childRouterOperationType, canonicalIntent)
+    : parsed.intent.trim();
   const retrievalMode = parsed.retrievalMode ?? inferRetrievalMode({ domains, freshnessNeed, intent });
   const retrievalPlan = retrievalPlannerService.buildPlan({
     messageText: fallbackText,
@@ -244,6 +294,7 @@ export const resolveRouteContract = (input: {
   childRouterDomain?: string | null;
   childRouterOperationType?: string | null;
   childRouterConfidence?: number | null;
+  canonicalIntent?: CanonicalIntent;
 }): ResolvedRouteContract => {
   const raw = parseRawOutput(input.rawLlmOutput);
   if (!raw) {
@@ -256,6 +307,7 @@ export const resolveRouteContract = (input: {
         childRouterDomain: input.childRouterDomain,
         childRouterOperationType: input.childRouterOperationType,
         childRouterConfidence: input.childRouterConfidence,
+        canonicalIntent: input.canonicalIntent,
       }),
     };
   }
@@ -271,6 +323,7 @@ export const resolveRouteContract = (input: {
         childRouterDomain: input.childRouterDomain,
         childRouterOperationType: input.childRouterOperationType,
         childRouterConfidence: input.childRouterConfidence,
+        canonicalIntent: input.canonicalIntent,
       }),
     };
   }
@@ -284,6 +337,7 @@ export const resolveRouteContract = (input: {
       input.childRouterDomain,
       input.childRouterOperationType,
       input.childRouterConfidence,
+      input.canonicalIntent,
     ),
   };
 };

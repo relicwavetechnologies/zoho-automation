@@ -22,10 +22,46 @@ import type {
   DelegatedStepResult,
   SupervisorAgentId,
   SupervisorPlan,
+  SupervisorSourceSystem,
   SupervisorStep,
+  SupervisorStepAction,
 } from './types';
 
 export { SUPERVISOR_AGENT_TOOL_IDS };
+
+const defaultSynthesisStepAction = (agentId: SupervisorAgentId): SupervisorStepAction => {
+  switch (agentId) {
+    case 'context-agent':
+      return 'cross_source_lookup';
+    case 'google-workspace-agent':
+      return 'send_email';
+    case 'lark-ops-agent':
+      return 'create_task';
+    case 'zoho-ops-agent':
+      return 'read_records';
+    case 'workspace-agent':
+      return 'search_records';
+    default:
+      return 'cross_source_lookup';
+  }
+};
+
+const defaultSynthesisStepSource = (agentId: SupervisorAgentId): SupervisorSourceSystem => {
+  switch (agentId) {
+    case 'context-agent':
+      return 'context';
+    case 'google-workspace-agent':
+      return 'gmail';
+    case 'lark-ops-agent':
+      return 'lark';
+    case 'zoho-ops-agent':
+      return 'zoho_books';
+    case 'workspace-agent':
+      return 'workspace';
+    default:
+      return 'context';
+  }
+};
 
 export const deriveEligibleSupervisorAgents = (input: {
   allowedToolIds: string[];
@@ -179,6 +215,8 @@ export const planSupervisorDelegation = async (
     eligibleAgents,
     preferredAgentIds: input.eligibleAgentIds,
     childRouteHints: input.childRouteHints ?? undefined,
+    inferredDomain: input.inferredDomain,
+    inferredOperationClass: input.inferredOperationClass,
     recentTaskSummaries: input.recentTaskSummaries,
     threadSummary: input.threadSummary,
     searchIntent: input.searchIntent,
@@ -342,6 +380,8 @@ export const runSupervisorSynthesis = async (input: {
       steps: input.agentResults.map((result) => ({
         stepId: result.stepId,
         agentId: result.agentId,
+        action: defaultSynthesisStepAction(result.agentId),
+        sourceSystem: defaultSynthesisStepSource(result.agentId),
         objective: result.objective,
         dependsOn: [],
         inputRefs: [],
@@ -358,6 +398,7 @@ export const runSupervisorSynthesis = async (input: {
       finalText: result.assistantText ?? result.text ?? '',
       toolEnvelopes: [],
       sourceRefs: result.sourceRefs,
+      sourceArtifacts: result.artifacts?.map((artifact) => artifact.id),
     })),
   });
 };

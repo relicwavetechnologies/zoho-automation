@@ -18,6 +18,8 @@ import { googleOAuthService } from '../../channels/google/google-oauth.service';
 import { googleUserAuthLinkRepository } from '../../channels/google/google-user-auth-link.repository';
 import { hotContextStore } from '../hot-context.store';
 import type {
+  CanonicalToolOperation,
+  MutationExecutionResult,
   PendingApprovalAction,
   VercelCitation,
   VercelRuntimeRequestContext,
@@ -965,6 +967,19 @@ const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 
+const normalizeEmailHeaderField = (value: unknown): string | undefined => {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value.trim();
+  }
+  if (Array.isArray(value)) {
+    const emails = value
+      .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+      .map((entry) => entry.trim());
+    return emails.length > 0 ? emails.join(', ') : undefined;
+  }
+  return undefined;
+};
+
 const asNumber = (value: unknown): number | undefined => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -1312,6 +1327,8 @@ const buildEnvelope = (input: {
   summary: string;
   actionGroup?: ToolActionGroup;
   operation?: string;
+  canonicalOperation?: CanonicalToolOperation;
+  mutationResult?: MutationExecutionResult;
   keyData?: Record<string, unknown>;
   fullPayload?: Record<string, unknown>;
   citations?: VercelCitation[];
@@ -1345,6 +1362,8 @@ const buildEnvelope = (input: {
     summary: input.summary,
     ...(input.actionGroup ? { actionGroup: input.actionGroup } : {}),
     ...(input.operation ? { operation: input.operation } : {}),
+    ...(input.canonicalOperation ? { canonicalOperation: input.canonicalOperation } : {}),
+    ...(input.mutationResult ? { mutationResult: input.mutationResult } : {}),
     ...(input.keyData ? { keyData: input.keyData } : {}),
     ...(input.fullPayload ? { fullPayload: input.fullPayload } : {}),
     ...(input.citations && input.citations.length > 0 ? { citations: input.citations } : {}),
@@ -1879,6 +1898,8 @@ const buildImmediateApprovalExecutionEnvelope = (input: {
   toolId?: string;
   actionGroup?: ToolActionGroup;
   operation?: string;
+  canonicalOperation?: CanonicalToolOperation;
+  mutationResult?: MutationExecutionResult;
   payload?: Record<string, unknown>;
   errorKind?: VercelToolEnvelope['errorKind'];
 }): VercelToolEnvelope =>
@@ -1887,7 +1908,11 @@ const buildImmediateApprovalExecutionEnvelope = (input: {
     summary: input.summary,
     toolId: input.toolId,
     actionGroup: input.actionGroup,
+    confirmedAction:
+      input.ok && Boolean(input.actionGroup && input.actionGroup !== 'read'),
     operation: input.operation,
+    canonicalOperation: input.canonicalOperation,
+    mutationResult: input.mutationResult,
     keyData: input.payload,
     fullPayload: input.payload,
     ...(input.ok
@@ -1903,6 +1928,7 @@ const createPendingRemoteApproval = async (input: {
   toolId: string;
   actionGroup: ToolActionGroup;
   operation: string;
+  canonicalOperation?: CanonicalToolOperation;
   summary: string;
   subject?: string;
   explanation?: string;
@@ -1934,6 +1960,7 @@ const createPendingRemoteApproval = async (input: {
       toolId: input.toolId,
       actionGroup: input.actionGroup,
       operation: input.operation,
+      ...(input.canonicalOperation ? { canonicalOperation: input.canonicalOperation } : {}),
     },
     metadata: {
       companyId: input.runtime.companyId,
@@ -1975,6 +2002,8 @@ const createPendingRemoteApproval = async (input: {
         toolId: input.toolId,
         actionGroup: input.actionGroup,
         operation: input.operation,
+        canonicalOperation: executionResult.canonicalOperation ?? input.canonicalOperation,
+        mutationResult: executionResult.mutationResult,
         payload: executionResult.payload,
         errorKind: executionResult.ok ? undefined : 'api_failure',
       });
@@ -1985,6 +2014,16 @@ const createPendingRemoteApproval = async (input: {
         toolId: input.toolId,
         actionGroup: input.actionGroup,
         operation: input.operation,
+        canonicalOperation: input.canonicalOperation,
+        mutationResult: {
+          attempted: true,
+          succeeded: false,
+          provider: input.canonicalOperation?.provider ?? input.toolId,
+          operation: input.canonicalOperation?.operation ?? input.operation,
+          pendingApproval: false,
+          errorKind: 'api_failure',
+          error: error instanceof Error ? error.message : 'Failed to execute the approved action.',
+        },
         errorKind: 'api_failure',
       });
     }
@@ -2004,6 +2043,7 @@ const createPendingRemoteApproval = async (input: {
       toolId: input.toolId,
       actionGroup: input.actionGroup,
       operation: input.operation,
+      canonicalOperation: input.canonicalOperation,
       title: `${input.toolId} ${input.actionGroup} approval required`,
       summary: input.summary,
       subject: input.subject,
@@ -3470,6 +3510,7 @@ const finalizeToolEnvelope = (
           : 'error');
   const confirmedAction =
     output.confirmedAction
+    ?? output.mutationResult?.succeeded
     ?? Boolean(output.success && !output.pendingApprovalAction && isConfirmedActionGroup(actionGroup));
 
   return {
@@ -3479,6 +3520,8 @@ const finalizeToolEnvelope = (
     data: output.data ?? output.fullPayload ?? output.keyData ?? null,
     confirmedAction,
     ...(actionGroup ? { actionGroup } : {}),
+    ...(output.canonicalOperation ? { canonicalOperation: output.canonicalOperation } : {}),
+    ...(output.mutationResult ? { mutationResult: output.mutationResult } : {}),
     ...(output.error || output.success ? {} : { error: output.summary }),
   };
 };
@@ -3890,11 +3933,13 @@ export const createVercelDesktopTools = (
 
     contextSearch: tool({
       description:
-        'Unified retrieval broker for conversation history, indexed files, Lark contacts, Zoho context, workspace search, public web search, and skills. When the query is an uncertain entity lookup, it automatically searches broadly across internal sources on the first pass and keeps web as a later fallback; when the query explicitly names a source like books, CRM, files, workspace, or web, it focuses there first and expands later. Use search first, then fetch with a returned chunkRef when you need the full content.',
+        'Unified retrieval broker for conversation history, indexed files, Lark contacts, Zoho context, workspace search, public web search, and skills. Use the narrowest possible source selection for the task at hand. Scope guidance: personal_history for conversation recall or prior email/body lookup, files for documents and uploaded files, lark_contacts for people/recipient lookup, zoho_crm for CRM records, and all only when you genuinely need multiple internal sources simultaneously or do not know which source is relevant. Web, workspace, and skills are selected via the sources object. Use search first, then fetch with a returned chunkRef when you need the full content.',
       inputSchema: z.object({
         operation: z.enum(['search', 'fetch']),
         query: z.string().optional(),
-        scopes: z.array(z.enum(CONTEXT_SEARCH_SCOPE_VALUES)).optional().default(['all']),
+        scopes: z.array(z.enum(CONTEXT_SEARCH_SCOPE_VALUES)).optional().default(['all']).describe(
+          'Explicit search scope selector. Use personal_history for conversation recall or prior email/body content, files for documents, lark_contacts for people and recipient lookup, zoho_crm for CRM records, and all only when you genuinely need multiple internal sources simultaneously or are truly unsure which internal source has the answer. Web, workspace, and skills are controlled by the sources object, not this array.',
+        ),
         sources: z.object({
           personalHistory: z.boolean().optional(),
           files: z.boolean().optional(),
@@ -5719,41 +5764,61 @@ export const createVercelDesktopTools = (
     googleMail: tool({
       description:
         'Use the connected Google account to list, read, draft, and send Gmail messages. For outbound email, prefer giving purpose, audience, tone, templateFamily, facts, and a clear subject so the composer can generate a polished message.',
-      inputSchema: z.object({
-        operation: z.enum([
-          'listMessages',
-          'getMessage',
-          'getThread',
-          'createDraft',
-          'sendMessage',
-          'sendDraft',
-        ]),
-        query: z.string().optional(),
-        maxResults: z.number().int().min(1).max(50).optional(),
-        messageId: z.string().optional(),
-        threadId: z.string().optional(),
-        draftId: z.string().optional(),
-        to: z.string().optional(),
-        subject: z.string().optional().describe('Clear final subject line for the email. Prefer specific, action-oriented subjects.'),
-        body: z.string().optional().describe('Optional raw draft body. Use this when the user provided exact wording to preserve.'),
-        cc: z.string().optional(),
-        bcc: z.string().optional(),
-        isHtml: z.boolean().optional().describe('Set true when the email should be presentation-ready HTML instead of plain text.'),
-        purpose: z.string().optional().describe('What the email is trying to accomplish. This is the best primary input for the email composer.'),
-        audience: z.string().optional().describe('Who the email is for, used to personalize greeting and framing.'),
-        tone: z.string().optional().describe('Desired tone such as professional, warm, concise, executive, or friendly.'),
-        templateFamily: z.string().optional().describe('Optional style hint like invoice_followup, audit_delivery, proposal, reminder, or thank_you.'),
-        facts: z.array(z.string()).optional().describe('Key facts, dates, amounts, names, and next steps that must appear in the email.'),
-        preserveUserWording: z.boolean().optional(),
-        attachments: z
-          .array(
-            z.object({
-              artifactId: z.string().min(1),
-            }),
-          )
-          .optional(),
-        format: z.enum(['metadata', 'full', 'minimal', 'raw']).optional(),
-      }),
+      inputSchema: z.discriminatedUnion('operation', [
+        z.object({
+          operation: z.literal('listMessages'),
+          query: z.string().optional(),
+          maxResults: z.number().int().min(1).max(50).optional(),
+        }),
+        z.object({
+          operation: z.literal('getMessage'),
+          messageId: z.string().min(1),
+          format: z.enum(['metadata', 'full', 'minimal', 'raw']).optional(),
+        }),
+        z.object({
+          operation: z.literal('getThread'),
+          threadId: z.string().min(1),
+          format: z.enum(['metadata', 'full', 'minimal', 'raw']).optional(),
+        }),
+        z.object({
+          operation: z.literal('sendDraft'),
+          draftId: z.string().min(1),
+        }),
+        z.object({
+          operation: z.literal('createDraft'),
+          to: z.union([z.string().min(1), z.array(z.string().email()).min(1)]),
+          subject: z.string().optional().describe('Clear final subject line for the email. Prefer specific, action-oriented subjects.'),
+          body: z.string().optional().describe('Optional raw draft body. Use this when the user provided exact wording to preserve.'),
+          cc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
+          bcc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
+          isHtml: z.boolean().optional().describe('Set true when the email should be presentation-ready HTML instead of plain text.'),
+          purpose: z.string().optional().describe('What the email is trying to accomplish. This is the best primary input for the email composer.'),
+          audience: z.string().optional().describe('Who the email is for, used to personalize greeting and framing.'),
+          tone: z.string().optional().describe('Desired tone such as professional, warm, concise, executive, or friendly.'),
+          templateFamily: z.string().optional().describe('Optional style hint like invoice_followup, audit_delivery, proposal, reminder, or thank_you.'),
+          facts: z.array(z.string()).optional().describe('Key facts, dates, amounts, names, and next steps that must appear in the email.'),
+          preserveUserWording: z.boolean().optional(),
+          attachments: z.array(z.object({ artifactId: z.string().min(1) })).optional(),
+          threadId: z.string().optional(),
+        }),
+        z.object({
+          operation: z.literal('sendMessage'),
+          to: z.union([z.string().min(1), z.array(z.string().email()).min(1)]),
+          subject: z.string().min(1),
+          body: z.string().min(1),
+          cc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
+          bcc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
+          isHtml: z.boolean().optional().describe('Set true when the email should be presentation-ready HTML instead of plain text.'),
+          purpose: z.string().optional().describe('What the email is trying to accomplish. This is the best primary input for the email composer.'),
+          audience: z.string().optional().describe('Who the email is for, used to personalize greeting and framing.'),
+          tone: z.string().optional().describe('Desired tone such as professional, warm, concise, executive, or friendly.'),
+          templateFamily: z.string().optional().describe('Optional style hint like invoice_followup, audit_delivery, proposal, reminder, or thank_you.'),
+          facts: z.array(z.string()).optional().describe('Key facts, dates, amounts, names, and next steps that must appear in the email.'),
+          preserveUserWording: z.boolean().optional(),
+          attachments: z.array(z.object({ artifactId: z.string().min(1) })).optional(),
+          threadId: z.string().optional(),
+        }),
+      ]),
       execute: async (input) =>
         withLifecycle(hooks, 'googleMail', 'Running Gmail workflow', async () => {
           const VALID_GMAIL_OPERATIONS = [
@@ -5805,6 +5870,9 @@ export const createVercelDesktopTools = (
           }
 
 	          const baseUrl = 'https://gmail.googleapis.com/gmail/v1/users/me';
+          const normalizedTo = normalizeEmailHeaderField((input as { to?: unknown }).to);
+          const normalizedCc = normalizeEmailHeaderField((input as { cc?: unknown }).cc);
+          const normalizedBcc = normalizeEmailHeaderField((input as { bcc?: unknown }).bcc);
 	          const buildGmailEnvelope = (envelope: Parameters<typeof buildEnvelope>[0]): VercelToolEnvelope =>
 	            buildEnvelope({
 	              toolId: 'googleWorkspace',
@@ -5929,7 +5997,7 @@ export const createVercelDesktopTools = (
 	          }
 
           if (input.operation === 'createDraft') {
-            if (!input.to || (!input.body && !(input.facts?.length) && !input.purpose && !input.subject)) {
+            if (!normalizedTo || (!input.body && !(input.facts?.length) && !input.purpose && !input.subject)) {
               const missingFields = [
                 !input.to ? 'to' : null,
                 !input.body && !(input.facts?.length) && !input.purpose && !input.subject
@@ -5962,8 +6030,8 @@ export const createVercelDesktopTools = (
               )
               : [];
             const composed = await loadEmailComposeService().composeEmail({
-              purpose: input.purpose ?? input.subject,
-              audience: input.audience ?? input.to,
+                  purpose: input.purpose ?? input.subject,
+              audience: input.audience ?? normalizedTo,
               tone: input.tone,
               templateFamily: input.templateFamily,
               subject: input.subject,
@@ -5981,15 +6049,21 @@ export const createVercelDesktopTools = (
               toolId: 'googleWorkspace',
               actionGroup: 'create',
               operation: 'createDraft',
+              canonicalOperation: {
+                provider: 'google',
+                product: 'gmail',
+                operation: 'createDraft',
+                actionGroup: 'create',
+              },
               summary: `Approval required to create Gmail draft "${composed.subject}"${attachmentEntries.length > 0 ? ` with ${attachmentEntries.length} attachment(s)` : ''}.`,
               subject: composed.subject,
-              explanation: `Create a draft to ${input.to}.`,
+              explanation: `Create a draft to ${normalizedTo}.`,
               payload: {
-                to: input.to,
+                to: normalizedTo,
                 subject: composed.subject,
                 body: composed.body,
-                cc: input.cc,
-                bcc: input.bcc,
+                cc: normalizedCc,
+                bcc: normalizedBcc,
                 isHtml: composed.isHtml,
                 threadId: input.threadId,
                 attachments: attachmentEntries.map((entry) => ({
@@ -6023,6 +6097,12 @@ export const createVercelDesktopTools = (
               toolId: 'googleWorkspace',
               actionGroup: 'send',
               operation: 'sendDraft',
+              canonicalOperation: {
+                provider: 'google',
+                product: 'gmail',
+                operation: 'sendDraft',
+                actionGroup: 'send',
+              },
               summary: `Approval required to send Gmail draft ${draftId}.`,
               subject: draftId,
               explanation: 'Send the selected Gmail draft.',
@@ -6031,7 +6111,7 @@ export const createVercelDesktopTools = (
           }
 
           if (input.operation === 'sendMessage') {
-            if (!input.to || (!input.body && !(input.facts?.length) && !input.purpose && !input.subject)) {
+            if (!normalizedTo || (!input.body && !(input.facts?.length) && !input.purpose && !input.subject)) {
               const missingFields = [
                 !input.to ? 'to' : null,
                 !input.body && !(input.facts?.length) && !input.purpose && !input.subject
@@ -6065,7 +6145,7 @@ export const createVercelDesktopTools = (
               : [];
             const composed = await loadEmailComposeService().composeEmail({
               purpose: input.purpose ?? input.subject,
-              audience: input.audience ?? input.to,
+              audience: input.audience ?? normalizedTo,
               tone: input.tone,
               templateFamily: input.templateFamily,
               subject: input.subject,
@@ -6083,15 +6163,21 @@ export const createVercelDesktopTools = (
               toolId: 'googleWorkspace',
               actionGroup: 'send',
               operation: 'sendMessage',
+              canonicalOperation: {
+                provider: 'google',
+                product: 'gmail',
+                operation: 'sendMessage',
+                actionGroup: 'send',
+              },
               summary: `Approval required to send Gmail message "${composed.subject}"${attachmentEntries.length > 0 ? ` with ${attachmentEntries.length} attachment(s)` : ''}.`,
               subject: composed.subject,
-              explanation: `Send email to ${input.to}.`,
+              explanation: `Send email to ${normalizedTo}.`,
               payload: {
-                to: input.to,
+                to: normalizedTo,
                 subject: composed.subject,
                 body: composed.body,
-                cc: input.cc,
-                bcc: input.bcc,
+                cc: normalizedCc,
+                bcc: normalizedBcc,
                 isHtml: composed.isHtml,
                 threadId: input.threadId,
                 attachments: attachmentEntries.map((entry) => ({
@@ -12632,9 +12718,37 @@ export const createVercelDesktopTools = (
 
   tools.googleWorkspace = tool({
     description: 'Google Workspace operations for Gmail (sendMessage, searchMessages, createDraft, sendDraft, listMessages, getMessage, getThread), Drive (listFiles, getFile, downloadFile, createFolder, uploadFile, updateFile, deleteFile), and Calendar. Use operation="sendMessage" to send email, operation="searchMessages" to search inbox, operation="createDraft" to draft, operation="drive" for Drive, operation="calendar" for Calendar.',
-    inputSchema: z.object({
-      operation: z.enum(['gmail', 'drive', 'calendar', 'sendMessage', 'searchMessages', 'createDraft', 'sendDraft', 'listMessages', 'getMessage', 'getThread']),
-    }).passthrough(),
+    inputSchema: z.discriminatedUnion('operation', [
+      z.object({
+        operation: z.literal('sendMessage'),
+        to: z.union([z.string().min(1), z.array(z.string().email()).min(1)]),
+        subject: z.string().min(1),
+        body: z.string().min(1),
+        cc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
+        bcc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
+        isHtml: z.boolean().optional(),
+        threadId: z.string().optional(),
+      }).passthrough(),
+      z.object({
+        operation: z.literal('createDraft'),
+        to: z.union([z.string().min(1), z.array(z.string().email()).min(1)]),
+        subject: z.string().optional(),
+        body: z.string().optional(),
+        cc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
+        bcc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
+        isHtml: z.boolean().optional(),
+        threadId: z.string().optional(),
+        purpose: z.string().optional(),
+        facts: z.array(z.string()).optional(),
+      }).passthrough(),
+      z.object({
+        operation: z.literal('sendDraft'),
+        draftId: z.string().min(1),
+      }).passthrough(),
+      z.object({
+        operation: z.enum(['gmail', 'drive', 'calendar', 'searchMessages', 'listMessages', 'getMessage', 'getThread']),
+      }).passthrough(),
+    ]),
     execute: async (input, options) => {
       const GMAIL_OPERATIONS = ['gmail', 'sendMessage', 'searchMessages', 'createDraft', 'sendDraft', 'listMessages', 'getMessage', 'getThread'] as const;
       if ((GMAIL_OPERATIONS as readonly string[]).includes(input.operation)) {

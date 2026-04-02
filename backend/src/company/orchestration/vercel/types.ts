@@ -2,14 +2,18 @@ import type { ToolActionGroup } from '../../tools/tool-action-groups';
 import type { ZohoRateLimitConfig } from '../../integrations/zoho/zoho-rate-limit.types';
 import type { DepartmentManagerApprovalConfig } from '../../departments/department.service';
 import type { SearchIntent } from '../search-intent-classifier';
-import type { SearchIntent } from '../search-intent-classifier';
+import type { CanonicalIntent } from '../intent/canonical-intent';
 
 export type VercelToolErrorKind =
   | 'missing_input'
   | 'permission'
   | 'unsupported'
   | 'api_failure'
-  | 'validation';
+  | 'validation'
+  | 'not_found'
+  | 'resolution_failed'
+  | 'rate_limited'
+  | 'policy_blocked';
 
 export type VercelToolResultStatus =
   | 'success'
@@ -27,6 +31,26 @@ export type VercelCitation = {
   sourceId?: string;
   fileAssetId?: string;
   chunkIndex?: number;
+};
+
+export type CanonicalToolOperation = {
+  provider: 'google' | 'lark' | 'zoho';
+  product: 'gmail' | 'drive' | 'calendar' | 'message' | 'books' | 'crm';
+  operation: string;
+  actionGroup: 'read' | 'create' | 'update' | 'delete' | 'send' | 'execute';
+};
+
+export type MutationExecutionResult = {
+  attempted: boolean;
+  succeeded: boolean;
+  provider: string;
+  operation: string;
+  entityId?: string;
+  messageId?: string;
+  threadId?: string;
+  pendingApproval: boolean;
+  errorKind?: string;
+  error?: string;
 };
 
 export type PendingApprovalAction =
@@ -83,6 +107,7 @@ export type PendingApprovalAction =
       toolId: string;
       actionGroup: ToolActionGroup;
       operation: string;
+      canonicalOperation?: CanonicalToolOperation;
       title: string;
       summary: string;
       subject?: string;
@@ -99,6 +124,8 @@ export type VercelToolEnvelope = {
   summary: string;
   actionGroup?: ToolActionGroup;
   operation?: string;
+  canonicalOperation?: CanonicalToolOperation;
+  mutationResult?: MutationExecutionResult;
   keyData?: Record<string, unknown>;
   fullPayload?: Record<string, unknown>;
   citations?: VercelCitation[];
@@ -203,6 +230,8 @@ export type VercelRuntimeRequestContext = {
   departmentSkillsMarkdown?: string;
   searchIntent?: SearchIntent;
   searchIntentPromise?: Promise<SearchIntent>;
+  canonicalIntent?: CanonicalIntent;
+  canonicalIntentPromise?: Promise<CanonicalIntent>;
   delegatedAgentId?: string;
 };
 

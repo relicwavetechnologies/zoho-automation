@@ -20,6 +20,7 @@
     "memory:reset:routing": "tsx scripts/reset-routing-memory.ts",
     "executions:cleanup": "tsx scripts/cleanup-execution-history.ts",
     "harness:lark:routing": "tsx scripts/run-lark-routing-harness.ts",
+    "harness:lark:local": "tsx scripts/run-local-lark-execution-harness.ts",
     "harness:context-search:sources": "tsx scripts/run-context-search-source-harness.ts",
     "harness:context-search:ladder": "tsx scripts/run-context-search-ladder-harness.ts",
     "harness:supervisor:structured": "tsx scripts/run-supervisor-structured-harness.ts",

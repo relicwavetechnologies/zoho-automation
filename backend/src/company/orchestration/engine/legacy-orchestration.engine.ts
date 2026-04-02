@@ -162,7 +162,7 @@ export class LegacyOrchestrationEngine implements OrchestrationEngine {
         await sleep(100);
       }
 
-      if (orchestratorService.requiresHumanConfirmation(message.text)) {
+      if (await orchestratorService.requiresHumanConfirmation(message.text)) {
         const hitlAction = await hitlActionService.createPending({
           taskId: task.taskId,
           actionType: 'execute',

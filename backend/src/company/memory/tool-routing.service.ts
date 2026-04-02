@@ -1,5 +1,6 @@
 import { prisma } from '../../utils/prisma';
-import { classifyIntent, toNarrowOperationClass } from '../orchestration/intent/canonical-intent';
+import type { CanonicalIntent } from '../orchestration/intent/canonical-intent';
+import { classifyIntent, resolveCanonicalIntent, toNarrowOperationClass } from '../orchestration/intent/canonical-intent';
 import { addDays, MEMORY_ROUTING_PHRASE_EXAMPLE_CAP, type ToolRoutingDomain, type ToolRoutingFollowUpClass, type ToolRoutingIntent, type ToolRoutingMemoryValue, type ToolRoutingOperationClass, type ToolRoutingScopeHint, type UserMemoryChannelOrigin, type UserMemoryScope } from './contracts';
 import { memoryContextService } from './memory-context.service';
 import { memoryRetentionService } from './memory-retention.service';
@@ -119,8 +120,9 @@ const detectFollowUpClass = (message: string): ToolRoutingFollowUpClass => {
 const detectOperationClass = (
   message: string,
   childRoute?: RoutingChildRouteHints,
+  canonicalIntent?: CanonicalIntent,
 ): ToolRoutingOperationClass => {
-  return toNarrowOperationClass(classifyIntent(normalizePhrase(message), {
+  return toNarrowOperationClass(canonicalIntent ?? classifyIntent(normalizePhrase(message), {
     normalizedIntent: childRoute?.normalizedIntent,
     childRouterOperationType: childRoute?.operationType,
   })) as ToolRoutingOperationClass;
@@ -164,12 +166,13 @@ const detectDomain = (
   hasWorkspace: boolean,
   hasArtifacts: boolean,
   childRoute?: RoutingChildRouteHints,
+  canonicalIntent?: CanonicalIntent,
 ): ToolRoutingDomain => {
-  const canonicalIntent = classifyIntent(text, {
+  const resolvedCanonicalIntent = canonicalIntent ?? classifyIntent(text, {
     normalizedIntent: childRoute?.normalizedIntent,
     childRouterDomain: childRoute?.domain,
   });
-  const canonicalDomain = canonicalIntent.domain;
+  const canonicalDomain = resolvedCanonicalIntent.domain;
   const childRouteDomain = childRoute?.domain?.trim() as ToolRoutingDomain | undefined;
   if (childRouteDomain) {
     const canonicalIsSpecific = canonicalDomain !== 'general' && canonicalDomain !== 'lark';
@@ -187,7 +190,7 @@ const detectDomain = (
   if (!hasExactExtractionIntent(text) && hasContextSearchIntent(text)) {
     return 'context_search';
   }
-  if (canonicalIntent.domain === 'gmail' || /\b(draft email|send by gmail|mail via gmail)\b/.test(text)) {
+  if (resolvedCanonicalIntent.domain === 'gmail' || /\b(draft email|send by gmail|mail via gmail)\b/.test(text)) {
     return 'gmail';
   }
   if (/\b(google drive|drive file|drive folder)\b/.test(text)) {
@@ -208,7 +211,7 @@ const detectDomain = (
   if (/\b(task|assignee|todo|due date)\b/.test(text)) {
     return 'lark_task';
   }
-  if (canonicalIntent.domain === 'lark_doc' || /\b(note|writeup|report)\b/.test(text)) {
+  if (resolvedCanonicalIntent.domain === 'lark_doc' || /\b(note|writeup|report)\b/.test(text)) {
     return 'lark_doc';
   }
   if (/\b(lark calendar|calendar event|schedule|event)\b/.test(text)) {
@@ -229,7 +232,7 @@ const detectDomain = (
   if (hasWorkspace && /\b(repo|repository|workspace|folder|file path|terminal|command|script|code)\b/.test(text)) {
     return 'workspace';
   }
-  if (canonicalIntent.domain === 'web_search' || /\b(web|internet|online|site|up to date|up-to-date)\b/.test(text)) {
+  if (resolvedCanonicalIntent.domain === 'web_search' || /\b(web|internet|online|site|up to date|up-to-date)\b/.test(text)) {
     return 'web_search';
   }
   return 'unknown';
@@ -545,6 +548,7 @@ export const normalizeToolRoutingIntent = (input: {
   childRoute?: RoutingChildRouteHints;
   hasWorkspace?: boolean;
   hasArtifacts?: boolean;
+  canonicalIntent?: CanonicalIntent;
 }): ToolRoutingIntent => {
   const evidenceText = buildEvidenceText({
     latestUserMessage: input.latestUserMessage,
@@ -555,8 +559,13 @@ export const normalizeToolRoutingIntent = (input: {
     Boolean(input.hasWorkspace),
     Boolean(input.hasArtifacts),
     input.childRoute,
+    input.canonicalIntent,
   );
-  const operationClass = detectOperationClass(evidenceText, input.childRoute);
+  const operationClass = detectOperationClass(
+    evidenceText,
+    input.childRoute,
+    input.canonicalIntent,
+  );
   const entity = detectEntity(domain, evidenceText);
   const scopeHint = detectScopeHint(evidenceText);
   const followUpClass = detectFollowUpClass(input.latestUserMessage);
@@ -574,6 +583,26 @@ export const normalizeToolRoutingIntent = (input: {
   };
 };
 
+const resolveToolRoutingIntent = async (input: {
+  latestUserMessage: string;
+  childRoute?: RoutingChildRouteHints;
+  hasWorkspace?: boolean;
+  hasArtifacts?: boolean;
+}): Promise<ToolRoutingIntent> => {
+  const canonicalIntent = await resolveCanonicalIntent({
+    message: input.latestUserMessage,
+    supplementarySignals: {
+      normalizedIntent: input.childRoute?.normalizedIntent,
+      childRouterDomain: input.childRoute?.domain,
+      childRouterOperationType: input.childRoute?.operationType,
+    },
+  });
+  return normalizeToolRoutingIntent({
+    ...input,
+    canonicalIntent,
+  });
+};
+
 class ToolRoutingService {
   async findRoutingPriors(input: {
     companyId: string;
@@ -586,7 +615,7 @@ class ToolRoutingService {
     hasWorkspace?: boolean;
     hasArtifacts?: boolean;
   }): Promise<{ intent: ToolRoutingIntent; priors: ToolRoutingPriorMatch[] }> {
-    const intent = normalizeToolRoutingIntent({
+    const intent = await resolveToolRoutingIntent({
       latestUserMessage: input.latestUserMessage,
       childRoute: input.childRoute,
       hasWorkspace: input.hasWorkspace,
@@ -723,7 +752,7 @@ class ToolRoutingService {
       return;
     }
 
-    const intent = normalizeToolRoutingIntent({
+    const intent = await resolveToolRoutingIntent({
       latestUserMessage: input.latestUserMessage,
       childRoute: input.childRoute,
       hasWorkspace: input.hasWorkspace,
