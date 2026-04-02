@@ -177,8 +177,14 @@ const normalizeLarkMarkdown = (value: string): string =>
   (value ?? '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    // Lark markdown does not render "* item" bullets — convert to "- item"
+    // Lark card markdown elements do not render "* item" bullets — convert to "- item"
     .replace(/^(\s*)\* /gm, '$1- ')
+    // H2/H3/H4+ headings render as large block elements that push content below Lark's
+    // visible threshold causing card collapse. Convert to bold inline text instead.
+    // H1 is left alone — it's extracted as the card title by extractTitleAndBodyFromMarkdown.
+    .replace(/^#{2,6}\s+(.+)$/gm, '**$1**')
+    // Blockquotes (>) are not rendered in Lark card markdown — strip the marker
+    .replace(/^>\s?/gm, '')
     .trim();
 
 const stripMarkdownForSummary = (value: string): string =>
