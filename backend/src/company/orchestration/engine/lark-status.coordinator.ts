@@ -167,12 +167,14 @@ export class LarkStatusCoordinator {
       ? await this.adapter.updateMessage({
         messageId: this.statusMessageId,
         text: renderable.text,
+        format: 'text',
         actions: renderable.actions,
         correlationId: this.correlationId,
       })
       : await this.adapter.sendMessage({
         chatId: this.chatId,
         text: renderable.text,
+        format: 'text',
         actions: renderable.actions,
         correlationId: this.correlationId,
         replyToMessageId: this.replyToMessageId,
