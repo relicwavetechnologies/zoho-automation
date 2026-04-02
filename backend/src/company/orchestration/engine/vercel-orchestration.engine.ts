@@ -4699,6 +4699,116 @@ const executeLarkVercelTask = async (
     }
   };
 
+  if (process.env.USE_SUPERVISOR_V2 === 'true') {
+    statusHistory.push('Supervisor v2 engaged.');
+    await assertExecutionRunnable(task.taskId, abortSignal);
+    await updateStatus('planning', 'Supervisor is planning the request.');
+
+    const { supervisorV2Engine } = await import('./supervisor-v2.engine');
+    const supervisorResult = await supervisorV2Engine.executeTask({
+      task,
+      message,
+      latestCheckpoint: null,
+      abortSignal,
+    });
+    const supervisorPayload = supervisorResult as OrchestrationExecutionResult & {
+      finalText?: string;
+      pendingApproval?: PendingApprovalAction | null;
+      hasToolResults?: boolean;
+      isSensitiveContent?: boolean;
+    };
+    const finalText =
+      supervisorPayload.finalText?.trim()
+      || supervisorPayload.latestSynthesis?.trim()
+      || 'Done.';
+    const pendingApproval = supervisorPayload.pendingApproval ?? null;
+    const hasToolResults =
+      supervisorPayload.hasToolResults ?? Boolean((supervisorPayload.agentResults ?? []).length);
+    const isSensitiveContent = supervisorPayload.isSensitiveContent ?? false;
+
+    await assertExecutionRunnable(task.taskId, abortSignal);
+    await updateStatus('analyzing', 'Wrapping up your answer…');
+
+    let deliveredStatusMessageId: string | undefined;
+    if (pendingApproval) {
+      await assertExecutionRunnable(task.taskId, abortSignal);
+      const managerApprovalResult = await sendManagerApprovalRequest({
+        runtime,
+        message,
+        pendingApproval,
+      });
+      statusHistory.push(`Approval required: ${pendingApproval.kind}`);
+      const approvalText = managerApprovalResult.sent
+        ? `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`
+        : pendingApproval.kind === 'tool_action'
+          ? (summarizeText(pendingApproval.summary, 220) ?? finalText)
+          : finalText;
+      const approvalActions = managerApprovalResult.sent ? [] : buildLarkApprovalActions(pendingApproval);
+      currentStatusPhase = 'approval';
+      currentStatusDetail = approvalText;
+      currentStatusActions = approvalActions;
+      await assertExecutionRunnable(task.taskId, abortSignal);
+      const delivery = await deliverTerminalResponse({
+        text: approvalText,
+        actions: approvalActions,
+        hasToolResults,
+        isSensitiveContent,
+        proposedReplyMode,
+      });
+      deliveredStatusMessageId = delivery.statusMessageId;
+    } else {
+      await assertExecutionRunnable(task.taskId, abortSignal);
+      const delivery = await deliverTerminalResponse({
+        text: finalText,
+        actions: [],
+        hasToolResults,
+        isSensitiveContent,
+        proposedReplyMode,
+      });
+      deliveredStatusMessageId = delivery.statusMessageId;
+      conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, finalText);
+    }
+
+    const statusMessageId = deliveredStatusMessageId ?? statusCoordinator?.getStatusMessageId();
+    await assertExecutionRunnable(task.taskId, abortSignal);
+    await persistAssistantTurn({
+      content: finalText,
+      statusMessageId: statusMessageId ?? null,
+      pendingApproval,
+    });
+    await assertExecutionRunnable(task.taskId, abortSignal);
+    await persistConversationMemorySnapshot(finalText);
+    await appendLatestAgentRunLog(
+      task.taskId,
+      pendingApproval ? 'run.waiting_for_approval' : 'run.completed',
+      {
+        channel: 'lark',
+        route: 'supervisor_v2',
+        threadId: contextStorageId ?? message.chatId,
+        durationMs: Date.now() - runStartedAt,
+        finalText,
+        pendingApproval: pendingApproval
+          ? {
+              kind: pendingApproval.kind,
+              approvalId:
+                pendingApproval.kind === 'tool_action' ? pendingApproval.approvalId : null,
+            }
+          : null,
+        stepCount: supervisorPayload.runtimeMeta?.supervisorWaveCount ?? 0,
+      },
+    );
+    runCompletedSuccessfully = true;
+
+    return {
+      ...supervisorResult,
+      latestSynthesis: finalText,
+      runtimeMeta: {
+        ...supervisorResult.runtimeMeta,
+        threadId: contextStorageId,
+      },
+    };
+  }
+
   await assertExecutionRunnable(task.taskId, abortSignal);
   const childRoute = await runDesktopChildRouter({
     executionId,
@@ -6861,10 +6971,6 @@ export const vercelOrchestrationEngine: OrchestrationEngine = {
     return adaptPlanForVercel(task);
   },
   async executeTask(input) {
-    if (process.env.USE_SUPERVISOR_V2 === 'true') {
-      const { supervisorV2Engine } = await import('./supervisor-v2.engine');
-      return supervisorV2Engine.executeTask(input);
-    }
     return executeByChannel(input);
   },
 };

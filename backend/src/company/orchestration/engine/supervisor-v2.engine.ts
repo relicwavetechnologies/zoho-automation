@@ -1,7 +1,6 @@
 import { generateText, stepCountIs, tool } from 'ai';
 import { z } from 'zod';
 
-import { resolveChannelAdapter } from '../../channels';
 import { larkChatContextService } from '../../channels/lark/lark-chat-context.service';
 import {
   type AgentResultDTO,
@@ -19,7 +18,6 @@ import { toolPermissionService } from '../../tools/tool-permission.service';
 import { DOMAIN_TO_TOOL_IDS } from '../../tools/tool-registry';
 import { resolveCanonicalIntent } from '../intent/canonical-intent';
 import type { OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
-import { LarkStatusCoordinator } from './lark-status.coordinator';
 import { createVercelDesktopTools } from '../vercel/legacy-tools';
 import { resolveVercelLanguageModel } from '../vercel/model-factory';
 import type {
@@ -1073,8 +1071,6 @@ const executeTask = async (
 ): Promise<SupervisorV2ExecutionOutput> => {
   const { task, message, abortSignal } = input;
   const executionId = resolveCanonicalExecutionId(task, message);
-  const adapter = message.channel === 'lark' ? resolveChannelAdapter('lark') : null;
-  let statusCoordinator: LarkStatusCoordinator | null = null;
 
   try {
     const conversation = await resolveConversationContext(input);
@@ -1082,33 +1078,8 @@ const executeTask = async (
     const runtime = await resolveRuntimeContext(task, message, contextStorageId);
     const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
 
-    if (adapter && message.channel === 'lark') {
-      statusCoordinator = new LarkStatusCoordinator({
-        adapter,
-        chatId: message.chatId,
-        correlationId: task.taskId,
-        initialStatusMessageId: message.trace?.statusMessageId ?? message.trace?.ackMessageId,
-        replyToMessageId: message.trace?.replyToMessageId ?? message.messageId,
-        replyInThread: message.chatType === 'group',
-      });
-      await statusCoordinator.update({
-        text: 'Planning the next action.',
-        actions: [],
-      }, { force: true });
-      statusCoordinator.startHeartbeat(() => ({
-        text: 'Execution complete. Preparing the final response.',
-        actions: [],
-      }));
-    }
-
     const updateLiveStatus = async (text: string): Promise<void> => {
-      if (!statusCoordinator) {
-        return;
-      }
-      await statusCoordinator.update({
-        text,
-        actions: [],
-      });
+      void text;
     };
 
     const supervisorTools = {
@@ -1257,12 +1228,7 @@ const executeTask = async (
           },
         });
 
-        if (statusCoordinator) {
-          await statusCoordinator.update({
-            text: buildStepProgressText(step),
-            actions: [],
-          });
-        }
+        void step;
       },
     });
 
@@ -1278,7 +1244,6 @@ const executeTask = async (
     const hasToolResults =
       toolResults.length > 0
       || asArray(supervisorResult.steps).some((step) => asArray(asRecord(step)?.toolCalls).length > 0);
-    const statusMessageId = statusCoordinator?.getStatusMessageId();
     const agentResults = toSupervisorAgentResults(toolResults, task.taskId);
 
     return {
@@ -1302,7 +1267,6 @@ const executeTask = async (
       finalText,
       toolResults,
       pendingApproval,
-      statusMessageId,
       hasToolResults,
       isSensitiveContent: false,
     };
@@ -1342,12 +1306,9 @@ const executeTask = async (
       finalText: messageText,
       toolResults: [],
       pendingApproval: null,
-      statusMessageId: statusCoordinator?.getStatusMessageId(),
       hasToolResults: false,
       isSensitiveContent: false,
     };
-  } finally {
-    await statusCoordinator?.close();
   }
 };
 
