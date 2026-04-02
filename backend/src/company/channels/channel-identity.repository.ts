@@ -1,4 +1,5 @@
 import { prisma } from '../../utils/prisma';
+import { redDebug } from '../../utils/red-debug';
 
 type UpsertChannelIdentityInput = {
   channel: string;
@@ -23,6 +24,12 @@ class ChannelIdentityRepository {
     limit?: number;
   }) {
     const normalized = input.query.trim().toLowerCase();
+    redDebug('channel_identity.search_lark_contacts.start', {
+      companyId: input.companyId,
+      query: input.query,
+      normalizedQuery: normalized,
+      limit: input.limit ?? null,
+    });
     if (!normalized) {
       return [];
     }
@@ -37,6 +44,11 @@ class ChannelIdentityRepository {
     if (tokens.length === 0) {
       return [];
     }
+    redDebug('channel_identity.search_lark_contacts.tokens', {
+      companyId: input.companyId,
+      query: input.query,
+      tokens,
+    });
 
     const rows = await prisma.channelIdentity.findMany({
       where: {
@@ -53,6 +65,17 @@ class ChannelIdentityRepository {
       ],
       take: Math.max(1, Math.min(input.limit ?? 5, 10)),
     });
+    redDebug('channel_identity.search_lark_contacts.rows', {
+      companyId: input.companyId,
+      query: input.query,
+      rowCount: rows.length,
+      sample: rows.slice(0, 5).map((row) => ({
+        displayName: row.displayName,
+        email: row.email,
+        larkOpenId: row.larkOpenId,
+        larkUserId: row.larkUserId,
+      })),
+    });
 
     const score = (row: { displayName: string | null; email: string | null }): number => {
       const haystack = `${row.displayName ?? ''} ${row.email ?? ''}`.toLowerCase();
@@ -67,10 +90,21 @@ class ChannelIdentityRepository {
       return total;
     };
 
-    return rows
+    const ranked = rows
       .map((row) => ({ row, score: score(row) }))
       .sort((left, right) => right.score - left.score)
       .map(({ row }) => row);
+    redDebug('channel_identity.search_lark_contacts.ranked', {
+      companyId: input.companyId,
+      query: input.query,
+      rowCount: ranked.length,
+      sample: ranked.slice(0, 5).map((row) => ({
+        displayName: row.displayName,
+        email: row.email,
+        larkOpenId: row.larkOpenId,
+      })),
+    });
+    return ranked;
   }
 
   async upsert(input: UpsertChannelIdentityInput) {

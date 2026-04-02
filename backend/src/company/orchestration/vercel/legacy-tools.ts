@@ -29,6 +29,7 @@ import type {
 import type { MemberSessionDTO } from '../../../modules/member-auth/member-auth.service';
 import { discoverRepositories, inspectRepository, retrieveRepositoryFile } from './repo-tool';
 import { formatZohoGatewayDeniedMessage } from '../../integrations/zoho/zoho-gateway-denials';
+import { redDebug } from '../../../utils/red-debug';
 
 type LarkOperationalConfigLike = {
   findByCompanyId: (companyId: string) => Promise<{
@@ -4048,6 +4049,14 @@ export const createVercelDesktopTools = (
               sources: input.sources,
             }),
           });
+          redDebug('legacy_tools.context_search.normalized', {
+            delegatedAgentId: runtime.delegatedAgentId ?? 'unknown',
+            query,
+            inputScopes: input.scopes ?? null,
+            inputSources: input.sources ?? null,
+            normalizedSources: normalizedSources ?? null,
+            limit: input.limit ?? null,
+          });
           const result = await contextSearchBrokerService.search({
             runtime,
             query,
@@ -4055,6 +4064,13 @@ export const createVercelDesktopTools = (
             dateFrom: input.dateFrom,
             dateTo: input.dateTo,
             sources: normalizedSources,
+          });
+          redDebug('legacy_tools.context_search.result', {
+            delegatedAgentId: runtime.delegatedAgentId ?? 'unknown',
+            query,
+            sourceCoverage: result.sourceCoverage,
+            searchSummary: result.searchSummary,
+            resultCount: result.results.length,
           });
           const citations = contextSearchBrokerService.toVercelCitationsFromSearch(result);
 

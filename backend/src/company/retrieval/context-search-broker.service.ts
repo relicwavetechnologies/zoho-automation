@@ -12,6 +12,7 @@ import { vectorDocumentRepository } from '../integrations/vector/vector-document
 import { skillService } from '../skills/skill.service';
 import { fileRetrievalService } from './file-retrieval.service';
 import { logger } from '../../utils/logger';
+import { redDebug } from '../../utils/red-debug';
 import { getCachedSearchIntent, type SearchIntent } from '../orchestration/search-intent-classifier';
 
 export type ContextSearchBrokerSourceKey =
@@ -1069,6 +1070,14 @@ class ContextSearchBrokerService {
     const query = input.query.trim();
     const requestedLimit = Math.max(1, Math.min(input.limit ?? 5, 10));
     const sources = this.normalizeSources(input.sources);
+    redDebug('context_search_broker.search.start', {
+      delegatedAgentId: input.runtime.delegatedAgentId ?? 'unknown',
+      companyId: input.runtime.companyId,
+      query,
+      requestedSources: input.sources ?? null,
+      normalizedSources: sources,
+      limit: input.limit ?? null,
+    });
     const searchIntent = await getCachedSearchIntent({
       runtime: input.runtime,
       message: query,
@@ -1168,10 +1177,27 @@ class ContextSearchBrokerService {
         }).slice(0, internalLimit);
       },
       larkContacts: async () => {
+        redDebug('context_search_broker.lark_contacts.before_query', {
+          companyId: input.runtime.companyId,
+          delegatedAgentId: input.runtime.delegatedAgentId ?? 'unknown',
+          query,
+          limit: internalLimit,
+          larkContactsEnabled: sources.larkContacts,
+        });
         const people = await channelIdentityRepository.searchLarkContacts({
           companyId: input.runtime.companyId,
           query,
           limit: internalLimit,
+        });
+        redDebug('context_search_broker.lark_contacts.after_query', {
+          companyId: input.runtime.companyId,
+          query,
+          resultCount: people.length,
+          sample: people.slice(0, 5).map((person) => ({
+            displayName: readString(person.displayName),
+            email: readString(person.email),
+            larkOpenId: readString(person.larkOpenId),
+          })),
         });
         return people.map((person, index) => {
           const sourceId = readString(person.larkOpenId)
@@ -1429,6 +1455,13 @@ class ContextSearchBrokerService {
         .map(([key]) => key),
       personalHistoryIncluded: sourceCoverage.personalHistory?.enabled ?? false,
       resultCount: finalResults.length,
+    });
+    redDebug('context_search_broker.search.final', {
+      delegatedAgentId: input.runtime.delegatedAgentId ?? 'unknown',
+      query,
+      sourceCoverage,
+      finalResultCount: finalResults.length,
+      finalScopes: finalResults.map((result) => result.scope),
     });
 
     const resolvedEntities = buildResolvedEntities(finalResults);

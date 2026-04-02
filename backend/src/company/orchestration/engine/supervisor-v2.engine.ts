@@ -30,6 +30,7 @@ import type {
 } from '../vercel/types';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
 import { logger } from '../../../utils/logger';
+import { redDebug } from '../../../utils/red-debug';
 
 type ChatTurn = {
   role: 'user' | 'assistant';
@@ -98,166 +99,16 @@ const stripMarkdownDecorators = (value: string): string =>
     .replace(/^#{1,6}\s+/gm, '')
     .trim();
 
-const compactWhitespace = (value: string): string => value.replace(/\n{3,}/g, '\n\n').trim();
-
-const isMarkdownTableLine = (line: string): boolean => {
-  const trimmed = line.trim();
-  return trimmed.includes('|') && trimmed.startsWith('|') && trimmed.endsWith('|');
-};
-
-const isMarkdownTableDivider = (line: string): boolean =>
-  /^[\s|:-]+$/.test(line.trim());
-
-const splitTableCells = (line: string): string[] =>
-  line
-    .trim()
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map((cell) => stripMarkdownDecorators(cell.trim()))
-    .filter((cell) => cell.length > 0);
-
-const rewriteMarkdownTables = (value: string, maxRows = 10): string => {
-  const lines = value.split('\n');
-  const rewritten: string[] = [];
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? '';
-    if (!isMarkdownTableLine(line)) {
-      rewritten.push(line);
-      continue;
-    }
-
-    const header = splitTableCells(line);
-    const divider = lines[index + 1] ?? '';
-    if (header.length === 0 || !isMarkdownTableDivider(divider)) {
-      rewritten.push(line);
-      continue;
-    }
-
-    const rows: string[] = [];
-    let cursor = index + 2;
-    while (cursor < lines.length && isMarkdownTableLine(lines[cursor] ?? '')) {
-      const cells = splitTableCells(lines[cursor] ?? '');
-      if (cells.length > 0) {
-        const summary = header
-          .map((column, cellIndex) => `${column}: ${cells[cellIndex] ?? '-'}`)
-          .join(' | ');
-        rows.push(`- ${summary}`);
-      }
-      cursor += 1;
-    }
-
-    rewritten.push(rows.slice(0, maxRows).join('\n'));
-    if (rows.length > maxRows) {
-      rewritten.push(`- ...and ${rows.length - maxRows} more rows.`);
-    }
-    index = cursor - 1;
-  }
-
-  return rewritten.join('\n');
-};
-
-const compactBulletLists = (value: string, maxItems = 12): string => {
-  const lines = value.split('\n');
-  const rewritten: string[] = [];
-  let bufferedBullets: string[] = [];
-
-  const flushBullets = () => {
-    if (bufferedBullets.length === 0) {
-      return;
-    }
-    rewritten.push(...bufferedBullets.slice(0, maxItems));
-    if (bufferedBullets.length > maxItems) {
-      rewritten.push(`- ...and ${bufferedBullets.length - maxItems} more items.`);
-    }
-    bufferedBullets = [];
-  };
-
-  for (const line of lines) {
-    if (/^\s*[-*•]\s+/.test(line)) {
-      bufferedBullets.push(line.replace(/^\s*[•*]\s+/, '- ').trimEnd());
-      continue;
-    }
-    flushBullets();
-    rewritten.push(line);
-  }
-  flushBullets();
-
-  return rewritten.join('\n');
-};
-
-const truncateForLark = (value: string, maxChars = 2600): string => {
-  const trimmed = value.trim();
-  if (trimmed.length <= maxChars) {
-    return trimmed;
-  }
-  const boundary = Math.max(
-    trimmed.lastIndexOf('\n\n', maxChars),
-    trimmed.lastIndexOf('\n', maxChars),
-    trimmed.lastIndexOf('. ', maxChars),
-  );
-  const cutAt = boundary > 400 ? boundary : maxChars;
-  return `${trimmed.slice(0, cutAt).trim()}\n\nReply with "continue" if you want the remaining items.`;
-};
-
-const buildActionAwareSummary = (
-  toolResults: VercelToolEnvelope[],
-  pendingApproval: PendingApprovalAction | null,
-): string | null => {
-  const approvalRecord = pendingApproval?.kind === 'tool_action'
-    ? asRecord(pendingApproval.payload)
-    : undefined;
-  if (pendingApproval?.kind === 'tool_action' && pendingApproval.operation === 'sendMessage' && approvalRecord) {
-    const to = asString(approvalRecord.to) ?? 'the recipient';
-    const subject = asString(approvalRecord.subject) ?? 'No subject';
-    const body = summarizeText(asString(approvalRecord.body), 180);
-    return [
-      `I prepared an email to ${to}.`,
-      `Subject: ${subject}`,
-      body ? `Preview: ${body}` : '',
-    ].filter(Boolean).join('\n');
-  }
-  if (pendingApproval?.kind === 'tool_action' && pendingApproval.operation === 'createDraft' && approvalRecord) {
-    const to = asString(approvalRecord.to) ?? 'the recipient';
-    const subject = asString(approvalRecord.subject) ?? 'No subject';
-    return `I prepared a draft for ${to} with subject "${subject}".`;
-  }
-  if (pendingApproval?.kind === 'tool_action' && pendingApproval.operation === 'sendDm' && approvalRecord) {
-    const recipients = asArray(approvalRecord.recipientLabels)
-      .map((entry) => asString(entry))
-      .filter((entry): entry is string => Boolean(entry))
-      .join(', ');
-    const preview = summarizeText(asString(approvalRecord.message), 180);
-    return [
-      `I prepared a Lark message for ${recipients || 'the selected recipients'}.`,
-      preview ? `Preview: ${preview}` : '',
-    ].filter(Boolean).join('\n');
-  }
-  const firstAction = toolResults.find((entry) => entry.confirmedAction || entry.pendingApprovalAction);
-  if (!firstAction) {
-    return null;
-  }
-  return firstAction.summary;
-};
-
-const formatFinalTextForLark = (
-  text: string,
-  toolResults: VercelToolEnvelope[],
-  pendingApproval: PendingApprovalAction | null,
-): string => {
-  const preferredLead = buildActionAwareSummary(toolResults, pendingApproval);
-  let formatted = stripMarkdownDecorators(text);
-  formatted = rewriteMarkdownTables(formatted);
-  formatted = compactBulletLists(formatted);
-  formatted = compactWhitespace(formatted);
-
-  if (preferredLead && !formatted.toLowerCase().includes(preferredLead.toLowerCase())) {
-    formatted = `${preferredLead}\n\n${formatted}`.trim();
-  }
-
-  return truncateForLark(formatted);
-};
+const LARK_FORMAT_RULES = `
+FORMATTING RULES (Lark chat — follow exactly):
+- Use **bold** for emphasis and labels
+- Use bullet points (- item) for lists
+- For data tables: use | Col1 | Col2 | Col3 | format with a header separator row
+- Do NOT use ### or ## headings — use **Bold Label:** instead
+- Do NOT use # heading — use **Title** on its own line instead
+- Keep responses concise — no filler text
+- Numbers and amounts: use commas for thousands (42,495,664.40)
+`.trim();
 
 const buildConversationKey = (message: NormalizedIncomingMessageDTO): string =>
   `${message.channel}:${message.chatId}`;
@@ -368,11 +219,12 @@ export const buildSupervisorSystemPrompt = (runtime: VercelRuntimeRequestContext
     '  → Example: "send findings to anish"',
     '    calls: googleWorkspaceAgent({ objective: "send email with findings", recipientEmail: "anishsuman2305@gmail.com", subject: "Research Findings", body: "..." })',
     `Permissions summary: ${buildPermissionSummary(runtime)}.`,
+    'FORMATTING: Use **bold** for emphasis. Use - for bullet lists. For data: use | Col | Col | table format. Never use ### or ## headings — use **Bold:** instead. Be concise and direct.',
   ].join('\n');
 };
 
 const buildSubAgentPrompt = (label: string, guidance: string): string =>
-  `You are a ${label}. ${guidance}`.trim();
+  `You are a ${label}. ${guidance}\n\n${LARK_FORMAT_RULES}`.trim();
 
 const buildContextAgentPrompt = (): string => [
   'You are a retrieval specialist.',
@@ -796,21 +648,37 @@ async function runContextAgent(
           chunkRef: z.string().optional(),
         }),
         execute: async ({ query, operation, sources, limit, chunkRef }) =>
-          contextSearchTool.execute({
-            query,
-            operation,
-            sources: {
-              web: sources?.web ?? (params.webSearch ?? false),
-              larkContacts: sources?.larkContacts ?? (params.contactSearch ?? true),
-              personalHistory: sources?.personalHistory ?? true,
-              files: sources?.files ?? true,
-              zohoCrmContext: sources?.zohoCrmContext ?? true,
-              skills: false,
-            },
-            scopes: ['all'],
-            limit: limit ?? 8,
-            ...(chunkRef ? { chunkRef } : {}),
-          }),
+          (async () => {
+            const effectivePayload = {
+              query,
+              operation,
+              sources: {
+                web: sources?.web ?? (params.webSearch ?? false),
+                larkContacts: sources?.larkContacts ?? (params.contactSearch ?? true),
+                personalHistory: sources?.personalHistory ?? true,
+                files: sources?.files ?? true,
+                zohoCrmContext: sources?.zohoCrmContext ?? true,
+                skills: false,
+              },
+              scopes: ['all'] as const,
+              limit: limit ?? 8,
+              ...(chunkRef ? { chunkRef } : {}),
+            };
+            redDebug('supervisor_v2.context_agent.context_search.execute', {
+              objective: params.objective,
+              contactSearch: params.contactSearch ?? null,
+              webSearch: params.webSearch ?? null,
+              rawToolArgs: {
+                query,
+                operation,
+                sources: sources ?? null,
+                limit: limit ?? null,
+                chunkRef: chunkRef ?? null,
+              },
+              effectivePayload,
+            });
+            return contextSearchTool.execute(effectivePayload);
+          })(),
       }),
     },
     runtime,
@@ -1385,13 +1253,12 @@ const executeTask = async (
     const toolResults = extractNestedToolResults(supervisorResult.steps);
     const pendingApproval =
       extractNestedPendingApproval(supervisorResult.steps) ?? extractPendingApproval(toolResults);
-    const rawFinalText =
-      summarizeText(supervisorResult.text, 6_000)
-      || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n')
+    const rawText = supervisorResult.text?.trim()
+      || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n\n')
       || 'Completed the request.';
-    const finalText = runtime.channel === 'lark'
-      ? formatFinalTextForLark(rawFinalText, toolResults, pendingApproval)
-      : rawFinalText;
+    const finalText = rawText.length > 12_000
+      ? `${rawText.slice(0, 12_000)}\n\n*(Response truncated — showing first portion)*`
+      : rawText;
     const hasToolResults =
       toolResults.length > 0
       || asArray(supervisorResult.steps).some((step) => asArray(asRecord(step)?.toolCalls).length > 0);
