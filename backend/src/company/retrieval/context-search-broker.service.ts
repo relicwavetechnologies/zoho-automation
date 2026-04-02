@@ -1089,6 +1089,10 @@ class ContextSearchBrokerService {
       selectInitialSources(searchIntent, weights, sources);
     } else {
       for (const key of Object.keys(sources) as ContextSearchBrokerSourceKey[]) {
+        if (input.sources[key] !== undefined) {
+          sources[key] = Boolean(input.sources[key]);
+          continue;
+        }
         if (weights[key] <= 0) {
           sources[key] = false;
         }
