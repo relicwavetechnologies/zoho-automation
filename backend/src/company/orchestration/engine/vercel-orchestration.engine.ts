@@ -4698,6 +4698,67 @@ const executeLarkVercelTask = async (
       });
     }
   };
+  const finalizeLarkDelivery = async (input: {
+    finalText: string;
+    pendingApproval: PendingApprovalAction | null;
+    hasToolResults: boolean;
+    isSensitiveContent: boolean;
+    proposedReplyMode?: ReplyModeHint;
+  }): Promise<{ statusMessageId?: string }> => {
+    await assertExecutionRunnable(task.taskId, abortSignal);
+    await updateStatus('analyzing', 'Wrapping up your answer…');
+
+    let deliveredStatusMessageId: string | undefined;
+    if (input.pendingApproval) {
+      await assertExecutionRunnable(task.taskId, abortSignal);
+      const managerApprovalResult = await sendManagerApprovalRequest({
+        runtime,
+        message,
+        pendingApproval: input.pendingApproval,
+      });
+      statusHistory.push(`Approval required: ${input.pendingApproval.kind}`);
+      const approvalText = managerApprovalResult.sent
+        ? `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`
+        : input.pendingApproval.kind === 'tool_action'
+          ? (summarizeText(input.pendingApproval.summary, 220) ?? input.finalText)
+          : input.finalText;
+      const approvalActions = managerApprovalResult.sent ? [] : buildLarkApprovalActions(input.pendingApproval);
+      currentStatusPhase = 'approval';
+      currentStatusDetail = approvalText;
+      currentStatusActions = approvalActions;
+      await assertExecutionRunnable(task.taskId, abortSignal);
+      const delivery = await deliverTerminalResponse({
+        text: approvalText,
+        actions: approvalActions,
+        hasToolResults: input.hasToolResults,
+        isSensitiveContent: input.isSensitiveContent,
+        proposedReplyMode: input.proposedReplyMode,
+      });
+      deliveredStatusMessageId = delivery.statusMessageId;
+    } else {
+      await assertExecutionRunnable(task.taskId, abortSignal);
+      const delivery = await deliverTerminalResponse({
+        text: input.finalText,
+        actions: [],
+        hasToolResults: input.hasToolResults,
+        isSensitiveContent: input.isSensitiveContent,
+        proposedReplyMode: input.proposedReplyMode,
+      });
+      deliveredStatusMessageId = delivery.statusMessageId;
+      conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, input.finalText);
+    }
+
+    const statusMessageId = deliveredStatusMessageId ?? statusCoordinator?.getStatusMessageId();
+    await assertExecutionRunnable(task.taskId, abortSignal);
+    await persistAssistantTurn({
+      content: input.finalText,
+      statusMessageId: statusMessageId ?? null,
+      pendingApproval: input.pendingApproval,
+    });
+    await assertExecutionRunnable(task.taskId, abortSignal);
+    await persistConversationMemorySnapshot(input.finalText);
+    return { statusMessageId };
+  };
 
   if (process.env.USE_SUPERVISOR_V2 === 'true') {
     statusHistory.push('Supervisor v2 engaged.');
@@ -4726,58 +4787,13 @@ const executeLarkVercelTask = async (
       supervisorPayload.hasToolResults ?? Boolean((supervisorPayload.agentResults ?? []).length);
     const isSensitiveContent = supervisorPayload.isSensitiveContent ?? false;
 
-    await assertExecutionRunnable(task.taskId, abortSignal);
-    await updateStatus('analyzing', 'Wrapping up your answer…');
-
-    let deliveredStatusMessageId: string | undefined;
-    if (pendingApproval) {
-      await assertExecutionRunnable(task.taskId, abortSignal);
-      const managerApprovalResult = await sendManagerApprovalRequest({
-        runtime,
-        message,
-        pendingApproval,
-      });
-      statusHistory.push(`Approval required: ${pendingApproval.kind}`);
-      const approvalText = managerApprovalResult.sent
-        ? `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`
-        : pendingApproval.kind === 'tool_action'
-          ? (summarizeText(pendingApproval.summary, 220) ?? finalText)
-          : finalText;
-      const approvalActions = managerApprovalResult.sent ? [] : buildLarkApprovalActions(pendingApproval);
-      currentStatusPhase = 'approval';
-      currentStatusDetail = approvalText;
-      currentStatusActions = approvalActions;
-      await assertExecutionRunnable(task.taskId, abortSignal);
-      const delivery = await deliverTerminalResponse({
-        text: approvalText,
-        actions: approvalActions,
-        hasToolResults,
-        isSensitiveContent,
-        proposedReplyMode,
-      });
-      deliveredStatusMessageId = delivery.statusMessageId;
-    } else {
-      await assertExecutionRunnable(task.taskId, abortSignal);
-      const delivery = await deliverTerminalResponse({
-        text: finalText,
-        actions: [],
-        hasToolResults,
-        isSensitiveContent,
-        proposedReplyMode,
-      });
-      deliveredStatusMessageId = delivery.statusMessageId;
-      conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, finalText);
-    }
-
-    const statusMessageId = deliveredStatusMessageId ?? statusCoordinator?.getStatusMessageId();
-    await assertExecutionRunnable(task.taskId, abortSignal);
-    await persistAssistantTurn({
-      content: finalText,
-      statusMessageId: statusMessageId ?? null,
+    await finalizeLarkDelivery({
+      finalText,
       pendingApproval,
+      hasToolResults,
+      isSensitiveContent,
+      proposedReplyMode,
     });
-    await assertExecutionRunnable(task.taskId, abortSignal);
-    await persistConversationMemorySnapshot(finalText);
     await appendLatestAgentRunLog(
       task.taskId,
       pendingApproval ? 'run.waiting_for_approval' : 'run.completed',
@@ -6625,51 +6641,13 @@ const executeLarkVercelTask = async (
     });
 
     statusHistory.push('Execution complete. Preparing the final response.');
-    await updateStatus('analyzing', 'Wrapping up your answer…');
-
-    let deliveredStatusMessageId: string | undefined;
-    if (pendingApproval) {
-      await assertExecutionRunnable(task.taskId, abortSignal);
-      const managerApprovalResult = await sendManagerApprovalRequest({
-        runtime,
-        message,
-        pendingApproval,
-      });
-      statusHistory.push(`Approval required: ${pendingApproval.kind}`);
-      const approvalText = managerApprovalResult.sent
-          ? `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`
-          : pendingApproval.kind === 'tool_action'
-          ? (summarizeText(pendingApproval.summary, 220) ?? deliveryText)
-          : deliveryText;
-      const approvalActions = managerApprovalResult.sent ? [] : buildLarkApprovalActions(pendingApproval);
-      currentStatusPhase = 'approval';
-      currentStatusDetail = approvalText;
-      currentStatusActions = approvalActions;
-      await assertExecutionRunnable(task.taskId, abortSignal);
-      const delivery = await deliverTerminalResponse({
-        text: approvalText,
-        actions: approvalActions,
-        hasToolResults,
-        isSensitiveContent,
-        proposedReplyMode,
-      });
-      deliveredStatusMessageId = delivery.statusMessageId;
-    } else {
-      await assertExecutionRunnable(task.taskId, abortSignal);
-      const delivery = await deliverTerminalResponse({
-        text: deliveryText,
-        actions: [],
-        hasToolResults,
-        isSensitiveContent,
-        proposedReplyMode,
-      });
-      deliveredStatusMessageId = delivery.statusMessageId;
-    }
-
-    const statusMessageId = deliveredStatusMessageId ?? statusCoordinator?.getStatusMessageId();
-    if (!pendingApproval) {
-      conversationMemoryStore.addAssistantMessage(conversationKey, task.taskId, deliveryText);
-    }
+    const { statusMessageId } = await finalizeLarkDelivery({
+      finalText: deliveryText,
+      pendingApproval,
+      hasToolResults,
+      isSensitiveContent,
+      proposedReplyMode,
+    });
     if (linkedUserId) {
       const effectiveMessages =
         inputMessages.length > 0 ? inputMessages : [{ role: 'user', content: resolvedUserMessage }];
@@ -6694,13 +6672,6 @@ const executeLarkVercelTask = async (
         runExposedToolIds: effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
       });
     }
-
-    await assertExecutionRunnable(task.taskId, abortSignal);
-    await persistAssistantTurn({
-      content: deliveryText,
-      statusMessageId: statusMessageId ?? null,
-      pendingApproval,
-    });
 
     const agentResults = (
       delegatedAgentResults.length > 0
@@ -6746,8 +6717,6 @@ const executeLarkVercelTask = async (
       delete cleanedTaskState.supervisorProgress;
       activeTaskState = cleanedTaskState;
     }
-    await assertExecutionRunnable(task.taskId, abortSignal);
-    await persistConversationMemorySnapshot(finalText);
     await assertExecutionRunnable(task.taskId, abortSignal);
     await memoryService.recordToolSelectionOutcome({
       companyId: runtime.companyId,
