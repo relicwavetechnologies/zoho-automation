@@ -73,8 +73,18 @@ const extractSearchTokens = (query: string): string[] =>
     query
       .split(/[^a-z0-9@._-]+/i)
       .map((token) => token.trim())
-      .filter((token) => token.length >= 2 && !CONTACT_QUERY_STOPWORDS.has(token)),
-  )).slice(0, 12);
+      .filter((token) => token.length >= 2 && !CONTACT_QUERY_STOPWORDS.has(token))
+      .flatMap((token) => {
+        const expanded = [token];
+        if (token.length >= 5) {
+          expanded.push(token.slice(0, 5));
+        }
+        if (token.length >= 6) {
+          expanded.push(token.slice(0, 4));
+        }
+        return expanded;
+      }),
+  )).slice(0, 20);
 
 const scoreContactRow = (
   row: { displayName: string | null; email: string | null },
