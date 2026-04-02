@@ -90,6 +90,175 @@ const summarizeText = (value: string | null | undefined, limit = 240): string =>
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
 };
 
+const stripMarkdownDecorators = (value: string): string =>
+  value
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .trim();
+
+const compactWhitespace = (value: string): string => value.replace(/\n{3,}/g, '\n\n').trim();
+
+const isMarkdownTableLine = (line: string): boolean => {
+  const trimmed = line.trim();
+  return trimmed.includes('|') && trimmed.startsWith('|') && trimmed.endsWith('|');
+};
+
+const isMarkdownTableDivider = (line: string): boolean =>
+  /^[\s|:-]+$/.test(line.trim());
+
+const splitTableCells = (line: string): string[] =>
+  line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => stripMarkdownDecorators(cell.trim()))
+    .filter((cell) => cell.length > 0);
+
+const rewriteMarkdownTables = (value: string, maxRows = 10): string => {
+  const lines = value.split('\n');
+  const rewritten: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    if (!isMarkdownTableLine(line)) {
+      rewritten.push(line);
+      continue;
+    }
+
+    const header = splitTableCells(line);
+    const divider = lines[index + 1] ?? '';
+    if (header.length === 0 || !isMarkdownTableDivider(divider)) {
+      rewritten.push(line);
+      continue;
+    }
+
+    const rows: string[] = [];
+    let cursor = index + 2;
+    while (cursor < lines.length && isMarkdownTableLine(lines[cursor] ?? '')) {
+      const cells = splitTableCells(lines[cursor] ?? '');
+      if (cells.length > 0) {
+        const summary = header
+          .map((column, cellIndex) => `${column}: ${cells[cellIndex] ?? '-'}`)
+          .join(' | ');
+        rows.push(`- ${summary}`);
+      }
+      cursor += 1;
+    }
+
+    rewritten.push(rows.slice(0, maxRows).join('\n'));
+    if (rows.length > maxRows) {
+      rewritten.push(`- ...and ${rows.length - maxRows} more rows.`);
+    }
+    index = cursor - 1;
+  }
+
+  return rewritten.join('\n');
+};
+
+const compactBulletLists = (value: string, maxItems = 12): string => {
+  const lines = value.split('\n');
+  const rewritten: string[] = [];
+  let bufferedBullets: string[] = [];
+
+  const flushBullets = () => {
+    if (bufferedBullets.length === 0) {
+      return;
+    }
+    rewritten.push(...bufferedBullets.slice(0, maxItems));
+    if (bufferedBullets.length > maxItems) {
+      rewritten.push(`- ...and ${bufferedBullets.length - maxItems} more items.`);
+    }
+    bufferedBullets = [];
+  };
+
+  for (const line of lines) {
+    if (/^\s*[-*•]\s+/.test(line)) {
+      bufferedBullets.push(line.replace(/^\s*[•*]\s+/, '- ').trimEnd());
+      continue;
+    }
+    flushBullets();
+    rewritten.push(line);
+  }
+  flushBullets();
+
+  return rewritten.join('\n');
+};
+
+const truncateForLark = (value: string, maxChars = 2600): string => {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  const boundary = Math.max(
+    trimmed.lastIndexOf('\n\n', maxChars),
+    trimmed.lastIndexOf('\n', maxChars),
+    trimmed.lastIndexOf('. ', maxChars),
+  );
+  const cutAt = boundary > 400 ? boundary : maxChars;
+  return `${trimmed.slice(0, cutAt).trim()}\n\nReply with "continue" if you want the remaining items.`;
+};
+
+const buildActionAwareSummary = (
+  toolResults: VercelToolEnvelope[],
+  pendingApproval: PendingApprovalAction | null,
+): string | null => {
+  const approvalRecord = pendingApproval?.kind === 'tool_action'
+    ? asRecord(pendingApproval.payload)
+    : undefined;
+  if (pendingApproval?.kind === 'tool_action' && pendingApproval.operation === 'sendMessage' && approvalRecord) {
+    const to = asString(approvalRecord.to) ?? 'the recipient';
+    const subject = asString(approvalRecord.subject) ?? 'No subject';
+    const body = summarizeText(asString(approvalRecord.body), 180);
+    return [
+      `I prepared an email to ${to}.`,
+      `Subject: ${subject}`,
+      body ? `Preview: ${body}` : '',
+    ].filter(Boolean).join('\n');
+  }
+  if (pendingApproval?.kind === 'tool_action' && pendingApproval.operation === 'createDraft' && approvalRecord) {
+    const to = asString(approvalRecord.to) ?? 'the recipient';
+    const subject = asString(approvalRecord.subject) ?? 'No subject';
+    return `I prepared a draft for ${to} with subject "${subject}".`;
+  }
+  if (pendingApproval?.kind === 'tool_action' && pendingApproval.operation === 'sendDm' && approvalRecord) {
+    const recipients = asArray(approvalRecord.recipientLabels)
+      .map((entry) => asString(entry))
+      .filter((entry): entry is string => Boolean(entry))
+      .join(', ');
+    const preview = summarizeText(asString(approvalRecord.message), 180);
+    return [
+      `I prepared a Lark message for ${recipients || 'the selected recipients'}.`,
+      preview ? `Preview: ${preview}` : '',
+    ].filter(Boolean).join('\n');
+  }
+  const firstAction = toolResults.find((entry) => entry.confirmedAction || entry.pendingApprovalAction);
+  if (!firstAction) {
+    return null;
+  }
+  return firstAction.summary;
+};
+
+const formatFinalTextForLark = (
+  text: string,
+  toolResults: VercelToolEnvelope[],
+  pendingApproval: PendingApprovalAction | null,
+): string => {
+  const preferredLead = buildActionAwareSummary(toolResults, pendingApproval);
+  let formatted = stripMarkdownDecorators(text);
+  formatted = rewriteMarkdownTables(formatted);
+  formatted = compactBulletLists(formatted);
+  formatted = compactWhitespace(formatted);
+
+  if (preferredLead && !formatted.toLowerCase().includes(preferredLead.toLowerCase())) {
+    formatted = `${preferredLead}\n\n${formatted}`.trim();
+  }
+
+  return truncateForLark(formatted);
+};
+
 const buildConversationKey = (message: NormalizedIncomingMessageDTO): string =>
   `${message.channel}:${message.chatId}`;
 
@@ -178,6 +347,7 @@ const buildSupervisorSystemPrompt = (runtime: VercelRuntimeRequestContext): stri
     '3. If an agent returns an error, read it, fix the objective or arguments, and retry.',
     '4. Be concise in the final response.',
     '5. Never hallucinate tool names. Use only the 4 agents listed above.',
+    '6. If you send, draft, or prepare a message, say what was sent or prepared with recipient plus a short content preview, not only that it happened.',
     `Permissions summary: ${buildPermissionSummary(runtime)}.`,
   ].join('\n');
 };
@@ -491,6 +661,7 @@ const runSubAgent = async (
     tools: Record<string, ReturnType<typeof tool>>;
     runtime: VercelRuntimeRequestContext;
     abortSignal?: AbortSignal;
+    onStepFinish?: (step: unknown) => Promise<void>;
   },
 ): Promise<SubAgentTextResult> => {
   const resolvedModel = await resolveVercelLanguageModel(input.runtime.mode);
@@ -510,6 +681,7 @@ const runSubAgent = async (
     },
     stopWhen: stepCountIs(3),
     abortSignal: input.abortSignal,
+    onStepFinish: input.onStepFinish,
   });
 
   const toolResults = extractToolEnvelopes(result.steps);
@@ -530,6 +702,7 @@ async function runContextAgent(
   params: { objective: string; webSearch?: boolean; contactSearch?: boolean },
   runtime: VercelRuntimeRequestContext,
   abortSignal?: AbortSignal,
+  onStepFinish?: (step: unknown) => Promise<void>,
 ): Promise<SubAgentTextResult> {
   const legacyTools = getLegacyTools({
     ...runtime,
@@ -581,6 +754,7 @@ async function runContextAgent(
     },
     runtime,
     abortSignal,
+    onStepFinish,
   });
 }
 
@@ -588,6 +762,7 @@ async function runGoogleWorkspaceAgent(
   params: { objective: string; recipientEmail?: string; subject?: string; body?: string },
   runtime: VercelRuntimeRequestContext,
   abortSignal?: AbortSignal,
+  onStepFinish?: (step: unknown) => Promise<void>,
 ): Promise<SubAgentTextResult> {
   const legacyTools = getLegacyTools({
     ...runtime,
@@ -660,6 +835,7 @@ async function runGoogleWorkspaceAgent(
     },
     runtime,
     abortSignal,
+    onStepFinish,
   });
 }
 
@@ -667,6 +843,7 @@ async function runZohoAgent(
   objective: string,
   runtime: VercelRuntimeRequestContext,
   abortSignal?: AbortSignal,
+  onStepFinish?: (step: unknown) => Promise<void>,
 ): Promise<SubAgentTextResult> {
   const legacyTools = getLegacyTools({
     ...runtime,
@@ -737,6 +914,7 @@ async function runZohoAgent(
     tools,
     runtime,
     abortSignal,
+    onStepFinish,
   });
 }
 
@@ -744,6 +922,7 @@ async function runLarkAgent(
   params: { objective: string; assignee?: string },
   runtime: VercelRuntimeRequestContext,
   abortSignal?: AbortSignal,
+  onStepFinish?: (step: unknown) => Promise<void>,
 ): Promise<SubAgentTextResult> {
   const legacyTools = getLegacyTools({
     ...runtime,
@@ -810,6 +989,7 @@ async function runLarkAgent(
     tools,
     runtime,
     abortSignal,
+    onStepFinish,
   });
 }
 
@@ -882,6 +1062,44 @@ const buildStepProgressText = (step: unknown): string => {
   return summarizeText(asString(stepRecord?.text), 220) || 'Working on the request.';
 };
 
+const buildAgentStartStatus = (label: string, objective: string): string =>
+  `I understand the request. Now I am using ${label} for: ${summarizeText(stripMarkdownDecorators(objective), 180)}`;
+
+const buildAgentStepStatus = (label: string, step: unknown): string => {
+  const stepRecord = asRecord(step);
+  const toolCalls = asArray(stepRecord?.toolCalls)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+  const toolResults = asArray(stepRecord?.toolResults)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+
+  const callNames = toolCalls
+    .map((entry) => asString(entry.toolName))
+    .filter((entry): entry is string => Boolean(entry));
+  const resultSummaries = toolResults
+    .map((entry) => {
+      const output = asRecord(entry.output);
+      return asString(output?.summary) ?? asString(output?.text);
+    })
+    .filter((entry): entry is string => Boolean(entry));
+
+  if (resultSummaries.length > 0) {
+    return `I got a result from ${label}: ${summarizeText(stripMarkdownDecorators(resultSummaries.join(' | ')), 200)}`;
+  }
+  if (callNames.length > 0) {
+    return `I am working with ${label} using ${callNames.join(', ')}.`;
+  }
+  return `I am still working with ${label}.`;
+};
+
+const buildAgentFinishStatus = (label: string, result: SubAgentTextResult): string => {
+  if (result.pendingApproval) {
+    return `I prepared the ${label} action and it now needs approval.`;
+  }
+  return `I got what I needed from ${label}. Now I am preparing the next step.`;
+};
+
 const toSupervisorAgentResults = (toolResults: VercelToolEnvelope[], taskId: string): AgentResultDTO[] => {
   if (toolResults.length === 0) {
     return [];
@@ -938,6 +1156,16 @@ const executeTask = async (
       }));
     }
 
+    const updateLiveStatus = async (text: string): Promise<void> => {
+      if (!statusCoordinator) {
+        return;
+      }
+      await statusCoordinator.update({
+        text,
+        actions: [],
+      });
+    };
+
     const supervisorTools = {
       contextAgent: tool({
         description:
@@ -947,8 +1175,17 @@ const executeTask = async (
           webSearch: z.boolean().optional().describe('Include web results'),
           contactSearch: z.boolean().optional().describe('Search for contact details'),
         }),
-        execute: async ({ objective, webSearch, contactSearch }) =>
-          runContextAgent({ objective, webSearch, contactSearch }, runtime, abortSignal),
+        execute: async ({ objective, webSearch, contactSearch }) => {
+          await updateLiveStatus(buildAgentStartStatus('context', objective));
+          const result = await runContextAgent(
+            { objective, webSearch, contactSearch },
+            runtime,
+            abortSignal,
+            async (step) => updateLiveStatus(buildAgentStepStatus('context', step)),
+          );
+          await updateLiveStatus(buildAgentFinishStatus('context', result));
+          return result;
+        },
       }),
       googleWorkspaceAgent: tool({
         description:
@@ -959,7 +1196,17 @@ const executeTask = async (
           subject: z.string().optional(),
           body: z.string().optional(),
         }),
-        execute: async (params) => runGoogleWorkspaceAgent(params, runtime, abortSignal),
+        execute: async (params) => {
+          await updateLiveStatus(buildAgentStartStatus('Google Workspace', params.objective));
+          const result = await runGoogleWorkspaceAgent(
+            params,
+            runtime,
+            abortSignal,
+            async (step) => updateLiveStatus(buildAgentStepStatus('Google Workspace', step)),
+          );
+          await updateLiveStatus(buildAgentFinishStatus('Google Workspace', result));
+          return result;
+        },
       }),
       zohoAgent: tool({
         description:
@@ -967,7 +1214,17 @@ const executeTask = async (
         inputSchema: z.object({
           objective: z.string().describe('What Zoho data to fetch or action to perform'),
         }),
-        execute: async ({ objective }) => runZohoAgent(objective, runtime, abortSignal),
+        execute: async ({ objective }) => {
+          await updateLiveStatus(buildAgentStartStatus('Zoho', objective));
+          const result = await runZohoAgent(
+            objective,
+            runtime,
+            abortSignal,
+            async (step) => updateLiveStatus(buildAgentStepStatus('Zoho', step)),
+          );
+          await updateLiveStatus(buildAgentFinishStatus('Zoho', result));
+          return result;
+        },
       }),
       larkAgent: tool({
         description:
@@ -976,7 +1233,17 @@ const executeTask = async (
           objective: z.string().describe('What Lark action to perform'),
           assignee: z.string().optional().describe('Who to assign task to'),
         }),
-        execute: async (params) => runLarkAgent(params, runtime, abortSignal),
+        execute: async (params) => {
+          await updateLiveStatus(buildAgentStartStatus('Lark', params.objective));
+          const result = await runLarkAgent(
+            params,
+            runtime,
+            abortSignal,
+            async (step) => updateLiveStatus(buildAgentStepStatus('Lark', step)),
+          );
+          await updateLiveStatus(buildAgentFinishStatus('Lark', result));
+          return result;
+        },
       }),
     };
 
@@ -1058,9 +1325,14 @@ const executeTask = async (
     const pendingApproval =
       extractNestedPendingApproval(supervisorResult.steps) ?? extractPendingApproval(toolResults);
     const finalText =
-      summarizeText(supervisorResult.text, 6_000)
-      || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n')
-      || 'Completed the request.';
+      formatFinalTextForLark(
+        supervisorResult.text
+        || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n')
+        || 'Completed the request.',
+        toolResults,
+        pendingApproval,
+      )
+      ;
     const hasToolResults =
       toolResults.length > 0
       || asArray(supervisorResult.steps).some((step) => asArray(asRecord(step)?.toolCalls).length > 0);
