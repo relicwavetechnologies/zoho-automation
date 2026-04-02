@@ -472,6 +472,8 @@ export function isEntityConsistentResult(
   return result.score >= 0.65;
 }
 
+const CONTACT_PRIORITY_SCOPES = new Set(['lark_contacts', 'zoho_crm']);
+
 export function getAuthorityLevel(scope: string): 'authoritative' | 'documentary' | 'contextual' | 'public' {
   if (scope === 'zoho_books' || scope === 'zoho_crm') return 'authoritative';
   if (scope === 'files' || scope === 'workspace') return 'documentary';
@@ -1442,6 +1444,22 @@ class ContextSearchBrokerService {
 
       if (larkFallback.length > 0) {
         consistentResults = larkFallback;
+      }
+    }
+
+    if (searchIntent?.queryType === 'person_entity' && searchIntent.lookupTarget === 'contact_info') {
+      const structuredContactResults = rankContextSearchResults(
+        results.filter((result) => CONTACT_PRIORITY_SCOPES.has(result.scope)),
+        {
+          query,
+          limit: internalLimit,
+          companyLookup: companyEntityLookup,
+          weights,
+        },
+      ).filter((result) => isEntityConsistentResult(result, searchIntent));
+
+      if (structuredContactResults.length > 0) {
+        consistentResults = structuredContactResults;
       }
     }
 
