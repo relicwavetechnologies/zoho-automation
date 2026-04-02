@@ -6861,6 +6861,10 @@ export const vercelOrchestrationEngine: OrchestrationEngine = {
     return adaptPlanForVercel(task);
   },
   async executeTask(input) {
+    if (process.env.USE_SUPERVISOR_V2 === 'true') {
+      const { supervisorV2Engine } = await import('./supervisor-v2.engine');
+      return supervisorV2Engine.executeTask(input);
+    }
     return executeByChannel(input);
   },
 };
