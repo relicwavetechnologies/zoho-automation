@@ -244,6 +244,8 @@ export const buildSupervisorSystemPrompt = (runtime: VercelRuntimeRequestContext
     '    calls: larkAgent({ objective: "schedule a Lark meeting with Anish and Vijay tomorrow at 4 PM" })',
     '  → Example: "create a Lark doc with the summary"',
     '    calls: larkAgent({ objective: "create a Lark doc containing the summary" })',
+    '  → If the user asks for a doc, document, page, notes page, markdown report, or written snapshot, that is a doc request, not a task request.',
+    '  → Never create a task when the user explicitly asked for a Lark doc or document.',
     `Permissions summary: ${buildPermissionSummary(runtime)}.`,
     'FORMATTING: Use **bold** for emphasis. Use - for bullet lists. For data: use | Col | Col | table format. Never use ### or ## headings — use **Bold:** instead. Be concise and direct.',
   ].join('\n');
@@ -908,7 +910,7 @@ async function runLarkAgent(
   const tools: Record<string, ReturnType<typeof tool>> = {};
   if (larkTaskTool) {
     tools.task = tool({
-      description: 'List, read, create, update, assign, complete, or delete Lark tasks.',
+      description: 'List, read, create, update, assign, complete, or delete Lark tasks. Use only for todos, follow-ups, reminders, and action items. Do not use this tool to create documents, notes, reports, or markdown snapshots.',
       inputSchema: z.object({
         operation: z.enum([
           'list',
@@ -1076,7 +1078,7 @@ async function runLarkAgent(
   }
   if (larkDocTool) {
     tools.doc = tool({
-      description: 'Create, edit, read, or inspect a Lark doc using markdown.',
+      description: 'Create, edit, read, or inspect a Lark doc using markdown. Use this for documents, notes, pages, summaries, reports, and markdown snapshots. If the user asks for a doc or document, use this tool instead of task creation.',
       inputSchema: z.object({
         operation: z.enum(['create', 'edit', 'read', 'inspect']),
         documentId: z.string().optional(),
@@ -1107,10 +1109,13 @@ async function runLarkAgent(
         'Complete Lark actions as asked.',
         'You can read or update Lark tasks, messages, calendars, meetings, and docs.',
         'For current tasks, current meetings, today\'s calendar, or Lark docs, prefer your Lark tools over context search.',
+        'Treat "doc", "document", "page", "markdown report", "notes", and "snapshot" as document requests. Use the doc tool for those.',
+        'Tasks are only for action items, todos, reminders, or follow-ups. Never create a task when the user explicitly asked for a Lark doc or document.',
         'For requests like "my tasks", "active tasks", or "open tasks", use task.listOpenMine or task.listMine. Do not use listAssignableUsers unless the user is asking who can be assigned.',
         'For requests like "today\'s events", "calendar events", or "meetings today", use calendar.listEvents. Do not use meeting.list for day-scoped discovery, because the VC meetings API does not support date-scoped listing.',
         'For scheduling requests, use calendar scheduling operations and resolve attendees from teammate names. If attendee names are ambiguous or missing, surface the validation error clearly instead of guessing.',
         'Use larkMeeting for specific meeting lookup, recent meeting inspection, or minutes. Use calendar operations for date-scoped events, availability, and scheduling.',
+        'When asked to create a Lark doc, call doc.create with a title and markdown body. Do not store report content inside a task title or task summary.',
         'Use markdown when creating or editing Lark docs.',
         'Return what you found or changed clearly.',
       ].join(' '),
@@ -1335,7 +1340,7 @@ const executeTask = async (
         description:
           'Read or update Lark tasks, messages, calendars, meetings, docs, and Base records. Use for internal team actions and current Lark data.',
         inputSchema: z.object({
-          objective: z.string().describe('What Lark action to perform'),
+          objective: z.string().describe('What Lark action to perform. If creating a doc, say doc/document explicitly. If creating a task, say task/todo/action item explicitly.'),
           assignee: z.string().optional().describe('Who to assign task to'),
         }),
         execute: async (params) => {
