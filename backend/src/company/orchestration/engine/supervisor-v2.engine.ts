@@ -240,6 +240,8 @@ export const buildSupervisorSystemPrompt = (runtime: VercelRuntimeRequestContext
     '    calls: larkAgent({ objective: "list my open Lark tasks" })',
     '  → Example: "what meetings do I have today in Lark"',
     '    calls: larkAgent({ objective: "list meetings and calendar events for today in Lark" })',
+    '  → Example: "schedule a meeting with Anish and Vijay tomorrow at 4 PM"',
+    '    calls: larkAgent({ objective: "schedule a Lark meeting with Anish and Vijay tomorrow at 4 PM" })',
     '  → Example: "create a Lark doc with the summary"',
     '    calls: larkAgent({ objective: "create a Lark doc containing the summary" })',
     `Permissions summary: ${buildPermissionSummary(runtime)}.`,
@@ -886,6 +888,15 @@ async function runLarkAgent(
   const larkCalendarTool = legacyTools.larkCalendar;
   const larkMeetingTool = legacyTools.larkMeeting;
   const larkDocTool = legacyTools.larkDoc;
+  const larkTaskReadOperations = new Set([
+    'list',
+    'listMine',
+    'listOpenMine',
+    'get',
+    'current',
+    'listTasklists',
+    'listAssignableUsers',
+  ]);
   if (!larkTaskTool && !larkMessageTool && !larkCalendarTool && !larkMeetingTool && !larkDocTool) {
     return {
       text: 'Lark tools are not available for this user.',
@@ -937,7 +948,8 @@ async function runLarkAgent(
         assignToMe,
       }) =>
         larkTaskTool.execute({
-          operation,
+          operation: larkTaskReadOperations.has(operation) ? 'read' : 'write',
+          taskOperation: operation === 'assign' ? 'reassign' : operation,
           ...(taskId ? { taskId } : {}),
           ...(tasklistId ? { tasklistId } : {}),
           ...(query ? { query } : {}),
@@ -1091,7 +1103,17 @@ async function runLarkAgent(
     label: 'Lark specialist',
     prompt: buildSubAgentPrompt(
       'Lark specialist',
-      'Complete Lark actions as asked. You can read or update Lark tasks, messages, calendars, meetings, and docs. Use markdown when creating or editing Lark docs. Return what you did clearly.',
+      [
+        'Complete Lark actions as asked.',
+        'You can read or update Lark tasks, messages, calendars, meetings, and docs.',
+        'For current tasks, current meetings, today\'s calendar, or Lark docs, prefer your Lark tools over context search.',
+        'For requests like "my tasks", "active tasks", or "open tasks", use task.listOpenMine or task.listMine. Do not use listAssignableUsers unless the user is asking who can be assigned.',
+        'For requests like "today\'s events", "calendar events", or "meetings today", use calendar.listEvents and optionally meeting.list. Do not use task operations for calendar or event reads.',
+        'For scheduling requests, use calendar scheduling operations and resolve attendees from teammate names. If attendee names are ambiguous or missing, surface the validation error clearly instead of guessing.',
+        'Use larkMeeting for meeting/minute lookup. Use calendar operations for availability and scheduling.',
+        'Use markdown when creating or editing Lark docs.',
+        'Return what you found or changed clearly.',
+      ].join(' '),
     ),
     message: buildSubAgentUserMessage(params.objective, {
       assignee: params.assignee,
