@@ -171,7 +171,7 @@ const DEFAULT_LARK_CARD_TITLE = 'Divo AI';
 const DEFAULT_LARK_CARD_TAG = 'Finance';
 const MAX_LARK_CARD_SUMMARY_LENGTH = 160;
 const MAX_LARK_MARKDOWN_ELEMENT_LENGTH = 1200;
-const MAX_LARK_CARD_ELEMENT_COUNT = 50;
+const MAX_LARK_CARD_ELEMENT_COUNT = 30;
 
 const normalizeLarkMarkdown = (value: string): string =>
   (value ?? '')
@@ -263,28 +263,6 @@ const buildLarkMarkdownElementV2 = (
   ...(options?.margin ? { margin: options.margin } : {}),
 });
 
-const buildLarkTableElementV2 = (
-  headers: string[],
-  rows: string[][],
-): Record<string, unknown> => ({
-  tag: 'table',
-  columns: headers.map(() => ({ width: 'auto', align: 'left' })),
-  rows: [
-    {
-      cells: headers.map((h) => ({
-        tag: 'markdown',
-        content: `**${h}**`,
-      })),
-    },
-    ...rows.map((row) => ({
-      cells: row.map((cell) => ({
-        tag: 'markdown',
-        content: cell.trim() || '-',
-      })),
-    })),
-  ],
-});
-
 const MARKDOWN_TABLE_SEPARATOR_PATTERN = /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/;
 
 const isMarkdownTableBlock = (block: string): boolean => {
@@ -293,185 +271,125 @@ const isMarkdownTableBlock = (block: string): boolean => {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  if (lines.length < 3) return false;
-
-  const hasPipes = lines[0]!.includes('|');
-  const hasSeparator = MARKDOWN_TABLE_SEPARATOR_PATTERN.test(lines[1]!);
-
-  return hasPipes && hasSeparator;
+  return lines.length >= 3
+    && lines[0]!.includes('|')
+    && MARKDOWN_TABLE_SEPARATOR_PATTERN.test(lines[1]!);
 };
 
-const LARK_TABLE_ROWS_PER_CHUNK = 20;
-
-const splitMarkdownTableBlock = (block: string): Array<Record<string, unknown>> => {
+const splitMarkdownTableBlock = (block: string): string[] => {
   const lines = block
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
 
   if (lines.length < 3) {
-    return [buildLarkMarkdownElementV2(block)];
+    return [block];
   }
 
-  const parseRow = (row: string) =>
-    row
-      .replace(/^\||\|$/g, '')
-      .split('|')
-      .map((cell) => cell.trim());
-
-  const headers = parseRow(lines[0]!);
-  const rows = lines.slice(2).map(parseRow);
-
-  if (headers.length === 0) {
-    return [buildLarkMarkdownElementV2(block)];
+  const [header, separator, ...rows] = lines;
+  const prefix = `${header}\n${separator}`;
+  if (prefix.length >= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+    return [block];
   }
 
-  // Always use native Lark table elements — Lark markdown elements do NOT render
-  // GFM table syntax (pipes show as raw text). Split large tables into chunks.
-  const result: Array<Record<string, unknown>> = [];
-  for (let i = 0; i < rows.length; i += LARK_TABLE_ROWS_PER_CHUNK) {
-    result.push(buildLarkTableElementV2(headers, rows.slice(i, i + LARK_TABLE_ROWS_PER_CHUNK)));
+  const chunks: string[] = [];
+  let current = prefix;
+  for (const row of rows) {
+    const candidate = `${current}\n${row}`;
+    if (candidate.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+      current = candidate;
+      continue;
+    }
+    chunks.push(current);
+    current = `${prefix}\n${row}`;
   }
-  return result.length > 0 ? result : [buildLarkMarkdownElementV2(block)];
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks;
 };
 
-const splitLarkMarkdownIntoElements = (content: string): Array<Record<string, unknown>> => {
+const splitLarkMarkdownIntoElements = (content: string): string[] => {
   const normalized = normalizeLarkMarkdown(content);
   if (!normalized) {
-    return [buildLarkMarkdownElementV2('No content available.')];
+    return ['No content available.'];
   }
 
-  const lines = normalized.split('\n');
-  const rawBlocks: Array<{ type: 'markdown' | 'table'; content: string }> = [];
-  let currentMarkdownLines: string[] = [];
-  let currentTableLines: string[] = [];
-  let inTable = false;
+  const blocks = normalized
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
 
-  const flushMarkdown = () => {
-    if (currentMarkdownLines.length > 0) {
-      rawBlocks.push({ type: 'markdown', content: currentMarkdownLines.join('\n').trim() });
-      currentMarkdownLines = [];
+  if (blocks.length === 0) {
+    return [normalized];
+  }
+
+  const chunks: string[] = [];
+  let current = '';
+  for (const block of blocks) {
+    if (isMarkdownTableBlock(block)) {
+      if (current) {
+        chunks.push(current);
+        current = '';
+      }
+      chunks.push(...splitMarkdownTableBlock(block));
+      continue;
     }
-  };
 
-  const flushTable = () => {
-    if (currentTableLines.length > 0) {
-      rawBlocks.push({ type: 'table', content: currentTableLines.join('\n').trim() });
-      currentTableLines = [];
-      inTable = false;
+    const candidate = current ? `${current}\n\n${block}` : block;
+    if (candidate.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+      current = candidate;
+      continue;
     }
-  };
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmed = line.trim();
+    if (current) {
+      chunks.push(current);
+      current = '';
+    }
 
-    if (!inTable && trimmed.includes('|') && i + 1 < lines.length) {
-      const nextLine = lines[i + 1].trim();
-      if (MARKDOWN_TABLE_SEPARATOR_PATTERN.test(nextLine)) {
-        flushMarkdown();
-        inTable = true;
-        currentTableLines.push(line);
+    if (block.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+      current = block;
+      continue;
+    }
+
+    const lines = block.split('\n');
+    let lineChunk = '';
+    for (const line of lines) {
+      const nextLineChunk = lineChunk ? `${lineChunk}\n${line}` : line;
+      if (nextLineChunk.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+        lineChunk = nextLineChunk;
         continue;
       }
+      if (lineChunk) {
+        chunks.push(lineChunk);
+      }
+      if (line.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+        lineChunk = line;
+        continue;
+      }
+      for (let offset = 0; offset < line.length; offset += MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+        chunks.push(line.slice(offset, offset + MAX_LARK_MARKDOWN_ELEMENT_LENGTH));
+      }
+      lineChunk = '';
     }
-
-    if (inTable) {
-      if (trimmed.includes('|') || MARKDOWN_TABLE_SEPARATOR_PATTERN.test(trimmed) || trimmed === '') {
-        if (trimmed === '' && i + 1 < lines.length && !lines[i + 1].trim().includes('|')) {
-          flushTable();
-          continue;
-        }
-        currentTableLines.push(line);
-      } else {
-        flushTable();
-        currentMarkdownLines.push(line);
-      }
-    } else {
-      currentMarkdownLines.push(line);
-    }
-  }
-  flushMarkdown();
-  flushTable();
-
-  const elements: Array<Record<string, unknown>> = [];
-  for (const block of rawBlocks) {
-    if (block.type === 'table') {
-      elements.push(...splitMarkdownTableBlock(block.content));
-    } else {
-      const text = block.content;
-      // Split by paragraphs to ensure atomic rendering and bypass Lark collapse
-      const paragraphBlocks = text.split(/\n{2,}/);
-      let currentChunk = '';
-      for (const p of paragraphBlocks) {
-        const candidate = currentChunk ? `${currentChunk}\n\n${p}` : p;
-        if (candidate.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
-          currentChunk = candidate;
-        } else {
-          if (currentChunk) {
-            elements.push(buildLarkMarkdownElementV2(currentChunk));
-          }
-          if (p.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
-            currentChunk = p;
-          } else {
-            // Hard split at line breaks for extremely large paragraphs
-            const pLines = p.split('\n');
-            let lineChunk = '';
-            for (const l of pLines) {
-              const nextLine = lineChunk ? `${lineChunk}\n${l}` : l;
-              if (nextLine.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
-                lineChunk = nextLine;
-              } else {
-                if (lineChunk) {
-                  elements.push(buildLarkMarkdownElementV2(lineChunk));
-                }
-                if (l.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
-                  lineChunk = l;
-                } else {
-                  // Forced character-level split as absolute last resort
-                  for (let offset = 0; offset < l.length; offset += MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
-                    elements.push(buildLarkMarkdownElementV2(l.slice(offset, offset + MAX_LARK_MARKDOWN_ELEMENT_LENGTH)));
-                  }
-                  lineChunk = '';
-                }
-              }
-            }
-            currentChunk = lineChunk;
-          }
-        }
-      }
-      if (currentChunk) {
-        elements.push(buildLarkMarkdownElementV2(currentChunk));
-      }
+    if (lineChunk) {
+      current = lineChunk;
     }
   }
 
-  if (elements.length <= MAX_LARK_CARD_ELEMENT_COUNT) {
-    return elements;
+  if (current) {
+    chunks.push(current);
   }
 
-  const kept = elements.slice(0, MAX_LARK_CARD_ELEMENT_COUNT - 1);
-  const remaining = elements.slice(MAX_LARK_CARD_ELEMENT_COUNT - 1);
-  
-  const overflowRaw = remaining
-    .map((e) => {
-      if (e.tag === 'markdown') return String(e.content);
-      if (e.tag === 'table') return '(Table omitted in overflow)';
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n\n');
+  if (chunks.length <= MAX_LARK_CARD_ELEMENT_COUNT) {
+    return chunks;
+  }
 
-  const overflowLimited =
-    overflowRaw.length > MAX_LARK_MARKDOWN_ELEMENT_LENGTH
-      ? `${overflowRaw.slice(0, MAX_LARK_MARKDOWN_ELEMENT_LENGTH - 100)}... (truncated)`
-      : overflowRaw;
-
-  kept.push(
-    buildLarkMarkdownElementV2(
-      `${overflowLimited}\n\n_Note: Some content was truncated due to Lark card size limits._`,
-    ),
-  );
+  const kept = chunks.slice(0, MAX_LARK_CARD_ELEMENT_COUNT - 1);
+  const overflowText = chunks.slice(MAX_LARK_CARD_ELEMENT_COUNT - 1).join('\n\n');
+  kept.push(`${overflowText.slice(0, MAX_LARK_MARKDOWN_ELEMENT_LENGTH - 32)}\n\n_Continued in follow-up if needed._`);
   return kept;
 };
 
@@ -503,22 +421,18 @@ const buildLarkButtonElementV2 = (
 const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<string, unknown> => {
   const { title, body } = extractTitleAndBodyFromMarkdown(text);
   const normalizedBody = normalizeLarkMarkdown(body);
-  const elements = splitLarkMarkdownIntoElements(normalizedBody);
-
-  // Apply default margins if not already set (except for the first element)
-  const elementsWithMargins = elements.map((el, index) => {
-    if (el.tag === 'markdown' && index > 0 && !el.margin) {
-      return { ...el, margin: '8px 0 0 0' };
-    }
-    return el;
-  });
+  const elements: Array<Record<string, unknown>> = splitLarkMarkdownIntoElements(normalizedBody).map((chunk, index) =>
+    buildLarkMarkdownElementV2(chunk, {
+      textSize: 'normal',
+      ...(index === 0 ? {} : { margin: '8px 0 0 0' }),
+    }));
 
   if (actions && actions.length > 0) {
-    elementsWithMargins.push(buildLarkMarkdownElementV2('---', { margin: '8px 0 4px 0' }));
-    elementsWithMargins.push(
+    elements.push(buildLarkMarkdownElementV2('---', { margin: '8px 0 4px 0' }));
+    elements.push(
       buildLarkMarkdownElementV2('**Actions**', { textSize: 'heading', margin: '0 0 4px 0' }),
     );
-    elementsWithMargins.push(...actions.map((action, index) => buildLarkButtonElementV2(action, index)));
+    elements.push(...actions.map((action, index) => buildLarkButtonElementV2(action, index)));
   }
 
   return {
@@ -559,7 +473,7 @@ const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<s
     body: {
       vertical_spacing: '8px',
       padding: '12px 12px 12px 12px',
-      elements: elementsWithMargins,
+      elements,
     },
   };
 };
