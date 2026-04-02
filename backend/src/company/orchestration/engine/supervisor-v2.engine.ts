@@ -1256,8 +1256,8 @@ const executeTask = async (
     const rawText = supervisorResult.text?.trim()
       || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n\n')
       || 'Completed the request.';
-    const finalText = rawText.length > 12_000
-      ? `${rawText.slice(0, 12_000)}\n\n*(Response truncated — showing first portion)*`
+    const finalText = rawText.length > 50_000
+      ? `${rawText.slice(0, 50_000)}\n\n*(Response truncated — showing first portion)*`
       : rawText;
     const hasToolResults =
       toolResults.length > 0
