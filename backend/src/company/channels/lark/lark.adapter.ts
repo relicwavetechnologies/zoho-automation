@@ -174,7 +174,12 @@ const MAX_LARK_MARKDOWN_ELEMENT_LENGTH = 1200;
 const MAX_LARK_CARD_ELEMENT_COUNT = 50;
 
 const normalizeLarkMarkdown = (value: string): string =>
-  (value ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  (value ?? '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    // Lark markdown does not render "* item" bullets — convert to "- item"
+    .replace(/^(\s*)\* /gm, '$1- ')
+    .trim();
 
 const stripMarkdownForSummary = (value: string): string =>
   (value ?? '')
