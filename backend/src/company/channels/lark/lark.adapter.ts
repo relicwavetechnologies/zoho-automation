@@ -179,9 +179,10 @@ const normalizeLarkMarkdown = (value: string): string =>
 const stripMarkdownForSummary = (value: string): string =>
   (value ?? '')
     .replace(/^#{1,6}\s+/gm, '')
-    .replace(/[*_~`>#-]+/g, ' ')
+    .replace(/[*_~`>#|\-]+/g, ' ')
     .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
     .replace(/<[^>]+>/g, ' ')
+    .replace(/[\u2022\u2023\u25AA\u25B8]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -289,6 +290,8 @@ const isMarkdownTableBlock = (block: string): boolean => {
   return hasPipes && hasSeparator;
 };
 
+const LARK_TABLE_ROWS_PER_CHUNK = 20;
+
 const splitMarkdownTableBlock = (block: string): Array<Record<string, unknown>> => {
   const lines = block
     .split('\n')
@@ -308,37 +311,17 @@ const splitMarkdownTableBlock = (block: string): Array<Record<string, unknown>> 
   const headers = parseRow(lines[0]!);
   const rows = lines.slice(2).map(parseRow);
 
-  // Use Lark native table only for VERY small tables (1-5 rows) to avoid UI clipping
-  if (headers.length > 0 && headers.length <= 6 && rows.length <= 5) {
-    return [buildLarkTableElementV2(headers, rows)];
-  }
-
-  // Otherwise, use markdown with repeated headers for context during splitting
-  const headerLine = lines[0]!;
-  const separatorLine = lines[1]!;
-  const prefix = `${headerLine}\n${separatorLine}`;
-
-  if (prefix.length >= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
+  if (headers.length === 0) {
     return [buildLarkMarkdownElementV2(block)];
   }
 
-  const chunks: Array<Record<string, unknown>> = [];
-  let current = prefix;
-  for (const rowLine of lines.slice(2)) {
-    const candidate = `${current}\n${rowLine}`;
-    if (candidate.length <= MAX_LARK_MARKDOWN_ELEMENT_LENGTH) {
-      current = candidate;
-    } else {
-      chunks.push(buildLarkMarkdownElementV2(current));
-      current = `${prefix}\n${rowLine}`;
-    }
+  // Always use native Lark table elements — Lark markdown elements do NOT render
+  // GFM table syntax (pipes show as raw text). Split large tables into chunks.
+  const result: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < rows.length; i += LARK_TABLE_ROWS_PER_CHUNK) {
+    result.push(buildLarkTableElementV2(headers, rows.slice(i, i + LARK_TABLE_ROWS_PER_CHUNK)));
   }
-
-  if (current) {
-    chunks.push(buildLarkMarkdownElementV2(current));
-  }
-
-  return chunks;
+  return result.length > 0 ? result : [buildLarkMarkdownElementV2(block)];
 };
 
 const splitLarkMarkdownIntoElements = (content: string): Array<Record<string, unknown>> => {
