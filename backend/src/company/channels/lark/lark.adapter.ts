@@ -478,6 +478,34 @@ const buildLarkCardContent = (text: string, actions?: ChannelAction[]): Record<s
   };
 };
 
+const extractCardDiagnostics = (card: Record<string, unknown>): {
+  elementCount: number;
+  markdownElementCount: number;
+  tableElementCount: number;
+  summaryPreview: string;
+  firstElementPreview: string;
+  cardJsonLength: number;
+} => {
+  const body = asRecord(card.body);
+  const elements = Array.isArray(body?.elements) ? (body.elements as unknown[]) : [];
+  const markdownElements = elements.filter((el) => asRecord(el)?.tag === 'markdown');
+  const tableElements = markdownElements.filter((el) => {
+    const content = readString(asRecord(el)?.content as string);
+    return content !== undefined && content.includes('|');
+  });
+  const configSummary = asRecord(asRecord(card.config)?.summary as Record<string, unknown>);
+  const summaryContent = readString(configSummary?.content as string) ?? '';
+  const firstContent = readString(asRecord(markdownElements[0])?.content as string) ?? '';
+  return {
+    elementCount: elements.length,
+    markdownElementCount: markdownElements.length,
+    tableElementCount: tableElements.length,
+    summaryPreview: summaryContent.slice(0, 100),
+    firstElementPreview: firstContent.slice(0, 120),
+    cardJsonLength: JSON.stringify(card).length,
+  };
+};
+
 export class LarkChannelAdapter implements ChannelAdapter {
   public readonly channel = 'lark' as const;
 
@@ -611,14 +639,31 @@ export class LarkChannelAdapter implements ChannelAdapter {
       ? `/open-apis/im/v1/messages/${input.replyToMessageId!.trim()}/reply`
       : `/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`;
     const format = input.format ?? 'interactive';
+    const card = format !== 'text' ? buildLarkCardContent(safeText, input.actions) : null;
     const body = {
       ...(isReply ? {} : { receive_id: input.chatId }),
       msg_type: format === 'text' ? 'text' : 'interactive',
       ...(isReply ? { reply_in_thread: input.replyInThread ?? true } : {}),
-      content: JSON.stringify(
-        format === 'text' ? { text: safeText } : buildLarkCardContent(safeText, input.actions),
-      ),
+      content: JSON.stringify(format === 'text' ? { text: safeText } : card),
     };
+    if (card) {
+      const diag = extractCardDiagnostics(card);
+      emitRuntimeTrace({
+        event: 'lark.card.render',
+        level: 'info',
+        taskId: input.correlationId,
+        metadata: {
+          context: 'send',
+          textLength: safeText.length,
+          elementCount: diag.elementCount,
+          markdownElementCount: diag.markdownElementCount,
+          tableElementCount: diag.tableElementCount,
+          cardJsonLength: diag.cardJsonLength,
+          summaryPreview: diag.summaryPreview,
+          firstElementPreview: diag.firstElementPreview,
+        },
+      });
+    }
     logger.info('lark.egress.send.start', {
       ...buildEgressTraceMeta({
         chatId: input.chatId,
@@ -707,6 +752,27 @@ export class LarkChannelAdapter implements ChannelAdapter {
   public async updateMessage(input: ChannelUpdateMessage): Promise<ChannelOutboundResult> {
     const safeText = input.text ?? '';
     const format = input.format ?? 'interactive';
+    const card = format !== 'text' ? buildLarkCardContent(safeText, input.actions) : null;
+    const content = JSON.stringify(format === 'text' ? { text: safeText } : card);
+    if (card) {
+      const diag = extractCardDiagnostics(card);
+      emitRuntimeTrace({
+        event: 'lark.card.render',
+        level: 'info',
+        taskId: input.correlationId,
+        messageId: input.messageId,
+        metadata: {
+          context: 'update',
+          textLength: safeText.length,
+          elementCount: diag.elementCount,
+          markdownElementCount: diag.markdownElementCount,
+          tableElementCount: diag.tableElementCount,
+          cardJsonLength: diag.cardJsonLength,
+          summaryPreview: diag.summaryPreview,
+          firstElementPreview: diag.firstElementPreview,
+        },
+      });
+    }
     logger.info('lark.egress.update.start', {
       ...buildEgressTraceMeta({
         messageId: input.messageId,
@@ -715,10 +781,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
       format,
       textLength: safeText.length,
-      contentLength:
-        format === 'text'
-          ? JSON.stringify({ text: safeText }).length
-          : JSON.stringify(buildLarkCardContent(safeText, input.actions)).length,
+      contentLength: content.length,
     });
     orangeDebug('lark.egress.update.start', {
       messageId: input.messageId,
@@ -731,9 +794,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
       body: {
         msg_type: format === 'text' ? 'text' : 'interactive',
-        content: JSON.stringify(
-          format === 'text' ? { text: safeText } : buildLarkCardContent(safeText, input.actions),
-        ),
+        content,
       },
       context: 'update',
       messageId: input.messageId,
