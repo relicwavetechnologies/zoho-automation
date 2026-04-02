@@ -3543,11 +3543,6 @@ const buildLarkStatusText = (input: {
   const latestHistory = [...normalizedHistory]
     .reverse()
     .find((entry) => entry.length > 0);
-  const recentHistory = [...normalizedHistory]
-    .slice(-3)
-    .reverse()
-    .map((s) => `▸ ${s.length > 80 ? `${s.slice(0, 79)}…` : s}`)
-    .join('\n');
   const phaseLabel = (() => {
     switch (input.phase) {
       case 'received':
@@ -3593,21 +3588,16 @@ const buildLarkStatusText = (input: {
     }
   })();
   const latestAction = summarizeText(
-    detail && latestHistory && latestHistory !== detail
-      ? `${detail} | ${latestHistory}`
-      : detail ?? latestHistory,
-    220,
+    detail ?? latestHistory ?? phaseLabel,
+    140,
   );
-  const lines = [phaseHeadline, '', `Phase: ${phaseLabel}`];
-  if (latestAction) {
-    lines.push(`Current: ${latestAction}`);
-  }
-  if (recentHistory) {
-    lines.push('', 'Recent progress:');
-    lines.push(recentHistory);
-  }
-  if (input.heartbeatNote?.trim()) {
-    lines.push('', input.heartbeatNote.trim());
+  const secondaryLine = summarizeText(
+    input.heartbeatNote?.trim() || latestAction || phaseLabel,
+    140,
+  );
+  const lines = [phaseHeadline];
+  if (secondaryLine && secondaryLine !== phaseHeadline) {
+    lines.push(secondaryLine);
   }
   return lines.join('\n');
 };
