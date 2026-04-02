@@ -910,7 +910,7 @@ async function runLarkAgent(
   const tools: Record<string, ReturnType<typeof tool>> = {};
   if (larkTaskTool) {
     tools.task = tool({
-      description: 'List, read, create, update, assign, complete, or delete Lark tasks. Use only for todos, follow-ups, reminders, and action items. Do not use this tool to create documents, notes, reports, or markdown snapshots.',
+      description: 'List, read, create, update, assign, complete, or delete Lark tasks. Use only for todos, follow-ups, reminders, and action items. Do not use this tool to create documents, notes, reports, markdown snapshots, calendar events, or meeting placeholders.',
       inputSchema: z.object({
         operation: z.enum([
           'list',
@@ -987,7 +987,7 @@ async function runLarkAgent(
   }
   if (larkCalendarTool) {
     tools.calendar = tool({
-      description: 'List calendars, list events, inspect event details, check availability, or schedule/update/delete Lark calendar events.',
+      description: 'List calendars, list events, inspect event details, check availability, or schedule/update/delete Lark calendar events. Use this tool for meeting scheduling requests.',
       inputSchema: z.object({
         operation: z.enum([
           'listCalendars',
@@ -1114,6 +1114,7 @@ async function runLarkAgent(
         'For requests like "my tasks", "active tasks", or "open tasks", use task.listOpenMine or task.listMine. Do not use listAssignableUsers unless the user is asking who can be assigned.',
         'For requests like "today\'s events", "calendar events", or "meetings today", use calendar.listEvents. Do not use meeting.list for day-scoped discovery, because the VC meetings API does not support date-scoped listing.',
         'For scheduling requests, use calendar scheduling operations and resolve attendees from teammate names. If attendee names are ambiguous or missing, surface the validation error clearly instead of guessing.',
+        'Never create a task as a substitute for a meeting request. For "schedule/set up/book a meeting", call calendar.scheduleMeeting or return the validation error from that attempt.',
         'Use larkMeeting for specific meeting lookup, recent meeting inspection, or minutes. Use calendar operations for date-scoped events, availability, and scheduling.',
         'When asked to create a Lark doc, call doc.create with a title and markdown body. Do not store report content inside a task title or task summary.',
         'Use markdown when creating or editing Lark docs.',
