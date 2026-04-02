@@ -10530,6 +10530,64 @@ export const createVercelDesktopTools = (
             const epochMs = toEpochMs(value);
             return epochMs ? new Date(epochMs).toISOString() : null;
           };
+          const getCurrentDateParts = (offsetDays = 0) => {
+            const formatter = new Intl.DateTimeFormat('en-CA', {
+              timeZone,
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+            });
+            const now = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
+            const parts = formatter.formatToParts(now);
+            const read = (type: string) =>
+              Number(parts.find((part) => part.type === type)?.value ?? '0');
+            return {
+              year: read('year'),
+              month: read('month'),
+              day: read('day'),
+            };
+          };
+          const toEpochSecondsFromLocalParts = (inputArgs: {
+            year: number;
+            month: number;
+            day: number;
+            hour: number;
+            minute: number;
+            second: number;
+          }): string | undefined => normalizeLarkTimestamp(
+            `${String(inputArgs.year).padStart(4, '0')}-${String(inputArgs.month).padStart(2, '0')}-${String(inputArgs.day).padStart(2, '0')} ${String(inputArgs.hour).padStart(2, '0')}:${String(inputArgs.minute).padStart(2, '0')}:${String(inputArgs.second).padStart(2, '0')}`,
+            timeZone,
+          );
+          const resolveDateScopeRange = (
+            scope?: string,
+          ): { startTime?: string; endTime?: string } => {
+            const normalizedScope = scope?.trim().toLowerCase();
+            if (!normalizedScope) {
+              return {};
+            }
+            const isToday = normalizedScope === 'today';
+            const isTomorrow = normalizedScope === 'tomorrow';
+            const isYesterday = normalizedScope === 'yesterday';
+            if (!isToday && !isTomorrow && !isYesterday) {
+              return {};
+            }
+            const offsetDays = isTomorrow ? 1 : isYesterday ? -1 : 0;
+            const parts = getCurrentDateParts(offsetDays);
+            return {
+              startTime: toEpochSecondsFromLocalParts({
+                ...parts,
+                hour: 0,
+                minute: 0,
+                second: 0,
+              }),
+              endTime: toEpochSecondsFromLocalParts({
+                ...parts,
+                hour: 23,
+                minute: 59,
+                second: 59,
+              }),
+            };
+          };
           const formatEpoch = (epochMs: number): string => new Date(epochMs).toISOString();
           const mergeBusyIntervals = (
             items: Array<{ startMs: number; endMs: number }>,
@@ -10668,15 +10726,23 @@ export const createVercelDesktopTools = (
             }
           }
           if (input.operation === 'listEvents' || input.operation === 'getEvent') {
+            const dateScopeRange =
+              !input.startTime && !input.endTime
+                ? resolveDateScopeRange(effectiveDateScope)
+                : {};
             const result = await calendarService.listEvents({
               ...authInput,
               calendarId: resolvedCalendarId,
               pageSize: 100,
-              startTime: normalizeLarkTimestamp(input.startTime ?? effectiveDateScope, timeZone),
-              endTime: normalizeLarkTimestamp(input.endTime, timeZone),
+              startTime: dateScopeRange.startTime
+                ?? normalizeLarkTimestamp(input.startTime, timeZone),
+              endTime: dateScopeRange.endTime
+                ?? normalizeLarkTimestamp(input.endTime, timeZone),
             });
             const normalizedQuery = (
-              input.operation === 'getEvent' ? input.eventId : effectiveDateScope
+              input.operation === 'getEvent'
+                ? input.eventId
+                : input.query
             )
               ?.trim()
               .toLowerCase();
@@ -11095,10 +11161,16 @@ export const createVercelDesktopTools = (
         withLifecycle(hooks, 'larkMeeting', 'Running Lark Meeting workflow', async () => {
           const effectiveDateScope = input.dateScope ?? runtime.dateScope;
           if (input.operation === 'list' && effectiveDateScope) {
+            if (tools.larkCalendar?.execute) {
+              return tools.larkCalendar.execute({
+                operation: 'listEvents',
+                dateScope: effectiveDateScope,
+              });
+            }
             return buildEnvelope({
               success: false,
               summary:
-                'Day-based meeting discovery is unsupported in the VC meetings API. Use larkCalendar for date-scoped meeting lookup.',
+                'Date-scoped meeting lookup requires the Lark calendar tool, which is unavailable in this runtime.',
               errorKind: 'unsupported',
               retryable: false,
             });

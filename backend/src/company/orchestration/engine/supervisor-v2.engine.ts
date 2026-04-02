@@ -238,8 +238,8 @@ export const buildSupervisorSystemPrompt = (runtime: VercelRuntimeRequestContext
     '  → use task/calendar/meeting/doc operations instead of contextAgent when the user wants current Lark data or Lark updates',
     '  → Example: "show my open Lark tasks"',
     '    calls: larkAgent({ objective: "list my open Lark tasks" })',
-    '  → Example: "what meetings do I have today in Lark"',
-    '    calls: larkAgent({ objective: "list meetings and calendar events for today in Lark" })',
+    '  → Example: "what events do I have today in Lark"',
+    '    calls: larkAgent({ objective: "list calendar events for today in Lark" })',
     '  → Example: "schedule a meeting with Anish and Vijay tomorrow at 4 PM"',
     '    calls: larkAgent({ objective: "schedule a Lark meeting with Anish and Vijay tomorrow at 4 PM" })',
     '  → Example: "create a Lark doc with the summary"',
@@ -1054,7 +1054,7 @@ async function runLarkAgent(
   }
   if (larkMeetingTool) {
     tools.meeting = tool({
-      description: 'List or inspect Lark meetings and minutes.',
+      description: 'List or inspect Lark meetings and minutes. Do not use for day-scoped discovery like "today" or "tomorrow"; use calendar.listEvents for that.',
       inputSchema: z.object({
         operation: z.enum(['list', 'get', 'getMinute']),
         meetingId: z.string().optional(),
@@ -1108,9 +1108,9 @@ async function runLarkAgent(
         'You can read or update Lark tasks, messages, calendars, meetings, and docs.',
         'For current tasks, current meetings, today\'s calendar, or Lark docs, prefer your Lark tools over context search.',
         'For requests like "my tasks", "active tasks", or "open tasks", use task.listOpenMine or task.listMine. Do not use listAssignableUsers unless the user is asking who can be assigned.',
-        'For requests like "today\'s events", "calendar events", or "meetings today", use calendar.listEvents and optionally meeting.list. Do not use task operations for calendar or event reads.',
+        'For requests like "today\'s events", "calendar events", or "meetings today", use calendar.listEvents. Do not use meeting.list for day-scoped discovery, because the VC meetings API does not support date-scoped listing.',
         'For scheduling requests, use calendar scheduling operations and resolve attendees from teammate names. If attendee names are ambiguous or missing, surface the validation error clearly instead of guessing.',
-        'Use larkMeeting for meeting/minute lookup. Use calendar operations for availability and scheduling.',
+        'Use larkMeeting for specific meeting lookup, recent meeting inspection, or minutes. Use calendar operations for date-scoped events, availability, and scheduling.',
         'Use markdown when creating or editing Lark docs.',
         'Return what you found or changed clearly.',
       ].join(' '),
