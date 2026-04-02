@@ -90,6 +90,7 @@ import {
   executeSupervisorDag,
   formatSupervisorResolvedContext,
   getSupervisorAgentToolIds,
+  isMeaningfulSupervisorStepText,
   planSupervisorDelegation,
   synthesizeSupervisorOutcome,
 } from '../supervisor';
@@ -1211,6 +1212,8 @@ DECISION TREE — follow in order, stop at first match:
    -> Call googleWorkspace with the appropriate calendar or drive operation.
 
 EMAIL (send, search, draft):
+- You only have access to googleWorkspace. Do not attempt any other tool.
+- If you need recipient email or content, read it from your handoff context and objective.
 - For sending email: use googleWorkspace tool with operation="sendMessage", plus fields: to, subject, body.
 - When the objective or handoff already gives you recipient, subject, or body, you must copy those values into the tool call explicitly. Never call sendMessage with only operation.
 - For searching inbox: use googleWorkspace tool with operation="searchMessages", field: query.
@@ -2793,8 +2796,8 @@ export const buildDelegatedLarkStepPrompt = (input: {
   const objectiveRecipientEmail = input.step.objective.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? null;
   const primaryUpstreamContent = input.upstreamResults
     .map((result) => result.text?.trim() ?? '')
-    .find((text) => text.length > 0) ?? '';
-  const upstreamContentAvailable = primaryUpstreamContent.length > 0;
+    .find((text) => isMeaningfulSupervisorStepText(text)) ?? '';
+  const upstreamContentAvailable = isMeaningfulSupervisorStepText(primaryUpstreamContent);
   const upstreamContext = input.upstreamResults.length > 0
     ? input.upstreamResults.map((result) => [
       `Step ${result.stepId} (${result.agentId})`,
@@ -4620,6 +4623,55 @@ const executeLarkVercelTask = async (
           }
           const stepToolResults: RunToolResult[] = [];
           const stepResolvedContext = { ...resolvedHandoffContext };
+          const objectiveLooksLikeEmailSend = /\b(send|email|mail)\b/i.test(step.objective);
+          const upstreamEmailContent = upstreamResults
+            .map((result) => result.text?.trim() ?? '')
+            .find((text) => isMeaningfulSupervisorStepText(text)) ?? '';
+          const objectiveHasInlineBody =
+            /\bwith the body\b/i.test(step.objective)
+            || /\bbody\s*[:=]/i.test(step.objective)
+            || /\bsubject\s*[:=]/i.test(step.objective);
+          if (
+            step.agentId === 'google-workspace-agent'
+            && objectiveLooksLikeEmailSend
+            && upstreamResults.length > 0
+            && !isMeaningfulSupervisorStepText(upstreamEmailContent)
+            && !objectiveHasInlineBody
+          ) {
+            const blockedText = 'Upstream step did not produce email content to send.';
+            await appendExecutionEventSafe({
+              executionId,
+              phase: 'error',
+              eventType: 'supervisor.step.failed',
+              actorType: 'agent',
+              actorKey: step.agentId,
+              title: `Delegated step ${step.stepId}`,
+              summary: blockedText,
+              status: 'failed',
+              payload: {
+                durationMs: Date.now() - delegatedStepStartedAt,
+                ttftMs: null,
+                stepId: step.stepId,
+                agentId: step.agentId,
+                objective: step.objective,
+                pendingApproval: null,
+                blockingUserInput: null,
+                toolResults: [],
+              },
+            });
+            executionMs += Date.now() - delegatedStepStartedAt;
+            return {
+              stepId: step.stepId,
+              agentId: step.agentId,
+              objective: step.objective,
+              status: 'failed',
+              summary: blockedText,
+              assistantText: blockedText,
+              text: blockedText,
+              toolResults: [],
+              taskState: {},
+            } satisfies DelegatedAgentExecutionResult;
+          }
           const stepMessages: ModelMessage[] = [
             ...primaryMessages.map(({ role, content }) => ({ role, content })),
             {
@@ -4905,14 +4957,25 @@ const executeLarkVercelTask = async (
             );
           }
           const stepTextValue = (stepResult.text ?? '').trim();
+          const stepLikelyMalformedNoResult = (
+            stepToolResults.length === 0
+            && !stepPendingApproval
+            && !stepBlockingUserInput
+            && delegatedStepLikelyRequiresToolUse(step)
+            && (stepTextValue === '' || stepTextValue === 'Done.')
+          );
           const stepText = stepBlockingUserInput
             ? (buildMissingInputResponseText(stepBlockingUserInput) ?? stepTextValue) || 'I need one more detail from you before I can continue.'
             : stepPendingApproval
               ? `Approval required before continuing: ${stepPendingApproval.kind === 'run_command' ? stepPendingApproval.command : stepPendingApproval.kind}.`
-              : stepTextValue || 'Done.';
+              : stepLikelyMalformedNoResult
+                ? 'Step produced no results.'
+                : stepTextValue || 'Done.';
           const stepStatus: DelegatedAgentExecutionResult['status'] =
             stepPendingApproval || stepBlockingUserInput
               ? 'blocked'
+              : stepLikelyMalformedNoResult
+                ? 'failed'
               : stepToolResults.some((result) => result.status === 'error' || result.status === 'timeout')
                 ? 'failed'
                 : 'success';

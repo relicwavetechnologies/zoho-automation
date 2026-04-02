@@ -5807,7 +5807,7 @@ export const createVercelDesktopTools = (
 	          const baseUrl = 'https://gmail.googleapis.com/gmail/v1/users/me';
 	          const buildGmailEnvelope = (envelope: Parameters<typeof buildEnvelope>[0]): VercelToolEnvelope =>
 	            buildEnvelope({
-	              toolId: 'google-gmail',
+	              toolId: 'googleWorkspace',
 	              ...envelope,
 	            });
 
@@ -5978,7 +5978,7 @@ export const createVercelDesktopTools = (
             });
             return createPendingRemoteApproval({
               runtime,
-              toolId: 'google-gmail',
+              toolId: 'googleWorkspace',
               actionGroup: 'create',
               operation: 'createDraft',
               summary: `Approval required to create Gmail draft "${composed.subject}"${attachmentEntries.length > 0 ? ` with ${attachmentEntries.length} attachment(s)` : ''}.`,
@@ -6020,7 +6020,7 @@ export const createVercelDesktopTools = (
             }
             return createPendingRemoteApproval({
               runtime,
-              toolId: 'google-gmail',
+              toolId: 'googleWorkspace',
               actionGroup: 'send',
               operation: 'sendDraft',
               summary: `Approval required to send Gmail draft ${draftId}.`,
@@ -6080,7 +6080,7 @@ export const createVercelDesktopTools = (
             });
             return createPendingRemoteApproval({
               runtime,
-              toolId: 'google-gmail',
+              toolId: 'googleWorkspace',
               actionGroup: 'send',
               operation: 'sendMessage',
               summary: `Approval required to send Gmail message "${composed.subject}"${attachmentEntries.length > 0 ? ` with ${attachmentEntries.length} attachment(s)` : ''}.`,

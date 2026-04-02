@@ -177,3 +177,14 @@ export const formatSupervisorResolvedContext = (
   Object.keys(resolved).length > 0
     ? JSON.stringify(resolved, null, 2)
     : 'None.';
+
+export const isMeaningfulSupervisorStepText = (text: string | null | undefined): boolean => {
+  const trimmed = text?.trim() ?? '';
+  if (!trimmed) {
+    return false;
+  }
+  if (/^done\.?$/i.test(trimmed)) {
+    return false;
+  }
+  return trimmed.length > 20;
+};
