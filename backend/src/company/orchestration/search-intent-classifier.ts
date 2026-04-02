@@ -97,6 +97,7 @@ const INHERIT_ENTITY_RE = /\b(it|this|that|same|wahi|phir|again|continue)\b/i;
 const SEARCH_REFERENCE_RE = /\b(search|search context|context|lookup|look up|find|use search context)\b/i;
 const COMPANY_SUFFIX_RE = /\b(llc|inc|ltd|limited|corp|corporation|company|private limited|pvt ltd|gmbh|plc)\b/i;
 const CONTACT_LOOKUP_RE = /\b(contact|contact info|email|mail|phone|mobile|number|address)\b/i;
+const PERSON_QUERY_HINT_RE = /\b([a-z]{2,}\s*(?:,\s*[a-z]{2,})+|[a-z]{2,}\s+and\s+[a-z]{2,})\b/i;
 
 const stripMentions = (message: string): string =>
   message.replace(/@[a-z0-9._-]+/gi, ' ').replace(/\s+/g, ' ').trim();
@@ -153,9 +154,20 @@ const normalizeIntent = (intent: SearchIntent, message: string): SearchIntent =>
   const lookupTarget = intent.lookupTarget === 'general' && CONTACT_LOOKUP_RE.test(message)
     ? 'contact_info'
     : intent.lookupTarget;
+  const queryType =
+    lookupTarget === 'contact_info'
+      && (intent.queryType === 'conversation' || intent.queryType === 'general')
+      && (
+        extractedEntityType === 'person'
+        || Boolean(sanitizedExtractedEntity)
+        || PERSON_QUERY_HINT_RE.test(message)
+      )
+      ? 'person_entity'
+      : intent.queryType;
 
   return {
     ...intent,
+    queryType,
     extractedEntity: sanitizedExtractedEntity,
     extractedEntityType,
     lookupTarget,

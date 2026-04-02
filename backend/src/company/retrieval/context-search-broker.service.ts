@@ -465,8 +465,23 @@ export function isEntityConsistentResult(
   }
 
   if (intent.queryType === 'person_entity' && intent.extractedEntity) {
-    const firstName = intent.extractedEntity.toLowerCase().split(/\s+/)[0];
-    return text.includes(firstName);
+    const personTargets = Array.from(new Set(
+      intent.extractedEntity
+        .toLowerCase()
+        .split(/,|\band\b|&|\n/gi)
+        .map((segment) =>
+          segment
+            .replace(/\b(sir|madam|mr|mrs|ms)\b/gi, ' ')
+            .replace(/[^a-z0-9\s@._-]+/gi, ' ')
+            .trim(),
+        )
+        .filter(Boolean),
+    ));
+    const targetTokens = personTargets
+      .flatMap((target) => target.split(/\s+/))
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2);
+    return targetTokens.some((token) => text.includes(token));
   }
 
   return result.score >= 0.65;
