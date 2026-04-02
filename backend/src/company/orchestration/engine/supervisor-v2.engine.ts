@@ -104,13 +104,19 @@ FORMATTING RULES (Lark chat — follow exactly):
 - Use **bold** for emphasis and labels
 - Use bullet points (- item) for lists
 - For structured data, do NOT use markdown pipe tables
-- Instead use compact bullet rows or short labeled lines
+- Do NOT use pipe-separated inline rows like "INV21184 | Customer | Due | Balance"
+- Instead use short multi-line record blocks with one fact per line
 - Good format example: - **Shivam Bhateja**: shivam@emiactech.com
-- Good format example: - **Invoice FINV/25-26/046** | LUXHABITAT | Due: 2026-01-03 | Balance: 1,220
+- Good format example:
+  - **Invoice FINV/25-26/046**
+    Customer: LUXHABITAT
+    Due: 2026-01-03
+    Balance: 1,220
 - Do NOT use ### or ## headings — use **Bold Label:** instead
 - Do NOT use # heading — use **Title** on its own line instead
 - Keep responses concise — no filler text
 - If there are many records, show a concise first batch and mention the total count
+- Keep each line short enough to wrap cleanly in a narrow Lark card
 - Numbers and amounts: use commas for thousands (42,495,664.40)
 `.trim();
 
@@ -229,7 +235,7 @@ export const buildSupervisorSystemPrompt = (runtime: VercelRuntimeRequestContext
     '  → Example: "send findings to anish"',
     '    calls: googleWorkspaceAgent({ objective: "send email with findings", recipientEmail: "anishsuman2305@gmail.com", subject: "Research Findings", body: "..." })',
     `Permissions summary: ${buildPermissionSummary(runtime)}.`,
-    'FORMATTING: Use **bold** for emphasis. Use - for bullet lists. Do not use markdown pipe tables in Lark replies. For structured data, use compact bullet rows or short labeled lines instead. Never use ### or ## headings — use **Bold:** instead. If there are many records, show a concise first batch and mention the total count. Be concise and direct.',
+    'FORMATTING: Use **bold** for emphasis. Use - for bullet lists. Do not use markdown pipe tables in Lark replies. Do not use pipe-separated inline rows. For structured data, use short multi-line record blocks with one fact per line. Keep each line short enough to wrap cleanly in a narrow Lark card. Never use ### or ## headings — use **Bold:** instead. If there are many records, show a concise first batch and mention the total count. Be concise and direct.',
   ].join('\n');
 };
 
