@@ -11,11 +11,15 @@ import { buildWorkflowAuthoringTools } from './families/workflow-authoring';
 import { buildZohoBooksTools } from './families/zoho-books';
 import { buildZohoCrmTools } from './families/zoho-crm';
 
+const RETRIEVAL_AGENTS = new Set(['context-agent', 'workspace-agent']);
+
 export const createVercelDesktopTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
 ): Record<string, any> => ({
-  ...(runtime.delegatedAgentId ? {} : buildContextSearchTools(runtime, hooks)),
+  ...(!runtime.delegatedAgentId || RETRIEVAL_AGENTS.has(runtime.delegatedAgentId)
+    ? buildContextSearchTools(runtime, hooks)
+    : {}),
   ...buildDocumentTools(runtime, hooks),
   ...buildWorkflowAuthoringTools(runtime, hooks),
   ...buildRepoCodingTools(runtime, hooks),

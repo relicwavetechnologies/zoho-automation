@@ -114,6 +114,7 @@ import {
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
 const LARK_BLOCKED_TOOL_IDS = new Set<string>();
+const DELEGATED_RETRIEVAL_AGENTS = new Set(['context-agent', 'workspace-agent']);
 const LARK_VERCEL_MODE: VercelRuntimeRequestContext['mode'] = 'high';
 const LARK_THREAD_CONTEXT_MESSAGE_LIMIT = DESKTOP_THREAD_CONTEXT_MESSAGE_LIMIT;
 const LARK_CONTEXT_TARGET_RATIO = 0.6;
@@ -4598,10 +4599,20 @@ const executeLarkVercelTask = async (
               output: result.output,
             })),
           });
-          const familyToolIds = getSupervisorAgentToolIds(
+          let familyToolIds = getSupervisorAgentToolIds(
             step.agentId,
             effectiveRuntime.allowedToolIds,
-          ).filter((toolId) => toolId !== 'contextSearch');
+          );
+          if (DELEGATED_RETRIEVAL_AGENTS.has(step.agentId)) {
+            if (
+              effectiveRuntime.allowedToolIds.includes('contextSearch')
+              && !familyToolIds.includes('contextSearch')
+            ) {
+              familyToolIds = [...familyToolIds, 'contextSearch'];
+            }
+          } else {
+            familyToolIds = familyToolIds.filter((toolId) => toolId !== 'contextSearch');
+          }
           const stepRuntime: VercelRuntimeRequestContext = {
             ...effectiveRuntime,
             allowedToolIds: familyToolIds,
