@@ -167,7 +167,18 @@ const dedupeTrailingCurrentMessage = (
 };
 
 const buildPermissionSummary = (runtime: VercelRuntimeRequestContext): string => {
-  const preferredTools = ['contextSearch', 'googleWorkspace', 'zohoBooks', 'zohoCrm', 'larkTask', 'larkMessage'];
+  const preferredTools = [
+    'contextSearch',
+    'googleWorkspace',
+    'zohoBooks',
+    'zohoCrm',
+    'larkTask',
+    'larkMessage',
+    'lark-calendar-agent',
+    'lark-meeting-agent',
+    'lark-doc-agent',
+    'lark-base-agent',
+  ];
   const entries = preferredTools.flatMap((toolId) => {
     const actions = runtime.allowedActionsByTool?.[toolId];
     if (!actions?.length) {
@@ -189,7 +200,7 @@ export const buildSupervisorSystemPrompt = (runtime: VercelRuntimeRequestContext
     '- contextAgent: search contacts, documents, web, or prior conversation facts before acting.',
     '- googleWorkspaceAgent: Gmail, drafts, search, and Google actions. Sending email needs human approval.',
     '- zohoAgent: invoices, overdue reports, payments, and CRM/Books records.',
-    '- larkAgent: create Lark tasks or send Lark messages for internal follow-up.',
+    '- larkAgent: read or create Lark tasks, messages, calendar events, meetings, docs, and Base records.',
     'Rules:',
     '1. Only act on the latest user message.',
     '2. Prior conversation shows completed work and context. Never redo completed actions unless the latest message clearly asks for it.',
@@ -222,6 +233,15 @@ export const buildSupervisorSystemPrompt = (runtime: VercelRuntimeRequestContext
     '  → always include recipientEmail, subject, body if known',
     '  → Example: "send findings to anish"',
     '    calls: googleWorkspaceAgent({ objective: "send email with findings", recipientEmail: "anishsuman2305@gmail.com", subject: "Research Findings", body: "..." })',
+    'Lark tasks, calendar, meetings, or docs:',
+    '  → call larkAgent directly',
+    '  → use task/calendar/meeting/doc operations instead of contextAgent when the user wants current Lark data or Lark updates',
+    '  → Example: "show my open Lark tasks"',
+    '    calls: larkAgent({ objective: "list my open Lark tasks" })',
+    '  → Example: "what meetings do I have today in Lark"',
+    '    calls: larkAgent({ objective: "list meetings and calendar events for today in Lark" })',
+    '  → Example: "create a Lark doc with the summary"',
+    '    calls: larkAgent({ objective: "create a Lark doc containing the summary" })',
     `Permissions summary: ${buildPermissionSummary(runtime)}.`,
     'FORMATTING: Use **bold** for emphasis. Use - for bullet lists. For data: use | Col | Col | table format. Never use ### or ## headings — use **Bold:** instead. Be concise and direct.',
   ].join('\n');
@@ -863,7 +883,10 @@ async function runLarkAgent(
   });
   const larkTaskTool = legacyTools.larkTask;
   const larkMessageTool = legacyTools.larkMessage;
-  if (!larkTaskTool && !larkMessageTool) {
+  const larkCalendarTool = legacyTools.larkCalendar;
+  const larkMeetingTool = legacyTools.larkMeeting;
+  const larkDocTool = legacyTools.larkDoc;
+  if (!larkTaskTool && !larkMessageTool && !larkCalendarTool && !larkMeetingTool && !larkDocTool) {
     return {
       text: 'Lark tools are not available for this user.',
       toolResults: [],
@@ -873,22 +896,61 @@ async function runLarkAgent(
 
   const tools: Record<string, ReturnType<typeof tool>> = {};
   if (larkTaskTool) {
-    tools.createTask = tool({
-      description: 'Create a Lark task.',
+    tools.task = tool({
+      description: 'List, read, create, update, assign, complete, or delete Lark tasks.',
       inputSchema: z.object({
-        summary: z.string(),
+        operation: z.enum([
+          'list',
+          'listMine',
+          'listOpenMine',
+          'get',
+          'current',
+          'listTasklists',
+          'listAssignableUsers',
+          'create',
+          'update',
+          'delete',
+          'complete',
+          'reassign',
+          'assign',
+        ]),
+        taskId: z.string().optional(),
+        tasklistId: z.string().optional(),
+        query: z.string().optional(),
+        summary: z.string().optional(),
+        description: z.string().optional(),
+        dueTs: z.string().optional(),
         assigneeOpenId: z.string().optional(),
-        dueDate: z.string().optional(),
+        assigneeName: z.string().optional(),
+        assignToMe: z.boolean().optional(),
       }),
-      execute: async ({ summary, assigneeOpenId, dueDate }) =>
+      execute: async ({
+        operation,
+        taskId,
+        tasklistId,
+        query,
+        summary,
+        description,
+        dueTs,
+        assigneeOpenId,
+        assigneeName,
+        assignToMe,
+      }) =>
         larkTaskTool.execute({
-          operation: 'write',
-          taskOperation: 'create',
-          summary,
+          operation,
+          ...(taskId ? { taskId } : {}),
+          ...(tasklistId ? { tasklistId } : {}),
+          ...(query ? { query } : {}),
+          ...(summary ? { summary } : {}),
+          ...(description ? { description } : {}),
+          ...(dueTs ? { dueTs } : {}),
           ...(assigneeOpenId
             ? { assigneeMode: 'canonical_ids', assigneeIds: [assigneeOpenId] }
             : {}),
-          ...(dueDate ? { dueTs: dueDate } : {}),
+          ...(assigneeName
+            ? { assigneeMode: 'named_people', assigneeNames: [assigneeName] }
+            : {}),
+          ...(assignToMe !== undefined ? { assignToMe } : {}),
         }),
     });
   }
@@ -909,12 +971,127 @@ async function runLarkAgent(
         }),
     });
   }
+  if (larkCalendarTool) {
+    tools.calendar = tool({
+      description: 'List calendars, list events, inspect event details, check availability, or schedule/update/delete Lark calendar events.',
+      inputSchema: z.object({
+        operation: z.enum([
+          'listCalendars',
+          'listEvents',
+          'getEvent',
+          'createEvent',
+          'updateEvent',
+          'deleteEvent',
+          'listAvailability',
+          'scheduleMeeting',
+        ]),
+        calendarId: z.string().optional(),
+        calendarName: z.string().optional(),
+        eventId: z.string().optional(),
+        dateScope: z.string().optional(),
+        startTime: z.string().optional(),
+        endTime: z.string().optional(),
+        searchStartTime: z.string().optional(),
+        searchEndTime: z.string().optional(),
+        durationMinutes: z.number().int().positive().max(1440).optional(),
+        summary: z.string().optional(),
+        description: z.string().optional(),
+        attendeeName: z.string().optional(),
+        attendeeNames: z.array(z.string()).optional(),
+        includeMe: z.boolean().optional(),
+        needNotification: z.boolean().optional(),
+      }),
+      execute: async ({
+        operation,
+        calendarId,
+        calendarName,
+        eventId,
+        dateScope,
+        startTime,
+        endTime,
+        searchStartTime,
+        searchEndTime,
+        durationMinutes,
+        summary,
+        description,
+        attendeeName,
+        attendeeNames,
+        includeMe,
+        needNotification,
+      }) =>
+        larkCalendarTool.execute({
+          operation,
+          ...(calendarId ? { calendarId } : {}),
+          ...(calendarName ? { calendarName } : {}),
+          ...(eventId ? { eventId } : {}),
+          ...(dateScope ? { dateScope } : {}),
+          ...(startTime ? { startTime } : {}),
+          ...(endTime ? { endTime } : {}),
+          ...(searchStartTime ? { searchStartTime } : {}),
+          ...(searchEndTime ? { searchEndTime } : {}),
+          ...(durationMinutes ? { durationMinutes } : {}),
+          ...(summary ? { summary } : {}),
+          ...(description ? { description } : {}),
+          ...((attendeeNames?.length || attendeeName)
+            ? { attendeeNames: attendeeNames?.length ? attendeeNames : [attendeeName as string] }
+            : {}),
+          ...(includeMe !== undefined ? { includeMe } : {}),
+          ...(needNotification !== undefined ? { needNotification } : {}),
+        }),
+    });
+  }
+  if (larkMeetingTool) {
+    tools.meeting = tool({
+      description: 'List or inspect Lark meetings and minutes.',
+      inputSchema: z.object({
+        operation: z.enum(['list', 'get', 'getMinute']),
+        meetingId: z.string().optional(),
+        meetingNo: z.string().optional(),
+        minuteToken: z.string().optional(),
+        query: z.string().optional(),
+        dateScope: z.string().optional(),
+      }),
+      execute: async ({ operation, meetingId, meetingNo, minuteToken, query, dateScope }) =>
+        larkMeetingTool.execute({
+          operation,
+          ...(meetingId ? { meetingId } : {}),
+          ...(meetingNo ? { meetingNo } : {}),
+          ...(minuteToken ? { minuteToken } : {}),
+          ...(query ? { query } : {}),
+          ...(dateScope ? { dateScope } : {}),
+        }),
+    });
+  }
+  if (larkDocTool) {
+    tools.doc = tool({
+      description: 'Create, edit, read, or inspect a Lark doc using markdown.',
+      inputSchema: z.object({
+        operation: z.enum(['create', 'edit', 'read', 'inspect']),
+        documentId: z.string().optional(),
+        title: z.string().optional(),
+        markdown: z.string().optional(),
+        instruction: z.string().optional(),
+        strategy: z.enum(['replace', 'append', 'patch', 'delete']).optional(),
+        query: z.string().optional(),
+      }),
+      execute: async ({ operation, documentId, title, markdown, instruction, strategy, query }) =>
+        larkDocTool.execute({
+          operation,
+          ...(documentId ? { documentId } : {}),
+          ...(title ? { title } : {}),
+          ...(markdown ? { markdown } : {}),
+          ...(instruction ? { instruction } : {}),
+          ...(strategy ? { strategy } : {}),
+          ...(query ? { query } : {}),
+        }),
+    });
+  }
 
   return runSubAgent({
     label: 'Lark specialist',
     prompt: buildSubAgentPrompt(
       'Lark specialist',
-      'Complete Lark actions as asked. Return what you did clearly.',
+      'Complete Lark actions as asked. You can read or update Lark tasks, messages, calendars, meetings, and docs. Use markdown when creating or editing Lark docs. Return what you did clearly.',
     ),
     message: buildSubAgentUserMessage(params.objective, {
       assignee: params.assignee,
@@ -1134,7 +1311,7 @@ const executeTask = async (
       }),
       larkAgent: tool({
         description:
-          'Create tasks, send Lark messages, manage calendar in Lark. Use for internal team actions in Lark.',
+          'Read or update Lark tasks, messages, calendars, meetings, docs, and Base records. Use for internal team actions and current Lark data.',
         inputSchema: z.object({
           objective: z.string().describe('What Lark action to perform'),
           assignee: z.string().optional().describe('Who to assign task to'),
