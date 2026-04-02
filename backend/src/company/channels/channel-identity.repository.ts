@@ -76,6 +76,9 @@ const extractSearchTokens = (query: string): string[] =>
       .filter((token) => token.length >= 2 && !CONTACT_QUERY_STOPWORDS.has(token))
       .flatMap((token) => {
         const expanded = [token];
+        if (token.length >= 4) {
+          expanded.push(token.slice(0, 3));
+        }
         if (token.length >= 5) {
           expanded.push(token.slice(0, 5));
         }
@@ -86,9 +89,52 @@ const extractSearchTokens = (query: string): string[] =>
       }),
   )).slice(0, 20);
 
+const normalizeName = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+const levenshteinDistance = (left: string, right: string): number => {
+  if (left === right) return 0;
+  if (!left) return right.length;
+  if (!right) return left.length;
+
+  const previous = new Array(right.length + 1).fill(0).map((_, index) => index);
+  const current = new Array(right.length + 1).fill(0);
+
+  for (let row = 1; row <= left.length; row += 1) {
+    current[0] = row;
+    for (let column = 1; column <= right.length; column += 1) {
+      const substitutionCost = left[row - 1] === right[column - 1] ? 0 : 1;
+      current[column] = Math.min(
+        current[column - 1] + 1,
+        previous[column] + 1,
+        previous[column - 1] + substitutionCost,
+      );
+    }
+    for (let column = 0; column <= right.length; column += 1) {
+      previous[column] = current[column];
+    }
+  }
+
+  return previous[right.length] ?? Math.max(left.length, right.length);
+};
+
+const similarityScore = (left: string, right: string): number => {
+  const normalizedLeft = normalizeName(left);
+  const normalizedRight = normalizeName(right);
+  if (!normalizedLeft || !normalizedRight) {
+    return 0;
+  }
+  if (normalizedLeft === normalizedRight) {
+    return 1;
+  }
+  const distance = levenshteinDistance(normalizedLeft, normalizedRight);
+  return 1 - (distance / Math.max(normalizedLeft.length, normalizedRight.length, 1));
+};
+
 const scoreContactRow = (
   row: { displayName: string | null; email: string | null },
   tokens: string[],
+  target?: string,
 ): number => {
   const displayName = (row.displayName ?? '').toLowerCase();
   const email = (row.email ?? '').toLowerCase();
@@ -104,6 +150,21 @@ const scoreContactRow = (
     else if (email.startsWith(`${token}@`)) total += 7;
     else if (email.includes(token)) total += 5;
     else if (displayName.includes(token)) total += 4;
+  }
+
+  if (target) {
+    const displaySimilarity = similarityScore(target, row.displayName ?? '');
+    const firstNameSimilarity = similarityScore(
+      normalizeName(target).split(/\s+/)[0] ?? '',
+      normalizeName(row.displayName ?? '').split(/\s+/)[0] ?? '',
+    );
+    if (displaySimilarity >= 0.92) total += 18;
+    else if (displaySimilarity >= 0.82) total += 12;
+    else if (displaySimilarity >= 0.72) total += 8;
+
+    if (firstNameSimilarity >= 0.92) total += 14;
+    else if (firstNameSimilarity >= 0.82) total += 10;
+    else if (firstNameSimilarity >= 0.72) total += 6;
   }
 
   return total;
@@ -140,7 +201,7 @@ class ChannelIdentityRepository {
       tokens,
     });
 
-    const rows = await prisma.channelIdentity.findMany({
+    const broadRows = await prisma.channelIdentity.findMany({
       where: {
         companyId: input.companyId,
         channel: 'lark',
@@ -153,8 +214,41 @@ class ChannelIdentityRepository {
         { updatedAt: 'desc' },
         { createdAt: 'desc' },
       ],
-      take: Math.min(Math.max(requestedLimit * 6, targets.length * 6, 24), 60),
+      take: Math.min(Math.max(requestedLimit * 8, targets.length * 8, 32), 120),
     });
+
+    const perTargetRowGroups = await Promise.all(
+      targets.map(async (target) => {
+        const targetTokens = extractSearchTokens(target);
+        if (targetTokens.length === 0) {
+          return [];
+        }
+        return prisma.channelIdentity.findMany({
+          where: {
+            companyId: input.companyId,
+            channel: 'lark',
+            OR: targetTokens.flatMap((token) => ([
+              { displayName: { contains: token, mode: 'insensitive' as const } },
+              { email: { contains: token, mode: 'insensitive' as const } },
+            ])),
+          },
+          orderBy: [
+            { updatedAt: 'desc' },
+            { createdAt: 'desc' },
+          ],
+          take: 20,
+        });
+      }),
+    );
+
+    const rowsById = new Map<string, (typeof broadRows)[number]>();
+    for (const row of broadRows) {
+      rowsById.set(row.id, row);
+    }
+    for (const row of perTargetRowGroups.flat()) {
+      rowsById.set(row.id, row);
+    }
+    const rows = Array.from(rowsById.values());
     redDebug('channel_identity.search_lark_contacts.rows', {
       companyId: input.companyId,
       query: input.query,
@@ -181,7 +275,7 @@ class ChannelIdentityRepository {
         continue;
       }
       const bestMatch = rows
-        .map((row) => ({ row, score: scoreContactRow(row, targetTokens) }))
+        .map((row) => ({ row, score: scoreContactRow(row, targetTokens, target) }))
         .filter(({ score }) => score > 0)
         .sort((left, right) => right.score - left.score)[0];
       const bestId = bestMatch?.row.id;
