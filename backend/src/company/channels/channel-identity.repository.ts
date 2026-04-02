@@ -17,6 +17,88 @@ type UpsertChannelIdentityInput = {
   syncedFromLarkRole?: string;
 };
 
+const CONTACT_QUERY_STOPWORDS = new Set([
+  'search',
+  'find',
+  'lookup',
+  'look',
+  'up',
+  'for',
+  'contact',
+  'contacts',
+  'detail',
+  'details',
+  'email',
+  'emails',
+  'mail',
+  'phone',
+  'mobile',
+  'number',
+  'numbers',
+  'info',
+  'information',
+  'sir',
+  'madam',
+  'please',
+  'plz',
+  'good',
+  'now',
+  'and',
+]);
+
+const extractContactTargets = (query: string): string[] => {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return [];
+  }
+
+  const segments = normalized
+    .replace(/\b(contact details?|contact info|email ids?|phone numbers?)\b/gi, ' ')
+    .split(/,|\band\b|&|\n/gi)
+    .map((segment) =>
+      segment
+        .split(/[^a-z0-9@._-]+/i)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 2 && !CONTACT_QUERY_STOPWORDS.has(token))
+        .join(' ')
+        .trim(),
+    )
+    .filter(Boolean);
+
+  return Array.from(new Set(segments)).slice(0, 8);
+};
+
+const extractSearchTokens = (query: string): string[] =>
+  Array.from(new Set(
+    query
+      .split(/[^a-z0-9@._-]+/i)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2 && !CONTACT_QUERY_STOPWORDS.has(token)),
+  )).slice(0, 12);
+
+const scoreContactRow = (
+  row: { displayName: string | null; email: string | null },
+  tokens: string[],
+): number => {
+  const displayName = (row.displayName ?? '').toLowerCase();
+  const email = (row.email ?? '').toLowerCase();
+  const haystack = `${displayName} ${email}`.trim();
+  let total = 0;
+
+  for (const token of tokens) {
+    if (!token) continue;
+    if (haystack === token) total += 12;
+    else if (email === token) total += 11;
+    else if (displayName === token) total += 10;
+    else if (displayName.startsWith(`${token} `) || displayName.endsWith(` ${token}`) || displayName === token) total += 8;
+    else if (email.startsWith(`${token}@`)) total += 7;
+    else if (email.includes(token)) total += 5;
+    else if (displayName.includes(token)) total += 4;
+  }
+
+  return total;
+};
+
 class ChannelIdentityRepository {
   async searchLarkContacts(input: {
     companyId: string;
@@ -24,22 +106,20 @@ class ChannelIdentityRepository {
     limit?: number;
   }) {
     const normalized = input.query.trim().toLowerCase();
+    const requestedLimit = Math.max(1, Math.min(input.limit ?? 5, 20));
+    const targets = extractContactTargets(normalized);
     redDebug('channel_identity.search_lark_contacts.start', {
       companyId: input.companyId,
       query: input.query,
       normalizedQuery: normalized,
-      limit: input.limit ?? null,
+      limit: requestedLimit,
+      targets,
     });
     if (!normalized) {
       return [];
     }
 
-    const tokens = Array.from(new Set(
-      normalized
-        .split(/[^a-z0-9@._-]+/i)
-        .map((token) => token.trim())
-        .filter((token) => token.length >= 2),
-    )).slice(0, 8);
+    const tokens = extractSearchTokens(normalized);
 
     if (tokens.length === 0) {
       return [];
@@ -63,7 +143,7 @@ class ChannelIdentityRepository {
         { updatedAt: 'desc' },
         { createdAt: 'desc' },
       ],
-      take: Math.max(1, Math.min(input.limit ?? 5, 10)),
+      take: Math.min(Math.max(requestedLimit * 6, targets.length * 6, 24), 60),
     });
     redDebug('channel_identity.search_lark_contacts.rows', {
       companyId: input.companyId,
@@ -77,22 +157,36 @@ class ChannelIdentityRepository {
       })),
     });
 
-    const score = (row: { displayName: string | null; email: string | null }): number => {
-      const haystack = `${row.displayName ?? ''} ${row.email ?? ''}`.toLowerCase();
-      let total = 0;
-      for (const token of tokens) {
-        if (haystack === token) total += 10;
-        else if ((row.email ?? '').toLowerCase() === token) total += 9;
-        else if ((row.displayName ?? '').toLowerCase() === token) total += 8;
-        else if ((row.email ?? '').toLowerCase().includes(token)) total += 5;
-        else if ((row.displayName ?? '').toLowerCase().includes(token)) total += 4;
-      }
-      return total;
-    };
+    const globallyRanked = rows
+      .map((row) => ({ row, score: scoreContactRow(row, tokens) }))
+      .filter(({ score }) => score > 0)
+      .sort((left, right) => right.score - left.score);
 
-    const ranked = rows
-      .map((row) => ({ row, score: score(row) }))
-      .sort((left, right) => right.score - left.score)
+    const coveredIds = new Set<string>();
+    const coverageRanked: typeof globallyRanked = [];
+
+    for (const target of targets) {
+      const targetTokens = extractSearchTokens(target);
+      if (targetTokens.length === 0) {
+        continue;
+      }
+      const bestMatch = rows
+        .map((row) => ({ row, score: scoreContactRow(row, targetTokens) }))
+        .filter(({ score }) => score > 0)
+        .sort((left, right) => right.score - left.score)[0];
+      const bestId = bestMatch?.row.id;
+      if (!bestMatch || !bestId || coveredIds.has(bestId)) {
+        continue;
+      }
+      coveredIds.add(bestId);
+      coverageRanked.push(bestMatch);
+    }
+
+    const ranked = [
+      ...coverageRanked,
+      ...globallyRanked.filter(({ row }) => !coveredIds.has(row.id)),
+    ]
+      .slice(0, requestedLimit)
       .map(({ row }) => row);
     redDebug('channel_identity.search_lark_contacts.ranked', {
       companyId: input.companyId,

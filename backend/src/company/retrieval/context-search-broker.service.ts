@@ -474,6 +474,18 @@ export function isEntityConsistentResult(
 
 const CONTACT_PRIORITY_SCOPES = new Set(['lark_contacts', 'zoho_crm']);
 
+const dedupeContextResults = (results: ContextSearchBrokerResult[]): ContextSearchBrokerResult[] => {
+  const seen = new Set<string>();
+  return results.filter((result) => {
+    const key = `${result.scope}:${result.sourceId}:${result.chunkIndex}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+};
+
 export function getAuthorityLevel(scope: string): 'authoritative' | 'documentary' | 'contextual' | 'public' {
   if (scope === 'zoho_books' || scope === 'zoho_crm') return 'authoritative';
   if (scope === 'files' || scope === 'workspace') return 'documentary';
@@ -1448,18 +1460,42 @@ class ContextSearchBrokerService {
     }
 
     if (searchIntent?.queryType === 'person_entity' && searchIntent.lookupTarget === 'contact_info') {
+      const larkContactResults = rankContextSearchResults(
+        results.filter((result) => result.scope === 'lark_contacts'),
+        {
+          query,
+          limit: internalLimit,
+          companyLookup: false,
+          weights: {
+            ...weights,
+            larkContacts: Math.max(weights.larkContacts, 10),
+          },
+        },
+      ).filter((result) => isEntityConsistentResult(result, searchIntent));
+
       const structuredContactResults = rankContextSearchResults(
         results.filter((result) => CONTACT_PRIORITY_SCOPES.has(result.scope)),
         {
           query,
           limit: internalLimit,
-          companyLookup: companyEntityLookup,
-          weights,
+          companyLookup: false,
+          weights: {
+            ...weights,
+            larkContacts: Math.max(weights.larkContacts, 10),
+            zohoCrmContext: Math.max(weights.zohoCrmContext, 6),
+          },
         },
       ).filter((result) => isEntityConsistentResult(result, searchIntent));
 
-      if (structuredContactResults.length > 0) {
-        consistentResults = structuredContactResults;
+      const fallbackContextResults = consistentResults.filter((result) => !CONTACT_PRIORITY_SCOPES.has(result.scope));
+      const prioritizedContactResults = dedupeContextResults([
+        ...larkContactResults,
+        ...structuredContactResults,
+        ...fallbackContextResults,
+      ]);
+
+      if (prioritizedContactResults.length > 0) {
+        consistentResults = prioritizedContactResults;
       }
     }
 
