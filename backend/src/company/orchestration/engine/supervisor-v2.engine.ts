@@ -860,7 +860,16 @@ async function runGoogleWorkspaceAgent(
     label: 'Google Workspace specialist',
     prompt: buildSubAgentPrompt(
       'Google Workspace specialist',
-      'Complete the objective using your tools. If a tool fails, read the error and fix your input. Return what happened clearly.',
+      [
+        'Complete the objective using your Google Workspace tools.',
+        'You can work across Gmail, Google Drive, and Google Calendar.',
+        'For latest inbox requests like "check my inbox", "latest emails", or "try again", use listInbox instead of searchEmail.',
+        'Use searchEmail only when the user explicitly wants filtered/search query results.',
+        'Use googleDrive for Drive file and folder operations.',
+        'Use googleCalendar for Google Calendar event and calendar operations.',
+        'If a tool fails, read the error, correct your input, and try again when possible.',
+        'Return what happened clearly.',
+      ].join(' '),
     ),
     message: buildSubAgentUserMessage(params.objective, {
       recipientEmail: params.recipientEmail,
@@ -911,6 +920,32 @@ async function runGoogleWorkspaceAgent(
             ...(maxResults ? { maxResults } : {}),
           }),
       }),
+      getEmail: tool({
+        description: 'Fetch a Gmail message by messageId.',
+        inputSchema: z.object({
+          messageId: z.string(),
+          format: z.enum(['metadata', 'full', 'minimal', 'raw']).optional(),
+        }),
+        execute: async ({ messageId, format }) =>
+          googleWorkspaceTool.execute({
+            operation: 'getMessage',
+            messageId,
+            ...(format ? { format } : {}),
+          }),
+      }),
+      getEmailThread: tool({
+        description: 'Fetch a Gmail thread by threadId.',
+        inputSchema: z.object({
+          threadId: z.string(),
+          format: z.enum(['metadata', 'full', 'minimal', 'raw']).optional(),
+        }),
+        execute: async ({ threadId, format }) =>
+          googleWorkspaceTool.execute({
+            operation: 'getThread',
+            threadId,
+            ...(format ? { format } : {}),
+          }),
+      }),
       createDraft: tool({
         description: 'Create an email draft.',
         inputSchema: z.object({
@@ -924,6 +959,77 @@ async function runGoogleWorkspaceAgent(
             to,
             subject,
             body,
+          }),
+      }),
+      sendDraft: tool({
+        description: 'Send an existing Gmail draft by draftId.',
+        inputSchema: z.object({
+          draftId: z.string(),
+        }),
+        execute: async ({ draftId }) =>
+          googleWorkspaceTool.execute({
+            operation: 'sendDraft',
+            draftId,
+          }),
+      }),
+      googleDrive: tool({
+        description: 'Use Google Drive to list, inspect, download, create folders, upload, update, or delete files.',
+        inputSchema: z.object({
+          operation: z.enum([
+            'listFiles',
+            'getFile',
+            'downloadFile',
+            'createFolder',
+            'uploadFile',
+            'updateFile',
+            'deleteFile',
+          ]),
+          query: z.string().optional(),
+          pageSize: z.number().int().min(1).max(100).optional(),
+          orderBy: z.string().optional(),
+          fileId: z.string().optional(),
+          fields: z.string().optional(),
+          fileName: z.string().optional(),
+          parentId: z.string().optional(),
+          mimeType: z.string().optional(),
+          contentBase64: z.string().optional(),
+          contentText: z.string().optional(),
+          maxBytes: z.number().int().min(1).max(5_000_000).optional(),
+          preferLink: z.boolean().optional(),
+        }),
+        execute: async (input) =>
+          googleWorkspaceTool.execute({
+            operation: 'drive',
+            ...input,
+          }),
+      }),
+      googleCalendar: tool({
+        description: 'Use Google Calendar to list calendars, inspect events, and create, update, or delete events.',
+        inputSchema: z.object({
+          operation: z.enum([
+            'listCalendars',
+            'listEvents',
+            'getEvent',
+            'createEvent',
+            'updateEvent',
+            'deleteEvent',
+          ]),
+          calendarId: z.string().optional(),
+          eventId: z.string().optional(),
+          query: z.string().optional(),
+          timeMin: z.string().optional(),
+          timeMax: z.string().optional(),
+          summary: z.string().optional(),
+          description: z.string().optional(),
+          location: z.string().optional(),
+          startTime: z.string().optional(),
+          endTime: z.string().optional(),
+          attendees: z.array(z.string()).optional(),
+        }),
+        execute: async (input) =>
+          googleWorkspaceTool.execute({
+            operation: 'calendar',
+            ...input,
           }),
       }),
     },
