@@ -3006,6 +3006,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
     };
 
     const stepLog: string[] = [];
+    const hasExistingCard = Boolean(message.trace?.statusMessageId);
 
     const formatStepLog = (): string => {
       if (stepLog.length === 0) return '';
@@ -3019,8 +3020,16 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
     };
 
     if (statusCoordinator) {
-      await statusCoordinator.update({ text: '*Starting up ···*', actions: [] });
+      if (hasExistingCard) {
+        await statusCoordinator.update(
+          { text: '*Starting up ···*', actions: [] },
+          { force: true },
+        );
+      }
       statusCoordinator.startHeartbeat(() => {
+        if (!hasExistingCard && stepLog.length === 0) {
+          return null;
+        }
         const logSection = formatStepLog();
         const vibeText = nextVibeText();
         return {

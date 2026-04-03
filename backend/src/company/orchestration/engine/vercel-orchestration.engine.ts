@@ -4753,12 +4753,18 @@ const executeLarkVercelTask = async (
   if (process.env.USE_SUPERVISOR_V2 === 'true') {
     statusHistory.push('Supervisor v2 engaged.');
     await assertExecutionRunnable(task.taskId, abortSignal);
-    await updateStatus('planning', 'Supervisor is planning the request.');
+    const existingStatusMessageId = statusCoordinator?.getStatusMessageId?.() ?? null;
 
     const { supervisorV2Engine } = await import('./supervisor-v2.engine');
     const supervisorResult = await supervisorV2Engine.executeTask({
       task,
-      message,
+      message: {
+        ...message,
+        trace: {
+          ...message.trace,
+          statusMessageId: existingStatusMessageId ?? message.trace?.statusMessageId,
+        },
+      },
       latestCheckpoint: null,
       abortSignal,
     });
