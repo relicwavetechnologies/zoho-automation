@@ -2,6 +2,7 @@ import { generateText, stepCountIs, tool } from 'ai';
 import { z } from 'zod';
 
 import { larkChatContextService } from '../../channels/lark/lark-chat-context.service';
+import { resolveChannelAdapter } from '../../channels/channel-adapter.registry';
 import {
   type AgentResultDTO,
   type HITLActionDTO,
@@ -20,6 +21,7 @@ import { resolveCanonicalIntent } from '../intent/canonical-intent';
 import type { OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
 import { createVercelDesktopTools } from '../vercel/legacy-tools';
 import { resolveVercelLanguageModel } from '../vercel/model-factory';
+import { LarkStatusCoordinator } from './lark-status.coordinator';
 import type {
   PendingApprovalAction,
   VercelRuntimeRequestContext,
@@ -111,6 +113,30 @@ const LARK_V2_MODE: VercelRuntimeRequestContext['mode'] = 'high';
 const SUPERVISOR_HISTORY_TOKEN_BUDGET = 8_000;
 const SUPERVISOR_HISTORY_MAX_MESSAGES = 16;
 const SUPERVISOR_CONTEXT_TEXT_LIMIT = 2_000;
+
+const DIVO_VIBES: string[][] = [
+  ['Working', 'Thinking', 'Diving'],
+  ['Analyzing', 'Crunching', 'Brewing'],
+  ['Processing', 'Mapping', 'Connecting'],
+  ['Skewing', 'Wiring', 'Firing'],
+  ['Fetching', 'Syncing', 'Linking'],
+  ['Scanning', 'Sifting', 'Finding'],
+  ['Computing', 'Churning', 'Building'],
+  ['Orchestrating', 'Delegating', 'Executing'],
+];
+
+const DOT_FRAMES = ['·', '··', '···', '····'];
+
+let _vibeIndex = 0;
+let _dotIndex = 0;
+
+const nextVibeText = (): string => {
+  const words = DIVO_VIBES[_vibeIndex % DIVO_VIBES.length];
+  const dots = DOT_FRAMES[_dotIndex % DOT_FRAMES.length];
+  _vibeIndex++;
+  _dotIndex++;
+  return `${words.join(' · ')} ${dots}`;
+};
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -2571,22 +2597,44 @@ const extractNestedPendingApproval = (steps: unknown): PendingApprovalAction | n
 const buildStepProgressText = (step: unknown): string => {
   const stepRecord = asRecord(step);
   const toolCalls = asArray(stepRecord?.toolCalls)
-    .map((entry) => asRecord(entry))
+    .map(asRecord)
     .filter((entry): entry is Record<string, unknown> => Boolean(entry));
   const toolResults = asArray(stepRecord?.toolResults)
-    .map((entry) => asRecord(entry))
+    .map(asRecord)
     .filter((entry): entry is Record<string, unknown> => Boolean(entry));
-  const called = toolCalls.map((entry) => asString(entry.toolName)).filter((entry): entry is string => Boolean(entry));
-  const summaries = toolResults
-    .map((entry) => asString(asRecord(entry.output)?.text) ?? asString(asRecord(entry.output)?.summary))
-    .filter((entry): entry is string => Boolean(entry));
-  if (summaries.length > 0) {
-    return summarizeText(summaries.join(' | '), 220);
+
+  for (const result of toolResults) {
+    const output = asRecord(result.output);
+    const summary = asString(output?.summary) ?? asString(output?.text);
+    const toolName = asString(result.toolName) ?? asString(result.tool);
+    if (summary && toolName) {
+      const label = ({
+        contextAgent: 'Context search',
+        zohoAgent: 'Zoho data',
+        googleWorkspaceAgent: 'Google Workspace',
+        larkAgent: 'Lark',
+        workspaceAgent: 'Workspace',
+      } as Record<string, string>)[toolName] ?? toolName;
+      return `${label}: ${summarizeText(summary, 80)}`;
+    }
   }
+
+  const called = toolCalls
+    .map((toolCall) => asString(toolCall.toolName))
+    .filter((name): name is string => Boolean(name))
+    .map((name) => ({
+      contextAgent: 'Searching context',
+      zohoAgent: 'Reading Zoho',
+      googleWorkspaceAgent: 'Accessing Google',
+      larkAgent: 'Accessing Lark',
+      workspaceAgent: 'Running workspace task',
+    } as Record<string, string>)[name] ?? `Running ${name}`);
+
   if (called.length > 0) {
-    return `Used ${called.join(', ')}.`;
+    return `${called.join(', ')}...`;
   }
-  return summarizeText(asString(stepRecord?.text), 220) || 'Working on the request.';
+
+  return summarizeText(asString(stepRecord?.text), 80) || 'Working on it...';
 };
 
 const buildAgentStartStatus = (label: string, objective: string): string =>
@@ -2792,6 +2840,9 @@ const executeTask = async (
 ): Promise<SupervisorV2ExecutionOutput> => {
   const { task, message, abortSignal } = input;
   const executionId = resolveCanonicalExecutionId(task, message);
+  _vibeIndex = Math.floor(Math.random() * DIVO_VIBES.length);
+  _dotIndex = 0;
+  let statusCoordinator: LarkStatusCoordinator | null = null;
 
   try {
     const conversation = await resolveConversationContext(input);
@@ -2799,8 +2850,23 @@ const executeTask = async (
     const runtime = await resolveRuntimeContext(task, message, contextStorageId);
     const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
 
+    if (message.channel === 'lark') {
+      statusCoordinator = new LarkStatusCoordinator({
+        adapter: resolveChannelAdapter('lark'),
+        chatId: message.chatId,
+        correlationId: task.taskId,
+        initialStatusMessageId: message.trace?.statusMessageId,
+        replyToMessageId: message.trace?.replyToMessageId ?? message.messageId,
+        replyInThread: message.chatType === 'group',
+      });
+    }
+
     const updateLiveStatus = async (text: string): Promise<void> => {
-      void text;
+      if (!statusCoordinator) {
+        void text;
+        return;
+      }
+      await statusCoordinator.update({ text, actions: [] });
     };
 
     const supervisorTools = {
@@ -2939,6 +3005,33 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       }),
     };
 
+    const stepLog: string[] = [];
+
+    const formatStepLog = (): string => {
+      if (stepLog.length === 0) return '';
+      const visible = stepLog.slice(-4);
+      return visible
+        .map((line, index) => {
+          const isLatest = index === visible.length - 1;
+          return isLatest ? line : `${line} ✓`;
+        })
+        .join('\n');
+    };
+
+    if (statusCoordinator) {
+      await statusCoordinator.update({ text: '*Starting up ···*', actions: [] });
+      statusCoordinator.startHeartbeat(() => {
+        const logSection = formatStepLog();
+        const vibeText = nextVibeText();
+        return {
+          text: logSection
+            ? `${logSection}\n\n*${vibeText}*`
+            : `*${vibeText}*`,
+          actions: [],
+        };
+      });
+    }
+
     const supervisorResult = await generateText({
       model: resolvedModel.model,
       system: buildSupervisorSystemPrompt(runtime, conversation),
@@ -2961,10 +3054,10 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       onStepFinish: async (step) => {
         const stepRecord = asRecord(step) ?? {};
         const toolCalls = asArray(stepRecord.toolCalls)
-          .map((entry) => asRecord(entry))
+          .map(asRecord)
           .filter((entry): entry is Record<string, unknown> => Boolean(entry));
         const toolResults = asArray(stepRecord.toolResults)
-          .map((entry) => asRecord(entry))
+          .map(asRecord)
           .filter((entry): entry is Record<string, unknown> => Boolean(entry));
         const usage = asRecord(stepRecord.usage);
         await appendExecutionEventSafe({
@@ -3004,7 +3097,20 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
           },
         });
 
-        void step;
+        const stepLine = buildStepProgressText(step);
+        if (stepLine && stepLine !== 'Working on it...') {
+          stepLog.push(stepLine);
+        }
+
+        if (statusCoordinator) {
+          const logSection = formatStepLog();
+          const vibeText = nextVibeText();
+          const cardText = logSection
+            ? `${logSection}\n\n*${vibeText}*`
+            : `*${vibeText}*`;
+
+          await statusCoordinator.update({ text: cardText, actions: [] });
+        }
       },
     });
 
@@ -3046,6 +3152,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       pendingApproval,
       hasToolResults,
       isSensitiveContent: false,
+      statusMessageId: statusCoordinator?.getStatusMessageId(),
     };
   } catch (error) {
     const messageText = error instanceof Error ? error.message : 'Supervisor v2 execution failed.';
@@ -3085,7 +3192,10 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       pendingApproval: null,
       hasToolResults: false,
       isSensitiveContent: false,
+      statusMessageId: statusCoordinator?.getStatusMessageId(),
     };
+  } finally {
+    await statusCoordinator?.close();
   }
 };
 
