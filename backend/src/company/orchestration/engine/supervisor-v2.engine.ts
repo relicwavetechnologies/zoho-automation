@@ -72,9 +72,26 @@ type ConversationContextSnapshot = {
   sharedChatContextId?: string;
   persistentThreadId?: string;
   recentTurns: ChatTurn[];
+  attachmentMessages: string[];
   threadSummaryContext?: string;
   taskStateContext?: string;
   historySource: 'lark_shared_chat' | 'lark_lifetime_thread' | 'desktop_thread' | 'ephemeral_memory';
+};
+
+type AttachmentKind = 'pdf' | 'image' | 'csv' | 'doc' | 'other';
+
+type AttachmentContext = {
+  fileName: string;
+  mimeType: string;
+  fileAssetId: string;
+  cloudinaryUrl: string;
+  kind: AttachmentKind;
+  sizeBytes?: number;
+  mode: 'inline' | 'rag';
+  firstPagePreview?: string;
+  inlineText?: string;
+  keyFields?: Record<string, unknown>;
+  retrievalHint?: string;
 };
 
 type DeliveryMode =
@@ -154,6 +171,20 @@ const asNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+const resolveAttachmentKind = (mimeType: string, fileName: string): AttachmentKind => {
+  if (mimeType.includes('pdf')) return 'pdf';
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.includes('csv') || fileName.toLowerCase().endsWith('.csv')) return 'csv';
+  if (
+    mimeType.includes('word')
+    || fileName.toLowerCase().endsWith('.docx')
+    || fileName.toLowerCase().endsWith('.doc')
+  ) {
+    return 'doc';
+  }
+  return 'other';
+};
 
 const LARGE_RESULT_KEYS = [
   'invoices',
@@ -331,6 +362,144 @@ const summarizeText = (value: string | null | undefined, limit = 240): string =>
     return '';
   }
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const buildAttachmentContext = async (
+  file: {
+    fileAssetId: string;
+    cloudinaryUrl: string;
+    mimeType: string;
+    fileName: string;
+  },
+  runtime: VercelRuntimeRequestContext,
+): Promise<AttachmentContext> => {
+  const kind = resolveAttachmentKind(file.mimeType, file.fileName);
+  const base: AttachmentContext = {
+    fileName: file.fileName,
+    mimeType: file.mimeType,
+    fileAssetId: file.fileAssetId,
+    cloudinaryUrl: file.cloudinaryUrl,
+    kind,
+    mode: 'rag',
+  };
+
+  try {
+    if (kind === 'image') {
+      const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
+      const visionResult = await generateText({
+        model: resolvedModel.model,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', image: new URL(file.cloudinaryUrl) },
+            {
+              type: 'text',
+              text: 'Describe this image concisely in 2-3 sentences. Note any key numbers, text, charts, or data visible.',
+            },
+          ],
+        }],
+        temperature: 0,
+        providerOptions: {
+          google: {
+            thinkingConfig: {
+              includeThoughts: resolvedModel.includeThoughts,
+              thinkingLevel: resolvedModel.thinkingLevel,
+            },
+          },
+        },
+      });
+      const inlineText = summarizeText(visionResult.text, 8_000);
+      return inlineText
+        ? {
+            ...base,
+            mode: 'inline',
+            inlineText,
+          }
+        : base;
+    }
+
+    const legacyTools = getLegacyTools({
+      ...runtime,
+      delegatedAgentId: 'document-context',
+    });
+    const ocrTool = legacyTools.documentOcrRead as LegacyExecutableTool | undefined;
+    if (!ocrTool) {
+      return base;
+    }
+
+    const result = await ocrTool.execute({
+      operation: 'extractText',
+      fileAssetId: file.fileAssetId,
+    }) as Record<string, unknown>;
+
+    const fullPayload = asRecord(result.fullPayload);
+    const extractedText = asString(fullPayload?.text) ?? '';
+    const wordCount = extractedText
+      ? extractedText.split(/\s+/).filter(Boolean).length
+      : 0;
+
+    if (wordCount <= 5_000 && extractedText.length > 0) {
+      return {
+        ...base,
+        mode: 'inline',
+        inlineText: extractedText.slice(0, 8_000),
+      };
+    }
+
+    const firstPagePreview = extractedText.slice(0, 1_500);
+    const baseName = file.fileName.replace(/\.[^.]+$/, '');
+
+    return {
+      ...base,
+      mode: 'rag',
+      firstPagePreview,
+      retrievalHint: `${baseName} [topic of question]`,
+    };
+  } catch (error) {
+    logger.warn('supervisor_v2.attachment.context_failed', {
+      fileName: file.fileName,
+      fileAssetId: file.fileAssetId,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return base;
+  }
+};
+
+const formatAttachmentAsMessage = (ctx: AttachmentContext): string => {
+  const icon = {
+    pdf: 'PDF',
+    image: 'IMAGE',
+    csv: 'CSV',
+    doc: 'DOC',
+    other: 'FILE',
+  }[ctx.kind];
+
+  if (ctx.mode === 'inline' && ctx.inlineText) {
+    return [
+      `[ATTACHMENT ${icon}] ${ctx.fileName}`,
+      `Type: ${ctx.mimeType}`,
+      '',
+      'Extracted content:',
+      ctx.inlineText,
+    ].join('\n');
+  }
+
+  const baseName = ctx.fileName.replace(/\.[^.]+$/, '');
+  return [
+    `[ATTACHMENT ${icon}] ${ctx.fileName} — LARGE DOCUMENT`,
+    `Type: ${ctx.mimeType}`,
+    '',
+    'First page preview:',
+    ctx.firstPagePreview ?? '(preview unavailable)',
+    '',
+    'This document is too large to read fully inline.',
+    'It is indexed and searchable. To find specific information from it:',
+    '-> Call contextAgent with files-focused retrieval using the document filename in the query.',
+    `-> Query format: "${ctx.fileName} [what you need to find]"`,
+    `-> Example: "${baseName} closing balance"`,
+    `-> Example: "${baseName} total outstanding amount"`,
+    'Do NOT try to read the full document inline. Use contextSearch retrieval instead.',
+  ].join('\n');
 };
 
 const stripMarkdownDecorators = (value: string): string =>
@@ -766,6 +935,17 @@ WORKSPACE RULES:
   "Process file at /path/file.csv. Task: X. Output to: /path/out.csv"
 - If workspace not available: tell user data is saved and processing can happen when
   workspace connects
+
+DOCUMENT / ATTACHMENT RULES:
+- When a user sends an attached file, its content or preview is already in the conversation above as an attachment message
+- For INLINE documents (small): the full text is available — answer directly from it, no tool call needed
+- For LARGE documents (marked with LARGE DOCUMENT): do NOT try to read inline
+  Always use contextAgent to retrieve specific information from indexed files. Use the document filename in your query.
+  Example: user asks "what is the closing balance in the statement"
+  -> contextAgent({ objective: "find closing balance in [filename]" })
+- For bank statements / financial PDFs: after retrieval, compare extracted values against Zoho if the user asks for reconciliation
+- For images: describe what you see from the vision context provided
+- Never ask the user to re-send a file that is already attached
 
 FORMATTING:
 Use **bold** for emphasis. Use - for bullet lists. For data tables use | Col | format.
@@ -1561,6 +1741,8 @@ const resolveConversationContext = async (
       isSharedGroupChat,
       sharedChatContextId: shared.id,
       recentTurns: selectSupervisorTurns(normalizeTurns(shared.recentMessages), message.text),
+      attachmentMessages: (message.attachedFiles ?? []).map((file) =>
+        `[ATTACHED: ${file.fileName} | ${file.mimeType} | id:${file.fileAssetId}]`),
       threadSummaryContext: buildThreadSummaryContext(shared.summary) ?? undefined,
       taskStateContext: buildTaskStateContext(shared.taskState) ?? undefined,
       historySource: 'lark_shared_chat',
@@ -1588,6 +1770,8 @@ const resolveConversationContext = async (
         ),
         message.text,
       ),
+      attachmentMessages: (message.attachedFiles ?? []).map((file) =>
+        `[ATTACHED: ${file.fileName} | ${file.mimeType} | id:${file.fileAssetId}]`),
       threadSummaryContext: buildThreadSummaryContext(
         parseDesktopThreadSummary((meta as Record<string, unknown>).summaryJson),
       ) ?? undefined,
@@ -1619,6 +1803,8 @@ const resolveConversationContext = async (
           ),
           message.text,
         ),
+        attachmentMessages: (message.attachedFiles ?? []).map((file) =>
+          `[ATTACHED: ${file.fileName} | ${file.mimeType} | id:${file.fileAssetId}]`),
         threadSummaryContext: buildThreadSummaryContext(
           parseDesktopThreadSummary((meta as Record<string, unknown>).summaryJson),
         ) ?? undefined,
@@ -1649,6 +1835,8 @@ const resolveConversationContext = async (
       ),
       message.text,
     ),
+    attachmentMessages: (message.attachedFiles ?? []).map((file) =>
+      `[ATTACHED: ${file.fileName} | ${file.mimeType} | id:${file.fileAssetId}]`),
     historySource: 'ephemeral_memory',
   };
 };
@@ -2850,6 +3038,13 @@ const executeTask = async (
     const contextStorageId = conversation.persistentThreadId ?? conversation.sharedChatContextId;
     const runtime = await resolveRuntimeContext(task, message, contextStorageId);
     const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
+    const attachmentContextMessages: string[] = [];
+    if (input.message.attachedFiles?.length) {
+      for (const file of input.message.attachedFiles) {
+        const ctx = await buildAttachmentContext(file, runtime);
+        attachmentContextMessages.push(formatAttachmentAsMessage(ctx));
+      }
+    }
     const stepLog: string[] = [];
     const hasExistingCard = Boolean(message.trace?.statusMessageId);
 
@@ -3061,6 +3256,10 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       system: buildSupervisorSystemPrompt(runtime, conversation),
       messages: [
         ...conversation.recentTurns,
+        ...attachmentContextMessages.map((content) => ({
+          role: 'user' as const,
+          content,
+        })),
         { role: 'user', content: message.text },
       ],
       tools: supervisorTools,
