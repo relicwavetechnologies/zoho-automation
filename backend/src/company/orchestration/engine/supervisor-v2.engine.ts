@@ -33,7 +33,9 @@ import {
   filterThreadMessagesForContext,
   parseDesktopTaskState,
   parseDesktopThreadSummary,
+  upsertDesktopSourceArtifacts,
 } from '../../../modules/desktop-chat/desktop-thread-memory';
+import { fileUploadService } from '../../../modules/file-upload/file-upload.service';
 import { logger } from '../../../utils/logger';
 import { redDebug } from '../../../utils/red-debug';
 import { estimateTokens } from '../../../utils/token-estimator';
@@ -73,6 +75,37 @@ type ConversationContextSnapshot = {
   historySource: 'lark_shared_chat' | 'lark_lifetime_thread' | 'desktop_thread' | 'ephemeral_memory';
 };
 
+type DeliveryMode =
+  | 'inline'
+  | 'preview_plus_artifact'
+  | 'workspace_process_then_publish'
+  | 'saved_for_later_processing';
+
+type ArtifactDecision = {
+  mode: DeliveryMode;
+  rowCount: number;
+  byteSize: number;
+  previewRows: unknown[];
+  rows: unknown[];
+};
+
+type SavedArtifact = {
+  artifactId: string;
+  label: string;
+  sourceDomain: string;
+  kind: 'csv' | 'json' | 'report';
+  rowCount: number;
+  byteSize: number;
+  publishedUrl?: string;
+  localPath?: string;
+  querySummary: string;
+  schemaSummary: string;
+  createdAt: string;
+  status: 'saved' | 'saved_for_later_processing' | 'processed' | 'published';
+  chatId?: string;
+  threadId?: string;
+};
+
 const LARK_V2_MODE: VercelRuntimeRequestContext['mode'] = 'high';
 const SUPERVISOR_HISTORY_TOKEN_BUDGET = 8_000;
 const SUPERVISOR_HISTORY_MAX_MESSAGES = 16;
@@ -93,6 +126,151 @@ const asNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+const LARGE_RESULT_KEYS = [
+  'invoices',
+  'records',
+  'items',
+  'results',
+  'rows',
+  'data',
+  'messages',
+  'events',
+  'tasks',
+  'people',
+] as const;
+
+const extractRowCount = (toolResults: VercelToolEnvelope[]): number => {
+  for (const result of toolResults) {
+    const data = asRecord(result.data) ?? asRecord(result.fullPayload);
+    if (!data) continue;
+    const invoiceCount = asNumber(data.invoiceCount);
+    if (invoiceCount !== undefined) return invoiceCount;
+    for (const key of LARGE_RESULT_KEYS) {
+      const arr = asArray(data[key]);
+      if (arr.length > 0) return arr.length;
+    }
+  }
+  return 0;
+};
+
+const extractRawRows = (toolResults: VercelToolEnvelope[]): unknown[] => {
+  for (const result of toolResults) {
+    const data = asRecord(result.data) ?? asRecord(result.fullPayload);
+    if (!data) continue;
+    for (const key of LARGE_RESULT_KEYS) {
+      const arr = asArray(data[key]);
+      if (arr.length > 0) return arr;
+    }
+  }
+  return [];
+};
+
+const extractKeyStats = (toolResults: VercelToolEnvelope[]): string => {
+  for (const result of toolResults) {
+    const data = asRecord(result.data) ?? asRecord(result.fullPayload);
+    if (!data) continue;
+    const parts: string[] = [];
+    if (asNumber(data.invoiceCount) !== undefined) {
+      parts.push(`${data.invoiceCount} invoices`);
+    }
+    if (asNumber(data.totalOutstanding) !== undefined) {
+      parts.push(
+        `Total: ${Number(data.totalOutstanding).toLocaleString('en-IN', {
+          style: 'currency',
+          currency: 'INR',
+        })}`,
+      );
+    }
+    if (parts.length === 0) {
+      const summary = asString(data.summary);
+      if (summary) {
+        parts.push(summary);
+      }
+    }
+    if (parts.length > 0) return parts.join(' · ');
+  }
+  return '';
+};
+
+const convertToCSV = (rows: unknown[]): Buffer => {
+  if (rows.length === 0) return Buffer.from('');
+  const firstRow = asRecord(rows[0]) ?? {};
+  const headers = Object.keys(firstRow);
+  const escape = (val: unknown): string => {
+    const str = val === null || val === undefined ? '' : String(val);
+    return str.includes(',') || str.includes('"') || str.includes('\n')
+      ? `"${str.replace(/"/g, '""')}"`
+      : str;
+  };
+  const lines = [
+    headers.join(','),
+    ...rows.map((row) => {
+      const r = asRecord(row) ?? {};
+      return headers.map((header) => escape(r[header])).join(',');
+    }),
+  ];
+  return Buffer.from(lines.join('\n'), 'utf-8');
+};
+
+const decideDeliveryMode = (
+  rowCount: number,
+  byteSize: number,
+  objective: string,
+  workspaceAvailable: boolean,
+): DeliveryMode => {
+  const processVerb = /\b(analyze|analyse|process|clean|dedupe|deduplicate|reconcile|merge|compare|transform|aggregate|filter|sort|group|pivot|summarize|calculate)\b/i
+    .test(objective);
+
+  if (processVerb && workspaceAvailable) return 'workspace_process_then_publish';
+  if (processVerb && !workspaceAvailable) return 'saved_for_later_processing';
+  if (rowCount <= 20 && byteSize < 25_000) return 'inline';
+  if (rowCount <= 200 && byteSize < 250_000) return 'preview_plus_artifact';
+  if (workspaceAvailable) return 'workspace_process_then_publish';
+  return 'saved_for_later_processing';
+};
+
+const buildArtifactDecision = (
+  toolResults: VercelToolEnvelope[],
+  objective: string,
+  workspaceAvailable: boolean,
+): ArtifactDecision => {
+  const rows = extractRawRows(toolResults);
+  const rowCount = rows.length > 0 ? rows.length : extractRowCount(toolResults);
+  const csvBuffer = rows.length > 0 ? convertToCSV(rows) : Buffer.from('');
+  const byteSize = csvBuffer.length;
+  const previewRows = rows.slice(0, 5);
+  const mode = decideDeliveryMode(rowCount, byteSize, objective, workspaceAvailable);
+  return { mode, rowCount, byteSize, previewRows, rows };
+};
+
+const buildPreviewTable = (
+  previewRows: unknown[],
+  rowCount: number,
+): string => {
+  if (previewRows.length === 0) return '';
+  const firstRow = asRecord(previewRows[0]) ?? {};
+  const headers = Object.keys(firstRow).slice(0, 6);
+  if (headers.length === 0) return '';
+
+  const headerRow = `| ${headers.join(' | ')} |`;
+  const separator = `| ${headers.map(() => '---').join(' | ')} |`;
+  const dataRows = previewRows.map((row) => {
+    const record = asRecord(row) ?? {};
+    const cells = headers.map((header) => {
+      const value = record[header];
+      const str = value === null || value === undefined ? '' : String(value);
+      return str.length > 30 ? `${str.slice(0, 27)}...` : str;
+    });
+    return `| ${cells.join(' | ')} |`;
+  });
+
+  const lines = [headerRow, separator, ...dataRows];
+  if (rowCount > previewRows.length) {
+    lines.push(`\n*(showing ${previewRows.length} of ${rowCount} rows)*`);
+  }
+  return lines.join('\n');
+};
 
 const summarizeText = (value: string | null | undefined, limit = 240): string => {
   const trimmed = value?.trim() ?? '';
@@ -224,6 +402,184 @@ const compactContextText = (value?: string | null): string | undefined => {
     : trimmed;
 };
 
+const saveArtifact = async (input: {
+  rows: unknown[];
+  sourceDomain: string;
+  querySummary: string;
+  companyId: string;
+  runtime: VercelRuntimeRequestContext;
+}): Promise<SavedArtifact | null> => {
+  try {
+    const { rows, sourceDomain, querySummary, companyId, runtime } = input;
+    if (rows.length === 0) return null;
+
+    const date = new Date().toISOString().slice(0, 16).replace(/[:.T]/g, '-');
+    const safeSummary = querySummary
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .slice(0, 40);
+    const fileName = `${sourceDomain}_${safeSummary || 'artifact'}_${date}.csv`;
+
+    const buffer = convertToCSV(rows);
+    const byteSize = buffer.length;
+    const firstRow = asRecord(rows[0]) ?? {};
+    const schemaSummary = Object.keys(firstRow).slice(0, 8).join(', ');
+
+    const localPath = runtime.workspace?.path
+      ? `${runtime.workspace.path.replace(/\/$/, '')}/.divo/artifacts/${fileName}`
+      : undefined;
+
+    const uploaded = await fileUploadService.upload({
+      buffer,
+      mimeType: 'text/csv',
+      fileName,
+      sizeBytes: byteSize,
+      companyId,
+      uploaderUserId: runtime.userId,
+      uploaderChannel: runtime.channel === 'lark' ? 'lark' : 'desktop',
+      allowedRoles: [runtime.requesterAiRole],
+    });
+
+    const artifact: SavedArtifact = {
+      artifactId: uploaded.fileAssetId,
+      label: querySummary.slice(0, 80),
+      sourceDomain,
+      kind: 'csv',
+      rowCount: rows.length,
+      byteSize,
+      publishedUrl: uploaded.cloudinaryUrl,
+      localPath,
+      querySummary,
+      schemaSummary,
+      createdAt: new Date().toISOString(),
+      status: 'published',
+      chatId: runtime.chatId,
+      threadId: runtime.threadId,
+    };
+
+    return artifact;
+  } catch (error) {
+    logger.warn('supervisor_v2.artifact.save_failed', {
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return null;
+  }
+};
+
+const persistArtifactReference = async (
+  artifact: SavedArtifact | null,
+  runtime: VercelRuntimeRequestContext,
+): Promise<void> => {
+  if (!artifact?.artifactId) {
+    return;
+  }
+
+  const nextTaskState = upsertDesktopSourceArtifacts({
+    taskState: parseDesktopTaskState(runtime.taskState),
+    artifacts: [{
+      fileAssetId: artifact.artifactId,
+      fileName: artifact.localPath?.split('/').pop()?.trim() || artifact.label || 'artifact.csv',
+      sourceType: 'company_file',
+      summary: `${artifact.sourceDomain} artifact · ${artifact.rowCount} rows`,
+      retrievalHint: artifact.publishedUrl || artifact.localPath || artifact.querySummary,
+    }],
+  });
+
+  runtime.taskState = nextTaskState;
+
+  try {
+    if (runtime.channel === 'lark' && runtime.sourceChatType === 'group' && runtime.chatId) {
+      await larkChatContextService.updateMemory({
+        companyId: runtime.companyId,
+        chatId: runtime.chatId,
+        chatType: 'group',
+        taskState: nextTaskState,
+      });
+      return;
+    }
+
+    if (runtime.threadId) {
+      await desktopThreadsService.updateOwnedThreadMemory(
+        runtime.threadId,
+        runtime.userId,
+        { taskStateJson: nextTaskState as unknown as Record<string, unknown> },
+      );
+    }
+  } catch (error) {
+    logger.warn('supervisor_v2.artifact.persist_failed', {
+      artifactId: artifact.artifactId,
+      threadId: runtime.threadId,
+      chatId: runtime.chatId,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+  }
+};
+
+const writeArtifactToWorkspace = async (
+  artifact: SavedArtifact,
+  runtime: VercelRuntimeRequestContext,
+  abortSignal?: AbortSignal,
+  onStepFinish?: (step: unknown) => Promise<void>,
+): Promise<SubAgentTextResult | null> => {
+  if (!artifact.localPath || !artifact.publishedUrl || !runtime.workspace?.path) {
+    return null;
+  }
+
+  const artifactDir = `${runtime.workspace.path.replace(/\/$/, '')}/.divo/artifacts`;
+  const scriptDir = `${runtime.workspace.path.replace(/\/$/, '')}/.divo/scripts`;
+  const processHint = /\b(analyze|analyse|process|clean|dedupe|deduplicate|reconcile|merge|compare|transform|aggregate|filter|sort|group|pivot|summarize|calculate)\b/i
+    .test(artifact.querySummary)
+    ? `Then process ${artifact.localPath} for the original task: ${artifact.querySummary}. If processing is needed, check for .venv, venv, pyproject.toml, requirements.txt, or uv; write a deterministic Python script under ${scriptDir}; save outputs under ${artifactDir}; and verify the outputs exist.`
+    : `Then inspect ${artifact.localPath}, summarize its shape, and save any derived report under ${artifactDir} if useful.`;
+
+  return runWorkspaceAgent(
+    {
+      objective: [
+        `Create directory ${artifactDir} if it does not exist and confirm it is writable.`,
+        `Download the published CSV artifact from ${artifact.publishedUrl} to ${artifact.localPath}.`,
+        `Confirm ${artifact.localPath} exists after the download.`,
+        processHint,
+        'Return what you did, the main output file paths, and the key findings summary.',
+      ].join(' '),
+    },
+    runtime,
+    abortSignal,
+    onStepFinish,
+  );
+};
+
+const buildArtifactPresentation = (input: {
+  baseText: string;
+  artifact: SavedArtifact | null;
+  decision: ArtifactDecision;
+  keyStats: string;
+  includePreview: boolean;
+  localProcessingText?: string;
+}): string => {
+  const lines = [input.baseText.trim()];
+  const summary = input.keyStats || `${input.decision.rowCount} items found`;
+  if (summary && !lines[0]?.includes(summary)) {
+    lines.push(`**Summary:** ${summary}`);
+  }
+  if (input.includePreview) {
+    const preview = buildPreviewTable(input.decision.previewRows, input.decision.rowCount);
+    if (preview) {
+      lines.push('**Preview:**');
+      lines.push(preview);
+    }
+  }
+  if (input.artifact?.publishedUrl) {
+    const fileName = input.artifact.localPath?.split('/').pop() || `${input.artifact.sourceDomain}_artifact.csv`;
+    lines.push(`**${input.decision.rowCount} items found. Full data:** [${fileName}](${input.artifact.publishedUrl})`);
+  }
+  if (input.artifact?.localPath && input.localProcessingText) {
+    lines.push(input.localProcessingText);
+  } else if (input.artifact?.localPath && input.decision.mode === 'saved_for_later_processing') {
+    lines.push(`**Saved for later processing:** ${input.artifact.localPath}`);
+  }
+  return lines.filter((line) => line && line.trim().length > 0).join('\n\n');
+};
+
 const buildPermissionSummary = (runtime: VercelRuntimeRequestContext): string => {
   const preferredTools = [
     'contextSearch',
@@ -282,6 +638,17 @@ export const buildSupervisorSystemPrompt = (
     '10. Never infer that a previous request is incomplete from conversation history alone.',
     '11. Rendered UI truncation is not evidence of incomplete work.',
     '12. Do not combine multiple requests into one answer unless the latest user message explicitly asks for both.',
+    'DATA PRESENTATION RULES:',
+    '- For results with 20 items or fewer: answer fully in chat.',
+    '- For results with 21-200 items: give a concise summary, show up to 5 preview rows, and include any artifact link returned by the agent.',
+    '- For results with more than 200 items: give summary stats only and include the artifact link.',
+    '- Never paste full tables with 50+ rows into chat.',
+    '- When an agent returns an artifactUrl or published artifact link, always include it in the response.',
+    '- Format large-result links like: **X items found. Full data:** [filename](url)',
+    'WORKSPACE RULES:',
+    '- If the user asks to analyze, process, clean, dedupe, reconcile, merge, compare, transform, or calculate over data and a workspace is available, use workspaceAgent with the local artifact path when known.',
+    '- If workspace is not available, say the data is saved for later processing and include the artifact link.',
+    '- workspaceAgent objectives must include the file path when known, never the raw dataset.',
     'COMMON PATTERNS — follow these exactly:',
     "Contact/people lookup (anytime user asks for someone's email, phone, details):",
     '  → call contextAgent with contactSearch: true',
@@ -1125,6 +1492,7 @@ async function runWorkspaceAgent(
         'If a virtual environment exists, use it explicitly. If not, prefer python3 with standard-library code when feasible and avoid assuming nonstandard packages are installed.',
         'For large Zoho exports, CSV/JSON processing, reconciliation, deduping, aggregation, or data cleanup, inspect files first, then script the transformation, run it, and verify the output.',
         'When modifying data files, preserve originals unless the user explicitly asked for destructive replacement. Prefer creating a derived output file and summarizing what changed.',
+        'When processing a data file: first inspect the workspace and confirm the file path exists; then check for .venv, venv, pyproject.toml, requirements.txt, or uv; if a venv exists use it explicitly; if not, use python3 with standard library only; write scripts under .divo/scripts/; save outputs under .divo/artifacts/ with descriptive names; verify outputs exist before claiming success.',
         'Use verifyResult after a mutating or destructive action before claiming success.',
         'If no connected workspace is available, return the workspace tool error clearly.',
       ].join(' '),
@@ -1707,6 +2075,121 @@ const toSupervisorAgentResults = (toolResults: VercelToolEnvelope[], taskId: str
   }));
 };
 
+const applyArtifactFlow = async (input: {
+  sourceDomain: 'google' | 'zoho' | 'lark';
+  objective: string;
+  runtime: VercelRuntimeRequestContext;
+  result: SubAgentTextResult;
+  abortSignal?: AbortSignal;
+  onWorkspaceStep?: (step: unknown) => Promise<void>;
+}): Promise<SubAgentTextResult & {
+  artifactUrl?: string;
+  artifactPath?: string;
+  artifact?: SavedArtifact | null;
+  rowCount?: number;
+}> => {
+  const workspaceAvailable =
+    input.runtime.desktopExecutionAvailability === 'available'
+    && Boolean(input.runtime.workspace?.path);
+
+  const decision = buildArtifactDecision(
+    input.result.toolResults,
+    input.objective,
+    workspaceAvailable,
+  );
+
+  if (decision.rows.length === 0 || decision.mode === 'inline') {
+    return input.result;
+  }
+
+  const artifact = await saveArtifact({
+    rows: decision.rows,
+    sourceDomain: input.sourceDomain,
+    querySummary: input.objective.slice(0, 120),
+    companyId: input.runtime.companyId,
+    runtime: input.runtime,
+  });
+  await persistArtifactReference(artifact, input.runtime);
+
+  const keyStats = extractKeyStats(input.result.toolResults);
+
+  if (decision.mode === 'preview_plus_artifact') {
+    return {
+      ...input.result,
+      text: buildArtifactPresentation({
+        baseText: input.result.text,
+        artifact,
+        decision,
+        keyStats,
+        includePreview: true,
+      }),
+      artifactUrl: artifact?.publishedUrl,
+      artifactPath: artifact?.localPath,
+      artifact,
+      rowCount: decision.rowCount,
+    };
+  }
+
+  if (decision.mode === 'saved_for_later_processing') {
+    return {
+      ...input.result,
+      text: buildArtifactPresentation({
+        baseText: input.result.text,
+        artifact: artifact
+          ? { ...artifact, status: 'saved_for_later_processing' }
+          : artifact,
+        decision,
+        keyStats,
+        includePreview: false,
+      }),
+      artifactUrl: artifact?.publishedUrl,
+      artifactPath: artifact?.localPath,
+      artifact: artifact
+        ? { ...artifact, status: 'saved_for_later_processing' }
+        : artifact,
+      rowCount: decision.rowCount,
+    };
+  }
+
+  const workspaceResult = artifact
+    ? await writeArtifactToWorkspace(
+      artifact,
+      input.runtime,
+      input.abortSignal,
+      input.onWorkspaceStep,
+    )
+    : null;
+
+  const localProcessingText = workspaceResult?.text
+    ? `**Workspace processing:** ${workspaceResult.text}`
+    : artifact?.localPath
+      ? `**Saved locally:** ${artifact.localPath}`
+      : undefined;
+
+  return {
+    ...input.result,
+    text: buildArtifactPresentation({
+      baseText: input.result.text,
+      artifact,
+      decision,
+      keyStats,
+      includePreview: false,
+      localProcessingText,
+    }),
+    toolResults: [
+      ...input.result.toolResults,
+      ...(workspaceResult?.toolResults ?? []),
+    ],
+    pendingApproval: workspaceResult?.pendingApproval ?? input.result.pendingApproval,
+    artifactUrl: artifact?.publishedUrl,
+    artifactPath: artifact?.localPath,
+    artifact: artifact
+      ? { ...artifact, status: workspaceResult ? 'processed' : artifact.status }
+      : artifact,
+    rowCount: decision.rowCount,
+  };
+};
+
 const executeTask = async (
   input: OrchestrationExecutionInput,
 ): Promise<SupervisorV2ExecutionOutput> => {
@@ -1761,8 +2244,16 @@ const executeTask = async (
             abortSignal,
             async (step) => updateLiveStatus(buildAgentStepStatus('Google Workspace', step)),
           );
-          await updateLiveStatus(buildAgentFinishStatus('Google Workspace', result));
-          return result;
+          const enriched = await applyArtifactFlow({
+            sourceDomain: 'google',
+            objective: params.objective,
+            runtime,
+            result,
+            abortSignal,
+            onWorkspaceStep: async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
+          });
+          await updateLiveStatus(buildAgentFinishStatus('Google Workspace', enriched));
+          return enriched;
         },
       }),
       workspaceAgent: tool({
@@ -1797,8 +2288,16 @@ const executeTask = async (
             abortSignal,
             async (step) => updateLiveStatus(buildAgentStepStatus('Zoho', step)),
           );
-          await updateLiveStatus(buildAgentFinishStatus('Zoho', result));
-          return result;
+          const enriched = await applyArtifactFlow({
+            sourceDomain: 'zoho',
+            objective,
+            runtime,
+            result,
+            abortSignal,
+            onWorkspaceStep: async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
+          });
+          await updateLiveStatus(buildAgentFinishStatus('Zoho', enriched));
+          return enriched;
         },
       }),
       larkAgent: tool({
@@ -1816,8 +2315,16 @@ const executeTask = async (
             abortSignal,
             async (step) => updateLiveStatus(buildAgentStepStatus('Lark', step)),
           );
-          await updateLiveStatus(buildAgentFinishStatus('Lark', result));
-          return result;
+          const enriched = await applyArtifactFlow({
+            sourceDomain: 'lark',
+            objective: params.objective,
+            runtime,
+            result,
+            abortSignal,
+            onWorkspaceStep: async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
+          });
+          await updateLiveStatus(buildAgentFinishStatus('Lark', enriched));
+          return enriched;
         },
       }),
     };
