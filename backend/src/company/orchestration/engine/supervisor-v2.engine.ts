@@ -27,8 +27,16 @@ import type {
   VercelRuntimeToolHooks,
 } from '../vercel/types';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
+import {
+  buildTaskStateContext,
+  buildThreadSummaryContext,
+  filterThreadMessagesForContext,
+  parseDesktopTaskState,
+  parseDesktopThreadSummary,
+} from '../../../modules/desktop-chat/desktop-thread-memory';
 import { logger } from '../../../utils/logger';
 import { redDebug } from '../../../utils/red-debug';
+import { estimateTokens } from '../../../utils/token-estimator';
 
 type ChatTurn = {
   role: 'user' | 'assistant';
@@ -60,10 +68,15 @@ type ConversationContextSnapshot = {
   sharedChatContextId?: string;
   persistentThreadId?: string;
   recentTurns: ChatTurn[];
+  threadSummaryContext?: string;
+  taskStateContext?: string;
+  historySource: 'lark_shared_chat' | 'lark_lifetime_thread' | 'desktop_thread' | 'ephemeral_memory';
 };
 
 const LARK_V2_MODE: VercelRuntimeRequestContext['mode'] = 'high';
-const SUPERVISOR_MAX_TURNS = 8;
+const SUPERVISOR_HISTORY_TOKEN_BUDGET = 8_000;
+const SUPERVISOR_HISTORY_MAX_MESSAGES = 16;
+const SUPERVISOR_CONTEXT_TEXT_LIMIT = 2_000;
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -166,6 +179,51 @@ const dedupeTrailingCurrentMessage = (
   return turns;
 };
 
+const takeRecentTurnsByTokenBudget = (input: {
+  turns: ChatTurn[];
+  tokenBudget: number;
+  maxMessages: number;
+}): ChatTurn[] => {
+  const selected: ChatTurn[] = [];
+  let usedTokens = 0;
+  for (let index = input.turns.length - 1; index >= 0; index -= 1) {
+    const turn = input.turns[index]!;
+    const estimatedTokens = estimateTokens(turn.content);
+    if (
+      selected.length >= input.maxMessages
+      || (selected.length > 0 && usedTokens + estimatedTokens > input.tokenBudget)
+    ) {
+      break;
+    }
+    selected.unshift(turn);
+    usedTokens += estimatedTokens;
+  }
+  return selected;
+};
+
+const selectSupervisorTurns = (
+  turns: ChatTurn[],
+  latestMessage: string,
+): ChatTurn[] =>
+  dedupeTrailingCurrentMessage(
+    takeRecentTurnsByTokenBudget({
+      turns: filterThreadMessagesForContext(turns),
+      tokenBudget: SUPERVISOR_HISTORY_TOKEN_BUDGET,
+      maxMessages: SUPERVISOR_HISTORY_MAX_MESSAGES,
+    }),
+    latestMessage,
+  );
+
+const compactContextText = (value?: string | null): string | undefined => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.length > SUPERVISOR_CONTEXT_TEXT_LIMIT
+    ? `${trimmed.slice(0, SUPERVISOR_CONTEXT_TEXT_LIMIT)}...`
+    : trimmed;
+};
+
 const buildPermissionSummary = (runtime: VercelRuntimeRequestContext): string => {
   const preferredTools = [
     'contextSearch',
@@ -189,10 +247,15 @@ const buildPermissionSummary = (runtime: VercelRuntimeRequestContext): string =>
   return entries.length > 0 ? entries.join(', ') : 'Use only tools permitted by the runtime.';
 };
 
-export const buildSupervisorSystemPrompt = (runtime: VercelRuntimeRequestContext): string => {
+export const buildSupervisorSystemPrompt = (
+  runtime: VercelRuntimeRequestContext,
+  conversation?: ConversationContextSnapshot,
+): string => {
   const today = new Date().toISOString().slice(0, 10);
   const departmentLabel = runtime.departmentName?.trim() || 'no specific department';
   const requesterLabel = runtime.requesterName?.trim() || runtime.requesterEmail?.trim() || 'the current user';
+  const threadSummaryContext = compactContextText(conversation?.threadSummaryContext);
+  const taskStateContext = compactContextText(conversation?.taskStateContext);
   return [
     `You are Divo, the orchestration supervisor for company ${runtime.companyId} and department ${departmentLabel}.`,
     `You are helping ${requesterLabel}. Today is ${today}.`,
@@ -250,6 +313,14 @@ export const buildSupervisorSystemPrompt = (runtime: VercelRuntimeRequestContext
     '  → If the user asks for a doc, document, page, notes page, markdown report, or written snapshot, that is a doc request, not a task request.',
     '  → Never create a task when the user explicitly asked for a Lark doc or document.',
     `Permissions summary: ${buildPermissionSummary(runtime)}.`,
+    ...(threadSummaryContext || taskStateContext
+      ? [
+          'Conversation memory:',
+          ...(threadSummaryContext ? [threadSummaryContext] : []),
+          ...(taskStateContext ? [taskStateContext] : []),
+          'Use this memory to resolve continuations and references, but do not let stale history override a clearly new latest request.',
+        ]
+      : []),
     'FORMATTING: Use **bold** for emphasis. Use - for bullet lists. For data: use | Col | Col | table format. Never use ### or ## headings — use **Bold:** instead. Be concise and direct.',
   ].join('\n');
 };
@@ -431,49 +502,96 @@ const resolveConversationContext = async (
       linkedUserId,
       isSharedGroupChat,
       sharedChatContextId: shared.id,
-      recentTurns: dedupeTrailingCurrentMessage(
-        normalizeTurns(shared.recentMessages).slice(-SUPERVISOR_MAX_TURNS),
-        message.text,
-      ),
+      recentTurns: selectSupervisorTurns(normalizeTurns(shared.recentMessages), message.text),
+      threadSummaryContext: buildThreadSummaryContext(shared.summary) ?? undefined,
+      taskStateContext: buildTaskStateContext(shared.taskState) ?? undefined,
+      historySource: 'lark_shared_chat',
     };
   }
 
-  if (companyId && linkedUserId) {
+  if (message.channel === 'lark' && companyId && linkedUserId) {
     const thread = await desktopThreadsService.findOrCreateLarkLifetimeThread(linkedUserId, companyId);
+    const meta = await desktopThreadsService.getThreadMeta(thread.id, linkedUserId);
     const cached = await desktopThreadsService.getCachedOwnedThreadContext(
       thread.id,
       linkedUserId,
-      24,
+      120,
     );
     return {
       linkedUserId,
       isSharedGroupChat: false,
       persistentThreadId: thread.id,
-      recentTurns: dedupeTrailingCurrentMessage(
+      recentTurns: selectSupervisorTurns(
         normalizeTurns(
           cached.messages.map((entry) => ({
             role: entry.role,
             content: entry.content,
           })),
-        ).slice(-SUPERVISOR_MAX_TURNS),
+        ),
         message.text,
       ),
+      threadSummaryContext: buildThreadSummaryContext(
+        parseDesktopThreadSummary((meta as Record<string, unknown>).summaryJson),
+      ) ?? undefined,
+      taskStateContext: buildTaskStateContext(
+        parseDesktopTaskState((meta as Record<string, unknown>).taskStateJson),
+      ) ?? undefined,
+      historySource: 'lark_lifetime_thread',
     };
+  }
+
+  if (message.channel === 'desktop' && message.chatId) {
+    try {
+      const meta = await desktopThreadsService.getThreadMeta(message.chatId, message.userId);
+      const cached = await desktopThreadsService.getCachedOwnedThreadContext(
+        message.chatId,
+        message.userId,
+        120,
+      );
+      return {
+        linkedUserId: message.userId,
+        isSharedGroupChat: false,
+        persistentThreadId: message.chatId,
+        recentTurns: selectSupervisorTurns(
+          normalizeTurns(
+            cached.messages.map((entry) => ({
+              role: entry.role,
+              content: entry.content,
+            })),
+          ),
+          message.text,
+        ),
+        threadSummaryContext: buildThreadSummaryContext(
+          parseDesktopThreadSummary((meta as Record<string, unknown>).summaryJson),
+        ) ?? undefined,
+        taskStateContext: buildTaskStateContext(
+          parseDesktopTaskState((meta as Record<string, unknown>).taskStateJson),
+        ) ?? undefined,
+        historySource: 'desktop_thread',
+      };
+    } catch (error) {
+      logger.info('supervisor_v2.desktop_thread_context_unresolved', {
+        chatId: message.chatId,
+        userId: message.userId,
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
+    }
   }
 
   const conversationKey = buildConversationKey(message);
   return {
     linkedUserId,
     isSharedGroupChat: false,
-    recentTurns: dedupeTrailingCurrentMessage(
+    recentTurns: selectSupervisorTurns(
       normalizeTurns(
         conversationMemoryStore.getContextMessages(conversationKey).map((entry) => ({
           role: entry.role,
           content: entry.content,
         })),
-      ).slice(-SUPERVISOR_MAX_TURNS),
+      ),
       message.text,
     ),
+    historySource: 'ephemeral_memory',
   };
 };
 
@@ -1367,7 +1485,7 @@ const executeTask = async (
 
     const supervisorResult = await generateText({
       model: resolvedModel.model,
-      system: buildSupervisorSystemPrompt(runtime),
+      system: buildSupervisorSystemPrompt(runtime, conversation),
       messages: [
         ...conversation.recentTurns,
         { role: 'user', content: message.text },
@@ -1465,6 +1583,7 @@ const executeTask = async (
           : undefined,
         canonicalIntent: runtime.canonicalIntent,
         supervisorWaveCount: asArray(supervisorResult.steps).length,
+        conversationHistorySource: conversation.historySource,
       },
       finalText,
       toolResults,
