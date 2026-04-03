@@ -145,9 +145,7 @@ export const ingestLarkAttachments = async (input: {
         companyId: input.companyId,
         uploaderUserId: input.uploaderUserId,
         uploaderChannel: 'lark',
-        allowedRoles: input.allowedRoles && input.allowedRoles.length > 0
-          ? input.allowedRoles
-          : ['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN'],
+        allowedRoles: input.allowedRoles?.slice(0, 1) ?? ['MEMBER'],
         visibility: 'personal',
         ownerUserId: input.uploaderUserId,
       });
