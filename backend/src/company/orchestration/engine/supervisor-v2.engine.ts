@@ -2849,6 +2849,47 @@ const executeTask = async (
     const contextStorageId = conversation.persistentThreadId ?? conversation.sharedChatContextId;
     const runtime = await resolveRuntimeContext(task, message, contextStorageId);
     const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
+    const stepLog: string[] = [];
+    const hasExistingCard = Boolean(message.trace?.statusMessageId);
+
+    const formatStepLog = (): string => {
+      if (stepLog.length === 0) return '';
+      const visible = stepLog.slice(-4);
+      return visible
+        .map((line, index) => {
+          const isLatest = index === visible.length - 1;
+          return isLatest ? line : `${line} ✓`;
+        })
+        .join('\n');
+    };
+
+    const buildStatusCardText = (): string => {
+      const logSection = formatStepLog();
+      const vibeText = nextVibeText().replace(/\s+·\s+/g, ' . ');
+      const updatesBlock = !logSection
+        ? 'Updates: Working on it'
+        : logSection.includes('\n')
+          ? `Updates:\n${logSection}`
+          : `Updates: ${logSection}`;
+      return [
+        '===============================',
+        updatesBlock,
+        '',
+        vibeText,
+        '===============================',
+      ].join('\n');
+    };
+
+    const appendStatusLine = (line: string | undefined): void => {
+      const normalized = summarizeText(stripMarkdownDecorators(line ?? ''), 120);
+      if (!normalized || normalized === 'Working on it...') {
+        return;
+      }
+      if (stepLog[stepLog.length - 1] === normalized) {
+        return;
+      }
+      stepLog.push(normalized);
+    };
 
     if (message.channel === 'lark') {
       statusCoordinator = new LarkStatusCoordinator({
@@ -2862,11 +2903,12 @@ const executeTask = async (
     }
 
     const updateLiveStatus = async (text: string): Promise<void> => {
+      appendStatusLine(text);
       if (!statusCoordinator) {
         void text;
         return;
       }
-      await statusCoordinator.update({ text, actions: [] });
+      await statusCoordinator.update({ text: buildStatusCardText(), actions: [] });
     };
 
     const supervisorTools = {
@@ -3005,24 +3047,10 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       }),
     };
 
-    const stepLog: string[] = [];
-    const hasExistingCard = Boolean(message.trace?.statusMessageId);
-
-    const formatStepLog = (): string => {
-      if (stepLog.length === 0) return '';
-      const visible = stepLog.slice(-4);
-      return visible
-        .map((line, index) => {
-          const isLatest = index === visible.length - 1;
-          return isLatest ? line : `${line} ✓`;
-        })
-        .join('\n');
-    };
-
     if (statusCoordinator) {
       if (hasExistingCard) {
         await statusCoordinator.update(
-          { text: '*Starting up ···*', actions: [] },
+          { text: buildStatusCardText(), actions: [] },
           { force: true },
         );
       }
@@ -3030,12 +3058,8 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
         if (!hasExistingCard && stepLog.length === 0) {
           return null;
         }
-        const logSection = formatStepLog();
-        const vibeText = nextVibeText();
         return {
-          text: logSection
-            ? `${logSection}\n\n*${vibeText}*`
-            : `*${vibeText}*`,
+          text: buildStatusCardText(),
           actions: [],
         };
       });
@@ -3107,18 +3131,10 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
         });
 
         const stepLine = buildStepProgressText(step);
-        if (stepLine && stepLine !== 'Working on it...') {
-          stepLog.push(stepLine);
-        }
+        appendStatusLine(stepLine);
 
         if (statusCoordinator) {
-          const logSection = formatStepLog();
-          const vibeText = nextVibeText();
-          const cardText = logSection
-            ? `${logSection}\n\n*${vibeText}*`
-            : `*${vibeText}*`;
-
-          await statusCoordinator.update({ text: cardText, actions: [] });
+          await statusCoordinator.update({ text: buildStatusCardText(), actions: [] });
         }
       },
     });

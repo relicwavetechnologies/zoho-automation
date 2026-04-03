@@ -4762,7 +4762,10 @@ const executeLarkVercelTask = async (
         ...message,
         trace: {
           ...message.trace,
-          statusMessageId: existingStatusMessageId ?? message.trace?.statusMessageId,
+          statusMessageId:
+            existingStatusMessageId
+            ?? message.trace?.statusMessageId
+            ?? message.trace?.ackMessageId,
         },
       },
       latestCheckpoint: null,
