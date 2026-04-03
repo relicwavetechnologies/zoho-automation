@@ -660,6 +660,8 @@ const saveArtifact = async (input: {
       uploaderUserId: runtime.userId,
       uploaderChannel: runtime.channel === 'lark' ? 'lark' : 'desktop',
       allowedRoles: [runtime.requesterAiRole],
+      visibility: 'personal',
+      ownerUserId: runtime.userId,
     });
 
     const artifact: SavedArtifact = {

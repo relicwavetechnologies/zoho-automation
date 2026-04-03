@@ -148,6 +148,8 @@ export const ingestLarkAttachments = async (input: {
         allowedRoles: input.allowedRoles && input.allowedRoles.length > 0
           ? input.allowedRoles
           : ['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN'],
+        visibility: 'personal',
+        ownerUserId: input.uploaderUserId,
       });
       orangeDebug('lark.file.ingestion.upload.success', {
         messageId: input.messageId,
