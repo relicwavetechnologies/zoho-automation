@@ -2872,11 +2872,13 @@ const executeTask = async (
           ? `Updates:\n${logSection}`
           : `Updates: ${logSection}`;
       return [
+        '```text',
         '===============================',
         updatesBlock,
         '',
         vibeText,
         '===============================',
+        '```',
       ].join('\n');
     };
 
