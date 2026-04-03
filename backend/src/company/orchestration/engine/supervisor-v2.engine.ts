@@ -84,6 +84,7 @@ type DeliveryMode =
 type ArtifactDecision = {
   mode: DeliveryMode;
   rowCount: number;
+  reportedTotal: number;
   byteSize: number;
   previewRows: unknown[];
   rows: unknown[];
@@ -213,14 +214,17 @@ const convertToCSV = (rows: unknown[]): Buffer => {
   return Buffer.from(lines.join('\n'), 'utf-8');
 };
 
+const containsProcessVerb = (text: string): boolean =>
+  /\b(analyze|analyse|process|clean|dedupe|deduplicate|reconcile|merge|compare|transform|aggregate|filter|sort|group|pivot|summarize|calculate|find|save|cleaned|report)\b/i
+    .test(text);
+
 const decideDeliveryMode = (
   rowCount: number,
   byteSize: number,
-  objective: string,
+  userIntent: string,
   workspaceAvailable: boolean,
 ): DeliveryMode => {
-  const processVerb = /\b(analyze|analyse|process|clean|dedupe|deduplicate|reconcile|merge|compare|transform|aggregate|filter|sort|group|pivot|summarize|calculate)\b/i
-    .test(objective);
+  const processVerb = containsProcessVerb(userIntent);
 
   if (processVerb && workspaceAvailable) return 'workspace_process_then_publish';
   if (processVerb && !workspaceAvailable) return 'saved_for_later_processing';
@@ -232,20 +236,38 @@ const decideDeliveryMode = (
 
 const buildArtifactDecision = (
   toolResults: VercelToolEnvelope[],
-  objective: string,
+  agentObjective: string,
+  userIntent: string,
   workspaceAvailable: boolean,
 ): ArtifactDecision => {
   const rows = extractRawRows(toolResults);
   const rowCount = rows.length > 0 ? rows.length : extractRowCount(toolResults);
+  let reportedTotal = rowCount;
+  for (const result of toolResults) {
+    const data = asRecord(result.data) ?? asRecord(result.fullPayload);
+    if (!data) continue;
+    const invoiceCount = asNumber(data.invoiceCount);
+    if (invoiceCount !== undefined) {
+      reportedTotal = invoiceCount;
+      if (invoiceCount > rows.length && rows.length > 0) {
+        logger.warn('supervisor_v2.artifact.truncated', {
+          extractedRows: rows.length,
+          reportedTotal: invoiceCount,
+          sourceDomain: 'zoho',
+        });
+      }
+      break;
+    }
+  }
   const csvBuffer = rows.length > 0 ? convertToCSV(rows) : Buffer.from('');
   const byteSize = csvBuffer.length;
   const previewRows = rows.slice(0, 5);
   const isSummaryQuery = /\b(how many|count|total|summary|overview|stats)\b/i
-    .test(objective) && !/\b(list|show|get|fetch|all|export)\b/i.test(objective);
+    .test(agentObjective) && !/\b(list|show|get|fetch|all|export)\b/i.test(agentObjective);
   const mode = isSummaryQuery
     ? 'inline'
-    : decideDeliveryMode(rowCount, byteSize, objective, workspaceAvailable);
-  return { mode, rowCount, byteSize, previewRows, rows };
+    : decideDeliveryMode(rowCount, byteSize, userIntent, workspaceAvailable);
+  return { mode, rowCount, reportedTotal, byteSize, previewRows, rows };
 };
 
 const buildPreviewTable = (
@@ -521,35 +543,45 @@ const persistArtifactReference = async (
 
 const writeArtifactToWorkspace = async (
   artifact: SavedArtifact,
+  rows: unknown[],
   runtime: VercelRuntimeRequestContext,
-  abortSignal?: AbortSignal,
-  onStepFinish?: (step: unknown) => Promise<void>,
-): Promise<SubAgentTextResult | null> => {
-  if (!artifact.localPath || !artifact.publishedUrl || !runtime.workspace?.path) {
+): Promise<string | null> => {
+  if (!artifact.localPath || !runtime.workspace?.path) {
     return null;
   }
 
-  const artifactDir = `${runtime.workspace.path.replace(/\/$/, '')}/.divo/artifacts`;
-  const scriptDir = `${runtime.workspace.path.replace(/\/$/, '')}/.divo/scripts`;
-  const processHint = /\b(analyze|analyse|process|clean|dedupe|deduplicate|reconcile|merge|compare|transform|aggregate|filter|sort|group|pivot|summarize|calculate)\b/i
-    .test(artifact.querySummary)
-    ? `Then process ${artifact.localPath} for the original task: ${artifact.querySummary}. If processing is needed, check for .venv, venv, pyproject.toml, requirements.txt, or uv; write a deterministic Python script under ${scriptDir}; save outputs under ${artifactDir}; and verify the outputs exist.`
-    : `Then inspect ${artifact.localPath}, summarize its shape, and save any derived report under ${artifactDir} if useful.`;
+  try {
+    const fs = await import('fs/promises');
+    const path = await import('path');
 
-  return runWorkspaceAgent(
-    {
-      objective: [
-        `Create directory ${artifactDir} if it does not exist and confirm it is writable.`,
-        `Download the published CSV artifact from ${artifact.publishedUrl} to ${artifact.localPath}.`,
-        `Confirm ${artifact.localPath} exists after the download.`,
-        processHint,
-        'Return what you did, the main output file paths, and the key findings summary.',
-      ].join(' '),
-    },
-    runtime,
-    abortSignal,
-    onStepFinish,
-  );
+    const dir = path.dirname(artifact.localPath);
+    await fs.mkdir(dir, { recursive: true });
+
+    const csvBuffer = convertToCSV(rows);
+    await fs.writeFile(artifact.localPath, csvBuffer);
+
+    const stat = await fs.stat(artifact.localPath);
+    if (stat.size === 0) {
+      logger.warn('supervisor_v2.artifact.local_write_empty', {
+        path: artifact.localPath,
+      });
+      return null;
+    }
+
+    logger.info('supervisor_v2.artifact.local_write_ok', {
+      path: artifact.localPath,
+      bytes: stat.size,
+      rows: rows.length,
+    });
+
+    return artifact.localPath;
+  } catch (error) {
+    logger.warn('supervisor_v2.artifact.local_write_failed', {
+      path: artifact.localPath,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return null;
+  }
 };
 
 const buildArtifactPresentation = (input: {
@@ -574,7 +606,10 @@ const buildArtifactPresentation = (input: {
   }
   if (input.artifact?.publishedUrl) {
     const fileName = input.artifact.localPath?.split('/').pop() || `${input.artifact.sourceDomain}_artifact.csv`;
-    lines.push(`**${input.decision.rowCount} items found. Full data:** [${fileName}](${input.artifact.publishedUrl})`);
+    const truncationNote = input.decision.reportedTotal > input.artifact.rowCount
+      ? ` *(Note: artifact contains ${input.artifact.rowCount} of ${input.decision.reportedTotal} total rows — Zoho API limit)*`
+      : '';
+    lines.push(`**${input.decision.reportedTotal} items found. Full data:** [${fileName}](${input.artifact.publishedUrl})${truncationNote}`);
   }
   if (input.artifact?.localPath && input.localProcessingText) {
     lines.push(input.localProcessingText);
@@ -2079,49 +2114,51 @@ const toSupervisorAgentResults = (toolResults: VercelToolEnvelope[], taskId: str
   }));
 };
 
-const applyArtifactFlow = async (input: {
-  sourceDomain: 'google' | 'zoho' | 'lark';
-  objective: string;
-  runtime: VercelRuntimeRequestContext;
-  result: SubAgentTextResult;
-  abortSignal?: AbortSignal;
-  onWorkspaceStep?: (step: unknown) => Promise<void>;
-}): Promise<SubAgentTextResult & {
+const applyArtifactFlow = async (
+  agentResult: SubAgentTextResult,
+  agentObjective: string,
+  userIntent: string,
+  sourceDomain: 'google' | 'zoho' | 'lark',
+  runtime: VercelRuntimeRequestContext,
+  abortSignal?: AbortSignal,
+  onWorkspaceStep?: (step: unknown) => Promise<void>,
+): Promise<SubAgentTextResult & {
   artifactUrl?: string;
   artifactPath?: string;
   artifact?: SavedArtifact | null;
   rowCount?: number;
 }> => {
   const workspaceAvailable =
-    input.runtime.desktopExecutionAvailability === 'available'
-    && Boolean(input.runtime.workspace?.path);
+    runtime.desktopExecutionAvailability === 'available'
+    && Boolean(runtime.workspace?.path);
 
   const decision = buildArtifactDecision(
-    input.result.toolResults,
-    input.objective,
+    agentResult.toolResults,
+    agentObjective,
+    userIntent,
     workspaceAvailable,
   );
 
   if (decision.rows.length === 0 || decision.mode === 'inline') {
-    return input.result;
+    return agentResult;
   }
 
   const artifact = await saveArtifact({
     rows: decision.rows,
-    sourceDomain: input.sourceDomain,
-    querySummary: input.objective.slice(0, 120),
-    companyId: input.runtime.companyId,
-    runtime: input.runtime,
+    sourceDomain,
+    querySummary: agentObjective.slice(0, 120),
+    companyId: runtime.companyId,
+    runtime,
   });
-  await persistArtifactReference(artifact, input.runtime);
+  await persistArtifactReference(artifact, runtime);
 
-  const keyStats = extractKeyStats(input.result.toolResults);
+  const keyStats = extractKeyStats(agentResult.toolResults);
 
   if (decision.mode === 'preview_plus_artifact') {
     return {
-      ...input.result,
+      ...agentResult,
       text: buildArtifactPresentation({
-        baseText: input.result.text,
+        baseText: agentResult.text,
         artifact,
         decision,
         keyStats,
@@ -2136,9 +2173,9 @@ const applyArtifactFlow = async (input: {
 
   if (decision.mode === 'saved_for_later_processing') {
     return {
-      ...input.result,
+      ...agentResult,
       text: buildArtifactPresentation({
-        baseText: input.result.text,
+        baseText: agentResult.text,
         artifact: artifact
           ? { ...artifact, status: 'saved_for_later_processing' }
           : artifact,
@@ -2155,25 +2192,45 @@ const applyArtifactFlow = async (input: {
     };
   }
 
-  const workspaceResult = artifact
+  const localPath = artifact
     ? await writeArtifactToWorkspace(
       artifact,
-      input.runtime,
-      input.abortSignal,
-      input.onWorkspaceStep,
+      decision.rows,
+      runtime,
+    )
+    : null;
+
+  const workspaceResult = localPath && artifact && runtime.workspace?.path
+    ? await runWorkspaceAgent(
+      {
+        objective: [
+          `The data file already exists at: ${localPath}`,
+          `It has ${decision.rows.length} rows. Schema: ${artifact.schemaSummary}`,
+          `Task: ${userIntent}`,
+          'Steps:',
+          `1. Read the file at ${localPath}`,
+          `2. Write a Python script to ${runtime.workspace.path.replace(/\/$/, '')}/.divo/scripts/ to complete the task`,
+          '3. Run it',
+          `4. Save output to ${runtime.workspace.path.replace(/\/$/, '')}/.divo/artifacts/processed_${artifact.artifactId.slice(0, 8)}.csv`,
+          '5. Verify output exists and return key findings',
+        ].join('\n'),
+      },
+      runtime,
+      abortSignal,
+      onWorkspaceStep,
     )
     : null;
 
   const localProcessingText = workspaceResult?.text
     ? `**Workspace processing:** ${workspaceResult.text}`
-    : artifact?.localPath
-      ? `**Saved locally:** ${artifact.localPath}`
+    : localPath
+      ? `**Saved locally:** ${localPath}`
       : undefined;
 
   return {
-    ...input.result,
+    ...agentResult,
     text: buildArtifactPresentation({
-      baseText: input.result.text,
+      baseText: agentResult.text,
       artifact,
       decision,
       keyStats,
@@ -2181,12 +2238,12 @@ const applyArtifactFlow = async (input: {
       localProcessingText,
     }),
     toolResults: [
-      ...input.result.toolResults,
+      ...agentResult.toolResults,
       ...(workspaceResult?.toolResults ?? []),
     ],
-    pendingApproval: workspaceResult?.pendingApproval ?? input.result.pendingApproval,
+    pendingApproval: workspaceResult?.pendingApproval ?? agentResult.pendingApproval,
     artifactUrl: artifact?.publishedUrl,
-    artifactPath: artifact?.localPath,
+    artifactPath: localPath ?? artifact?.localPath,
     artifact: artifact
       ? { ...artifact, status: workspaceResult ? 'processed' : artifact.status }
       : artifact,
@@ -2248,14 +2305,15 @@ const executeTask = async (
             abortSignal,
             async (step) => updateLiveStatus(buildAgentStepStatus('Google Workspace', step)),
           );
-          const enriched = await applyArtifactFlow({
-            sourceDomain: 'google',
-            objective: params.objective,
-            runtime,
+          const enriched = await applyArtifactFlow(
             result,
+            params.objective,
+            message.text,
+            'google',
+            runtime,
             abortSignal,
-            onWorkspaceStep: async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
-          });
+            async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
+          );
           await updateLiveStatus(buildAgentFinishStatus('Google Workspace', enriched));
           return enriched;
         },
@@ -2292,14 +2350,15 @@ const executeTask = async (
             abortSignal,
             async (step) => updateLiveStatus(buildAgentStepStatus('Zoho', step)),
           );
-          const enriched = await applyArtifactFlow({
-            sourceDomain: 'zoho',
-            objective,
-            runtime,
+          const enriched = await applyArtifactFlow(
             result,
+            objective,
+            message.text,
+            'zoho',
+            runtime,
             abortSignal,
-            onWorkspaceStep: async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
-          });
+            async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
+          );
           await updateLiveStatus(buildAgentFinishStatus('Zoho', enriched));
           return enriched;
         },
@@ -2319,14 +2378,15 @@ const executeTask = async (
             abortSignal,
             async (step) => updateLiveStatus(buildAgentStepStatus('Lark', step)),
           );
-          const enriched = await applyArtifactFlow({
-            sourceDomain: 'lark',
-            objective: params.objective,
-            runtime,
+          const enriched = await applyArtifactFlow(
             result,
+            params.objective,
+            message.text,
+            'lark',
+            runtime,
             abortSignal,
-            onWorkspaceStep: async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
-          });
+            async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
+          );
           await updateLiveStatus(buildAgentFinishStatus('Lark', enriched));
           return enriched;
         },
