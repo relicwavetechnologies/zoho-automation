@@ -240,7 +240,11 @@ const buildArtifactDecision = (
   const csvBuffer = rows.length > 0 ? convertToCSV(rows) : Buffer.from('');
   const byteSize = csvBuffer.length;
   const previewRows = rows.slice(0, 5);
-  const mode = decideDeliveryMode(rowCount, byteSize, objective, workspaceAvailable);
+  const isSummaryQuery = /\b(how many|count|total|summary|overview|stats)\b/i
+    .test(objective) && !/\b(list|show|get|fetch|all|export)\b/i.test(objective);
+  const mode = isSummaryQuery
+    ? 'inline'
+    : decideDeliveryMode(rowCount, byteSize, objective, workspaceAvailable);
   return { mode, rowCount, byteSize, previewRows, rows };
 };
 
