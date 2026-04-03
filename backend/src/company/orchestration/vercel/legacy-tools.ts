@@ -9535,6 +9535,34 @@ export const createVercelDesktopTools = (
             hasLarkOpenId: Boolean(runtime.larkOpenId),
             hasLarkUserId: Boolean(runtime.larkUserId),
           });
+          const resolveLarkTaskActionGroup = (): ToolActionGroup => {
+            if (
+              input.operation === 'list' ||
+              input.operation === 'listMine' ||
+              input.operation === 'listOpenMine' ||
+              input.operation === 'get' ||
+              input.operation === 'current' ||
+              input.operation === 'listTasklists' ||
+              input.operation === 'listAssignableUsers'
+            ) {
+              return 'read';
+            }
+            if (input.operation === 'delete') {
+              return 'delete';
+            }
+            if (input.operation === 'create') {
+              return 'create';
+            }
+            return 'update';
+          };
+          const taskPermissionError = ensureActionPermission(
+            runtime,
+            toCanonicalToolId('larkTask'),
+            resolveLarkTaskActionGroup(),
+          );
+          if (taskPermissionError) {
+            return taskPermissionError;
+          }
           const defaults = await getLarkDefaults(runtime);
           const conversationKey = buildConversationKey(runtime.threadId);
           const latestTask = conversationMemoryStore.getLatestLarkTask(conversationKey);
@@ -10444,6 +10472,34 @@ export const createVercelDesktopTools = (
       execute: async (input) =>
         withLifecycle(hooks, 'larkCalendar', 'Running Lark Calendar workflow', async () => {
           const calendarService = loadLarkCalendarService();
+          const resolveLarkCalendarActionGroup = (): ToolActionGroup => {
+            if (
+              input.operation === 'listCalendars' ||
+              input.operation === 'listEvents' ||
+              input.operation === 'getEvent' ||
+              input.operation === 'listAvailability'
+            ) {
+              return 'read';
+            }
+            if (input.operation === 'deleteEvent') {
+              return 'delete';
+            }
+            if (
+              input.operation === 'createEvent' ||
+              input.operation === 'scheduleMeeting'
+            ) {
+              return 'create';
+            }
+            return 'update';
+          };
+          const calendarPermissionError = ensureActionPermission(
+            runtime,
+            toCanonicalToolId('larkCalendar'),
+            resolveLarkCalendarActionGroup(),
+          );
+          if (calendarPermissionError) {
+            return calendarPermissionError;
+          }
           const defaults = await getLarkDefaults(runtime);
           const normalizeLarkTimestamp = loadNormalizeLarkTimestamp();
           const resolveLarkPeople = loadResolveLarkPeople();

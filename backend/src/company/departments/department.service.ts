@@ -79,6 +79,14 @@ export type DepartmentApproverTarget = {
   source: 'department_manager' | 'company_admin';
 };
 
+export type EffectiveDepartmentRolePermission = {
+  roleId: string;
+  toolId: string;
+  actionGroup: ToolActionGroup;
+  allowed: boolean;
+  source: 'department_role' | 'department_role_all' | 'company_role_fallback' | 'none';
+};
+
 const normalizeSlug = (value: string): string =>
   value
     .trim()
@@ -99,6 +107,66 @@ const vercelToolIds = ACTIVE_TOOL_REGISTRY.filter((tool) => tool.engines.include
   (tool) => tool.id,
 );
 const ACTION_GROUP_ALL = 'all';
+
+const vercelAvailableTools = ACTIVE_TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel'));
+
+const buildActionLookup = <T extends { toolId: string; actionGroup: string; allowed: boolean }>(
+  rows: T[],
+) => {
+  const map = new Map<string, Map<string, boolean>>();
+  for (const row of rows) {
+    const resolvedToolId = toCanonicalToolId(row.toolId);
+    const existing = map.get(resolvedToolId) ?? new Map<string, boolean>();
+    existing.set(row.actionGroup, row.allowed);
+    map.set(resolvedToolId, existing);
+  }
+  return map;
+};
+
+const resolveDepartmentToolAction = (input: {
+  toolId: string;
+  actionGroup: ToolActionGroup;
+  rolePermissionMap: Map<string, Map<string, boolean>>;
+  overrideMap?: Map<string, Map<string, boolean>>;
+  companyAllowedActionsByTool: Record<string, ToolActionGroup[]>;
+}): {
+  allowed: boolean;
+  source: EffectiveDepartmentRolePermission['source'];
+} => {
+  const overrideRows = input.overrideMap?.get(input.toolId);
+  if (overrideRows?.has(input.actionGroup)) {
+    return {
+      allowed: overrideRows.get(input.actionGroup) as boolean,
+      source: 'department_role',
+    };
+  }
+  if (overrideRows?.has(ACTION_GROUP_ALL)) {
+    return {
+      allowed: overrideRows.get(ACTION_GROUP_ALL) as boolean,
+      source: 'department_role_all',
+    };
+  }
+
+  const roleRows = input.rolePermissionMap.get(input.toolId);
+  if (roleRows?.has(input.actionGroup)) {
+    return {
+      allowed: roleRows.get(input.actionGroup) as boolean,
+      source: 'department_role',
+    };
+  }
+  if (roleRows?.has(ACTION_GROUP_ALL)) {
+    return {
+      allowed: roleRows.get(ACTION_GROUP_ALL) as boolean,
+      source: 'department_role_all',
+    };
+  }
+
+  if ((input.companyAllowedActionsByTool[input.toolId] ?? []).includes(input.actionGroup)) {
+    return { allowed: true, source: 'company_role_fallback' };
+  }
+
+  return { allowed: false, source: 'none' };
+};
 
 const uniqueByUserId = <T extends { userId: string }>(rows: T[]): T[] => {
   const seen = new Set<string>();
@@ -571,47 +639,20 @@ class DepartmentService {
       vercelToolIds,
     );
 
-    const buildActionLookup = <T extends { toolId: string; actionGroup: string; allowed: boolean }>(
-      rows: T[],
-    ) => {
-      const map = new Map<string, Map<string, boolean>>();
-      for (const row of rows) {
-        const resolvedToolId = toCanonicalToolId(row.toolId);
-        const existing = map.get(resolvedToolId) ?? new Map<string, boolean>();
-        existing.set(row.actionGroup, row.allowed);
-        map.set(resolvedToolId, existing);
-      }
-      return map;
-    };
-
     const rolePermissionMap = buildActionLookup(rolePermissions);
     const overrideMap = buildActionLookup(userOverrides);
-
-    const resolveActionAllowed = (toolId: string, actionGroup: ToolActionGroup): boolean => {
-      const overrideRows = overrideMap.get(toolId);
-      if (overrideRows?.has(actionGroup)) {
-        return overrideRows.get(actionGroup) as boolean;
-      }
-      if (overrideRows?.has(ACTION_GROUP_ALL)) {
-        return overrideRows.get(ACTION_GROUP_ALL) as boolean;
-      }
-
-      const roleRows = rolePermissionMap.get(toolId);
-      if (roleRows?.has(actionGroup)) {
-        return roleRows.get(actionGroup) as boolean;
-      }
-      if (roleRows?.has(ACTION_GROUP_ALL)) {
-        return roleRows.get(ACTION_GROUP_ALL) as boolean;
-      }
-
-      return (companyAllowedActionsByTool[toolId] ?? []).includes(actionGroup);
-    };
 
     const allowedActionsByTool = Object.fromEntries(
       vercelToolIds
         .map((toolId) => {
           const actions = getSupportedToolActionGroups(toolId).filter((actionGroup) =>
-            resolveActionAllowed(toolId, actionGroup),
+            resolveDepartmentToolAction({
+              toolId,
+              actionGroup,
+              rolePermissionMap,
+              overrideMap,
+              companyAllowedActionsByTool,
+            }).allowed,
           );
           return [toolId, actions] as const;
         })
@@ -781,6 +822,43 @@ class DepartmentService {
 
   async getAdminDepartmentDetail(session: DepartmentAdminSession, departmentId: string) {
     const department = await this.assertDepartmentAccess(session, departmentId);
+    const companyAllowedActionsByRole = await Promise.all(
+      department.roles.map(async (role) => [
+        role.id,
+        await toolPermissionService.getAllowedActionsByTool(
+          department.companyId,
+          role.slug,
+          vercelToolIds,
+        ),
+      ] as const),
+    );
+    const companyAllowedActionsByRoleMap = new Map(companyAllowedActionsByRole);
+    const explicitRolePermissionMapByRoleId = new Map(
+      department.roles.map((role) => [
+        role.id,
+        buildActionLookup(department.toolPermissions.filter((row) => row.roleId === role.id)),
+      ]),
+    );
+    const effectiveRolePermissions: EffectiveDepartmentRolePermission[] = department.roles.flatMap(
+      (role) =>
+        vercelAvailableTools.flatMap((tool) =>
+          getSupportedToolActionGroups(tool.id).map((actionGroup) => {
+            const resolved = resolveDepartmentToolAction({
+              toolId: tool.id,
+              actionGroup,
+              rolePermissionMap: explicitRolePermissionMapByRoleId.get(role.id) ?? new Map(),
+              companyAllowedActionsByTool: companyAllowedActionsByRoleMap.get(role.id) ?? {},
+            });
+            return {
+              roleId: role.id,
+              toolId: tool.id,
+              actionGroup,
+              allowed: resolved.allowed,
+              source: resolved.source,
+            };
+          }),
+        ),
+    );
     const skillBundle = await skillService.listAdminSkillBundle(session, departmentId);
     const larkIdentities = await prisma.channelIdentity.findMany({
       where: {
@@ -881,6 +959,7 @@ class DepartmentService {
         actionGroup: row.actionGroup,
         allowed: row.allowed,
       })),
+      effectiveRolePermissions,
       userOverrides: department.userToolOverrides.map((row) => ({
         id: row.id,
         userId: row.userId,
@@ -891,15 +970,13 @@ class DepartmentService {
       globalSkills: skillBundle.globalSkills,
       departmentSkills: skillBundle.departmentSkills,
       availableMembers,
-      availableTools: ACTIVE_TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel')).map(
-        (tool) => ({
+      availableTools: vercelAvailableTools.map((tool) => ({
           toolId: tool.id,
           name: tool.name,
           description: tool.description,
           category: tool.category,
           supportedActionGroups: getSupportedToolActionGroups(tool.id),
-        }),
-      ),
+        })),
     };
   }
 

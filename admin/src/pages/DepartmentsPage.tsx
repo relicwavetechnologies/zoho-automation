@@ -127,6 +127,18 @@ type DepartmentToolPermission = {
   allowed: boolean;
 };
 
+type EffectiveDepartmentRolePermission = {
+  roleId: string;
+  toolId: string;
+  actionGroup: string;
+  allowed: boolean;
+  source:
+    | "department_role"
+    | "department_role_all"
+    | "company_role_fallback"
+    | "none";
+};
+
 type DepartmentUserOverride = {
   id: string;
   userId: string;
@@ -228,6 +240,7 @@ type DepartmentDetail = {
   roles: DepartmentRole[];
   memberships: DepartmentMembership[];
   toolPermissions: DepartmentToolPermission[];
+  effectiveRolePermissions: EffectiveDepartmentRolePermission[];
   userOverrides: DepartmentUserOverride[];
   globalSkills: DepartmentSkill[];
   departmentSkills: DepartmentSkill[];
@@ -914,13 +927,13 @@ export const DepartmentsPage = () => {
     return candidateResults.filter((c) => !c.isAlreadyAssigned);
   }, [candidateResults]);
 
-  const rolePermissionMap = useMemo(() => {
+  const effectiveRolePermissionMap = useMemo(() => {
     const map = new Map<string, boolean>();
-    detail?.toolPermissions.forEach((p) => {
+    detail?.effectiveRolePermissions.forEach((p) => {
       map.set(`${p.roleId}:${p.toolId}:${p.actionGroup}`, p.allowed);
     });
     return map;
-  }, [detail?.toolPermissions]);
+  }, [detail?.effectiveRolePermissions]);
 
   const availableOverrideActionGroups = useMemo(
     () =>
@@ -2350,13 +2363,6 @@ export const DepartmentsPage = () => {
                                         </div>
                                       </TableCell>
                                       {detail.roles.map((role) => {
-                                        const defaultAllowsAction = (
-                                          actionGroup: string,
-                                        ) =>
-                                          role.slug === "MANAGER"
-                                            ? true
-                                            : tool.toolId === "contextSearch" &&
-                                              actionGroup === "read";
                                         return (
                                           <TableCell
                                             key={`${role.id}:${tool.toolId}`}
@@ -2367,15 +2373,13 @@ export const DepartmentsPage = () => {
                                                 (actionGroup) => {
                                                   const key = `${role.id}:${tool.toolId}:${actionGroup}`;
                                                   const allowed =
-                                                    rolePermissionMap.get(
+                                                    effectiveRolePermissionMap.get(
                                                       key,
                                                     ) ??
-                                                    rolePermissionMap.get(
+                                                    effectiveRolePermissionMap.get(
                                                       `${role.id}:${tool.toolId}:all`,
                                                     ) ??
-                                                    defaultAllowsAction(
-                                                      actionGroup,
-                                                    );
+                                                    false;
                                                   const isPending =
                                                     pendingPermissionKey ===
                                                     key;
