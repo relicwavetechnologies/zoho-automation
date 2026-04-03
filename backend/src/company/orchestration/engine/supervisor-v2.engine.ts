@@ -133,9 +133,10 @@ let _dotIndex = 0;
 const nextVibeText = (): string => {
   const words = DIVO_VIBES[_vibeIndex % DIVO_VIBES.length];
   const dots = DOT_FRAMES[_dotIndex % DOT_FRAMES.length];
+  const word = words[_dotIndex % words.length] ?? words[0] ?? 'Working';
   _vibeIndex++;
   _dotIndex++;
-  return `${words.join(' · ')} ${dots}`;
+  return `${word} ${dots}`;
 };
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
@@ -2866,10 +2867,8 @@ const executeTask = async (
     const buildStatusCardText = (): string => {
       const logSection = formatStepLog();
       const vibeText = nextVibeText().replace(/\s+·\s+/g, ' | ');
-      const updatesBlock = !logSection
-        ? 'Updates | Working on it'
-        : `Updates | ${logSection}`;
-      return `${updatesBlock} | ${vibeText}`;
+      const progressText = !logSection ? 'Working on it' : logSection;
+      return `${progressText} | ${vibeText}`;
     };
 
     const appendStatusLine = (line: string | undefined): void => {
