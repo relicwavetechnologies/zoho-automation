@@ -16,12 +16,12 @@ const VERCEL_MODELS: Record<
 > = {
   fast: {
     modelId: 'gemini-3.1-flash-lite-preview',
-    thinkingLevel: 'minimal',
+    thinkingLevel: 'low',
     includeThoughts: false,
   },
   high: {
     modelId: 'gemini-3.1-flash-lite-preview',
-    thinkingLevel: 'minimal',
+    thinkingLevel: 'low',
     includeThoughts: false,
   },
 };
@@ -43,6 +43,6 @@ export const resolveVercelChildRouterModel = async () => ({
   model: googleClient('gemini-3.1-flash-lite-preview'),
   effectiveModelId: 'gemini-3.1-flash-lite-preview',
   effectiveProvider: 'google' as const,
-  thinkingLevel: 'minimal' as const,
+  thinkingLevel: 'low' as const,
   includeThoughts: false as const,
 });
