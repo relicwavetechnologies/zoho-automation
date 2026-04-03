@@ -2860,26 +2860,16 @@ const executeTask = async (
           const isLatest = index === visible.length - 1;
           return isLatest ? line : `${line} ✓`;
         })
-        .join('\n');
+        .join(' | ');
     };
 
     const buildStatusCardText = (): string => {
       const logSection = formatStepLog();
-      const vibeText = nextVibeText().replace(/\s+·\s+/g, ' . ');
+      const vibeText = nextVibeText().replace(/\s+·\s+/g, ' | ');
       const updatesBlock = !logSection
-        ? 'Updates: Working on it'
-        : logSection.includes('\n')
-          ? `Updates:\n${logSection}`
-          : `Updates: ${logSection}`;
-      return [
-        '```text',
-        '===============================',
-        updatesBlock,
-        '',
-        vibeText,
-        '===============================',
-        '```',
-      ].join('\n');
+        ? 'Updates | Working on it'
+        : `Updates | ${logSection}`;
+      return `${updatesBlock} | ${vibeText}`;
     };
 
     const appendStatusLine = (line: string | undefined): void => {
