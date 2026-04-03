@@ -236,6 +236,7 @@ const buildPermissionSummary = (runtime: VercelRuntimeRequestContext): string =>
     'lark-meeting-agent',
     'lark-doc-agent',
     'lark-base-agent',
+    'devTools',
   ];
   const entries = preferredTools.flatMap((toolId) => {
     const actions = runtime.allowedActionsByTool?.[toolId];
@@ -256,6 +257,9 @@ export const buildSupervisorSystemPrompt = (
   const requesterLabel = runtime.requesterName?.trim() || runtime.requesterEmail?.trim() || 'the current user';
   const threadSummaryContext = compactContextText(conversation?.threadSummaryContext);
   const taskStateContext = compactContextText(conversation?.taskStateContext);
+  const workspaceBlock = runtime.workspace
+    ? `Connected desktop workspace: ${runtime.workspace.path} (${runtime.workspace.name}). Desktop execution availability: ${runtime.desktopExecutionAvailability ?? 'available'}. Approval policy: ${runtime.desktopApprovalPolicySummary ?? 'unknown'}.`
+    : `Connected desktop workspace: none. Desktop execution availability: ${runtime.desktopExecutionAvailability ?? 'none'}.`;
   return [
     `You are Divo, the orchestration supervisor for company ${runtime.companyId} and department ${departmentLabel}.`,
     `You are helping ${requesterLabel}. Today is ${today}.`,
@@ -264,12 +268,13 @@ export const buildSupervisorSystemPrompt = (
     '- googleWorkspaceAgent: Gmail, drafts, search, and Google actions. Sending email needs human approval.',
     '- zohoAgent: invoices, overdue reports, payments, and CRM/Books records.',
     '- larkAgent: read or create Lark tasks, messages, calendar events, meetings, docs, and Base records.',
+    '- workspaceAgent: inspect the connected local workspace, read/write files, create/delete folders, and run terminal commands.',
     'Rules:',
     '1. Only act on the latest user message.',
     '2. Prior conversation shows completed work and context. Never redo completed actions unless the latest message clearly asks for it.',
     '3. If an agent returns an error, read it, fix the objective or arguments, and retry.',
     '4. Be concise in the final response.',
-    '5. Never hallucinate tool names. Use only the 4 agents listed above.',
+    '5. Never hallucinate tool names. Use only the 5 agents listed above.',
     '6. If you send, draft, or prepare a message, say what was sent or prepared with recipient plus a short content preview, not only that it happened.',
     '7. Treat earlier messages as non-actionable background unless the latest user message explicitly refers to them.',
     '8. Do not continue, resume, or elaborate on any earlier request unless the latest user message clearly asks you to do that.',
@@ -296,6 +301,15 @@ export const buildSupervisorSystemPrompt = (
     '  → always include recipientEmail, subject, body if known',
     '  → Example: "send findings to anish"',
     '    calls: googleWorkspaceAgent({ objective: "send email with findings", recipientEmail: "anishsuman2305@gmail.com", subject: "Research Findings", body: "..." })',
+    'Local workspace or terminal actions:',
+    '  → call workspaceAgent directly when the user asks to inspect local files, read or write workspace files, create/delete folders, or run terminal commands/scripts in the connected desktop workspace',
+    '  → Example: "show me files in the src folder"',
+    '    calls: workspaceAgent({ objective: "inspect the src folder in the connected workspace" })',
+    '  → Example: "read package.json and tsconfig.json"',
+    '    calls: workspaceAgent({ objective: "read package.json and tsconfig.json from the connected workspace" })',
+    '  → Example: "run tests in the workspace"',
+    '    calls: workspaceAgent({ objective: "run the test command in the connected workspace and report the result" })',
+    '  → If a workspace is connected, ambiguous file or terminal requests refer to the local workspace by default, not Drive or repo tools.',
     'Lark tasks, calendar, meetings, or docs:',
     '  → call larkAgent directly',
     '  → use task/calendar/meeting/doc operations instead of contextAgent when the user wants current Lark data or Lark updates',
@@ -313,6 +327,7 @@ export const buildSupervisorSystemPrompt = (
     '  → If the user asks for a doc, document, page, notes page, markdown report, or written snapshot, that is a doc request, not a task request.',
     '  → Never create a task when the user explicitly asked for a Lark doc or document.',
     `Permissions summary: ${buildPermissionSummary(runtime)}.`,
+    workspaceBlock,
     ...(threadSummaryContext || taskStateContext
       ? [
           'Conversation memory:',
@@ -376,6 +391,25 @@ const buildSubAgentUserMessage = (
   }
   return lines.join('\n');
 };
+
+type DesktopWsGatewayLike = {
+  getRemoteExecutionAvailability: (
+    userId: string,
+    companyId: string,
+  ) => {
+    status: 'available' | 'none' | 'ambiguous';
+    session?: {
+      activeWorkspace?: {
+        name: string;
+        path: string;
+      };
+    };
+  };
+  getPolicySummary: (userId: string, companyId: string) => string | undefined;
+};
+
+const loadDesktopWsGateway = (): DesktopWsGatewayLike =>
+  require('../../../modules/desktop-live/desktop-ws.gateway').desktopWsGateway as DesktopWsGatewayLike;
 
 const extractToolEnvelopes = (steps: unknown): VercelToolEnvelope[] => {
   const envelopes: VercelToolEnvelope[] = [];
@@ -666,6 +700,12 @@ const resolveRuntimeContext = async (
     }
   }
 
+  const resolvedUserId = linkedUserId ?? message.userId;
+  const desktopGateway = loadDesktopWsGateway();
+  const desktopAvailability = desktopGateway.getRemoteExecutionAvailability(resolvedUserId, companyId);
+  const runtimeWorkspace = desktopAvailability.session?.activeWorkspace;
+  const desktopApprovalPolicySummary = desktopGateway.getPolicySummary(resolvedUserId, companyId);
+
   return {
     channel: message.channel === 'lark' ? 'lark' : 'desktop',
     threadId: contextStorageId ?? buildConversationKey(message),
@@ -673,7 +713,7 @@ const resolveRuntimeContext = async (
     attachedFiles: message.attachedFiles,
     executionId: resolveCanonicalExecutionId(task, message),
     companyId,
-    userId: linkedUserId ?? message.userId,
+    userId: resolvedUserId,
     requesterAiRole,
     requesterChannelIdentityId: message.trace?.channelIdentityId,
     requesterName: message.trace?.requesterName,
@@ -697,6 +737,14 @@ const resolveRuntimeContext = async (
     larkUserId: message.trace?.larkUserId,
     authProvider: message.channel === 'lark' ? 'lark' : message.trace?.authProvider,
     mode: LARK_V2_MODE,
+    workspace: runtimeWorkspace
+      ? {
+          name: runtimeWorkspace.name,
+          path: runtimeWorkspace.path,
+        }
+      : undefined,
+    desktopExecutionAvailability: desktopAvailability.status,
+    desktopApprovalPolicySummary,
     allowedToolIds,
     allowedActionsByTool,
     departmentSystemPrompt,
@@ -1036,6 +1084,149 @@ async function runGoogleWorkspaceAgent(
     runtime,
     abortSignal,
     onStepFinish,
+  });
+}
+
+async function runWorkspaceAgent(
+  params: { objective: string },
+  runtime: VercelRuntimeRequestContext,
+  abortSignal?: AbortSignal,
+  onStepFinish?: (step: unknown) => Promise<void>,
+): Promise<SubAgentTextResult> {
+  const legacyTools = getLegacyTools({
+    ...runtime,
+    delegatedAgentId: 'workspace-agent',
+  });
+  const codingTool = legacyTools.coding;
+  if (!codingTool) {
+    return {
+      text: 'Workspace tools are not available for this user.',
+      toolResults: [],
+      pendingApproval: null,
+    };
+  }
+
+  return runSubAgent({
+    label: 'Workspace specialist',
+    prompt: buildSubAgentPrompt(
+      'Workspace specialist',
+      [
+        'Use the connected local workspace tools to inspect files, read files, write files, create directories, delete paths, run terminal commands, and verify results.',
+        'Prefer inspectWorkspace before reading unknown files or folders.',
+        'Use readFiles when you know the exact file paths.',
+        'Use runCommand when the task is best expressed as an exact shell command in the active workspace.',
+        'Use writeFile only when you know the exact target path and final file content.',
+        'Use verifyResult after a mutating or destructive action before claiming success.',
+        'If no connected workspace is available, return the workspace tool error clearly.',
+      ].join(' '),
+    ),
+    message: buildSubAgentUserMessage(params.objective, {
+      workspaceConnected: Boolean(runtime.workspace),
+      workspacePath: runtime.workspace?.path,
+      desktopExecutionAvailability: runtime.desktopExecutionAvailability,
+      desktopApprovalPolicy: runtime.desktopApprovalPolicySummary,
+    }),
+    tools: {
+      inspectWorkspace: tool({
+        description: 'Inspect the workspace root or a specific subdirectory.',
+        inputSchema: z.object({
+          objective: z.string(),
+          path: z.string().optional(),
+        }),
+        execute: async ({ objective, path }) =>
+          codingTool.execute({
+            operation: 'inspectWorkspace',
+            objective,
+            ...(path ? { path } : {}),
+          }),
+      }),
+      readFiles: tool({
+        description: 'Read one or more exact workspace file paths.',
+        inputSchema: z.object({
+          objective: z.string(),
+          paths: z.array(z.string()).min(1),
+        }),
+        execute: async ({ objective, paths }) =>
+          codingTool.execute({
+            operation: 'readFiles',
+            objective,
+            paths,
+          }),
+      }),
+      runCommand: tool({
+        description: 'Run an exact terminal command in the connected workspace.',
+        inputSchema: z.object({
+          objective: z.string(),
+          command: z.string(),
+        }),
+        execute: async ({ objective, command }) =>
+          codingTool.execute({
+            operation: 'runCommand',
+            objective,
+            command,
+          }),
+      }),
+      writeFile: tool({
+        description: 'Write exact content to a workspace file path.',
+        inputSchema: z.object({
+          objective: z.string(),
+          path: z.string(),
+          content: z.string(),
+        }),
+        execute: async ({ objective, path, content }) =>
+          codingTool.execute({
+            operation: 'writeFile',
+            objective,
+            contentPlan: {
+              path,
+              content,
+            },
+          }),
+      }),
+      createDirectory: tool({
+        description: 'Create a directory in the connected workspace.',
+        inputSchema: z.object({
+          objective: z.string(),
+          path: z.string(),
+        }),
+        execute: async ({ objective, path }) =>
+          codingTool.execute({
+            operation: 'createDirectory',
+            objective,
+            path,
+          }),
+      }),
+      deletePath: tool({
+        description: 'Delete a file or directory in the connected workspace.',
+        inputSchema: z.object({
+          objective: z.string(),
+          path: z.string(),
+        }),
+        execute: async ({ objective, path }) =>
+          codingTool.execute({
+            operation: 'deletePath',
+            objective,
+            path,
+          }),
+      }),
+      verifyResult: tool({
+        description: 'Verify the result of a workspace action.',
+        inputSchema: z.object({
+          objective: z.string(),
+          expectedOutputs: z.array(z.string()).optional(),
+        }),
+        execute: async ({ objective, expectedOutputs }) =>
+          codingTool.execute({
+            operation: 'verifyResult',
+            objective,
+            ...(expectedOutputs ? { expectedOutputs } : {}),
+          }),
+      }),
+    },
+    runtime,
+    abortSignal,
+    onStepFinish,
+    maxSteps: 6,
   });
 }
 
@@ -1562,6 +1753,24 @@ const executeTask = async (
             async (step) => updateLiveStatus(buildAgentStepStatus('Google Workspace', step)),
           );
           await updateLiveStatus(buildAgentFinishStatus('Google Workspace', result));
+          return result;
+        },
+      }),
+      workspaceAgent: tool({
+        description:
+          'Inspect the connected local workspace, read/write files, create/delete folders, and run terminal commands. Use for local repo/workspace tasks when a desktop workspace is connected.',
+        inputSchema: z.object({
+          objective: z.string().describe('What local workspace action to perform'),
+        }),
+        execute: async ({ objective }) => {
+          await updateLiveStatus(buildAgentStartStatus('Workspace', objective));
+          const result = await runWorkspaceAgent(
+            { objective },
+            runtime,
+            abortSignal,
+            async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
+          );
+          await updateLiveStatus(buildAgentFinishStatus('Workspace', result));
           return result;
         },
       }),
