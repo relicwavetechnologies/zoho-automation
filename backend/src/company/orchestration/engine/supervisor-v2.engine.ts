@@ -136,6 +136,13 @@ type ConversationContextSnapshot = {
   recentTurns: ChatTurn[];
 };
 
+type ResolvedLatestRequest = {
+  effectiveMessage: string;
+  antecedentUserTurn?: string;
+  assistantClarificationTurn?: string;
+  usedHistory: boolean;
+};
+
 const LARK_V2_MODE: VercelRuntimeRequestContext['mode'] = 'high';
 const SUPERVISOR_MAX_TURNS = 8;
 
@@ -207,10 +214,18 @@ const containsRegex = (text: string, pattern: RegExp): boolean => pattern.test(t
 const EMAIL_REGEX = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
 const TIME_HINT_REGEX = /\b(now|today|tomorrow|tonight|\d{1,2}(:\d{2})?\s?(am|pm)|morning|afternoon|evening|ist)\b/i;
 const WITH_PERSON_REGEX = /\b(with|to)\s+[a-z]/i;
+const MEETING_ACTION_REGEX = /\b(schedule|book|set up|meeting)\b/i;
+const SEND_EMAIL_ACTION_REGEX = /\b(send|email|mail|draft)\b/i;
+const DOC_ACTION_REGEX = /\b(doc|document|page|notes|snapshot|report)\b/i;
+const TASK_ACTION_REGEX = /\b(task|todo|reminder|follow[- ]?up)\b/i;
 
 const buildWorkflowPrompt = (spec: WorkflowPromptSpec, strictToolUse = false): string => [
   `Role: ${spec.role}`,
   `Allowed tools: ${spec.allowedTools.join(', ')}`,
+  'Conversation rules:',
+  '- Treat the latest user message as the primary instruction.',
+  '- You may use recent conversation turns only to recover missing details or clarify what the latest user fragment refers to.',
+  '- Do not let older unrelated conversation override the latest request.',
   'When to use each tool:',
   ...spec.whenToUse.map((entry) => `- ${entry}`),
   `Missing-input policy: ${spec.missingInputPolicy}`,
@@ -236,6 +251,98 @@ const buildWorkflowPrompt = (spec: WorkflowPromptSpec, strictToolUse = false): s
 const buildMissingInputsText = (workflowId: WorkflowId, missingInputs: string[]): string => {
   const label = workflowId.replace(/_/g, ' ').toLowerCase();
   return `I need the following to continue with ${label}: ${missingInputs.join(', ')}.`;
+};
+
+const normalizeForIntent = (value: string): string =>
+  value
+    .replace(/\[Referenced message\]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const latestLooksLikeContinuation = (latestMessage: string): boolean => {
+  const text = normalizeForIntent(latestMessage).toLowerCase();
+  if (!text) {
+    return false;
+  }
+  if (MEETING_ACTION_REGEX.test(text) || SEND_EMAIL_ACTION_REGEX.test(text) || DOC_ACTION_REGEX.test(text) || TASK_ACTION_REGEX.test(text)) {
+    return false;
+  }
+  if (/^(yes|yeah|yep|ok|okay|sure|do it|go ahead|with .+|for .+|at .+|on .+|tomorrow|today|now)$/i.test(text)) {
+    return true;
+  }
+  if (text.length <= 40 && (TIME_HINT_REGEX.test(text) || /^with\s+/i.test(text) || /^at\s+/i.test(text))) {
+    return true;
+  }
+  return false;
+};
+
+const findLatestMatchingTurn = (
+  turns: ChatTurn[],
+  role: ChatTurn['role'],
+  predicate: (content: string) => boolean,
+): string | undefined => {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (turn?.role === role && predicate(turn.content)) {
+      return turn.content;
+    }
+  }
+  return undefined;
+};
+
+const buildResolvedLatestRequest = (
+  latestMessage: string,
+  recentTurns: ChatTurn[],
+): ResolvedLatestRequest => {
+  const normalizedLatest = normalizeForIntent(latestMessage);
+  const assistantClarificationTurn = findLatestMatchingTurn(
+    recentTurns,
+    'assistant',
+    (content) => /i need the following to continue|missing|required|need .* continue/i.test(content),
+  );
+  const antecedentUserTurn = findLatestMatchingTurn(
+    recentTurns,
+    'user',
+    (content) => {
+      const normalized = normalizeForIntent(content);
+      return (
+        MEETING_ACTION_REGEX.test(normalized)
+        || SEND_EMAIL_ACTION_REGEX.test(normalized)
+        || DOC_ACTION_REGEX.test(normalized)
+        || TASK_ACTION_REGEX.test(normalized)
+      );
+    },
+  );
+
+  const shouldUseHistory =
+    latestLooksLikeContinuation(normalizedLatest)
+    && Boolean(antecedentUserTurn)
+    && (
+      Boolean(assistantClarificationTurn)
+      || TIME_HINT_REGEX.test(normalizedLatest)
+      || /^(with|at|on|tomorrow|today|now)\b/i.test(normalizedLatest)
+    );
+
+  if (!shouldUseHistory || !antecedentUserTurn) {
+    return {
+      effectiveMessage: latestMessage,
+      usedHistory: false,
+    };
+  }
+
+  return {
+    effectiveMessage: [
+      normalizeForIntent(antecedentUserTurn),
+      '',
+      `Additional details from the latest user reply: ${normalizedLatest}`,
+      assistantClarificationTurn
+        ? `Recent assistant clarification: ${normalizeForIntent(assistantClarificationTurn)}`
+        : '',
+    ].filter(Boolean).join('\n'),
+    antecedentUserTurn,
+    assistantClarificationTurn,
+    usedHistory: true,
+  };
 };
 
 const buildPersistentLarkConversationKey = (threadId: string): string => `lark-thread:${threadId}`;
@@ -722,6 +829,7 @@ const runSubAgent = async (
     label: string;
     prompt: string;
     message: string;
+    history?: ChatTurn[];
     tools: Record<string, ReturnType<typeof tool>>;
     toolChoice?: 'auto' | 'required' | { toolName: string };
     runtime: VercelRuntimeRequestContext;
@@ -734,7 +842,10 @@ const runSubAgent = async (
   const result = await generateText({
     model: resolvedModel.model,
     system: input.prompt,
-    messages: [{ role: 'user', content: input.message }],
+    messages: [
+      ...(input.history ?? []),
+      { role: 'user', content: input.message },
+    ],
     tools: input.tools,
     toolChoice: input.toolChoice,
     temperature: 0,
@@ -1717,6 +1828,7 @@ const runContextWorkflow = async (
   classifier: ClassifierResult,
   runtime: VercelRuntimeRequestContext,
   objective: string,
+  recentTurns: ChatTurn[],
   abortSignal?: AbortSignal,
 ): Promise<WorkflowExecutionResult> => {
   const workflowId = classifier.workflowId as Extract<WorkflowId, 'CONTACT_LOOKUP' | 'HISTORY_LOOKUP' | 'FILE_LOOKUP' | 'WEB_RESEARCH' | 'MIXED_LOOKUP'>;
@@ -1738,6 +1850,7 @@ const runContextWorkflow = async (
     label: 'retrieval specialist',
     prompt: buildWorkflowPrompt(buildContextWorkflowPromptSpec(workflowId), classifier.confidence !== 'low'),
     message: buildSubAgentUserMessage(objective),
+    history: recentTurns.slice(-6),
     tools: {
       contextSearch: tool({
         description: 'Search context using the fixed source profile for this workflow.',
@@ -1771,6 +1884,7 @@ const runGoogleWorkflow = async (
   classifier: ClassifierResult,
   runtime: VercelRuntimeRequestContext,
   params: { objective: string; recipientEmail?: string; subject?: string; body?: string },
+  recentTurns: ChatTurn[],
   abortSignal?: AbortSignal,
   strictRetry = false,
 ): Promise<WorkflowExecutionResult> => {
@@ -1886,6 +2000,7 @@ const runGoogleWorkflow = async (
       subject: params.subject,
       body: params.body,
     }),
+    history: recentTurns.slice(-6),
     tools,
     toolChoice,
     runtime,
@@ -1900,6 +2015,7 @@ const runZohoWorkflow = async (
   classifier: ClassifierResult,
   runtime: VercelRuntimeRequestContext,
   objective: string,
+  recentTurns: ChatTurn[],
   abortSignal?: AbortSignal,
 ): Promise<WorkflowExecutionResult> => {
   const legacyTools = getLegacyTools({
@@ -2010,6 +2126,7 @@ const runZohoWorkflow = async (
     label: 'Zoho specialist',
     prompt: buildWorkflowPrompt(promptSpec, true),
     message: buildSubAgentUserMessage(objective),
+    history: recentTurns.slice(-6),
     tools,
     toolChoice,
     runtime,
@@ -2024,6 +2141,7 @@ const runLarkWorkflow = async (
   classifier: ClassifierResult,
   runtime: VercelRuntimeRequestContext,
   params: { objective: string; assignee?: string },
+  recentTurns: ChatTurn[],
   abortSignal?: AbortSignal,
   strictRetry = false,
 ): Promise<WorkflowExecutionResult> => {
@@ -2257,6 +2375,7 @@ const runLarkWorkflow = async (
     message: buildSubAgentUserMessage(params.objective, {
       assignee: params.assignee,
     }),
+    history: recentTurns.slice(-6),
     tools,
     toolChoice,
     runtime,
@@ -2270,7 +2389,8 @@ const runLarkWorkflow = async (
 const executeWorkflow = async (
   classifier: ClassifierResult,
   runtime: VercelRuntimeRequestContext,
-  message: NormalizedIncomingMessageDTO,
+  effectiveMessage: string,
+  recentTurns: ChatTurn[],
   abortSignal?: AbortSignal,
   strictRetry = false,
 ): Promise<WorkflowExecutionResult> => {
@@ -2284,21 +2404,22 @@ const executeWorkflow = async (
   }
 
   if (classifier.domain === 'context') {
-    return runContextWorkflow(classifier, runtime, message.text, abortSignal);
+    return runContextWorkflow(classifier, runtime, effectiveMessage, recentTurns, abortSignal);
   }
   if (classifier.domain === 'google') {
     return runGoogleWorkflow(
       classifier,
       runtime,
-      { objective: message.text },
+      { objective: effectiveMessage },
+      recentTurns,
       abortSignal,
       strictRetry,
     );
   }
   if (classifier.domain === 'zoho') {
-    return runZohoWorkflow(classifier, runtime, message.text, abortSignal);
+    return runZohoWorkflow(classifier, runtime, effectiveMessage, recentTurns, abortSignal);
   }
-  return runLarkWorkflow(classifier, runtime, { objective: message.text }, abortSignal, strictRetry);
+  return runLarkWorkflow(classifier, runtime, { objective: effectiveMessage }, recentTurns, abortSignal, strictRetry);
 };
 
 const toSupervisorAgentResults = (toolResults: VercelToolEnvelope[], taskId: string): AgentResultDTO[] => {
@@ -2334,11 +2455,12 @@ const executeTask = async (
     const conversation = await resolveConversationContext(input);
     const contextStorageId = conversation.persistentThreadId ?? conversation.sharedChatContextId;
     const runtime = await resolveRuntimeContext(task, message, contextStorageId);
+    const resolvedLatestRequest = buildResolvedLatestRequest(message.text, conversation.recentTurns);
 
     const updateLiveStatus = async (text: string): Promise<void> => {
       void text;
     };
-    const classifier = classifyWorkflow(message.text);
+    const classifier = classifyWorkflow(resolvedLatestRequest.effectiveMessage);
     await appendExecutionEventSafe({
       executionId,
       phase: 'planning',
@@ -2347,11 +2469,24 @@ const executeTask = async (
       actorKey: 'supervisor',
       title: 'Workflow classified',
       status: 'done',
-      payload: classifier,
+      payload: {
+        classifier,
+        latestMessage: message.text,
+        effectiveMessage: resolvedLatestRequest.effectiveMessage,
+        usedHistory: resolvedLatestRequest.usedHistory,
+        antecedentUserTurn: resolvedLatestRequest.antecedentUserTurn ?? null,
+        assistantClarificationTurn: resolvedLatestRequest.assistantClarificationTurn ?? null,
+      },
     });
 
-    await updateLiveStatus(buildAgentStartStatus(`${classifier.domain}:${classifier.workflowId}`, message.text));
-    let workflowResult = await executeWorkflow(classifier, runtime, message, abortSignal);
+    await updateLiveStatus(buildAgentStartStatus(`${classifier.domain}:${classifier.workflowId}`, resolvedLatestRequest.effectiveMessage));
+    let workflowResult = await executeWorkflow(
+      classifier,
+      runtime,
+      resolvedLatestRequest.effectiveMessage,
+      conversation.recentTurns,
+      abortSignal,
+    );
     await updateLiveStatus(`I completed the routed workflow ${classifier.workflowId}.`);
 
     let validation = workflowResult.status === 'SUCCESS'
@@ -2379,7 +2514,14 @@ const executeTask = async (
         },
       });
 
-      workflowResult = await executeWorkflow(classifier, runtime, message, abortSignal, true);
+      workflowResult = await executeWorkflow(
+        classifier,
+        runtime,
+        resolvedLatestRequest.effectiveMessage,
+        conversation.recentTurns,
+        abortSignal,
+        true,
+      );
       validation = workflowResult.status === 'SUCCESS'
         ? validateWorkflowExecution(classifier, workflowResult)
         : { valid: true as const };
@@ -2411,6 +2553,11 @@ const executeTask = async (
           rerouteReason: workflowResult.rerouteReason ?? null,
           calledToolNames: workflowResult.calledToolNames,
           pendingApproval: Boolean(workflowResult.pendingApproval),
+        },
+        requestResolution: {
+          latestMessage: message.text,
+          effectiveMessage: resolvedLatestRequest.effectiveMessage,
+          usedHistory: resolvedLatestRequest.usedHistory,
         },
         validator: validation,
       },
