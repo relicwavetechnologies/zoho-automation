@@ -43,81 +43,7 @@ type SubAgentTextResult = {
   text: string;
   toolResults: VercelToolEnvelope[];
   pendingApproval: PendingApprovalAction | null;
-  calledToolNames: string[];
 };
-
-type WorkflowDomain = 'context' | 'google' | 'zoho' | 'lark';
-
-type WorkflowId =
-  | 'CONTACT_LOOKUP'
-  | 'HISTORY_LOOKUP'
-  | 'FILE_LOOKUP'
-  | 'WEB_RESEARCH'
-  | 'MIXED_LOOKUP'
-  | 'SEND_EMAIL'
-  | 'CREATE_DRAFT'
-  | 'SEARCH_EMAIL'
-  | 'BOOKS_READ'
-  | 'CRM_READ'
-  | 'OVERDUE_REPORT'
-  | 'READ_TASKS'
-  | 'CREATE_TASK'
-  | 'READ_CALENDAR'
-  | 'SCHEDULE_MEETING'
-  | 'READ_MEETING_DETAILS'
-  | 'CREATE_DOC'
-  | 'EDIT_DOC'
-  | 'SEND_DM';
-
-type WorkflowConfidence = 'high' | 'medium' | 'low';
-
-type WorkflowExecutionStatus =
-  | 'SUCCESS'
-  | 'MISSING_REQUIRED_FIELDS'
-  | 'AMBIGUOUS_REQUEST'
-  | 'MISROUTED_INTENT'
-  | 'TOOLSET_INSUFFICIENT'
-  | 'TOOL_EXECUTION_FAILED';
-
-type ValidationFailureReason =
-  | 'missing_required_tool_call'
-  | 'wrong_object_type'
-  | 'unsupported_claim_without_tool_evidence';
-
-type ClassifierResult = {
-  domain: WorkflowDomain;
-  workflowId: WorkflowId;
-  confidence: WorkflowConfidence;
-  canExecuteNow: boolean;
-  missingInputs: string[];
-  reason: string;
-};
-
-type WorkflowExecutionResult = {
-  domain: WorkflowDomain;
-  workflowId: WorkflowId;
-  status: WorkflowExecutionStatus;
-  text: string;
-  toolResults: VercelToolEnvelope[];
-  pendingApproval: PendingApprovalAction | null;
-  calledToolNames: string[];
-  missingInputs: string[];
-  reason?: string;
-  rerouteReason?: string;
-};
-
-type WorkflowPromptSpec = {
-  role: string;
-  allowedTools: string[];
-  whenToUse: string[];
-  missingInputPolicy: string;
-  examples: string[];
-  negativeExamples: string[];
-};
-
-type WorkflowValidationResult =
-  | { valid: true }
-  | { valid: false; reason: ValidationFailureReason; detail: string };
 
 export type SupervisorV2ExecutionOutput = OrchestrationExecutionResult & {
   finalText: string;
@@ -134,13 +60,6 @@ type ConversationContextSnapshot = {
   sharedChatContextId?: string;
   persistentThreadId?: string;
   recentTurns: ChatTurn[];
-};
-
-type ResolvedLatestRequest = {
-  effectiveMessage: string;
-  antecedentUserTurn?: string;
-  assistantClarificationTurn?: string;
-  usedHistory: boolean;
 };
 
 const LARK_V2_MODE: VercelRuntimeRequestContext['mode'] = 'high';
@@ -161,20 +80,6 @@ const asNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
-
-const calledToolNamesFromSteps = (steps: unknown): string[] => {
-  const names = new Set<string>();
-  for (const step of asArray(steps)) {
-    const stepRecord = asRecord(step);
-    for (const toolCall of asArray(stepRecord?.toolCalls)) {
-      const toolName = asString(asRecord(toolCall)?.toolName);
-      if (toolName) {
-        names.add(toolName);
-      }
-    }
-  }
-  return [...names];
-};
 
 const summarizeText = (value: string | null | undefined, limit = 240): string => {
   const trimmed = value?.trim() ?? '';
@@ -205,145 +110,6 @@ FORMATTING RULES (Lark chat — follow exactly):
 
 const buildConversationKey = (message: NormalizedIncomingMessageDTO): string =>
   `${message.channel}:${message.chatId}`;
-
-const containsAny = (text: string, patterns: readonly string[]): boolean =>
-  patterns.some((pattern) => text.includes(pattern));
-
-const containsRegex = (text: string, pattern: RegExp): boolean => pattern.test(text);
-
-const EMAIL_REGEX = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
-const TIME_HINT_REGEX = /\b(now|today|tomorrow|tonight|\d{1,2}(:\d{2})?\s?(am|pm)|morning|afternoon|evening|ist)\b/i;
-const WITH_PERSON_REGEX = /\b(with|to)\s+[a-z]/i;
-const MEETING_ACTION_REGEX = /\b(schedule|book|set up|meeting)\b/i;
-const SEND_EMAIL_ACTION_REGEX = /\b(send|email|mail|draft)\b/i;
-const DOC_ACTION_REGEX = /\b(doc|document|page|notes|snapshot|report)\b/i;
-const TASK_ACTION_REGEX = /\b(task|todo|reminder|follow[- ]?up)\b/i;
-
-const buildWorkflowPrompt = (spec: WorkflowPromptSpec, strictToolUse = false): string => [
-  `Role: ${spec.role}`,
-  `Allowed tools: ${spec.allowedTools.join(', ')}`,
-  'Conversation rules:',
-  '- Treat the latest user message as the primary instruction.',
-  '- You may use recent conversation turns only to recover missing details or clarify what the latest user fragment refers to.',
-  '- Do not let older unrelated conversation override the latest request.',
-  'When to use each tool:',
-  ...spec.whenToUse.map((entry) => `- ${entry}`),
-  `Missing-input policy: ${spec.missingInputPolicy}`,
-  'Grounding rules:',
-  '- Never claim a tool is unavailable, unsupported, or failed unless a real tool call returned that result.',
-  '- Never answer an explicit action request without either calling the required tool or returning a structured missing-input/failure outcome.',
-  '- Never substitute one object type for another: meeting is not task, doc is not task, email send is not draft.',
-  '- Never use prior conversation as an active instruction source unless the latest user message explicitly refers to it.',
-  strictToolUse
-    ? '- This run is validator-enforced. You must use the relevant allowed tool before answering.'
-    : '- If the relevant tool exists for the request, call it before answering.',
-  'Failure rules:',
-  '- If required fields are missing, respond with a clear request for those exact missing fields.',
-  '- If the request does not match the workflow, say clearly that the request appears misrouted.',
-  '- If a tool call fails, report the actual failure from the tool result rather than inventing a limitation.',
-  'Examples:',
-  ...spec.examples.map((entry) => `- ${entry}`),
-  'Negative examples:',
-  ...spec.negativeExamples.map((entry) => `- ${entry}`),
-  LARK_FORMAT_RULES,
-].join('\n');
-
-const buildMissingInputsText = (workflowId: WorkflowId, missingInputs: string[]): string => {
-  const label = workflowId.replace(/_/g, ' ').toLowerCase();
-  return `I need the following to continue with ${label}: ${missingInputs.join(', ')}.`;
-};
-
-const normalizeForIntent = (value: string): string =>
-  value
-    .replace(/\[Referenced message\]/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const latestLooksLikeContinuation = (latestMessage: string): boolean => {
-  const text = normalizeForIntent(latestMessage).toLowerCase();
-  if (!text) {
-    return false;
-  }
-  if (MEETING_ACTION_REGEX.test(text) || SEND_EMAIL_ACTION_REGEX.test(text) || DOC_ACTION_REGEX.test(text) || TASK_ACTION_REGEX.test(text)) {
-    return false;
-  }
-  if (/^(yes|yeah|yep|ok|okay|sure|do it|go ahead|with .+|for .+|at .+|on .+|tomorrow|today|now)$/i.test(text)) {
-    return true;
-  }
-  if (text.length <= 40 && (TIME_HINT_REGEX.test(text) || /^with\s+/i.test(text) || /^at\s+/i.test(text))) {
-    return true;
-  }
-  return false;
-};
-
-const findLatestMatchingTurn = (
-  turns: ChatTurn[],
-  role: ChatTurn['role'],
-  predicate: (content: string) => boolean,
-): string | undefined => {
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const turn = turns[index];
-    if (turn?.role === role && predicate(turn.content)) {
-      return turn.content;
-    }
-  }
-  return undefined;
-};
-
-const buildResolvedLatestRequest = (
-  latestMessage: string,
-  recentTurns: ChatTurn[],
-): ResolvedLatestRequest => {
-  const normalizedLatest = normalizeForIntent(latestMessage);
-  const assistantClarificationTurn = findLatestMatchingTurn(
-    recentTurns,
-    'assistant',
-    (content) => /i need the following to continue|missing|required|need .* continue/i.test(content),
-  );
-  const antecedentUserTurn = findLatestMatchingTurn(
-    recentTurns,
-    'user',
-    (content) => {
-      const normalized = normalizeForIntent(content);
-      return (
-        MEETING_ACTION_REGEX.test(normalized)
-        || SEND_EMAIL_ACTION_REGEX.test(normalized)
-        || DOC_ACTION_REGEX.test(normalized)
-        || TASK_ACTION_REGEX.test(normalized)
-      );
-    },
-  );
-
-  const shouldUseHistory =
-    latestLooksLikeContinuation(normalizedLatest)
-    && Boolean(antecedentUserTurn)
-    && (
-      Boolean(assistantClarificationTurn)
-      || TIME_HINT_REGEX.test(normalizedLatest)
-      || /^(with|at|on|tomorrow|today|now)\b/i.test(normalizedLatest)
-    );
-
-  if (!shouldUseHistory || !antecedentUserTurn) {
-    return {
-      effectiveMessage: latestMessage,
-      usedHistory: false,
-    };
-  }
-
-  return {
-    effectiveMessage: [
-      normalizeForIntent(antecedentUserTurn),
-      '',
-      `Additional details from the latest user reply: ${normalizedLatest}`,
-      assistantClarificationTurn
-        ? `Recent assistant clarification: ${normalizeForIntent(assistantClarificationTurn)}`
-        : '',
-    ].filter(Boolean).join('\n'),
-    antecedentUserTurn,
-    assistantClarificationTurn,
-    usedHistory: true,
-  };
-};
 
 const buildPersistentLarkConversationKey = (threadId: string): string => `lark-thread:${threadId}`;
 
@@ -829,9 +595,7 @@ const runSubAgent = async (
     label: string;
     prompt: string;
     message: string;
-    history?: ChatTurn[];
     tools: Record<string, ReturnType<typeof tool>>;
-    toolChoice?: 'auto' | 'required' | { toolName: string };
     runtime: VercelRuntimeRequestContext;
     maxSteps?: number;
     abortSignal?: AbortSignal;
@@ -842,12 +606,8 @@ const runSubAgent = async (
   const result = await generateText({
     model: resolvedModel.model,
     system: input.prompt,
-    messages: [
-      ...(input.history ?? []),
-      { role: 'user', content: input.message },
-    ],
+    messages: [{ role: 'user', content: input.message }],
     tools: input.tools,
-    toolChoice: input.toolChoice,
     temperature: 0,
     providerOptions: {
       google: {
@@ -873,7 +633,6 @@ const runSubAgent = async (
     text: fallbackText,
     toolResults,
     pendingApproval,
-    calledToolNames: calledToolNamesFromSteps(result.steps),
   };
 };
 
@@ -893,7 +652,6 @@ async function runContextAgent(
       text: 'Context search is not available for this user.',
       toolResults: [],
       pendingApproval: null,
-      calledToolNames: [],
     };
   }
 
@@ -977,7 +735,6 @@ async function runGoogleWorkspaceAgent(
       text: 'Google Workspace tools are not available for this user.',
       toolResults: [],
       pendingApproval: null,
-      calledToolNames: [],
     };
   }
 
@@ -1060,7 +817,6 @@ async function runZohoAgent(
       text: 'Zoho tools are not available for this user.',
       toolResults: [],
       pendingApproval: null,
-      calledToolNames: [],
     };
   }
 
@@ -1152,7 +908,6 @@ async function runLarkAgent(
       text: 'Lark tools are not available for this user.',
       toolResults: [],
       pendingApproval: null,
-      calledToolNames: [],
     };
   }
 
@@ -1490,938 +1245,6 @@ const buildAgentFinishStatus = (label: string, result: SubAgentTextResult): stri
   return `I got what I needed from ${label}. Now I am preparing the next step.`;
 };
 
-const classifyWorkflow = (latestMessage: string): ClassifierResult => {
-  const text = latestMessage.trim().toLowerCase();
-
-  const meetingScheduleIntent =
-    (containsAny(text, ['schedule a meeting', 'schedule meeting', 'book a meeting', 'set up a meeting', 'set up meeting'])
-      || (containsAny(text, ['schedule', 'book', 'set up']) && text.includes('meeting')))
-    && (containsRegex(text, WITH_PERSON_REGEX) || containsRegex(text, EMAIL_REGEX) || containsAny(text, ['anish', 'shivam', 'archit', 'vijay']));
-  if (meetingScheduleIntent) {
-    const missingInputs: string[] = [];
-    if (!(containsRegex(text, WITH_PERSON_REGEX) || containsRegex(text, EMAIL_REGEX))) {
-      missingInputs.push('attendee names or emails');
-    }
-    if (!containsRegex(text, TIME_HINT_REGEX)) {
-      missingInputs.push('meeting time or date');
-    }
-    return {
-      domain: 'lark',
-      workflowId: 'SCHEDULE_MEETING',
-      confidence: 'high',
-      canExecuteNow: missingInputs.length === 0,
-      missingInputs,
-      reason: 'explicit Lark meeting scheduling intent',
-    };
-  }
-
-  if ((containsAny(text, ['create a lark doc', 'create doc', 'create document', 'notes page', 'markdown report', 'snapshot'])
-      || (containsAny(text, ['doc', 'document', 'page', 'notes', 'snapshot', 'report']) && containsAny(text, ['create', 'make', 'write'])))) {
-    return {
-      domain: 'lark',
-      workflowId: containsAny(text, ['edit doc', 'update doc', 'append to doc']) ? 'EDIT_DOC' : 'CREATE_DOC',
-      confidence: 'high',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'explicit Lark doc intent',
-    };
-  }
-
-  if (containsAny(text, ['active tasks', 'open tasks', 'my tasks', 'current active tasks'])) {
-    return {
-      domain: 'lark',
-      workflowId: 'READ_TASKS',
-      confidence: 'high',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'explicit Lark task read intent',
-    };
-  }
-
-  if ((containsAny(text, ['create task', 'create a task', 'todo', 'follow-up task', 'reminder']) && !containsAny(text, ['doc', 'document', 'page']))) {
-    return {
-      domain: 'lark',
-      workflowId: 'CREATE_TASK',
-      confidence: 'high',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'explicit task creation intent',
-    };
-  }
-
-  if (containsAny(text, ['calendar events', 'today’s calendar', "today's calendar", 'lark calendars', 'meetings today', 'events today'])) {
-    return {
-      domain: 'lark',
-      workflowId: containsAny(text, ['minute', 'minutes', 'meeting details', 'recent meeting']) ? 'READ_MEETING_DETAILS' : 'READ_CALENDAR',
-      confidence: 'high',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'explicit calendar or meeting read intent',
-    };
-  }
-
-  if (containsAny(text, ['message on lark', 'send dm', 'dm ', 'ping on lark'])) {
-    const missingInputs: string[] = [];
-    if (!containsRegex(text, WITH_PERSON_REGEX)) {
-      missingInputs.push('recipient name');
-    }
-    return {
-      domain: 'lark',
-      workflowId: 'SEND_DM',
-      confidence: 'medium',
-      canExecuteNow: missingInputs.length === 0,
-      missingInputs,
-      reason: 'explicit Lark messaging intent',
-    };
-  }
-
-  const sendEmailIntent = containsAny(text, ['send email', 'send an email', 'mail this', 'email this']);
-  if (sendEmailIntent) {
-    const missingInputs: string[] = [];
-    if (!(containsRegex(text, EMAIL_REGEX) || containsRegex(text, WITH_PERSON_REGEX))) {
-      missingInputs.push('recipient');
-    }
-    return {
-      domain: 'google',
-      workflowId: 'SEND_EMAIL',
-      confidence: 'high',
-      canExecuteNow: missingInputs.length === 0,
-      missingInputs,
-      reason: 'explicit send-email intent',
-    };
-  }
-
-  if (containsAny(text, ['create draft', 'draft email', 'draft a mail'])) {
-    return {
-      domain: 'google',
-      workflowId: 'CREATE_DRAFT',
-      confidence: 'high',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'explicit draft intent',
-    };
-  }
-
-  if (containsAny(text, ['search gmail', 'search email', 'find email thread', 'find email in gmail', 'inbox'])) {
-    return {
-      domain: 'google',
-      workflowId: 'SEARCH_EMAIL',
-      confidence: 'high',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'explicit Gmail search intent',
-    };
-  }
-
-  if (containsAny(text, ['overdue invoice', 'overdue invoices', 'overdue report', 'review overdue'])) {
-    return {
-      domain: 'zoho',
-      workflowId: 'OVERDUE_REPORT',
-      confidence: 'high',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'explicit overdue invoice/report intent',
-    };
-  }
-
-  if (containsAny(text, ['crm', 'lead', 'deal', 'contact in crm'])) {
-    return {
-      domain: 'zoho',
-      workflowId: 'CRM_READ',
-      confidence: 'medium',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'Zoho CRM read intent',
-    };
-  }
-
-  if (containsAny(text, ['invoice', 'payment', 'zoho books', 'books record'])) {
-    return {
-      domain: 'zoho',
-      workflowId: 'BOOKS_READ',
-      confidence: 'medium',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'Zoho Books read intent',
-    };
-  }
-
-  if (containsAny(text, ['email for', 'phone for', 'contact details', 'email address for', 'contact for'])) {
-    return {
-      domain: 'context',
-      workflowId: 'CONTACT_LOOKUP',
-      confidence: 'high',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'contact lookup intent',
-    };
-  }
-
-  if (containsAny(text, ['what did we', 'earlier', 'previous', 'last draft', 'last message', 'discussed'])) {
-    return {
-      domain: 'context',
-      workflowId: 'HISTORY_LOOKUP',
-      confidence: 'medium',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'history lookup intent',
-    };
-  }
-
-  if (containsAny(text, ['contract', 'pdf', 'document', 'uploaded file', 'attachment', 'file'])) {
-    return {
-      domain: 'context',
-      workflowId: 'FILE_LOOKUP',
-      confidence: 'medium',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'file lookup intent',
-    };
-  }
-
-  if (containsAny(text, ['latest', 'news', 'research', 'look up', 'search', 'web'])) {
-    return {
-      domain: 'context',
-      workflowId: 'WEB_RESEARCH',
-      confidence: 'medium',
-      canExecuteNow: true,
-      missingInputs: [],
-      reason: 'web research intent',
-    };
-  }
-
-  return {
-    domain: 'context',
-    workflowId: 'MIXED_LOOKUP',
-    confidence: 'low',
-    canExecuteNow: true,
-    missingInputs: [],
-    reason: 'default mixed lookup fallback',
-  };
-};
-
-const buildWorkflowFailureResult = (
-  classifier: ClassifierResult,
-  status: WorkflowExecutionStatus,
-  text: string,
-  reason?: string,
-): WorkflowExecutionResult => ({
-  domain: classifier.domain,
-  workflowId: classifier.workflowId,
-  status,
-  text,
-  toolResults: [],
-  pendingApproval: null,
-  calledToolNames: [],
-  missingInputs: classifier.missingInputs,
-  ...(reason ? { reason } : {}),
-});
-
-const normalizeWorkflowResult = (
-  classifier: ClassifierResult,
-  result: SubAgentTextResult,
-  overrides?: Partial<Pick<WorkflowExecutionResult, 'status' | 'reason' | 'rerouteReason' | 'missingInputs'>>,
-): WorkflowExecutionResult => {
-  const failedTool = result.toolResults.find((entry) => !entry.success && !entry.pendingApprovalAction);
-  return {
-    domain: classifier.domain,
-    workflowId: classifier.workflowId,
-    status: overrides?.status ?? (failedTool ? 'TOOL_EXECUTION_FAILED' : 'SUCCESS'),
-    text: result.text,
-    toolResults: result.toolResults,
-    pendingApproval: result.pendingApproval,
-    calledToolNames: result.calledToolNames,
-    missingInputs: overrides?.missingInputs ?? classifier.missingInputs,
-    ...(overrides?.reason ? { reason: overrides.reason } : failedTool?.error ? { reason: failedTool.error } : {}),
-    ...(overrides?.rerouteReason ? { rerouteReason: overrides.rerouteReason } : {}),
-  };
-};
-
-const validateWorkflowExecution = (
-  classifier: ClassifierResult,
-  result: WorkflowExecutionResult,
-): WorkflowValidationResult => {
-  const normalizedText = result.text.toLowerCase();
-  const hasToolFailureEvidence = result.toolResults.some((entry) => !entry.success || Boolean(entry.error));
-  const hasUnsupportedClaim = /(unable|unavailable|unsupported|do not have access|can't|cannot)/i.test(normalizedText);
-  const usedTaskTool = result.calledToolNames.includes('task');
-  const usedDocTool = result.calledToolNames.includes('doc');
-  const usedCalendarTool = result.calledToolNames.includes('calendar');
-  const usedSendEmailTool = result.calledToolNames.includes('sendEmail');
-
-  if (classifier.workflowId === 'SCHEDULE_MEETING' && !usedCalendarTool) {
-    return {
-      valid: false,
-      reason: 'missing_required_tool_call',
-      detail: 'meeting scheduling workflow completed without calendar tool usage',
-    };
-  }
-  if (classifier.workflowId === 'CREATE_DOC' && usedTaskTool && !usedDocTool) {
-    return {
-      valid: false,
-      reason: 'wrong_object_type',
-      detail: 'doc creation workflow used task tool instead of doc tool',
-    };
-  }
-  if (classifier.workflowId === 'SEND_EMAIL' && !usedSendEmailTool) {
-    return {
-      valid: false,
-      reason: 'missing_required_tool_call',
-      detail: 'email send workflow completed without sendEmail tool usage',
-    };
-  }
-  if (hasUnsupportedClaim && !hasToolFailureEvidence) {
-    return {
-      valid: false,
-      reason: 'unsupported_claim_without_tool_evidence',
-      detail: 'final text reported unsupported or unavailable without matching tool failure evidence',
-    };
-  }
-  return { valid: true };
-};
-
-const buildContextSourcesForWorkflow = (
-  workflowId: Extract<WorkflowId, 'CONTACT_LOOKUP' | 'HISTORY_LOOKUP' | 'FILE_LOOKUP' | 'WEB_RESEARCH' | 'MIXED_LOOKUP'>,
-) => {
-  if (workflowId === 'CONTACT_LOOKUP') {
-    return { web: false, larkContacts: true, personalHistory: true, files: false, zohoCrmContext: true, skills: false };
-  }
-  if (workflowId === 'HISTORY_LOOKUP') {
-    return { web: false, larkContacts: false, personalHistory: true, files: false, zohoCrmContext: false, skills: false };
-  }
-  if (workflowId === 'FILE_LOOKUP') {
-    return { web: false, larkContacts: false, personalHistory: false, files: true, zohoCrmContext: false, skills: false };
-  }
-  if (workflowId === 'WEB_RESEARCH') {
-    return { web: true, larkContacts: false, personalHistory: false, files: false, zohoCrmContext: false, skills: false };
-  }
-  return { web: false, larkContacts: true, personalHistory: true, files: true, zohoCrmContext: true, skills: false };
-};
-
-const buildContextWorkflowPromptSpec = (
-  workflowId: Extract<WorkflowId, 'CONTACT_LOOKUP' | 'HISTORY_LOOKUP' | 'FILE_LOOKUP' | 'WEB_RESEARCH' | 'MIXED_LOOKUP'>,
-): WorkflowPromptSpec => ({
-  role: 'retrieval specialist focused on grounded lookup',
-  allowedTools: ['contextSearch'],
-  whenToUse: [
-    'Use contextSearch with the fixed source profile for this workflow.',
-    'Search first. Only use fetch if you already have a chunkRef and need full content.',
-    'Return exactly what you found and what sources were checked.',
-  ],
-  missingInputPolicy: 'If the request is too vague to search, ask for the missing entity, document, or topic.',
-  examples: workflowId === 'CONTACT_LOOKUP'
-    ? ['"find email for Vijay" -> use contextSearch with contact-focused sources.']
-    : workflowId === 'HISTORY_LOOKUP'
-      ? ['"what did we decide earlier about the invoice?" -> use contextSearch with personal history only.']
-      : workflowId === 'FILE_LOOKUP'
-        ? ['"find the pricing clause in the contract" -> use contextSearch with files only.']
-        : workflowId === 'WEB_RESEARCH'
-          ? ['"search latest AI agent prompting repos" -> use contextSearch with web only.']
-          : ['"find Anish contact details and our earlier draft" -> use contextSearch with mixed sources.'],
-  negativeExamples: [
-    'Do not claim nothing is available unless you actually searched.',
-    'Do not silently include unrelated sources for a narrow workflow.',
-  ],
-});
-
-const runContextWorkflow = async (
-  classifier: ClassifierResult,
-  runtime: VercelRuntimeRequestContext,
-  objective: string,
-  recentTurns: ChatTurn[],
-  abortSignal?: AbortSignal,
-): Promise<WorkflowExecutionResult> => {
-  const workflowId = classifier.workflowId as Extract<WorkflowId, 'CONTACT_LOOKUP' | 'HISTORY_LOOKUP' | 'FILE_LOOKUP' | 'WEB_RESEARCH' | 'MIXED_LOOKUP'>;
-  const legacyTools = getLegacyTools({
-    ...runtime,
-    delegatedAgentId: `context-${workflowId.toLowerCase()}`,
-  });
-  const contextSearchTool = legacyTools.contextSearch;
-  if (!contextSearchTool) {
-    return buildWorkflowFailureResult(
-      classifier,
-      'TOOLSET_INSUFFICIENT',
-      'Context search is not available for this user.',
-      'context search tool missing',
-    );
-  }
-
-  const result = await runSubAgent({
-    label: 'retrieval specialist',
-    prompt: buildWorkflowPrompt(buildContextWorkflowPromptSpec(workflowId), classifier.confidence !== 'low'),
-    message: buildSubAgentUserMessage(objective),
-    history: recentTurns.slice(-6),
-    tools: {
-      contextSearch: tool({
-        description: 'Search context using the fixed source profile for this workflow.',
-        inputSchema: z.object({
-          query: z.string(),
-          operation: z.enum(['search', 'fetch']),
-          limit: z.number().optional(),
-          chunkRef: z.string().optional(),
-        }),
-        execute: async ({ query, operation, limit, chunkRef }) =>
-          contextSearchTool.execute({
-            query,
-            operation,
-            sources: buildContextSourcesForWorkflow(workflowId),
-            scopes: ['all'] as const,
-            limit: limit ?? 8,
-            ...(chunkRef ? { chunkRef } : {}),
-          }),
-      }),
-    },
-    toolChoice: 'required',
-    runtime,
-    maxSteps: workflowId === 'MIXED_LOOKUP' ? 6 : 4,
-    abortSignal,
-  });
-
-  return normalizeWorkflowResult(classifier, result);
-};
-
-const runGoogleWorkflow = async (
-  classifier: ClassifierResult,
-  runtime: VercelRuntimeRequestContext,
-  params: { objective: string; recipientEmail?: string; subject?: string; body?: string },
-  recentTurns: ChatTurn[],
-  abortSignal?: AbortSignal,
-  strictRetry = false,
-): Promise<WorkflowExecutionResult> => {
-  const legacyTools = getLegacyTools({
-    ...runtime,
-    delegatedAgentId: `google-${classifier.workflowId.toLowerCase()}`,
-  });
-  const googleWorkspaceTool = legacyTools.googleWorkspace;
-  const contextSearchTool = legacyTools.contextSearch;
-  if (!googleWorkspaceTool) {
-    return buildWorkflowFailureResult(
-      classifier,
-      'TOOLSET_INSUFFICIENT',
-      'Google Workspace tools are not available for this user.',
-      'google workspace tool missing',
-    );
-  }
-
-  const tools: Record<string, ReturnType<typeof tool>> = {};
-  let toolChoice: 'required' | { toolName: string } = 'required';
-
-  if (classifier.workflowId === 'SEND_EMAIL') {
-    if (contextSearchTool) {
-      tools.resolveRecipient = tool({
-        description: 'Resolve a recipient name to contact details. Use only if the user named a person instead of an email address.',
-        inputSchema: z.object({ query: z.string() }),
-        execute: async ({ query }) =>
-          contextSearchTool.execute({
-            query,
-            operation: 'search',
-            sources: buildContextSourcesForWorkflow('CONTACT_LOOKUP'),
-            scopes: ['all'] as const,
-            limit: 5,
-          }),
-      });
-    }
-    tools.sendEmail = tool({
-      description: 'Send an email. Use this workflow only for actual sending, not drafts.',
-      inputSchema: z.object({
-        to: z.string(),
-        subject: z.string(),
-        body: z.string(),
-        cc: z.string().optional(),
-      }),
-      execute: async ({ to, subject, body, cc }) =>
-        googleWorkspaceTool.execute({
-          operation: 'sendMessage',
-          to,
-          subject,
-          body,
-          ...(cc ? { cc } : {}),
-        }),
-    });
-  } else if (classifier.workflowId === 'CREATE_DRAFT') {
-    tools.createDraft = tool({
-      description: 'Create an email draft.',
-      inputSchema: z.object({
-        to: z.string(),
-        subject: z.string(),
-        body: z.string(),
-      }),
-      execute: async ({ to, subject, body }) =>
-        googleWorkspaceTool.execute({
-          operation: 'createDraft',
-          to,
-          subject,
-          body,
-        }),
-    });
-    toolChoice = { toolName: 'createDraft' };
-  } else {
-    tools.searchEmail = tool({
-      description: 'Search Gmail messages.',
-      inputSchema: z.object({ query: z.string() }),
-      execute: async ({ query }) =>
-        googleWorkspaceTool.execute({
-          operation: 'searchMessages',
-          query,
-        }),
-    });
-    toolChoice = { toolName: 'searchEmail' };
-  }
-
-  const promptSpec: WorkflowPromptSpec = {
-    role: 'Google Workspace specialist for a single workflow',
-    allowedTools: Object.keys(tools),
-    whenToUse: classifier.workflowId === 'SEND_EMAIL'
-      ? [
-          'If the user gave a person name instead of an email address, resolve the recipient first.',
-          'Use sendEmail only for actual sending.',
-          'If send approval is required, return the grounded pending-approval result.',
-        ]
-      : classifier.workflowId === 'CREATE_DRAFT'
-        ? ['Use createDraft for draft requests only.']
-        : ['Use searchEmail for inbox or Gmail search requests only.'],
-    missingInputPolicy:
-      'If required fields such as recipient, subject, or body are missing, ask only for those exact missing fields.',
-    examples: classifier.workflowId === 'SEND_EMAIL'
-      ? ['"send email to anish with the findings" -> resolve recipient if needed, then sendEmail.']
-      : classifier.workflowId === 'CREATE_DRAFT'
-        ? ['"create a draft to Vijay about the invoice" -> createDraft.']
-        : ['"search Gmail for the last mail from Anish" -> searchEmail.'],
-    negativeExamples: classifier.workflowId === 'SEND_EMAIL'
-      ? ['Do not create a draft when the user asked to send.', 'Do not say email sending is unavailable unless the tool call failed.']
-      : ['Do not send an email from a read-only or draft workflow.'],
-  };
-
-  const result = await runSubAgent({
-    label: 'Google Workspace specialist',
-    prompt: buildWorkflowPrompt(promptSpec, strictRetry || classifier.workflowId !== 'SEARCH_EMAIL'),
-    message: buildSubAgentUserMessage(params.objective, {
-      recipientEmail: params.recipientEmail,
-      subject: params.subject,
-      body: params.body,
-    }),
-    history: recentTurns.slice(-6),
-    tools,
-    toolChoice,
-    runtime,
-    maxSteps: 6,
-    abortSignal,
-  });
-
-  return normalizeWorkflowResult(classifier, result, strictRetry ? { rerouteReason: 'strict_google_retry' } : undefined);
-};
-
-const runZohoWorkflow = async (
-  classifier: ClassifierResult,
-  runtime: VercelRuntimeRequestContext,
-  objective: string,
-  recentTurns: ChatTurn[],
-  abortSignal?: AbortSignal,
-): Promise<WorkflowExecutionResult> => {
-  const legacyTools = getLegacyTools({
-    ...runtime,
-    delegatedAgentId: `zoho-${classifier.workflowId.toLowerCase()}`,
-  });
-  const zohoBooksTool = legacyTools.zohoBooks;
-  const zohoCrmTool = legacyTools.zohoCrm;
-
-  if (classifier.workflowId === 'OVERDUE_REPORT' || classifier.workflowId === 'BOOKS_READ') {
-    if (!zohoBooksTool) {
-      return buildWorkflowFailureResult(classifier, 'TOOLSET_INSUFFICIENT', 'Zoho Books tools are not available for this user.', 'zoho books tool missing');
-    }
-  }
-  if (classifier.workflowId === 'CRM_READ' && !zohoCrmTool) {
-    return buildWorkflowFailureResult(classifier, 'TOOLSET_INSUFFICIENT', 'Zoho CRM tools are not available for this user.', 'zoho crm tool missing');
-  }
-
-  const tools: Record<string, ReturnType<typeof tool>> = {};
-  let toolChoice: { toolName: string } | 'required' = 'required';
-  const promptSpec: WorkflowPromptSpec = {
-    role: 'Zoho specialist for grounded financial and CRM reads',
-    allowedTools: [],
-    whenToUse: [],
-    missingInputPolicy: 'If a record identifier or report name is required and missing, ask for that exact missing value.',
-    examples: [],
-    negativeExamples: ['Do not use context search for Zoho workflows unless the request explicitly asks for non-Zoho context.'],
-  };
-
-  if (classifier.workflowId === 'OVERDUE_REPORT') {
-    tools.readBooks = tool({
-      description: 'Build or fetch overdue invoice reports from Zoho Books.',
-      inputSchema: z.object({
-        operation: z.enum(['buildOverdueReport', 'getReport', 'listRecords', 'getRecord']),
-        recordType: z.string().optional(),
-        filters: z.record(z.string()).optional(),
-        recordId: z.string().optional(),
-        reportName: z.string().optional(),
-      }),
-      execute: async ({ operation, recordType, filters, recordId, reportName }) =>
-        zohoBooksTool!.execute({
-          operation: operation === 'buildOverdueReport' ? 'buildOverdueReport' : 'read',
-          ...(recordType ? { module: recordType } : {}),
-          ...(filters ? { filters } : {}),
-          ...(recordId ? { recordId } : {}),
-          ...(reportName ? { reportName } : {}),
-          ...(operation === 'getRecord' ? { readOperation: 'getRecord' } : {}),
-          ...(operation === 'listRecords' ? { readOperation: 'listRecords' } : {}),
-          ...(operation === 'getReport' ? { readOperation: 'getReport' } : {}),
-        }),
-    });
-    toolChoice = { toolName: 'readBooks' };
-    promptSpec.allowedTools = ['readBooks'];
-    promptSpec.whenToUse = ['Use readBooks for overdue reports and invoice-overdue reads only.'];
-    promptSpec.examples = ['"review overdue invoices" -> readBooks with buildOverdueReport.'];
-  } else if (classifier.workflowId === 'CRM_READ') {
-    tools.readCRM = tool({
-      description: 'Read Zoho CRM data.',
-      inputSchema: z.object({
-        operation: z.enum(['search', 'read']),
-        module: z.string().optional(),
-        query: z.string().optional(),
-        recordId: z.string().optional(),
-        filters: z.record(z.string()).optional(),
-      }),
-      execute: async ({ operation, module, query, recordId, filters }) =>
-        zohoCrmTool!.execute({
-          operation,
-          ...(module ? { module } : {}),
-          ...(query ? { query } : {}),
-          ...(recordId ? { recordId } : {}),
-          ...(filters ? { filters } : {}),
-        }),
-    });
-    toolChoice = { toolName: 'readCRM' };
-    promptSpec.allowedTools = ['readCRM'];
-    promptSpec.whenToUse = ['Use readCRM for deals, leads, contacts, and CRM record reads.'];
-    promptSpec.examples = ['"find CRM details for a customer" -> readCRM.'];
-  } else {
-    tools.readBooks = tool({
-      description: 'Read Zoho Books records.',
-      inputSchema: z.object({
-        operation: z.enum(['listRecords', 'getRecord', 'getReport']),
-        recordType: z.string().optional(),
-        filters: z.record(z.string()).optional(),
-        recordId: z.string().optional(),
-        reportName: z.string().optional(),
-      }),
-      execute: async ({ operation, recordType, filters, recordId, reportName }) =>
-        zohoBooksTool!.execute({
-          operation: 'read',
-          ...(recordType ? { module: recordType } : {}),
-          ...(filters ? { filters } : {}),
-          ...(recordId ? { recordId } : {}),
-          ...(reportName ? { reportName } : {}),
-          ...(operation === 'getRecord' ? { readOperation: 'getRecord' } : {}),
-          ...(operation === 'listRecords' ? { readOperation: 'listRecords' } : {}),
-          ...(operation === 'getReport' ? { readOperation: 'getReport' } : {}),
-        }),
-    });
-    toolChoice = { toolName: 'readBooks' };
-    promptSpec.allowedTools = ['readBooks'];
-    promptSpec.whenToUse = ['Use readBooks for standard Books record reads.'];
-    promptSpec.examples = ['"show the invoice record" -> readBooks.'];
-  }
-
-  const result = await runSubAgent({
-    label: 'Zoho specialist',
-    prompt: buildWorkflowPrompt(promptSpec, true),
-    message: buildSubAgentUserMessage(objective),
-    history: recentTurns.slice(-6),
-    tools,
-    toolChoice,
-    runtime,
-    maxSteps: 4,
-    abortSignal,
-  });
-
-  return normalizeWorkflowResult(classifier, result);
-};
-
-const runLarkWorkflow = async (
-  classifier: ClassifierResult,
-  runtime: VercelRuntimeRequestContext,
-  params: { objective: string; assignee?: string },
-  recentTurns: ChatTurn[],
-  abortSignal?: AbortSignal,
-  strictRetry = false,
-): Promise<WorkflowExecutionResult> => {
-  const legacyTools = getLegacyTools({
-    ...runtime,
-    delegatedAgentId: `lark-${classifier.workflowId.toLowerCase()}`,
-  });
-  const larkTaskTool = legacyTools.larkTask;
-  const larkMessageTool = legacyTools.larkMessage;
-  const larkCalendarTool = legacyTools.larkCalendar;
-  const larkMeetingTool = legacyTools.larkMeeting;
-  const larkDocTool = legacyTools.larkDoc;
-  const tools: Record<string, ReturnType<typeof tool>> = {};
-  let toolChoice: 'required' | { toolName: string } = 'required';
-
-  const promptSpec: WorkflowPromptSpec = {
-    role: 'Lark workflow specialist',
-    allowedTools: [],
-    whenToUse: [],
-    missingInputPolicy: 'If required attendee, recipient, title, or content fields are missing, ask only for those exact missing fields.',
-    examples: [],
-    negativeExamples: [],
-  };
-
-  if (classifier.workflowId === 'READ_TASKS') {
-    if (!larkTaskTool) {
-      return buildWorkflowFailureResult(classifier, 'TOOLSET_INSUFFICIENT', 'Lark task tools are not available for this user.', 'lark task tool missing');
-    }
-    tools.task = tool({
-      description: 'Read current Lark tasks.',
-      inputSchema: z.object({
-        operation: z.enum(['listMine', 'listOpenMine', 'current', 'listTasklists']),
-      }),
-      execute: async ({ operation }) =>
-        larkTaskTool.execute({
-          operation: 'read',
-          taskOperation: operation,
-        }),
-    });
-    toolChoice = { toolName: 'task' };
-    promptSpec.allowedTools = ['task'];
-    promptSpec.whenToUse = ['Use task for task reads only.'];
-    promptSpec.examples = ['"show my active tasks" -> task.listOpenMine.'];
-    promptSpec.negativeExamples = ['Do not use listAssignableUsers for "my tasks".'];
-  } else if (classifier.workflowId === 'CREATE_TASK') {
-    if (!larkTaskTool) {
-      return buildWorkflowFailureResult(classifier, 'TOOLSET_INSUFFICIENT', 'Lark task tools are not available for this user.', 'lark task tool missing');
-    }
-    tools.task = tool({
-      description: 'Create or assign a Lark task. Use only for todos, reminders, or follow-ups.',
-      inputSchema: z.object({
-        operation: z.enum(['create', 'reassign']),
-        summary: z.string().optional(),
-        description: z.string().optional(),
-        dueTs: z.string().optional(),
-        assigneeName: z.string().optional(),
-      }),
-      execute: async ({ operation, summary, description, dueTs, assigneeName }) =>
-        larkTaskTool.execute({
-          operation: 'write',
-          taskOperation: operation,
-          ...(summary ? { summary } : {}),
-          ...(description ? { description } : {}),
-          ...(dueTs ? { dueTs } : {}),
-          ...(assigneeName ? { assigneeMode: 'named_people', assigneeNames: [assigneeName] } : {}),
-        }),
-    });
-    toolChoice = { toolName: 'task' };
-    promptSpec.allowedTools = ['task'];
-    promptSpec.whenToUse = ['Use task only for true action items.'];
-    promptSpec.examples = ['"create a follow-up task for Vijay" -> task.create.'];
-    promptSpec.negativeExamples = ['Do not create tasks for meeting requests.', 'Do not create tasks for document requests.'];
-  } else if (classifier.workflowId === 'READ_CALENDAR') {
-    if (!larkCalendarTool) {
-      return buildWorkflowFailureResult(classifier, 'TOOLSET_INSUFFICIENT', 'Lark calendar tools are not available for this user.', 'lark calendar tool missing');
-    }
-    tools.calendar = tool({
-      description: 'Read Lark calendars and events.',
-      inputSchema: z.object({
-        operation: z.enum(['listCalendars', 'listEvents', 'getEvent']),
-        calendarId: z.string().optional(),
-        eventId: z.string().optional(),
-        dateScope: z.string().optional(),
-      }),
-      execute: async ({ operation, calendarId, eventId, dateScope }) =>
-        larkCalendarTool.execute({
-          operation,
-          ...(calendarId ? { calendarId } : {}),
-          ...(eventId ? { eventId } : {}),
-          ...(dateScope ? { dateScope } : {}),
-        }),
-    });
-    toolChoice = { toolName: 'calendar' };
-    promptSpec.allowedTools = ['calendar'];
-    promptSpec.whenToUse = ['Use calendar.listEvents for day-scoped event and meeting discovery.', 'Use calendar.listCalendars only when the user asked about calendars.'];
-    promptSpec.examples = ['"show my meetings today" -> calendar.listEvents.'];
-    promptSpec.negativeExamples = ['Do not use task or meeting detail tools for simple day-scoped calendar reads.'];
-  } else if (classifier.workflowId === 'SCHEDULE_MEETING') {
-    if (!larkCalendarTool) {
-      return buildWorkflowFailureResult(classifier, 'TOOLSET_INSUFFICIENT', 'Lark calendar tools are not available for this user.', 'lark calendar tool missing');
-    }
-    tools.calendar = tool({
-      description: 'Schedule a Lark meeting. This is the required tool for meeting scheduling requests.',
-      inputSchema: z.object({
-        operation: z.enum(['scheduleMeeting', 'listAvailability']).default('scheduleMeeting'),
-        startTime: z.string().optional(),
-        endTime: z.string().optional(),
-        searchStartTime: z.string().optional(),
-        searchEndTime: z.string().optional(),
-        durationMinutes: z.number().int().positive().max(1440).optional(),
-        summary: z.string().optional(),
-        description: z.string().optional(),
-        attendeeName: z.string().optional(),
-        attendeeNames: z.array(z.string()).optional(),
-        includeMe: z.boolean().optional(),
-        needNotification: z.boolean().optional(),
-      }),
-      execute: async ({ operation, startTime, endTime, searchStartTime, searchEndTime, durationMinutes, summary, description, attendeeName, attendeeNames, includeMe, needNotification }) =>
-        larkCalendarTool.execute({
-          operation,
-          ...(startTime ? { startTime } : {}),
-          ...(endTime ? { endTime } : {}),
-          ...(searchStartTime ? { searchStartTime } : {}),
-          ...(searchEndTime ? { searchEndTime } : {}),
-          ...(durationMinutes ? { durationMinutes } : {}),
-          ...(summary ? { summary } : {}),
-          ...(description ? { description } : {}),
-          ...((attendeeNames?.length || attendeeName)
-            ? { attendeeNames: attendeeNames?.length ? attendeeNames : [attendeeName as string] }
-            : {}),
-          ...(includeMe !== undefined ? { includeMe } : {}),
-          ...(needNotification !== undefined ? { needNotification } : {}),
-        }),
-    });
-    toolChoice = { toolName: 'calendar' };
-    promptSpec.allowedTools = ['calendar'];
-    promptSpec.whenToUse = ['Use calendar.scheduleMeeting directly for schedule, set up, or book meeting requests.', 'Use attendee names directly; do not preflight with task or assignee listing.'];
-    promptSpec.examples = ['"schedule a meeting with Shivam and Archit now" -> calendar.scheduleMeeting.'];
-    promptSpec.negativeExamples = ['Do not create a task as a meeting placeholder.', 'Do not say the calendar tool is unavailable unless the tool call failed.'];
-  } else if (classifier.workflowId === 'READ_MEETING_DETAILS') {
-    if (!larkMeetingTool) {
-      return buildWorkflowFailureResult(classifier, 'TOOLSET_INSUFFICIENT', 'Lark meeting tools are not available for this user.', 'lark meeting tool missing');
-    }
-    tools.meeting = tool({
-      description: 'Read specific meeting details or minutes.',
-      inputSchema: z.object({
-        operation: z.enum(['list', 'get', 'getMinute']),
-        meetingId: z.string().optional(),
-        meetingNo: z.string().optional(),
-        minuteToken: z.string().optional(),
-        query: z.string().optional(),
-      }),
-      execute: async ({ operation, meetingId, meetingNo, minuteToken, query }) =>
-        larkMeetingTool.execute({
-          operation,
-          ...(meetingId ? { meetingId } : {}),
-          ...(meetingNo ? { meetingNo } : {}),
-          ...(minuteToken ? { minuteToken } : {}),
-          ...(query ? { query } : {}),
-        }),
-    });
-    toolChoice = { toolName: 'meeting' };
-    promptSpec.allowedTools = ['meeting'];
-    promptSpec.whenToUse = ['Use meeting only for specific meeting inspection, meeting lookup, or minutes.'];
-    promptSpec.examples = ['"show the minutes for this meeting" -> meeting.getMinute.'];
-    promptSpec.negativeExamples = ['Do not use meeting tool for day-scoped event discovery.'];
-  } else if (classifier.workflowId === 'CREATE_DOC' || classifier.workflowId === 'EDIT_DOC') {
-    if (!larkDocTool) {
-      return buildWorkflowFailureResult(classifier, 'TOOLSET_INSUFFICIENT', 'Lark doc tools are not available for this user.', 'lark doc tool missing');
-    }
-    tools.doc = tool({
-      description: 'Create or edit a Lark doc using markdown.',
-      inputSchema: z.object({
-        operation: classifier.workflowId === 'CREATE_DOC'
-          ? z.enum(['create'] as const)
-          : z.enum(['edit', 'inspect', 'read'] as const),
-        documentId: z.string().optional(),
-        title: z.string().optional(),
-        markdown: z.string().optional(),
-        instruction: z.string().optional(),
-        strategy: z.enum(['replace', 'append', 'patch', 'delete']).optional(),
-        query: z.string().optional(),
-      }),
-      execute: async ({ operation, documentId, title, markdown, instruction, strategy, query }) =>
-        larkDocTool.execute({
-          operation,
-          ...(documentId ? { documentId } : {}),
-          ...(title ? { title } : {}),
-          ...(markdown ? { markdown } : {}),
-          ...(instruction ? { instruction } : {}),
-          ...(strategy ? { strategy } : {}),
-          ...(query ? { query } : {}),
-        }),
-    });
-    toolChoice = { toolName: 'doc' };
-    promptSpec.allowedTools = ['doc'];
-    promptSpec.whenToUse = ['Use doc for documents, notes, pages, reports, and markdown snapshots only.'];
-    promptSpec.examples = classifier.workflowId === 'CREATE_DOC'
-      ? ['"create a Lark doc titled Daily Lark Snapshot" -> doc.create.']
-      : ['"append these notes to the existing doc" -> doc.edit.'];
-    promptSpec.negativeExamples = ['Do not store report content inside a task title or task summary.', 'Do not create a task when the user asked for a doc.'];
-  } else if (classifier.workflowId === 'SEND_DM') {
-    if (!larkMessageTool) {
-      return buildWorkflowFailureResult(classifier, 'TOOLSET_INSUFFICIENT', 'Lark message tools are not available for this user.', 'lark message tool missing');
-    }
-    tools.sendMessage = tool({
-      description: 'Send a Lark DM.',
-      inputSchema: z.object({
-        message: z.string(),
-        recipientOpenId: z.string().optional(),
-        recipientName: z.string().optional(),
-      }),
-      execute: async ({ message, recipientOpenId, recipientName }) =>
-        larkMessageTool.execute({
-          operation: 'sendDm',
-          message,
-          ...(recipientOpenId ? { recipientOpenIds: [recipientOpenId] } : {}),
-          ...(recipientName ? { recipientNames: [recipientName] } : {}),
-        }),
-    });
-    toolChoice = { toolName: 'sendMessage' };
-    promptSpec.allowedTools = ['sendMessage'];
-    promptSpec.whenToUse = ['Use sendMessage only for direct message requests.'];
-    promptSpec.examples = ['"send a DM to Anish" -> sendMessage.'];
-    promptSpec.negativeExamples = ['Do not create a task or doc for a DM request.'];
-  }
-
-  const result = await runSubAgent({
-    label: 'Lark specialist',
-    prompt: buildWorkflowPrompt(promptSpec, strictRetry || classifier.workflowId !== 'READ_TASKS'),
-    message: buildSubAgentUserMessage(params.objective, {
-      assignee: params.assignee,
-    }),
-    history: recentTurns.slice(-6),
-    tools,
-    toolChoice,
-    runtime,
-    maxSteps: classifier.workflowId === 'SCHEDULE_MEETING' ? 8 : 6,
-    abortSignal,
-  });
-
-  return normalizeWorkflowResult(classifier, result, strictRetry ? { rerouteReason: 'strict_lark_retry' } : undefined);
-};
-
-const executeWorkflow = async (
-  classifier: ClassifierResult,
-  runtime: VercelRuntimeRequestContext,
-  effectiveMessage: string,
-  recentTurns: ChatTurn[],
-  abortSignal?: AbortSignal,
-  strictRetry = false,
-): Promise<WorkflowExecutionResult> => {
-  if (!classifier.canExecuteNow && classifier.missingInputs.length > 0) {
-    return buildWorkflowFailureResult(
-      classifier,
-      'MISSING_REQUIRED_FIELDS',
-      buildMissingInputsText(classifier.workflowId, classifier.missingInputs),
-      classifier.reason,
-    );
-  }
-
-  if (classifier.domain === 'context') {
-    return runContextWorkflow(classifier, runtime, effectiveMessage, recentTurns, abortSignal);
-  }
-  if (classifier.domain === 'google') {
-    return runGoogleWorkflow(
-      classifier,
-      runtime,
-      { objective: effectiveMessage },
-      recentTurns,
-      abortSignal,
-      strictRetry,
-    );
-  }
-  if (classifier.domain === 'zoho') {
-    return runZohoWorkflow(classifier, runtime, effectiveMessage, recentTurns, abortSignal);
-  }
-  return runLarkWorkflow(classifier, runtime, { objective: effectiveMessage }, recentTurns, abortSignal, strictRetry);
-};
-
 const toSupervisorAgentResults = (toolResults: VercelToolEnvelope[], taskId: string): AgentResultDTO[] => {
   if (toolResults.length === 0) {
     return [];
@@ -2455,123 +1278,174 @@ const executeTask = async (
     const conversation = await resolveConversationContext(input);
     const contextStorageId = conversation.persistentThreadId ?? conversation.sharedChatContextId;
     const runtime = await resolveRuntimeContext(task, message, contextStorageId);
-    const resolvedLatestRequest = buildResolvedLatestRequest(message.text, conversation.recentTurns);
+    const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
 
     const updateLiveStatus = async (text: string): Promise<void> => {
       void text;
     };
-    const classifier = classifyWorkflow(resolvedLatestRequest.effectiveMessage);
-    await appendExecutionEventSafe({
-      executionId,
-      phase: 'planning',
-      eventType: 'workflow.classified',
-      actorType: 'system',
-      actorKey: 'supervisor',
-      title: 'Workflow classified',
-      status: 'done',
-      payload: {
-        classifier,
-        latestMessage: message.text,
-        effectiveMessage: resolvedLatestRequest.effectiveMessage,
-        usedHistory: resolvedLatestRequest.usedHistory,
-        antecedentUserTurn: resolvedLatestRequest.antecedentUserTurn ?? null,
-        assistantClarificationTurn: resolvedLatestRequest.assistantClarificationTurn ?? null,
-      },
-    });
 
-    await updateLiveStatus(buildAgentStartStatus(`${classifier.domain}:${classifier.workflowId}`, resolvedLatestRequest.effectiveMessage));
-    let workflowResult = await executeWorkflow(
-      classifier,
-      runtime,
-      resolvedLatestRequest.effectiveMessage,
-      conversation.recentTurns,
+    const supervisorTools = {
+      contextAgent: tool({
+        description:
+          'Search for contacts, web information, documents, conversation history. Use when you need to find information before acting.',
+        inputSchema: z.object({
+          objective: z.string().describe('What you need found or retrieved'),
+          webSearch: z.boolean().optional().describe('Include web results'),
+          contactSearch: z.boolean().optional().describe('Search for contact details'),
+        }),
+        execute: async ({ objective, webSearch, contactSearch }) => {
+          await updateLiveStatus(buildAgentStartStatus('context', objective));
+          const result = await runContextAgent(
+            { objective, webSearch, contactSearch },
+            runtime,
+            abortSignal,
+            async (step) => updateLiveStatus(buildAgentStepStatus('context', step)),
+          );
+          await updateLiveStatus(buildAgentFinishStatus('context', result));
+          return result;
+        },
+      }),
+      googleWorkspaceAgent: tool({
+        description:
+          'Send emails, search Gmail, create drafts, manage calendar. Use when you need to send email or access Google services. Email sending requires human approval.',
+        inputSchema: z.object({
+          objective: z.string().describe('What Google action to perform'),
+          recipientEmail: z.string().optional(),
+          subject: z.string().optional(),
+          body: z.string().optional(),
+        }),
+        execute: async (params) => {
+          await updateLiveStatus(buildAgentStartStatus('Google Workspace', params.objective));
+          const result = await runGoogleWorkspaceAgent(
+            params,
+            runtime,
+            abortSignal,
+            async (step) => updateLiveStatus(buildAgentStepStatus('Google Workspace', step)),
+          );
+          await updateLiveStatus(buildAgentFinishStatus('Google Workspace', result));
+          return result;
+        },
+      }),
+      zohoAgent: tool({
+        description:
+          'Read invoices, payments, overdue reports, CRM records from Zoho. Use when you need financial or CRM data.',
+        inputSchema: z.object({
+          objective: z.string().describe('What Zoho data to fetch or action to perform'),
+        }),
+        execute: async ({ objective }) => {
+          await updateLiveStatus(buildAgentStartStatus('Zoho', objective));
+          const result = await runZohoAgent(
+            objective,
+            runtime,
+            abortSignal,
+            async (step) => updateLiveStatus(buildAgentStepStatus('Zoho', step)),
+          );
+          await updateLiveStatus(buildAgentFinishStatus('Zoho', result));
+          return result;
+        },
+      }),
+      larkAgent: tool({
+        description:
+          'Read or update Lark tasks, messages, calendars, meetings, docs, and Base records. Use for internal team actions and current Lark data.',
+        inputSchema: z.object({
+          objective: z.string().describe('What Lark action to perform. If creating a doc, say doc/document explicitly. If creating a task, say task/todo/action item explicitly.'),
+          assignee: z.string().optional().describe('Who to assign task to'),
+        }),
+        execute: async (params) => {
+          await updateLiveStatus(buildAgentStartStatus('Lark', params.objective));
+          const result = await runLarkAgent(
+            params,
+            runtime,
+            abortSignal,
+            async (step) => updateLiveStatus(buildAgentStepStatus('Lark', step)),
+          );
+          await updateLiveStatus(buildAgentFinishStatus('Lark', result));
+          return result;
+        },
+      }),
+    };
+
+    const supervisorResult = await generateText({
+      model: resolvedModel.model,
+      system: buildSupervisorSystemPrompt(runtime),
+      messages: [
+        ...conversation.recentTurns,
+        { role: 'user', content: message.text },
+      ],
+      tools: supervisorTools,
+      temperature: 0,
+      providerOptions: {
+        google: {
+          thinkingConfig: {
+            includeThoughts: resolvedModel.includeThoughts,
+            thinkingLevel: resolvedModel.thinkingLevel,
+          },
+        },
+      },
+      stopWhen: stepCountIs(10),
       abortSignal,
-    );
-    await updateLiveStatus(`I completed the routed workflow ${classifier.workflowId}.`);
+      onStepFinish: async (step) => {
+        const stepRecord = asRecord(step) ?? {};
+        const toolCalls = asArray(stepRecord.toolCalls)
+          .map((entry) => asRecord(entry))
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+        const toolResults = asArray(stepRecord.toolResults)
+          .map((entry) => asRecord(entry))
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+        const usage = asRecord(stepRecord.usage);
+        await appendExecutionEventSafe({
+          executionId,
+          phase: 'tools',
+          eventType: 'agent.step.io',
+          actorType: 'agent',
+          actorKey: 'supervisor',
+          title: 'Supervisor step',
+          status: 'done',
+          payload: {
+            input: {
+              toolCallsMade: toolCalls.map((toolCall) => ({
+                tool: asString(toolCall.toolName) ?? 'unknown',
+                args: asRecord(toolCall.input) ?? {},
+              })),
+            },
+            output: {
+              toolResults: toolResults.map((toolResult) => {
+                const output = asRecord(toolResult.output);
+                return {
+                  tool: asString(toolResult.toolName) ?? 'unknown',
+                  success: asBoolean(output?.success) ?? true,
+                  summary:
+                    asString(output?.text)
+                    ?? asString(output?.summary)
+                    ?? summarizeText(JSON.stringify(output ?? {}), 180),
+                  error: asString(output?.error) ?? null,
+                };
+              }),
+              text: summarizeText(asString(stepRecord.text), 300),
+            },
+            processing: {
+              inputTokens: asNumber(usage?.inputTokens) ?? 0,
+              outputTokens: asNumber(usage?.outputTokens) ?? 0,
+            },
+          },
+        });
 
-    let validation = workflowResult.status === 'SUCCESS'
-      ? validateWorkflowExecution(classifier, workflowResult)
-      : { valid: true as const };
-
-    if (!validation.valid) {
-      await appendExecutionEventSafe({
-        executionId,
-        phase: 'tools',
-        eventType: 'workflow.validation.failed',
-        actorType: 'system',
-        actorKey: 'supervisor',
-        title: 'Workflow validation failed',
-        summary: validation.detail,
-        status: 'failed',
-        payload: {
-          classifier,
-          validation,
-          toolResults: workflowResult.toolResults.map((entry) => ({
-            toolId: entry.toolId,
-            summary: entry.summary,
-            success: entry.success,
-          })),
-        },
-      });
-
-      workflowResult = await executeWorkflow(
-        classifier,
-        runtime,
-        resolvedLatestRequest.effectiveMessage,
-        conversation.recentTurns,
-        abortSignal,
-        true,
-      );
-      validation = workflowResult.status === 'SUCCESS'
-        ? validateWorkflowExecution(classifier, workflowResult)
-        : { valid: true as const };
-
-      if (!validation.valid) {
-        workflowResult = {
-          ...workflowResult,
-          status: 'TOOLSET_INSUFFICIENT',
-          text: `I could not complete this through the routed ${classifier.workflowId.toLowerCase()} workflow after validating the tool path. Please restate the request with explicit details.`,
-          reason: validation.detail,
-          rerouteReason: validation.reason,
-        };
-      }
-    }
-
-    await appendExecutionEventSafe({
-      executionId,
-      phase: 'tools',
-      eventType: 'workflow.completed',
-      actorType: 'agent',
-      actorKey: 'supervisor',
-      title: 'Workflow completed',
-      status: workflowResult.status === 'SUCCESS' ? 'done' : workflowResult.status === 'MISSING_REQUIRED_FIELDS' ? 'pending' : 'failed',
-      payload: {
-        classifier,
-        workflowResult: {
-          status: workflowResult.status,
-          reason: workflowResult.reason ?? null,
-          rerouteReason: workflowResult.rerouteReason ?? null,
-          calledToolNames: workflowResult.calledToolNames,
-          pendingApproval: Boolean(workflowResult.pendingApproval),
-        },
-        requestResolution: {
-          latestMessage: message.text,
-          effectiveMessage: resolvedLatestRequest.effectiveMessage,
-          usedHistory: resolvedLatestRequest.usedHistory,
-        },
-        validator: validation,
+        void step;
       },
     });
 
-    const toolResults = workflowResult.toolResults;
-    const pendingApproval = workflowResult.pendingApproval ?? extractPendingApproval(toolResults);
-    const rawText = workflowResult.text?.trim()
+    const toolResults = extractNestedToolResults(supervisorResult.steps);
+    const pendingApproval =
+      extractNestedPendingApproval(supervisorResult.steps) ?? extractPendingApproval(toolResults);
+    const rawText = supervisorResult.text?.trim()
       || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n\n')
       || 'Completed the request.';
     const finalText = rawText.length > 50_000
       ? `${rawText.slice(0, 50_000)}\n\n*(Response truncated — showing first portion)*`
       : rawText;
-    const hasToolResults = toolResults.length > 0 || workflowResult.calledToolNames.length > 0;
+    const hasToolResults =
+      toolResults.length > 0
+      || asArray(supervisorResult.steps).some((step) => asArray(asRecord(step)?.toolCalls).length > 0);
     const agentResults = toSupervisorAgentResults(toolResults, task.taskId);
 
     return {
@@ -2585,15 +1459,12 @@ const executeTask = async (
         engine: 'vercel',
         threadId: runtime.threadId,
         node: 'supervisor_v2',
-        stepHistory: ['supervisor_v2.classify', 'supervisor_v2.executeWorkflow'],
+        stepHistory: ['supervisor_v2.executeTask'],
         routeIntent: runtime.canonicalIntent
           ? `${runtime.canonicalIntent.domain}:${runtime.canonicalIntent.operationClass}`
           : undefined,
         canonicalIntent: runtime.canonicalIntent,
-        supervisorWaveCount: 1,
-        workflowDomain: classifier.domain,
-        workflowId: classifier.workflowId,
-        workflowConfidence: classifier.confidence,
+        supervisorWaveCount: asArray(supervisorResult.steps).length,
       },
       finalText,
       toolResults,
