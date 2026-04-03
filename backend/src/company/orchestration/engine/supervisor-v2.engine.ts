@@ -545,38 +545,76 @@ const writeArtifactToWorkspace = async (
   artifact: SavedArtifact,
   rows: unknown[],
   runtime: VercelRuntimeRequestContext,
+  abortSignal?: AbortSignal,
 ): Promise<string | null> => {
-  if (!artifact.localPath || !runtime.workspace?.path) {
-    return null;
-  }
+  void abortSignal;
+  if (!artifact.localPath || !runtime.workspace?.path) return null;
 
   try {
-    const fs = await import('fs/promises');
-    const path = await import('path');
+    const csvContent = convertToCSV(rows).toString('utf-8');
 
-    const dir = path.dirname(artifact.localPath);
-    await fs.mkdir(dir, { recursive: true });
-
-    const csvBuffer = convertToCSV(rows);
-    await fs.writeFile(artifact.localPath, csvBuffer);
-
-    const stat = await fs.stat(artifact.localPath);
-    if (stat.size === 0) {
-      logger.warn('supervisor_v2.artifact.local_write_empty', {
-        path: artifact.localPath,
+    if (csvContent.length > 50_000) {
+      logger.info('supervisor_v2.artifact.workspace_write_skipped', {
+        reason: 'too_large_for_gateway_write',
+        bytes: csvContent.length,
+        rows: rows.length,
       });
       return null;
     }
 
-    logger.info('supervisor_v2.artifact.local_write_ok', {
+    const legacyTools = getLegacyTools({
+      ...runtime,
+      delegatedAgentId: 'workspace-agent',
+    });
+    const codingTool = legacyTools.coding as LegacyExecutableTool | undefined;
+
+    if (!codingTool) {
+      logger.warn('supervisor_v2.artifact.workspace_write_failed', {
+        reason: 'coding_tool_unavailable',
+      });
+      return null;
+    }
+
+    const mkdirResult = await codingTool.execute({
+      operation: 'createDirectory',
+      objective: 'Create directory for artifact storage',
+      path: `${runtime.workspace.path}/.divo/artifacts`,
+    }) as Record<string, unknown>;
+
+    if (!mkdirResult?.success && !String(mkdirResult?.summary ?? '').includes('exists')) {
+      logger.warn('supervisor_v2.artifact.workspace_mkdir_failed', {
+        path: `${runtime.workspace.path}/.divo/artifacts`,
+        result: mkdirResult?.summary,
+      });
+    }
+
+    const writeResult = await codingTool.execute({
+      operation: 'writeFile',
+      objective: 'Write artifact CSV file',
+      contentPlan: {
+        path: artifact.localPath,
+        content: csvContent,
+      },
+    }) as Record<string, unknown>;
+
+    if (!writeResult?.success) {
+      logger.warn('supervisor_v2.artifact.workspace_write_failed', {
+        path: artifact.localPath,
+        result: writeResult?.summary,
+        error: writeResult?.error,
+      });
+      return null;
+    }
+
+    logger.info('supervisor_v2.artifact.workspace_write_ok', {
       path: artifact.localPath,
-      bytes: stat.size,
+      bytes: csvContent.length,
       rows: rows.length,
     });
 
     return artifact.localPath;
   } catch (error) {
-    logger.warn('supervisor_v2.artifact.local_write_failed', {
+    logger.warn('supervisor_v2.artifact.workspace_write_error', {
       path: artifact.localPath,
       error: error instanceof Error ? error.message : 'unknown',
     });
