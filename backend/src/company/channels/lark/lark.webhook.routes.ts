@@ -2839,10 +2839,10 @@ export const createLarkWebhookEventHandler = (
 
           await sendLarkReply({
             text: [
-              'Started a fresh chat context.',
+              'I cleared the chat whiteboard so hard I forgot everything.',
               '',
-              'Previous Lark chat context will not be used for the next turns.',
-              'Stored memories and vectors were kept.',
+              'Starting fresh from here, so the previous Lark chat context will not be used for the next turns.',
+              'Stored memories and vectors are still safe.',
             ].join('\n'),
           });
 
