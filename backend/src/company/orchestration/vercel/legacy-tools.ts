@@ -5914,7 +5914,27 @@ export const createVercelDesktopTools = (
 	            const items = asArray(payload.messages)
 	              .map((entry) => asRecord(entry))
 	              .filter(Boolean);
-	            const normalizedMessages = items.map((entry) => normalizeGmailMessage(entry));
+              const metadataHeaders = ['From', 'To', 'Subject', 'Date', 'In-Reply-To', 'References'];
+              const normalizedMessages = await Promise.all(items.map(async (entry) => {
+                const messageId = asString(entry.id);
+                if (!messageId) {
+                  return normalizeGmailMessage(entry);
+                }
+                const detailUrl = new URL(`${baseUrl}/messages/${encodeURIComponent(messageId)}`);
+                detailUrl.searchParams.set('format', 'metadata');
+                metadataHeaders.forEach((header) => {
+                  detailUrl.searchParams.append('metadataHeaders', header);
+                });
+                try {
+                  const { payload: messagePayload } = await fetchGoogleApiJsonWithRetry(
+                    access.accessToken,
+                    detailUrl,
+                  );
+                  return normalizeGmailMessage(messagePayload);
+                } catch {
+                  return normalizeGmailMessage(entry);
+                }
+              }));
 	            return buildGmailEnvelope({
 	              success: true,
 	              summary:
