@@ -868,6 +868,19 @@ async function runGoogleWorkspaceAgent(
       body: params.body,
     }),
     tools: {
+      listInbox: tool({
+        description: 'List the latest Gmail inbox messages. Use this for requests like "check my inbox", "latest emails", or "try again".',
+        inputSchema: z.object({
+          query: z.string().optional(),
+          maxResults: z.number().int().min(1).max(20).optional(),
+        }),
+        execute: async ({ query, maxResults }) =>
+          googleWorkspaceTool.execute({
+            operation: 'listMessages',
+            ...(query ? { query } : {}),
+            ...(maxResults ? { maxResults } : {}),
+          }),
+      }),
       sendEmail: tool({
         description: 'Send an email.',
         inputSchema: z.object({
@@ -886,14 +899,16 @@ async function runGoogleWorkspaceAgent(
           }),
       }),
       searchEmail: tool({
-        description: 'Search Gmail messages.',
+        description: 'Search Gmail messages by query. Use this only when the user asked to search/filter email, not for simply checking the latest inbox messages.',
         inputSchema: z.object({
           query: z.string(),
+          maxResults: z.number().int().min(1).max(20).optional(),
         }),
-        execute: async ({ query }) =>
+        execute: async ({ query, maxResults }) =>
           googleWorkspaceTool.execute({
             operation: 'searchMessages',
             query,
+            ...(maxResults ? { maxResults } : {}),
           }),
       }),
       createDraft: tool({

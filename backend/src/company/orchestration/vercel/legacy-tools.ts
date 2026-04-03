@@ -5787,6 +5787,11 @@ export const createVercelDesktopTools = (
           maxResults: z.number().int().min(1).max(50).optional(),
         }),
         z.object({
+          operation: z.literal('searchMessages'),
+          query: z.string().min(1),
+          maxResults: z.number().int().min(1).max(50).optional(),
+        }),
+        z.object({
           operation: z.literal('getMessage'),
           messageId: z.string().min(1),
           format: z.enum(['metadata', 'full', 'minimal', 'raw']).optional(),
@@ -5839,6 +5844,7 @@ export const createVercelDesktopTools = (
         withLifecycle(hooks, 'googleMail', 'Running Gmail workflow', async () => {
           const VALID_GMAIL_OPERATIONS = [
             'listMessages',
+            'searchMessages',
             'getMessage',
             'getThread',
             'createDraft',
@@ -5855,7 +5861,7 @@ export const createVercelDesktopTools = (
               success: false,
               status: 'error' as const,
               errorKind: 'unsupported',
-              error: `Invalid Gmail operation "${operation ?? 'undefined'}". Valid operations: sendMessage (requires: to, subject, body), searchMessages (requires: query), getDraft, sendDraft (requires: draftId).`,
+              error: `Invalid Gmail operation "${operation ?? 'undefined'}". Valid operations: listMessages, searchMessages (requires: query), getMessage, getThread, createDraft, sendMessage, sendDraft (requires: draftId).`,
               retryable: false,
               data: null,
               confirmedAction: false,
@@ -5895,10 +5901,14 @@ export const createVercelDesktopTools = (
 	              ...envelope,
 	            });
 
-	          if (input.operation === 'listMessages') {
+	          if (input.operation === 'listMessages' || input.operation === 'searchMessages') {
 	            const url = new URL(`${baseUrl}/messages`);
             url.searchParams.set('maxResults', String(input.maxResults ?? 10));
-            url.searchParams.set('q', input.query?.trim() || 'in:inbox');
+            const query =
+              input.operation === 'searchMessages'
+                ? input.query.trim()
+                : input.query?.trim() || 'in:inbox';
+            url.searchParams.set('q', query);
             try {
               const { payload } = await fetchGoogleApiJsonWithRetry(access.accessToken, url);
 	            const items = asArray(payload.messages)
@@ -5907,7 +5917,10 @@ export const createVercelDesktopTools = (
 	            const normalizedMessages = items.map((entry) => normalizeGmailMessage(entry));
 	            return buildGmailEnvelope({
 	              success: true,
-	              summary: `Found ${items.length} message(s).`,
+	              summary:
+                  input.operation === 'searchMessages'
+                    ? `Found ${items.length} message(s) for "${query}".`
+                    : `Found ${items.length} message(s).`,
 	              data: {
 	                count: items.length,
 	                messages: normalizedMessages,
@@ -5917,6 +5930,7 @@ export const createVercelDesktopTools = (
 	                resultCount: items.length,
 	              },
 	              fullPayload: {
+                  query,
 	                count: items.length,
 	                messages: normalizedMessages,
 	                resultSizeEstimate: payload.resultSizeEstimate ?? items.length,
@@ -5926,7 +5940,10 @@ export const createVercelDesktopTools = (
               const payload = ((error as any)?.payload ?? {}) as Record<string, unknown>;
 	              return buildGmailEnvelope({
 	                success: false,
-	                summary: `Gmail list failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
+	                summary:
+                    input.operation === 'searchMessages'
+                      ? `Gmail search failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`
+                      : `Gmail list failed: ${(payload as any)?.error?.message ?? (error as Error)?.message ?? 'request failed'}`,
 	                errorKind: 'api_failure',
                 retryable: true,
                 fullPayload: { status: (error as any)?.status, payload },
