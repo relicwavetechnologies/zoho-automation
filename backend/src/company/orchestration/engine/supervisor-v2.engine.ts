@@ -255,7 +255,7 @@ export const buildSupervisorSystemPrompt = (runtime: VercelRuntimeRequestContext
 };
 
 const buildSubAgentPrompt = (label: string, guidance: string): string =>
-  `You are a ${label}. ${guidance}\n\n${LARK_FORMAT_RULES}`.trim();
+  `You are a ${label}. ${guidance} Do not claim a tool is unavailable, unsupported, or failed unless a tool call explicitly returned that result. If the user asked for an action and the relevant tool exists, call it before answering.\n\n${LARK_FORMAT_RULES}`.trim();
 
 const buildContextAgentPrompt = (): string => [
   'You are a retrieval specialist.',
@@ -597,6 +597,7 @@ const runSubAgent = async (
     message: string;
     tools: Record<string, ReturnType<typeof tool>>;
     runtime: VercelRuntimeRequestContext;
+    maxSteps?: number;
     abortSignal?: AbortSignal;
     onStepFinish?: (step: unknown) => Promise<void>;
   },
@@ -616,7 +617,7 @@ const runSubAgent = async (
         },
       },
     },
-    stopWhen: stepCountIs(3),
+    stopWhen: stepCountIs(input.maxSteps ?? 3),
     abortSignal: input.abortSignal,
     onStepFinish: input.onStepFinish,
   });
@@ -1131,6 +1132,7 @@ async function runLarkAgent(
     }),
     tools,
     runtime,
+    maxSteps: 6,
     abortSignal,
     onStepFinish,
   });
