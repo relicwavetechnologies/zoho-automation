@@ -709,9 +709,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
       textPreview: safeText.slice(0, 120),
     });
     const result = await this.requestWithTokenRetry({
-      method: 'PUT',
+      method: 'PATCH',
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
       body: {
+        msg_type: format === 'text' ? 'text' : 'interactive',
         content: JSON.stringify(
           format === 'text'
             ? { text: safeText }
@@ -768,7 +769,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
   }
 
   private async requestWithTokenRetry(input: {
-    method: 'POST' | 'PUT';
+    method: 'POST' | 'PATCH';
     requestPath: string;
     body: Record<string, unknown>;
     context: 'send' | 'update';
@@ -872,7 +873,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
 
   private async performRequest(
     input: {
-      method: 'POST' | 'PUT';
+      method: 'POST' | 'PATCH';
       requestPath: string;
       body: Record<string, unknown>;
     },
