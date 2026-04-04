@@ -33,6 +33,8 @@ import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-
 import {
   buildTaskStateContext,
   buildThreadSummaryContext,
+  createEmptyTaskState,
+  type DesktopTaskState,
   filterThreadMessagesForContext,
   parseDesktopTaskState,
   parseDesktopThreadSummary,
@@ -75,9 +77,27 @@ type ConversationContextSnapshot = {
   persistentThreadId?: string;
   recentTurns: ChatTurn[];
   attachmentMessages: string[];
+  taskState: DesktopTaskState;
   threadSummaryContext?: string;
   taskStateContext?: string;
   historySource: 'lark_shared_chat' | 'lark_lifetime_thread' | 'desktop_thread' | 'ephemeral_memory';
+};
+
+type TodoStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+
+type TodoItem = {
+  id: string;
+  description: string;
+  status: TodoStatus;
+  result?: string;
+  updatedAt: string;
+};
+
+type ActiveTodos = {
+  goal: string;
+  items: TodoItem[];
+  createdAt: string;
+  expiresAt: string;
 };
 
 type AttachmentKind = 'pdf' | 'image' | 'csv' | 'doc' | 'other';
@@ -176,6 +196,8 @@ let _vibeIndex = 0;
 let _dotIndex = 0;
 const SHAPE_INTENT_CLASSIFIER_MODEL = 'llama-3.1-8b-instant';
 const SHAPE_INTENT_CLASSIFIER_TIMEOUT_MS = 3_000;
+const TODO_KEY = '__active_todos__';
+const TODO_TTL_HOURS = 48;
 
 const nextVibeText = (): string => {
   const words = DIVO_VIBES[_vibeIndex % DIVO_VIBES.length];
@@ -1321,6 +1343,8 @@ You are Divo, the orchestration supervisor for company ${runtime.companyId},
 department ${departmentLabel}. You are helping ${requesterLabel}. Today is ${today}.
 
 You have 5 specialist agents. You route tasks to them — you never execute tool calls yourself.
+You also have one internal helper tool:
+- manageTodos: create, update, and clear active multi-step todos for the current conversation
 
 AGENTS:
 - contextAgent: find contacts, web info, documents, prior conversation facts
@@ -1358,6 +1382,18 @@ WORKSPACE RULES:
   "Process file at /path/file.csv. Task: X. Output to: /path/out.csv"
 - If workspace not available: tell user data is saved and processing can happen when
   workspace connects
+
+TODO MANAGEMENT RULES:
+- Create todos only when a task has 3 or more distinct steps, batch work, or multiple approval cycles
+- Do not create todos for simple single-step requests that finish in one agent call
+- When you create todos, use manageTodos with a clear goal and concrete step descriptions
+- While working, mark the current step as running before you start it
+- When a step completes, update it to done, failed, or skipped with a brief result
+- If a step fails, mark it failed with the reason and continue the next step if that still makes sense
+- manageTodos returns nextPending — use it to keep momentum
+- If the user says cancel, stop, forget it, or start over, clear todos and confirm
+- If the user asks something unrelated, answer it and keep existing todos intact
+- manageTodos auto-clears when all items are finished
 
 DOCUMENT / ATTACHMENT RULES:
 - When a user sends an attached file, its content or preview is already in the conversation above as an attachment message
@@ -1541,6 +1577,23 @@ MULTI-STEP CHAINING EXAMPLES:
                  Task: find customers with multiple overdue invoices.
                  Output to: /workspace/.divo/artifacts/duplicate_customers.csv"
     })
+
+  "send payment reminders to all overdue customers":
+    manageTodos({ action: "create", goal: "send payment reminders",
+      todos: [
+        { id: "1", description: "fetch all overdue customers from Zoho" },
+        { id: "2", description: "draft personalized reminder email template" },
+        { id: "3", description: "send batch 1 (customers 1-30) — needs approval" },
+        { id: "4", description: "send batch 2 (customers 31-60) — needs approval" },
+        { id: "5", description: "send batch 3 (customers 61-90) — needs approval" },
+        { id: "6", description: "send remaining customers — needs approval" }
+      ]
+    })
+    manageTodos({ action: "update", id: "1", status: "running" })
+    zohoAgent({ objective: "fetch all overdue customers 2026" })
+    manageTodos({ action: "update", id: "1", status: "done", result: "122 customers fetched" })
+    manageTodos({ action: "update", id: "2", status: "running" })
+    ... and so on
 
 CONTINUATION HANDLING:
   When latest message is a short fragment with no standalone meaning,
@@ -2186,6 +2239,7 @@ const resolveConversationContext = async (
       recentTurns: dedupeTrailingCurrentMessage(normalizeTurns(recentMessages), message.text).slice(-10),
       attachmentMessages: (message.attachedFiles ?? []).map((file) =>
         `[ATTACHED: ${file.fileName} | ${file.mimeType} | id:${file.fileAssetId}]`),
+      taskState: sharedMemory.taskState,
       threadSummaryContext: buildThreadSummaryContext(sharedMemory.summary) ?? undefined,
       taskStateContext: buildTaskStateContext(sharedMemory.taskState) ?? undefined,
       historySource: 'lark_shared_chat',
@@ -2195,6 +2249,7 @@ const resolveConversationContext = async (
   if (message.channel === 'lark' && companyId && linkedUserId) {
     const thread = await desktopThreadsService.findOrCreateLarkLifetimeThread(linkedUserId, companyId);
     const meta = await desktopThreadsService.getThreadMeta(thread.id, linkedUserId);
+    const taskState = parseDesktopTaskState((meta as Record<string, unknown>).taskStateJson);
     const cached = await desktopThreadsService.getCachedOwnedThreadContext(
       thread.id,
       linkedUserId,
@@ -2215,12 +2270,11 @@ const resolveConversationContext = async (
       ),
       attachmentMessages: (message.attachedFiles ?? []).map((file) =>
         `[ATTACHED: ${file.fileName} | ${file.mimeType} | id:${file.fileAssetId}]`),
+      taskState,
       threadSummaryContext: buildThreadSummaryContext(
         parseDesktopThreadSummary((meta as Record<string, unknown>).summaryJson),
       ) ?? undefined,
-      taskStateContext: buildTaskStateContext(
-        parseDesktopTaskState((meta as Record<string, unknown>).taskStateJson),
-      ) ?? undefined,
+      taskStateContext: buildTaskStateContext(taskState) ?? undefined,
       historySource: 'lark_lifetime_thread',
     };
   }
@@ -2228,6 +2282,7 @@ const resolveConversationContext = async (
   if (message.channel === 'desktop' && message.chatId) {
     try {
       const meta = await desktopThreadsService.getThreadMeta(message.chatId, message.userId);
+      const taskState = parseDesktopTaskState((meta as Record<string, unknown>).taskStateJson);
       const cached = await desktopThreadsService.getCachedOwnedThreadContext(
         message.chatId,
         message.userId,
@@ -2248,12 +2303,11 @@ const resolveConversationContext = async (
         ),
         attachmentMessages: (message.attachedFiles ?? []).map((file) =>
           `[ATTACHED: ${file.fileName} | ${file.mimeType} | id:${file.fileAssetId}]`),
+        taskState,
         threadSummaryContext: buildThreadSummaryContext(
           parseDesktopThreadSummary((meta as Record<string, unknown>).summaryJson),
         ) ?? undefined,
-        taskStateContext: buildTaskStateContext(
-          parseDesktopTaskState((meta as Record<string, unknown>).taskStateJson),
-        ) ?? undefined,
+        taskStateContext: buildTaskStateContext(taskState) ?? undefined,
         historySource: 'desktop_thread',
       };
     } catch (error) {
@@ -2280,6 +2334,7 @@ const resolveConversationContext = async (
     ),
     attachmentMessages: (message.attachedFiles ?? []).map((file) =>
       `[ATTACHED: ${file.fileName} | ${file.mimeType} | id:${file.fileAssetId}]`),
+    taskState: createEmptyTaskState(),
     historySource: 'ephemeral_memory',
   };
 };
@@ -3280,6 +3335,7 @@ const buildStepProgressText = (step: unknown): string => {
         googleWorkspaceAgent: 'Google Workspace',
         larkAgent: 'Lark',
         workspaceAgent: 'Workspace',
+        manageTodos: 'Todo tracker',
       } as Record<string, string>)[toolName] ?? toolName;
       return `${label}: ${summarizeText(summary, 80)}`;
     }
@@ -3294,6 +3350,7 @@ const buildStepProgressText = (step: unknown): string => {
       googleWorkspaceAgent: 'Accessing Google',
       larkAgent: 'Accessing Lark',
       workspaceAgent: 'Running workspace task',
+      manageTodos: 'Updating todo list',
     } as Record<string, string>)[name] ?? `Running ${name}`);
 
   if (called.length > 0) {
@@ -3539,6 +3596,105 @@ const executeTask = async (
     const conversation = await resolveConversationContext(input);
     const contextStorageId = conversation.persistentThreadId ?? conversation.sharedChatContextId;
     const runtime = await resolveRuntimeContext(task, message, contextStorageId);
+    let currentTaskState = conversation.taskState ?? createEmptyTaskState();
+
+    const readStoredTodos = (): ActiveTodos | null => {
+      const raw = currentTaskState.workingSets?.[TODO_KEY] as unknown;
+      return raw ? raw as ActiveTodos : null;
+    };
+
+    const loadActiveTodos = (): ActiveTodos | null => {
+      const todos = readStoredTodos();
+      if (!todos) {
+        return null;
+      }
+      if (new Date(todos.expiresAt) < new Date()) {
+        return null;
+      }
+      return todos;
+    };
+
+    const saveActiveTodos = async (todos: ActiveTodos | null): Promise<void> => {
+      try {
+        const workingSets = {
+          ...(currentTaskState.workingSets ?? {}),
+        } as Record<string, unknown>;
+        if (todos === null) {
+          delete workingSets[TODO_KEY];
+        } else {
+          workingSets[TODO_KEY] = todos;
+        }
+        const nextTaskState: DesktopTaskState = {
+          ...currentTaskState,
+          workingSets: workingSets as DesktopTaskState['workingSets'],
+          updatedAt: new Date().toISOString(),
+        };
+
+        if (conversation.sharedChatContextId && runtime.channel === 'lark' && message.chatId) {
+          await larkChatContextService.persistTaskState({
+            companyId: runtime.companyId,
+            chatId: message.chatId,
+            chatType: message.chatType,
+            taskState: nextTaskState,
+          });
+        } else if (conversation.persistentThreadId && conversation.linkedUserId) {
+          await desktopThreadsService.updateOwnedThreadMemory(
+            conversation.persistentThreadId,
+            conversation.linkedUserId,
+            {
+              taskStateJson: nextTaskState as unknown as Record<string, unknown>,
+            },
+          );
+        }
+
+        currentTaskState = nextTaskState;
+        conversation.taskState = nextTaskState;
+        conversation.taskStateContext = buildTaskStateContext(nextTaskState) ?? undefined;
+      } catch (err) {
+        logger.warn('supervisor_v2.todos.save_failed', {
+          error: err instanceof Error ? err.message : 'unknown',
+        });
+      }
+    };
+
+    const staleTodos = readStoredTodos();
+    if (staleTodos && new Date(staleTodos.expiresAt) < new Date()) {
+      await saveActiveTodos(null);
+      logger.info('supervisor_v2.todos.expired_cleared', {
+        goal: staleTodos.goal,
+      });
+    }
+
+    const buildTodoContext = (): string => {
+      const todos = loadActiveTodos();
+      if (!todos) {
+        return '';
+      }
+
+      const statusIcon: Record<TodoStatus, string> = {
+        pending: '○',
+        running: '⟳',
+        done: '✓',
+        failed: '✗',
+        skipped: '–',
+      };
+
+      const lines = todos.items.map((item) => {
+        const icon = statusIcon[item.status];
+        const result = item.result ? ` [${item.result}]` : '';
+        return `${icon} ${item.id}. ${item.description}${result}`;
+      });
+
+      return [
+        `ACTIVE TODOS — Goal: ${todos.goal}`,
+        lines.join('\n'),
+        '',
+        'Update todo status using manageTodos as you complete each step.',
+        'If user asks something unrelated, answer it but keep todos intact.',
+        'Only clear if user cancels or all steps are done.',
+      ].join('\n');
+    };
+
     const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
     const attachmentContextMessages: string[] = [];
     if (input.message.attachedFiles?.length) {
@@ -3600,6 +3756,104 @@ const executeTask = async (
     };
 
     const supervisorTools = {
+      manageTodos: tool({
+        description: [
+          'Manage your active todo list for complex multi-step tasks.',
+          'CREATE todos when a task has 3+ steps or requires batch processing.',
+          'UPDATE status as you complete each step.',
+          'CLEAR when all done or user cancels.',
+          'Do NOT create todos for simple single-step requests.',
+        ].join(' '),
+        inputSchema: z.object({
+          action: z.enum(['create', 'update', 'clear']),
+          goal: z.string().optional().describe('High level goal for this todo list'),
+          todos: z.array(z.object({
+            id: z.string(),
+            description: z.string(),
+          })).optional().describe('Initial todo items — all start as pending'),
+          id: z.string().optional().describe('Todo item id to update'),
+          status: z.enum(['pending', 'running', 'done', 'failed', 'skipped']).optional(),
+          result: z.string().optional().describe('Brief result or reason for this status'),
+        }),
+        execute: async ({ action, goal, todos, id, status, result }) => {
+          const now = new Date().toISOString();
+          const expires = new Date(
+            Date.now() + TODO_TTL_HOURS * 60 * 60 * 1000,
+          ).toISOString();
+
+          if (action === 'create') {
+            if (!goal || !todos?.length) {
+              return { success: false, message: 'goal and todos required for create' };
+            }
+            const newTodos: ActiveTodos = {
+              goal,
+              items: todos.map((todo) => ({
+                id: todo.id,
+                description: todo.description,
+                status: 'pending',
+                updatedAt: now,
+              })),
+              createdAt: now,
+              expiresAt: expires,
+            };
+            await saveActiveTodos(newTodos);
+            return {
+              success: true,
+              message: `Created ${todos.length} todos for: ${goal}`,
+              todos: newTodos.items,
+            };
+          }
+
+          if (action === 'update') {
+            const current = loadActiveTodos();
+            if (!current) {
+              return { success: false, message: 'No active todos found' };
+            }
+            if (!id || !status) {
+              return { success: false, message: 'id and status required for update' };
+            }
+            const hasMatch = current.items.some((item) => item.id === id);
+            if (!hasMatch) {
+              return { success: false, message: `Todo ${id} not found` };
+            }
+
+            const updated: ActiveTodos = {
+              ...current,
+              expiresAt: expires,
+              items: current.items.map((item) =>
+                item.id === id
+                  ? { ...item, status, result, updatedAt: now }
+                  : item),
+            };
+            await saveActiveTodos(updated);
+
+            const allFinished = updated.items.every((item) =>
+              ['done', 'failed', 'skipped'].includes(item.status));
+            if (allFinished) {
+              await saveActiveTodos(null);
+              return {
+                success: true,
+                message: 'All todos finished — list cleared automatically',
+                allDone: true,
+              };
+            }
+
+            const next = updated.items.find((item) => item.status === 'pending');
+            return {
+              success: true,
+              message: `Updated todo ${id} → ${status}`,
+              nextPending: next?.description ?? null,
+            };
+          }
+
+          if (action === 'clear') {
+            await saveActiveTodos(null);
+            return { success: true, message: 'Todo list cleared' };
+          }
+
+          return { success: false, message: 'Unknown action' };
+        },
+      }),
       contextAgent: tool({
         description:
           `Search for contacts, emails, web information, documents, or conversation history.
@@ -3763,17 +4017,21 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       });
     }
 
+    const todoContext = buildTodoContext();
+    const messages = [
+      ...conversation.recentTurns,
+      ...(todoContext ? [{ role: 'user' as const, content: todoContext }] : []),
+      ...attachmentContextMessages.map((content) => ({
+        role: 'user' as const,
+        content,
+      })),
+      { role: 'user' as const, content: message.text },
+    ];
+
     const supervisorResult = await generateText({
       model: resolvedModel.model,
       system: buildSupervisorSystemPrompt(runtime, conversation),
-      messages: [
-        ...conversation.recentTurns,
-        ...attachmentContextMessages.map((content) => ({
-          role: 'user' as const,
-          content,
-        })),
-        { role: 'user', content: message.text },
-      ],
+      messages,
       tools: supervisorTools,
       temperature: 0,
       providerOptions: {
