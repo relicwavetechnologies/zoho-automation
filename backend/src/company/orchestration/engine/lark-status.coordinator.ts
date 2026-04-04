@@ -120,7 +120,7 @@ export class LarkStatusCoordinator {
         const result = await this.adapter.updateMessage({
           messageId: this.liveTextMessageId,
           text: nextText,
-          format: 'text',
+          format: 'interactive',
           correlationId: this.correlationId,
         });
         logger.info('supervisor_v2.live_text.update_ok', {
@@ -142,7 +142,7 @@ export class LarkStatusCoordinator {
         const result = await this.adapter.sendMessage({
           chatId: this.chatId,
           text: nextText,
-          format: 'text',
+          format: 'interactive',
           correlationId: this.correlationId,
           replyToMessageId: this.replyToMessageId,
           replyInThread: this.replyInThread,
@@ -188,7 +188,7 @@ export class LarkStatusCoordinator {
       const result = await this.adapter.updateMessage({
         messageId: this.liveTextMessageId,
         text,
-        format: 'text',
+        format: 'interactive',
         correlationId: this.correlationId,
       });
       logger.info('supervisor_v2.live_text.finalize_ok', {
