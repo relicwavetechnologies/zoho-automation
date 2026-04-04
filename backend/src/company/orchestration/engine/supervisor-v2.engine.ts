@@ -3713,88 +3713,17 @@ const executeTask = async (
         .join('\n');
     };
 
-    const LIVE_TEXT_BOX_WIDTH = 30;
-    const LIVE_TEXT_BORDER = '='.repeat(LIVE_TEXT_BOX_WIDTH + 4);
-
-    const wrapLineForBox = (line: string, width: number): string[] => {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        return [''];
-      }
-      const words = trimmed.split(/\s+/).filter(Boolean);
-      const lines: string[] = [];
-      let current = '';
-      for (const word of words) {
-        if (!current) {
-          if (word.length <= width) {
-            current = word;
-            continue;
-          }
-          for (let index = 0; index < word.length; index += width) {
-            lines.push(word.slice(index, index + width));
-          }
-          current = '';
-          continue;
-        }
-        const next = `${current} ${word}`;
-        if (next.length <= width) {
-          current = next;
-          continue;
-        }
-        lines.push(current);
-        if (word.length <= width) {
-          current = word;
-          continue;
-        }
-        for (let index = 0; index < word.length; index += width) {
-          const chunk = word.slice(index, index + width);
-          if (chunk.length === width) {
-            lines.push(chunk);
-          } else {
-            current = chunk;
-          }
-        }
-      }
-      if (current) {
-        lines.push(current);
-      }
-      return lines.length > 0 ? lines : [''];
-    };
-
-    const buildLiveTextBox = (...sections: Array<string | undefined>): string => {
-      const renderedLines: string[] = [];
-      const normalizedSections = sections
+    const buildLiveTextBody = (...sections: Array<string | undefined>): string =>
+      sections
         .filter((section): section is string => Boolean(section && section.trim().length > 0))
-        .map((section) => section.trim());
-
-      for (const [sectionIndex, section] of normalizedSections.entries()) {
-        const sectionLines = section
-          .split('\n')
-          .flatMap((line) => wrapLineForBox(line, LIVE_TEXT_BOX_WIDTH));
-        for (const line of sectionLines) {
-          renderedLines.push(`| ${line.padEnd(LIVE_TEXT_BOX_WIDTH, ' ')} |`);
-        }
-        if (sectionIndex < normalizedSections.length - 1) {
-          renderedLines.push(`| ${''.padEnd(LIVE_TEXT_BOX_WIDTH, ' ')} |`);
-        }
-      }
-
-      if (renderedLines.length === 0) {
-        renderedLines.push(`| ${''.padEnd(LIVE_TEXT_BOX_WIDTH, ' ')} |`);
-      }
-
-      return [
-        LIVE_TEXT_BORDER,
-        ...renderedLines,
-        LIVE_TEXT_BORDER,
-      ].join('\n');
-    };
+        .map((section) => section.trim())
+        .join('\n\n');
 
     const buildStatusCardText = (): string => {
       const todoSection = buildTodoContext();
       const logSection = formatStepLog();
       const vibeText = nextVibeText();
-      return buildLiveTextBox(
+      return buildLiveTextBody(
         todoSection,
         logSection,
         vibeText,
@@ -4081,13 +4010,13 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
         { text: '*Working on it...*', actions: [] },
         { force: true },
       );
-      await statusCoordinator.updateLiveText(buildLiveTextBox('Starting up ···'));
+      await statusCoordinator.updateLiveText(buildLiveTextBody('Starting up ···'));
       statusCoordinator.startHeartbeat(() => {
         const todoSection = buildTodoContext();
         const logSection = formatStepLog();
         const vibeText = nextVibeText();
         return {
-          text: buildLiveTextBox(todoSection, logSection, vibeText),
+          text: buildLiveTextBody(todoSection, logSection, vibeText),
           actions: [],
         };
       });
@@ -4173,7 +4102,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
           const todoSection = buildTodoContext();
           const logSection = formatStepLog();
           const vibeText = nextVibeText();
-          const cardText = buildLiveTextBox(todoSection, logSection, vibeText);
+          const cardText = buildLiveTextBody(todoSection, logSection, vibeText);
           await statusCoordinator.updateLiveText(cardText);
         }
       },
