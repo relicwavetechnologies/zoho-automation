@@ -3,6 +3,7 @@ import type {
   ChannelAdapter,
   ChannelOutboundResult,
 } from '../../channels/base/channel-adapter';
+import { logger } from '../../../utils/logger';
 
 type LarkStatusRenderable = {
   text: string;
@@ -108,13 +109,23 @@ export class LarkStatusCoordinator {
     if (this.closed || !nextText) return;
     try {
       if (this.liveTextMessageId) {
+        logger.info('supervisor_v2.live_text.update_attempt', {
+          liveTextMessageId: this.liveTextMessageId,
+          textLength: nextText.length,
+        });
         await this.adapter.updateMessage({
           messageId: this.liveTextMessageId,
           text: nextText,
           format: 'text',
           correlationId: this.correlationId,
         });
+        logger.info('supervisor_v2.live_text.update_ok', {
+          liveTextMessageId: this.liveTextMessageId,
+        });
       } else {
+        logger.info('supervisor_v2.live_text.send_attempt', {
+          chatId: this.chatId,
+        });
         const result = await this.adapter.sendMessage({
           chatId: this.chatId,
           text: nextText,
@@ -124,9 +135,16 @@ export class LarkStatusCoordinator {
           replyInThread: this.replyInThread,
         });
         this.liveTextMessageId = result?.messageId;
+        logger.info('supervisor_v2.live_text.send_ok', {
+          liveTextMessageId: this.liveTextMessageId,
+          hasMessageId: Boolean(this.liveTextMessageId),
+        });
       }
-    } catch {
-      // non-critical — live text failing should not break execution
+    } catch (err) {
+      logger.warn('supervisor_v2.live_text.failed', {
+        liveTextMessageId: this.liveTextMessageId,
+        error: err instanceof Error ? err.message : 'unknown',
+      });
     }
   }
 
