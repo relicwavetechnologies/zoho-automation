@@ -173,6 +173,10 @@ export class LarkStatusCoordinator {
 
   public async finalizeLiveText(text: string): Promise<void> {
     if (this.closed || !this.liveTextMessageId) return;
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
     try {
       logger.info('supervisor_v2.live_text.finalize_attempt', {
         chatId: this.chatId,

@@ -3704,16 +3704,16 @@ const executeTask = async (
 
     const formatStepLog = (): string => {
       if (stepLog.length === 0) return '';
-      const visible = stepLog.slice(-4);
+      const visible = stepLog.slice(-3);
       return visible
         .map((line, index) => {
           const isLatest = index === visible.length - 1;
           return isLatest ? line : `${line} ✓`;
         })
-        .join(' | ');
+        .join('\n');
     };
 
-    const LIVE_TEXT_BOX_WIDTH = 44;
+    const LIVE_TEXT_BOX_WIDTH = 30;
     const LIVE_TEXT_BORDER = '='.repeat(LIVE_TEXT_BOX_WIDTH + 4);
 
     const wrapLineForBox = (line: string, width: number): string[] => {
@@ -3802,7 +3802,7 @@ const executeTask = async (
     };
 
     const appendStatusLine = (line: string | undefined): void => {
-      const normalized = summarizeText(stripMarkdownDecorators(line ?? ''), 120);
+      const normalized = summarizeText(stripMarkdownDecorators(line ?? ''), 72);
       if (!normalized || normalized === 'Working on it...') {
         return;
       }
