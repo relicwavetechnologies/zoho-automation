@@ -3713,18 +3713,79 @@ const executeTask = async (
         .join(' | ');
     };
 
-    const LIVE_TEXT_BORDER = '====================================';
+    const LIVE_TEXT_BOX_WIDTH = 44;
+    const LIVE_TEXT_BORDER = '='.repeat(LIVE_TEXT_BOX_WIDTH + 4);
+
+    const wrapLineForBox = (line: string, width: number): string[] => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        return [''];
+      }
+      const words = trimmed.split(/\s+/).filter(Boolean);
+      const lines: string[] = [];
+      let current = '';
+      for (const word of words) {
+        if (!current) {
+          if (word.length <= width) {
+            current = word;
+            continue;
+          }
+          for (let index = 0; index < word.length; index += width) {
+            lines.push(word.slice(index, index + width));
+          }
+          current = '';
+          continue;
+        }
+        const next = `${current} ${word}`;
+        if (next.length <= width) {
+          current = next;
+          continue;
+        }
+        lines.push(current);
+        if (word.length <= width) {
+          current = word;
+          continue;
+        }
+        for (let index = 0; index < word.length; index += width) {
+          const chunk = word.slice(index, index + width);
+          if (chunk.length === width) {
+            lines.push(chunk);
+          } else {
+            current = chunk;
+          }
+        }
+      }
+      if (current) {
+        lines.push(current);
+      }
+      return lines.length > 0 ? lines : [''];
+    };
 
     const buildLiveTextBox = (...sections: Array<string | undefined>): string => {
-      const content = sections
+      const renderedLines: string[] = [];
+      const normalizedSections = sections
         .filter((section): section is string => Boolean(section && section.trim().length > 0))
-        .map((section) => section.trim())
-        .join('\n\n');
+        .map((section) => section.trim());
+
+      for (const [sectionIndex, section] of normalizedSections.entries()) {
+        const sectionLines = section
+          .split('\n')
+          .flatMap((line) => wrapLineForBox(line, LIVE_TEXT_BOX_WIDTH));
+        for (const line of sectionLines) {
+          renderedLines.push(`| ${line.padEnd(LIVE_TEXT_BOX_WIDTH, ' ')} |`);
+        }
+        if (sectionIndex < normalizedSections.length - 1) {
+          renderedLines.push(`| ${''.padEnd(LIVE_TEXT_BOX_WIDTH, ' ')} |`);
+        }
+      }
+
+      if (renderedLines.length === 0) {
+        renderedLines.push(`| ${''.padEnd(LIVE_TEXT_BOX_WIDTH, ' ')} |`);
+      }
+
       return [
         LIVE_TEXT_BORDER,
-        '',
-        content,
-        '',
+        ...renderedLines,
         LIVE_TEXT_BORDER,
       ].join('\n');
     };
@@ -4133,7 +4194,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
     const agentResults = toSupervisorAgentResults(toolResults, task.taskId);
 
     const durationSec = Math.round((Date.now() - executionStartMs) / 1000);
-    await statusCoordinator?.finalizeLiveText(buildLiveTextBox(`Completed in ${durationSec}s ✓`));
+    await statusCoordinator?.finalizeLiveText(`Completed in ${durationSec}s ✓`);
 
     return {
       task,
@@ -4163,7 +4224,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
     };
   } catch (error) {
     const messageText = error instanceof Error ? error.message : 'Supervisor v2 execution failed.';
-    await statusCoordinator?.finalizeLiveText(buildLiveTextBox('Something went wrong ✗'));
+    await statusCoordinator?.finalizeLiveText('Something went wrong ✗');
     await appendExecutionEventSafe({
       executionId,
       phase: 'tools',
