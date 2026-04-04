@@ -1,6 +1,7 @@
 import { generateText, stepCountIs, tool } from 'ai';
 import { z } from 'zod';
 
+import config from '../../../config';
 import { larkChatContextService } from '../../channels/lark/lark-chat-context.service';
 import { resolveChannelAdapter } from '../../channels/channel-adapter.registry';
 import {
@@ -40,6 +41,7 @@ import {
 import { fileUploadService } from '../../../modules/file-upload/file-upload.service';
 import { logger } from '../../../utils/logger';
 import { redDebug } from '../../../utils/red-debug';
+import { withProviderRetry } from '../../../utils/provider-retry';
 import { estimateTokens } from '../../../utils/token-estimator';
 
 type ChatTurn = {
@@ -100,13 +102,39 @@ type DeliveryMode =
   | 'workspace_process_then_publish'
   | 'saved_for_later_processing';
 
+type ResultShapeSpec = {
+  domain: 'zoho' | 'google' | 'lark' | 'context';
+  entity: 'invoice' | 'customer' | 'payment' | 'email' | 'event' | 'task' | 'record';
+  grain: 'invoice' | 'customer_aggregate' | 'payment' | 'email' | 'event' | 'task' | 'record';
+  limit?: number;
+  columns?: string[];
+  summaryOnly: boolean;
+  rawExportRequested: boolean;
+  sortField?: string;
+  sortDirection?: 'asc' | 'desc';
+  sourceFetchLimit?: number;
+  artifactFileStem?: string;
+};
+
+type ShapedDataset = {
+  rows: Record<string, unknown>[];
+  previewRows: Record<string, unknown>[];
+  columns: string[];
+  grain: ResultShapeSpec['grain'];
+  sourceMatchedTotal: number;
+  shapedTotal: number;
+  returnedRowCount: number;
+  summaryStats: string;
+  artifactEligible: boolean;
+  truncatedBySource: boolean;
+  truncatedByShape: boolean;
+  byteSize: number;
+};
+
 type ArtifactDecision = {
   mode: DeliveryMode;
-  rowCount: number;
+  dataset: ShapedDataset;
   reportedTotal: number;
-  byteSize: number;
-  previewRows: unknown[];
-  rows: unknown[];
 };
 
 type SavedArtifact = {
@@ -146,6 +174,8 @@ const DOT_FRAMES = ['·', '··', '···', '····'];
 
 let _vibeIndex = 0;
 let _dotIndex = 0;
+const SHAPE_INTENT_CLASSIFIER_MODEL = 'llama-3.1-8b-instant';
+const SHAPE_INTENT_CLASSIFIER_TIMEOUT_MS = 3_000;
 
 const nextVibeText = (): string => {
   const words = DIVO_VIBES[_vibeIndex % DIVO_VIBES.length];
@@ -171,6 +201,19 @@ const asNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+const extractFirstJsonObject = (text: string): string | null => {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) return fenced[1].trim();
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    return null;
+  }
+  return trimmed.slice(start, end + 1);
+};
 
 const resolveAttachmentKind = (mimeType: string, fileName: string): AttachmentKind => {
   if (mimeType.includes('pdf')) return 'pdf';
@@ -199,26 +242,240 @@ const LARGE_RESULT_KEYS = [
   'people',
 ] as const;
 
-const extractRowCount = (toolResults: VercelToolEnvelope[]): number => {
-  for (const result of toolResults) {
-    const data = asRecord(result.data) ?? asRecord(result.fullPayload);
-    if (!data) continue;
-    const invoiceCount = asNumber(data.invoiceCount);
-    if (invoiceCount !== undefined) return invoiceCount;
-    for (const key of LARGE_RESULT_KEYS) {
-      const arr = asArray(data[key]);
-      if (arr.length > 0) return arr.length;
-    }
-  }
-  return 0;
+const formatInr = (value: number): string =>
+  Number(value).toLocaleString('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 2,
+  });
+
+const detectRequestedLimit = (text: string): number | undefined => {
+  const match = text.match(/\b(?:top|latest|first|only)\s+(\d{1,3})\b/i);
+  const parsed = match ? Number(match[1]) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 };
 
-const extractRawRows = (toolResults: VercelToolEnvelope[]): unknown[] => {
+const detectSummaryOnlyQuery = (text: string): boolean =>
+  /\b(how many|count|total|summary|overview|stats|kitne)\b/i.test(text)
+  && !/\b(list|show|get|fetch|all|export|csv|rows?)\b/i.test(text);
+
+const detectRawExportRequested = (text: string): boolean =>
+  /\b(export all|full csv|raw data|full data|complete export|download csv)\b/i.test(text);
+
+const detectZohoShapeSpecFallback = (text: string): ResultShapeSpec | null => {
+  const normalized = text.trim();
+  if (!/\b(overdue|invoice|invoices|outstanding|payment list)\b/i.test(normalized)) {
+    return null;
+  }
+
+  const limit = detectRequestedLimit(normalized);
+  const rawExportRequested = detectRawExportRequested(normalized);
+  const summaryOnly = detectSummaryOnlyQuery(normalized);
+  const grain: ResultShapeSpec['grain'] =
+    /\bcustomers?\b.*\b(overdue|balance|outstanding|multiple)\b/i.test(normalized)
+      || /\bmultiple overdue invoices\b/i.test(normalized)
+      || /\btop customers?\b/i.test(normalized)
+      ? 'customer_aggregate'
+      : 'invoice';
+
+  let columns: string[] | undefined;
+  if (grain === 'invoice') {
+    const requestedColumns: string[] = [];
+    if (/\binvoice\s*(?:number|no)\b/i.test(normalized)) requestedColumns.push('invoiceNumber');
+    if (/\bcustomer\s*name\b/i.test(normalized)) requestedColumns.push('customerName');
+    if (/\bdue date\b/i.test(normalized)) requestedColumns.push('dueDate');
+    if (/\bbalance\b/i.test(normalized)) requestedColumns.push('balance');
+    if (/\boverdue days?\b/i.test(normalized)) requestedColumns.push('overdueDays');
+    columns = requestedColumns.length > 0
+      ? requestedColumns
+      : ['invoiceNumber', 'customerName', 'balance', 'dueDate', 'overdueDays'];
+  } else {
+    const requestedColumns: string[] = [];
+    if (/\bcustomer\s*name\b/i.test(normalized) || /\bcustomers?\b/i.test(normalized)) {
+      requestedColumns.push('customerName');
+    }
+    if (/\binvoice count\b/i.test(normalized) || /\bmultiple overdue invoices\b/i.test(normalized)) {
+      requestedColumns.push('invoiceCount');
+    }
+    if (/\bbalance\b/i.test(normalized) || /\boutstanding\b/i.test(normalized)) {
+      requestedColumns.push('totalOutstanding');
+    }
+    columns = requestedColumns.length > 0
+      ? requestedColumns
+      : ['customerName', 'invoiceCount', 'totalOutstanding'];
+  }
+
+  const artifactFileStem = grain === 'customer_aggregate'
+    ? `overdue_customers${limit ? `_top_${limit}` : ''}`
+    : `overdue_invoices${limit ? `_top_${limit}` : ''}`;
+
+  return {
+    domain: 'zoho',
+    entity: grain === 'customer_aggregate' ? 'customer' : 'invoice',
+    grain,
+    limit,
+    columns,
+    summaryOnly,
+    rawExportRequested,
+    sortField: grain === 'customer_aggregate' ? 'totalOutstanding' : 'balance',
+    sortDirection: 'desc',
+    sourceFetchLimit: 200,
+    artifactFileStem,
+  };
+};
+
+const zohoShapeIntentSchema = z.object({
+  relevant: z.boolean().default(true),
+  entity: z.enum(['invoice', 'customer', 'payment', 'record']).optional(),
+  grain: z.enum(['invoice', 'customer_aggregate', 'payment', 'record']).optional(),
+  limit: z.number().int().min(1).max(200).nullable().optional(),
+  columns: z.array(z.string().trim().min(1)).max(8).nullable().optional(),
+  summaryOnly: z.boolean().optional(),
+  rawExportRequested: z.boolean().optional(),
+  sortField: z.string().trim().min(1).nullable().optional(),
+  sortDirection: z.enum(['asc', 'desc']).optional(),
+});
+
+const normalizeZohoShapeSpec = (
+  parsed: z.infer<typeof zohoShapeIntentSchema>,
+  text: string,
+): ResultShapeSpec | null => {
+  if (!parsed.relevant) {
+    return null;
+  }
+
+  const fallback = detectZohoShapeSpecFallback(text);
+  if (!fallback) {
+    return null;
+  }
+
+  const grain = parsed.grain ?? fallback.grain;
+  const allowedColumns = grain === 'customer_aggregate'
+    ? ['customerName', 'invoiceCount', 'totalOutstanding']
+    : ['invoiceNumber', 'customerName', 'balance', 'dueDate', 'overdueDays'];
+  const requestedColumns = (parsed.columns ?? fallback.columns ?? [])
+    .filter((column): column is string => allowedColumns.includes(column));
+  const columns = requestedColumns.length > 0 ? requestedColumns : fallback.columns;
+  const limit = parsed.limit ?? fallback.limit;
+  const artifactFileStem = grain === 'customer_aggregate'
+    ? `overdue_customers${limit ? `_top_${limit}` : ''}`
+    : `overdue_invoices${limit ? `_top_${limit}` : ''}`;
+
+  return {
+    domain: 'zoho',
+    entity: grain === 'customer_aggregate' ? 'customer' : (parsed.entity === 'payment' ? 'payment' : 'invoice'),
+    grain,
+    limit,
+    columns,
+    summaryOnly: parsed.summaryOnly ?? fallback.summaryOnly,
+    rawExportRequested: parsed.rawExportRequested ?? fallback.rawExportRequested,
+    sortField: parsed.sortField && allowedColumns.includes(parsed.sortField)
+      ? parsed.sortField
+      : fallback.sortField,
+    sortDirection: parsed.sortDirection ?? fallback.sortDirection,
+    sourceFetchLimit: 200,
+    artifactFileStem,
+  };
+};
+
+const buildZohoShapeIntentPrompt = (text: string): string => [
+  'Classify this user request for shaping a Zoho overdue/invoice result.',
+  'Return ONLY JSON.',
+  'Use these fields:',
+  '- relevant: boolean',
+  '- entity: invoice | customer | payment | record',
+  '- grain: invoice | customer_aggregate | payment | record',
+  '- limit: integer or null',
+  '- columns: array of canonical columns',
+  '- summaryOnly: boolean',
+  '- rawExportRequested: boolean',
+  '- sortField: invoiceNumber | customerName | balance | dueDate | overdueDays | invoiceCount | totalOutstanding | null',
+  '- sortDirection: asc | desc',
+  '',
+  'Rules:',
+  '- If user asks top customers, grouped customers, or customers with multiple overdue invoices, grain=customer_aggregate.',
+  '- If user asks overdue invoices list, grain=invoice.',
+  '- Extract explicit limits like top 10, latest 5, first 20, only 15.',
+  '- summaryOnly=true only for count/total/summary-only asks.',
+  '- rawExportRequested=true only when user explicitly asks for raw/full/export CSV data.',
+  '- Allowed invoice columns: invoiceNumber, customerName, balance, dueDate, overdueDays',
+  '- Allowed customer aggregate columns: customerName, invoiceCount, totalOutstanding',
+  '- If user does not specify columns, return null for columns.',
+  '',
+  `User request: ${text.trim()}`,
+].join('\n');
+
+const resolveZohoShapeSpec = async (text: string): Promise<ResultShapeSpec | null> => {
+  const fallback = detectZohoShapeSpecFallback(text);
+  if (!fallback) {
+    return null;
+  }
+  if (!config.GROQ_API_KEY.trim()) {
+    return fallback;
+  }
+
+  try {
+    const response = await withProviderRetry('groq', async () => {
+      const nextResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.GROQ_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: SHAPE_INTENT_CLASSIFIER_MODEL,
+          temperature: 0,
+          max_tokens: 180,
+          response_format: { type: 'json_object' },
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a strict JSON classifier for shaping Zoho financial results. Return JSON only.',
+            },
+            {
+              role: 'user',
+              content: buildZohoShapeIntentPrompt(text),
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(SHAPE_INTENT_CLASSIFIER_TIMEOUT_MS),
+      });
+
+      if (!nextResponse.ok) {
+        const error: Error & { status?: number; headers?: Record<string, string> } = new Error(`zoho_shape_classifier_http_${nextResponse.status}`);
+        error.status = nextResponse.status;
+        error.headers = Object.fromEntries(nextResponse.headers.entries());
+        throw error;
+      }
+
+      return nextResponse;
+    });
+
+    const payload = await response.json() as {
+      choices?: Array<{ message?: { content?: string | null } }>;
+    };
+    const content = payload.choices?.[0]?.message?.content?.trim() ?? '';
+    const json = extractFirstJsonObject(content);
+    if (!json) {
+      throw new Error('zoho_shape_classifier_no_json');
+    }
+    return normalizeZohoShapeSpec(zohoShapeIntentSchema.parse(JSON.parse(json)), text) ?? fallback;
+  } catch (error) {
+    logger.warn('supervisor_v2.zoho_shape_classifier.failed', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+    return fallback;
+  }
+};
+
+const extractGenericRows = (toolResults: VercelToolEnvelope[]): Record<string, unknown>[] => {
   for (const result of toolResults) {
     const data = asRecord(result.data) ?? asRecord(result.fullPayload);
     if (!data) continue;
     for (const key of LARGE_RESULT_KEYS) {
-      const arr = asArray(data[key]);
+      const arr = asArray(data[key])
+        .map(asRecord)
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry));
       if (arr.length > 0) return arr;
     }
   }
@@ -234,12 +491,7 @@ const extractKeyStats = (toolResults: VercelToolEnvelope[]): string => {
       parts.push(`${data.invoiceCount} invoices`);
     }
     if (asNumber(data.totalOutstanding) !== undefined) {
-      parts.push(
-        `Total: ${Number(data.totalOutstanding).toLocaleString('en-IN', {
-          style: 'currency',
-          currency: 'INR',
-        })}`,
-      );
+      parts.push(`Total: ${formatInr(Number(data.totalOutstanding))}`);
     }
     if (parts.length === 0) {
       const summary = asString(data.summary);
@@ -252,10 +504,10 @@ const extractKeyStats = (toolResults: VercelToolEnvelope[]): string => {
   return '';
 };
 
-const convertToCSV = (rows: unknown[]): Buffer => {
+const convertToCSV = (rows: Record<string, unknown>[], columns?: string[]): Buffer => {
   if (rows.length === 0) return Buffer.from('');
-  const firstRow = asRecord(rows[0]) ?? {};
-  const headers = Object.keys(firstRow);
+  const firstRow = rows[0] ?? {};
+  const headers = columns && columns.length > 0 ? columns : Object.keys(firstRow);
   const escape = (val: unknown): string => {
     const str = val === null || val === undefined ? '' : String(val);
     return str.includes(',') || str.includes('"') || str.includes('\n')
@@ -265,11 +517,157 @@ const convertToCSV = (rows: unknown[]): Buffer => {
   const lines = [
     headers.join(','),
     ...rows.map((row) => {
-      const r = asRecord(row) ?? {};
+      const r = row ?? {};
       return headers.map((header) => escape(r[header])).join(',');
     }),
   ];
   return Buffer.from(lines.join('\n'), 'utf-8');
+};
+
+const sortRows = (
+  rows: Record<string, unknown>[],
+  field: string | undefined,
+  direction: 'asc' | 'desc' | undefined,
+): Record<string, unknown>[] => {
+  if (!field) {
+    return rows.slice();
+  }
+  const multiplier = direction === 'asc' ? 1 : -1;
+  return rows.slice().sort((left, right) => {
+    const leftValue = left[field];
+    const rightValue = right[field];
+    if (typeof leftValue === 'number' && typeof rightValue === 'number') {
+      return (leftValue - rightValue) * multiplier;
+    }
+    return String(leftValue ?? '').localeCompare(String(rightValue ?? '')) * multiplier;
+  });
+};
+
+const projectRows = (
+  rows: Record<string, unknown>[],
+  columns: string[],
+): Record<string, unknown>[] =>
+  rows.map((row) =>
+    columns.reduce<Record<string, unknown>>((acc, column) => {
+      acc[column] = row[column];
+      return acc;
+    }, {}));
+
+const shapeZohoDataset = (
+  toolResults: VercelToolEnvelope[],
+  shapeSpec: ResultShapeSpec,
+): ShapedDataset | null => {
+  for (const result of toolResults) {
+    const payload = asRecord(result.fullPayload) ?? asRecord(result.data);
+    const invoices = asArray(payload?.invoices)
+      .map(asRecord)
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+    if (invoices.length === 0) {
+      continue;
+    }
+
+    const sourceMatchedTotal = asNumber(payload?.invoiceCount) ?? invoices.length;
+    const totalOutstanding = asNumber(payload?.totalOutstanding)
+      ?? invoices.reduce((sum, invoice) => sum + (asNumber(invoice.balance) ?? 0), 0);
+    const truncatedBySource = Boolean(asBoolean(payload?.sourceTruncated))
+      || sourceMatchedTotal > invoices.length;
+
+    const baseRows = shapeSpec.grain === 'customer_aggregate'
+      ? (() => {
+          const grouped = new Map<string, Record<string, unknown>>();
+          for (const invoice of invoices) {
+            const customerKey = asString(invoice.customerId)
+              ?? asString(invoice.customerName)
+              ?? asString(invoice.invoiceId)
+              ?? 'unknown';
+            const existing = grouped.get(customerKey) ?? {
+              customerId: asString(invoice.customerId),
+              customerName: asString(invoice.customerName) ?? 'Unknown customer',
+              invoiceCount: 0,
+              totalOutstanding: 0,
+            };
+            existing.invoiceCount = (asNumber(existing.invoiceCount) ?? 0) + 1;
+            existing.totalOutstanding = (asNumber(existing.totalOutstanding) ?? 0) + (asNumber(invoice.balance) ?? 0);
+            grouped.set(customerKey, existing);
+          }
+          return [...grouped.values()];
+        })()
+      : invoices.map((invoice) => ({
+          invoiceNumber: asString(invoice.invoiceNumber),
+          customerName: asString(invoice.customerName),
+          balance: asNumber(invoice.balance),
+          dueDate: asString(invoice.dueDate),
+          overdueDays: asNumber(invoice.overdueDays),
+          invoiceId: asString(invoice.invoiceId),
+          customerId: asString(invoice.customerId),
+        }));
+
+    const sortedRows = sortRows(baseRows, shapeSpec.sortField, shapeSpec.sortDirection);
+    const shapedTotal = sortedRows.length;
+    const limitedRows = !shapeSpec.rawExportRequested && shapeSpec.limit
+      ? sortedRows.slice(0, shapeSpec.limit)
+      : sortedRows;
+    const returnedRowCount = limitedRows.length;
+    const truncatedByShape = shapedTotal > returnedRowCount;
+    const columns = shapeSpec.columns && shapeSpec.columns.length > 0
+      ? shapeSpec.columns
+      : shapeSpec.grain === 'customer_aggregate'
+        ? ['customerName', 'invoiceCount', 'totalOutstanding']
+        : ['invoiceNumber', 'customerName', 'balance', 'dueDate', 'overdueDays'];
+    const projectedRows = projectRows(limitedRows, columns);
+    const previewRows = projectedRows.slice(0, 5);
+    const byteSize = convertToCSV(projectedRows, columns).length;
+    const summaryStats = shapeSpec.grain === 'customer_aggregate'
+      ? `${sourceMatchedTotal} overdue invoices · ${shapedTotal} customers · Total: ${formatInr(totalOutstanding)}`
+      : `${sourceMatchedTotal} overdue invoices · Total: ${formatInr(totalOutstanding)}`;
+
+    return {
+      rows: projectedRows,
+      previewRows,
+      columns,
+      grain: shapeSpec.grain,
+      sourceMatchedTotal,
+      shapedTotal,
+      returnedRowCount,
+      summaryStats,
+      artifactEligible: !shapeSpec.summaryOnly && projectedRows.length > 0,
+      truncatedBySource,
+      truncatedByShape,
+      byteSize,
+    };
+  }
+
+  return null;
+};
+
+const buildShapedDataset = (
+  toolResults: VercelToolEnvelope[],
+  sourceDomain: 'google' | 'zoho' | 'lark',
+  shapeSpec: ResultShapeSpec | null,
+): ShapedDataset | null => {
+  if (sourceDomain === 'zoho' && shapeSpec?.domain === 'zoho') {
+    return shapeZohoDataset(toolResults, shapeSpec);
+  }
+
+  const rows = extractGenericRows(toolResults);
+  if (rows.length === 0) {
+    return null;
+  }
+  const columns = Object.keys(rows[0] ?? {});
+  return {
+    rows,
+    previewRows: rows.slice(0, 5),
+    columns,
+    grain: shapeSpec?.grain ?? 'record',
+    sourceMatchedTotal: rows.length,
+    shapedTotal: rows.length,
+    returnedRowCount: rows.length,
+    summaryStats: extractKeyStats(toolResults) || `${rows.length} items found`,
+    artifactEligible: true,
+    truncatedBySource: false,
+    truncatedByShape: false,
+    byteSize: convertToCSV(rows, columns).length,
+  };
 };
 
 const containsProcessVerb = (text: string): boolean =>
@@ -294,47 +692,57 @@ const decideDeliveryMode = (
 
 const buildArtifactDecision = (
   toolResults: VercelToolEnvelope[],
+  sourceDomain: 'google' | 'zoho' | 'lark',
+  shapeSpec: ResultShapeSpec | null,
   agentObjective: string,
   userIntent: string,
   workspaceAvailable: boolean,
 ): ArtifactDecision => {
-  const rows = extractRawRows(toolResults);
-  const rowCount = rows.length > 0 ? rows.length : extractRowCount(toolResults);
-  let reportedTotal = rowCount;
-  for (const result of toolResults) {
-    const data = asRecord(result.data) ?? asRecord(result.fullPayload);
-    if (!data) continue;
-    const invoiceCount = asNumber(data.invoiceCount);
-    if (invoiceCount !== undefined) {
-      reportedTotal = invoiceCount;
-      if (invoiceCount > rows.length && rows.length > 0) {
-        logger.warn('supervisor_v2.artifact.truncated', {
-          extractedRows: rows.length,
-          reportedTotal: invoiceCount,
-          sourceDomain: 'zoho',
-        });
-      }
-      break;
-    }
-  }
-  const csvBuffer = rows.length > 0 ? convertToCSV(rows) : Buffer.from('');
-  const byteSize = csvBuffer.length;
-  const previewRows = rows.slice(0, 5);
+  const dataset = buildShapedDataset(toolResults, sourceDomain, shapeSpec) ?? {
+    rows: [],
+    previewRows: [],
+    columns: [],
+    grain: shapeSpec?.grain ?? 'record',
+    sourceMatchedTotal: 0,
+    shapedTotal: 0,
+    returnedRowCount: 0,
+    summaryStats: '',
+    artifactEligible: false,
+    truncatedBySource: false,
+    truncatedByShape: false,
+    byteSize: 0,
+  };
   const isSummaryQuery = /\b(how many|count|total|summary|overview|stats)\b/i
     .test(agentObjective) && !/\b(list|show|get|fetch|all|export)\b/i.test(agentObjective);
-  const mode = isSummaryQuery
+  const mode = isSummaryQuery || shapeSpec?.summaryOnly
     ? 'inline'
-    : decideDeliveryMode(rowCount, byteSize, userIntent, workspaceAvailable);
-  return { mode, rowCount, reportedTotal, byteSize, previewRows, rows };
+    : shapeSpec?.rawExportRequested
+      ? (
+          workspaceAvailable && (dataset.returnedRowCount > 200 || dataset.byteSize >= 250_000)
+            ? 'workspace_process_then_publish'
+            : 'preview_plus_artifact'
+        )
+      : decideDeliveryMode(
+        dataset.returnedRowCount,
+        dataset.byteSize,
+        userIntent,
+        workspaceAvailable,
+      );
+  return {
+    mode,
+    dataset,
+    reportedTotal: dataset.sourceMatchedTotal,
+  };
 };
 
 const buildPreviewTable = (
-  previewRows: unknown[],
+  previewRows: Record<string, unknown>[],
   rowCount: number,
+  columns?: string[],
 ): string => {
   if (previewRows.length === 0) return '';
-  const firstRow = asRecord(previewRows[0]) ?? {};
-  const headers = Object.keys(firstRow).slice(0, 6);
+  const firstRow = previewRows[0] ?? {};
+  const headers = (columns && columns.length > 0 ? columns : Object.keys(firstRow)).slice(0, 6);
   if (headers.length === 0) return '';
 
   const headerRow = `| ${headers.join(' | ')} |`;
@@ -625,27 +1033,29 @@ const compactContextText = (value?: string | null): string | undefined => {
 };
 
 const saveArtifact = async (input: {
-  rows: unknown[];
+  rows: Record<string, unknown>[];
+  columns?: string[];
   sourceDomain: string;
   querySummary: string;
   companyId: string;
   runtime: VercelRuntimeRequestContext;
+  fileStem?: string;
 }): Promise<SavedArtifact | null> => {
   try {
-    const { rows, sourceDomain, querySummary, companyId, runtime } = input;
+    const { rows, columns, sourceDomain, querySummary, companyId, runtime } = input;
     if (rows.length === 0) return null;
 
     const date = new Date().toISOString().slice(0, 16).replace(/[:.T]/g, '-');
-    const safeSummary = querySummary
+    const safeSummary = (input.fileStem ?? querySummary)
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '_')
       .slice(0, 40);
     const fileName = `${sourceDomain}_${safeSummary || 'artifact'}_${date}.csv`;
 
-    const buffer = convertToCSV(rows);
+    const buffer = convertToCSV(rows, columns);
     const byteSize = buffer.length;
-    const firstRow = asRecord(rows[0]) ?? {};
-    const schemaSummary = Object.keys(firstRow).slice(0, 8).join(', ');
+    const firstRow = rows[0] ?? {};
+    const schemaSummary = (columns && columns.length > 0 ? columns : Object.keys(firstRow)).slice(0, 8).join(', ');
 
     const localPath = runtime.workspace?.path
       ? `${runtime.workspace.path.replace(/\/$/, '')}/.divo/artifacts/${fileName}`
@@ -824,17 +1234,20 @@ const buildArtifactPresentation = (input: {
   baseText: string;
   artifact: SavedArtifact | null;
   decision: ArtifactDecision;
-  keyStats: string;
   includePreview: boolean;
   localProcessingText?: string;
 }): string => {
-  const lines = [input.baseText.trim()];
-  const summary = input.keyStats || `${input.decision.rowCount} items found`;
+  const lines = input.baseText.trim() ? [input.baseText.trim()] : [];
+  const summary = input.decision.dataset.summaryStats || `${input.decision.dataset.returnedRowCount} items found`;
   if (summary && !lines[0]?.includes(summary)) {
     lines.push(`**Summary:** ${summary}`);
   }
   if (input.includePreview) {
-    const preview = buildPreviewTable(input.decision.previewRows, input.decision.rowCount);
+    const preview = buildPreviewTable(
+      input.decision.dataset.previewRows,
+      input.decision.dataset.returnedRowCount,
+      input.decision.dataset.columns,
+    );
     if (preview) {
       lines.push('**Preview:**');
       lines.push(preview);
@@ -842,10 +1255,15 @@ const buildArtifactPresentation = (input: {
   }
   if (input.artifact?.publishedUrl) {
     const fileName = input.artifact.localPath?.split('/').pop() || `${input.artifact.sourceDomain}_artifact.csv`;
-    const truncationNote = input.decision.reportedTotal > input.artifact.rowCount
-      ? ` *(Note: artifact contains ${input.artifact.rowCount} of ${input.decision.reportedTotal} total rows — Zoho API limit)*`
-      : '';
-    lines.push(`**${input.decision.reportedTotal} items found. Full data:** [${fileName}](${input.artifact.publishedUrl})${truncationNote}`);
+    const truncationNotes: string[] = [];
+    if (input.decision.dataset.truncatedBySource) {
+      truncationNotes.push(`source matched ${input.decision.reportedTotal}`);
+    }
+    if (input.decision.dataset.truncatedByShape) {
+      truncationNotes.push(`returned ${input.decision.dataset.returnedRowCount}`);
+    }
+    const suffix = truncationNotes.length > 0 ? ` *(${truncationNotes.join(' · ')})*` : '';
+    lines.push(`**${input.decision.dataset.returnedRowCount} rows. Full data:** [${fileName}](${input.artifact.publishedUrl})${suffix}`);
   }
   if (input.artifact?.localPath && input.localProcessingText) {
     lines.push(input.localProcessingText);
@@ -927,6 +1345,9 @@ DATA PRESENTATION RULES:
 - 21-200 items: concise summary + 5-row preview + artifact link (agent provides this)
 - 200+ items: key stats only + artifact link
 - Never paste 50+ row tables into chat
+- Infer the requested row grain, columns, and limit from the latest user message.
+- If the user asks for "top N", "latest N", or specific columns, keep only that shaped result in the final answer.
+- Do not surface raw IDs or extra columns unless the user explicitly asked for raw/full export.
 - When an agent returns an artifactUrl always include it as:
   **N items found. Full data:** [filename](url)
 - "How many" / "count" / "total" / "kitne" questions: inline answer only, never artifact
@@ -1731,22 +2152,42 @@ const resolveConversationContext = async (
   const companyId = message.trace?.companyId;
   const linkedUserId = await resolveWorkspaceUserIdForLarkMessage(message);
   const isSharedGroupChat = Boolean(companyId && message.chatType === 'group' && message.chatId);
+  const isThreadReply = Boolean(message.trace?.threadRootId);
+  const threadRootId = message.trace?.threadRootId ?? null;
 
   if (isSharedGroupChat && companyId) {
-    const shared = await larkChatContextService.load({
+    const sharedMemory = await larkChatContextService.load({
       companyId,
       chatId: message.chatId,
       chatType: message.chatType,
     });
+    const combinedMessages = isThreadReply && threadRootId
+      ? (() => {
+          const threadContextPromise = larkChatContextService.loadThreadContext({
+            companyId,
+            chatId: message.chatId,
+            chatType: message.chatType,
+            threadRootId,
+            splitPointMessageId: threadRootId,
+          });
+          return threadContextPromise;
+        })()
+      : null;
+    const resolvedMessages = combinedMessages
+      ? await combinedMessages
+      : null;
+    const recentMessages = resolvedMessages
+      ? [...resolvedMessages.mainContextUpToSplit, ...resolvedMessages.threadMessages]
+      : sharedMemory.recentMessages;
     return {
       linkedUserId,
       isSharedGroupChat,
-      sharedChatContextId: shared.id,
-      recentTurns: selectSupervisorTurns(normalizeTurns(shared.recentMessages), message.text),
+      sharedChatContextId: sharedMemory.id,
+      recentTurns: dedupeTrailingCurrentMessage(normalizeTurns(recentMessages), message.text).slice(-10),
       attachmentMessages: (message.attachedFiles ?? []).map((file) =>
         `[ATTACHED: ${file.fileName} | ${file.mimeType} | id:${file.fileAssetId}]`),
-      threadSummaryContext: buildThreadSummaryContext(shared.summary) ?? undefined,
-      taskStateContext: buildTaskStateContext(shared.taskState) ?? undefined,
+      threadSummaryContext: buildThreadSummaryContext(sharedMemory.summary) ?? undefined,
+      taskStateContext: buildTaskStateContext(sharedMemory.taskState) ?? undefined,
       historySource: 'lark_shared_chat',
     };
   }
@@ -2497,6 +2938,40 @@ async function runZohoAgent(
   });
 }
 
+const shouldUseCanonicalZohoOverduePath = (text: string): boolean =>
+  /\b(overdue|invoice|invoices|outstanding|payment list)\b/i.test(text)
+  && !/\bcrm\b/i.test(text);
+
+const runCanonicalZohoOverdueQuery = async (
+  objective: string,
+  runtime: VercelRuntimeRequestContext,
+  shapeSpec: ResultShapeSpec,
+): Promise<SubAgentTextResult> => {
+  const legacyTools = getLegacyTools({
+    ...runtime,
+    delegatedAgentId: 'zoho-ops-agent',
+  });
+  const zohoBooksTool = legacyTools.zohoBooks;
+  if (!zohoBooksTool) {
+    return {
+      text: 'Zoho Books tools are not available for this user.',
+      toolResults: [],
+      pendingApproval: null,
+    };
+  }
+
+  const envelope = await zohoBooksTool.execute({
+    operation: 'buildOverdueReport',
+    limit: shapeSpec.sourceFetchLimit ?? 200,
+  }) as VercelToolEnvelope;
+
+  return {
+    text: asString(envelope.summary) ?? '',
+    toolResults: [envelope],
+    pendingApproval: null,
+  };
+};
+
 async function runLarkAgent(
   params: { objective: string; assignee?: string },
   runtime: VercelRuntimeRequestContext,
@@ -2894,6 +3369,7 @@ const applyArtifactFlow = async (
   agentObjective: string,
   userIntent: string,
   sourceDomain: 'google' | 'zoho' | 'lark',
+  shapeSpec: ResultShapeSpec | null,
   runtime: VercelRuntimeRequestContext,
   abortSignal?: AbortSignal,
   onWorkspaceStep?: (step: unknown) => Promise<void>,
@@ -2909,40 +3385,66 @@ const applyArtifactFlow = async (
 
   const decision = buildArtifactDecision(
     agentResult.toolResults,
+    sourceDomain,
+    shapeSpec,
     agentObjective,
     userIntent,
     workspaceAvailable,
   );
 
-  if (decision.rows.length === 0 || decision.mode === 'inline') {
+  if (decision.dataset.rows.length === 0) {
     return agentResult;
   }
 
+  if (decision.mode === 'inline') {
+    if (sourceDomain !== 'zoho' || !shapeSpec) {
+      return agentResult;
+    }
+    const inlineText = [
+      `Found ${decision.reportedTotal} ${shapeSpec.grain === 'customer_aggregate' ? 'matching overdue invoices across customers' : 'overdue invoices'}.`,
+      decision.dataset.summaryStats,
+      ...(decision.dataset.previewRows.length > 0 && !shapeSpec.summaryOnly
+        ? ['**Preview:**', buildPreviewTable(
+          decision.dataset.previewRows,
+          decision.dataset.returnedRowCount,
+          decision.dataset.columns,
+        )]
+        : []),
+      ...(decision.dataset.truncatedBySource
+        ? ['Source results were truncated before shaping, so additional records may exist beyond the fetched set.']
+        : []),
+    ].filter((line) => line && line.trim().length > 0).join('\n\n');
+    return {
+      ...agentResult,
+      text: inlineText,
+      rowCount: decision.dataset.returnedRowCount,
+    };
+  }
+
   const artifact = await saveArtifact({
-    rows: decision.rows,
+    rows: decision.dataset.rows,
+    columns: decision.dataset.columns,
     sourceDomain,
     querySummary: agentObjective.slice(0, 120),
     companyId: runtime.companyId,
     runtime,
+    fileStem: shapeSpec?.artifactFileStem,
   });
   await persistArtifactReference(artifact, runtime);
-
-  const keyStats = extractKeyStats(agentResult.toolResults);
 
   if (decision.mode === 'preview_plus_artifact') {
     return {
       ...agentResult,
       text: buildArtifactPresentation({
-        baseText: agentResult.text,
+        baseText: sourceDomain === 'zoho' && shapeSpec ? '' : agentResult.text,
         artifact,
         decision,
-        keyStats,
         includePreview: true,
       }),
       artifactUrl: artifact?.publishedUrl,
       artifactPath: artifact?.localPath,
       artifact,
-      rowCount: decision.rowCount,
+      rowCount: decision.dataset.returnedRowCount,
     };
   }
 
@@ -2950,12 +3452,11 @@ const applyArtifactFlow = async (
     return {
       ...agentResult,
       text: buildArtifactPresentation({
-        baseText: agentResult.text,
+        baseText: sourceDomain === 'zoho' && shapeSpec ? '' : agentResult.text,
         artifact: artifact
           ? { ...artifact, status: 'saved_for_later_processing' }
           : artifact,
         decision,
-        keyStats,
         includePreview: false,
       }),
       artifactUrl: artifact?.publishedUrl,
@@ -2963,14 +3464,14 @@ const applyArtifactFlow = async (
       artifact: artifact
         ? { ...artifact, status: 'saved_for_later_processing' }
         : artifact,
-      rowCount: decision.rowCount,
+      rowCount: decision.dataset.returnedRowCount,
     };
   }
 
   const localPath = artifact
     ? await writeArtifactToWorkspace(
       artifact,
-      decision.rows,
+      decision.dataset.rows,
       runtime,
     )
     : null;
@@ -2980,7 +3481,7 @@ const applyArtifactFlow = async (
       {
         objective: [
           `The data file already exists at: ${localPath}`,
-          `It has ${decision.rows.length} rows. Schema: ${artifact.schemaSummary}`,
+          `It has ${decision.dataset.rows.length} rows. Schema: ${artifact.schemaSummary}`,
           `Task: ${userIntent}`,
           'Steps:',
           `1. Read the file at ${localPath}`,
@@ -3003,15 +3504,14 @@ const applyArtifactFlow = async (
       : undefined;
 
   return {
-    ...agentResult,
-    text: buildArtifactPresentation({
-      baseText: agentResult.text,
-      artifact,
-      decision,
-      keyStats,
-      includePreview: false,
-      localProcessingText,
-    }),
+      ...agentResult,
+      text: buildArtifactPresentation({
+      baseText: sourceDomain === 'zoho' && shapeSpec ? '' : agentResult.text,
+        artifact,
+        decision,
+        includePreview: false,
+        localProcessingText,
+      }),
     toolResults: [
       ...agentResult.toolResults,
       ...(workspaceResult?.toolResults ?? []),
@@ -3022,7 +3522,7 @@ const applyArtifactFlow = async (
     artifact: artifact
       ? { ...artifact, status: workspaceResult ? 'processed' : artifact.status }
       : artifact,
-    rowCount: decision.rowCount,
+    rowCount: decision.dataset.returnedRowCount,
   };
 };
 
@@ -3146,6 +3646,7 @@ Never use for Lark actions — use larkAgent for those.`,
             params.objective,
             message.text,
             'google',
+            null,
             runtime,
             abortSignal,
             async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
@@ -3184,17 +3685,25 @@ Returns structured data that may be saved as an artifact for large results.`,
         }),
         execute: async ({ objective }) => {
           await updateLiveStatus(buildAgentStartStatus('Zoho', objective));
-          const result = await runZohoAgent(
-            objective,
-            runtime,
-            abortSignal,
-            async (step) => updateLiveStatus(buildAgentStepStatus('Zoho', step)),
-          );
+          const shapeSpec = await resolveZohoShapeSpec(message.text);
+          const result = shapeSpec && shouldUseCanonicalZohoOverduePath(message.text)
+            ? await runCanonicalZohoOverdueQuery(
+              objective,
+              runtime,
+              shapeSpec,
+            )
+            : await runZohoAgent(
+              objective,
+              runtime,
+              abortSignal,
+              async (step) => updateLiveStatus(buildAgentStepStatus('Zoho', step)),
+            );
           const enriched = await applyArtifactFlow(
             result,
             objective,
             message.text,
             'zoho',
+            shapeSpec,
             runtime,
             abortSignal,
             async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
@@ -3225,6 +3734,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
             params.objective,
             message.text,
             'lark',
+            null,
             runtime,
             abortSignal,
             async (step) => updateLiveStatus(buildAgentStepStatus('Workspace', step)),
