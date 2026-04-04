@@ -180,14 +180,14 @@ const SUPERVISOR_HISTORY_MAX_MESSAGES = 16;
 const SUPERVISOR_CONTEXT_TEXT_LIMIT = 2_000;
 
 const DIVO_VIBES: string[][] = [
-  ['Working', 'Thinking', 'Diving'],
-  ['Analyzing', 'Crunching', 'Brewing'],
-  ['Processing', 'Mapping', 'Connecting'],
-  ['Skewing', 'Wiring', 'Firing'],
-  ['Fetching', 'Syncing', 'Linking'],
-  ['Scanning', 'Sifting', 'Finding'],
-  ['Computing', 'Churning', 'Building'],
-  ['Orchestrating', 'Delegating', 'Executing'],
+  ['Warping', 'Locking', 'Landing'],
+  ['Scanning', 'Slicing', 'Surfacing'],
+  ['Crunching', 'Threading', 'Routing'],
+  ['Wiring', 'Linking', 'Launching'],
+  ['Tracking', 'Hunting', 'Pinning'],
+  ['Forging', 'Refining', 'Shaping'],
+  ['Delegating', 'Orchestrating', 'Closing'],
+  ['Sifting', 'Triaging', 'Resolving'],
 ];
 
 const DOT_FRAMES = ['·', '··', '···', '····'];
