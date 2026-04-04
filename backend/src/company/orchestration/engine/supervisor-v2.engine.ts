@@ -3688,10 +3688,6 @@ const executeTask = async (
       return [
         `ACTIVE TODOS — Goal: ${todos.goal}`,
         lines.join('\n'),
-        '',
-        'Update todo status using manageTodos as you complete each step.',
-        'If user asks something unrelated, answer it but keep todos intact.',
-        'Only clear if user cancels or all steps are done.',
       ].join('\n');
     };
 
@@ -3718,10 +3714,14 @@ const executeTask = async (
     };
 
     const buildStatusCardText = (): string => {
+      const todoSection = buildTodoContext();
       const logSection = formatStepLog();
-      const vibeText = nextVibeText().replace(/\s+·\s+/g, ' | ');
-      const progressText = !logSection ? 'Working on it' : logSection;
-      return `${progressText} | ${vibeText}`;
+      const vibeText = nextVibeText();
+      return [
+        todoSection,
+        logSection,
+        `*${vibeText}*`,
+      ].filter(Boolean).join('\n\n');
     };
 
     const appendStatusLine = (line: string | undefined): void => {
