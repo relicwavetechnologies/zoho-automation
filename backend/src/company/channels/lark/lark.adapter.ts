@@ -689,12 +689,23 @@ export class LarkChannelAdapter implements ChannelAdapter {
   public async updateMessage(input: ChannelUpdateMessage): Promise<ChannelOutboundResult> {
     const safeText = input.text ?? '';
     const format = input.format ?? 'interactive';
+    const method = format === 'text' ? 'PUT' : 'PATCH';
+    const requestPath = `/open-apis/im/v1/messages/${input.messageId}`;
+    const body = {
+      msg_type: format === 'text' ? 'text' : 'interactive',
+      content: JSON.stringify(
+        format === 'text'
+          ? { text: safeText }
+          : buildLarkCardContent(safeText, input.actions),
+      ),
+    };
     logger.info('lark.egress.update.start', {
       ...buildEgressTraceMeta({
         messageId: input.messageId,
         correlationId: input.correlationId,
       }),
-      requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
+      method,
+      requestPath,
       format,
       textLength: safeText.length,
       contentLength:
@@ -709,16 +720,9 @@ export class LarkChannelAdapter implements ChannelAdapter {
       textPreview: safeText.slice(0, 120),
     });
     const result = await this.requestWithTokenRetry({
-      method: 'PATCH',
-      requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
-      body: {
-        msg_type: format === 'text' ? 'text' : 'interactive',
-        content: JSON.stringify(
-          format === 'text'
-            ? { text: safeText }
-            : buildLarkCardContent(safeText, input.actions),
-        ),
-      },
+      method,
+      requestPath,
+      body,
       context: 'update',
       messageId: input.messageId,
     });
@@ -729,7 +733,8 @@ export class LarkChannelAdapter implements ChannelAdapter {
           messageId: input.messageId,
           correlationId: input.correlationId,
         }),
-        requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
+        method,
+        requestPath,
         format,
         error: result.result.error,
       });
@@ -769,7 +774,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
   }
 
   private async requestWithTokenRetry(input: {
-    method: 'POST' | 'PATCH';
+    method: 'POST' | 'PATCH' | 'PUT';
     requestPath: string;
     body: Record<string, unknown>;
     context: 'send' | 'update';
@@ -873,7 +878,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
 
   private async performRequest(
     input: {
-      method: 'POST' | 'PATCH';
+      method: 'POST' | 'PATCH' | 'PUT';
       requestPath: string;
       body: Record<string, unknown>;
     },
