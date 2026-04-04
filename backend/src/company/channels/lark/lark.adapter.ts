@@ -554,6 +554,8 @@ export class LarkChannelAdapter implements ChannelAdapter {
       altMsgType: readString((message as Record<string, unknown>).message_type),
       content: message.content,
     });
+    const threadRootId = readString((message as Record<string, unknown>).root_id) ?? null;
+    const threadParentId = readString((message as Record<string, unknown>).parent_id) ?? null;
     const referencedMessageId = readReferencedMessageId(message as Record<string, unknown>);
 
     if (!userId || !chatId || !messageId) {
@@ -574,6 +576,8 @@ export class LarkChannelAdapter implements ChannelAdapter {
         larkOpenId,
         larkUserId,
         referencedMessageId,
+        threadRootId,
+        threadParentId,
       },
     };
 
@@ -708,7 +712,6 @@ export class LarkChannelAdapter implements ChannelAdapter {
       method: 'PATCH',
       requestPath: `/open-apis/im/v1/messages/${input.messageId}`,
       body: {
-        msg_type: format === 'text' ? 'text' : 'interactive',
         content: JSON.stringify(
           format === 'text'
             ? { text: safeText }
