@@ -8,6 +8,7 @@ const readString = (value: unknown): string | undefined => {
 
 export type LarkMention = {
   id?: string;
+  openId?: string;
   name?: string;
   token?: string;
 };
@@ -65,9 +66,15 @@ const collectMentions = (value: unknown): LarkMention[] => {
       ?? readString(record.user_id)
       ?? readString(record.union_id)
       ?? readString(record.id);
+    const openId = readString(record.open_id);
     const name = readString(record.user_name) ?? readString(record.name) ?? readString(record.text);
     const token = isPlaceholderMention(name) ? name : undefined;
-    mentions.push({ ...(id ? { id } : {}), ...(name ? { name } : {}), ...(token ? { token } : {}) });
+    mentions.push({
+      ...(id ? { id } : {}),
+      ...(openId ? { openId } : {}),
+      ...(name ? { name } : {}),
+      ...(token ? { token } : {}),
+    });
   }
 
   return [
@@ -99,6 +106,7 @@ const collectRawMentions = (value: unknown): LarkMention[] => {
     ?? readString(record.union_id)
     ?? readString(record.id)
     ?? readString(record.key);
+  const openId = readString(record.open_id) ?? readString(record.openId);
   const name =
     readString(record.user_name)
     ?? readString(record.userName)
@@ -111,8 +119,12 @@ const collectRawMentions = (value: unknown): LarkMention[] => {
     ?? (isPlaceholderMention(name) ? name : undefined);
 
   const current = id || name ? [{ ...(id ? { id } : {}), ...(name ? { name } : {}), ...(token ? { token } : {}) }] : [];
+  const currentWithOpenId = current.map((entry) => ({
+    ...entry,
+    ...(openId ? { openId } : {}),
+  }));
   return [
-    ...current,
+    ...currentWithOpenId,
     ...Object.values(record).flatMap((entry) => collectRawMentions(entry)),
   ];
 };
@@ -310,6 +322,34 @@ export const replaceLarkMentionTokens = (input: {
     }
     return resolvedName.startsWith('@') ? resolvedName : `@${resolvedName}`;
   });
+};
+
+export const resolveLarkMentions = (
+  text: string,
+  mentions: Array<{
+    key: string;
+    name: string;
+    id?: {
+      open_id?: string;
+    };
+  }>,
+): string => {
+  if (!mentions?.length) {
+    return text;
+  }
+
+  let resolved = text;
+  for (const mention of mentions) {
+    if (!mention.key || !mention.name) {
+      continue;
+    }
+    const suffix = mention.id?.open_id ? ` (open_id:${mention.id.open_id})` : '';
+    resolved = resolved.replaceAll(
+      mention.key,
+      `@${mention.name}${suffix}`,
+    );
+  }
+  return resolved;
 };
 
 export type LarkAttachmentKey = {

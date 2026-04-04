@@ -54,6 +54,16 @@ export type NormalizedIncomingMessageDTO = {
     replyToMessageId?: string;
     /** Referenced inbound message id when the user replies to or quotes an earlier message. */
     referencedMessageId?: string;
+    /** Root message id for a Lark thread reply. Present only when the incoming message is in a thread. */
+    threadRootId?: string | null;
+    /** Immediate parent message id for a Lark thread reply. */
+    threadParentId?: string | null;
+    /** Structured users mentioned in the incoming message. */
+    mentionedUsers?: Array<{
+      key: string;
+      name: string;
+      openId?: string;
+    }>;
     /** True when the incoming text is only an attention ping like "@Divo" with no actionable content. */
     attentionOnly?: boolean;
   };

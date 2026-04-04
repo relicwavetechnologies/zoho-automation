@@ -14,7 +14,7 @@ import { buildLarkTraceMeta } from './lark-observability';
 import { larkTenantTokenService, LarkTenantTokenService } from './lark-tenant-token.service';
 import { emitRuntimeTrace } from '../../observability';
 import type { LarkAttachmentKey, LarkMention } from './lark-message-content';
-import { extractLarkMentionsFromMessage, inferLarkMessageType, parseLarkAttachmentKeys, parseLarkMessageContent } from './lark-message-content';
+import { extractLarkMentionsFromMessage, inferLarkMessageType, parseLarkAttachmentKeys, parseLarkMessageContent, resolveLarkMentions } from './lark-message-content';
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (typeof value !== 'object' || value === null) {
@@ -554,6 +554,21 @@ export class LarkChannelAdapter implements ChannelAdapter {
       altMsgType: readString((message as Record<string, unknown>).message_type),
       content: message.content,
     });
+    const mentions = extractLarkMentionsFromMessage({
+      content: message.content,
+      rawMentions: (message as Record<string, unknown>).mentions,
+    });
+    const parsedText = parseLarkMessageContent(message.content, msgType);
+    const resolvedText = resolveLarkMentions(
+      parsedText,
+      mentions.flatMap((mention) => mention.token && mention.name
+        ? [{
+          key: mention.token,
+          name: mention.name,
+          id: mention.openId ? { open_id: mention.openId } : undefined,
+        }]
+        : []),
+    );
     const threadRootId = readString((message as Record<string, unknown>).root_id) ?? null;
     const threadParentId = readString((message as Record<string, unknown>).parent_id) ?? null;
     const referencedMessageId = readReferencedMessageId(message as Record<string, unknown>);
@@ -569,7 +584,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       chatType: message.chat_type === 'group' ? 'group' : 'p2p',
       messageId,
       timestamp: toIsoTimestamp(readString(message.create_time)),
-      text: parseLarkMessageContent(message.content, msgType),
+      text: resolvedText,
       rawEvent: event,
       trace: {
         larkTenantKey: readTenantKey(envelope),
@@ -578,6 +593,18 @@ export class LarkChannelAdapter implements ChannelAdapter {
         referencedMessageId,
         threadRootId,
         threadParentId,
+        ...(mentions.length > 0
+          ? {
+            mentionedUsers: mentions.flatMap((mention) =>
+              mention.token && mention.name
+                ? [{
+                  key: mention.token,
+                  name: mention.name,
+                  openId: mention.openId ?? mention.id,
+                }]
+                : []),
+          }
+          : {}),
       },
     };
 
