@@ -3588,6 +3588,7 @@ const executeTask = async (
 ): Promise<SupervisorV2ExecutionOutput> => {
   const { task, message, abortSignal } = input;
   const executionId = resolveCanonicalExecutionId(task, message);
+  const executionStartMs = Date.now();
   _vibeIndex = Math.floor(Math.random() * DIVO_VIBES.length);
   _dotIndex = 0;
   let statusCoordinator: LarkStatusCoordinator | null = null;
@@ -3700,7 +3701,6 @@ const executeTask = async (
       }
     }
     const stepLog: string[] = [];
-    const hasExistingCard = Boolean(message.trace?.statusMessageId);
 
     const formatStepLog = (): string => {
       if (stepLog.length === 0) return '';
@@ -3752,7 +3752,7 @@ const executeTask = async (
         void text;
         return;
       }
-      await statusCoordinator.update({ text: buildStatusCardText(), actions: [] });
+      await statusCoordinator.updateLiveText(buildStatusCardText());
     };
 
     const supervisorTools = {
@@ -4000,18 +4000,17 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
     };
 
     if (statusCoordinator) {
-      if (hasExistingCard) {
-        await statusCoordinator.update(
-          { text: buildStatusCardText(), actions: [] },
-          { force: true },
-        );
-      }
+      await statusCoordinator.update(
+        { text: '*Working on it...*', actions: [] },
+        { force: true },
+      );
+      await statusCoordinator.updateLiveText('Starting up ···');
       statusCoordinator.startHeartbeat(() => {
-        if (!hasExistingCard && stepLog.length === 0) {
-          return null;
-        }
+        const todoSection = buildTodoContext();
+        const logSection = formatStepLog();
+        const vibeText = nextVibeText();
         return {
-          text: buildStatusCardText(),
+          text: [todoSection, logSection, `${vibeText}`].filter(Boolean).join('\n\n'),
           actions: [],
         };
       });
@@ -4094,7 +4093,13 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
         appendStatusLine(stepLine);
 
         if (statusCoordinator) {
-          await statusCoordinator.update({ text: buildStatusCardText(), actions: [] });
+          const todoSection = buildTodoContext();
+          const logSection = formatStepLog();
+          const vibeText = nextVibeText();
+          const cardText = [todoSection, logSection, vibeText]
+            .filter(Boolean)
+            .join('\n\n');
+          await statusCoordinator.updateLiveText(cardText);
         }
       },
     });
@@ -4112,6 +4117,9 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       toolResults.length > 0
       || asArray(supervisorResult.steps).some((step) => asArray(asRecord(step)?.toolCalls).length > 0);
     const agentResults = toSupervisorAgentResults(toolResults, task.taskId);
+
+    const durationSec = Math.round((Date.now() - executionStartMs) / 1000);
+    await statusCoordinator?.finalizeLiveText(`Completed in ${durationSec}s ✓`);
 
     return {
       task,
@@ -4141,6 +4149,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
     };
   } catch (error) {
     const messageText = error instanceof Error ? error.message : 'Supervisor v2 execution failed.';
+    await statusCoordinator?.finalizeLiveText('Something went wrong ✗');
     await appendExecutionEventSafe({
       executionId,
       phase: 'tools',

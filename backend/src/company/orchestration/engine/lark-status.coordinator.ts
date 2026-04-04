@@ -43,6 +43,7 @@ export class LarkStatusCoordinator {
   private readonly heartbeatIntervalMs: number;
 
   private statusMessageId?: string;
+  private liveTextMessageId?: string;
   private lastSentAt = 0;
   private lastText?: string;
   private lastActionsKey = actionsKey();
@@ -66,6 +67,10 @@ export class LarkStatusCoordinator {
 
   public getStatusMessageId(): string | undefined {
     return this.statusMessageId;
+  }
+
+  public getLiveTextMessageId(): string | undefined {
+    return this.liveTextMessageId;
   }
 
   public async update(renderable: LarkStatusRenderable, options?: { force?: boolean; terminal?: boolean }): Promise<void> {
@@ -98,7 +103,46 @@ export class LarkStatusCoordinator {
     await this.pump();
   }
 
-  public startHeartbeat(getRenderable: () => LarkStatusRenderable | null): void {
+  public async updateLiveText(text: string): Promise<void> {
+    const nextText = text.trim();
+    if (this.closed || !nextText) return;
+    try {
+      if (this.liveTextMessageId) {
+        await this.adapter.updateMessage({
+          messageId: this.liveTextMessageId,
+          text: nextText,
+          format: 'text',
+          correlationId: this.correlationId,
+        });
+      } else {
+        const result = await this.adapter.sendMessage({
+          chatId: this.chatId,
+          text: nextText,
+          format: 'text',
+          correlationId: this.correlationId,
+          replyToMessageId: this.replyToMessageId,
+          replyInThread: this.replyInThread,
+        });
+        this.liveTextMessageId = result?.messageId;
+      }
+    } catch {
+      // non-critical — live text failing should not break execution
+    }
+  }
+
+  public async finalizeLiveText(text: string): Promise<void> {
+    if (this.closed || !this.liveTextMessageId) return;
+    try {
+      await this.adapter.updateMessage({
+        messageId: this.liveTextMessageId,
+        text,
+        format: 'text',
+        correlationId: this.correlationId,
+      });
+    } catch {}
+  }
+
+  public startHeartbeat(getRenderable: () => LarkStatusRenderable): void {
     if (this.closed || this.heartbeatTimer) return;
     this.heartbeatTimer = setInterval(() => {
       if (this.closed) return;
@@ -106,12 +150,8 @@ export class LarkStatusCoordinator {
         void this.flushPending();
         return;
       }
-      if (Date.now() - this.lastSentAt < this.heartbeatIntervalMs) {
-        return;
-      }
       const renderable = getRenderable();
-      if (!renderable) return;
-      void this.update(renderable, { force: true });
+      void this.updateLiveText(renderable.text);
     }, this.heartbeatIntervalMs);
     this.heartbeatTimer.unref?.();
   }
