@@ -3713,15 +3713,31 @@ const executeTask = async (
         .join(' | ');
     };
 
+    const LIVE_TEXT_BORDER = '====================================';
+
+    const buildLiveTextBox = (...sections: Array<string | undefined>): string => {
+      const content = sections
+        .filter((section): section is string => Boolean(section && section.trim().length > 0))
+        .map((section) => section.trim())
+        .join('\n\n');
+      return [
+        LIVE_TEXT_BORDER,
+        '',
+        content,
+        '',
+        LIVE_TEXT_BORDER,
+      ].join('\n');
+    };
+
     const buildStatusCardText = (): string => {
       const todoSection = buildTodoContext();
       const logSection = formatStepLog();
       const vibeText = nextVibeText();
-      return [
+      return buildLiveTextBox(
         todoSection,
         logSection,
-        `*${vibeText}*`,
-      ].filter(Boolean).join('\n\n');
+        vibeText,
+      );
     };
 
     const appendStatusLine = (line: string | undefined): void => {
@@ -4004,13 +4020,13 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
         { text: '*Working on it...*', actions: [] },
         { force: true },
       );
-      await statusCoordinator.updateLiveText('Starting up ···');
+      await statusCoordinator.updateLiveText(buildLiveTextBox('Starting up ···'));
       statusCoordinator.startHeartbeat(() => {
         const todoSection = buildTodoContext();
         const logSection = formatStepLog();
         const vibeText = nextVibeText();
         return {
-          text: [todoSection, logSection, `${vibeText}`].filter(Boolean).join('\n\n'),
+          text: buildLiveTextBox(todoSection, logSection, vibeText),
           actions: [],
         };
       });
@@ -4096,9 +4112,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
           const todoSection = buildTodoContext();
           const logSection = formatStepLog();
           const vibeText = nextVibeText();
-          const cardText = [todoSection, logSection, vibeText]
-            .filter(Boolean)
-            .join('\n\n');
+          const cardText = buildLiveTextBox(todoSection, logSection, vibeText);
           await statusCoordinator.updateLiveText(cardText);
         }
       },
@@ -4119,7 +4133,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
     const agentResults = toSupervisorAgentResults(toolResults, task.taskId);
 
     const durationSec = Math.round((Date.now() - executionStartMs) / 1000);
-    await statusCoordinator?.finalizeLiveText(`Completed in ${durationSec}s ✓`);
+    await statusCoordinator?.finalizeLiveText(buildLiveTextBox(`Completed in ${durationSec}s ✓`));
 
     return {
       task,
@@ -4149,7 +4163,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
     };
   } catch (error) {
     const messageText = error instanceof Error ? error.message : 'Supervisor v2 execution failed.';
-    await statusCoordinator?.finalizeLiveText('Something went wrong ✗');
+    await statusCoordinator?.finalizeLiveText(buildLiveTextBox('Something went wrong ✗'));
     await appendExecutionEventSafe({
       executionId,
       phase: 'tools',
