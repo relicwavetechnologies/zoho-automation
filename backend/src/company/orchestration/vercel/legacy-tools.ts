@@ -3954,7 +3954,7 @@ export const createVercelDesktopTools = (
           web: z.boolean().optional(),
           skills: z.boolean().optional(),
         }).optional(),
-        limit: z.number().int().min(1).max(10).optional().default(5),
+        limit: z.number().int().min(1).max(25).optional().default(5),
         dateFrom: z.string().optional(),
         dateTo: z.string().optional(),
         chunkRef: z.string().optional(),
@@ -4063,7 +4063,7 @@ export const createVercelDesktopTools = (
           const result = await contextSearchBrokerService.search({
             runtime,
             query,
-            limit: Math.max(1, Math.min(10, input.limit ?? 5)),
+            limit: Math.max(1, Math.min(25, input.limit ?? 5)),
             dateFrom: input.dateFrom,
             dateTo: input.dateTo,
             sources: normalizedSources,
