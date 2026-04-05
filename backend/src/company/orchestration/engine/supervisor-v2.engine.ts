@@ -1,3 +1,5 @@
+import path from 'path';
+
 import { generateText, stepCountIs, tool } from 'ai';
 import { z } from 'zod';
 
@@ -41,12 +43,7 @@ import {
   parseDesktopThreadSummary,
   upsertDesktopSourceArtifacts,
 } from '../../../modules/desktop-chat/desktop-thread-memory';
-import { fileUploadService } from '../../../modules/file-upload/file-upload.service';
 import { desktopWorkflowsService } from '../../../modules/desktop-workflows/desktop-workflows.service';
-import {
-  GENERATED_ARTIFACT_FILE_PREFIX,
-  GENERATED_ARTIFACT_RETENTION_HOURS,
-} from '../../../modules/file-upload/file-asset-retention.constants';
 import { logger } from '../../../utils/logger';
 import { prisma } from '../../../utils/prisma';
 import { redDebug } from '../../../utils/red-debug';
@@ -109,6 +106,9 @@ type ActiveTodos = {
 
 type AttachmentKind = 'pdf' | 'image' | 'csv' | 'doc' | 'other';
 
+const GENERATED_ARTIFACT_FILE_PREFIX = 'divo_tmp_';
+const GENERATED_ARTIFACT_RETENTION_HOURS = 48;
+
 type AttachmentContext = {
   fileName: string;
   mimeType: string;
@@ -121,6 +121,11 @@ type AttachmentContext = {
   inlineText?: string;
   keyFields?: Record<string, unknown>;
   retrievalHint?: string;
+};
+
+const getFileUploadService = (): typeof import('../../../modules/file-upload/file-upload.service')['fileUploadService'] => {
+  const mod = require(path.resolve(__dirname, '../../../modules/file-upload/file-upload.service')) as typeof import('../../../modules/file-upload/file-upload.service');
+  return mod.fileUploadService;
 };
 
 type DeliveryMode =
@@ -1112,7 +1117,7 @@ const saveArtifact = async (input: {
       ? `${runtime.workspace.path.replace(/\/$/, '')}/.divo/artifacts/${fileName}`
       : undefined;
 
-    const uploaded = await fileUploadService.upload({
+    const uploaded = await getFileUploadService().upload({
       buffer,
       mimeType: 'text/csv',
       fileName,
