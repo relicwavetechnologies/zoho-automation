@@ -42,8 +42,10 @@ type LarkOperationalConfigLike = {
   } | null>;
 };
 
+const resolveModulePath = (modulePath: string): string => path.resolve(__dirname, modulePath);
+
 const loadModuleExport = <T>(modulePath: string, exportName: string): T => {
-  const moduleRecord = require(modulePath) as Record<string, unknown>;
+  const moduleRecord = require(resolveModulePath(modulePath)) as Record<string, unknown>;
   return moduleRecord[exportName] as T;
 };
 
@@ -290,7 +292,7 @@ const loadDocumentTextHelpers = (): {
   extractTextFromBuffer: (buffer: Buffer, mimeType: string, fileName: string) => Promise<string>;
   normalizeExtractedText: (rawText: string, maxWords?: number) => string;
 } =>
-  require('../../../modules/file-upload/document-text-extractor') as {
+  require(resolveModulePath('../../../modules/file-upload/document-text-extractor')) as {
     extractTextFromBuffer: (buffer: Buffer, mimeType: string, fileName: string) => Promise<string>;
     normalizeExtractedText: (rawText: string, maxWords?: number) => string;
   };
@@ -3888,6 +3890,7 @@ export const createVercelDesktopTools = (
             fileAssetId: input.fileAssetId?.trim(),
             limit,
             requesterAiRole: runtime.requesterAiRole,
+            requesterUserId: runtime.userId,
             preferParentContext: true,
           });
           const citations = searchResult.citations.filter((entry): entry is VercelCitation =>

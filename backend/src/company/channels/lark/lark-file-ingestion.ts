@@ -6,6 +6,8 @@
  * Returns a NormalizedAttachedFile[] that can be appended to the normalized
  * incoming message DTO before enqueuing the AI task.
  */
+import path from 'path';
+
 import { logger } from '../../../utils/logger';
 import { orangeDebug } from '../../../utils/orange-debug';
 import type { LarkChannelAdapter } from './lark.adapter';
@@ -15,7 +17,7 @@ import { larkRecentFilesStore } from './lark-recent-files.store';
 
 // Lazily required to avoid circular deps at module load time.
 const getFileUploadService = (): typeof import('../../../modules/file-upload/file-upload.service')['fileUploadService'] => {
-  const mod = require('../../../modules/file-upload/file-upload.service') as typeof import('../../../modules/file-upload/file-upload.service');
+  const mod = require(path.resolve(__dirname, '../../../modules/file-upload/file-upload.service')) as typeof import('../../../modules/file-upload/file-upload.service');
   return mod.fileUploadService;
 };
 
