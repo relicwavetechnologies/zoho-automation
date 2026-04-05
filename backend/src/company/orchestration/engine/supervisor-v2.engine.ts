@@ -15,6 +15,7 @@ import { departmentService } from '../../departments/department.service';
 import {
   executionService,
 } from '../../observability';
+import { memoryService } from '../../memory';
 import { conversationMemoryStore } from '../../state/conversation';
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import { DOMAIN_TO_TOOL_IDS } from '../../tools/tool-registry';
@@ -41,7 +42,13 @@ import {
   upsertDesktopSourceArtifacts,
 } from '../../../modules/desktop-chat/desktop-thread-memory';
 import { fileUploadService } from '../../../modules/file-upload/file-upload.service';
+import { desktopWorkflowsService } from '../../../modules/desktop-workflows/desktop-workflows.service';
+import {
+  GENERATED_ARTIFACT_FILE_PREFIX,
+  GENERATED_ARTIFACT_RETENTION_HOURS,
+} from '../../../modules/file-upload/file-asset-retention.constants';
 import { logger } from '../../../utils/logger';
+import { prisma } from '../../../utils/prisma';
 import { redDebug } from '../../../utils/red-debug';
 import { withProviderRetry } from '../../../utils/provider-retry';
 import { estimateTokens } from '../../../utils/token-estimator';
@@ -155,6 +162,7 @@ type ArtifactDecision = {
   mode: DeliveryMode;
   dataset: ShapedDataset;
   reportedTotal: number;
+  tokenEstimate: number;
 };
 
 type SavedArtifact = {
@@ -169,6 +177,7 @@ type SavedArtifact = {
   querySummary: string;
   schemaSummary: string;
   createdAt: string;
+  expiresAt?: string;
   status: 'saved' | 'saved_for_later_processing' | 'processed' | 'published';
   chatId?: string;
   threadId?: string;
@@ -697,8 +706,7 @@ const containsProcessVerb = (text: string): boolean =>
     .test(text);
 
 const decideDeliveryMode = (
-  rowCount: number,
-  byteSize: number,
+  tokenEstimate: number,
   userIntent: string,
   workspaceAvailable: boolean,
 ): DeliveryMode => {
@@ -706,8 +714,8 @@ const decideDeliveryMode = (
 
   if (processVerb && workspaceAvailable) return 'workspace_process_then_publish';
   if (processVerb && !workspaceAvailable) return 'saved_for_later_processing';
-  if (rowCount <= 20 && byteSize < 25_000) return 'inline';
-  if (rowCount <= 200 && byteSize < 250_000) return 'preview_plus_artifact';
+  if (tokenEstimate < 4_000) return 'inline';
+  if (tokenEstimate < 20_000) return 'preview_plus_artifact';
   if (workspaceAvailable) return 'workspace_process_then_publish';
   return 'saved_for_later_processing';
 };
@@ -734,19 +742,19 @@ const buildArtifactDecision = (
     truncatedByShape: false,
     byteSize: 0,
   };
+  const tokenEstimate = estimateTokens(dataset.rows);
   const isSummaryQuery = /\b(how many|count|total|summary|overview|stats)\b/i
     .test(agentObjective) && !/\b(list|show|get|fetch|all|export)\b/i.test(agentObjective);
   const mode = isSummaryQuery || shapeSpec?.summaryOnly
     ? 'inline'
     : shapeSpec?.rawExportRequested
       ? (
-          workspaceAvailable && (dataset.returnedRowCount > 200 || dataset.byteSize >= 250_000)
+          workspaceAvailable && tokenEstimate >= 20_000
             ? 'workspace_process_then_publish'
             : 'preview_plus_artifact'
         )
       : decideDeliveryMode(
-        dataset.returnedRowCount,
-        dataset.byteSize,
+        tokenEstimate,
         userIntent,
         workspaceAvailable,
       );
@@ -754,6 +762,7 @@ const buildArtifactDecision = (
     mode,
     dataset,
     reportedTotal: dataset.sourceMatchedTotal,
+    tokenEstimate,
   };
 };
 
@@ -792,6 +801,14 @@ const summarizeText = (value: string | null | undefined, limit = 240): string =>
     return '';
   }
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+};
+
+const estimateTokens = (data: unknown[]): number => {
+  try {
+    return Math.ceil(JSON.stringify(data).length / 4);
+  } catch {
+    return 999_999;
+  }
 };
 
 const buildAttachmentContext = async (
@@ -1054,6 +1071,16 @@ const compactContextText = (value?: string | null): string | undefined => {
     : trimmed;
 };
 
+const compactPromptMemoryText = (value?: string | null, maxChars = 800): string | undefined => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.length > maxChars
+    ? `${trimmed.slice(0, maxChars)}...`
+    : trimmed;
+};
+
 const saveArtifact = async (input: {
   rows: Record<string, unknown>[];
   columns?: string[];
@@ -1067,12 +1094,14 @@ const saveArtifact = async (input: {
     const { rows, columns, sourceDomain, querySummary, companyId, runtime } = input;
     if (rows.length === 0) return null;
 
+    const createdAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
     const date = new Date().toISOString().slice(0, 16).replace(/[:.T]/g, '-');
     const safeSummary = (input.fileStem ?? querySummary)
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '_')
       .slice(0, 40);
-    const fileName = `${sourceDomain}_${safeSummary || 'artifact'}_${date}.csv`;
+    const fileName = `${GENERATED_ARTIFACT_FILE_PREFIX}${sourceDomain}_${safeSummary || 'artifact'}_${date}.csv`;
 
     const buffer = convertToCSV(rows, columns);
     const byteSize = buffer.length;
@@ -1107,7 +1136,8 @@ const saveArtifact = async (input: {
       localPath,
       querySummary,
       schemaSummary,
-      createdAt: new Date().toISOString(),
+      createdAt,
+      expiresAt,
       status: 'published',
       chatId: runtime.chatId,
       threadId: runtime.threadId,
@@ -1276,7 +1306,10 @@ const buildArtifactPresentation = (input: {
     }
   }
   if (input.artifact?.publishedUrl) {
-    const fileName = input.artifact.localPath?.split('/').pop() || `${input.artifact.sourceDomain}_artifact.csv`;
+    const rawFileName = input.artifact.localPath?.split('/').pop() || `${input.artifact.sourceDomain}_artifact.csv`;
+    const fileName = rawFileName.startsWith(GENERATED_ARTIFACT_FILE_PREFIX)
+      ? rawFileName.slice(GENERATED_ARTIFACT_FILE_PREFIX.length)
+      : rawFileName;
     const truncationNotes: string[] = [];
     if (input.decision.dataset.truncatedBySource) {
       truncationNotes.push(`source matched ${input.decision.reportedTotal}`);
@@ -1285,7 +1318,14 @@ const buildArtifactPresentation = (input: {
       truncationNotes.push(`returned ${input.decision.dataset.returnedRowCount}`);
     }
     const suffix = truncationNotes.length > 0 ? ` *(${truncationNotes.join(' · ')})*` : '';
-    lines.push(`**${input.decision.dataset.returnedRowCount} rows. Full data:** [${fileName}](${input.artifact.publishedUrl})${suffix}`);
+    const summaryLine = input.decision.dataset.summaryStats || `${input.decision.dataset.returnedRowCount} items found`;
+    const previewPrefix = input.decision.mode === 'preview_plus_artifact'
+      ? 'Showing first 5. Full data'
+      : 'Full data';
+    lines.push(`**${summaryLine}. ${previewPrefix}:** [${fileName}](${input.artifact.publishedUrl})${suffix}`);
+    if (input.artifact.expiresAt) {
+      lines.push(`*Temporary link: keep a copy if you need it later. Artifact retention target is ${GENERATED_ARTIFACT_RETENTION_HOURS / 24} days.*`);
+    }
   }
   if (input.artifact?.localPath && input.localProcessingText) {
     lines.push(input.localProcessingText);
@@ -1322,12 +1362,22 @@ const buildPermissionSummary = (runtime: VercelRuntimeRequestContext): string =>
 export const buildSupervisorSystemPrompt = (
   runtime: VercelRuntimeRequestContext,
   conversation?: ConversationContextSnapshot,
+  memoryContext?: {
+    behaviorProfile?: string;
+    durableMemory?: string;
+    relevantFacts?: string;
+    isScheduledRun?: boolean;
+  },
 ): string => {
   const today = new Date().toISOString().slice(0, 10);
   const departmentLabel = runtime.departmentName?.trim() || 'no specific department';
   const requesterLabel = runtime.requesterName?.trim() || runtime.requesterEmail?.trim() || 'the current user';
   const threadSummaryContext = compactContextText(conversation?.threadSummaryContext);
   const taskStateContext = compactContextText(conversation?.taskStateContext);
+  const behaviorProfile = compactPromptMemoryText(memoryContext?.behaviorProfile);
+  const durableMemory = compactPromptMemoryText(memoryContext?.durableMemory);
+  const relevantFacts = compactPromptMemoryText(memoryContext?.relevantFacts);
+  const isScheduledRun = memoryContext?.isScheduledRun === true;
   const workspaceBlock = runtime.workspace
     ? `Connected desktop workspace: ${runtime.workspace.path} (${runtime.workspace.name}). Desktop execution availability: ${runtime.desktopExecutionAvailability ?? 'available'}. Approval policy: ${runtime.desktopApprovalPolicySummary ?? 'unknown'}.`
     : `Connected desktop workspace: none. Desktop execution availability: ${runtime.desktopExecutionAvailability ?? 'none'}.`;
@@ -1406,6 +1456,68 @@ DOCUMENT / ATTACHMENT RULES:
 - For images: describe what you see from the vision context provided
 - Never ask the user to re-send a file that is already attached
 
+SCHEDULING:
+- When user wants to automate a task on a schedule, use scheduleTool
+- Always confirm before creating: restate WHAT runs, WHEN, and WHERE output goes
+- Ask if the schedule time or output destination is unclear
+- Tools available:
+  scheduleTool creates a new scheduled workflow
+  listScheduledJobsTool shows all scheduled workflows
+  editScheduledJobTool changes schedule time, destination, or name
+  cancelScheduledJobTool pauses a workflow
+  runNowTool triggers a workflow immediately
+- Natural language routing:
+  "schedule X every Y" -> scheduleTool
+  "show my schedules" -> listScheduledJobsTool
+  "change my report to Tuesday" -> editScheduledJobTool
+  "pause/cancel/stop/delete my report" -> cancelScheduledJobTool
+  "run my report now" -> runNowTool
+- If the user wants edit/cancel/run but gives no ID:
+  1. Call listScheduledJobsTool
+  2. Show the list
+  3. Ask "Which one? Reply with the name or ID"
+  4. Then call the action tool with the identified workflowId
+- If user says "delete", treat it as cancel/pause. Do not promise permanent deletion from chat.
+- After creating, confirm with:
+  "✓ Scheduled — [task summary]
+   Runs: [humanScheduleLabel]
+   Output: [This chat / Your DM]
+   Workflow ID: [id]
+   Next run: [nextRunAt in IST]
+   Say 'cancel [id]' to stop."
+- After scheduleTool succeeds, also mention:
+  Say "@Divo /workflows" to see all your schedules.
+  Say "@Divo run [name] now" to trigger immediately.
+  Say "@Divo cancel [name]" to stop it.
+- After editScheduledJobTool succeeds, confirm:
+  ✓ Updated — [humanChangeLabel]
+  Next run: [nextRunAt in IST]
+- After cancelScheduledJobTool succeeds, confirm:
+  ✓ Paused — [workflow name]
+  Say "@Divo edit [name]" to reschedule it.
+- For scheduled execution (trace.isScheduledRun = true):
+  Execute the task directly with no clarifying questions
+  Deliver the result to the configured output
+  Do not ask for approval on read-only operations like fetching, summarizing, or reporting
+  For write operations still use normal approval flow
+
+${isScheduledRun ? 'CURRENT EXECUTION: This is a scheduled run. Execute directly, do not ask follow-up questions unless the task is impossible.' : ''}
+
+${[
+  ...(behaviorProfile ? [
+    'USER PREFERENCES (follow these):',
+    behaviorProfile,
+  ] : []),
+  ...(durableMemory ? [
+    'DURABLE CONTEXT (ongoing tasks, decisions, constraints):',
+    durableMemory,
+  ] : []),
+  ...(relevantFacts ? [
+    'RELEVANT MEMORY FACTS:',
+    relevantFacts,
+  ] : []),
+].join('\n')}
+
 FORMATTING:
 Use **bold** for emphasis. Use - for bullet lists. For data tables use | Col | format.
 Never use ### or ## headings — use **Bold:** instead. Be concise and direct.
@@ -1468,16 +1580,47 @@ EMAIL (SEND / SEARCH / DRAFT):
   Trigger: "send email", "email to X", "draft", "check inbox", "search emails"
   → googleWorkspaceAgent({ objective: "[email task]", recipientEmail, subject, body if known })
 
+  When sending a document summary via email, the body must be structured as:
+  - Greeting
+  - Context sentence (what this email is about)
+  - Section 1 heading + 2-3 sentence summary
+  - Section 2 heading + 2-3 sentence summary
+  - Call to action or next steps
+  - Sign-off with sender name from runtime.requesterName
+
   Examples:
   - "send the findings to anish"
     → googleWorkspaceAgent({ objective: "send email with findings",
        recipientEmail: "anishsuman2305@gmail.com",
        subject: "Research Findings",
-       body: "[findings from prior step]" })
+       body: "Hi Anish,\n\nI've reviewed the material and wanted to share a concise summary of the key findings.\n\n**Section 1**\n[2-3 sentence summary from prior step]\n\n**Section 2**\n[2-3 sentence summary from prior step]\n\nLet me know if you'd like me to expand on any of the gaps or next steps.\n\nBest regards,\n${runtime.requesterName?.trim() || 'Sender'}" })
   - "check my inbox"
     → googleWorkspaceAgent({ objective: "list recent inbox messages" })
   - "search emails from vijay sir"
     → googleWorkspaceAgent({ objective: "search Gmail for emails from Vijay" })
+
+  Example good email body:
+  "Hi Anish,
+
+I've reviewed the Mr. Market FRD and wanted to share
+a summary of the key sections.
+
+**SEBI Compliance**
+The system must frame all outputs as technical analysis
+with mandatory disclaimers. Conservative users are
+blocked from F&O advice, and safety interrupts trigger
+for high-risk stocks.
+
+**Technical Architecture**
+The FRD covers live data feeds, technical indicators,
+and a RAG-based vector database for annual reports.
+Critical gaps include a risk engine, OMS, and FIX
+protocol connectivity for production readiness.
+
+Let me know if you'd like to discuss the gaps further.
+
+Best regards,
+Abhishek"
 
   Note: email sending shows an approval card to the user — inform them to approve.
 
@@ -1594,6 +1737,20 @@ MULTI-STEP CHAINING EXAMPLES:
     manageTodos({ action: "update", id: "1", status: "done", result: "122 customers fetched" })
     manageTodos({ action: "update", id: "2", status: "running" })
     ... and so on
+
+  "schedule the overdue invoice report every Monday at 9am and send it to this chat":
+    Step 1: confirm the task, schedule, and destination if they are already clear
+    Step 2: scheduleTool({
+      userIntent: "schedule the overdue invoice report every Monday at 9am and send it to this chat",
+      taskPrompt: "Get all overdue invoices from Zoho and summarize by customer name and overdue amount",
+      scheduleType: "weekly",
+      timezone: "Asia/Kolkata",
+      hour: 9,
+      minute: 0,
+      dayOfWeek: 1,
+      outputTarget: "lark_current_chat",
+      humanScheduleLabel: "Every Monday at 9:00 AM IST"
+    })
 
 CONTINUATION HANDLING:
   When latest message is a short fragment with no standalone meaning,
@@ -1761,6 +1918,16 @@ Objective: "draft an email to the client about the overdue invoice"
 Objective: "try again" or "send it" (after a prior email was pending)
 → Check if prior step has pending email context, attempt sendEmail again
 → Return: "Retrying email send. Approval required."
+
+EMAIL FORMATTING RULES:
+- When composing an email body:
+  Use proper paragraph breaks (double newline between sections)
+- Use a professional greeting: "Hi [Name],"
+- Use clear section headers followed by content
+- End with a professional sign-off: "Best regards,\n[Sender Name]"
+- Never send one wall of text
+- For summaries: use short paragraphs, not run-on sentences
+- Maximum 3-4 sentences per paragraph
 
 WHAT NOT TO DO:
 - Do not create Lark meetings or tasks — those belong to larkAgent
@@ -2557,6 +2724,11 @@ async function runContextAgent(
         }),
         execute: async ({ query, operation, sources, limit, chunkRef }) =>
           (async () => {
+            const effectiveLimit = resolveContextSearchLimit({
+              limit,
+              sources,
+              contactSearch: params.contactSearch,
+            });
             const effectivePayload = {
               query,
               operation,
@@ -2569,7 +2741,7 @@ async function runContextAgent(
                 skills: false,
               },
               scopes: ['all'] as const,
-              limit: limit ?? 8,
+              limit: effectiveLimit,
               ...(chunkRef ? { chunkRef } : {}),
             };
             redDebug('supervisor_v2.context_agent.context_search.execute', {
@@ -2594,6 +2766,19 @@ async function runContextAgent(
     onStepFinish,
   });
 }
+
+export const resolveContextSearchLimit = (input: {
+  limit?: number;
+  sources?: { files?: boolean } | undefined;
+  contactSearch?: boolean;
+}): number =>
+  input.limit ?? (
+    input.sources?.files
+      ? 20
+      : input.contactSearch
+        ? 10
+        : 15
+  );
 
 async function runGoogleWorkspaceAgent(
   params: { objective: string; recipientEmail?: string; subject?: string; body?: string },
@@ -3453,27 +3638,17 @@ const applyArtifactFlow = async (
     return agentResult;
   }
 
+  logger.info('supervisor_v2.artifact.decision', {
+    rows: decision.dataset.rows.length,
+    tokenEstimate: decision.tokenEstimate,
+    mode: decision.mode,
+  });
+
   if (decision.mode === 'inline') {
-    if (sourceDomain !== 'zoho' || !shapeSpec) {
-      return agentResult;
-    }
-    const inlineText = [
-      `Found ${decision.reportedTotal} ${shapeSpec.grain === 'customer_aggregate' ? 'matching overdue invoices across customers' : 'overdue invoices'}.`,
-      decision.dataset.summaryStats,
-      ...(decision.dataset.previewRows.length > 0 && !shapeSpec.summaryOnly
-        ? ['**Preview:**', buildPreviewTable(
-          decision.dataset.previewRows,
-          decision.dataset.returnedRowCount,
-          decision.dataset.columns,
-        )]
-        : []),
-      ...(decision.dataset.truncatedBySource
-        ? ['Source results were truncated before shaping, so additional records may exist beyond the fetched set.']
-        : []),
-    ].filter((line) => line && line.trim().length > 0).join('\n\n');
+    const inlineCsv = convertToCSV(decision.dataset.rows, decision.dataset.columns).toString('utf-8');
     return {
       ...agentResult,
-      text: inlineText,
+      text: `\`\`\`csv\n${inlineCsv}\n\`\`\``,
       rowCount: decision.dataset.returnedRowCount,
     };
   }
@@ -3597,6 +3772,27 @@ const executeTask = async (
     const conversation = await resolveConversationContext(input);
     const contextStorageId = conversation.persistentThreadId ?? conversation.sharedChatContextId;
     const runtime = await resolveRuntimeContext(task, message, contextStorageId);
+    const traceRecord = asRecord(message.trace);
+    const isScheduledRun = asBoolean(traceRecord?.isScheduledRun) ?? false;
+    const memoryPromptContext =
+      runtime.companyId && runtime.userId
+        ? await memoryService.getPromptContext({
+          userId: runtime.userId,
+          companyId: runtime.companyId,
+          queryText: message.text,
+          threadId: runtime.threadId,
+          conversationKey: contextStorageId ?? runtime.threadId,
+          contextClass: 'normal_work',
+        })
+        : {
+            behaviorProfile: null,
+            behaviorProfileContext: null,
+            durableTaskContext: [],
+            durableTaskContextText: null,
+            relevantMemoryFacts: [],
+            relevantMemoryFactsText: null,
+            preferredReplyMode: null,
+          };
     let currentTaskState = conversation.taskState ?? createEmptyTaskState();
 
     const readStoredTodos = (): ActiveTodos | null => {
@@ -3860,6 +4056,303 @@ const executeTask = async (
           return { success: false, message: 'Unknown action' };
         },
       }),
+      scheduleTool: tool({
+        description: `Schedule a task to run automatically at a future time or on a recurring schedule.
+Use when user says: "schedule", "every Monday", "daily at 9am",
+"remind me", "set this up to run automatically", "weekly report".
+Do NOT use for immediate execution — use other tools for that.`,
+        inputSchema: z.object({
+          taskPrompt: z.string().describe(
+            'Complete executable instruction for what to run. Example: "Get all overdue invoices from Zoho and summarize by customer name and amount"',
+          ),
+          userIntent: z.string().describe('Original user intent in their words'),
+          scheduleType: z.enum(['one_time', 'daily', 'weekly', 'monthly']),
+          timezone: z.string().default('Asia/Kolkata'),
+          runAt: z.string().optional().describe('ISO datetime for one-time runs'),
+          hour: z.number().min(0).max(23).optional(),
+          minute: z.number().min(0).max(59).optional().default(0),
+          dayOfWeek: z.number().min(0).max(6).optional().describe('0=Sunday, 1=Monday ... 6=Saturday. Only for weekly.'),
+          dayOfMonth: z.number().min(1).max(31).optional().describe('Only for monthly.'),
+          outputTarget: z.enum(['lark_current_chat', 'lark_self_dm']).describe(
+            'lark_current_chat = deliver to this same group/chat. lark_self_dm = deliver to user personal DM with Divo.',
+          ),
+          humanScheduleLabel: z.string().describe('Human readable: "Every Monday at 9:00 AM IST" or "Tomorrow at 3:00 PM IST"'),
+        }),
+        execute: async (params) => {
+          try {
+            const job = await desktopWorkflowsService.createFromLarkIntent({
+              companyId: runtime.companyId,
+              userId: runtime.userId,
+              userIntent: params.userIntent,
+              taskPrompt: params.taskPrompt,
+              schedule: {
+                type: params.scheduleType,
+                timezone: params.timezone,
+                runAt: params.runAt,
+                hour: params.hour,
+                minute: params.minute ?? 0,
+                dayOfWeek: params.dayOfWeek,
+                dayOfMonth: params.dayOfMonth,
+              },
+              outputTarget: params.outputTarget,
+              originChatId: message.chatId,
+              requesterOpenId: runtime.larkOpenId ?? runtime.userId,
+            });
+
+            return {
+              success: true,
+              workflowId: job.id,
+              schedule: params.humanScheduleLabel,
+              outputTarget: params.outputTarget === 'lark_self_dm' ? 'Your DM' : 'This chat',
+              task: params.taskPrompt,
+              nextRunAt: job.nextRunAt?.toISOString() ?? null,
+            };
+          } catch (err) {
+            return {
+              success: false,
+              error: err instanceof Error ? err.message : 'Failed to create schedule',
+            };
+          }
+        },
+      }),
+      listScheduledJobsTool: tool({
+        description: 'List scheduled tasks for the current user. Use when: "what have I scheduled", "show my reminders", "list my scheduled tasks"',
+        inputSchema: z.object({}),
+        execute: async () => {
+          const workflows = await prisma.scheduledWorkflow.findMany({
+            where: {
+              companyId: runtime.companyId,
+              createdByUserId: runtime.userId,
+              status: { in: ['draft', 'published', 'scheduled_active', 'paused'] },
+              scheduleEnabled: true,
+            },
+            orderBy: { nextRunAt: 'asc' },
+            take: 10,
+          });
+
+          return {
+            count: workflows.length,
+            jobs: workflows.map((workflow) => {
+              const outputConfig = asRecord(workflow.outputConfigJson);
+              const destinations = asArray(outputConfig?.destinations).map(asRecord).filter(Boolean);
+              const firstDestination = destinations[0];
+              return {
+                id: workflow.id,
+                name: workflow.name,
+                intent: workflow.userIntent,
+                nextRunAt: workflow.nextRunAt?.toISOString() ?? null,
+                scheduleType: workflow.scheduleType,
+                outputTarget: asString(firstDestination?.kind) ?? null,
+              };
+            }),
+          };
+        },
+      }),
+      editScheduledJobTool: tool({
+        description: `Edit an existing scheduled workflow. Use when user says:
+"change my Monday report to Tuesday", "update the schedule to 10am",
+"send it to my DM instead", "rename my workflow", "change what it does".
+Requires a workflowId — if user doesn't give one, use listScheduledJobsTool first.`,
+        inputSchema: z.object({
+          workflowId: z.string().describe('ID of the workflow to edit'),
+          newSchedule: z.object({
+            type: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional(),
+            timezone: z.string().optional(),
+            runAt: z.string().optional(),
+            hour: z.number().min(0).max(23).optional(),
+            minute: z.number().min(0).max(59).optional(),
+            dayOfWeek: z.number().min(0).max(6).optional(),
+            dayOfMonth: z.number().min(1).max(31).optional(),
+          }).optional(),
+          newOutputTarget: z.enum(['lark_current_chat', 'lark_self_dm']).optional(),
+          newName: z.string().optional(),
+          humanChangeLabel: z.string().describe('Human readable summary of what changed'),
+        }),
+        execute: async (params) => {
+          try {
+            const existing = await prisma.scheduledWorkflow.findFirst({
+              where: {
+                id: params.workflowId,
+                companyId: runtime.companyId,
+                createdByUserId: runtime.userId,
+              },
+            });
+            if (!existing) {
+              return {
+                success: false,
+                error: 'Workflow not found or you do not have permission to edit it.',
+              };
+            }
+
+            const existingSchedule = asRecord(existing.scheduleConfigJson);
+            const nextSchedule = params.newSchedule
+              ? (
+                  (params.newSchedule.type ?? asString(existingSchedule?.type)) === 'one_time'
+                    ? {
+                        type: 'one_time' as const,
+                        timezone: params.newSchedule.timezone ?? asString(existingSchedule?.timezone) ?? 'Asia/Kolkata',
+                        runAt: params.newSchedule.runAt ?? asString(existingSchedule?.runAt) ?? new Date().toISOString(),
+                      }
+                    : (params.newSchedule.type ?? asString(existingSchedule?.type)) === 'daily'
+                      ? {
+                          type: 'daily' as const,
+                          timezone: params.newSchedule.timezone ?? asString(existingSchedule?.timezone) ?? 'Asia/Kolkata',
+                          time: {
+                            hour: params.newSchedule.hour ?? asNumber(asRecord(existingSchedule?.time)?.hour) ?? 9,
+                            minute: params.newSchedule.minute ?? asNumber(asRecord(existingSchedule?.time)?.minute) ?? 0,
+                          },
+                        }
+                      : (params.newSchedule.type ?? asString(existingSchedule?.type)) === 'weekly'
+                        ? {
+                            type: 'weekly' as const,
+                            timezone: params.newSchedule.timezone ?? asString(existingSchedule?.timezone) ?? 'Asia/Kolkata',
+                            daysOfWeek: [(['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'] as const)[params.newSchedule.dayOfWeek ?? 1] ?? 'MO'],
+                            time: {
+                              hour: params.newSchedule.hour ?? asNumber(asRecord(existingSchedule?.time)?.hour) ?? 9,
+                              minute: params.newSchedule.minute ?? asNumber(asRecord(existingSchedule?.time)?.minute) ?? 0,
+                            },
+                          }
+                        : {
+                            type: 'monthly' as const,
+                            timezone: params.newSchedule.timezone ?? asString(existingSchedule?.timezone) ?? 'Asia/Kolkata',
+                            dayOfMonth: params.newSchedule.dayOfMonth ?? asNumber(existingSchedule?.dayOfMonth) ?? 1,
+                            time: {
+                              hour: params.newSchedule.hour ?? asNumber(asRecord(existingSchedule?.time)?.hour) ?? 9,
+                              minute: params.newSchedule.minute ?? asNumber(asRecord(existingSchedule?.time)?.minute) ?? 0,
+                            },
+                          }
+                )
+              : undefined;
+
+            const nextOutputConfig = params.newOutputTarget
+              ? {
+                  version: 'v1' as const,
+                  destinations: [
+                    params.newOutputTarget === 'lark_self_dm'
+                      ? {
+                          id: 'dest_1',
+                          kind: 'lark_self_dm' as const,
+                          label: 'Requester personal DM',
+                          openId: runtime.larkOpenId ?? runtime.userId,
+                        }
+                      : {
+                          id: 'dest_1',
+                          kind: 'lark_current_chat' as const,
+                          label: 'Current Lark chat',
+                        },
+                  ],
+                  defaultDestinationIds: ['dest_1'],
+                }
+              : undefined;
+
+            await desktopWorkflowsService.update(
+              {
+                userId: runtime.userId,
+                companyId: runtime.companyId,
+                role: runtime.requesterAiRole,
+                aiRole: runtime.requesterAiRole,
+                sessionId: `wf-edit-${Date.now()}`,
+                expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                authProvider: runtime.channel === 'lark' ? 'lark' : 'handoff',
+                email: runtime.requesterEmail ?? '',
+                name: runtime.requesterName,
+                larkTenantKey: runtime.larkTenantKey,
+                larkOpenId: runtime.larkOpenId,
+                larkUserId: runtime.larkUserId,
+              },
+              params.workflowId,
+              {
+                ...(params.newName ? { name: params.newName } : {}),
+                ...(nextSchedule ? { schedule: nextSchedule } : {}),
+                ...(nextOutputConfig ? { outputConfig: nextOutputConfig } : {}),
+              },
+            );
+
+            const updated = await prisma.scheduledWorkflow.findUnique({
+              where: { id: params.workflowId },
+            });
+
+            return {
+              success: true,
+              workflowId: params.workflowId,
+              change: params.humanChangeLabel,
+              nextRunAt: updated?.nextRunAt?.toISOString() ?? null,
+            };
+          } catch (err) {
+            return {
+              success: false,
+              error: err instanceof Error ? err.message : 'Failed to update workflow',
+            };
+          }
+        },
+      }),
+      cancelScheduledJobTool: tool({
+        description: 'Cancel or pause a scheduled task. Use when: "cancel my schedule", "stop the weekly report", "pause reminder"',
+        inputSchema: z.object({
+          workflowId: z.string().describe('The workflow ID to cancel'),
+        }),
+        execute: async (params) => {
+          await prisma.scheduledWorkflow.updateMany({
+            where: {
+              id: params.workflowId,
+              companyId: runtime.companyId,
+              createdByUserId: runtime.userId,
+            },
+            data: {
+              scheduleEnabled: false,
+              status: 'paused',
+              pausedAt: new Date(),
+            },
+          });
+          return { success: true, cancelled: params.workflowId };
+        },
+      }),
+      runNowTool: tool({
+        description: `Run a scheduled workflow immediately, outside its schedule.
+Use when user says: "run it now", "trigger my report now", "execute the weekly report today".`,
+        inputSchema: z.object({
+          workflowId: z.string().describe('ID of the workflow to run now'),
+        }),
+        execute: async (params) => {
+          try {
+            const existing = await prisma.scheduledWorkflow.findFirst({
+              where: {
+                id: params.workflowId,
+                companyId: runtime.companyId,
+                createdByUserId: runtime.userId,
+              },
+            });
+            if (!existing) {
+              return { success: false, error: 'Workflow not found.' };
+            }
+
+            await desktopWorkflowsService.runNow(
+              {
+                userId: runtime.userId,
+                companyId: runtime.companyId,
+                role: runtime.requesterAiRole,
+                aiRole: runtime.requesterAiRole,
+                sessionId: `wf-run-${Date.now()}`,
+                expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                authProvider: runtime.channel === 'lark' ? 'lark' : 'handoff',
+                email: runtime.requesterEmail ?? '',
+                name: runtime.requesterName,
+                larkTenantKey: runtime.larkTenantKey,
+                larkOpenId: runtime.larkOpenId,
+                larkUserId: runtime.larkUserId,
+              },
+              params.workflowId,
+            );
+
+            return { success: true, message: 'Workflow triggered — result will arrive shortly.' };
+          } catch (err) {
+            return {
+              success: false,
+              error: err instanceof Error ? err.message : 'Failed to trigger workflow',
+            };
+          }
+        },
+      }),
       contextAgent: tool({
         description:
           `Search for contacts, emails, web information, documents, or conversation history.
@@ -4035,7 +4528,12 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
 
     const supervisorResult = await generateText({
       model: resolvedModel.model,
-      system: buildSupervisorSystemPrompt(runtime, conversation),
+      system: buildSupervisorSystemPrompt(runtime, conversation, {
+        behaviorProfile: memoryPromptContext.behaviorProfileContext ?? undefined,
+        durableMemory: memoryPromptContext.durableTaskContextText ?? undefined,
+        relevantFacts: memoryPromptContext.relevantMemoryFactsText ?? undefined,
+        isScheduledRun,
+      }),
       messages,
       tools: supervisorTools,
       temperature: 0,
@@ -4124,6 +4622,14 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
 
     const durationSec = Math.round((Date.now() - executionStartMs) / 1000);
     await statusCoordinator?.finalizeLiveText(`Completed in ${durationSec}s ✓`);
+    await memoryService.recordUserTurn({
+      userId: runtime.userId,
+      companyId: runtime.companyId,
+      channelOrigin: runtime.channel === 'lark' ? 'lark' : 'desktop',
+      text: message.text,
+      threadId: runtime.threadId,
+      conversationKey: contextStorageId ?? runtime.threadId,
+    }).catch(() => {});
 
     return {
       task,

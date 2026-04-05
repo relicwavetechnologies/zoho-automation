@@ -9,6 +9,7 @@ import type { NormalizedIncomingMessageDTO } from '../../contracts';
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
 import { LarkChannelAdapter } from './lark.adapter';
+import type { ChannelAction } from '../base/channel-adapter';
 import type { LarkIngressParseResult } from './lark-ingress.contract';
 import { parseLarkIngressPayload } from './lark-ingress.contract';
 import { buildLarkTextHash, buildLarkTraceMeta } from './lark-observability';
@@ -20,6 +21,7 @@ import { extractLarkMentionsFromMessage, inferLarkMessageType, parseLarkAttachme
 import { ingestLarkAttachments } from './lark-file-ingestion';
 import { larkRecentFilesStore } from './lark-recent-files.store';
 import { larkChatContextService } from './lark-chat-context.service';
+import { handleLarkCommand } from './lark-commands.service';
 import { orangeDebug } from '../../../utils/orange-debug';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
 import {
@@ -38,6 +40,7 @@ import { LarkStatusCoordinator } from '../../orchestration/engine/lark-status.co
 import { runtimeTaskStore } from '../../orchestration/runtime-task.store';
 import { taskFsm } from '../../orchestration/task-fsm';
 import { memoryService } from '../../memory';
+import { prisma } from '../../../utils/prisma';
 import { resolveAllowedRolesForVisibilityScope } from '../../../modules/file-upload/file-visibility-scope';
 import { knowledgeShareService } from '../../knowledge-share/knowledge-share.service';
 import { departmentService } from '../../departments/department.service';
@@ -67,6 +70,12 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
 
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+
+const asNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+const asBoolean = (value: unknown): boolean | undefined =>
+  typeof value === 'boolean' ? value : undefined;
 
 const buildSourceArtifactEntriesFromNormalizedFiles = (
   files: NonNullable<NormalizedIncomingMessageDTO['attachedFiles']>,
@@ -744,32 +753,29 @@ const normalizeLarkCommandText = (text: string): string => {
   return current;
 };
 
-const isLarkClearContextCommand = (text: string): boolean => {
-  const normalized = normalizeLarkCommandText(text).toLowerCase();
-  return normalized === '/clear'
-    || normalized === '/new'
-    || normalized === '/newchat'
-    || normalized === 'clear chat'
-    || normalized === 'clear context'
-    || normalized === 'start new chat'
-    || normalized === 'new chat';
-};
-
 const parseLarkWorkflowCommand = (
   text: string,
-): { kind: 'list' } | { kind: 'run'; reference: string } | null => {
+): { kind: 'list' } | { kind: 'reference'; reference: string; shouldRun: boolean } | null => {
   const trimmed = normalizeLarkCommandText(text);
   const normalized = trimmed.toLowerCase();
   if (normalized === '/prompts' || normalized === '/workflows') {
     return { kind: 'list' };
   }
+  if (normalized.startsWith('/workflow run ')) {
+    const reference = trimmed.slice('/workflow run '.length).trim();
+    return reference ? { kind: 'reference', reference, shouldRun: true } : { kind: 'list' };
+  }
   if (normalized.startsWith('/workflow ')) {
     const reference = trimmed.slice('/workflow '.length).trim();
-    return reference ? { kind: 'run', reference } : { kind: 'list' };
+    return reference ? { kind: 'reference', reference, shouldRun: false } : { kind: 'list' };
+  }
+  if (normalized.startsWith('/workflows run ')) {
+    const reference = trimmed.slice('/workflows run '.length).trim();
+    return reference ? { kind: 'reference', reference, shouldRun: true } : { kind: 'list' };
   }
   if (normalized.startsWith('/workflows ')) {
     const reference = trimmed.slice('/workflows '.length).trim();
-    return reference ? { kind: 'run', reference } : { kind: 'list' };
+    return reference ? { kind: 'reference', reference, shouldRun: false } : { kind: 'list' };
   }
   return null;
 };
@@ -864,7 +870,10 @@ const buildLarkCommandMenuText = (): string => [
   'List your saved reusable prompts/workflows.',
   '',
   '/workflow <id-or-name>',
-  'Run one saved workflow by exact id or name.',
+  'View one saved workflow by exact id or name.',
+  '',
+  '/workflow run <id-or-name>',
+  'Run one saved workflow immediately.',
   '',
   '/workflows <id-or-name>',
   'Same as /workflow <id-or-name>.',
@@ -1003,23 +1012,120 @@ const formatLarkShareCommandResult = (input: {
   ].join('\n');
 };
 
-const formatWorkflowListText = (rows: Array<Record<string, unknown>>): string => {
-  if (rows.length === 0) {
-    return 'No saved workflows were found. You can ask me to turn a repeatable task into a reusable workflow.';
+type WorkflowCardRenderable = {
+  text: string;
+  actions: ChannelAction[];
+};
+
+const formatInIST = (value: string | Date | null | undefined): string => {
+  if (!value) return 'Not scheduled';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Not scheduled';
+  return date.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+};
+
+const formatScheduleLabel = (scheduleConfig: unknown, timezone: string): string => {
+  const cfg = asRecord(scheduleConfig);
+  const type = asString(cfg?.type);
+  const time = asRecord(cfg?.time);
+  const hour = asNumber(time?.hour) ?? 9;
+  const minute = asNumber(time?.minute) ?? 0;
+  const hhmm = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  switch (type) {
+    case 'daily':
+      return `Daily at ${hhmm} ${timezone}`;
+    case 'weekly': {
+      const dayToken = Array.isArray(cfg?.daysOfWeek) ? cfg.daysOfWeek[0] : undefined;
+      const day = typeof dayToken === 'string'
+        ? ({ SU: 'Sun', MO: 'Mon', TU: 'Tue', WE: 'Wed', TH: 'Thu', FR: 'Fri', SA: 'Sat' } as Record<string, string>)[dayToken] ?? dayToken
+        : 'Mon';
+      return `Every ${day} at ${hhmm} ${timezone}`;
+    }
+    case 'monthly':
+      return `Monthly on day ${asNumber(cfg?.dayOfMonth) ?? 1} at ${hhmm} ${timezone}`;
+    case 'one_time':
+      return `Once at ${formatInIST(asString(cfg?.runAt))}`;
+    default:
+      return 'Custom schedule';
   }
-  return [
-    `Saved workflows (${rows.length}):`,
-    '',
-    ...rows.slice(0, 20).map((row, index) => {
-      const name = typeof row.name === 'string' ? row.name : 'Unnamed workflow';
-      const id = typeof row.id === 'string' ? row.id : 'unknown';
-      const status = typeof row.status === 'string' ? row.status : 'unknown';
-      const nextRunAt = typeof row.nextRunAt === 'string' && row.nextRunAt.trim()
-        ? `, next run ${row.nextRunAt}`
-        : '';
-      return `${index + 1}. ${name} (${id}) [${status}${nextRunAt}]`;
-    }),
-  ].join('\n');
+};
+
+const formatOutputLabel = (outputConfig: unknown): string => {
+  const cfg = asRecord(outputConfig);
+  const firstDestination = Array.isArray(cfg?.destinations)
+    ? asRecord(cfg?.destinations[0])
+    : undefined;
+  const kind = asString(firstDestination?.kind);
+  switch (kind) {
+    case 'lark_self_dm':
+      return 'Your DM';
+    case 'lark_current_chat':
+      return 'This chat';
+    case 'lark_chat':
+      return `Chat: ${(asString(firstDestination?.chatId) ?? '').slice(0, 8)}...`;
+    case 'desktop_inbox':
+      return 'Desktop inbox';
+    default:
+      return kind ?? 'Unknown';
+  }
+};
+
+const buildWorkflowListCard = (rows: Array<Record<string, unknown>>): WorkflowCardRenderable => {
+  if (rows.length === 0) {
+    return {
+      text: [
+        '**No scheduled workflows yet.**',
+        '',
+        'Say "@Divo schedule [task] every [time]" to create one.',
+      ].join('\n'),
+      actions: [],
+    };
+  }
+
+  const bodyLines = rows.slice(0, 10).flatMap((row) => {
+    const name = asString(row.name) ?? 'Unnamed workflow';
+    const intent = asString(row.userIntent) ?? name;
+    const scheduleLabel = formatScheduleLabel(row.schedule, asString(row.timezone) ?? 'Asia/Kolkata');
+    const outputLabel = formatOutputLabel(row.outputConfig);
+    const nextRun = formatInIST(asString(row.nextRunAt));
+    const id = asString(row.id) ?? 'unknown';
+    const scheduleEnabled = asBoolean(row.scheduleEnabled) ?? false;
+    const statusIcon = scheduleEnabled ? '🟢' : '⏸';
+    return [
+      `${statusIcon} **${name}**`,
+      `Task: ${intent}`,
+      `Schedule: ${scheduleLabel}`,
+      `Output: ${outputLabel}`,
+      `Next run: ${nextRun}`,
+      `ID: \`${id.slice(0, 8)}\``,
+      '',
+    ];
+  });
+
+  return {
+    text: [
+      `**Your Scheduled Workflows (${rows.length})**`,
+      '',
+      ...bodyLines,
+      '─────────────────────',
+      'To manage: say "@Divo [pause/edit/run/delete] [workflow name or ID]"',
+    ].join('\n'),
+    actions: [
+      {
+        id: 'workflow_refresh_list',
+        label: 'Refresh',
+        style: 'default',
+        value: {
+          kind: 'workflow_card_action',
+          action: 'list',
+        },
+      },
+    ],
+  };
 };
 
 const formatWorkflowAmbiguityText = (reference: string, candidates: Array<Record<string, unknown>>): string => [
@@ -1034,6 +1140,76 @@ const formatWorkflowAmbiguityText = (reference: string, candidates: Array<Record
   '',
   'Run /workflow <exact-id-or-name> with one of the entries above.',
 ].join('\n');
+
+const buildWorkflowDetailCard = (
+  workflow: Record<string, unknown>,
+  runs: Array<Record<string, unknown>>,
+): WorkflowCardRenderable => {
+  const workflowId = asString(workflow.id) ?? 'unknown';
+  const workflowName = asString(workflow.name) ?? 'Unnamed workflow';
+  const scheduleEnabled = asBoolean(workflow.scheduleEnabled) ?? false;
+  const schedule = asRecord(workflow.schedule);
+  const scheduleLabel = formatScheduleLabel(schedule, asString(schedule?.timezone) ?? asString(workflow.timezone) ?? 'Asia/Kolkata');
+  const outputLabel = formatOutputLabel(workflow.outputConfig);
+  const lastRun = formatInIST(asString(workflow.lastRunAt));
+  const nextRun = formatInIST(asString(workflow.nextRunAt));
+  const statusLabel = scheduleEnabled ? '🟢 Active' : '⏸ Paused';
+  const recentRunLines = runs.slice(0, 3).map((run) => {
+    const runStatus = asString(run.status) ?? 'unknown';
+    const icon = runStatus === 'succeeded' ? '✓' : runStatus === 'failed' ? '✗' : '⟳';
+    return `${icon} ${formatInIST(asString(run.scheduledFor))} — ${asString(run.resultSummary) ?? runStatus}`;
+  });
+
+  return {
+    text: [
+      `**${workflowName}**`,
+      `Status: ${statusLabel}`,
+      '',
+      `**Task:** ${asString(workflow.userIntent) ?? workflowName}`,
+      `**Schedule:** ${scheduleLabel}`,
+      `**Output:** ${outputLabel}`,
+      `**Last run:** ${lastRun}`,
+      `**Next run:** ${nextRun}`,
+      ...(recentRunLines.length > 0 ? ['', `**Recent runs:**`, ...recentRunLines] : []),
+      '',
+      '─────────────────────',
+      `To manage: "@Divo [pause/edit/run/delete] ${workflowName}"`,
+      `ID: \`${workflowId.slice(0, 8)}\``,
+    ].join('\n'),
+    actions: [
+      {
+        id: 'workflow_run_now',
+        label: 'Run now',
+        style: 'primary',
+        value: {
+          kind: 'workflow_card_action',
+          action: 'run_now',
+          workflowId,
+        },
+      },
+      {
+        id: 'workflow_pause',
+        label: scheduleEnabled ? 'Pause' : 'Resume later in chat',
+        style: scheduleEnabled ? 'danger' : 'default',
+        value: {
+          kind: 'workflow_card_action',
+          action: scheduleEnabled ? 'pause' : 'view',
+          workflowId,
+        },
+      },
+      {
+        id: 'workflow_refresh_detail',
+        label: 'Refresh',
+        style: 'default',
+        value: {
+          kind: 'workflow_card_action',
+          action: 'view',
+          workflowId,
+        },
+      },
+    ],
+  };
+};
 
 const formatWorkflowRunResultText = (input: {
   workflowName: string;
@@ -1169,6 +1345,30 @@ const parseKnowledgeShareCardAction = (
     };
   }
   return { kind: 'revert', requestId };
+};
+
+const parseWorkflowCardAction = (
+  value: unknown,
+):
+  | { action: 'list' }
+  | { action: 'view' | 'run_now' | 'pause'; workflowId: string }
+  | null => {
+  const record = asRecord(value);
+  if (!record || record.kind !== 'workflow_card_action') {
+    return null;
+  }
+  const action = asString(record.action);
+  if (action === 'list') {
+    return { action: 'list' };
+  }
+  if (action === 'view' || action === 'run_now' || action === 'pause') {
+    const workflowId = asString(record.workflowId);
+    if (!workflowId) {
+      return null;
+    }
+    return { action, workflowId };
+  }
+  return null;
 };
 
 const sanitizeCardActionMessageText = (value: string | null | undefined): string => {
@@ -1925,6 +2125,7 @@ export const createLarkWebhookEventHandler = (
       });
 
       let attachedFiles = normalized.attachedFiles ?? [];
+      const isCommand = parsed.kind === 'event_callback_message' && tracedMessageBase.text.trim().startsWith('/');
       const effectiveUploaderId = linkedUserId ?? channelIdentityId ?? normalized.userId;
       const allowedRoles = scopedCompanyId
         ? await resolveAllowedRolesForVisibilityScope({
@@ -2331,7 +2532,7 @@ export const createLarkWebhookEventHandler = (
         && !workflowCommand
         && !memoryCommand
         && !shareCommand
-        && !isLarkClearContextCommand(tracedMessageBase.text);
+        && !isCommand;
 
       if (shouldStoreGroupContextMessage) {
         try {
@@ -2342,6 +2543,7 @@ export const createLarkWebhookEventHandler = (
             messageId: tracedMessageBase.messageId,
             role: 'user',
             content: tracedMessageBase.text,
+            threadRootId: tracedMessageBase.trace?.threadRootId ?? null,
             metadata: {
               userId: tracedMessageBase.userId,
               requesterEmail,
@@ -2695,8 +2897,19 @@ export const createLarkWebhookEventHandler = (
             await statusCoordinator.update({
               text: 'Checking your saved workflows...',
             }, { force: true });
-            const workflows = await desktopWorkflowsService.listVisibleSummaries(workflowSession);
-            await statusCoordinator.replace(formatWorkflowListText(workflows));
+            const workflows = await desktopWorkflowsService.list(workflowSession);
+            const listCard = buildWorkflowListCard(workflows.map((workflow) => ({
+              id: workflow.id,
+              name: workflow.name,
+              userIntent: workflow.userIntent,
+              status: workflow.status,
+              scheduleEnabled: workflow.scheduleEnabled,
+              nextRunAt: workflow.nextRunAt,
+              schedule: workflow.schedule,
+              timezone: workflow.schedule.timezone,
+              outputConfig: workflow.outputConfig,
+            })));
+            await statusCoordinator.replace(listCard.text, listCard.actions);
             await statusCoordinator.close();
             return res.status(202).json({
               success: true,
@@ -2724,6 +2937,45 @@ export const createLarkWebhookEventHandler = (
               success: true,
               message: 'Workflow command handled with ambiguity',
               data: { count: resolved.candidates.length },
+            });
+          }
+
+          if (!workflowCommand.shouldRun) {
+            const workflowDetail = await desktopWorkflowsService.get(workflowSession, resolved.workflow.id);
+            const workflowRuns = await prisma.scheduledWorkflowRun.findMany({
+              where: { workflowId: resolved.workflow.id },
+              orderBy: { scheduledFor: 'desc' },
+              take: 3,
+              select: {
+                status: true,
+                scheduledFor: true,
+                resultSummary: true,
+              },
+            });
+            const detailCard = buildWorkflowDetailCard(
+              {
+                id: workflowDetail.id,
+                name: workflowDetail.name,
+                userIntent: workflowDetail.userIntent,
+                scheduleEnabled: workflowDetail.scheduleEnabled,
+                schedule: workflowDetail.schedule,
+                timezone: workflowDetail.schedule.timezone,
+                outputConfig: workflowDetail.outputConfig,
+                lastRunAt: workflowDetail.lastRunAt,
+                nextRunAt: workflowDetail.nextRunAt,
+              },
+              workflowRuns.map((run) => ({
+                status: run.status,
+                scheduledFor: run.scheduledFor.toISOString(),
+                resultSummary: run.resultSummary,
+              })),
+            );
+            await statusCoordinator.replace(detailCard.text, detailCard.actions);
+            await statusCoordinator.close();
+            return res.status(202).json({
+              success: true,
+              message: 'Workflow detail command handled',
+              data: { workflowId: resolved.workflow.id },
             });
           }
 
@@ -2785,15 +3037,21 @@ export const createLarkWebhookEventHandler = (
         }
       }
 
-      if (parsed.kind === 'event_callback_message' && isLarkClearContextCommand(tracedMessageBase.text)) {
+      if (parsed.kind === 'event_callback_message' && isCommand) {
         try {
           if (scopedCompanyId && tracedMessageBase.chatType === 'group') {
-            await larkChatContextService.clear({
-              companyId: scopedCompanyId,
+            const result = await handleLarkCommand({
+              commandText: tracedMessageBase.text.trim(),
               chatId: tracedMessageBase.chatId,
+              companyId: scopedCompanyId,
+              threadRootId: tracedMessageBase.trace?.threadRootId ?? null,
+              adapter: dependencies.adapter,
+              messageId: tracedMessageBase.messageId,
             });
-            conversationMemoryStore.clearConversation(`lark-chat:${tracedMessageBase.chatId}`);
-            dependencies.log.info('lark.chat_context.cleared', {
+            if (!tracedMessageBase.trace?.threadRootId) {
+              conversationMemoryStore.clearConversation(`lark-chat:${tracedMessageBase.chatId}`);
+            }
+            dependencies.log.info('lark.chat_context.command_handled', {
               ...buildIngressTraceMeta({
                 requestId,
                 message: tracedMessageBase,
@@ -2802,58 +3060,42 @@ export const createLarkWebhookEventHandler = (
                 larkTenantKey,
                 companyId: scopedCompanyId,
               }),
-              mode: 'shared_group_context_cleared',
+              commandText: tracedMessageBase.text.trim(),
+              threadRootId: tracedMessageBase.trace?.threadRootId ?? null,
             });
-          } else if (scopedCompanyId && linkedUserId) {
-            const rotated = await desktopThreadsService.clearLarkLifetimeThreadContext(
-              linkedUserId,
-              scopedCompanyId,
-            );
-            dependencies.log.info('lark.chat_context.cleared', {
-              ...buildIngressTraceMeta({
-                requestId,
-                message: tracedMessageBase,
-                eventId: parsed.eventId,
-                textHash,
-                larkTenantKey,
-                companyId: scopedCompanyId,
-              }),
-              previousThreadId: rotated.previous?.id ?? null,
-              currentThreadId: rotated.current.id,
-              mode: 'persistent_thread_rotated',
+            await dependencies.adapter.sendMessage({
+              chatId: tracedMessageBase.chatId,
+              text: result.responseText,
+              correlationId: requestId,
+              replyToMessageId: tracedMessageBase.messageId,
+              replyInThread: Boolean(tracedMessageBase.trace?.threadRootId),
             });
-          } else {
-            conversationMemoryStore.clearConversation(`${tracedMessageBase.channel}:${tracedMessageBase.chatId}`);
-            dependencies.log.info('lark.chat_context.cleared', {
-              ...buildIngressTraceMeta({
-                requestId,
-                message: tracedMessageBase,
-                eventId: parsed.eventId,
-                textHash,
-                larkTenantKey,
-                companyId: scopedCompanyId ?? undefined,
-              }),
-              mode: 'conversation_memory_only',
+            return res.status(202).json({
+              success: true,
+              message: 'Lark command handled',
+              data: {
+                channel: tracedMessageBase.channel,
+                messageId: tracedMessageBase.messageId,
+                chatId: tracedMessageBase.chatId,
+                commandText: tracedMessageBase.text.trim(),
+              },
             });
           }
-
-          await sendLarkReply({
-            text: [
-              'I cleared the chat whiteboard so hard I forgot everything.',
-              '',
-              'Starting fresh from here, so the previous Lark chat context will not be used for the next turns.',
-              'Stored memories and vectors are still safe.',
-            ].join('\n'),
+          await dependencies.adapter.sendMessage({
+            chatId: tracedMessageBase.chatId,
+            text: 'Slash commands are only available in shared group chats.',
+            correlationId: requestId,
+            replyToMessageId: tracedMessageBase.messageId,
+            replyInThread: Boolean(tracedMessageBase.trace?.threadRootId),
           });
-
           return res.status(202).json({
             success: true,
-            message: 'Lark chat context cleared',
+            message: 'Lark command handled',
             data: {
               channel: tracedMessageBase.channel,
               messageId: tracedMessageBase.messageId,
               chatId: tracedMessageBase.chatId,
-              cleared: true,
+              commandText: tracedMessageBase.text.trim(),
             },
           });
         } catch (error) {
@@ -3018,6 +3260,112 @@ export const createLarkWebhookEventHandler = (
       const knowledgeShareCardAction = parsed.kind === 'event_callback_card_action'
         ? parseKnowledgeShareCardAction(parsed.actionValue)
         : null;
+      const workflowCardAction = parsed.kind === 'event_callback_card_action'
+        ? parseWorkflowCardAction(parsed.actionValue)
+        : null;
+      if (workflowCardAction && scopedCompanyId && linkedUserId) {
+        const workflowSession = buildLarkWorkflowSession({
+          userId: linkedUserId,
+          companyId: scopedCompanyId,
+          aiRole: userRole,
+          email: requesterEmail,
+          larkTenantKey,
+          larkOpenId: tracedMessage.trace?.larkOpenId,
+          larkUserId: tracedMessage.trace?.larkUserId,
+        });
+        try {
+          if (workflowCardAction.action === 'list') {
+            const workflows = await desktopWorkflowsService.list(workflowSession);
+            const listCard = buildWorkflowListCard(workflows.map((workflow) => ({
+              id: workflow.id,
+              name: workflow.name,
+              userIntent: workflow.userIntent,
+              status: workflow.status,
+              scheduleEnabled: workflow.scheduleEnabled,
+              nextRunAt: workflow.nextRunAt,
+              schedule: workflow.schedule,
+              timezone: workflow.schedule.timezone,
+              outputConfig: workflow.outputConfig,
+            })));
+            await dependencies.adapter.updateMessage({
+              messageId: tracedMessage.messageId,
+              text: listCard.text,
+              actions: listCard.actions,
+            });
+            return res.status(200).json(buildLarkCardActionResponse('Workflow list refreshed.', 'success'));
+          }
+
+          if (workflowCardAction.action === 'run_now') {
+            await desktopWorkflowsService.runNow(workflowSession, workflowCardAction.workflowId);
+            return res.status(200).json(buildLarkCardActionResponse('Workflow triggered — result will arrive shortly.', 'success'));
+          }
+
+          if (workflowCardAction.action === 'pause') {
+            await prisma.scheduledWorkflow.updateMany({
+              where: {
+                id: workflowCardAction.workflowId,
+                companyId: scopedCompanyId,
+                createdByUserId: linkedUserId,
+              },
+              data: {
+                scheduleEnabled: false,
+                status: 'paused',
+                pausedAt: new Date(),
+              },
+            });
+          }
+
+          const workflowDetail = await desktopWorkflowsService.get(workflowSession, workflowCardAction.workflowId);
+          const workflowRuns = await prisma.scheduledWorkflowRun.findMany({
+            where: { workflowId: workflowCardAction.workflowId },
+            orderBy: { scheduledFor: 'desc' },
+            take: 3,
+            select: {
+              status: true,
+              scheduledFor: true,
+              resultSummary: true,
+            },
+          });
+          const detailCard = buildWorkflowDetailCard(
+            {
+              id: workflowDetail.id,
+              name: workflowDetail.name,
+              userIntent: workflowDetail.userIntent,
+              scheduleEnabled: workflowDetail.scheduleEnabled,
+              schedule: workflowDetail.schedule,
+              timezone: workflowDetail.schedule.timezone,
+              outputConfig: workflowDetail.outputConfig,
+              lastRunAt: workflowDetail.lastRunAt,
+              nextRunAt: workflowDetail.nextRunAt,
+            },
+            workflowRuns.map((run) => ({
+              status: run.status,
+              scheduledFor: run.scheduledFor.toISOString(),
+              resultSummary: run.resultSummary,
+            })),
+          );
+          await dependencies.adapter.updateMessage({
+            messageId: tracedMessage.messageId,
+            text: detailCard.text,
+            actions: detailCard.actions,
+          });
+          return res.status(200).json(
+            buildLarkCardActionResponse(
+              workflowCardAction.action === 'pause'
+                ? 'Workflow paused.'
+                : 'Workflow card refreshed.',
+              'success',
+            ),
+          );
+        } catch (error) {
+          return res.status(200).json(
+            buildLarkCardActionResponse(
+              error instanceof Error ? error.message : 'Workflow action failed.',
+              'error',
+            ),
+          );
+        }
+      }
       const hitlDecision = cardHitlDecision ?? textHitlDecision;
       if (hitlDecision) {
         const pendingThreadApprovalContext = scopedCompanyId && linkedUserId

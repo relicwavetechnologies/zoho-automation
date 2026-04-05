@@ -35,6 +35,8 @@ import type { MemberSessionDTO } from '../member-auth/member-auth.service';
 import { executeAutomatedDesktopTurn } from '../desktop-chat/vercel-desktop.engine';
 import { attachedFileSchema } from '../desktop-chat/desktop-chat.schemas';
 import { formatScheduledSlot, getNextScheduledRunAt } from './desktop-workflows.schedule';
+import { vercelOrchestrationEngine } from '../../company/orchestration/engine/vercel-orchestration.engine';
+import type { NormalizedIncomingMessageDTO } from '../../company/contracts';
 
 const WORKFLOW_NODE_KIND_VALUES = [
   'read',
@@ -220,6 +222,7 @@ const WORKFLOW_REFERENCE_CONTEXT_TOTAL_MAX_CHARS = 1600;
 const WORKFLOW_AI_DRAFT_CONTEXT_MAX_CHARS = 1600;
 const WORKFLOW_COMPILE_TIMEOUT_MS = 30000;
 const WORKFLOW_PLANNING_TIMEOUT_MS = 15000;
+const LARK_INTENT_SOURCE_MARKER = '[source:lark_intent]';
 
 const readString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
@@ -243,6 +246,17 @@ const sanitizeIdentifier = (value: string, fallback: string): string => {
     .slice(0, 80);
   return normalized || fallback;
 };
+
+const LARK_WEEKDAY_BY_NUMBER = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'] as const;
+
+const buildLarkIntentWorkflowDescription = (userIntent: string): string =>
+  `${LARK_INTENT_SOURCE_MARKER} ${truncateText(userIntent.trim(), 900)}`;
+
+const isLarkIntentWorkflowSpec = (workflowSpec: z.infer<typeof scheduledWorkflowSpecSchema>): boolean =>
+  workflowSpec.description?.includes(LARK_INTENT_SOURCE_MARKER) ?? false;
+
+const toWeeklyScheduleDay = (dayOfWeek: number): (typeof LARK_WEEKDAY_BY_NUMBER)[number] =>
+  LARK_WEEKDAY_BY_NUMBER[dayOfWeek] ?? 'MO';
 
 const looksLikeLarkDmIntent = (value: string): boolean =>
   includesAny(value, [
@@ -2709,6 +2723,136 @@ class DesktopWorkflowsService {
     };
   }
 
+  async createFromLarkIntent(input: {
+    companyId: string;
+    userId: string;
+    userIntent: string;
+    taskPrompt: string;
+    schedule: {
+      type: 'one_time' | 'daily' | 'weekly' | 'monthly';
+      timezone: string;
+      runAt?: string;
+      hour?: number;
+      minute?: number;
+      dayOfWeek?: number;
+      dayOfMonth?: number;
+    };
+    outputTarget: 'lark_current_chat' | 'lark_self_dm';
+    originChatId: string;
+    requesterOpenId: string;
+    name?: string;
+  }) {
+    const session = await this.loadExecutionSession({
+      workflowId: `lark_intent_${Date.now()}`,
+      workflowName: input.name ?? input.userIntent,
+      companyId: input.companyId,
+      createdByUserId: input.userId,
+      departmentId: null,
+    });
+
+    const workflowName = deriveWorkflowName(input.name ?? `Lark: ${input.userIntent}`);
+    const normalizedSchedule: ScheduledWorkflowScheduleConfig =
+      input.schedule.type === 'one_time'
+        ? {
+            type: 'one_time',
+            timezone: input.schedule.timezone,
+            runAt: readString(input.schedule.runAt) ?? new Date().toISOString(),
+          }
+        : input.schedule.type === 'daily'
+          ? {
+              type: 'daily',
+              timezone: input.schedule.timezone,
+              time: {
+                hour: input.schedule.hour ?? 9,
+                minute: input.schedule.minute ?? 0,
+              },
+            }
+          : input.schedule.type === 'weekly'
+            ? {
+                type: 'weekly',
+                timezone: input.schedule.timezone,
+                daysOfWeek: [toWeeklyScheduleDay(input.schedule.dayOfWeek ?? 1)],
+                time: {
+                  hour: input.schedule.hour ?? 9,
+                  minute: input.schedule.minute ?? 0,
+                },
+              }
+            : {
+                type: 'monthly',
+                timezone: input.schedule.timezone,
+                dayOfMonth: input.schedule.dayOfMonth ?? 1,
+                time: {
+                  hour: input.schedule.hour ?? 9,
+                  minute: input.schedule.minute ?? 0,
+                },
+              };
+
+    const outputConfig: ScheduledWorkflowOutputConfig = {
+      version: 'v1',
+      destinations: [
+        input.outputTarget === 'lark_self_dm'
+          ? {
+              id: 'dest_1',
+              kind: 'lark_self_dm',
+              label: 'Requester personal DM',
+              openId: input.requesterOpenId,
+            }
+          : {
+              id: 'dest_1',
+              kind: 'lark_current_chat',
+              label: 'Current Lark chat',
+            },
+      ],
+      defaultDestinationIds: ['dest_1'],
+    };
+
+    const workflowSpec = scheduledWorkflowSpecSchema.parse({
+      version: 'v1',
+      name: workflowName,
+      description: buildLarkIntentWorkflowDescription(input.userIntent),
+      nodes: [
+        {
+          id: 'analyze_1',
+          kind: 'analyze',
+          title: 'Execute scheduled task',
+          instructions: input.taskPrompt.trim(),
+          outputKey: 'result',
+          expectedOutput: 'Completed result for delivery.',
+        },
+        {
+          id: 'deliver_1',
+          kind: 'deliver',
+          title: 'Deliver result',
+          destinationIds: ['dest_1'],
+          inputs: ['analyze_1'],
+        },
+      ],
+      edges: [
+        {
+          sourceId: 'analyze_1',
+          targetId: 'deliver_1',
+          condition: 'always',
+        },
+      ],
+    });
+
+    const published = await this.publish(session, {
+      name: workflowName,
+      userIntent: input.userIntent.trim(),
+      aiDraft: input.taskPrompt.trim(),
+      schedule: normalizedSchedule,
+      scheduleEnabled: true,
+      outputConfig,
+      workflowSpec,
+      compiledPrompt: input.taskPrompt.trim(),
+      originChatId: input.originChatId,
+    });
+
+    return prisma.scheduledWorkflow.findUniqueOrThrow({
+      where: { id: published.workflowId },
+    });
+  }
+
   async runNow(
     session: MemberSessionDTO,
     workflowId: string,
@@ -3239,6 +3383,40 @@ class DesktopWorkflowsService {
       : outputConfig.destinations.map((destination) => destination.id);
   }
 
+  private resolvePrimaryLarkDestination(input: {
+    outputConfig: ScheduledWorkflowOutputConfig;
+    originChatId?: string | null;
+  }): {
+    destination: Extract<ScheduledWorkflowOutputConfig['destinations'][number], { kind: 'lark_chat' | 'lark_current_chat' | 'lark_self_dm' }>;
+    targetId: string;
+  } {
+    const preferredIds = new Set(this.resolveDestinationIdsForNotification(input.outputConfig));
+    const larkDestination = input.outputConfig.destinations.find((destination) =>
+      preferredIds.has(destination.id)
+      && (destination.kind === 'lark_chat' || destination.kind === 'lark_current_chat' || destination.kind === 'lark_self_dm'))
+      ?? input.outputConfig.destinations.find((destination) =>
+        destination.kind === 'lark_chat' || destination.kind === 'lark_current_chat' || destination.kind === 'lark_self_dm');
+
+    if (
+      !larkDestination
+      || (larkDestination.kind !== 'lark_chat'
+        && larkDestination.kind !== 'lark_current_chat'
+        && larkDestination.kind !== 'lark_self_dm')
+    ) {
+      throw new HttpException(400, 'Lark-intent workflows require a Lark destination.');
+    }
+
+    const { targetId, error } = resolveLarkDestinationTarget(larkDestination, input.originChatId ?? null);
+    if (!targetId) {
+      throw new HttpException(400, error ?? 'Unable to resolve Lark destination.');
+    }
+
+    return {
+      destination: larkDestination,
+      targetId,
+    };
+  }
+
   private async deliverTextToConfiguredDestinations(input: {
     workflowId: string;
     runId: string;
@@ -3546,7 +3724,9 @@ class DesktopWorkflowsService {
       nextRunAt: workflow.nextRunAt?.toISOString() ?? null,
     });
 
-    const { schedule, outputConfig } = parseWorkflowRow(workflow);
+    const parsedWorkflow = parseWorkflowRow(workflow);
+    const { schedule, outputConfig } = parsedWorkflow;
+    const isLarkIntent = isLarkIntentWorkflowSpec(parsedWorkflow.workflowSpec);
     const session = await this.loadExecutionSession({
       workflowId: workflow.id,
       workflowName: workflow.name,
@@ -3555,14 +3735,23 @@ class DesktopWorkflowsService {
       departmentId: workflow.departmentId,
     });
     await progress?.(`Loaded workflow "${workflow.name}" and restored execution identity.`);
-    const primaryThread = await this.resolvePrimaryExecutionThread({
-      workflowName: workflow.name,
-      outputConfig,
-      userId: session.userId,
-      companyId: session.companyId,
-      departmentId: workflow.departmentId,
-    });
-    await progress?.(`Resolved primary delivery thread: ${primaryThread.title ?? primaryThread.id}.`);
+    const primaryThread = isLarkIntent
+      ? {
+          id: workflow.originChatId ?? `scheduled_lark_${workflow.id}`,
+          title: 'Scheduled Lark delivery',
+        }
+      : await this.resolvePrimaryExecutionThread({
+          workflowName: workflow.name,
+          outputConfig,
+          userId: session.userId,
+          companyId: session.companyId,
+          departmentId: workflow.departmentId,
+        });
+    await progress?.(
+      isLarkIntent
+        ? 'Resolved Lark delivery target for this scheduled workflow.'
+        : `Resolved primary delivery thread: ${primaryThread.title ?? primaryThread.id}.`,
+    );
     logger.info('desktop.workflow.execute.thread.resolved', {
       workflowId: workflow.id,
       workflowName: workflow.name,
@@ -3628,6 +3817,137 @@ class DesktopWorkflowsService {
 
     try {
       const workflowAttachedFiles = findLatestAttachedFiles(workflow.messages);
+      if (isLarkIntent) {
+        const { destination, targetId } = this.resolvePrimaryLarkDestination({
+          outputConfig,
+          originChatId: workflow.originChatId ?? null,
+        });
+        const scheduledMessageId = `scheduled-${run.id}`;
+        const scheduledTimestamp = new Date().toISOString();
+        const scheduledChatType: NormalizedIncomingMessageDTO['chatType'] =
+          destination.kind === 'lark_self_dm' ? 'p2p' : 'group';
+        const normalizedMessage: NormalizedIncomingMessageDTO = {
+          channel: 'lark',
+          userId: session.larkOpenId ?? session.userId,
+          chatId: targetId,
+          chatType: scheduledChatType,
+          messageId: scheduledMessageId,
+          timestamp: scheduledTimestamp,
+          text: executionPrompt,
+          rawEvent: {
+            source: 'scheduled_workflow',
+            workflowId: workflow.id,
+            workflowRunId: run.id,
+            trigger,
+          },
+          trace: {
+            requestId: `scheduled-wf-${workflow.id}-${Date.now()}`,
+            eventId: `scheduled_evt_${run.id}`,
+            receivedAt: scheduledTimestamp,
+            larkTenantKey: session.larkTenantKey,
+            larkOpenId: session.larkOpenId,
+            larkUserId: session.larkUserId,
+            companyId: workflow.companyId,
+            linkedUserId: session.userId,
+            requesterName: session.name,
+            requesterEmail: session.email,
+            ...(workflow.originChatId ? { referencedMessageId: workflow.originChatId } : {}),
+            ...(destination.kind === 'lark_current_chat' ? { threadRootId: null, threadParentId: null } : {}),
+          } as NormalizedIncomingMessageDTO['trace'],
+        };
+
+        const scheduledTask = await vercelOrchestrationEngine.buildTask(
+          `scheduled-wf-${workflow.id}-${Date.now()}`,
+          {
+            ...normalizedMessage,
+            trace: {
+              ...normalizedMessage.trace,
+              isScheduledRun: true,
+              scheduledWorkflowId: workflow.id,
+              scheduledWorkflowRunId: run.id,
+            } as NormalizedIncomingMessageDTO['trace'],
+          },
+        );
+
+        const execution = await vercelOrchestrationEngine.executeTask({
+          task: scheduledTask,
+          message: {
+            ...normalizedMessage,
+            trace: {
+              ...normalizedMessage.trace,
+              isScheduledRun: true,
+              scheduledWorkflowId: workflow.id,
+              scheduledWorkflowRunId: run.id,
+            } as NormalizedIncomingMessageDTO['trace'],
+          },
+        });
+        const executionSummary = summarizeResult(execution.latestSynthesis ?? 'Scheduled run completed.', 1200);
+        const nextRunAt = trigger === 'scheduled'
+          ? getNextScheduledRunAt(schedule, new Date(scheduledFor.getTime() + 1000))
+          : workflow.nextRunAt;
+        const status: 'blocked' | 'succeeded' | 'failed' =
+          execution.status === 'hitl'
+            ? 'blocked'
+            : execution.status === 'done'
+              ? 'succeeded'
+              : 'failed';
+
+        await prisma.scheduledWorkflowRun.update({
+          where: { id: run.id },
+          data: {
+            status,
+            finishedAt: new Date(),
+            resultSummary: status === 'succeeded' || status === 'blocked' ? executionSummary : null,
+            errorSummary: status === 'failed' ? executionSummary : null,
+            deliveryStatusJson: [{
+              kind: destination.kind,
+              chatId: targetId,
+              status: status === 'failed' ? 'failed' : 'delivered',
+            }],
+          },
+        });
+
+        await prisma.scheduledWorkflow.update({
+          where: { id: workflow.id },
+          data: {
+            lastRunAt: new Date(),
+            nextRunAt: trigger === 'scheduled' ? nextRunAt : workflow.nextRunAt,
+            claimToken: null,
+            claimedAt: null,
+            ...(trigger === 'scheduled' && schedule.type === 'one_time' && !nextRunAt
+              ? {
+                  status: 'archived',
+                  scheduleEnabled: false,
+                  archivedAt: new Date(),
+                }
+              : {}),
+          },
+        });
+        await this.notifyWorkflowRunOutcome({
+          workflowId: workflow.id,
+          workflowName: workflow.name,
+          runId: run.id,
+          trigger,
+          status,
+          session,
+          outputConfig,
+          originChatId: workflow.originChatId ?? null,
+          scheduledFor,
+          nextRunAt: trigger === 'scheduled' ? nextRunAt : workflow.nextRunAt,
+          errorSummary: status === 'failed' ? executionSummary : null,
+        });
+
+        return {
+          runId: run.id,
+          executionId: null,
+          status,
+          threadId: primaryThread.id,
+          threadTitle: primaryThread.title ?? null,
+          resultSummary: status === 'failed' ? null : executionSummary,
+          errorSummary: status === 'failed' ? executionSummary : null,
+        };
+      }
+
       const execution = await executeAutomatedDesktopTurn({
         session,
         threadId: primaryThread.id,
