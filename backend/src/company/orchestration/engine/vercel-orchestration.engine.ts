@@ -1140,7 +1140,13 @@ const resolveMutationGuard = (input: {
     },
   );
   const resolvedCanonicalIntent = input.canonicalIntent ?? canonicalIntent;
-  const completion = evaluateRunCompletion(input.toolResults, resolvedCanonicalIntent);
+  const readOnlyPlannerOverride =
+    input.plannerChosenOperationClass === 'read'
+    || input.childRouterOperationType === 'read';
+  const completion = evaluateRunCompletion(
+    input.toolResults,
+    readOnlyPlannerOverride ? { isWriteLike: false } : resolvedCanonicalIntent,
+  );
   if (completion.status === 'completed') {
     return {
       node: 'synthesis.complete',
@@ -2316,10 +2322,11 @@ const resolveLarkExplicitMemoryWriteStatus = async (input: {
 
   const sendStatusMessage = async (text: string): Promise<boolean> => {
     try {
+      const isScheduledRun = Boolean(input.message.trace?.isScheduledRun);
       const replyMode = resolveReplyMode({
         chatType: input.message.chatType,
         incomingMessageId: input.message.messageId,
-        isProactiveDelivery: false,
+        isProactiveDelivery: isScheduledRun,
         isSensitiveContent: false,
         isShortAcknowledgement: true,
         userExplicitMode: input.currentTurnExplicitReplyMode,
@@ -2331,7 +2338,7 @@ const resolveLarkExplicitMemoryWriteStatus = async (input: {
         }),
         text,
         correlationId: input.taskId,
-        ...(replyMode.chatType === 'p2p'
+        ...(replyMode.chatType === 'p2p' || isScheduledRun
           ? {}
           : {
               replyToMessageId: replyMode.replyToMessageId,
@@ -4369,11 +4376,12 @@ const executeLarkVercelTask = async (
     runtime = await resolveRuntimeContext(task, message, contextStorageId, activeTaskState);
   } catch (error) {
     if (error instanceof DepartmentSelectionRequiredError) {
+      const departmentReplyToMessageId = isScheduledRun ? undefined : message.messageId;
       await adapter.sendMessage({
         chatId: message.chatId,
         text: error.message,
         correlationId: task.taskId,
-        replyToMessageId: message.messageId,
+        replyToMessageId: departmentReplyToMessageId,
       });
       return {
         task,
@@ -6868,7 +6876,7 @@ const executeLarkVercelTask = async (
     });
     statusHistory.push(`Failed: ${errorMessage}`);
     const failureCoordinator = await ensureStatusCoordinator({
-      replyToMessageId: message.messageId,
+      replyToMessageId: isScheduledRun ? undefined : message.messageId,
     });
     await failureCoordinator.replace(
       [

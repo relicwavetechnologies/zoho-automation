@@ -3904,7 +3904,41 @@ class DesktopWorkflowsService {
           },
         });
         const executionSummary = summarizeResult(execution.latestSynthesis ?? 'Scheduled run completed.', 1200);
-        const deliveredMessageId = execution.statusMessageId?.trim() || null;
+        let deliveredMessageId = execution.statusMessageId?.trim() || null;
+        let deliveryFailureReason: string | null = null;
+        if (execution.status === 'done' && !deliveredMessageId) {
+          const fallbackText = (execution.latestSynthesis ?? '').trim();
+          if (fallbackText) {
+            const adapter = resolveChannelAdapter('lark');
+            const outbound = await adapter.sendMessage({
+              chatId: targetId,
+              text: fallbackText,
+              correlationId: run.id,
+            });
+            deliveredMessageId = outbound.messageId?.trim() || null;
+            if (!deliveredMessageId) {
+              deliveryFailureReason = outbound.error?.rawMessage
+                ?? outbound.error?.classifiedReason
+                ?? 'Scheduled execution completed, but no Lark message was delivered.';
+            }
+            const fallbackDeliveryMeta = {
+              workflowId: workflow.id,
+              workflowRunId: run.id,
+              targetId,
+              destinationKind: destination.kind,
+              outboundStatus: outbound.status,
+              outboundMessageId: outbound.messageId ?? null,
+              outboundError: outbound.error ?? null,
+            };
+            if (outbound.status === 'failed') {
+              logger.warn('desktop.workflow.execute.lark_intent.fallback_delivery', fallbackDeliveryMeta);
+            } else {
+              logger.info('desktop.workflow.execute.lark_intent.fallback_delivery', fallbackDeliveryMeta);
+            }
+          } else {
+            deliveryFailureReason = 'Scheduled execution completed, but no final text was available for Lark delivery.';
+          }
+        }
         const nextRunAt = trigger === 'scheduled'
           ? getNextScheduledRunAt(schedule, new Date(scheduledFor.getTime() + 1000))
           : workflow.nextRunAt;
@@ -3916,7 +3950,7 @@ class DesktopWorkflowsService {
               ? (deliveryFailed ? 'failed' : 'succeeded')
               : 'failed';
         const failureSummary = deliveryFailed
-          ? 'Scheduled execution completed, but no Lark message was delivered.'
+          ? deliveryFailureReason ?? 'Scheduled execution completed, but no Lark message was delivered.'
           : executionSummary;
 
         if (status === 'failed') {
