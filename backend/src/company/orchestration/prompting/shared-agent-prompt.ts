@@ -3,8 +3,13 @@ import type { ToolActionGroup } from '../../tools/tool-action-groups';
 import { TOOL_REGISTRY_MAP } from '../../tools/tool-registry';
 import type { GroundedFilePromptInfo } from '../../../modules/desktop-chat/file-vision.builder';
 import { buildWorkspaceAwarePromptSections, type WorkspacePromptAvailability } from '../vercel/workspace-aware-prompt';
+import type { CompanyPromptProfileRuntime } from '../../prompt-profiles/company-prompt-profile.cache';
+import { getOrBuildStaticPromptLayer, type StaticPromptLayerMetadata } from './static-prompt-cache';
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
+const COMPANY_PROMPT_PROFILE_MAX_CHARS = 2_400;
+const DEPARTMENT_PROMPT_MAX_CHARS = 1_600;
+const DEPARTMENT_SKILLS_MAX_CHARS = 4_000;
 
 const getLocalDateContext = (): string => {
   const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -125,6 +130,23 @@ export const wrapUntrustedPromptDataBlock = (input: {
   ].join('\n');
 };
 
+const buildCompanyPromptProfileBlock = (profile?: CompanyPromptProfileRuntime): string => {
+  if (!profile?.hasContent || !profile.isActive) return '';
+  const sections = [
+    profile.companyContext ? `What the company does:\n${profile.companyContext}` : '',
+    profile.systemsOfRecord ? `Systems of record:\n${profile.systemsOfRecord}` : '',
+    profile.businessRules ? `Business rules:\n${profile.businessRules}` : '',
+    profile.communicationStyle ? `Communication norms:\n${profile.communicationStyle}` : '',
+    profile.formattingDefaults ? `Formatting defaults:\n${profile.formattingDefaults}` : '',
+    profile.restrictedClaims ? `Do not assume or claim:\n${profile.restrictedClaims}` : '',
+  ].filter(Boolean).join('\n\n');
+  return wrapUntrustedPromptDataBlock({
+    label: 'Company context profile',
+    text: sections,
+    maxChars: COMPANY_PROMPT_PROFILE_MAX_CHARS,
+  });
+};
+
 const extractOperationFromSelectionReason = (reason?: string | null): string | null => {
   const match = reason?.match(/\boperation\s+([a-z_]+)\b/i);
   return match?.[1]?.trim().toLowerCase() ?? null;
@@ -202,6 +224,8 @@ export type SharedAgentPromptInput = {
   plannerChosenToolId?: string;
   plannerChosenOperationClass?: string;
   allowedActionsByTool?: Record<string, ToolActionGroup[]>;
+  companyPromptProfile?: CompanyPromptProfileRuntime;
+  departmentId?: string;
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentSystemPrompt?: string;
@@ -357,11 +381,6 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
       latestActionResult: input.latestActionResult,
       availability: input.workspaceAvailability ?? (input.workspace ? 'available' : 'unknown'),
     }),
-    'Allowed tool catalog for this run:',
-    buildAllowedToolCatalog({
-      allowedToolIds: input.runExposedToolIds ?? input.allowedToolIds,
-      allowedActionsByTool: input.allowedActionsByTool,
-    }),
     '## Handoff discipline',
     'Your context is provided in the handoff input above.',
     'If you are missing critical information needed to complete your objective, do not search.',
@@ -494,19 +513,6 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
   }
   if (input.departmentRoleSlug) {
     parts.push(`Requester department role: ${sanitizePromptLiteral(input.departmentRoleSlug)}.`);
-  }
-  if (input.departmentSystemPrompt?.trim()) {
-    parts.push('Department instructions:', sanitizePromptMultiline(input.departmentSystemPrompt));
-  }
-  if (input.departmentSkillsMarkdown?.trim()) {
-    const block = wrapUntrustedPromptDataBlock({
-      label: 'Legacy department skills fallback context',
-      text: input.departmentSkillsMarkdown,
-      maxChars: 4_000,
-    });
-    if (block) {
-      parts.push(block);
-    }
   }
   if (latestMessage) {
     const block = wrapUntrustedPromptDataBlock({
@@ -700,4 +706,73 @@ export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): str
 
   parts.push(`Conversation key: ${sanitizePromptLiteral(input.conversationKey)}.`);
   return parts.filter(Boolean).join('\n');
+};
+
+const buildSharedAgentStaticOverlay = (input: SharedAgentPromptInput): string => {
+  const parts: string[] = [];
+  const companyBlock = buildCompanyPromptProfileBlock(input.companyPromptProfile);
+  if (companyBlock) {
+    parts.push(companyBlock);
+  }
+  if (input.departmentSystemPrompt?.trim()) {
+    parts.push(
+      wrapUntrustedPromptDataBlock({
+        label: 'Department instruction profile',
+        text: input.departmentSystemPrompt,
+        maxChars: DEPARTMENT_PROMPT_MAX_CHARS,
+      }),
+    );
+  }
+  if (input.departmentSkillsMarkdown?.trim()) {
+    parts.push(
+      wrapUntrustedPromptDataBlock({
+        label: 'Legacy department skills fallback context',
+        text: input.departmentSkillsMarkdown,
+        maxChars: DEPARTMENT_SKILLS_MAX_CHARS,
+      }),
+    );
+  }
+  parts.push(
+    'Allowed tool catalog for this run:',
+    buildAllowedToolCatalog({
+      allowedToolIds: input.runExposedToolIds ?? input.allowedToolIds,
+      allowedActionsByTool: input.allowedActionsByTool,
+    }),
+  );
+  return parts.filter(Boolean).join('\n');
+};
+
+export const buildSharedAgentSystemPromptWithCache = async (
+  input: SharedAgentPromptInput,
+): Promise<{
+  prompt: string;
+  promptCacheMetadata: StaticPromptLayerMetadata & {
+    companyProfileApplied: boolean;
+    departmentProfileApplied: boolean;
+  };
+}> => {
+  const staticLayer = await getOrBuildStaticPromptLayer({
+    namespace: 'shared-agent',
+    companyId: input.companyPromptProfile?.companyId ?? 'no-company',
+    departmentId: input.departmentId ?? null,
+    allowedToolIds: input.runExposedToolIds ?? input.allowedToolIds,
+    companyProfileHash: input.companyPromptProfile?.revisionHash ?? 'none',
+    departmentProfileHash: sanitizePromptLiteral([
+      input.departmentSystemPrompt?.trim() ?? '',
+      input.departmentSkillsMarkdown?.trim() ?? '',
+    ].join('|')),
+    runtimeLabel: input.runtimeLabel,
+    builder: () => buildSharedAgentStaticOverlay(input),
+  });
+
+  return {
+    prompt: [staticLayer.layer, buildSharedAgentSystemPrompt(input)].filter(Boolean).join('\n\n'),
+    promptCacheMetadata: {
+      ...staticLayer.metadata,
+      companyProfileApplied: Boolean(input.companyPromptProfile?.hasContent && input.companyPromptProfile.isActive),
+      departmentProfileApplied: Boolean(
+        input.departmentSystemPrompt?.trim() || input.departmentSkillsMarkdown?.trim(),
+      ),
+    },
+  };
 };

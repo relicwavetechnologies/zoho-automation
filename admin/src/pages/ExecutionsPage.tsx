@@ -275,6 +275,8 @@ const buildInspectorSections = (event: ExecutionEvent | null): InspectorSection[
   const requestSummary = recordOf(payload.requestSummary)
   const modelInput = recordOf(payload.modelInput)
   const modelInputSummary = recordOf(payload.modelInputSummary)
+  const toolAvailability =
+    recordOf(modelInput?.toolAvailability) || recordOf(modelInputSummary?.toolAvailability)
   const decisionState = recordOf(payload.decisionState)
   const toolCall = recordOf(payload.toolCall)
   const toolCallSummary = recordOf(payload.toolCallSummary)
@@ -317,6 +319,7 @@ const buildInspectorSections = (event: ExecutionEvent | null): InspectorSection[
       content: [
         typeof modelInputSummary?.label === 'string' ? `Input: ${modelInputSummary.label}` : '',
         modelInputSummary?.contextSummary ? `Context summary:\n${stringifyValue(modelInputSummary.contextSummary)}` : '',
+        toolAvailability ? `Prompt + tool metadata:\n${stringifyValue(toolAvailability)}` : '',
         typeof modelInput?.systemPrompt === 'string' ? `System prompt:\n${modelInput.systemPrompt}` : '',
         formattedMessages ? `Messages:\n${formattedMessages}` : '',
       ].filter(Boolean).join('\n\n'),

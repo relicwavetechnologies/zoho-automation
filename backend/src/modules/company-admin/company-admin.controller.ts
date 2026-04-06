@@ -21,6 +21,7 @@ import {
   upsertLarkOperationalConfigSchema,
   upsertZohoOAuthConfigSchema,
 } from './dto/connect-onboarding.dto';
+import { assistantProfileQuerySchema, upsertAssistantProfileSchema } from './dto/assistant-profile.dto';
 import { createInviteSchema } from './dto/create-invite.dto';
 import { CompanyAdminService, companyAdminService } from './company-admin.service';
 
@@ -46,6 +47,26 @@ class CompanyAdminController extends BaseController {
     }
     const result = await this.service.listMembers(session, companyId);
     return res.json(ApiResponse.success(result, 'Members loaded'));
+  };
+
+  getAssistantProfile = async (req: Request, res: Response) => {
+    const query = assistantProfileQuerySchema.parse(req.query);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.getAssistantProfile(session, query);
+    return res.json(ApiResponse.success(result, 'Assistant profile loaded'));
+  };
+
+  upsertAssistantProfile = async (req: Request, res: Response) => {
+    const payload = upsertAssistantProfileSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.upsertAssistantProfile(session, payload);
+    return res.json(ApiResponse.success(result, 'Assistant profile saved'));
   };
 
   getCompanyDirectory = async (req: Request, res: Response) => {

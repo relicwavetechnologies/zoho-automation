@@ -121,6 +121,8 @@ model User {
   departmentUserToolOverrides        DepartmentUserToolOverride[]
   createdDepartmentAgentConfigs      DepartmentAgentConfig[]      @relation("DepartmentAgentConfigCreatedBy")
   updatedDepartmentAgentConfigs      DepartmentAgentConfig[]      @relation("DepartmentAgentConfigUpdatedBy")
+  createdCompanyPromptProfiles       CompanyPromptProfile[]       @relation("CompanyPromptProfileCreatedBy")
+  updatedCompanyPromptProfiles       CompanyPromptProfile[]       @relation("CompanyPromptProfileUpdatedBy")
   createdZohoConnectionProfiles      ZohoConnectionProfile[]      @relation("ZohoConnectionProfileCreatedBy")
   updatedZohoConnectionProfiles      ZohoConnectionProfile[]      @relation("ZohoConnectionProfileUpdatedBy")
   departmentToolPermissionsUpdated   DepartmentToolPermission[]   @relation("DepartmentToolPermissionUpdatedBy")
@@ -142,6 +144,7 @@ model Company {
   name                   String
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
+  promptProfile          CompanyPromptProfile?
   departments            Department[]
   skills                 Skill[]
   zohoConnections        ZohoConnection[]
@@ -179,6 +182,27 @@ model Company {
   userMemoryProfiles     UserMemoryProfile[]
   taskRuns               TaskRun[]
   userDepartmentPreferences UserDepartmentPreference[]
+}
+
+model CompanyPromptProfile {
+  id                 String   @id @default(uuid())
+  companyId          String   @unique
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  companyContext     String
+  systemsOfRecord    String
+  businessRules      String
+  communicationStyle String
+  formattingDefaults String
+  restrictedClaims   String
+  isActive           Boolean  @default(true)
+  createdBy          String
+  createdByUser      User     @relation("CompanyPromptProfileCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  updatedBy          String
+  updatedByUser      User     @relation("CompanyPromptProfileUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([companyId, isActive])
 }
 
 model UserDepartmentPreference {

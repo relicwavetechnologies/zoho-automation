@@ -1,6 +1,7 @@
 import { departmentService } from '../../departments/department.service';
+import { companyPromptProfileService } from '../../prompt-profiles/company-prompt-profile.service';
 import { toolPermissionService } from '../../tools/tool-permission.service';
-import { buildSharedAgentSystemPrompt } from '../prompting/shared-agent-prompt';
+import { buildSharedAgentSystemPromptWithCache } from '../prompting/shared-agent-prompt';
 import { runtimeConversationRepository } from './runtime-conversation.repository';
 import type {
   RuntimeActor,
@@ -62,8 +63,10 @@ const messageContent = (input: {
   return content ?? null;
 };
 
-const buildSystemPrompt = (input: {
+const buildSystemPrompt = async (input: {
+  companyId: string;
   departmentName?: string;
+  departmentId?: string;
   departmentRoleSlug?: string;
   departmentPrompt?: string;
   skillsMarkdown?: string;
@@ -72,7 +75,7 @@ const buildSystemPrompt = (input: {
   allowedToolIds: string[];
   allowedActionsByTool: Record<string, Array<'read' | 'create' | 'update' | 'delete' | 'send' | 'execute'>>;
   conversationKey: string;
-}) => {
+}): Promise<string> => {
   const refLines: string[] = [];
   if (input.refs.latestLarkTask) {
     refLines.push(`Latest Lark task: ${JSON.stringify(input.refs.latestLarkTask)}`);
@@ -83,11 +86,14 @@ const buildSystemPrompt = (input: {
   if (input.refs.latestLarkCalendarEvent) {
     refLines.push(`Latest Lark event: ${JSON.stringify(input.refs.latestLarkCalendarEvent)}`);
   }
-  return buildSharedAgentSystemPrompt({
+  const companyPromptProfile = await companyPromptProfileService.resolveRuntimeProfile(input.companyId);
+  const result = await buildSharedAgentSystemPromptWithCache({
     runtimeLabel: 'You are the LangGraph runtime core for a tool-using assistant.',
     conversationKey: input.conversationKey,
     allowedToolIds: input.allowedToolIds,
     allowedActionsByTool: input.allowedActionsByTool,
+    companyPromptProfile,
+    departmentId: input.departmentId,
     departmentName: input.departmentName,
     departmentRoleSlug: input.departmentRoleSlug,
     departmentSystemPrompt: input.departmentPrompt,
@@ -95,6 +101,7 @@ const buildSystemPrompt = (input: {
     dateScope: input.dateScope,
     conversationRefsContext: refLines.length > 0 ? ['Conversation refs:', ...refLines].join('\n') : null,
   });
+  return result.prompt;
 };
 
 export type RuntimeContextBuildResult = {
@@ -164,7 +171,9 @@ export class RuntimeContextBuilder {
 
     const refs = readConversationRefs(conversation.refsJson);
     const dateScope = inferRuntimeDateScope(input.incomingText);
-    const systemPrompt = buildSystemPrompt({
+    const systemPrompt = await buildSystemPrompt({
+      companyId: input.companyId,
+      departmentId,
       departmentName,
       departmentRoleSlug,
       departmentPrompt,

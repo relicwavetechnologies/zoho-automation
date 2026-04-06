@@ -10,7 +10,7 @@ import {
   resolveVercelChildRouterModel,
   resolveVercelLanguageModel,
 } from '../../company/orchestration/vercel/model-factory';
-import { buildSharedAgentSystemPrompt } from '../../company/orchestration/prompting/shared-agent-prompt';
+import { buildSharedAgentSystemPromptWithCache } from '../../company/orchestration/prompting/shared-agent-prompt';
 import {
   chooseSupervisorPassThroughText,
   buildSupervisorResolvedContext,
@@ -66,6 +66,7 @@ import {
 } from '../../company/observability/circuit-breaker';
 import { conversationMemoryStore } from '../../company/state/conversation/conversation-memory.store';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
+import { companyPromptProfileService } from '../../company/prompt-profiles/company-prompt-profile.service';
 import { ALIAS_TO_CANONICAL_ID, DOMAIN_ALIASES, TOOL_REGISTRY_MAP } from '../../company/tools/tool-registry';
 import {
   classifyIntent,
@@ -3216,6 +3217,7 @@ const buildDesktopContextAssembly = async (input: {
   routerAcknowledgement?: string;
   childRouteHints?: DesktopChildRoute;
   approvalPolicySummary?: string;
+  departmentId?: string;
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentSystemPrompt?: string;
@@ -3236,6 +3238,7 @@ const buildDesktopContextAssembly = async (input: {
   memoryWriteStatusContext?: string | null;
 }): Promise<{
   systemPrompt: string;
+  promptCacheMetadata: Record<string, unknown>;
   historyMessages: ModelMessage[];
   contextClass: DesktopContextClass;
   conversationSnippets: string[];
@@ -3267,7 +3270,8 @@ const buildDesktopContextAssembly = async (input: {
     input.taskState.updatedAt = new Date().toISOString();
   }
   const conversationSnippets = memoryPromptContext.relevantMemoryFacts;
-  const systemPrompt = buildSystemPrompt({
+  const promptBuild = await buildSystemPrompt({
+    companyId: input.session.companyId,
     threadId: input.threadId,
     workspace: input.workspace,
     requesterName: input.session.name,
@@ -3287,6 +3291,7 @@ const buildDesktopContextAssembly = async (input: {
     routerAcknowledgement: input.routerAcknowledgement,
     childRouteHints: input.childRouteHints,
     approvalPolicySummary: input.approvalPolicySummary,
+    departmentId: input.departmentId,
     departmentName: input.departmentName,
     departmentRoleSlug: input.departmentRoleSlug,
     departmentSystemPrompt: input.departmentSystemPrompt,
@@ -3301,6 +3306,7 @@ const buildDesktopContextAssembly = async (input: {
     contextClass,
     hasAttachedFiles: input.activeAttachments.length > 0,
   });
+  const systemPrompt = promptBuild.prompt;
   const budget = getDesktopContextBudget({
     resolvedModel,
     contextClass,
@@ -3358,6 +3364,7 @@ const buildDesktopContextAssembly = async (input: {
 
   return {
     systemPrompt,
+    promptCacheMetadata: promptBuild.promptCacheMetadata,
     historyMessages,
     contextClass,
     conversationSnippets,
@@ -3366,6 +3373,7 @@ const buildDesktopContextAssembly = async (input: {
 };
 
 const buildSystemPrompt = (input: {
+  companyId: string;
   threadId: string;
   workspace?: { name: string; path: string };
   approvalPolicySummary?: string;
@@ -3388,6 +3396,7 @@ const buildSystemPrompt = (input: {
   resolvedUserReferences?: string[];
   routerAcknowledgement?: string;
   childRouteHints?: DesktopChildRoute;
+  departmentId?: string;
   departmentName?: string;
   departmentRoleSlug?: string;
   departmentSystemPrompt?: string;
@@ -3401,7 +3410,10 @@ const buildSystemPrompt = (input: {
   memoryWriteStatusContext?: string | null;
   contextClass?: DesktopContextClass;
   hasAttachedFiles?: boolean;
-}) => {
+}): Promise<{
+  prompt: string;
+  promptCacheMetadata: Record<string, unknown>;
+}> => {
   const latestMessage = input.latestUserMessage?.trim() ?? '';
   const retrievalGuidance = latestMessage
     ? retrievalOrchestratorService.buildPromptGuidance({
@@ -3413,7 +3425,8 @@ const buildSystemPrompt = (input: {
   const conversationRetrievalSnippets = continuationHint
     ? [...(input.conversationRetrievalSnippets ?? []), continuationHint]
     : input.conversationRetrievalSnippets;
-  return buildSharedAgentSystemPrompt({
+  return companyPromptProfileService.resolveRuntimeProfile(input.companyId).then((companyPromptProfile) =>
+    buildSharedAgentSystemPromptWithCache({
     runtimeLabel: 'You are the Vercel AI SDK desktop runtime for a tool-using assistant.',
     conversationKey: buildConversationKey(input.threadId),
     workspace: input.workspace,
@@ -3427,6 +3440,8 @@ const buildSystemPrompt = (input: {
     plannerChosenToolId: input.plannerChosenToolId,
     plannerChosenOperationClass: input.plannerChosenOperationClass,
     allowedActionsByTool: input.allowedActionsByTool,
+    companyPromptProfile,
+    departmentId: input.departmentId,
     departmentName: input.departmentName,
     departmentRoleSlug: input.departmentRoleSlug,
     departmentSystemPrompt: input.departmentSystemPrompt,
@@ -3460,7 +3475,7 @@ const buildSystemPrompt = (input: {
     contextClass: input.contextClass,
     hasAttachedFiles: input.hasAttachedFiles,
     hasActiveSourceArtifacts: (input.taskState?.activeSourceArtifacts.length ?? 0) > 0,
-  });
+  }));
 };
 
 const resolveDesktopRuntimeForRunScopedSelection = async (input: {
@@ -4281,6 +4296,7 @@ const runDesktopDelegatedAgentStep = async (input: {
     resolvedUserReferences: input.resolvedUserReferences,
     routerAcknowledgement: undefined,
     childRouteHints: input.childRoute,
+    departmentId: input.runtime.departmentId,
     departmentName: input.runtime.departmentName,
     departmentRoleSlug: input.runtime.departmentRoleSlug,
     departmentSystemPrompt: input.runtime.departmentSystemPrompt,
@@ -4589,6 +4605,7 @@ export const executeAutomatedDesktopTurn = async (input: {
       taskState: grounding.taskState,
       threadSummary: threadMemory.summary,
       resolvedUserReferences: resolvedUserContext.resolvedReferences,
+      departmentId: departmentRuntime.threadDepartmentId,
       departmentName: departmentRuntime.departmentName,
       departmentRoleSlug: departmentRuntime.departmentRoleSlug,
       departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
@@ -4637,6 +4654,7 @@ export const executeAutomatedDesktopTurn = async (input: {
           plannerCandidateToolIds: effectiveRuntime.plannerCandidateToolIds,
           plannerChosenToolId: effectiveRuntime.plannerChosenToolId,
           plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
+          promptCache: contextAssembly.promptCacheMetadata,
         },
       }),
     });
@@ -5487,6 +5505,7 @@ export class VercelDesktopEngine {
         resolvedUserReferences: resolvedUserContext.resolvedReferences,
         routerAcknowledgement: routerAcknowledgement ?? undefined,
         childRouteHints: childRoute,
+        departmentId: departmentRuntime.threadDepartmentId,
         departmentName: departmentRuntime.departmentName,
         departmentRoleSlug: departmentRuntime.departmentRoleSlug,
         departmentZohoReadScope: departmentRuntime.departmentZohoReadScope,
@@ -5555,6 +5574,7 @@ export class VercelDesktopEngine {
             plannerCandidateToolIds: effectiveRuntime.plannerCandidateToolIds,
             plannerChosenToolId: effectiveRuntime.plannerChosenToolId,
             plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
+            promptCache: contextAssembly.promptCacheMetadata,
           },
         }),
       });
@@ -6473,6 +6493,7 @@ export class VercelDesktopEngine {
         taskState: activeTaskState,
         threadSummary: activeThreadSummary,
         resolvedUserReferences: resolvedUserContext.resolvedReferences,
+        departmentId: departmentRuntime.threadDepartmentId,
         departmentName: departmentRuntime.departmentName,
         departmentRoleSlug: departmentRuntime.departmentRoleSlug,
         departmentZohoReadScope: departmentRuntime.departmentZohoReadScope,
@@ -6538,6 +6559,7 @@ export class VercelDesktopEngine {
             plannerCandidateToolIds: effectiveRuntime.plannerCandidateToolIds,
             plannerChosenToolId: effectiveRuntime.plannerChosenToolId,
             plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
+            promptCache: contextAssembly.promptCacheMetadata,
           },
         }),
       });
@@ -7181,6 +7203,7 @@ export class VercelDesktopEngine {
         taskState: activeTaskState,
         threadSummary: activeThreadSummary,
         resolvedUserReferences: resolvedUserContext.resolvedReferences,
+        departmentId: departmentRuntime.threadDepartmentId,
         departmentName: departmentRuntime.departmentName,
         departmentRoleSlug: departmentRuntime.departmentRoleSlug,
         departmentZohoReadScope: departmentRuntime.departmentZohoReadScope,
@@ -7246,6 +7269,7 @@ export class VercelDesktopEngine {
             plannerCandidateToolIds: effectiveRuntime.plannerCandidateToolIds,
             plannerChosenToolId: effectiveRuntime.plannerChosenToolId,
             plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass,
+            promptCache: contextAssembly.promptCacheMetadata,
           },
         }),
       });

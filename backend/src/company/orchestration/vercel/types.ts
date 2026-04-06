@@ -1,6 +1,7 @@
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
 import type { ZohoRateLimitConfig } from '../../integrations/zoho/zoho-rate-limit.types';
 import type { DepartmentManagerApprovalConfig } from '../../departments/department.service';
+import type { CompanyPromptProfileRuntime } from '../../prompt-profiles/company-prompt-profile.cache';
 import type { SearchIntent } from '../search-intent-classifier';
 import type { CanonicalIntent } from '../intent/canonical-intent';
 
@@ -226,6 +227,7 @@ export type VercelRuntimeRequestContext = {
   plannerChosenToolId?: string;
   plannerChosenOperationClass?: string;
   allowedActionsByTool?: Record<string, ToolActionGroup[]>;
+  companyPromptProfile?: CompanyPromptProfileRuntime;
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
   searchIntent?: SearchIntent;

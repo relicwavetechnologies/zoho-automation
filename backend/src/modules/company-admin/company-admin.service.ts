@@ -14,6 +14,7 @@ import { googleOAuthService } from '../../company/channels/google/google-oauth.s
 import { companyGoogleAuthLinkRepository } from '../../company/channels/google/company-google-auth-link.repository';
 import { auditService } from '../audit/audit.service';
 import { companyOnboardingService } from '../company-onboarding/company-onboarding.service';
+import { companyPromptProfileService } from '../../company/prompt-profiles/company-prompt-profile.service';
 import { CompanyAdminRepository, companyAdminRepository } from './company-admin.repository';
 import {
   ConnectOnboardingDto,
@@ -30,6 +31,7 @@ import {
   UpsertZohoOAuthConfigDto,
   ZohoProfileQueryDto,
 } from './dto/connect-onboarding.dto';
+import { type AssistantProfileQueryDto, type UpsertAssistantProfileDto } from './dto/assistant-profile.dto';
 import { CreateInviteDto } from './dto/create-invite.dto';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { aiRoleService } from '../../company/tools/ai-role.service';
@@ -207,6 +209,26 @@ const mapZohoProfileSummary = (profile: {
 export class CompanyAdminService extends BaseService {
   constructor(private readonly repository: CompanyAdminRepository = companyAdminRepository) {
     super();
+  }
+
+  async getAssistantProfile(session: SessionScope, query: AssistantProfileQueryDto) {
+    const companyId = resolveCompanyScope(session, query.companyId);
+    return companyPromptProfileService.getAdminProfile(companyId);
+  }
+
+  async upsertAssistantProfile(session: SessionScope, payload: UpsertAssistantProfileDto) {
+    const companyId = resolveCompanyScope(session, payload.companyId);
+    return companyPromptProfileService.upsertProfile({
+      companyId,
+      actorUserId: session.userId,
+      companyContext: payload.companyContext,
+      systemsOfRecord: payload.systemsOfRecord,
+      businessRules: payload.businessRules,
+      communicationStyle: payload.communicationStyle,
+      formattingDefaults: payload.formattingDefaults,
+      restrictedClaims: payload.restrictedClaims,
+      isActive: payload.isActive,
+    });
   }
 
   private async syncRuntimeZohoConnectionFromProfile(profileId: string): Promise<void> {

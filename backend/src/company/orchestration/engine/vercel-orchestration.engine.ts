@@ -27,7 +27,7 @@ import {
   type ExecutionToolDemandPayload,
 } from '../../observability';
 import { resolveVercelChildRouterModel, resolveVercelLanguageModel } from '../vercel/model-factory';
-import { buildSharedAgentSystemPrompt } from '../prompting/shared-agent-prompt';
+import { buildSharedAgentSystemPromptWithCache } from '../prompting/shared-agent-prompt';
 import { checkToolSelectionInvariant, resolveRunScopedToolSelection } from '../tool-selection/run-scoped-tool-selection.service';
 import { createVercelDesktopTools } from '../vercel/tools';
 import {
@@ -76,6 +76,7 @@ import {
 } from '../../../modules/desktop-chat/vercel-desktop.engine';
 import { LarkStatusCoordinator } from './lark-status.coordinator';
 import { aiTokenUsageService } from '../../ai-usage/ai-token-usage.service';
+import { companyPromptProfileService } from '../../prompt-profiles/company-prompt-profile.service';
 import { estimateMessageTokens, estimateTokens } from '../../../utils/token-estimator';
 import { AI_MODEL_CATALOG_MAP } from '../../ai-models';
 import { personalVectorMemoryService, type PersonalMemoryMatch } from '../../integrations/vector';
@@ -3017,7 +3018,7 @@ const hydrateConversationRefsFromMetadata = (
   }
 };
 
-const buildSystemPrompt = (input: {
+const buildSystemPrompt = async (input: {
   conversationKey: string;
   runtime: VercelRuntimeRequestContext;
   routerAcknowledgement?: string;
@@ -3037,14 +3038,17 @@ const buildSystemPrompt = (input: {
   activeTaskContext?: string | null;
   threadSummaryContextOverride?: string | null;
   taskStateContextOverride?: string | null;
-}) => {
+}): Promise<{
+  prompt: string;
+  promptCacheMetadata: Record<string, unknown>;
+}> => {
   const retrievalGuidance = input.latestUserMessage?.trim()
     ? retrievalOrchestratorService.buildPromptGuidance({
         messageText: input.queryEnrichment?.cleanQuery ?? input.latestUserMessage,
         hasAttachments: input.hasAttachedFiles,
       })
     : [];
-  return buildSharedAgentSystemPrompt({
+  return buildSharedAgentSystemPromptWithCache({
     runtimeLabel: 'You are Divo, EMIAC\'s internal AI colleague.',
     conversationKey: input.conversationKey,
     workspace: input.runtime.workspace,
@@ -3060,6 +3064,8 @@ const buildSystemPrompt = (input: {
     plannerChosenToolId: input.runtime.plannerChosenToolId,
     plannerChosenOperationClass: input.runtime.plannerChosenOperationClass,
     allowedActionsByTool: input.runtime.allowedActionsByTool,
+    companyPromptProfile: input.runtime.companyPromptProfile,
+    departmentId: input.runtime.departmentId,
     requesterName: input.runtime.requesterName,
     requesterEmail: input.runtime.requesterEmail,
     departmentName: input.runtime.departmentName,
@@ -3922,6 +3928,7 @@ const resolveRuntimeContext = async (
   let departmentManagerApprovalConfig: VercelRuntimeRequestContext['departmentManagerApprovalConfig'];
   let departmentSystemPrompt: string | undefined;
   let departmentSkillsMarkdown: string | undefined;
+  const companyPromptProfile = await companyPromptProfileService.resolveRuntimeProfile(companyId);
   let allowedToolIds = fallbackAllowedToolIds;
   let allowedActionsByTool: Record<string, string[]> | undefined;
   if (!linkedUserId) {
@@ -4013,6 +4020,7 @@ const resolveRuntimeContext = async (
     sourceStatusReplyModeHint: message.trace?.statusReplyModeHint,
     sourceChatType: message.chatType,
     sourceChannelUserId: message.userId,
+    companyPromptProfile,
     departmentId,
     departmentName,
     departmentRoleId,
@@ -5295,7 +5303,8 @@ const executeLarkVercelTask = async (
         });
       })()
     : null;
-  const systemPrompt = buildSystemPrompt({
+  let promptCacheMetadata: Record<string, unknown> | null = null;
+  const initialPromptBuild = await buildSystemPrompt({
     conversationKey,
     runtime: effectiveRuntime,
     routerAcknowledgement,
@@ -5314,6 +5323,8 @@ const executeLarkVercelTask = async (
     memoryWriteStatusContext,
     activeTaskContext: formatActiveTaskContext(task.taskId),
   });
+  const systemPrompt = initialPromptBuild.prompt;
+  promptCacheMetadata = initialPromptBuild.promptCacheMetadata;
   const budget = resolveLarkContextBudget({
     resolvedModel,
     contextClass,
@@ -5431,7 +5442,7 @@ const executeLarkVercelTask = async (
     runExposedToolIds: effectiveRuntime.runExposedToolIds ?? effectiveRuntime.allowedToolIds,
     allowedActionsByTool: effectiveRuntime.allowedActionsByTool ?? {},
   });
-  const systemPromptCore = buildSystemPrompt({
+  const systemPromptCoreBuild = await buildSystemPrompt({
     conversationKey: contextStorageId ?? message.chatId,
     runtime: effectiveRuntime,
     routerAcknowledgement,
@@ -5450,6 +5461,8 @@ const executeLarkVercelTask = async (
     memoryWriteStatusContext,
     activeTaskContext: formatActiveTaskContext(task.taskId),
   });
+  const systemPromptCore = systemPromptCoreBuild.prompt;
+  promptCacheMetadata = systemPromptCoreBuild.promptCacheMetadata;
   const compactionResult = runLayeredCompaction({
     systemPromptCore,
     toolDefinitions: toolDefinitionsForEstimate,
@@ -5485,7 +5498,7 @@ const executeLarkVercelTask = async (
   ];
 
   const relevantMemoryFactsContextForPrompt = compactionResult.memoryFacts.join('\n');
-  let compactedSystemPrompt = buildSystemPrompt({
+  const compactedPromptBuild = await buildSystemPrompt({
     conversationKey: contextStorageId ?? message.chatId,
     runtime: effectiveRuntime,
     routerAcknowledgement,
@@ -5504,6 +5517,8 @@ const executeLarkVercelTask = async (
     memoryWriteStatusContext,
     activeTaskContext: formatActiveTaskContext(task.taskId),
   });
+  let compactedSystemPrompt = compactedPromptBuild.prompt;
+  promptCacheMetadata = compactedPromptBuild.promptCacheMetadata;
   let finalPromptEstimate = estimateFinalPromptTokens({
     systemPrompt: compactedSystemPrompt,
     messages: inputMessages,
@@ -5520,7 +5535,7 @@ const executeLarkVercelTask = async (
       { force: true },
     );
     inputMessages = inputMessages.slice(-4);
-    compactedSystemPrompt = buildSystemPrompt({
+    const retryPromptBuild = await buildSystemPrompt({
       conversationKey: contextStorageId ?? message.chatId,
       runtime: effectiveRuntime,
       routerAcknowledgement,
@@ -5539,6 +5554,8 @@ const executeLarkVercelTask = async (
       memoryWriteStatusContext,
       activeTaskContext: formatActiveTaskContext(task.taskId),
     });
+    compactedSystemPrompt = retryPromptBuild.prompt;
+    promptCacheMetadata = retryPromptBuild.promptCacheMetadata;
     finalPromptEstimate = estimateFinalPromptTokens({
       systemPrompt: compactedSystemPrompt,
       messages: inputMessages,
@@ -5597,6 +5614,7 @@ const executeLarkVercelTask = async (
           plannerChosenToolId: effectiveRuntime.plannerChosenToolId ?? null,
           plannerChosenOperationClass: effectiveRuntime.plannerChosenOperationClass ?? null,
           toolSelectionReason: effectiveRuntime.toolSelectionReason ?? null,
+          promptCache: promptCacheMetadata,
         },
       }),
         durationMs: modelInputPrepMs,

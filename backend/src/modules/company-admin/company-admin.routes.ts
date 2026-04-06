@@ -10,6 +10,16 @@ const router = Router();
 router.get('/onboarding/google/callback', asyncHandler(companyAdminController.googleCallbackRelay));
 
 router.use(requireAdminSession());
+router.get(
+  '/assistant-profile',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.getAssistantProfile),
+);
+router.put(
+  '/assistant-profile',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.upsertAssistantProfile),
+);
 router.get('/members', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.listMembers));
 router.get('/directory', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.getCompanyDirectory));
 router.get('/invites', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.listInvites));
