@@ -44,6 +44,7 @@ const EMPTY_FORM: AssistantProfileForm = {
 };
 
 const buildPreview = (form: AssistantProfileForm): string => {
+  // Keep the preview intentionally limited to the company-level block.
   if (!form.isActive) {
     return 'Assistant profile is currently disabled.';
   }
