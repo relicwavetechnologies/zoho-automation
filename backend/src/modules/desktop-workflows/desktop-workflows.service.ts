@@ -37,6 +37,7 @@ import { attachedFileSchema } from '../desktop-chat/desktop-chat.schemas';
 import { formatScheduledSlot, getNextScheduledRunAt } from './desktop-workflows.schedule';
 import { vercelOrchestrationEngine } from '../../company/orchestration/engine/vercel-orchestration.engine';
 import type { NormalizedIncomingMessageDTO } from '../../company/contracts';
+import { executionService } from '../../company/observability';
 
 const WORKFLOW_NODE_KIND_VALUES = [
   'read',
@@ -3822,6 +3823,7 @@ class DesktopWorkflowsService {
           outputConfig,
           originChatId: workflow.originChatId ?? null,
         });
+        const scheduledExecutionId = `scheduled-wf-${workflow.id}-${run.id}`;
         const scheduledMessageId = `scheduled-${run.id}`;
         const scheduledTimestamp = new Date().toISOString();
         const scheduledChatType: NormalizedIncomingMessageDTO['chatType'] =
@@ -3841,7 +3843,7 @@ class DesktopWorkflowsService {
             trigger,
           },
           trace: {
-            requestId: `scheduled-wf-${workflow.id}-${Date.now()}`,
+            requestId: scheduledExecutionId,
             eventId: `scheduled_evt_${run.id}`,
             receivedAt: scheduledTimestamp,
             larkTenantKey: session.larkTenantKey,
@@ -3856,8 +3858,28 @@ class DesktopWorkflowsService {
           } as NormalizedIncomingMessageDTO['trace'],
         };
 
+        await executionService.startRun({
+          id: scheduledExecutionId,
+          companyId: workflow.companyId,
+          userId: session.userId ?? null,
+          channel: 'lark',
+          entrypoint: 'lark_inbound',
+          requestId: scheduledExecutionId,
+          taskId: scheduledExecutionId,
+          chatId: targetId,
+          messageId: scheduledMessageId,
+          latestSummary: summarizeResult(executionPrompt, 600),
+          agentTarget: 'lark-runtime',
+        });
+        await prisma.scheduledWorkflowRun.update({
+          where: { id: run.id },
+          data: {
+            executionRunId: scheduledExecutionId,
+          },
+        });
+
         const scheduledTask = await vercelOrchestrationEngine.buildTask(
-          `scheduled-wf-${workflow.id}-${Date.now()}`,
+          scheduledExecutionId,
           {
             ...normalizedMessage,
             trace: {
@@ -3886,20 +3908,38 @@ class DesktopWorkflowsService {
         const nextRunAt = trigger === 'scheduled'
           ? getNextScheduledRunAt(schedule, new Date(scheduledFor.getTime() + 1000))
           : workflow.nextRunAt;
+        const deliveryFailed = execution.status === 'done' && !deliveredMessageId;
         const status: 'blocked' | 'succeeded' | 'failed' =
           execution.status === 'hitl'
             ? 'blocked'
             : execution.status === 'done'
-              ? 'succeeded'
+              ? (deliveryFailed ? 'failed' : 'succeeded')
               : 'failed';
+        const failureSummary = deliveryFailed
+          ? 'Scheduled execution completed, but no Lark message was delivered.'
+          : executionSummary;
+
+        if (status === 'failed') {
+          await executionService.failRun({
+            executionId: scheduledExecutionId,
+            latestSummary: failureSummary,
+            errorMessage: failureSummary,
+          }).catch(() => undefined);
+        } else {
+          await executionService.completeRun({
+            executionId: scheduledExecutionId,
+            latestSummary: executionSummary,
+          }).catch(() => undefined);
+        }
 
         await prisma.scheduledWorkflowRun.update({
           where: { id: run.id },
           data: {
             status,
+            executionRunId: scheduledExecutionId,
             finishedAt: new Date(),
             resultSummary: status === 'succeeded' || status === 'blocked' ? executionSummary : null,
-            errorSummary: status === 'failed' ? executionSummary : null,
+            errorSummary: status === 'failed' ? failureSummary : null,
             deliveryStatusJson: [{
               kind: destination.kind,
               chatId: targetId,
@@ -3949,17 +3989,17 @@ class DesktopWorkflowsService {
           originChatId: workflow.originChatId ?? null,
           scheduledFor,
           nextRunAt: trigger === 'scheduled' ? nextRunAt : workflow.nextRunAt,
-          errorSummary: status === 'failed' ? executionSummary : null,
+          errorSummary: status === 'failed' ? failureSummary : null,
         });
 
         return {
           runId: run.id,
-          executionId: null,
+          executionId: scheduledExecutionId,
           status,
           threadId: primaryThread.id,
           threadTitle: primaryThread.title ?? null,
           resultSummary: status === 'failed' ? null : executionSummary,
-          errorSummary: status === 'failed' ? executionSummary : null,
+          errorSummary: status === 'failed' ? failureSummary : null,
         };
       }
 
@@ -4101,10 +4141,19 @@ class DesktopWorkflowsService {
         where: { id: run.id },
         data: {
           status: 'failed',
+          executionRunId: isLarkIntent ? `scheduled-wf-${workflow.id}-${run.id}` : null,
           finishedAt: new Date(),
           errorSummary: summarizeResult(message, 1200),
         },
       });
+
+      if (isLarkIntent) {
+        await executionService.failRun({
+          executionId: `scheduled-wf-${workflow.id}-${run.id}`,
+          latestSummary: summarizeResult(message, 1200),
+          errorMessage: summarizeResult(message, 1200),
+        }).catch(() => undefined);
+      }
 
       await prisma.scheduledWorkflow.update({
         where: { id: workflow.id },
@@ -4137,7 +4186,7 @@ class DesktopWorkflowsService {
 
       return {
         runId: run.id,
-        executionId: null,
+        executionId: isLarkIntent ? `scheduled-wf-${workflow.id}-${run.id}` : null,
         status: 'failed',
         threadId: primaryThread.id,
         threadTitle: primaryThread.title ?? null,

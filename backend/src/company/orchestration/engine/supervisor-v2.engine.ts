@@ -3960,8 +3960,8 @@ const executeTask = async (
         chatId: message.chatId,
         correlationId: task.taskId,
         initialStatusMessageId: message.trace?.statusMessageId,
-        replyToMessageId: message.trace?.replyToMessageId ?? message.messageId,
-        replyInThread: message.chatType === 'group',
+        replyToMessageId: isScheduledRun ? undefined : (message.trace?.replyToMessageId ?? message.messageId),
+        replyInThread: isScheduledRun ? false : message.chatType === 'group',
       });
     }
 

@@ -4122,6 +4122,7 @@ const executeLarkVercelTask = async (
   const completedSupervisorSteps = new Map<string, CompletedSupervisorStep>();
   let runCompletedSuccessfully = false;
   const runStartedAt = Date.now();
+  const isScheduledRun = Boolean(message.trace?.isScheduledRun);
   const originalUserMessage = message.text;
   const currentTurnExplicitReplyMode = resolveExplicitReplyModeFromText(originalUserMessage) as
     | 'dm'
@@ -4205,7 +4206,7 @@ const executeLarkVercelTask = async (
     const coordinator = await ensureStatusCoordinator(resolveReplyMode({
       chatType: message.chatType,
       incomingMessageId: message.messageId,
-      isProactiveDelivery: false,
+      isProactiveDelivery: isScheduledRun,
       isSensitiveContent: false,
       isShortAcknowledgement: false,
       proposedReplyMode,
@@ -4223,7 +4224,7 @@ const executeLarkVercelTask = async (
     const finalReplyMode = resolveReplyMode({
       chatType: message.chatType,
       incomingMessageId: message.messageId,
-      isProactiveDelivery: false,
+      isProactiveDelivery: isScheduledRun,
       isSensitiveContent: input.isSensitiveContent,
       isShortAcknowledgement: countSentences(input.text) <= 1 && !input.hasToolResults,
       proposedReplyMode: input.proposedReplyMode ?? proposedReplyMode,
