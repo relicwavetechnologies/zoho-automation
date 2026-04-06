@@ -4523,6 +4523,7 @@ const executeLarkVercelTask = async (
         messageId: input.statusMessageId ?? undefined,
         role: 'assistant',
         content: input.content,
+        threadRootId: message.trace?.threadRootId ?? null,
         metadata: {
           channel: 'lark',
           lark: {
@@ -4786,7 +4787,7 @@ const executeLarkVercelTask = async (
       supervisorPayload.hasToolResults ?? Boolean((supervisorPayload.agentResults ?? []).length);
     const isSensitiveContent = supervisorPayload.isSensitiveContent ?? false;
 
-    await finalizeLarkDelivery({
+    const delivery = await finalizeLarkDelivery({
       finalText,
       pendingApproval,
       hasToolResults,
@@ -4817,6 +4818,7 @@ const executeLarkVercelTask = async (
     return {
       ...supervisorResult,
       latestSynthesis: finalText,
+      statusMessageId: delivery.statusMessageId ?? supervisorPayload.statusMessageId,
       runtimeMeta: {
         ...supervisorResult.runtimeMeta,
         threadId: contextStorageId,

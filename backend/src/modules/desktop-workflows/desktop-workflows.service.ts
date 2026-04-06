@@ -3882,6 +3882,7 @@ class DesktopWorkflowsService {
           },
         });
         const executionSummary = summarizeResult(execution.latestSynthesis ?? 'Scheduled run completed.', 1200);
+        const deliveredMessageId = execution.statusMessageId?.trim() || null;
         const nextRunAt = trigger === 'scheduled'
           ? getNextScheduledRunAt(schedule, new Date(scheduledFor.getTime() + 1000))
           : workflow.nextRunAt;
@@ -3902,9 +3903,23 @@ class DesktopWorkflowsService {
             deliveryStatusJson: [{
               kind: destination.kind,
               chatId: targetId,
-              status: status === 'failed' ? 'failed' : 'delivered',
+              messageId: deliveredMessageId,
+              status: status === 'failed'
+                ? 'failed'
+                : deliveredMessageId
+                  ? 'delivered'
+                  : 'unknown',
             }],
           },
+        });
+
+        logger.info('desktop.workflow.execute.lark_intent.delivery', {
+          workflowId: workflow.id,
+          workflowRunId: run.id,
+          targetId,
+          destinationKind: destination.kind,
+          executionStatus: execution.status,
+          statusMessageId: deliveredMessageId,
         });
 
         await prisma.scheduledWorkflow.update({

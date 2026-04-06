@@ -17,6 +17,7 @@ export type OrchestrationExecutionResult = {
   status: OrchestrationTaskStatus;
   currentStep?: string;
   latestSynthesis?: string;
+  statusMessageId?: string;
   agentResults?: AgentResultDTO[];
   hitlAction?: HITLActionDTO;
   runtimeMeta?: {
