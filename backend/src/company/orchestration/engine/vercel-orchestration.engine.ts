@@ -4248,6 +4248,40 @@ const executeLarkVercelTask = async (
       replyModeHint: finalReplyModeHint,
     };
   };
+  const adoptSupervisorStatusMessage = async (
+    statusMessageId?: string | null,
+    proposedMode?: ReplyModeHint,
+  ): Promise<void> => {
+    const nextStatusMessageId = statusMessageId?.trim();
+    if (!nextStatusMessageId) {
+      return;
+    }
+    if (statusCoordinator?.getStatusMessageId?.() === nextStatusMessageId) {
+      return;
+    }
+    const replyMode = resolveReplyMode({
+      chatType: message.chatType,
+      incomingMessageId: message.messageId,
+      isProactiveDelivery: isScheduledRun,
+      isSensitiveContent: false,
+      isShortAcknowledgement: false,
+      proposedReplyMode: proposedMode ?? proposedReplyMode,
+      userExplicitMode: explicitReplyMode,
+    });
+    const nextHint = buildReplyModeHint(replyMode);
+    if (statusCoordinator) {
+      await statusCoordinator.close();
+    }
+    statusCoordinator = new LarkStatusCoordinator({
+      adapter,
+      chatId: resolveReplyModeChatId({ replyMode, message }),
+      correlationId: task.taskId,
+      initialStatusMessageId: nextStatusMessageId,
+      replyToMessageId: replyMode.replyToMessageId,
+      replyInThread: replyMode.replyInThread,
+    });
+    activeReplyModeHint = nextHint;
+  };
   hotContextStore.init(task.taskId);
   const currentAttachments = (message.attachedFiles ?? []) as AttachedFileRef[];
   let groundingAttachments = currentAttachments;
@@ -4796,6 +4830,7 @@ const executeLarkVercelTask = async (
       supervisorPayload.hasToolResults ?? Boolean((supervisorPayload.agentResults ?? []).length);
     const isSensitiveContent = supervisorPayload.isSensitiveContent ?? false;
 
+    await adoptSupervisorStatusMessage(supervisorPayload.statusMessageId, proposedReplyMode);
     const delivery = await finalizeLarkDelivery({
       finalText,
       pendingApproval,
