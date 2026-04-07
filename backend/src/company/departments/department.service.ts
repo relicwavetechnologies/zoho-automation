@@ -10,6 +10,7 @@ import {
 import { hashPassword } from '../../utils/bcrypt';
 import crypto from 'crypto';
 import { skillService } from '../skills/skill.service';
+import { companyAgentProfileService } from '../agent-profiles/agent-profile.service';
 import { departmentRuntimeCache } from './department-runtime.cache';
 import { departmentPreferenceService } from './department-preference.service';
 import type { ZohoRateLimitConfig } from '../integrations/zoho/zoho-rate-limit.types';
@@ -59,6 +60,8 @@ export type ResolvedDepartmentRuntime = {
   departmentZohoReadScope?: DepartmentZohoReadScope;
   departmentZohoRateLimitConfig?: ZohoRateLimitConfig;
   departmentManagerApprovalConfig?: DepartmentManagerApprovalConfig;
+  defaultAgentProfileId?: string;
+  specialistAgentProfileIds?: string[];
   systemPrompt?: string;
   skillsMarkdown?: string;
   allowedToolIds: string[];
@@ -69,6 +72,16 @@ export type DepartmentManagerApprovalConfig = {
   enabled: boolean;
   requiredToolIds: string[];
   managerDmAuditToolIds: string[];
+};
+
+export type DepartmentAgentAssignmentConfig = {
+  defaultAgentProfileId?: string;
+  specialistAgentProfileIds: string[];
+};
+
+export type DepartmentDefaultAgentConfig = {
+  modelKey?: string;
+  toolIds: string[];
 };
 
 export type DepartmentApproverTarget = {
@@ -102,6 +115,15 @@ const normalizeRoleSlug = (value: string): string =>
     .replace(/\s+/g, '_')
     .replace(/[^A-Z0-9_]/g, '')
     .slice(0, 40);
+
+const uniq = (values: Array<string | null | undefined>): string[] =>
+  Array.from(
+    new Set(
+      values
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
 
 const vercelToolIds = ACTIVE_TOOL_REGISTRY.filter((tool) => tool.engines.includes('vercel')).map(
   (tool) => tool.id,
@@ -397,6 +419,54 @@ const normalizeManagerApprovalConfig = (value: unknown): DepartmentManagerApprov
   };
 };
 
+const normalizeAgentAssignmentConfig = (input: {
+  defaultAgentProfileId?: unknown;
+  specialistAgentProfileIds?: unknown;
+  availableProfileIds?: string[];
+}): DepartmentAgentAssignmentConfig => {
+  const available = new Set(input.availableProfileIds ?? []);
+  const defaultAgentProfileId =
+    typeof input.defaultAgentProfileId === 'string' && input.defaultAgentProfileId.trim().length > 0
+      ? input.defaultAgentProfileId.trim()
+      : undefined;
+  const specialistAgentProfileIds = Array.isArray(input.specialistAgentProfileIds)
+    ? uniq(
+        input.specialistAgentProfileIds
+          .filter((entry): entry is string => typeof entry === 'string')
+          .map((entry) => entry.trim()),
+      )
+    : [];
+
+  return {
+    defaultAgentProfileId:
+      defaultAgentProfileId && (available.size === 0 || available.has(defaultAgentProfileId))
+        ? defaultAgentProfileId
+        : undefined,
+    specialistAgentProfileIds: specialistAgentProfileIds.filter((id) =>
+      (available.size === 0 || available.has(id)) && id !== defaultAgentProfileId),
+  };
+};
+
+const normalizeDepartmentDefaultAgentToolIds = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return uniq(
+    value
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => resolveCanonicalToolId(entry))
+      .filter((entry) => vercelToolIds.includes(entry)),
+  );
+};
+
+const normalizeDepartmentDefaultAgentModelKey = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized.slice(0, 120) : undefined;
+};
+
 class DepartmentService {
   private async resolveDepartmentCompanyId(
     departmentId: string,
@@ -641,6 +711,10 @@ class DepartmentService {
 
     const rolePermissionMap = buildActionLookup(rolePermissions);
     const overrideMap = buildActionLookup(userOverrides);
+    const normalizedAgentAssignment = normalizeAgentAssignmentConfig({
+      defaultAgentProfileId: membership.department.agentConfig?.defaultAgentProfileId,
+      specialistAgentProfileIds: membership.department.agentConfig?.specialistAgentProfileIds,
+    });
 
     const allowedActionsByTool = Object.fromEntries(
       vercelToolIds
@@ -658,13 +732,34 @@ class DepartmentService {
         })
         .filter(([, actions]) => actions.length > 0),
     );
-    const allowedToolIds = Object.keys(allowedActionsByTool);
+    const attachedProfileIds = uniq([
+      normalizedAgentAssignment.defaultAgentProfileId ?? undefined,
+      ...normalizedAgentAssignment.specialistAgentProfileIds,
+    ]);
+    let filteredAllowedActionsByTool = allowedActionsByTool;
+    if (attachedProfileIds.length > 0) {
+      const runtimeProfiles = await companyAgentProfileService.resolveRuntimeProfiles(input.companyId);
+      const attachedToolIds = new Set(
+        runtimeProfiles
+          .filter((profile) =>
+            attachedProfileIds.includes(profile.id)
+            && (profile.departmentIds.length === 0 || profile.departmentIds.includes(membership.departmentId)),
+          )
+          .flatMap((profile) => profile.toolIds),
+      );
+      if (attachedToolIds.size > 0) {
+        filteredAllowedActionsByTool = Object.fromEntries(
+          Object.entries(allowedActionsByTool).filter(([toolId]) => attachedToolIds.has(toolId)),
+        );
+      }
+    }
+    const allowedToolIds = Object.keys(filteredAllowedActionsByTool);
     logger.info('runtime.permission.resolved', {
       userId: input.userId,
       departmentId: membership.departmentId,
       roleId: membership.roleId,
       allowedToolIds: Array.from(allowedToolIds),
-      allowedActionsByTool: Object.entries(allowedActionsByTool).reduce((acc, [toolId, actions]) => {
+      allowedActionsByTool: Object.entries(filteredAllowedActionsByTool).reduce((acc, [toolId, actions]) => {
         acc[toolId] = Array.isArray(actions) ? actions : Object.keys(actions);
         return acc;
       }, {} as Record<string, string[]>),
@@ -685,10 +780,11 @@ class DepartmentService {
       departmentManagerApprovalConfig: normalizeManagerApprovalConfig(
         membership.department.agentConfig?.managerApprovalJson,
       ),
+      ...normalizedAgentAssignment,
       systemPrompt: membership.department.agentConfig?.systemPrompt ?? undefined,
       skillsMarkdown: membership.department.agentConfig?.skillsMarkdown ?? undefined,
       allowedToolIds,
-      allowedActionsByTool,
+      allowedActionsByTool: filteredAllowedActionsByTool,
     };
     await departmentRuntimeCache.set({
       companyId: input.companyId,
@@ -911,6 +1007,15 @@ class DepartmentService {
         larkSourceRoles: larkIdentity?.sourceRoles ?? [],
       };
     });
+    const availableAgentProfiles = await companyAgentProfileService.getAdminProfiles(department.companyId);
+    const normalizedAgentAssignment = normalizeAgentAssignmentConfig({
+      defaultAgentProfileId: department.agentConfig?.defaultAgentProfileId,
+      specialistAgentProfileIds: department.agentConfig?.specialistAgentProfileIds,
+      availableProfileIds: availableAgentProfiles.map((profile) => profile.id),
+    });
+    const defaultAgentProfile = normalizedAgentAssignment.defaultAgentProfileId
+      ? availableAgentProfiles.find((profile) => profile.id === normalizedAgentAssignment.defaultAgentProfileId)
+      : undefined;
 
     return {
       department: {
@@ -928,6 +1033,10 @@ class DepartmentService {
         skillsMarkdown: department.agentConfig?.skillsMarkdown ?? '',
         zohoRateLimit: normalizeZohoRateLimitConfig(department.agentConfig?.zohoRateLimitJson),
         managerApproval: normalizeManagerApprovalConfig(department.agentConfig?.managerApprovalJson),
+        defaultAgentProfileId: normalizedAgentAssignment.defaultAgentProfileId,
+        specialistAgentProfileIds: normalizedAgentAssignment.specialistAgentProfileIds,
+        defaultAgentModelKey: defaultAgentProfile?.modelKey,
+        defaultAgentToolIds: defaultAgentProfile?.toolIds ?? [],
         isActive: department.agentConfig?.isActive ?? true,
       },
       roles: department.roles.map((role) => ({
@@ -977,6 +1086,7 @@ class DepartmentService {
           category: tool.category,
           supportedActionGroups: getSupportedToolActionGroups(tool.id),
         })),
+      availableAgentProfiles,
     };
   }
 
@@ -1137,6 +1247,9 @@ class DepartmentService {
       companyId?: string;
       name: string;
       description?: string;
+      systemPrompt?: string;
+      defaultAgentModelKey?: string;
+      defaultAgentToolIds?: string[];
     },
   ) {
     if (session.role === 'DEPARTMENT_MANAGER') {
@@ -1145,6 +1258,13 @@ class DepartmentService {
 
     const companyId = await this.resolveAdminCompanyId(session, input.companyId);
     const name = input.name.trim();
+    const normalizedSystemPrompt = typeof input.systemPrompt === 'string' ? input.systemPrompt : '';
+    const normalizedDefaultAgentModelKey =
+      normalizeDepartmentDefaultAgentModelKey(input.defaultAgentModelKey)
+      ?? 'gemini-3.1-flash-lite-preview';
+    const normalizedDefaultAgentToolIds = normalizeDepartmentDefaultAgentToolIds(
+      input.defaultAgentToolIds,
+    );
     if (!name) {
       throw new HttpException(400, 'Department name is required.');
     }
@@ -1191,7 +1311,7 @@ class DepartmentService {
       await tx.departmentAgentConfig.create({
         data: {
           departmentId: created.id,
-          systemPrompt: '',
+          systemPrompt: normalizedSystemPrompt,
           skillsMarkdown: '',
           isActive: true,
           createdBy: session.userId,
@@ -1200,6 +1320,27 @@ class DepartmentService {
       });
       return { created, managerRole, memberRole };
     });
+
+    if (normalizedDefaultAgentToolIds.length > 0) {
+      const profile = await companyAgentProfileService.upsertDepartmentManagedProfile({
+        companyId,
+        departmentId: department.created.id,
+        actorUserId: session.userId,
+        departmentName: department.created.name,
+        departmentSlug: department.created.slug,
+        systemPrompt: normalizedSystemPrompt,
+        modelKey: normalizedDefaultAgentModelKey,
+        toolIds: normalizedDefaultAgentToolIds,
+      });
+      await prisma.departmentAgentConfig.update({
+        where: { departmentId: department.created.id },
+        data: {
+          defaultAgentProfileId: profile.id,
+        },
+      });
+    }
+
+    await departmentRuntimeCache.invalidateDepartment(companyId, department.created.id);
 
     return {
       id: department.created.id,
@@ -1285,12 +1426,28 @@ class DepartmentService {
       skillsMarkdown: string;
       zohoRateLimit?: ZohoRateLimitConfig;
       managerApproval?: DepartmentManagerApprovalConfig;
+      defaultAgentProfileId?: string;
+      specialistAgentProfileIds?: string[];
+      defaultAgentModelKey?: string;
+      defaultAgentToolIds?: string[];
       isActive?: boolean;
     },
   ) {
     const department = await this.assertDepartmentAccess(session, departmentId);
     const normalizedZohoRateLimit = normalizeZohoRateLimitConfig(input.zohoRateLimit);
     const normalizedManagerApproval = normalizeManagerApprovalConfig(input.managerApproval);
+    const availableAgentProfiles = await companyAgentProfileService.getAdminProfiles(department.companyId);
+    const normalizedAgentAssignment = normalizeAgentAssignmentConfig({
+      defaultAgentProfileId: input.defaultAgentProfileId,
+      specialistAgentProfileIds: input.specialistAgentProfileIds,
+      availableProfileIds: availableAgentProfiles.map((profile) => profile.id),
+    });
+    const requestedDefaultAgentToolIds = normalizeDepartmentDefaultAgentToolIds(
+      input.defaultAgentToolIds,
+    );
+    const requestedDefaultAgentModelKey = normalizeDepartmentDefaultAgentModelKey(
+      input.defaultAgentModelKey,
+    );
     const updated = await prisma.departmentAgentConfig.upsert({
       where: { departmentId },
       update: {
@@ -1298,6 +1455,8 @@ class DepartmentService {
         skillsMarkdown: input.skillsMarkdown,
         zohoRateLimitJson: normalizedZohoRateLimit,
         managerApprovalJson: normalizedManagerApproval,
+        defaultAgentProfileId: normalizedAgentAssignment.defaultAgentProfileId ?? null,
+        specialistAgentProfileIds: normalizedAgentAssignment.specialistAgentProfileIds,
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
         updatedBy: session.userId,
       },
@@ -1307,18 +1466,68 @@ class DepartmentService {
         skillsMarkdown: input.skillsMarkdown,
         zohoRateLimitJson: normalizedZohoRateLimit,
         managerApprovalJson: normalizedManagerApproval,
+        defaultAgentProfileId: normalizedAgentAssignment.defaultAgentProfileId ?? null,
+        specialistAgentProfileIds: normalizedAgentAssignment.specialistAgentProfileIds,
         isActive: input.isActive ?? true,
         createdBy: session.userId,
         updatedBy: session.userId,
       },
     });
-    await departmentRuntimeCache.invalidateDepartment(department.companyId, departmentId);
-    if (membership.status !== 'active') {
-      await departmentPreferenceService.clearActiveDepartmentId(
-        department.companyId,
-        membership.userId,
+    let finalDefaultAgentProfileId = updated.defaultAgentProfileId ?? undefined;
+    const currentDefaultAgentProfile = finalDefaultAgentProfileId
+      ? availableAgentProfiles.find((profile) => profile.id === finalDefaultAgentProfileId)
+      : undefined;
+    const canSyncManagedDefaultProfile = Boolean(
+      currentDefaultAgentProfile
+      && !currentDefaultAgentProfile.isSeeded
+      && currentDefaultAgentProfile.departmentIds.length === 1
+      && currentDefaultAgentProfile.departmentIds[0] === departmentId,
+    );
+    const shouldCreateOrSyncManagedDefaultProfile =
+      requestedDefaultAgentToolIds.length > 0
+      || (
+        canSyncManagedDefaultProfile
+        && (
+          Boolean(requestedDefaultAgentModelKey)
+          || currentDefaultAgentProfile!.toolIds.length > 0
+        )
       );
+
+    let finalSpecialistAgentProfileIds = updated.specialistAgentProfileIds ?? [];
+    if (shouldCreateOrSyncManagedDefaultProfile) {
+      const profile = await companyAgentProfileService.upsertDepartmentManagedProfile({
+        companyId: department.companyId,
+        departmentId,
+        actorUserId: session.userId,
+        departmentName: department.name,
+        departmentSlug: department.slug,
+        currentProfileId: canSyncManagedDefaultProfile ? currentDefaultAgentProfile!.id : undefined,
+        systemPrompt: input.systemPrompt,
+        modelKey:
+          requestedDefaultAgentModelKey
+          ?? currentDefaultAgentProfile?.modelKey
+          ?? 'gemini-3.1-flash-lite-preview',
+        toolIds:
+          requestedDefaultAgentToolIds.length > 0
+            ? requestedDefaultAgentToolIds
+            : currentDefaultAgentProfile?.toolIds ?? [],
+      });
+      finalDefaultAgentProfileId = profile.id;
+      if (profile.id !== updated.defaultAgentProfileId) {
+        finalSpecialistAgentProfileIds = normalizedAgentAssignment.specialistAgentProfileIds.filter(
+          (id) => id !== profile.id,
+        );
+        await prisma.departmentAgentConfig.update({
+          where: { departmentId },
+          data: {
+            defaultAgentProfileId: profile.id,
+            specialistAgentProfileIds: finalSpecialistAgentProfileIds,
+            updatedBy: session.userId,
+          },
+        });
+      }
     }
+    await departmentRuntimeCache.invalidateDepartment(department.companyId, departmentId);
 
     return {
       departmentId,
@@ -1326,6 +1535,16 @@ class DepartmentService {
       skillsMarkdown: updated.skillsMarkdown,
       zohoRateLimit: normalizeZohoRateLimitConfig(updated.zohoRateLimitJson),
       managerApproval: normalizeManagerApprovalConfig(updated.managerApprovalJson),
+      defaultAgentProfileId: finalDefaultAgentProfileId,
+      specialistAgentProfileIds: finalSpecialistAgentProfileIds,
+      defaultAgentModelKey:
+        requestedDefaultAgentModelKey
+        ?? currentDefaultAgentProfile?.modelKey
+        ?? undefined,
+      defaultAgentToolIds:
+        requestedDefaultAgentToolIds.length > 0
+          ? requestedDefaultAgentToolIds
+          : currentDefaultAgentProfile?.toolIds ?? [],
       isActive: updated.isActive,
       updatedAt: updated.updatedAt.toISOString(),
     };

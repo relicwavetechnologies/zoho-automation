@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { Job, Worker } from 'bullmq';
+import { Worker } from 'bullmq';
 
 import config from '../../../config';
 import { logger } from '../../../utils/logger';
@@ -23,20 +23,24 @@ import {
 import { runtimeTaskStore } from '../../orchestration/runtime-task.store';
 import { taskFsm } from '../../orchestration/task-fsm';
 import { checkpointRepository } from '../../state/checkpoint';
+import { isMemoryQueueBackend, setOrchestrationQueueBackendMode } from './orchestration.backend';
+import { getInMemoryOrchestrationQueueSnapshot, startInMemoryOrchestrationQueue, stopInMemoryOrchestrationQueue } from './in-memory-orchestration.queue';
+import { ORCHESTRATION_JOB_NAME, type OrchestrationJobData, type OrchestrationJobLike } from './orchestration.job';
 import {
-  ORCHESTRATION_JOB_NAME,
   ORCHESTRATION_QUEUE_NAME,
   getOrchestrationQueue,
   requeueOrchestrationTask,
-  type OrchestrationJobData,
 } from './orchestration.queue';
 import { pushDeadLetterRecord } from './dead-letter.queue';
-import { QueueTaskTimeoutError, withTaskTimeout } from './queue-safety';
+import { QueueTaskTimeoutError, isTransientQueueInfraError, withTaskTimeout } from './queue-safety';
 import { redisConnection, stateRedisConnection } from './redis.connection';
 
 const conversationLocks = new Map<string, Promise<void>>();
+const inMemoryConversationLocks = new Map<string, { token: string; expiresAt: number }>();
 const taskAbortControllers = new Map<string, AbortController>();
-const CONVERSATION_LOCK_TTL_MS = config.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS + 15_000;
+// Keep the chat lock short enough that a crashed supervisor does not block
+// subsequent messages for the full job timeout window.
+const CONVERSATION_LOCK_TTL_MS = 120_000;
 const CONVERSATION_LOCK_REQUEUE_DELAY_MS = 2_000;
 const CONVERSATION_LOCK_REQUEUE_MAX_DELAY_MS = 30_000;
 
@@ -91,7 +95,7 @@ const summarizeText = (value: string | null | undefined, limit = 280): string | 
 const buildExecutionId = (taskId: string, requestId?: string): string => requestId?.trim() || taskId;
 const buildConversationRuntimeKey = (channel: string, chatId: string): string =>
   `${channel}:${chatId}`;
-const buildConversationLockKey = (job: Job<OrchestrationJobData>): string =>
+const buildConversationLockKey = (job: OrchestrationJobLike): string =>
   `orchestration:conversation-lock:${buildConversationRuntimeKey(job.data.message.channel, job.data.message.chatId)}`;
 
 const computeConversationRequeueDelayMs = (requeueCount: number): number =>
@@ -100,7 +104,7 @@ const computeConversationRequeueDelayMs = (requeueCount: number): number =>
     CONVERSATION_LOCK_REQUEUE_MAX_DELAY_MS,
   );
 
-const buildQueueJobId = (job: Job<OrchestrationJobData>): string | undefined =>
+const buildQueueJobId = (job: OrchestrationJobLike): string | undefined =>
   typeof job.id === 'string'
     ? job.id
     : job.id != null
@@ -143,11 +147,64 @@ export const abortRunningTaskInProcess = (taskId: string): boolean => {
   return true;
 };
 
-const acquireConversationLock = async (job: Job<OrchestrationJobData>): Promise<(() => Promise<void>) | null> => {
-  const client = stateRedisConnection.getClient();
+const acquireConversationLock = async (job: OrchestrationJobLike): Promise<(() => Promise<void>) | null> => {
   const key = buildConversationLockKey(job);
   const token = randomUUID();
-  const acquired = await client.set(key, token, 'PX', CONVERSATION_LOCK_TTL_MS, 'NX');
+  const acquireInMemoryConversationLock = (): (() => Promise<void>) | null => {
+    const now = Date.now();
+    const existing = inMemoryConversationLocks.get(key);
+    if (!existing || existing.expiresAt <= now) {
+      inMemoryConversationLocks.set(key, {
+        token,
+        expiresAt: now + CONVERSATION_LOCK_TTL_MS,
+      });
+      return async () => {
+        const current = inMemoryConversationLocks.get(key);
+        if (current?.token === token) {
+          inMemoryConversationLocks.delete(key);
+        }
+      };
+    }
+
+    const existingTask = runtimeTaskStore.get(job.data.taskId);
+    const requeueCount = existingTask?.conversationRequeueCount ?? 0;
+    logger.warn('queue.conversation_lock.busy', {
+      taskId: job.data.taskId,
+      messageId: job.data.message.messageId,
+      chatId: job.data.message.chatId,
+      jobId: job.id,
+      requeueDelayMs: computeConversationRequeueDelayMs(requeueCount),
+      requeueCount,
+      backend: 'memory',
+    });
+    return null;
+  };
+
+  if (isMemoryQueueBackend()) {
+    return acquireInMemoryConversationLock();
+  }
+
+  const client = stateRedisConnection.getClient();
+  let acquired: string | null;
+  try {
+    acquired = await client.set(key, token, 'PX', CONVERSATION_LOCK_TTL_MS, 'NX');
+  } catch (error) {
+    if (isTransientQueueInfraError(error)) {
+      setOrchestrationQueueBackendMode(
+        'memory',
+        error instanceof Error ? error.message : 'state_redis_lock_failed',
+      );
+      logger.warn('queue.conversation_lock.memory_cutover', {
+        taskId: job.data.taskId,
+        messageId: job.data.message.messageId,
+        chatId: job.data.message.chatId,
+        jobId: job.id,
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
+      return acquireInMemoryConversationLock();
+    }
+    throw error;
+  }
   if (acquired === 'OK') {
     return async () => {
       try {
@@ -340,7 +397,7 @@ const cancelTrackedExecutionRun = async (input: {
 };
 
 const upsertRuntimeSnapshotFromJob = (
-  job: Job<OrchestrationJobData>,
+  job: OrchestrationJobLike,
   status: 'pending' | 'running',
 ) => {
   const existing = runtimeTaskStore.get(job.data.taskId);
@@ -376,6 +433,18 @@ const upsertRuntimeSnapshotFromJob = (
 };
 
 const reconcileTaskStateOnStartup = async (): Promise<void> => {
+  if (isMemoryQueueBackend()) {
+    const snapshot = getInMemoryOrchestrationQueueSnapshot();
+    logger.info('orchestration.worker.startup.reconciled', {
+      activeCount: snapshot.activeCount,
+      waitingCount: snapshot.pendingCount,
+      delayedCount: 0,
+      backend: 'memory',
+      maxPending: snapshot.maxPending,
+    });
+    return;
+  }
+
   const queue = getOrchestrationQueue();
   const [activeJobs, waitingJobs, delayedJobs] = await Promise.all([
     queue.getActive(),
@@ -398,7 +467,7 @@ const reconcileTaskStateOnStartup = async (): Promise<void> => {
 };
 
 const processTask = async (
-  job: Job<OrchestrationJobData>,
+  job: OrchestrationJobLike,
   abortSignal?: AbortSignal,
 ): Promise<void> => {
   const { taskId, message } = job.data;
@@ -772,9 +841,9 @@ const processTask = async (
 };
 
 export const runOrchestrationJobWithSafety = async (
-  job: Job<OrchestrationJobData>,
+  job: OrchestrationJobLike,
   abortController: AbortController,
-  processor: (job: Job<OrchestrationJobData>, abortSignal?: AbortSignal) => Promise<void> = processTask,
+  processor: (job: OrchestrationJobLike, abortSignal?: AbortSignal) => Promise<void> = processTask,
 ): Promise<void> =>
   withTaskTimeout(
     (abortSignal) => processor(job, abortSignal),
@@ -799,188 +868,180 @@ const buildWorkerOptions = (connection = redisConnection.getClient()) => ({
 });
 
 let worker: Worker<OrchestrationJobData, void, typeof ORCHESTRATION_JOB_NAME> | null = null;
+let memoryWorkerStarted = false;
 
-export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJobData, void, typeof ORCHESTRATION_JOB_NAME>> => {
-  if (worker) {
-    return worker;
+const executeQueuedJob = async (job: OrchestrationJobLike): Promise<void> => {
+  if (job.name !== ORCHESTRATION_JOB_NAME) {
+    return;
   }
 
-  worker = new Worker<OrchestrationJobData, void, typeof ORCHESTRATION_JOB_NAME>(
-    ORCHESTRATION_QUEUE_NAME,
-    async (job) => {
-      if (job.name !== ORCHESTRATION_JOB_NAME) {
-        return;
-      }
+  const releaseConversationLock = await acquireConversationLock(job);
+  if (!releaseConversationLock) {
+    const currentSnapshot = runtimeTaskStore.get(job.data.taskId);
+    const requeueCount = currentSnapshot?.conversationRequeueCount ?? 0;
+    const requeueDelayMs = computeConversationRequeueDelayMs(requeueCount);
+    const executionId = buildExecutionId(job.data.taskId, job.data.message.trace?.requestId);
+    await appendExecutionEventSafe(executionId, {
+      executionId,
+      phase: 'queued',
+      eventType: 'queue.conversation_lock.waiting',
+      actorType: 'worker',
+      actorKey: 'orchestration-worker',
+      title: 'Waiting for active conversation to finish',
+      summary: `Requeued (attempt ${requeueCount + 1}), retrying in ${Math.round(requeueDelayMs / 1000)}s`,
+      status: 'running',
+      payload: {
+        requeueCount: requeueCount + 1,
+        requeueDelayMs,
+        chatId: job.data.message.chatId,
+        channel: job.data.message.channel,
+      },
+    });
+    const requeued = await requeueOrchestrationTask(
+      job.data.taskId,
+      job.data.message,
+      requeueDelayMs,
+    );
+    runtimeTaskStore.update(job.data.taskId, {
+      conversationKey: job.data.message.chatId,
+    });
+    runtimeTaskStore.update(job.data.taskId, {
+      queueJobId: requeued.queueJobId,
+      conversationRequeueCount: requeueCount + 1,
+      currentStep: `Waiting for another task in this chat to finish (retry in ${Math.round(requeueDelayMs / 1000)}s).`,
+    });
+    return;
+  }
+  runtimeTaskStore.update(job.data.taskId, {
+    conversationRequeueCount: 0,
+  });
 
-      const releaseConversationLock = await acquireConversationLock(job);
-      if (!releaseConversationLock) {
-        const currentSnapshot = runtimeTaskStore.get(job.data.taskId);
-        const requeueCount = currentSnapshot?.conversationRequeueCount ?? 0;
-        const requeueDelayMs = computeConversationRequeueDelayMs(requeueCount);
-        const executionId = buildExecutionId(job.data.taskId, job.data.message.trace?.requestId);
-        await appendExecutionEventSafe(executionId, {
-          executionId,
-          phase: 'queued',
-          eventType: 'queue.conversation_lock.waiting',
-          actorType: 'worker',
-          actorKey: 'orchestration-worker',
-          title: 'Waiting for active conversation to finish',
-          summary: `Requeued (attempt ${requeueCount + 1}), retrying in ${Math.round(requeueDelayMs / 1000)}s`,
-          status: 'running',
-          payload: {
-            requeueCount: requeueCount + 1,
-            requeueDelayMs,
-            chatId: job.data.message.chatId,
-            channel: job.data.message.channel,
-          },
-        });
-        const requeued = await requeueOrchestrationTask(
-          job.data.taskId,
-          job.data.message,
-          requeueDelayMs,
-        );
-        runtimeTaskStore.update(job.data.taskId, {
-          conversationKey: job.data.message.chatId,
-        });
-        runtimeTaskStore.update(job.data.taskId, {
-          queueJobId: requeued.queueJobId,
-          conversationRequeueCount: requeueCount + 1,
-          currentStep: `Waiting for another task in this chat to finish (retry in ${Math.round(requeueDelayMs / 1000)}s).`,
-        });
-        return;
-      }
-      runtimeTaskStore.update(job.data.taskId, {
-        conversationRequeueCount: 0,
-      });
-
-      const abortController = new AbortController();
-      registerTaskAbortController(job.data.taskId, abortController);
-      try {
-        await runPerConversationDeterministically(
-          buildConversationRuntimeKey(job.data.message.channel, job.data.message.chatId),
-          async () => {
-          try {
-            await runOrchestrationJobWithSafety(job, abortController);
-          } catch (error) {
-            if (isTaskCancellationError(error)) {
-              await taskFsm.cancel(job.data.taskId);
-              await cancelTrackedExecutionRun({
+  const abortController = new AbortController();
+  registerTaskAbortController(job.data.taskId, abortController);
+  try {
+    await runPerConversationDeterministically(
+      buildConversationRuntimeKey(job.data.message.channel, job.data.message.chatId),
+      async () => {
+        try {
+          await runOrchestrationJobWithSafety(job, abortController);
+        } catch (error) {
+          if (isTaskCancellationError(error)) {
+            await taskFsm.cancel(job.data.taskId);
+            await cancelTrackedExecutionRun({
+              taskId: job.data.taskId,
+              message: job.data.message,
+              summary: error instanceof QueueTaskTimeoutError
+                ? `Execution timed out after ${error.timeoutMs}ms and was cancelled.`
+                : 'Execution was cancelled before completion.',
+              reasonCode: error instanceof QueueTaskTimeoutError
+                ? 'queue_task_timeout'
+                : 'lark_runtime_cancelled',
+            });
+            if (error instanceof QueueTaskTimeoutError) {
+              await notifyChannelTimeout({
                 taskId: job.data.taskId,
                 message: job.data.message,
-                summary: error instanceof QueueTaskTimeoutError
-                  ? `Execution timed out after ${error.timeoutMs}ms and was cancelled.`
-                  : 'Execution was cancelled before completion.',
-                reasonCode: error instanceof QueueTaskTimeoutError
-                  ? 'queue_task_timeout'
-                  : 'lark_runtime_cancelled',
+                timeoutMs: error.timeoutMs,
               });
-              if (error instanceof QueueTaskTimeoutError) {
-                await notifyChannelTimeout({
-                  taskId: job.data.taskId,
-                  message: job.data.message,
-                  timeoutMs: error.timeoutMs,
-                });
-              }
-              if (error instanceof QueueTaskTimeoutError) {
-                logger.error('queue.worker.timeout', {
-                  taskId: job.data.taskId,
-                  messageId: job.data.message.messageId,
-                  channel: job.data.message.channel,
-                  requestId: job.data.message.trace?.requestId,
-                  jobId: job.id,
-                  timeoutMs: error.timeoutMs,
-                });
-              }
-              return;
+              logger.error('queue.worker.timeout', {
+                taskId: job.data.taskId,
+                messageId: job.data.message.messageId,
+                channel: job.data.message.channel,
+                requestId: job.data.message.trace?.requestId,
+                jobId: job.id,
+                timeoutMs: error.timeoutMs,
+              });
             }
-
-            await taskFsm.fail(
-              job.data.taskId,
-              error instanceof Error ? error.message : 'runtime_worker_failure',
-            );
-            logger.error('orchestration.task.error', {
-              taskId: job.data.taskId,
-              messageId: job.data.message.messageId,
-              classifiedError: classifyRuntimeError(error),
-            });
-            throw error;
+            return;
           }
-          },
-        );
-      } finally {
-        unregisterTaskAbortController(job.data.taskId, abortController);
-        await releaseConversationLock();
-      }
-    },
-    buildWorkerOptions(),
-  );
 
-  worker.on('completed', (job) => {
-    logger.success('orchestration.worker.job.completed', { taskId: job.data.taskId, jobId: job.id });
-  });
-  worker.on('failed', (job, error) => {
-    const classifiedError = classifyRuntimeError(error);
-    const userFacingErrorMessage = classifiedError.classifiedReason === 'unclassified_runtime_error'
-      ? 'Something went wrong on my end. The team has been notified. Please try again in a moment.'
-      : (classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'unknown_runtime_failure');
-    void pushDeadLetterRecord({
-      queue: 'orchestration',
-      failedAt: new Date().toISOString(),
-      taskId: job?.data.taskId,
-      jobId: typeof job?.id === 'string' ? job.id : job?.id != null ? String(job.id) : undefined,
-      requestId: job?.data.message.trace?.requestId,
-      companyId: job?.data.message.trace?.companyId,
-      channel: job?.data.message.channel,
-      messageId: job?.data.message.messageId,
-      chatId: job?.data.message.chatId,
-      userId: job?.data.message.userId,
-      error: {
-        message: userFacingErrorMessage,
+          await taskFsm.fail(
+            job.data.taskId,
+            error instanceof Error ? error.message : 'runtime_worker_failure',
+          );
+          logger.error('orchestration.task.error', {
+            taskId: job.data.taskId,
+            messageId: job.data.message.messageId,
+            classifiedError: classifyRuntimeError(error),
+          });
+          throw error;
+        }
       },
-    });
-    orangeDebug('queue.job.failed', {
-      taskId: job?.data.taskId,
-      jobId: job?.id,
-      messageId: job?.data.message.messageId,
-      chatId: job?.data.message.chatId,
-      error: userFacingErrorMessage,
-    });
-    logger.error('Orchestration task failed', {
-      taskId: job?.data.taskId,
-      jobId: job?.id,
-      error: classifiedError,
-    });
-    logger.error('lark.runtime.job.failed', {
-      requestId: job?.data.message.trace?.requestId,
+    );
+  } finally {
+    unregisterTaskAbortController(job.data.taskId, abortController);
+    await releaseConversationLock();
+  }
+};
+
+const recordCompletedJob = (job: OrchestrationJobLike): void => {
+  logger.success('orchestration.worker.job.completed', { taskId: job.data.taskId, jobId: job.id });
+};
+
+const recordFailedJob = async (job: OrchestrationJobLike | undefined, error: unknown): Promise<void> => {
+  const classifiedError = classifyRuntimeError(error);
+  const userFacingErrorMessage = classifiedError.classifiedReason === 'unclassified_runtime_error'
+    ? 'Something went wrong on my end. The team has been notified. Please try again in a moment.'
+    : (classifiedError.rawMessage ?? classifiedError.classifiedReason ?? 'unknown_runtime_failure');
+  await pushDeadLetterRecord({
+    queue: 'orchestration',
+    failedAt: new Date().toISOString(),
+    taskId: job?.data.taskId,
+    jobId: typeof job?.id === 'string' ? job.id : job?.id != null ? String(job.id) : undefined,
+    requestId: job?.data.message.trace?.requestId,
+    companyId: job?.data.message.trace?.companyId,
+    channel: job?.data.message.channel,
+    messageId: job?.data.message.messageId,
+    chatId: job?.data.message.chatId,
+    userId: job?.data.message.userId,
+    error: {
+      message: userFacingErrorMessage,
+    },
+  });
+  orangeDebug('queue.job.failed', {
+    taskId: job?.data.taskId,
+    jobId: job?.id,
+    messageId: job?.data.message.messageId,
+    chatId: job?.data.message.chatId,
+    error: userFacingErrorMessage,
+  });
+  logger.error('Orchestration task failed', {
+    taskId: job?.data.taskId,
+    jobId: job?.id,
+    error: classifiedError,
+  });
+  logger.error('lark.runtime.job.failed', {
+    requestId: job?.data.message.trace?.requestId,
+    channel: job?.data.message.channel,
+    eventId: job?.data.message.trace?.eventId,
+    messageId: job?.data.message.messageId,
+    chatId: job?.data.message.chatId,
+    userId: job?.data.message.userId,
+    taskId: job?.data.taskId,
+    jobId: job?.id,
+    textHash: job?.data.message.trace?.textHash,
+    error: classifiedError,
+  });
+  emitRuntimeTrace({
+    event: 'lark.runtime.job.failed',
+    level: 'error',
+    requestId: job?.data.message.trace?.requestId,
+    taskId: job?.data.taskId,
+    messageId: job?.data.message.messageId,
+    metadata: {
       channel: job?.data.message.channel,
       eventId: job?.data.message.trace?.eventId,
-      messageId: job?.data.message.messageId,
       chatId: job?.data.message.chatId,
       userId: job?.data.message.userId,
-      taskId: job?.data.taskId,
-      jobId: job?.id,
       textHash: job?.data.message.trace?.textHash,
       error: classifiedError,
-    });
-    emitRuntimeTrace({
-      event: 'lark.runtime.job.failed',
-      level: 'error',
-      requestId: job?.data.message.trace?.requestId,
-      taskId: job?.data.taskId,
-      messageId: job?.data.message.messageId,
-      metadata: {
-        channel: job?.data.message.channel,
-        eventId: job?.data.message.trace?.eventId,
-        chatId: job?.data.message.chatId,
-        userId: job?.data.message.userId,
-        textHash: job?.data.message.trace?.textHash,
-        error: classifiedError,
-      },
-    });
-    const companyId = job?.data.message.trace?.companyId;
-    if (job?.data.taskId && companyId) {
-      const executionId = buildExecutionId(job.data.taskId, job.data.message.trace?.requestId);
-      void appendExecutionEventSafe(executionId, {
+    },
+  });
+  const companyId = job?.data.message.trace?.companyId;
+  if (job?.data.taskId && companyId) {
+    const executionId = buildExecutionId(job.data.taskId, job.data.message.trace?.requestId);
+    try {
+      await appendExecutionEventSafe(executionId, {
         executionId,
         phase: 'error',
         eventType: 'execution.failed',
@@ -999,15 +1060,61 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
           messageId: job.data.message.messageId,
           classifiedError,
         },
-      }).then(async () => {
-        await executionService.failRun({
-          executionId,
-          latestSummary: summarizeText(userFacingErrorMessage, 400),
-          errorCode: classifiedError.classifiedReason ?? 'lark_runtime_failed',
-          errorMessage: summarizeText(userFacingErrorMessage, 400),
-        });
-      }).catch(() => undefined);
+      });
+      await executionService.failRun({
+        executionId,
+        latestSummary: summarizeText(userFacingErrorMessage, 400),
+        errorCode: classifiedError.classifiedReason ?? 'lark_runtime_failed',
+        errorMessage: summarizeText(userFacingErrorMessage, 400),
+      });
+    } catch {
+      // Best-effort failure tracking should not cascade.
     }
+  }
+};
+
+export const processOrchestrationJobDirect = async (job: OrchestrationJobLike): Promise<void> => {
+  try {
+    await executeQueuedJob(job);
+    recordCompletedJob(job);
+  } catch (error) {
+    await recordFailedJob(job, error);
+  }
+};
+
+export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJobData, void, typeof ORCHESTRATION_JOB_NAME> | null> => {
+  if (!memoryWorkerStarted) {
+    startInMemoryOrchestrationQueue(processOrchestrationJobDirect);
+    memoryWorkerStarted = true;
+  }
+
+  if (isMemoryQueueBackend()) {
+    const recovered = await taskFsm.recoverStaleRunning(120_000);
+    if (recovered > 0) {
+      logger.warn('task_fsm_stale_recovery', { count: recovered });
+    }
+    await reconcileTaskStateOnStartup();
+    logger.warn('orchestration.worker.memory_fallback.started', {
+      maxPending: getInMemoryOrchestrationQueueSnapshot().maxPending,
+    });
+    return null;
+  }
+
+  if (worker) {
+    return worker;
+  }
+
+  worker = new Worker<OrchestrationJobData, void, typeof ORCHESTRATION_JOB_NAME>(
+    ORCHESTRATION_QUEUE_NAME,
+    executeQueuedJob,
+    buildWorkerOptions(),
+  );
+
+  worker.on('completed', (job) => {
+    recordCompletedJob(job);
+  });
+  worker.on('failed', (job, error) => {
+    void recordFailedJob(job ?? undefined, error);
   });
   worker.on('error', (error) => {
     logger.error('queue.worker.error', { error });
@@ -1023,6 +1130,10 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
 };
 
 export const stopOrchestrationWorker = async (): Promise<void> => {
+  if (memoryWorkerStarted) {
+    stopInMemoryOrchestrationQueue();
+    memoryWorkerStarted = false;
+  }
   if (!worker) {
     return;
   }

@@ -16,7 +16,7 @@ export type NormalizedAttachedFile = {
 };
 
 export type NormalizedIncomingMessageDTO = {
-  channel: 'lark' | 'slack' | 'whatsapp';
+  channel: 'lark' | 'desktop' | 'slack' | 'whatsapp';
   userId: string;
   chatId: string;
   chatType: 'p2p' | 'group';
@@ -42,6 +42,7 @@ export type NormalizedIncomingMessageDTO = {
     userRole?: string;
     requesterName?: string;
     requesterEmail?: string;
+    authProvider?: string;
     /** Initial ingress acknowledgement message id shown before routing decides final placement. */
     ackMessageId?: string;
     /** Delivery mode used for the initial ingress acknowledgement message. */

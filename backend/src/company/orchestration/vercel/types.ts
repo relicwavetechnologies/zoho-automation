@@ -176,6 +176,8 @@ export type VercelRuntimeRequestContext = {
   departmentZohoReadScope?: 'personalized' | 'show_all';
   departmentZohoRateLimitConfig?: ZohoRateLimitConfig;
   departmentManagerApprovalConfig?: DepartmentManagerApprovalConfig;
+  defaultAgentProfileId?: string;
+  specialistAgentProfileIds?: string[];
   larkTenantKey?: string;
   larkOpenId?: string;
   larkUserId?: string;

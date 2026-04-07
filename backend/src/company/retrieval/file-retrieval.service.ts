@@ -101,6 +101,7 @@ export class FileRetrievalService {
     companyId: string;
     query: string;
     requesterAiRole?: string;
+    requesterUserId?: string;
     fileAssetId?: string;
     limit?: number;
     preferParentContext?: boolean;
@@ -136,9 +137,10 @@ export class FileRetrievalService {
         sourceTypes: ['file_document'],
         fileAssetId: input.fileAssetId,
         includeShared: true,
-        includePersonal: false,
+        includePersonal: true,
         includePublic: false,
         requesterAiRole: input.requesterAiRole,
+        requesterUserId: input.requesterUserId,
         useMultimodal: true,
         queryMode: 'text',
       });

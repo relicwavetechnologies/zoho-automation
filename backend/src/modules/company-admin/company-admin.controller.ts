@@ -22,6 +22,7 @@ import {
   upsertZohoOAuthConfigSchema,
 } from './dto/connect-onboarding.dto';
 import { assistantProfileQuerySchema, upsertAssistantProfileSchema } from './dto/assistant-profile.dto';
+import { agentProfileQuerySchema, deleteAgentProfileParamsSchema, upsertAgentProfileSchema } from './dto/agent-profile.dto';
 import { createInviteSchema } from './dto/create-invite.dto';
 import { CompanyAdminService, companyAdminService } from './company-admin.service';
 
@@ -67,6 +68,40 @@ class CompanyAdminController extends BaseController {
     }
     const result = await this.service.upsertAssistantProfile(session, payload);
     return res.json(ApiResponse.success(result, 'Assistant profile saved'));
+  };
+
+  listAgentProfiles = async (req: Request, res: Response) => {
+    const query = agentProfileQuerySchema.parse(req.query);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.listAgentProfiles(session, query);
+    return res.json(ApiResponse.success(result, 'Agent profiles loaded'));
+  };
+
+  upsertAgentProfile = async (req: Request, res: Response) => {
+    const payload = upsertAgentProfileSchema.parse(req.body);
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.upsertAgentProfile(session, payload);
+    return res.json(ApiResponse.success(result, 'Agent profile saved'));
+  };
+
+  deleteAgentProfile = async (req: Request, res: Response) => {
+    const params = deleteAgentProfileParamsSchema.parse(req.params);
+    const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
+    const session = this.readSession(req);
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Admin session required' });
+    }
+    const result = await this.service.deleteAgentProfile(session, {
+      companyId,
+      profileId: params.profileId,
+    });
+    return res.json(ApiResponse.success(result, 'Agent profile deleted'));
   };
 
   getCompanyDirectory = async (req: Request, res: Response) => {

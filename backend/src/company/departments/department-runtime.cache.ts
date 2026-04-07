@@ -20,6 +20,8 @@ type CachedDepartmentRuntime = {
     requiredToolIds: string[];
     managerDmAuditToolIds: string[];
   };
+  defaultAgentProfileId?: string;
+  specialistAgentProfileIds?: string[];
   systemPrompt?: string;
   skillsMarkdown?: string;
   allowedToolIds: string[];
@@ -27,7 +29,7 @@ type CachedDepartmentRuntime = {
 };
 
 const DEPARTMENT_RUNTIME_TTL_SECONDS = 60 * 5;
-const DEPARTMENT_RUNTIME_CACHE_VERSION = 'v6';
+const DEPARTMENT_RUNTIME_CACHE_VERSION = 'v7';
 
 const fallbackHash = (fallbackAllowedToolIds: string[]): string =>
   createHash('sha1')

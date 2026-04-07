@@ -181,7 +181,9 @@ const buildPlannerPrompt = (input: {
     agentId: agent.id,
     label: agent.label,
     description: agent.description,
+    domainIds: agent.domainIds,
     toolIds: agent.toolIds,
+    routingHints: agent.routingHints ?? [],
   }));
 
   return JSON.stringify({
@@ -191,17 +193,13 @@ const buildPlannerPrompt = (input: {
       'Every non-direct step must include: stepId, agentId, action, sourceSystem, objective, dependsOn, inputRefs.',
       'Do not assume any later layer will reinterpret objective text. Your action and sourceSystem fields are final.',
       'ROUTING RULES — apply these in order, top to bottom:',
-      '1. LARK requests (tasks, calendar, meetings, approvals, docs, messages, Lark Base): use lark-ops-agent with sourceSystem=lark.',
-      '2. FINANCIAL requests (invoices, bills, payments, overdue, balance, Zoho Books): use zoho-ops-agent with sourceSystem=zoho_books.',
-      '3. CRM requests (contacts, leads, accounts, deals, Zoho CRM): use zoho-ops-agent with sourceSystem=zoho_crm.',
-      '4. EMAIL requests (send email, draft, reply, search inbox, Gmail): use google-workspace-agent with sourceSystem=gmail.',
-      '5. DRIVE / GOOGLE CALENDAR requests: use google-workspace-agent with sourceSystem=google_drive or google_calendar.',
-      '6. FILE / DOCUMENT / CODE / OCR requests where source is a local file or repo: use workspace-agent with sourceSystem=workspace.',
-      '7. CROSS-SOURCE or UNCLEAR requests (history recall, "what did we discuss", internal knowledge, no clear system of record): use context-agent with action=cross_source_lookup and sourceSystem=context.',
-      '8. If a clear system of record exists, do not use context-agent for the primary retrieval step.',
-      '9. If a request reads from one system and then writes in another, always create multiple dependent steps.',
-      '10. Do not collapse "read overdue invoices from Books and create Lark tasks" into one step.',
-      '11. Preserve explicit people, assignees, recipients, and owners exactly as named by the user. Do not generalize a named person into a team or department.',
+      '1. Choose only from the eligible agents provided in eligibleAgents.',
+      '2. Match sourceSystem to an agent whose domainIds clearly cover that system.',
+      '3. For cross-source or unclear retrieval, prefer an agent that exposes context_search/general-style domains and use action=cross_source_lookup with sourceSystem=context.',
+      '4. If a clear system of record exists, do not use a context-style agent for the primary retrieval step.',
+      '5. If a request reads from one system and then writes in another, always create multiple dependent steps.',
+      '6. Do not collapse "read overdue invoices from Books and create Lark tasks" into one step.',
+      '7. Preserve explicit people, assignees, recipients, and owners exactly as named by the user. Do not generalize a named person into a team or department.',
       'Action choices:',
       '- read_records: domain-owned read/report/list inside a source-of-truth system',
       '- search_records: domain-owned lookup/fuzzy search inside a source-of-truth system',
@@ -210,15 +208,13 @@ const buildPlannerPrompt = (input: {
       '- create_draft: create Gmail draft',
       '- post_message: send a Lark message/post',
       '- update_record: modify an existing domain record',
-      '- cross_source_lookup: context-agent only',
+      '- cross_source_lookup: use only with a context-capable eligible agent',
       'Ownership constraints:',
-      '- context-agent may only use action=cross_source_lookup and sourceSystem=context',
-      '- zoho_books/zoho_crm must use zoho-ops-agent',
-      '- lark must use lark-ops-agent',
-      '- gmail/google_drive/google_calendar must use google-workspace-agent',
+      '- Any step using sourceSystem=context should use an eligible agent whose domainIds include context_search or general.',
+      '- Match Zoho, Lark, Google, and Workspace sourceSystems to agents whose domainIds cover those systems.',
       'Examples:',
-      '- "get overdue invoices from books and create lark tasks for Anish Suman" => step_1 zoho-ops-agent/read_records/zoho_books, step_2 lark-ops-agent/create_task/lark dependsOn step_1 and the second step objective must still name Anish Suman explicitly',
-      '- "what did we discuss about overdue invoices last week" => one context-agent/cross_source_lookup/context step',
+      '- "get overdue invoices from books and create lark tasks for Anish Suman" => step_1 read_records/zoho_books with a Zoho-capable agent, step_2 create_task/lark with a Lark-capable agent, and the second step objective must still name Anish Suman explicitly',
+      '- "what did we discuss about overdue invoices last week" => one cross_source_lookup/context step with a context-capable agent',
       'Choose direct only when no tool work is required.',
       'Choose single when one agent can fully complete the request.',
       'Choose multi when later steps depend on earlier step output.',
@@ -415,32 +411,50 @@ const validateSupervisorPlan = (input: {
   eligibleAgents: SupervisorAgentDescriptor[];
 }): string[] => {
   const eligibleAgentIds = new Set(input.eligibleAgents.map((agent) => agent.id));
+  const agentById = new Map(input.eligibleAgents.map((agent) => [agent.id, agent]));
   const issues: string[] = [];
 
   for (const step of input.plan.steps) {
+    const agent = agentById.get(step.agentId);
     if (!eligibleAgentIds.has(step.agentId)) {
       issues.push(`step ${step.stepId}: ineligible agent ${step.agentId}`);
     }
-    if (step.sourceSystem === 'context' && step.agentId !== 'context-agent') {
-      issues.push(`step ${step.stepId}: sourceSystem=context must use context-agent`);
-    }
-    if (step.agentId === 'context-agent' && step.sourceSystem !== 'context') {
-      issues.push(`step ${step.stepId}: context-agent may only own sourceSystem=context`);
-    }
-    if (step.agentId === 'context-agent' && step.action !== 'cross_source_lookup') {
-      issues.push(`step ${step.stepId}: context-agent may only run cross_source_lookup`);
-    }
-    if ((step.sourceSystem === 'zoho_books' || step.sourceSystem === 'zoho_crm') && step.agentId !== 'zoho-ops-agent') {
-      issues.push(`step ${step.stepId}: Zoho systems must use zoho-ops-agent`);
-    }
-    if (step.sourceSystem === 'lark' && step.agentId !== 'lark-ops-agent') {
-      issues.push(`step ${step.stepId}: Lark steps must use lark-ops-agent`);
+    const supportedSourceDomains = (() => {
+      switch (step.sourceSystem) {
+        case 'context':
+          return ['context_search', 'general', 'outreach', 'skill', 'web_search'];
+        case 'zoho_books':
+          return ['zoho_books'];
+        case 'zoho_crm':
+          return ['zoho_crm'];
+        case 'lark':
+          return ['lark', 'lark_task', 'lark_message', 'lark_calendar', 'lark_meeting', 'lark_approval', 'lark_doc', 'lark_base'];
+        case 'gmail':
+          return ['gmail'];
+        case 'google_drive':
+          return ['google_drive'];
+        case 'google_calendar':
+          return ['google_calendar'];
+        case 'workspace':
+          return ['workflow', 'workspace', 'document_inspection'];
+        default:
+          return [];
+      }
+    })();
+    if (
+      agent
+      && supportedSourceDomains.length > 0
+      && !agent.domainIds.some((domainId) => supportedSourceDomains.includes(domainId))
+    ) {
+      issues.push(`step ${step.stepId}: agent ${step.agentId} does not support sourceSystem=${step.sourceSystem}`);
     }
     if (
-      (step.sourceSystem === 'gmail' || step.sourceSystem === 'google_drive' || step.sourceSystem === 'google_calendar')
-      && step.agentId !== 'google-workspace-agent'
+      agent
+      && step.sourceSystem === 'context'
+      && !agent.toolIds.includes('contextSearch')
+      && step.action === 'cross_source_lookup'
     ) {
-      issues.push(`step ${step.stepId}: Google workspace steps must use google-workspace-agent`);
+      issues.push(`step ${step.stepId}: cross-source lookup requires a context-capable agent`);
     }
     if (step.inputRefs.length > 0 && step.dependsOn.length === 0) {
       issues.push(`step ${step.stepId}: inputRefs require dependsOn`);

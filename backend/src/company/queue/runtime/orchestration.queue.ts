@@ -7,16 +7,13 @@ import type { NormalizedIncomingMessageDTO } from '../../contracts';
 import { taskFsm } from '../../orchestration/task-fsm';
 import { runWithRetryPolicy } from '../../observability';
 import { runtimeTaskStore, type RuntimeTaskSnapshot } from '../../orchestration/runtime-task.store';
+import { isMemoryQueueBackend, setOrchestrationQueueBackendMode } from './orchestration.backend';
+import { ORCHESTRATION_JOB_NAME, type OrchestrationJobData } from './orchestration.job';
+import { enqueueInMemoryOrchestrationJob } from './in-memory-orchestration.queue';
 import { redisConnection } from './redis.connection';
 import { buildSafeJobId, isTransientQueueInfraError, sanitizeQueueName } from './queue-safety';
 
 export const ORCHESTRATION_QUEUE_NAME = sanitizeQueueName('company-orchestration-v0');
-export const ORCHESTRATION_JOB_NAME = 'orchestration.task.execute' as const;
-
-export type OrchestrationJobData = {
-  taskId: string;
-  message: NormalizedIncomingMessageDTO;
-};
 
 type QueueAddOptions = {
   jobId: string;
@@ -62,6 +59,29 @@ const enqueueJobWithRetry = async (input: {
   delayMs?: number;
   queueAdd?: QueueAddFn;
 }): Promise<string> => {
+  if (isMemoryQueueBackend()) {
+    try {
+      return enqueueInMemoryOrchestrationJob({
+        jobId: input.jobId,
+        delayMs: input.delayMs,
+        data: {
+          taskId: input.taskId,
+          message: input.message,
+        },
+      });
+    } catch (error) {
+      logger.error('queue.enqueue.memory_failed', {
+        requestId: input.message.trace?.requestId,
+        taskId: input.taskId,
+        messageId: input.message.messageId,
+        channel: input.message.channel,
+        jobId: input.jobId,
+        error,
+      });
+      throw error;
+    }
+  }
+
   const queueAdd = input.queueAdd ?? defaultQueueAdd;
   const jobOptions = buildQueueAddOptions(input.jobId, input.delayMs);
   const trace = {
@@ -96,6 +116,21 @@ const enqueueJobWithRetry = async (input: {
     });
   } catch (error) {
     const retriable = isTransientQueueInfraError(error);
+    if (retriable) {
+      setOrchestrationQueueBackendMode(
+        'memory',
+        error instanceof Error ? error.message : 'queue_add_failed',
+      );
+      logger.warn('queue.enqueue.memory_cutover', trace);
+      return enqueueInMemoryOrchestrationJob({
+        jobId: input.jobId,
+        delayMs: input.delayMs,
+        data: {
+          taskId: input.taskId,
+          message: input.message,
+        },
+      });
+    }
     logger.error('queue.enqueue.failed', {
       ...trace,
       retriable,
@@ -190,7 +225,12 @@ export const requeueOrchestrationTask = async (
   return runtimeTaskStore.get(taskId) ?? task;
 };
 
-export const getOrchestrationQueue = () => getOrchestrationQueueSingleton();
+export const getOrchestrationQueue = () => {
+  if (isMemoryQueueBackend()) {
+    throw new Error('Redis orchestration queue unavailable while memory fallback is active');
+  }
+  return getOrchestrationQueueSingleton();
+};
 
 export const __test__ = {
   buildQueueAddOptions,

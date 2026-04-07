@@ -15,6 +15,7 @@ import { companyGoogleAuthLinkRepository } from '../../company/channels/google/c
 import { auditService } from '../audit/audit.service';
 import { companyOnboardingService } from '../company-onboarding/company-onboarding.service';
 import { companyPromptProfileService } from '../../company/prompt-profiles/company-prompt-profile.service';
+import { companyAgentProfileService } from '../../company/agent-profiles/agent-profile.service';
 import { CompanyAdminRepository, companyAdminRepository } from './company-admin.repository';
 import {
   ConnectOnboardingDto,
@@ -32,6 +33,7 @@ import {
   ZohoProfileQueryDto,
 } from './dto/connect-onboarding.dto';
 import { type AssistantProfileQueryDto, type UpsertAssistantProfileDto } from './dto/assistant-profile.dto';
+import { type AgentProfileQueryDto, type UpsertAgentProfileDto } from './dto/agent-profile.dto';
 import { CreateInviteDto } from './dto/create-invite.dto';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { aiRoleService } from '../../company/tools/ai-role.service';
@@ -229,6 +231,38 @@ export class CompanyAdminService extends BaseService {
       restrictedClaims: payload.restrictedClaims,
       isActive: payload.isActive,
     });
+  }
+
+  async listAgentProfiles(session: SessionScope, query: AgentProfileQueryDto) {
+    const companyId = resolveCompanyScope(session, query.companyId);
+    return companyAgentProfileService.getAdminProfiles(companyId);
+  }
+
+  async upsertAgentProfile(session: SessionScope, payload: UpsertAgentProfileDto) {
+    const companyId = resolveCompanyScope(session, payload.companyId);
+    return companyAgentProfileService.upsertProfile({
+      companyId,
+      actorUserId: session.userId,
+      profileId: payload.profileId,
+      slug: payload.slug,
+      name: payload.name,
+      description: payload.description,
+      systemPrompt: payload.systemPrompt,
+      modelKey: payload.modelKey,
+      toolIds: payload.toolIds,
+      routingHints: payload.routingHints ?? [],
+      departmentIds: payload.departmentIds ?? [],
+      isActive: payload.isActive,
+    });
+  }
+
+  async deleteAgentProfile(session: SessionScope, input: { companyId?: string; profileId: string }) {
+    const companyId = resolveCompanyScope(session, input.companyId);
+    await companyAgentProfileService.deleteProfile({
+      companyId,
+      profileId: input.profileId,
+    });
+    return { deleted: true, profileId: input.profileId };
   }
 
   private async syncRuntimeZohoConnectionFromProfile(profileId: string): Promise<void> {

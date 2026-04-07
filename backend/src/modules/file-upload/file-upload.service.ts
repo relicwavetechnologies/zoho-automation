@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 import { prisma } from '../../utils/prisma';
 import config from '../../config';
@@ -18,6 +18,8 @@ export type FileUploadInput = {
   uploaderChannel: 'lark' | 'desktop';
   /** Initial allowed AI roles for this file (e.g. ['HR', 'ADMIN']) */
   allowedRoles: string[];
+  visibility?: 'personal' | 'shared' | 'public';
+  ownerUserId?: string;
 };
 
 export type FileUploadOutput = {
@@ -25,6 +27,7 @@ export type FileUploadOutput = {
   fileName: string;
   cloudinaryUrl: string;
   ingestionStatus: string;
+  deduped?: boolean;
 };
 
 export class FileUploadService {
@@ -39,6 +42,36 @@ export class FileUploadService {
     });
     if (!resolvedMimeType) {
       throw new Error(`Unsupported file type: ${input.mimeType || input.fileName}`);
+    }
+
+    const contentHash = createHash('sha256')
+      .update(input.buffer)
+      .digest('hex');
+
+    const dedupOwnerId = input.ownerUserId ?? input.uploaderUserId;
+    const existingAsset = await prisma.fileAsset.findFirst({
+      where: {
+        companyId: input.companyId,
+        uploaderUserId: dedupOwnerId,
+        contentHash,
+        ingestionStatus: 'done',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingAsset) {
+      logger.info('file_upload.dedup_hit', {
+        existingAssetId: existingAsset.id,
+        companyId: input.companyId,
+        contentHash,
+      });
+      return {
+        fileAssetId: existingAsset.id,
+        fileName: input.fileName,
+        cloudinaryUrl: existingAsset.cloudinaryUrl,
+        ingestionStatus: existingAsset.ingestionStatus,
+        deduped: true,
+      };
     }
 
     const fileAssetId = randomUUID();
@@ -66,6 +99,7 @@ export class FileUploadService {
         cloudinaryPublicId: cloudResult.publicId,
         cloudinaryUrl: cloudResult.secureUrl,
         cloudinaryResourceType: cloudResult.resourceType,
+        contentHash,
         ingestionStatus: 'pending',
       },
     });
@@ -112,6 +146,8 @@ export class FileUploadService {
           sourceUrl: fileAsset.cloudinaryUrl,
           uploaderUserId: input.uploaderUserId,
           allowedRoles: input.allowedRoles,
+          visibility: input.visibility,
+          ownerUserId: input.ownerUserId ?? input.uploaderUserId,
         })
         .catch((err: any) => {
           logger.error('file.ingestion.failed_async', {

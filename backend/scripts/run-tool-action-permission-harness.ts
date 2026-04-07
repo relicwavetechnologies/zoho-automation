@@ -4,7 +4,7 @@ import { aiRoleService } from '../src/company/tools/ai-role.service';
 import type { ToolActionGroup } from '../src/company/tools/tool-action-groups';
 import { ToolPermissionService } from '../src/company/tools/tool-permission.service';
 import { toolAccessCache } from '../src/company/tools/tool-access.cache';
-import { ensureActionPermission } from '../src/company/orchestration/vercel/legacy-tools';
+import { ensureActionPermission } from '../src/company/orchestration/vercel/runtime-tools';
 import { __test__ as orchestrationEngineTest } from '../src/company/orchestration/engine/vercel-orchestration.engine';
 
 type ActionRow = {

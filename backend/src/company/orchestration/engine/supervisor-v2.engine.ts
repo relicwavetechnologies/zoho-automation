@@ -5,7 +5,6 @@ import { z } from 'zod';
 
 import config from '../../../config';
 import { larkChatContextService } from '../../channels/lark/lark-chat-context.service';
-import { resolveChannelAdapter } from '../../channels/channel-adapter.registry';
 import {
   type AgentResultDTO,
   type HITLActionDTO,
@@ -26,15 +25,18 @@ import { DOMAIN_TO_TOOL_IDS } from '../../tools/tool-registry';
 import { resolveCanonicalIntent } from '../intent/canonical-intent';
 import { getOrBuildStaticPromptLayer } from '../prompting/static-prompt-cache';
 import type { OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
-import { createVercelDesktopTools } from '../vercel/legacy-tools';
+import { createVercelDesktopTools } from '../vercel/tools';
 import { resolveVercelLanguageModel } from '../vercel/model-factory';
-import { LarkStatusCoordinator } from './lark-status.coordinator';
 import type {
   PendingApprovalAction,
   VercelRuntimeRequestContext,
   VercelToolEnvelope,
   VercelRuntimeToolHooks,
 } from '../vercel/types';
+import {
+  NoOpOrchestrationUpdateAdapter,
+  type OrchestrationUpdateAdapter,
+} from '../core/update-adapter';
 import { desktopThreadsService } from '../../../modules/desktop-threads/desktop-threads.service';
 import {
   buildTaskStateContext,
@@ -2666,6 +2668,8 @@ const resolveRuntimeContext = async (
   let departmentZohoReadScope: 'personalized' | 'show_all' | undefined;
   let departmentZohoRateLimitConfig: VercelRuntimeRequestContext['departmentZohoRateLimitConfig'];
   let departmentManagerApprovalConfig: VercelRuntimeRequestContext['departmentManagerApprovalConfig'];
+  let defaultAgentProfileId: string | undefined;
+  let specialistAgentProfileIds: string[] | undefined;
   let departmentSystemPrompt: string | undefined;
   let departmentSkillsMarkdown: string | undefined;
   const companyPromptProfile = await companyPromptProfileService.resolveRuntimeProfile(companyId);
@@ -2698,6 +2702,8 @@ const resolveRuntimeContext = async (
       departmentZohoReadScope = resolved.departmentZohoReadScope;
       departmentZohoRateLimitConfig = resolved.departmentZohoRateLimitConfig;
       departmentManagerApprovalConfig = resolved.departmentManagerApprovalConfig;
+      defaultAgentProfileId = resolved.defaultAgentProfileId;
+      specialistAgentProfileIds = resolved.specialistAgentProfileIds;
       departmentSystemPrompt = resolved.systemPrompt;
       departmentSkillsMarkdown = resolved.skillsMarkdown;
       allowedToolIds = resolved.allowedToolIds;
@@ -2747,6 +2753,8 @@ const resolveRuntimeContext = async (
     departmentZohoReadScope,
     departmentZohoRateLimitConfig,
     departmentManagerApprovalConfig,
+    defaultAgentProfileId,
+    specialistAgentProfileIds,
     larkTenantKey: message.trace?.larkTenantKey,
     larkOpenId: message.trace?.larkOpenId,
     larkUserId: message.trace?.larkUserId,
@@ -3904,7 +3912,8 @@ const executeTask = async (
   const executionStartMs = Date.now();
   _vibeIndex = Math.floor(Math.random() * DIVO_VIBES.length);
   _dotIndex = 0;
-  let statusCoordinator: LarkStatusCoordinator | null = null;
+  const updateAdapter: OrchestrationUpdateAdapter =
+    input.updateAdapter ?? new NoOpOrchestrationUpdateAdapter();
 
   try {
     const conversation = await resolveConversationContext(input);
@@ -3950,21 +3959,25 @@ const executeTask = async (
     };
 
     const saveActiveTodos = async (todos: ActiveTodos | null): Promise<void> => {
-      try {
-        const workingSets = {
-          ...(currentTaskState.workingSets ?? {}),
-        } as Record<string, unknown>;
-        if (todos === null) {
-          delete workingSets[TODO_KEY];
-        } else {
-          workingSets[TODO_KEY] = todos;
-        }
-        const nextTaskState: DesktopTaskState = {
-          ...currentTaskState,
-          workingSets: workingSets as DesktopTaskState['workingSets'],
-          updatedAt: new Date().toISOString(),
-        };
+      const workingSets = {
+        ...(currentTaskState.workingSets ?? {}),
+      } as Record<string, unknown>;
+      if (todos === null) {
+        delete workingSets[TODO_KEY];
+      } else {
+        workingSets[TODO_KEY] = todos;
+      }
+      const nextTaskState: DesktopTaskState = {
+        ...currentTaskState,
+        workingSets: workingSets as DesktopTaskState['workingSets'],
+        updatedAt: new Date().toISOString(),
+      };
 
+      currentTaskState = nextTaskState;
+      conversation.taskState = nextTaskState;
+      conversation.taskStateContext = buildTaskStateContext(nextTaskState) ?? undefined;
+
+      try {
         if (conversation.sharedChatContextId && runtime.channel === 'lark' && message.chatId) {
           await larkChatContextService.persistTaskState({
             companyId: runtime.companyId,
@@ -3981,10 +3994,6 @@ const executeTask = async (
             },
           );
         }
-
-        currentTaskState = nextTaskState;
-        conversation.taskState = nextTaskState;
-        conversation.taskStateContext = buildTaskStateContext(nextTaskState) ?? undefined;
       } catch (err) {
         logger.warn('supervisor_v2.todos.save_failed', {
           error: err instanceof Error ? err.message : 'unknown',
@@ -4075,24 +4084,9 @@ const executeTask = async (
       stepLog.push(normalized);
     };
 
-    if (message.channel === 'lark') {
-      statusCoordinator = new LarkStatusCoordinator({
-        adapter: resolveChannelAdapter('lark'),
-        chatId: message.chatId,
-        correlationId: task.taskId,
-        initialStatusMessageId: message.trace?.statusMessageId,
-        replyToMessageId: isScheduledRun ? undefined : (message.trace?.replyToMessageId ?? message.messageId),
-        replyInThread: isScheduledRun ? false : message.chatType === 'group',
-      });
-    }
-
     const updateLiveStatus = async (text: string): Promise<void> => {
       appendStatusLine(text);
-      if (!statusCoordinator) {
-        void text;
-        return;
-      }
-      await statusCoordinator.updateLiveText(buildStatusCardText());
+      await updateAdapter.updateLiveText(buildStatusCardText());
     };
 
     const supervisorTools = {
@@ -4636,22 +4630,17 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       }),
     };
 
-    if (statusCoordinator) {
-      await statusCoordinator.update(
-        { text: '*Working on it...*', actions: [] },
-        { force: true },
-      );
-      await statusCoordinator.updateLiveText(buildLiveTextBody('Starting up ···'));
-      statusCoordinator.startHeartbeat(() => {
-        const todoSection = buildTodoContext();
-        const logSection = formatStepLog();
-        const vibeText = nextVibeText();
-        return {
-          text: buildLiveTextBody(todoSection, logSection, vibeText),
-          actions: [],
-        };
-      });
-    }
+    await updateAdapter.initialize?.({ text: '*Working on it...*', actions: [] });
+    await updateAdapter.updateLiveText(buildLiveTextBody('Starting up ···'));
+    updateAdapter.startHeartbeat(() => {
+      const todoSection = buildTodoContext();
+      const logSection = formatStepLog();
+      const vibeText = nextVibeText();
+      return {
+        text: buildLiveTextBody(todoSection, logSection, vibeText),
+        actions: [],
+      };
+    });
 
     const todoContext = buildTodoContext();
     const messages = [
@@ -4762,13 +4751,11 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
         const stepLine = buildStepProgressText(step);
         appendStatusLine(stepLine);
 
-        if (statusCoordinator) {
-          const todoSection = buildTodoContext();
-          const logSection = formatStepLog();
-          const vibeText = nextVibeText();
-          const cardText = buildLiveTextBody(todoSection, logSection, vibeText);
-          await statusCoordinator.updateLiveText(cardText);
-        }
+        const todoSection = buildTodoContext();
+        const logSection = formatStepLog();
+        const vibeText = nextVibeText();
+        const cardText = buildLiveTextBody(todoSection, logSection, vibeText);
+        await updateAdapter.updateLiveText(cardText);
       },
     });
 
@@ -4787,7 +4774,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
     const agentResults = toSupervisorAgentResults(toolResults, task.taskId);
 
     const durationSec = Math.round((Date.now() - executionStartMs) / 1000);
-    await statusCoordinator?.finalizeLiveText(`Completed in ${durationSec}s ✓`);
+    await updateAdapter.finalizeLiveText(`Completed in ${durationSec}s ✓`);
     await memoryService.recordUserTurn({
       userId: runtime.userId,
       companyId: runtime.companyId,
@@ -4821,11 +4808,11 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       pendingApproval,
       hasToolResults,
       isSensitiveContent: false,
-      statusMessageId: statusCoordinator?.getStatusMessageId(),
+      statusMessageId: updateAdapter.getStatusMessageId(),
     };
   } catch (error) {
     const messageText = error instanceof Error ? error.message : 'Supervisor v2 execution failed.';
-    await statusCoordinator?.finalizeLiveText('Something went wrong ✗');
+    await updateAdapter.finalizeLiveText('Something went wrong ✗');
     await appendExecutionEventSafe({
       executionId,
       phase: 'tools',
@@ -4862,10 +4849,10 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       pendingApproval: null,
       hasToolResults: false,
       isSensitiveContent: false,
-      statusMessageId: statusCoordinator?.getStatusMessageId(),
+      statusMessageId: updateAdapter.getStatusMessageId(),
     };
   } finally {
-    await statusCoordinator?.close();
+    await updateAdapter.close();
   }
 };
 

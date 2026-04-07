@@ -61,7 +61,21 @@ export interface ToolDefinition {
   domain: ToolRoutingDomain;
   aliases: string[];
   supportedActionGroups?: ToolActionGroup[];
+  runtimeFamily?: string;
   deprecated?: boolean;
+}
+
+export type ToolApprovalMode = 'none' | 'always_pending' | 'confirm_or_pending';
+
+export interface ToolPolicyDescriptor {
+  toolId: string;
+  runtimeFamily: string;
+  intrinsicApprovalActionGroups: ToolActionGroup[];
+  overrideableApprovalActionGroups: ToolActionGroup[];
+  approvalMode: ToolApprovalMode;
+  repairOwnedByTool: boolean;
+  sideEffectSemantics: 'read_only' | 'mutating' | 'approval_gated';
+  observabilityLabel: string;
 }
 
 export const TOOL_REGISTRY: ToolDefinition[] = [
@@ -889,4 +903,96 @@ export const LEGACY_AGENT_TOOL_MAP: Record<string, string> = {
   response: 'response',
   'risk-check': 'risk-check',
   'lark-response': 'lark-response',
+};
+
+const DEFAULT_RUNTIME_FAMILY_BY_DOMAIN: Partial<Record<ToolRoutingDomain, string>> = {
+  gmail: 'google',
+  google_drive: 'google',
+  google_calendar: 'google',
+  lark: 'lark',
+  lark_task: 'lark',
+  lark_message: 'lark',
+  lark_calendar: 'lark',
+  lark_meeting: 'lark',
+  lark_approval: 'lark',
+  lark_doc: 'lark',
+  lark_base: 'lark',
+  zoho_books: 'zoho-books',
+  zoho_crm: 'zoho-crm',
+  workflow: 'workflow',
+  context_search: 'context-search',
+  web_search: 'context-search',
+  workspace: 'repo-coding',
+  document_inspection: 'documents',
+  outreach: 'outreach',
+  skill: 'repo-coding',
+};
+
+const INTRINSIC_APPROVAL_OVERRIDES: Partial<Record<string, ToolActionGroup[]>> = {
+  googleWorkspace: ['send', 'create', 'update', 'delete'],
+  'google-gmail': ['send', 'create', 'update', 'delete'],
+  'google-drive': ['create', 'update', 'delete'],
+  'google-calendar': ['create', 'update', 'delete'],
+  larkMessage: ['send'],
+  'lark-message-write': ['send', 'create', 'update', 'delete'],
+  larkTask: ['create', 'update', 'delete'],
+  larkCalendar: ['create', 'update', 'delete'],
+  larkMeeting: ['create', 'update', 'delete', 'execute'],
+  larkDoc: ['create', 'update', 'delete'],
+  larkApproval: ['create'],
+  zohoBooks: ['create', 'update', 'delete', 'send', 'execute'],
+  zohoCrm: ['create', 'update', 'delete'],
+  workflow: ['create', 'update', 'delete', 'execute'],
+};
+
+const OBSERVABILITY_LABEL_OVERRIDES: Partial<Record<string, string>> = {
+  googleWorkspace: 'Google Workspace',
+  larkMessage: 'Lark Message',
+  larkTask: 'Lark Task',
+  larkCalendar: 'Lark Calendar',
+  larkMeeting: 'Lark Meeting',
+  larkDoc: 'Lark Doc',
+  larkApproval: 'Lark Approval',
+  zohoBooks: 'Zoho Books',
+  zohoCrm: 'Zoho CRM',
+  contextSearch: 'Context Search',
+  workflow: 'Workflow',
+  devTools: 'Workspace Tools',
+  documentRead: 'Document Read',
+};
+
+export const getToolPolicyDescriptor = (toolId: string): ToolPolicyDescriptor => {
+  const canonicalToolId = resolveCanonicalToolId(toolId);
+  const definition = TOOL_REGISTRY_MAP.get(canonicalToolId);
+  const runtimeFamily =
+    definition?.runtimeFamily
+    ?? (definition ? DEFAULT_RUNTIME_FAMILY_BY_DOMAIN[definition.domain] : undefined)
+    ?? 'general';
+  const supportedActionGroups = definition?.supportedActionGroups ?? ['read'];
+  const intrinsicApprovalActionGroups = Array.from(new Set(
+    INTRINSIC_APPROVAL_OVERRIDES[canonicalToolId]
+    ?? supportedActionGroups.filter((actionGroup) => actionGroup !== 'read'),
+  ));
+  const overrideableApprovalActionGroups = intrinsicApprovalActionGroups.filter((actionGroup) => actionGroup !== 'send');
+  const approvalMode: ToolApprovalMode =
+    intrinsicApprovalActionGroups.length === 0
+      ? 'none'
+      : intrinsicApprovalActionGroups.includes('send')
+        ? 'always_pending'
+        : 'confirm_or_pending';
+  return {
+    toolId: canonicalToolId,
+    runtimeFamily,
+    intrinsicApprovalActionGroups,
+    overrideableApprovalActionGroups,
+    approvalMode,
+    repairOwnedByTool: true,
+    sideEffectSemantics:
+      intrinsicApprovalActionGroups.length > 0
+        ? 'approval_gated'
+        : supportedActionGroups.some((actionGroup) => actionGroup !== 'read')
+          ? 'mutating'
+          : 'read_only',
+    observabilityLabel: OBSERVABILITY_LABEL_OVERRIDES[canonicalToolId] ?? definition?.name ?? canonicalToolId,
+  };
 };

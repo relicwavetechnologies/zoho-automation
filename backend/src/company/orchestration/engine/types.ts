@@ -8,6 +8,7 @@ import type {
 } from '../../contracts';
 import type { OrchestrationTaskStatus } from '../../contracts/status';
 import type { CanonicalIntent } from '../intent/canonical-intent';
+import type { OrchestrationUpdateAdapter } from '../core/update-adapter';
 import type { DelegatedStepResult, SupervisorPlan } from '../supervisor';
 
 export type OrchestrationEngineId = 'legacy' | 'vercel' | 'langgraph';
@@ -39,6 +40,7 @@ export type OrchestrationExecutionInput = {
   message: NormalizedIncomingMessageDTO;
   latestCheckpoint?: CheckpointDTO | null;
   abortSignal?: AbortSignal;
+  updateAdapter?: OrchestrationUpdateAdapter;
 };
 
 export interface OrchestrationEngine {

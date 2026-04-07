@@ -6,6 +6,7 @@ import loaders from './loaders';
 import { runBootstrapHealthChecks } from './loaders/bootstrap-health';
 import { desktopWsGateway } from './modules/desktop-live/desktop-ws.gateway';
 import { desktopWorkflowsService } from './modules/desktop-workflows/desktop-workflows.service';
+import { fileAssetRetentionService } from './modules/file-upload/file-asset-retention.service';
 import { logger } from './utils/logger';
 import { createServer } from 'http';
 
@@ -21,6 +22,7 @@ const startServer = async () => {
     larkDirectorySyncScheduler.start();
     desktopWorkflowsService.startDueProcessor();
     executionRetentionService.start();
+    fileAssetRetentionService.start();
     larkTenantTokenService.getAccessToken().catch((error) => {
       logger.warn('lark.tenant_token.prewarm.failed', { reason: error instanceof Error ? error.message : 'unknown' });
     });
@@ -45,6 +47,7 @@ const gracefulShutdown = async () => {
     larkDirectorySyncScheduler.stop();
     desktopWorkflowsService.stopDueProcessor();
     executionRetentionService.stop();
+    fileAssetRetentionService.stop();
     await shutdownOrchestrationRuntime();
     logger.info('server.shutdown.complete', undefined, { always: true });
   } catch (error) {

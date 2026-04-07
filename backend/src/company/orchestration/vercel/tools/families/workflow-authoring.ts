@@ -1,9 +1,7 @@
 import type { VercelRuntimeRequestContext, VercelRuntimeToolHooks } from '../../types';
-import { getLegacyToolMap, pickTools } from '../shared/legacy-factory';
+import { getRuntimeToolFamilies } from '../shared/runtime-family-cache';
 
 export const buildWorkflowAuthoringTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
-): Record<string, any> => pickTools(getLegacyToolMap(runtime, hooks), [
-  'workflow',
-]);
+): Record<string, any> => getRuntimeToolFamilies(runtime, hooks).workflowAuthoring;

@@ -123,6 +123,8 @@ model User {
   updatedDepartmentAgentConfigs      DepartmentAgentConfig[]      @relation("DepartmentAgentConfigUpdatedBy")
   createdCompanyPromptProfiles       CompanyPromptProfile[]       @relation("CompanyPromptProfileCreatedBy")
   updatedCompanyPromptProfiles       CompanyPromptProfile[]       @relation("CompanyPromptProfileUpdatedBy")
+  createdCompanyAgentProfiles        CompanyAgentProfile[]        @relation("CompanyAgentProfileCreatedBy")
+  updatedCompanyAgentProfiles        CompanyAgentProfile[]        @relation("CompanyAgentProfileUpdatedBy")
   createdZohoConnectionProfiles      ZohoConnectionProfile[]      @relation("ZohoConnectionProfileCreatedBy")
   updatedZohoConnectionProfiles      ZohoConnectionProfile[]      @relation("ZohoConnectionProfileUpdatedBy")
   departmentToolPermissionsUpdated   DepartmentToolPermission[]   @relation("DepartmentToolPermissionUpdatedBy")
@@ -145,6 +147,7 @@ model Company {
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
   promptProfile          CompanyPromptProfile?
+  agentProfiles          CompanyAgentProfile[]
   departments            Department[]
   skills                 Skill[]
   zohoConnections        ZohoConnection[]
@@ -203,6 +206,31 @@ model CompanyPromptProfile {
   updatedAt          DateTime @updatedAt
 
   @@index([companyId, isActive])
+}
+
+model CompanyAgentProfile {
+  id           String   @id @default(uuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  slug         String
+  name         String
+  description  String?
+  systemPrompt String
+  modelKey     String
+  toolIds      String[] @default([])
+  routingHints String[] @default([])
+  departmentIds String[] @default([])
+  isActive     Boolean  @default(true)
+  isSeeded     Boolean  @default(false)
+  createdBy    String
+  createdByUser User    @relation("CompanyAgentProfileCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  updatedBy    String
+  updatedByUser User    @relation("CompanyAgentProfileUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([companyId, slug])
+  @@index([companyId, isActive, updatedAt])
 }
 
 model UserDepartmentPreference {
@@ -604,6 +632,7 @@ model FileAsset {
   cloudinaryPublicId     String
   cloudinaryUrl          String
   cloudinaryResourceType String             @default("raw")
+  contentHash            String?
   ingestionStatus        IngestionStatus    @default(pending)
   ingestionError         String?
   createdAt              DateTime           @default(now())
@@ -614,6 +643,7 @@ model FileAsset {
 
   @@index([companyId, uploaderUserId])
   @@index([companyId, ingestionStatus])
+  @@index([companyId, contentHash])
 }
 
 model OutboundArtifact {
@@ -797,6 +827,8 @@ model DepartmentAgentConfig {
   skillsMarkdown    String
   zohoRateLimitJson Json?
   managerApprovalJson Json?
+  defaultAgentProfileId String?
+  specialistAgentProfileIds String[] @default([])
   isActive          Boolean    @default(true)
   createdBy         String
   createdByUser     User       @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)

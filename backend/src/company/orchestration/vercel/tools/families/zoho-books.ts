@@ -1,12 +1,12 @@
 import type { VercelRuntimeRequestContext, VercelRuntimeToolHooks } from '../../types';
-import { getLegacyToolMap, pickTools } from '../shared/legacy-factory';
+import { getRuntimeToolFamilies } from '../shared/runtime-family-cache';
 import { zohoRateLimitService } from '../../../../integrations/zoho/zoho-rate-limit.service';
 
 export const buildZohoBooksTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
 ): Record<string, any> => {
-  const tools = pickTools(getLegacyToolMap(runtime, hooks), ['zohoBooks']);
+  const tools = getRuntimeToolFamilies(runtime, hooks).zohoBooks;
   return Object.fromEntries(
     Object.entries(tools).map(([toolName, toolDef]) => [
       toolName,

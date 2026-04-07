@@ -1,5 +1,5 @@
 import { resolveSupervisorAgentToolIds } from '../src/company/orchestration/supervisor/agent-registry';
-import { createVercelDesktopTools } from '../src/company/orchestration/vercel/legacy-tools';
+import { createVercelDesktopTools } from '../src/company/orchestration/vercel/tools';
 import type { VercelRuntimeRequestContext, VercelRuntimeToolHooks } from '../src/company/orchestration/vercel/types';
 import { ALIAS_TO_CANONICAL_ID, DOMAIN_TO_TOOL_IDS, TOOL_REGISTRY_MAP } from '../src/company/tools/tool-registry';
 

@@ -20,6 +20,7 @@ import { chooseSupervisorPassThroughText, synthesizeSupervisorResult } from './s
 import type {
   DelegatedAgentExecutionResult,
   DelegatedStepResult,
+  SupervisorAgentDescriptor,
   SupervisorAgentId,
   SupervisorPlan,
   SupervisorSourceSystem,
@@ -29,60 +30,59 @@ import type {
 
 export { SUPERVISOR_AGENT_TOOL_IDS };
 
+const dedupe = (values: string[]): string[] => Array.from(new Set(values));
+
 const defaultSynthesisStepAction = (agentId: SupervisorAgentId): SupervisorStepAction => {
-  switch (agentId) {
-    case 'context-agent':
-      return 'cross_source_lookup';
-    case 'google-workspace-agent':
-      return 'send_email';
-    case 'lark-ops-agent':
-      return 'create_task';
-    case 'zoho-ops-agent':
-      return 'read_records';
-    case 'workspace-agent':
-      return 'search_records';
-    default:
-      return 'cross_source_lookup';
-  }
+  if (agentId.includes('google') || agentId.includes('gmail')) return 'send_email';
+  if (agentId.includes('lark')) return 'create_task';
+  if (agentId.includes('zoho')) return 'read_records';
+  if (agentId.includes('workspace')) return 'search_records';
+  return 'cross_source_lookup';
 };
 
 const defaultSynthesisStepSource = (agentId: SupervisorAgentId): SupervisorSourceSystem => {
-  switch (agentId) {
-    case 'context-agent':
-      return 'context';
-    case 'google-workspace-agent':
-      return 'gmail';
-    case 'lark-ops-agent':
-      return 'lark';
-    case 'zoho-ops-agent':
-      return 'zoho_books';
-    case 'workspace-agent':
-      return 'workspace';
-    default:
-      return 'context';
-  }
+  if (agentId.includes('google') || agentId.includes('gmail')) return 'gmail';
+  if (agentId.includes('lark')) return 'lark';
+  if (agentId.includes('zoho')) return 'zoho_books';
+  if (agentId.includes('workspace')) return 'workspace';
+  return 'context';
 };
 
-export const deriveEligibleSupervisorAgents = (input: {
+export const deriveEligibleSupervisorAgents = async (input: {
+  companyId: string;
+  departmentId?: string;
+  defaultAgentProfileId?: string;
+  specialistAgentProfileIds?: string[];
   allowedToolIds: string[];
   runExposedToolIds?: string[];
   plannerChosenOperationClass?: string | null;
   latestUserMessage?: string;
-}): SupervisorAgentId[] =>
-  resolveSupervisorEligibleAgents({
+}): Promise<SupervisorAgentId[]> =>
+  (await resolveSupervisorEligibleAgents({
     runtime: {
+      companyId: input.companyId,
+      departmentId: input.departmentId,
+      defaultAgentProfileId: input.defaultAgentProfileId,
+      specialistAgentProfileIds: input.specialistAgentProfileIds,
       allowedToolIds: input.allowedToolIds,
       runExposedToolIds: input.runExposedToolIds,
       plannerChosenOperationClass: input.plannerChosenOperationClass ?? undefined,
       workspace: undefined,
     },
     latestUserMessage: input.latestUserMessage ?? '',
-  }).eligibleAgents.map((agent) => agent.id);
+  })).eligibleAgents.map((agent) => agent.id);
 
-export const inferEligibleSupervisorAgentIds = (allowedToolIds: string[]): SupervisorAgentId[] =>
-  buildSupervisorAgentCatalog({ allowedToolIds }).map((agent) => agent.id);
+export const inferEligibleSupervisorAgentIds = async (input: {
+  companyId: string;
+  allowedToolIds: string[];
+}): Promise<SupervisorAgentId[]> =>
+  (await buildSupervisorAgentCatalog({
+    companyId: input.companyId,
+    allowedToolIds: input.allowedToolIds,
+  })).map((agent) => agent.id);
 
 export const runSupervisorPlan = async (input: {
+  companyId: string;
   mode: 'fast' | 'high';
   latestUserMessage: string;
   systemPrompt: string;
@@ -92,9 +92,10 @@ export const runSupervisorPlan = async (input: {
   contextSummary?: string[];
 }): Promise<SupervisorPlan> => {
   const resolvedModel = await resolveVercelLanguageModel(input.mode);
-  const eligibleAgents = buildSupervisorAgentCatalog({
-    allowedToolIds: Object.values(SUPERVISOR_AGENT_TOOL_IDS).flat(),
-  }).filter((agent) => input.eligibleAgentIds.includes(agent.id));
+  const eligibleAgents = (await buildSupervisorAgentCatalog({
+    companyId: input.companyId,
+    allowedToolIds: dedupe(Object.values(SUPERVISOR_AGENT_TOOL_IDS).flat()),
+  })).filter((agent) => input.eligibleAgentIds.includes(agent.id));
   return basePlanSupervisorDelegation({
     model: resolvedModel.model,
     providerOptions: {
@@ -126,7 +127,7 @@ export const planSupervisorDelegation = async (
         providerOptions?: Record<string, unknown>;
         systemPrompt: string;
         latestUserMessage: string;
-        eligibleAgents: ReturnType<typeof buildSupervisorAgentCatalog>;
+        eligibleAgents: SupervisorAgentDescriptor[];
         preferredAgentIds: string[];
         childRouteHints?: Record<string, unknown> | null;
         queryEnrichment?: QueryEnrichment;
@@ -155,6 +156,7 @@ export const planSupervisorDelegation = async (
         } | null;
       }
     | {
+        companyId: string;
         mode: 'fast' | 'high';
         latestUserMessage: string;
         eligibleAgentIds: SupervisorAgentId[];
@@ -192,9 +194,10 @@ export const planSupervisorDelegation = async (
     return basePlanSupervisorDelegation(input);
   }
   const resolvedModel = await resolveVercelLanguageModel(input.mode);
-  const eligibleAgents = buildSupervisorAgentCatalog({
-    allowedToolIds: Object.values(SUPERVISOR_AGENT_TOOL_IDS).flat(),
-  }).filter((agent) => input.eligibleAgentIds.includes(agent.id));
+  const eligibleAgents = (await buildSupervisorAgentCatalog({
+    companyId: input.companyId,
+    allowedToolIds: dedupe(Object.values(SUPERVISOR_AGENT_TOOL_IDS).flat()),
+  })).filter((agent) => input.eligibleAgentIds.includes(agent.id));
   return basePlanSupervisorDelegation({
     model: resolvedModel.model,
     providerOptions: {
@@ -418,8 +421,9 @@ export const synthesizeSupervisorOutcome = async (input: {
   });
 
 export const getSupervisorAgentToolIds = (
+  companyId: string,
   agentId: SupervisorAgentId,
   allowedToolIds: string[],
-): string[] => resolveSupervisorAgentToolIds({ agentId, allowedToolIds });
+): Promise<string[]> => resolveSupervisorAgentToolIds({ companyId, agentId, allowedToolIds });
 
 export { chooseSupervisorPassThroughText };

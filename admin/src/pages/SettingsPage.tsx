@@ -11,8 +11,9 @@ import { ControlsPage } from './ControlsPage';
 import { VectorShareRequestsPage } from './VectorShareRequestsPage';
 import { RbacPage } from './RbacPage';
 import { AssistantSettingsPage } from './AssistantSettingsPage';
+import { AgentProfilesSettingsPage } from './AgentProfilesSettingsPage';
 
-const SETTINGS_TABS = ['assistant', 'integrations', 'audit', 'controls', 'share-requests', 'governance'] as const;
+const SETTINGS_TABS = ['assistant', 'agents', 'integrations', 'audit', 'controls', 'share-requests', 'governance'] as const;
 type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 const isSettingsTab = (value: string | null): value is SettingsTab =>
@@ -71,6 +72,13 @@ export const SettingsPage = () => {
                 Assistant
               </TabsTrigger>
               <TabsTrigger 
+                value="agents" 
+                className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-10 text-xs font-bold tracking-wider uppercase transition-all flex items-center gap-2"
+              >
+                <Bot className="h-3.5 w-3.5" />
+                Agents
+              </TabsTrigger>
+              <TabsTrigger 
                 value="audit" 
                 className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-10 text-xs font-bold tracking-wider uppercase transition-all flex items-center gap-2"
               >
@@ -106,6 +114,7 @@ export const SettingsPage = () => {
         <CardContent className="p-0">
           <div className="p-8 animate-in slide-in-from-bottom-2 duration-500">
             {selectedTab === 'assistant' ? <AssistantSettingsPage /> : null}
+            {selectedTab === 'agents' ? <AgentProfilesSettingsPage /> : null}
             {selectedTab === 'integrations' ? <IntegrationsPage /> : null}
             {selectedTab === 'audit' ? <AuditLogsPage /> : null}
             {selectedTab === 'controls' ? <ControlsPage /> : null}

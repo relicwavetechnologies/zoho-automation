@@ -29,6 +29,49 @@ export const normalizeExtractedText = (rawText: string, maxWords = config.DOC_EX
     : trimmed;
 };
 
+const extractTextFromVisionBuffer = async (
+  buffer: Buffer,
+  mimeType: string,
+): Promise<string> => {
+  const base64 = buffer.toString('base64');
+  const apiKey = process.env.OPENAI_API_KEY ?? '';
+  if (!apiKey) {
+    logger.warn('document.ingestion.image.no_openai_key', { mimeType });
+    return '';
+  }
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o',
+      max_tokens: 2000,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: 'Extract all readable text from this image or document. Return only the extracted text, no commentary.',
+            },
+            {
+              type: 'image_url',
+              image_url: { url: `data:${mimeType};base64,${base64}`, detail: 'high' },
+            },
+          ],
+        },
+      ],
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+
+  const json = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+  return json.choices?.[0]?.message?.content ?? '';
+};
+
 export const extractTextFromBuffer = async (
   buffer: Buffer,
   mimeType: string,
@@ -43,7 +86,29 @@ export const extractTextFromBuffer = async (
     const parser = new PDFParse({ data: buffer });
     try {
       const data = await parser.getText();
-      return data.text ?? '';
+      const text = data.text ?? '';
+      if (text.trim().length > 50) {
+        return text;
+      }
+
+      logger.info('document_extractor.pdf_ocr_fallback', {
+        fileName,
+        bufferSize: buffer.length,
+      });
+
+      try {
+        const ocrText = await extractTextFromVisionBuffer(buffer, 'application/pdf');
+        if (ocrText.trim().length > 50) {
+          return ocrText;
+        }
+      } catch (ocrErr) {
+        logger.warn('document_extractor.pdf_ocr_fallback_failed', {
+          fileName,
+          error: ocrErr instanceof Error ? ocrErr.message : 'unknown',
+        });
+      }
+
+      throw new Error('No extractable text found in PDF (tried OCR fallback)');
     } finally {
       await parser.destroy();
     }
@@ -70,43 +135,7 @@ export const extractTextFromBuffer = async (
   }
 
   if (mimeType.startsWith('image/')) {
-    const base64 = buffer.toString('base64');
-    const apiKey = process.env.OPENAI_API_KEY ?? '';
-    if (!apiKey) {
-      logger.warn('document.ingestion.image.no_openai_key', { mimeType });
-      return '';
-    }
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o',
-        max_tokens: 2000,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: 'Extract all readable text from this image. Return only the extracted text, no commentary.',
-              },
-              {
-                type: 'image_url',
-                image_url: { url: `data:${mimeType};base64,${base64}`, detail: 'high' },
-              },
-            ],
-          },
-        ],
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
-
-    const json = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    return json.choices?.[0]?.message?.content ?? '';
+    return extractTextFromVisionBuffer(buffer, mimeType);
   }
 
   logger.warn('document.ingestion.unsupported_mime', { mimeType, fileName });

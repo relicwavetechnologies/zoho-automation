@@ -181,6 +181,27 @@ type DepartmentAvailableTool = {
   supportedActionGroups: string[];
 };
 
+type ToolMatrix = {
+  roles: Array<{ id: string; slug: string }>;
+  tools: DepartmentAvailableTool[];
+};
+
+type DepartmentAvailableAgentProfile = {
+  id: string;
+  companyId: string;
+  slug: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  modelKey: string;
+  toolIds: string[];
+  routingHints: string[];
+  departmentIds: string[];
+  isActive: boolean;
+  isSeeded: boolean;
+  revisionHash: string;
+};
+
 type ZohoRateLimitUserOverride = {
   userId: string;
   maxCallsPerWindow: number;
@@ -235,6 +256,10 @@ type DepartmentDetail = {
     skillsMarkdown: string;
     zohoRateLimit: ZohoRateLimitConfig;
     managerApproval: DepartmentManagerApprovalConfig;
+    defaultAgentProfileId?: string;
+    specialistAgentProfileIds: string[];
+    defaultAgentModelKey?: string;
+    defaultAgentToolIds: string[];
     isActive: boolean;
   };
   roles: DepartmentRole[];
@@ -246,6 +271,7 @@ type DepartmentDetail = {
   departmentSkills: DepartmentSkill[];
   availableMembers: DepartmentAvailableMember[];
   availableTools: DepartmentAvailableTool[];
+  availableAgentProfiles: DepartmentAvailableAgentProfile[];
 };
 
 const statusBadgeVariant = (status: string) =>
@@ -278,6 +304,8 @@ const createDefaultManagerApprovalConfig =
     managerDmAuditToolIds: [],
   });
 
+const DEFAULT_AGENT_MODEL_KEY = "gemini-3.1-flash-lite-preview";
+
 const DEPARTMENT_TABS = [
   "profile",
   "prompt",
@@ -307,9 +335,20 @@ export const DepartmentsPage = () => {
   const [isSkillDialogOpen, setIsSkillDialogOpen] = useState(false);
   const [editingSkillId, setEditingSkillId] = useState<string | null>(null);
   const [departmentSearch, setDepartmentSearch] = useState("");
+  const [companyToolCatalog, setCompanyToolCatalog] = useState<
+    DepartmentAvailableTool[]
+  >([]);
 
   const [newDepartmentName, setNewDepartmentName] = useState("");
   const [newDepartmentDescription, setNewDepartmentDescription] = useState("");
+  const [newDepartmentSystemPrompt, setNewDepartmentSystemPrompt] =
+    useState("");
+  const [newDepartmentAgentModelKey, setNewDepartmentAgentModelKey] = useState(
+    DEFAULT_AGENT_MODEL_KEY,
+  );
+  const [newDepartmentToolIds, setNewDepartmentToolIds] = useState<string[]>(
+    [],
+  );
   const [newRoleName, setNewRoleName] = useState("");
   const [newRoleSlug, setNewRoleSlug] = useState("");
   const [newRoleZohoReadScope, setNewRoleZohoReadScope] = useState<
@@ -345,12 +384,20 @@ export const DepartmentsPage = () => {
     skillsMarkdown: string;
     zohoRateLimit: ZohoRateLimitConfig;
     managerApproval: DepartmentManagerApprovalConfig;
+    defaultAgentProfileId?: string;
+    specialistAgentProfileIds: string[];
+    defaultAgentModelKey?: string;
+    defaultAgentToolIds: string[];
     isActive: boolean;
   }>({
     systemPrompt: "",
     skillsMarkdown: "",
     zohoRateLimit: createDefaultZohoRateLimitConfig(),
     managerApproval: createDefaultManagerApprovalConfig(),
+    defaultAgentProfileId: undefined,
+    specialistAgentProfileIds: [],
+    defaultAgentModelKey: DEFAULT_AGENT_MODEL_KEY,
+    defaultAgentToolIds: [],
     isActive: true,
   });
   const [skillForm, setSkillForm] = useState({
@@ -438,6 +485,23 @@ export const DepartmentsPage = () => {
     ],
   );
 
+  const loadCompanyToolCatalog = useCallback(async () => {
+    if (!token) return;
+    if (isSuperAdmin && !effectiveCompanyId) {
+      setCompanyToolCatalog([]);
+      return;
+    }
+
+    const query = effectiveCompanyId
+      ? `?companyId=${encodeURIComponent(effectiveCompanyId)}`
+      : "";
+    const matrix = await api.get<ToolMatrix>(
+      `/api/admin/company/tool-permissions${query}`,
+      token,
+    );
+    setCompanyToolCatalog(matrix.tools);
+  }, [effectiveCompanyId, isSuperAdmin, token]);
+
   const loadDetail = useCallback(
     async (departmentId: string, options?: { silent?: boolean }) => {
       if (!token) return;
@@ -460,6 +524,11 @@ export const DepartmentsPage = () => {
             data.config.zohoRateLimit ?? createDefaultZohoRateLimitConfig(),
           managerApproval:
             data.config.managerApproval ?? createDefaultManagerApprovalConfig(),
+          defaultAgentProfileId: data.config.defaultAgentProfileId,
+          specialistAgentProfileIds: data.config.specialistAgentProfileIds ?? [],
+          defaultAgentModelKey:
+            data.config.defaultAgentModelKey ?? DEFAULT_AGENT_MODEL_KEY,
+          defaultAgentToolIds: data.config.defaultAgentToolIds ?? [],
           isActive: data.config.isActive,
         });
         setMembershipRoleId(
@@ -482,6 +551,10 @@ export const DepartmentsPage = () => {
   useEffect(() => {
     void loadDepartments();
   }, [effectiveCompanyId, isSuperAdmin, token]); // Reduced dependencies to avoid re-triggering on selection
+
+  useEffect(() => {
+    void loadCompanyToolCatalog();
+  }, [loadCompanyToolCatalog]);
 
   useEffect(() => {
     if (selectedDepartmentId) {
@@ -548,12 +621,20 @@ export const DepartmentsPage = () => {
         companyId: isSuperAdmin ? effectiveCompanyId : undefined,
         name: newDepartmentName.trim(),
         description: newDepartmentDescription.trim() || undefined,
+        systemPrompt: newDepartmentSystemPrompt,
+        defaultAgentModelKey: newDepartmentToolIds.length
+          ? newDepartmentAgentModelKey
+          : undefined,
+        defaultAgentToolIds: newDepartmentToolIds,
       },
       token,
     );
     toast({ title: "Department created" });
     setNewDepartmentName("");
     setNewDepartmentDescription("");
+    setNewDepartmentSystemPrompt("");
+    setNewDepartmentAgentModelKey(DEFAULT_AGENT_MODEL_KEY);
+    setNewDepartmentToolIds([]);
     setIsCreateDialogOpen(false);
     await loadDepartments();
     selectDepartment(created.id);
@@ -676,6 +757,65 @@ export const DepartmentsPage = () => {
           ...prev.managerApproval,
           [key]: [...current],
         },
+      };
+    });
+  };
+
+  const setDefaultAgentProfile = (profileId: string) => {
+    const nextProfile =
+      profileId === "__none__"
+        ? undefined
+        : detail?.availableAgentProfiles.find((profile) => profile.id === profileId);
+    setConfigForm((prev) => ({
+      ...prev,
+      defaultAgentProfileId: profileId === "__none__" ? undefined : profileId,
+      specialistAgentProfileIds: prev.specialistAgentProfileIds.filter((id) => id !== profileId),
+      defaultAgentModelKey:
+        nextProfile?.modelKey ??
+        (profileId === "__none__" ? DEFAULT_AGENT_MODEL_KEY : prev.defaultAgentModelKey),
+      defaultAgentToolIds:
+        nextProfile?.toolIds ?? (profileId === "__none__" ? [] : prev.defaultAgentToolIds),
+    }));
+  };
+
+  const toggleDefaultAgentTool = (toolId: string) => {
+    setConfigForm((prev) => {
+      const next = new Set(prev.defaultAgentToolIds);
+      if (next.has(toolId)) {
+        next.delete(toolId);
+      } else {
+        next.add(toolId);
+      }
+      return {
+        ...prev,
+        defaultAgentToolIds: Array.from(next),
+      };
+    });
+  };
+
+  const toggleNewDepartmentTool = (toolId: string) => {
+    setNewDepartmentToolIds((current) => {
+      const next = new Set(current);
+      if (next.has(toolId)) {
+        next.delete(toolId);
+      } else {
+        next.add(toolId);
+      }
+      return Array.from(next);
+    });
+  };
+
+  const toggleSpecialistAgentProfile = (profileId: string) => {
+    setConfigForm((prev) => {
+      const current = new Set(prev.specialistAgentProfileIds);
+      if (current.has(profileId)) {
+        current.delete(profileId);
+      } else if (prev.defaultAgentProfileId !== profileId) {
+        current.add(profileId);
+      }
+      return {
+        ...prev,
+        specialistAgentProfileIds: [...current],
       };
     });
   };
@@ -1618,6 +1758,94 @@ export const DepartmentsPage = () => {
                               </div>
                             </div>
 
+                            <Card className="border-border/50 bg-background/50">
+                              <CardHeader className="pb-3">
+                                <CardTitle className="text-sm">
+                                  Default Department Agent
+                                </CardTitle>
+                                <CardDescription>
+                                  Keep the default agent setup inside the department. If you edit a shared default agent here, the system will fork a department-owned default agent instead of mutating the shared one.
+                                </CardDescription>
+                              </CardHeader>
+                              <CardContent className="space-y-6">
+                                <div className="space-y-2">
+                                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                    Model
+                                  </label>
+                                  <Input
+                                    value={
+                                      configForm.defaultAgentModelKey ??
+                                      DEFAULT_AGENT_MODEL_KEY
+                                    }
+                                    onChange={(event) =>
+                                      setConfigForm((prev) => ({
+                                        ...prev,
+                                        defaultAgentModelKey:
+                                          event.target.value,
+                                      }))
+                                    }
+                                    placeholder={DEFAULT_AGENT_MODEL_KEY}
+                                    className="h-10 bg-background border-border/50"
+                                  />
+                                </div>
+                                <div className="space-y-3">
+                                  <div>
+                                    <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                      Default Agent Tools
+                                    </div>
+                                    <p className="text-xs text-muted-foreground mt-1">
+                                      This subset defines what the department default agent is allowed to use. Specialists can add more tools later through agent assignment.
+                                    </p>
+                                  </div>
+                                  <div className="grid gap-2 md:grid-cols-2">
+                                    {detail.availableTools.map((tool) => {
+                                      const active =
+                                        configForm.defaultAgentToolIds.includes(
+                                          tool.toolId,
+                                        );
+                                      return (
+                                        <button
+                                          key={`default-agent-tool-${tool.toolId}`}
+                                          type="button"
+                                          onClick={() =>
+                                            toggleDefaultAgentTool(tool.toolId)
+                                          }
+                                          className={cn(
+                                            "rounded-lg border p-3 text-left transition-colors",
+                                            active
+                                              ? "border-primary/40 bg-primary/5"
+                                              : "border-border/40 bg-background hover:border-border/70",
+                                          )}
+                                        >
+                                          <div className="flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                              <div className="text-sm font-semibold text-foreground">
+                                                {tool.name}
+                                              </div>
+                                              <div className="text-[10px] font-mono uppercase text-muted-foreground">
+                                                {tool.toolId}
+                                              </div>
+                                            </div>
+                                            <Badge
+                                              variant={
+                                                active ? "default" : "outline"
+                                              }
+                                              className="text-[10px] uppercase"
+                                            >
+                                              {active ? "Included" : "Off"}
+                                            </Badge>
+                                          </div>
+                                          <div className="mt-2 text-xs text-muted-foreground">
+                                            {tool.description}
+                                          </div>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              </CardContent>
+                            </Card>
+
                             <div className="space-y-4">
                               <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1 flex items-center gap-2">
                                 <BookOpen className="h-3.5 w-3.5" />
@@ -1655,6 +1883,97 @@ export const DepartmentsPage = () => {
                       >
                         <ScrollArea className="h-full">
                           <div className="p-8 space-y-8">
+                            <div className="space-y-4">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1 flex items-center gap-2">
+                                    <Settings className="h-3.5 w-3.5" />
+                                    Agent Assignment
+                                  </label>
+                                  <p className="text-xs text-muted-foreground mt-1 ml-1">
+                                    Pick one default department agent and optional specialists from the company inventory.
+                                  </p>
+                                </div>
+                              </div>
+
+                              <Card className="border-border/50 bg-background/50">
+                                <CardContent className="pt-6 space-y-6">
+                                  <div className="space-y-2">
+                                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                      Default Agent
+                                    </label>
+                                    <Select
+                                      value={configForm.defaultAgentProfileId ?? "__none__"}
+                                      onValueChange={setDefaultAgentProfile}
+                                    >
+                                      <SelectTrigger>
+                                        <SelectValue placeholder="Choose the default agent" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="__none__">No default agent</SelectItem>
+                                        {detail.availableAgentProfiles
+                                          .filter((profile) => profile.isActive)
+                                          .map((profile) => (
+                                            <SelectItem key={profile.id} value={profile.id}>
+                                              {profile.name}
+                                            </SelectItem>
+                                          ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+
+                                  <div className="space-y-3">
+                                    <div>
+                                      <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                        Specialist Agents
+                                      </div>
+                                      <p className="text-xs text-muted-foreground mt-1">
+                                        Specialists remain available for routing, but the default agent is preferred first.
+                                      </p>
+                                    </div>
+                                    <div className="space-y-3">
+                                      {detail.availableAgentProfiles
+                                        .filter((profile) => profile.isActive)
+                                        .map((profile) => {
+                                          const active = configForm.specialistAgentProfileIds.includes(profile.id);
+                                          const isDefault = configForm.defaultAgentProfileId === profile.id;
+                                          return (
+                                            <div
+                                              key={`agent-profile-${profile.id}`}
+                                              className="rounded-lg border border-border/40 p-3 flex items-start justify-between gap-4"
+                                            >
+                                              <div className="space-y-1">
+                                                <div className="text-sm font-semibold text-foreground">
+                                                  {profile.name}
+                                                  {profile.isSeeded ? (
+                                                    <span className="ml-2 text-[10px] uppercase text-muted-foreground">
+                                                      Seed
+                                                    </span>
+                                                  ) : null}
+                                                </div>
+                                                <div className="text-xs text-muted-foreground">{profile.description}</div>
+                                                <div className="text-[10px] font-mono uppercase text-muted-foreground">
+                                                  {profile.toolIds.join(", ")}
+                                                </div>
+                                              </div>
+                                              <Button
+                                                variant={active ? "default" : "outline"}
+                                                size="sm"
+                                                disabled={isDefault}
+                                                className="h-8 text-[10px] font-bold uppercase tracking-widest"
+                                                onClick={() => toggleSpecialistAgentProfile(profile.id)}
+                                              >
+                                                {isDefault ? "Default" : active ? "Specialist" : "Optional"}
+                                              </Button>
+                                            </div>
+                                          );
+                                        })}
+                                    </div>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            </div>
+
                             <div className="space-y-4">
                               <div className="flex items-center justify-between">
                                 <div>
@@ -2596,43 +2915,121 @@ export const DepartmentsPage = () => {
         </div>
 
         <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-          <DialogContent className="max-w-md rounded-2xl">
+          <DialogContent className="max-w-3xl rounded-2xl">
             <DialogHeader>
               <DialogTitle className="text-xl font-bold">
                 New Department
               </DialogTitle>
               <DialogDescription className="text-muted-foreground">
-                Set up a new organizational unit to manage specific AI workflows
-                and access.
+                Set up the department and its default agent together. Existing production behavior stays unchanged unless you configure the agent setup here.
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-5 py-4">
-              <div className="space-y-2">
-                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
-                  Department Name
-                </label>
-                <Input
-                  value={newDepartmentName}
-                  onChange={(event) => setNewDepartmentName(event.target.value)}
-                  placeholder="e.g. Technical Support"
-                  className="h-11 bg-secondary/20 border-border/50"
-                />
+            <ScrollArea className="max-h-[70vh] pr-4">
+              <div className="space-y-6 py-4">
+                <div className="grid gap-5 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                      Department Name
+                    </label>
+                    <Input
+                      value={newDepartmentName}
+                      onChange={(event) => setNewDepartmentName(event.target.value)}
+                      placeholder="e.g. Technical Support"
+                      className="h-11 bg-secondary/20 border-border/50"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                      Default Agent Model
+                    </label>
+                    <Input
+                      value={newDepartmentAgentModelKey}
+                      onChange={(event) =>
+                        setNewDepartmentAgentModelKey(event.target.value)
+                      }
+                      placeholder={DEFAULT_AGENT_MODEL_KEY}
+                      className="h-11 bg-secondary/20 border-border/50"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                    Description
+                  </label>
+                  <Textarea
+                    value={newDepartmentDescription}
+                    onChange={(event) =>
+                      setNewDepartmentDescription(event.target.value)
+                    }
+                    placeholder="What does this department do?"
+                    rows={3}
+                    className="bg-secondary/20 border-border/50 resize-none"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                    Department Agent Prompt
+                  </label>
+                  <Textarea
+                    value={newDepartmentSystemPrompt}
+                    onChange={(event) =>
+                      setNewDepartmentSystemPrompt(event.target.value)
+                    }
+                    placeholder="Describe how this department agent should operate."
+                    rows={7}
+                    className="bg-[#050505] border-border/50 text-emerald-500 font-mono text-sm leading-relaxed resize-y"
+                  />
+                </div>
+                <div className="space-y-3">
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
+                      Default Agent Tools
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1 ml-1">
+                      Pick the initial tool subset for this department. If you leave this empty, the department is created without a default agent and you can configure it later.
+                    </p>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {companyToolCatalog.map((tool) => {
+                      const active = newDepartmentToolIds.includes(tool.toolId);
+                      return (
+                        <button
+                          key={`new-department-tool-${tool.toolId}`}
+                          type="button"
+                          onClick={() => toggleNewDepartmentTool(tool.toolId)}
+                          className={cn(
+                            "rounded-lg border p-3 text-left transition-colors",
+                            active
+                              ? "border-primary/40 bg-primary/5"
+                              : "border-border/40 bg-background hover:border-border/70",
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold text-foreground">
+                                {tool.name}
+                              </div>
+                              <div className="text-[10px] font-mono uppercase text-muted-foreground">
+                                {tool.toolId}
+                              </div>
+                            </div>
+                            <Badge
+                              variant={active ? "default" : "outline"}
+                              className="text-[10px] uppercase"
+                            >
+                              {active ? "Included" : "Off"}
+                            </Badge>
+                          </div>
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            {tool.description}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
-              <div className="space-y-2">
-                <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground ml-1">
-                  Description
-                </label>
-                <Textarea
-                  value={newDepartmentDescription}
-                  onChange={(event) =>
-                    setNewDepartmentDescription(event.target.value)
-                  }
-                  placeholder="What does this department do?"
-                  rows={3}
-                  className="bg-secondary/20 border-border/50 resize-none"
-                />
-              </div>
-            </div>
+            </ScrollArea>
             <DialogFooter className="gap-2 sm:gap-0">
               <Button
                 variant="ghost"

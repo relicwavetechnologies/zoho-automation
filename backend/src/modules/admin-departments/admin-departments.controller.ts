@@ -17,6 +17,9 @@ const createDepartmentSchema = z.object({
   companyId: z.string().uuid().optional(),
   name: z.string().min(1).max(120),
   description: z.string().max(1000).optional(),
+  systemPrompt: z.string().max(20000).optional(),
+  defaultAgentModelKey: z.string().trim().min(1).max(120).optional(),
+  defaultAgentToolIds: z.array(z.string().trim().min(1).max(120)).max(500).optional(),
 });
 
 const updateDepartmentSchema = z.object({
@@ -51,6 +54,10 @@ const updateDepartmentConfigSchema = z.object({
       managerDmAuditToolIds: z.array(z.string().trim().min(1)).max(500),
     })
     .optional(),
+  defaultAgentProfileId: z.string().trim().min(1).max(120).optional().nullable(),
+  specialistAgentProfileIds: z.array(z.string().trim().min(1).max(120)).max(500).optional(),
+  defaultAgentModelKey: z.string().trim().min(1).max(120).optional(),
+  defaultAgentToolIds: z.array(z.string().trim().min(1).max(120)).max(500).optional(),
   isActive: z.boolean().optional(),
 });
 

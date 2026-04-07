@@ -82,6 +82,7 @@ const fetchIndexedFileChunks = async (input: {
 const fetchRelevantDocumentChunks = async (input: {
   fileAssetId: string;
   companyId: string;
+  requesterUserId?: string;
   requesterAiRole?: string;
   queryText: string;
 }): Promise<string> => {
@@ -89,6 +90,7 @@ const fetchRelevantDocumentChunks = async (input: {
     const search = await fileRetrievalService.search({
       companyId: input.companyId,
       fileAssetId: input.fileAssetId,
+      requesterUserId: input.requesterUserId,
       requesterAiRole: input.requesterAiRole,
       query: input.queryText,
       preferParentContext: true,
@@ -260,6 +262,7 @@ export const buildVisionContentWithGrounding = async (input: {
       const relevantContext = await fetchRelevantDocumentChunks({
         fileAssetId: file.fileAssetId,
         companyId: input.companyId,
+        requesterUserId: input.requesterUserId,
         requesterAiRole: input.requesterAiRole,
         queryText: input.userMessage,
       });

@@ -1,13 +1,7 @@
 import type { VercelRuntimeRequestContext, VercelRuntimeToolHooks } from '../../types';
-import { getLegacyToolMap, pickTools } from '../shared/legacy-factory';
+import { getRuntimeToolFamilies } from '../shared/runtime-family-cache';
 
 export const buildLarkCollabTools = (
   runtime: VercelRuntimeRequestContext,
   hooks: VercelRuntimeToolHooks,
-): Record<string, any> => pickTools(getLegacyToolMap(runtime, hooks), [
-  'larkCalendar',
-  'larkMeeting',
-  'larkApproval',
-  'larkBase',
-  'larkDoc',
-]);
+): Record<string, any> => getRuntimeToolFamilies(runtime, hooks).larkCollab;

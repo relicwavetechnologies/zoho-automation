@@ -7,7 +7,7 @@ import type {
   VercelToolEnvelope,
 } from '../vercel/types';
 
-export const SUPERVISOR_AGENT_IDS = [
+export const FALLBACK_SUPERVISOR_AGENT_IDS = [
   'lark-ops-agent',
   'google-workspace-agent',
   'zoho-ops-agent',
@@ -15,9 +15,9 @@ export const SUPERVISOR_AGENT_IDS = [
   'workspace-agent',
 ] as const;
 
-export type SupervisorAgentId = (typeof SUPERVISOR_AGENT_IDS)[number];
+export type SupervisorAgentId = string;
 
-export const supervisorAgentIdSchema = z.enum(SUPERVISOR_AGENT_IDS);
+export const supervisorAgentIdSchema = z.string().min(1).max(120);
 
 export const SUPERVISOR_STEP_ACTIONS = [
   'read_records',
@@ -83,11 +83,15 @@ export type SupervisorStepAction = z.infer<typeof supervisorStepActionSchema>;
 export type SupervisorSourceSystem = z.infer<typeof supervisorSourceSystemSchema>;
 
 export type SupervisorAgentDescriptor = {
-  id: SupervisorAgentId;
+  id: string;
   label: string;
   description: string;
   domainIds: string[];
   toolIds: string[];
+  systemPrompt?: string;
+  modelKey?: string;
+  routingHints?: string[];
+  isSeeded?: boolean;
 };
 
 export type DelegatedToolResult = {

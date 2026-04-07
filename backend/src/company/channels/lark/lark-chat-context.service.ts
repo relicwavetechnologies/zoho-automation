@@ -33,6 +33,9 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 
+const readThreadRootId = (message: StoredChatMessage): string | undefined =>
+  asString(message.metadata?.threadRootId);
+
 const parseStoredChatMessages = (value: unknown): StoredChatMessage[] => {
   if (!Array.isArray(value)) {
     return [];
@@ -164,6 +167,7 @@ export class LarkChatContextService {
     role: 'user' | 'assistant';
     content: string;
     metadata?: Record<string, unknown>;
+    threadRootId?: string | null;
   }): Promise<StoredChatMessage | null> {
     const content = input.content.trim();
     if (!content) {
@@ -180,7 +184,10 @@ export class LarkChatContextService {
       role: input.role,
       content,
       createdAt: nowIso,
-      metadata: input.metadata,
+      metadata: {
+        ...(input.metadata ?? {}),
+        threadRootId: input.threadRootId ?? null,
+      },
     };
     const nextMessages = [...existingMessages, nextMessage];
     let compactedSummary = currentSummary;
@@ -279,6 +286,40 @@ export class LarkChatContextService {
     companyId: string;
     chatId: string;
   }) {
+    await this.clearAllMessages(input);
+  }
+
+  async loadThreadContext(input: {
+    companyId: string;
+    chatId: string;
+    chatType?: string;
+    threadRootId: string;
+    splitPointMessageId: string;
+  }): Promise<{
+    mainContextUpToSplit: StoredChatMessage[];
+    threadMessages: StoredChatMessage[];
+    splitPointIndex: number;
+  }> {
+    const context = await this.load(input);
+    const mainMessages = context.recentMessages.filter((message) => !readThreadRootId(message));
+    const threadMessages = context.recentMessages.filter((message) =>
+      readThreadRootId(message) === input.threadRootId);
+    const splitPointIndex = mainMessages.findIndex((message) => message.id === input.splitPointMessageId);
+
+    return {
+      mainContextUpToSplit:
+        splitPointIndex >= 0
+          ? mainMessages.slice(0, splitPointIndex + 1)
+          : mainMessages,
+      threadMessages,
+      splitPointIndex,
+    };
+  }
+
+  async clearAllMessages(input: {
+    companyId: string;
+    chatId: string;
+  }): Promise<void> {
     const context = await this.getOrCreate({
       companyId: input.companyId,
       chatId: input.chatId,
@@ -286,12 +327,58 @@ export class LarkChatContextService {
     await prisma.larkChatContext.update({
       where: { id: context.id },
       data: {
-        summaryJson: Prisma.DbNull,
-        summaryUpdatedAt: null,
-        taskStateJson: Prisma.DbNull,
-        taskStateUpdatedAt: null,
         recentMessagesJson: JSON.parse(JSON.stringify([])),
         sourceMessageCount: 0,
+        lastMessageAt: new Date(),
+      },
+    });
+  }
+
+  async clearThreadMessages(input: {
+    companyId: string;
+    chatId: string;
+    threadRootId: string;
+  }): Promise<void> {
+    const context = await this.getOrCreate({
+      companyId: input.companyId,
+      chatId: input.chatId,
+    });
+    const existingMessages = parseStoredChatMessages(context.recentMessagesJson);
+    const retainedMessages = existingMessages.filter((message) =>
+      readThreadRootId(message) !== input.threadRootId);
+    await prisma.larkChatContext.update({
+      where: { id: context.id },
+      data: {
+        recentMessagesJson: JSON.parse(JSON.stringify(retainedMessages)),
+        sourceMessageCount: retainedMessages.length,
+        lastMessageAt: new Date(),
+      },
+    });
+  }
+
+  async clearMainMessages(input: {
+    companyId: string;
+    chatId: string;
+    upToMessageId: string;
+  }): Promise<void> {
+    const context = await this.getOrCreate({
+      companyId: input.companyId,
+      chatId: input.chatId,
+    });
+    const existingMessages = parseStoredChatMessages(context.recentMessagesJson);
+    const mainMessages = existingMessages.filter((message) => !readThreadRootId(message));
+    const threadMessages = existingMessages.filter((message) => Boolean(readThreadRootId(message)));
+    const splitPointIndex = mainMessages.findIndex((message) => message.id === input.upToMessageId);
+    const retainedMainMessages = splitPointIndex >= 0
+      ? mainMessages.slice(splitPointIndex + 1)
+      : mainMessages;
+    const retainedMessages = [...retainedMainMessages, ...threadMessages]
+      .sort((left, right) => new Date(left.createdAt).valueOf() - new Date(right.createdAt).valueOf());
+    await prisma.larkChatContext.update({
+      where: { id: context.id },
+      data: {
+        recentMessagesJson: JSON.parse(JSON.stringify(retainedMessages)),
+        sourceMessageCount: retainedMessages.length,
         lastMessageAt: new Date(),
       },
     });

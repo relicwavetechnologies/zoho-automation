@@ -8,7 +8,13 @@ import { PrismaClient } from '../src/generated/prisma';
 import { buildTaskWithConfiguredEngine, executeTaskWithConfiguredEngine } from '../src/company/orchestration/engine';
 import { LarkChannelAdapter } from '../src/company/channels/lark/lark.adapter';
 import { larkChatContextService } from '../src/company/channels/lark/lark-chat-context.service';
+import { memoryService } from '../src/company/memory';
+import { fileUploadService } from '../src/modules/file-upload/file-upload.service';
 import { desktopThreadsService } from '../src/modules/desktop-threads/desktop-threads.service';
+import { desktopWorkflowsService } from '../src/modules/desktop-workflows/desktop-workflows.service';
+import { getNextScheduledRunAt } from '../src/modules/desktop-workflows/desktop-workflows.schedule';
+import { fileRetrievalService } from '../src/company/retrieval/file-retrieval.service';
+import { resolveContextSearchLimit } from '../src/company/orchestration/engine/supervisor-v2.engine';
 import type { NormalizedIncomingMessageDTO } from '../src/company/contracts';
 
 const prisma = new PrismaClient();
@@ -443,9 +449,289 @@ const loadStoredContextSnapshot = async (input: {
   };
 };
 
+const runPersonalizationScenario = async (context: HarnessContext) => {
+  if (!context.linkedUserId) {
+    throw new Error('Personalization scenario requires linkedUserId.');
+  }
+
+  const threadId = `harness_memory_${Date.now()}`;
+  const conversationKey = `harness_memory_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+  const conciseWrite = await memoryService.recordUserTurnOrThrow({
+    companyId: context.companyId,
+    userId: context.linkedUserId,
+    channelOrigin: 'lark',
+    threadId,
+    conversationKey,
+    text: 'Answer in short bullet points.',
+  });
+
+  const financeWrite = await memoryService.recordUserTurnOrThrow({
+    companyId: context.companyId,
+    userId: context.linkedUserId,
+    channelOrigin: 'lark',
+    threadId,
+    conversationKey,
+    text: 'Reply in a direct tone.',
+  });
+
+  const promptContext = await memoryService.getPromptContext({
+    userId: context.linkedUserId,
+    companyId: context.companyId,
+    queryText: 'get overdue invoices',
+    threadId,
+    conversationKey,
+    contextClass: 'normal_work',
+  });
+
+  return {
+    scenario: 'personalization',
+    draftCounts: {
+      concise: conciseWrite.draftCount,
+      finance: financeWrite.draftCount,
+    },
+    behaviorProfileLoaded: Boolean(promptContext.behaviorProfileContext),
+    behaviorProfile: promptContext.behaviorProfileContext,
+    durableMemory: promptContext.durableTaskContextText,
+    relevantFacts: promptContext.relevantMemoryFactsText,
+  };
+};
+
+const runRetrievalLimitScenario = async (context: HarnessContext) => {
+  if (!context.linkedUserId) {
+    throw new Error('Retrieval scenario requires linkedUserId.');
+  }
+
+  const docText = Array.from({ length: 60 }, (_, index) =>
+    `Section ${index + 1}: key points about the uploaded document, invoice workflow, owners, follow ups, and finance controls.`
+  ).join('\n\n');
+
+  const uploaded = await fileUploadService.upload({
+    buffer: Buffer.from(docText, 'utf8'),
+    mimeType: 'text/plain',
+    fileName: `retrieval_limit_${Date.now()}.txt`,
+    sizeBytes: Buffer.byteLength(docText),
+    companyId: context.companyId,
+    uploaderUserId: context.linkedUserId,
+    uploaderChannel: 'lark',
+    allowedRoles: ['FINANCE'],
+    visibility: 'personal',
+    ownerUserId: context.linkedUserId,
+  });
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const asset = await prisma.fileAsset.findUnique({
+      where: { id: uploaded.fileAssetId },
+      select: { ingestionStatus: true, ingestionError: true },
+    });
+    if (asset?.ingestionStatus === 'done') {
+      break;
+    }
+    if (asset?.ingestionStatus === 'failed') {
+      throw new Error(`Retrieval scenario ingestion failed: ${asset.ingestionError ?? 'unknown'}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  const configuredLimit = resolveContextSearchLimit({
+    sources: { files: true },
+  });
+  const search = await fileRetrievalService.search({
+    companyId: context.companyId,
+    query: 'finance controls and invoice workflow key points',
+    requesterAiRole: 'FINANCE',
+    requesterUserId: context.linkedUserId,
+    fileAssetId: uploaded.fileAssetId,
+    limit: configuredLimit,
+  });
+
+  return {
+    scenario: 'retrieval_limit',
+    configuredLimit,
+    retrievedMatches: search.matches.length,
+    queriesUsed: search.queriesUsed,
+    firstMatch: search.matches[0]?.displayText ?? null,
+  };
+};
+
+const runDedupScenario = async (context: HarnessContext) => {
+  if (!context.linkedUserId) {
+    throw new Error('Dedup scenario requires linkedUserId.');
+  }
+
+  const content = `dedup-${Date.now()} same buffer content for upload reuse`;
+  const buffer = Buffer.from(content, 'utf8');
+  const first = await fileUploadService.upload({
+    buffer,
+    mimeType: 'text/plain',
+    fileName: 'dedup_first.txt',
+    sizeBytes: buffer.length,
+    companyId: context.companyId,
+    uploaderUserId: context.linkedUserId,
+    uploaderChannel: 'lark',
+    allowedRoles: ['FINANCE'],
+    visibility: 'personal',
+    ownerUserId: context.linkedUserId,
+  });
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const asset = await prisma.fileAsset.findUnique({
+      where: { id: first.fileAssetId },
+      select: { ingestionStatus: true, ingestionError: true },
+    });
+    if (asset?.ingestionStatus === 'done') {
+      break;
+    }
+    if (asset?.ingestionStatus === 'failed') {
+      throw new Error(`Dedup scenario first upload ingestion failed: ${asset.ingestionError ?? 'unknown'}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  const second = await fileUploadService.upload({
+    buffer,
+    mimeType: 'text/plain',
+    fileName: 'dedup_second.txt',
+    sizeBytes: buffer.length,
+    companyId: context.companyId,
+    uploaderUserId: context.linkedUserId,
+    uploaderChannel: 'lark',
+    allowedRoles: ['FINANCE'],
+    visibility: 'personal',
+    ownerUserId: context.linkedUserId,
+  });
+
+  return {
+    scenario: 'dedup',
+    firstAssetId: first.fileAssetId,
+    secondAssetId: second.fileAssetId,
+    deduped: first.fileAssetId === second.fileAssetId,
+    secondUploadDeduped: second.deduped ?? false,
+  };
+};
+
+const runLarkSchedulingScenario = async (context: HarnessContext) => {
+  if (!context.linkedUserId) {
+    throw new Error('Scheduling scenario requires linkedUserId.');
+  }
+
+  const created = await desktopWorkflowsService.createFromLarkIntent({
+    companyId: context.companyId,
+    userId: context.linkedUserId,
+    userIntent: 'schedule the overdue invoice report every Monday at 9am, send to this chat',
+    taskPrompt: 'Get all overdue invoices from Zoho and summarize by customer name and overdue amount.',
+    schedule: {
+      type: 'weekly',
+      timezone: 'Asia/Kolkata',
+      hour: 9,
+      minute: 0,
+      dayOfWeek: 1,
+    },
+    outputTarget: 'lark_current_chat',
+    originChatId: context.chatId,
+    requesterOpenId: context.larkOpenId,
+    name: `Harness Lark Schedule ${Date.now()}`,
+  });
+
+  const createdRow = await prisma.scheduledWorkflow.findUniqueOrThrow({
+    where: { id: created.id },
+    select: {
+      id: true,
+      name: true,
+      scheduleEnabled: true,
+      nextRunAt: true,
+      scheduleType: true,
+      outputConfigJson: true,
+      userIntent: true,
+      status: true,
+    },
+  });
+
+  const expectedNextRunAt = getNextScheduledRunAt(
+    {
+      type: 'weekly',
+      timezone: 'Asia/Kolkata',
+      daysOfWeek: ['MO'],
+      time: { hour: 9, minute: 0 },
+    },
+    new Date(),
+  );
+
+  const listed = await prisma.scheduledWorkflow.findMany({
+    where: {
+      companyId: context.companyId,
+      createdByUserId: context.linkedUserId,
+      status: { in: ['draft', 'published', 'scheduled_active', 'paused'] },
+      scheduleEnabled: true,
+    },
+    orderBy: { nextRunAt: 'asc' },
+    take: 10,
+    select: {
+      id: true,
+      name: true,
+      userIntent: true,
+      nextRunAt: true,
+      scheduleType: true,
+      outputConfigJson: true,
+    },
+  });
+
+  await prisma.scheduledWorkflow.updateMany({
+    where: {
+      id: created.id,
+      companyId: context.companyId,
+      createdByUserId: context.linkedUserId,
+    },
+    data: {
+      scheduleEnabled: false,
+      status: 'paused',
+      pausedAt: new Date(),
+    },
+  });
+
+  const cancelled = await prisma.scheduledWorkflow.findUniqueOrThrow({
+    where: { id: created.id },
+    select: {
+      id: true,
+      status: true,
+      scheduleEnabled: true,
+      pausedAt: true,
+    },
+  });
+
+  const createdDestinations = asRecord(createdRow.outputConfigJson);
+  const firstDestination = asRecord((Array.isArray(createdDestinations?.destinations) ? createdDestinations.destinations[0] : null));
+
+  return {
+    scenario: 'lark_schedule',
+    requestedMessages: [
+      'schedule the overdue invoice report every Monday at 9am, send to this chat',
+      'what do I have scheduled',
+      `cancel ${created.id}`,
+    ],
+    created: {
+      workflowId: createdRow.id,
+      scheduleEnabled: createdRow.scheduleEnabled,
+      status: createdRow.status,
+      nextRunAt: createdRow.nextRunAt?.toISOString() ?? null,
+      expectedNextRunAt: expectedNextRunAt?.toISOString() ?? null,
+      scheduleType: createdRow.scheduleType,
+      outputTarget: asString(firstDestination?.kind) ?? null,
+    },
+    listed: {
+      count: listed.length,
+      foundWorkflow: listed.some((workflow) => workflow.id === created.id),
+    },
+    cancelled: {
+      workflowId: cancelled.id,
+      status: cancelled.status,
+      scheduleEnabled: cancelled.scheduleEnabled,
+      pausedAt: cancelled.pausedAt?.toISOString() ?? null,
+    },
+  };
+};
+
 const main = async (): Promise<void> => {
+  const scenario = asString(readArg('--scenario'));
   const messageText = asString(readArg('--message') || readArg('-m'));
-  if (!messageText) {
+  if (!messageText && !scenario) {
     throw new Error('Pass --message "<text>"');
   }
 
@@ -485,6 +771,40 @@ const main = async (): Promise<void> => {
   const stubbedEgress = hasFlag('--real-lark-egress') ? null : installStubLarkEgress();
 
   try {
+    if (scenario) {
+      const results = [];
+      const scenarios = scenario === 'all'
+        ? ['personalization', 'retrieval_limit', 'dedup', 'lark_schedule']
+        : [scenario];
+
+      for (const item of scenarios) {
+        if (item === 'personalization') {
+          results.push(await runPersonalizationScenario(resolved));
+          continue;
+        }
+        if (item === 'retrieval_limit') {
+          results.push(await runRetrievalLimitScenario(resolved));
+          continue;
+        }
+        if (item === 'dedup') {
+          results.push(await runDedupScenario(resolved));
+          continue;
+        }
+        if (item === 'lark_schedule') {
+          results.push(await runLarkSchedulingScenario(resolved));
+          continue;
+        }
+        throw new Error(`Unknown scenario: ${item}`);
+      }
+
+      console.log(JSON.stringify({
+        harness: 'local-lark-execution',
+        scenario,
+        results,
+      }, null, 2));
+      return;
+    }
+
     const taskId = randomUUID();
     const messageId = `om_harness_${Date.now()}`;
     const timestamp = new Date().toISOString();

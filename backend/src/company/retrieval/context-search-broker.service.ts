@@ -1184,6 +1184,7 @@ class ContextSearchBrokerService {
           query,
           limit: internalLimit,
           requesterAiRole: input.runtime.requesterAiRole,
+          requesterUserId: input.runtime.userId,
           preferParentContext: true,
         });
         return search.matches.flatMap((match) => {

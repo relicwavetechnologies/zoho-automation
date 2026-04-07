@@ -23,6 +23,8 @@ export type IngestionInput = {
   sourceUrl: string;
   uploaderUserId: string;
   allowedRoles: string[];
+  visibility?: 'personal' | 'shared' | 'public';
+  ownerUserId?: string;
 };
 
 class DocumentIngestionPipeline {
@@ -103,7 +105,12 @@ class DocumentIngestionPipeline {
     });
 
     if (!truncatedText) {
-      throw new Error('No extractable text was found in this file');
+      logger.warn('document.ingestion.text.empty', {
+        fileAssetId: input.fileAssetId,
+        fileName: input.fileName,
+        mimeType: input.mimeType,
+      });
+      return [];
     }
 
     const chunks = buildIndexedFileChunks({
@@ -112,8 +119,9 @@ class DocumentIngestionPipeline {
       fileName: input.fileName,
       mimeType: input.mimeType,
       sourceUrl: input.sourceUrl,
-      uploaderUserId: input.uploaderUserId,
+      uploaderUserId: input.ownerUserId ?? input.uploaderUserId,
       allowedRoles: input.allowedRoles,
+      visibility: input.visibility,
       text: truncatedText,
       metadata: {
         embeddingProvider: embeddingService.providerName,
@@ -142,7 +150,7 @@ class DocumentIngestionPipeline {
       chunkText: chunk.chunkText,
       contentHash: hashContent(chunk.chunkText),
       visibility: chunk.visibility,
-      ownerUserId: input.uploaderUserId,
+      ownerUserId: input.ownerUserId ?? input.uploaderUserId,
       fileAssetId: input.fileAssetId,
       allowedRoles: input.allowedRoles,
       payload: {
@@ -179,8 +187,9 @@ class DocumentIngestionPipeline {
       fileName: input.fileName,
       mimeType: input.mimeType,
       sourceUrl: input.sourceUrl,
-      uploaderUserId: input.uploaderUserId,
+      uploaderUserId: input.ownerUserId ?? input.uploaderUserId,
       allowedRoles: input.allowedRoles,
+      visibility: input.visibility,
       text: embeddedSummary.summary,
       metadata: {
         ...embeddedSummary.metadata,
@@ -200,7 +209,7 @@ class DocumentIngestionPipeline {
         chunkText: chunk.chunkText,
         contentHash: hashContent(chunk.chunkText),
         visibility: chunk.visibility,
-        ownerUserId: input.uploaderUserId,
+        ownerUserId: input.ownerUserId ?? input.uploaderUserId,
         fileAssetId: input.fileAssetId,
         allowedRoles: input.allowedRoles,
         payload: {

@@ -15,10 +15,25 @@ router.get(
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.getAssistantProfile),
 );
+router.get(
+  '/agent-profiles',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.listAgentProfiles),
+);
 router.put(
   '/assistant-profile',
   requireRbacAction('onboarding.manage'),
   asyncHandler(companyAdminController.upsertAssistantProfile),
+);
+router.put(
+  '/agent-profiles',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.upsertAgentProfile),
+);
+router.delete(
+  '/agent-profiles/:profileId',
+  requireRbacAction('onboarding.manage'),
+  asyncHandler(companyAdminController.deleteAgentProfile),
 );
 router.get('/members', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.listMembers));
 router.get('/directory', requireRbacAction('onboarding.manage'), asyncHandler(companyAdminController.getCompanyDirectory));
