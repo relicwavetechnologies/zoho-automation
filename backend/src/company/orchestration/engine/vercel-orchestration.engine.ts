@@ -6,6 +6,7 @@ import { resolveChannelAdapter } from '../../channels';
 import { larkChatContextService } from '../../channels/lark/lark-chat-context.service';
 import { departmentService } from '../../departments/department.service';
 import { departmentPreferenceService } from '../../departments/department-preference.service';
+import { channelMappingService } from '../../agents/dynamic/channel-mapping.service';
 import type {
   AgentResultDTO,
   NormalizedIncomingMessageDTO,
@@ -1222,7 +1223,7 @@ const buildHotContextSlot = (toolName: string, output: VercelToolEnvelope): HotC
   };
 };
 
-const AGENT_CAPABILITY_PROFILES: Record<string, string> = {
+export const AGENT_CAPABILITY_PROFILES: Record<string, string> = {
   'zoho-ops-agent': `
 You are the Zoho specialist. Decision rules:
 
@@ -3072,6 +3073,7 @@ const buildSystemPrompt = async (input: {
     departmentRoleSlug: input.runtime.departmentRoleSlug,
     departmentSystemPrompt: input.runtime.departmentSystemPrompt,
     departmentSkillsMarkdown: input.runtime.departmentSkillsMarkdown,
+    agentDefinition: input.runtime.agentDefinition,
     dateScope: input.runtime.dateScope,
     latestUserMessage: input.latestUserMessage,
     queryEnrichment: input.queryEnrichment
@@ -4001,6 +4003,22 @@ const resolveRuntimeContext = async (
       contextSearch: ['read'],
     };
   }
+  const mappedAgent = await channelMappingService.resolveAgent(
+    companyId,
+    'lark',
+    message.chatId,
+  );
+  logger.error('orchestration.engine.selection.agent_source', {
+    channel: 'lark',
+    source: mappedAgent?.isActive ? 'db_mapped' : 'hardcoded_fallback',
+    resolution: 'channel_mapping_lookup',
+    companyId,
+    chatId: message.chatId,
+    messageId: message.messageId,
+    agentId: mappedAgent?.id,
+    agentName: mappedAgent?.name,
+    mappedAgentActive: mappedAgent?.isActive ?? false,
+  });
 
   return {
     channel: 'lark',
@@ -4058,6 +4076,7 @@ const resolveRuntimeContext = async (
           ),
         )
       : undefined,
+    agentDefinition: mappedAgent?.isActive ? mappedAgent : undefined,
     departmentSystemPrompt,
     departmentSkillsMarkdown,
   };
@@ -5256,7 +5275,10 @@ const executeLarkVercelTask = async (
   }
 
   await assertExecutionRunnable(task.taskId, abortSignal);
-  const resolvedModel = await resolveVercelLanguageModel(effectiveRuntime.mode);
+  const resolvedModel = await resolveVercelLanguageModel(
+    effectiveRuntime.mode,
+    effectiveRuntime.agentDefinition ?? undefined,
+  );
   const contextClass = chooseLarkContextClass({
     latestUserMessage: resolvedUserMessage,
     taskState: activeTaskState,

@@ -57,7 +57,7 @@ const shareClassificationSchema = z.object({
 });
 
 const SHARE_TOOL_ID = 'share_chat_vectors';
-const SHARE_MODEL_TARGET = 'mastra.outreach' as const;
+const SHARE_MODEL_TARGET = 'runtime.fast' as const;
 const FILE_PREFIX = 'file:';
 const SUMMARY_MODEL_TIMEOUT_MS = 4_000;
 

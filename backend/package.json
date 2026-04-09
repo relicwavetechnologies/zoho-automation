@@ -16,6 +16,9 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:push": "prisma db push",
+    "seed:agents": "ts-node -r tsconfig-paths/register --project tsconfig.json scripts/seed-agents.ts",
+    "seed:divo-prompt": "ts-node -r tsconfig-paths/register --project tsconfig.json scripts/seed-divo-prompt.ts",
+    "seed:child-prompts": "ts-node -r tsconfig-paths/register --project tsconfig.json scripts/seed-child-agent-prompts.ts",
     "memory:inspect:routing": "tsx scripts/inspect-routing-memory.ts",
     "memory:reset:routing": "tsx scripts/reset-routing-memory.ts",
     "executions:cleanup": "tsx scripts/cleanup-execution-history.ts",
@@ -51,6 +54,7 @@
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.43",
+    "@ai-sdk/groq": "^3.0.35",
     "@ai-sdk/openai": "^3.0.41",
     "@langchain/google": "^0.1.5",
     "@langchain/openai": "^1.2.12",

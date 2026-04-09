@@ -840,7 +840,10 @@ const buildAttachmentContext = async (
 
   try {
     if (kind === 'image') {
-      const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
+      const resolvedModel = await resolveVercelLanguageModel(
+        runtime.mode,
+        runtime.agentDefinition ?? undefined,
+      );
       const visionResult = await generateText({
         model: resolvedModel.model,
         messages: [{
@@ -854,14 +857,16 @@ const buildAttachmentContext = async (
           ],
         }],
         temperature: 0,
-        providerOptions: {
-          google: {
-            thinkingConfig: {
-              includeThoughts: resolvedModel.includeThoughts,
-              thinkingLevel: resolvedModel.thinkingLevel,
+        ...(resolvedModel.effectiveProvider === 'google' ? {
+          providerOptions: {
+            google: {
+              thinkingConfig: {
+                includeThoughts: resolvedModel.includeThoughts,
+                thinkingLevel: resolvedModel.thinkingLevel,
+              },
             },
           },
-        },
+        } : {}),
       });
       const inlineText = summarizeText(visionResult.text, 8_000);
       return inlineText
@@ -2783,21 +2788,26 @@ const runSubAgent = async (
     onStepFinish?: (step: unknown) => Promise<void>;
   },
 ): Promise<SubAgentTextResult> => {
-  const resolvedModel = await resolveVercelLanguageModel(input.runtime.mode);
+  const resolvedModel = await resolveVercelLanguageModel(
+    input.runtime.mode,
+    input.runtime.agentDefinition ?? undefined,
+  );
   const result = await generateText({
     model: resolvedModel.model,
     system: input.prompt,
     messages: [{ role: 'user', content: input.message }],
     tools: input.tools,
     temperature: 0,
-    providerOptions: {
-      google: {
-        thinkingConfig: {
-          includeThoughts: resolvedModel.includeThoughts,
-          thinkingLevel: resolvedModel.thinkingLevel,
+    ...(resolvedModel.effectiveProvider === 'google' ? {
+      providerOptions: {
+        google: {
+          thinkingConfig: {
+            includeThoughts: resolvedModel.includeThoughts,
+            thinkingLevel: resolvedModel.thinkingLevel,
+          },
         },
       },
-    },
+    } : {}),
     stopWhen: stepCountIs(input.maxSteps ?? 3),
     abortSignal: input.abortSignal,
     onStepFinish: input.onStepFinish,
@@ -4026,7 +4036,10 @@ const executeTask = async (
       ].join('\n');
     };
 
-    const resolvedModel = await resolveVercelLanguageModel(runtime.mode);
+    const resolvedModel = await resolveVercelLanguageModel(
+      runtime.mode,
+      runtime.agentDefinition ?? undefined,
+    );
     const attachmentContextMessages: string[] = [];
     if (input.message.attachedFiles?.length) {
       for (const file of input.message.attachedFiles) {
@@ -4703,14 +4716,16 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       messages,
       tools: supervisorTools,
       temperature: 0,
-      providerOptions: {
-        google: {
-          thinkingConfig: {
-            includeThoughts: resolvedModel.includeThoughts,
-            thinkingLevel: resolvedModel.thinkingLevel,
+      ...(resolvedModel.effectiveProvider === 'google' ? {
+        providerOptions: {
+          google: {
+            thinkingConfig: {
+              includeThoughts: resolvedModel.includeThoughts,
+              thinkingLevel: resolvedModel.thinkingLevel,
+            },
           },
         },
-      },
+      } : {}),
       stopWhen: stepCountIs(10),
       abortSignal,
       onStepFinish: async (step) => {
@@ -4824,6 +4839,11 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       statusMessageId: statusCoordinator?.getStatusMessageId(),
     };
   } catch (error) {
+    console.error('[DEBUG] supervisor_v2 fatal error:', {
+      message: error?.message,
+      stack: error?.stack?.split('\n').slice(0,8).join('\n'),
+      provider: error?.constructor?.name,
+    });
     const messageText = error instanceof Error ? error.message : 'Supervisor v2 execution failed.';
     await statusCoordinator?.finalizeLiveText('Something went wrong ✗');
     await appendExecutionEventSafe({

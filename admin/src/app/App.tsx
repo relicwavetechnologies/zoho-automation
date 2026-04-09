@@ -12,6 +12,7 @@ import { MemberLoginPage } from '../pages/MemberLoginPage';
 import { MembersPage } from '../pages/MembersPage';
 import { OverviewPage } from '../pages/OverviewPage';
 import { AiOpsPage } from '../pages/AiOpsPage';
+import { AgentsPage } from '../pages/AgentsPage';
 import { SettingsPage } from '../pages/SettingsPage';
 import { PlaceholderPage } from '../pages/PlaceholderPage';
 import { ZohoOauthCallbackPage } from '../pages/ZohoOauthCallbackPage';
@@ -71,6 +72,7 @@ export const App = () => {
           <Route path="ai-models" element={<Navigate to="/ai-ops?tab=models" replace />} />
           <Route path="departments" element={<DepartmentsPage />} />
           <Route path="ai-ops" element={<AiOpsPage />} />
+          <Route path="agents" element={<AgentsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="lark/callback" element={<LarkOauthCallbackPage />} />
           <Route path="google/callback" element={<GoogleOauthCallbackPage />} />

@@ -15,7 +15,7 @@ import { channelIdentityRepository } from '../../channels/channel-identity.repos
 
 const DEFAULT_RESULT_LIMIT = 3;
 const MAX_ALL_RESULT_LIMIT = 25;
-const SYNTHESIS_MODEL_TARGET = 'mastra.synthesis' as const;
+const SYNTHESIS_MODEL_TARGET = 'runtime.high' as const;
 const resolveZohoScopeMode = (scope?: unknown): ZohoScopeMode =>
   scope === 'show_all' ? 'company_scoped' : 'email_scoped';
 

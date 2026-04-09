@@ -4,6 +4,7 @@ import type { DepartmentManagerApprovalConfig } from '../../departments/departme
 import type { CompanyPromptProfileRuntime } from '../../prompt-profiles/company-prompt-profile.cache';
 import type { SearchIntent } from '../search-intent-classifier';
 import type { CanonicalIntent } from '../intent/canonical-intent';
+import type { AgentDefinition } from '../../../generated/prisma';
 
 export type VercelToolErrorKind =
   | 'missing_input'
@@ -230,6 +231,7 @@ export type VercelRuntimeRequestContext = {
   companyPromptProfile?: CompanyPromptProfileRuntime;
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
+  agentDefinition?: Pick<AgentDefinition, 'id' | 'name' | 'description' | 'systemPrompt' | 'toolIds' | 'isActive'>;
   searchIntent?: SearchIntent;
   searchIntentPromise?: Promise<SearchIntent>;
   canonicalIntent?: CanonicalIntent;

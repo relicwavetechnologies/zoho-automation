@@ -6,8 +6,8 @@ export type AiControlTargetKind = 'supervisor' | 'specialist' | 'router' | 'plan
 export const AI_THINKING_LEVELS: AiThinkingLevel[] = ['minimal', 'low', 'medium', 'high'];
 
 export type AiControlTargetKey =
-  | 'mastra.outreach'
-  | 'mastra.synthesis';
+  | 'runtime.fast'
+  | 'runtime.high';
 
 export type AiModelCatalogEntry = {
   provider: AiModelProvider;
@@ -66,9 +66,20 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
   },
   {
     provider: 'google',
+    modelId: 'gemini-2.5-pro',
+    label: 'Gemini 2.5 Pro',
+    description: 'Most advanced stable Gemini 2.5 model for complex reasoning and coding tasks.',
+    supportsThinking: true,
+    speed: 'strong',
+    cost: 'premium',
+    maxContextTokens: 1_048_576,
+    outputReserveTokens: 32_768,
+  },
+  {
+    provider: 'google',
     modelId: 'gemini-3.1-flash-lite-preview',
     label: 'Gemini 3.1 Flash-Lite Preview',
-    description: 'Latest lightweight Gemini 3.1 preview for cheap, fast supervisor and search runs.',
+    description: 'Current Gemini 3.1 Flash-Lite preview for cost-efficient, high-volume multimodal tasks.',
     preview: true,
     supportsThinking: true,
     speed: 'fast',
@@ -80,13 +91,25 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
     provider: 'google',
     modelId: 'gemini-3-flash-preview',
     label: 'Gemini 3 Flash Preview',
-    description: 'Stronger Gemini 3 fast model for supervision, routing, and complex tool selection.',
+    description: 'Current Gemini 3 Flash preview with frontier-class performance at Flash speed and pricing.',
     preview: true,
     supportsThinking: true,
     speed: 'strong',
     cost: 'balanced',
     maxContextTokens: 1_048_576,
     outputReserveTokens: 32_768,
+  },
+  {
+    provider: 'google',
+    modelId: 'gemini-3.1-pro-preview',
+    label: 'Gemini 3.1 Pro Preview',
+    description: 'Current Gemini 3.1 Pro preview for advanced reasoning, coding, and complex multimodal work.',
+    preview: true,
+    supportsThinking: true,
+    speed: 'strong',
+    cost: 'premium',
+    maxContextTokens: 1_048_576,
+    outputReserveTokens: 64_000,
   },
   {
     provider: 'openai',
@@ -146,26 +169,26 @@ export const AI_MODEL_CATALOG_MAP = new Map(
 
 export const AI_CONTROL_TARGETS: AiControlTargetDefinition[] = [
   {
-    key: 'mastra.outreach',
+    key: 'runtime.fast',
     engine: 'mastra',
     kind: 'specialist',
-    label: 'Divo Outreach Specialist',
-    description: 'SEO/outreach inventory filtering specialist for publisher discovery and ranking.',
+    label: 'Fast Runtime Model',
+    description: 'Model used for routing, classification, and lightweight reasoning calls.',
     defaultProvider: 'openai',
-    defaultModelId: 'gpt-4.1-nano',
+    defaultModelId: 'gpt-4o-mini',
     fastDefaultProvider: 'openai',
-    fastDefaultModelId: 'gpt-4.1-nano',
+    fastDefaultModelId: 'gpt-4o-mini',
   },
   {
-    key: 'mastra.synthesis',
+    key: 'runtime.high',
     engine: 'mastra',
     kind: 'synthesis',
-    label: 'Divo Synthesis',
-    description: 'Response-polishing agent used to turn grounded records into concise business answers.',
-    defaultProvider: 'google',
-    defaultModelId: 'gemini-3.1-flash-lite-preview',
-    fastDefaultProvider: 'google',
-    fastDefaultModelId: 'gemini-3.1-flash-lite-preview',
+    label: 'High Runtime Model',
+    description: 'Model used for synthesis, supervision, and complex reasoning calls.',
+    defaultProvider: 'openai',
+    defaultModelId: 'gpt-4o',
+    fastDefaultProvider: 'openai',
+    fastDefaultModelId: 'gpt-4o-mini',
   },
 ];
 

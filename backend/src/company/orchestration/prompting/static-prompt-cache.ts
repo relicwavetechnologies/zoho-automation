@@ -14,6 +14,7 @@ export type StaticPromptLayerMetadata = {
     allowedToolHash: string;
     companyProfileHash: string;
     departmentProfileHash: string;
+    agentDefinitionHash?: string;
     runtimeLabelHash?: string;
   };
 };
@@ -34,6 +35,7 @@ const buildKey = (input: {
   allowedToolIds?: string[];
   companyProfileHash?: string;
   departmentProfileHash?: string;
+  agentDefinitionHash?: string;
   runtimeLabel?: string;
 }): {
   redisKey: string;
@@ -47,6 +49,7 @@ const buildKey = (input: {
     allowedToolHash: hashList(input.allowedToolIds),
     companyProfileHash: input.companyProfileHash ?? 'none',
     departmentProfileHash: input.departmentProfileHash ?? 'none',
+    agentDefinitionHash: input.agentDefinitionHash ?? 'none',
     runtimeLabelHash: input.runtimeLabel ? hashValue(input.runtimeLabel) : undefined,
   };
   const serialized = JSON.stringify({
@@ -68,6 +71,7 @@ export const getOrBuildStaticPromptLayer = async (input: {
   allowedToolIds?: string[];
   companyProfileHash?: string;
   departmentProfileHash?: string;
+  agentDefinitionHash?: string;
   runtimeLabel?: string;
   builder: () => string;
 }): Promise<{ layer: string; metadata: StaticPromptLayerMetadata }> => {

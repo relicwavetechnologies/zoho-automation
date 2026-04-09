@@ -6,6 +6,7 @@ import { BaseController } from '../../core/controller';
 import { HttpException } from '../../core/http-exception';
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { knowledgeShareService } from '../../company/knowledge-share/knowledge-share.service';
+import { channelMappingService } from '../../company/agents/dynamic/channel-mapping.service';
 import { hitlActionService, executeStoredRemoteToolAction } from '../../company/state';
 import config from '../../config';
 import { logger } from '../../utils/logger';
@@ -34,6 +35,11 @@ class DesktopChatController extends BaseController {
   send = async (req: Request, res: Response): Promise<void> =>
     {
       const session = this.session(req);
+      const mappedAgent = await channelMappingService.resolveAgent(
+        session.companyId,
+        'desktop',
+        req.params.threadId,
+      );
       logger.info('desktop.chat.engine_route', {
         route: 'send',
         configuredEngine: config.ORCHESTRATION_ENGINE,
@@ -42,12 +48,19 @@ class DesktopChatController extends BaseController {
         userId: session.userId,
         companyId: session.companyId,
       });
-      return vercelDesktopEngine.stream(req, res, session);
+      return vercelDesktopEngine.stream(req, res, session, {
+        agentDefinition: mappedAgent?.isActive ? mappedAgent : undefined,
+      });
     };
 
   actStream = async (req: Request, res: Response): Promise<void> =>
     {
       const session = this.session(req);
+      const mappedAgent = await channelMappingService.resolveAgent(
+        session.companyId,
+        'desktop',
+        req.params.threadId,
+      );
       logger.info('desktop.chat.engine_route', {
         route: 'act_stream',
         configuredEngine: config.ORCHESTRATION_ENGINE,
@@ -56,12 +69,19 @@ class DesktopChatController extends BaseController {
         userId: session.userId,
         companyId: session.companyId,
       });
-      return vercelDesktopEngine.streamAct(req, res, session);
+      return vercelDesktopEngine.streamAct(req, res, session, {
+        agentDefinition: mappedAgent?.isActive ? mappedAgent : undefined,
+      });
     };
 
   act = async (req: Request, res: Response): Promise<Response> =>
     {
       const session = this.session(req);
+      const mappedAgent = await channelMappingService.resolveAgent(
+        session.companyId,
+        'desktop',
+        req.params.threadId,
+      );
       logger.info('desktop.chat.engine_route', {
         route: 'act',
         configuredEngine: config.ORCHESTRATION_ENGINE,
@@ -70,7 +90,9 @@ class DesktopChatController extends BaseController {
         userId: session.userId,
         companyId: session.companyId,
       });
-      return vercelDesktopEngine.act(req, res, session);
+      return vercelDesktopEngine.act(req, res, session, {
+        agentDefinition: mappedAgent?.isActive ? mappedAgent : undefined,
+      });
     };
 
   shareConversation = async (req: Request, res: Response): Promise<Response> => {

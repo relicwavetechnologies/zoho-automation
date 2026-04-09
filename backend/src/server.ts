@@ -2,6 +2,7 @@ import config from './config';
 import { larkDirectorySyncScheduler, larkTenantTokenService } from './company/channels/lark';
 import { executionRetentionService } from './company/observability';
 import { initializeOrchestrationRuntime, shutdownOrchestrationRuntime } from './company/queue/runtime';
+import { syncToolRegistry } from './company/tools/tool-sync.service';
 import loaders from './loaders';
 import { runBootstrapHealthChecks } from './loaders/bootstrap-health';
 import { desktopWsGateway } from './modules/desktop-live/desktop-ws.gateway';
@@ -14,6 +15,7 @@ let isShuttingDown = false;
 const startServer = async () => {
   try {
     await runBootstrapHealthChecks();
+    await syncToolRegistry();
     await initializeOrchestrationRuntime();
     const app = await loaders();
     const httpServer = createServer(app);

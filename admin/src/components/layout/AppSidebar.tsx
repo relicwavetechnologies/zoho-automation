@@ -5,6 +5,7 @@ import {
   Users,
   Workflow,
   Activity,
+  Bot,
   LogOut,
   User,
   ChevronUp,
@@ -38,6 +39,7 @@ const iconMap: Record<string, any> = {
   Home: LayoutDashboard,
   People: Users,
   Departments: Building2,
+  Agents: Bot,
   "AI Ops": Workflow,
   Settings: Settings2,
   Workspaces: Activity,
@@ -100,6 +102,28 @@ export function AppSidebar() {
                   </SidebarMenuItem>
                 )
               })}
+
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={location.pathname === "/agents"}
+                  tooltip="Agents"
+                  className={cn(
+                    "transition-all duration-200 h-10 px-3 rounded-xl",
+                    location.pathname === "/agents"
+                      ? "bg-secondary text-foreground border border-border shadow-sm"
+                      : "text-muted-foreground/70 hover:bg-secondary/30 hover:text-foreground border border-transparent"
+                  )}
+                >
+                  <NavLink to="/agents" className="flex items-center gap-3 w-full">
+                    <Bot className={cn(
+                      "h-[18px] w-[18px] transition-colors opacity-70",
+                      location.pathname === "/agents" ? "text-primary opacity-100" : ""
+                    )} strokeWidth={location.pathname === "/agents" ? 2.5 : 2} />
+                    <span className="font-semibold text-[13px] tracking-tight">Agents</span>
+                  </NavLink>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

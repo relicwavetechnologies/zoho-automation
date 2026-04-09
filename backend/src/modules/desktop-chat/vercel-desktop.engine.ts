@@ -68,6 +68,7 @@ import { conversationMemoryStore } from '../../company/state/conversation/conver
 import { toolPermissionService } from '../../company/tools/tool-permission.service';
 import { companyPromptProfileService } from '../../company/prompt-profiles/company-prompt-profile.service';
 import { ALIAS_TO_CANONICAL_ID, DOMAIN_ALIASES, TOOL_REGISTRY_MAP } from '../../company/tools/tool-registry';
+import { channelMappingService } from '../../company/agents/dynamic/channel-mapping.service';
 import {
   classifyIntent,
   isBareContinuationMessage,
@@ -1296,7 +1297,10 @@ const recordTokenUsage = async (input: {
     return;
   }
 
-  const resolvedModel = input.resolvedModel ?? (await resolveVercelLanguageModel(input.mode));
+  const resolvedModel = input.resolvedModel ?? (await resolveVercelLanguageModel(
+    input.mode,
+    input.runtime.agentDefinition ?? undefined,
+  ));
   const estimatedInputTokens =
     estimateTokens(input.systemPrompt) + estimateMessageTokens(input.messages);
   const estimatedOutputTokens = estimateTokens(input.outputText);
@@ -3222,6 +3226,7 @@ const buildDesktopContextAssembly = async (input: {
   departmentRoleSlug?: string;
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
+  agentDefinition?: VercelRuntimeRequestContext['agentDefinition'];
   dateScope?: string;
   latestActionResult?: { kind: string; ok: boolean; summary: string };
   activeAttachments: AttachedFileRef[];
@@ -3244,7 +3249,10 @@ const buildDesktopContextAssembly = async (input: {
   conversationSnippets: string[];
   metrics: DesktopContextAssemblyMetrics;
 }> => {
-  const resolvedModel = await resolveVercelLanguageModel(input.mode);
+  const resolvedModel = await resolveVercelLanguageModel(
+    input.mode,
+    input.runtime.agentDefinition ?? undefined,
+  );
   const contextClass = chooseDesktopContextClass({
     latestUserMessage: input.latestUserMessage,
     taskState: input.taskState,
@@ -3296,6 +3304,7 @@ const buildDesktopContextAssembly = async (input: {
     departmentRoleSlug: input.departmentRoleSlug,
     departmentSystemPrompt: input.departmentSystemPrompt,
     departmentSkillsMarkdown: input.departmentSkillsMarkdown,
+    agentDefinition: input.agentDefinition,
     threadSummary: input.threadSummary,
     taskState: input.taskState,
     conversationRetrievalSnippets: conversationSnippets,
@@ -3401,6 +3410,7 @@ const buildSystemPrompt = (input: {
   departmentRoleSlug?: string;
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
+  agentDefinition?: VercelRuntimeRequestContext['agentDefinition'];
   threadSummary?: DesktopThreadSummary;
   taskState?: DesktopTaskState;
   conversationRetrievalSnippets?: string[];
@@ -3446,6 +3456,7 @@ const buildSystemPrompt = (input: {
     departmentRoleSlug: input.departmentRoleSlug,
     departmentSystemPrompt: input.departmentSystemPrompt,
     departmentSkillsMarkdown: input.departmentSkillsMarkdown,
+    agentDefinition: input.agentDefinition,
     dateScope: input.dateScope,
     latestUserMessage: input.latestUserMessage,
     queryEnrichment: input.queryEnrichment
@@ -3684,6 +3695,48 @@ const resolveDepartmentRuntime = async (
   };
 };
 
+type DesktopEngineOptions = {
+  agentDefinition?: VercelRuntimeRequestContext['agentDefinition'] | null;
+};
+
+const resolveMappedDesktopAgent = async (input: {
+  companyId: string;
+  threadId: string;
+  agentDefinition?: VercelRuntimeRequestContext['agentDefinition'] | null;
+}): Promise<VercelRuntimeRequestContext['agentDefinition'] | undefined> => {
+  if (input.agentDefinition?.isActive) {
+    logger.error('orchestration.engine.selection.agent_source', {
+      channel: 'desktop',
+      source: 'db_mapped',
+      resolution: 'pre_resolved_runtime',
+      companyId: input.companyId,
+      threadId: input.threadId,
+      agentId: input.agentDefinition.id,
+      agentName: input.agentDefinition.name,
+    });
+    return input.agentDefinition;
+  }
+
+  const mappedAgent = await channelMappingService.resolveAgent(
+    input.companyId,
+    'desktop',
+    input.threadId,
+  );
+
+  logger.error('orchestration.engine.selection.agent_source', {
+    channel: 'desktop',
+    source: mappedAgent?.isActive ? 'db_mapped' : 'hardcoded_fallback',
+    resolution: 'channel_mapping_lookup',
+    companyId: input.companyId,
+    threadId: input.threadId,
+    agentId: mappedAgent?.id,
+    agentName: mappedAgent?.name,
+    mappedAgentActive: mappedAgent?.isActive ?? false,
+  });
+
+  return mappedAgent?.isActive ? mappedAgent : undefined;
+};
+
 const mapPendingApprovalAction = (
   action: PendingApprovalAction,
 ): DesktopWorkspaceAction | RemoteApprovalAction => {
@@ -3881,7 +3934,10 @@ const generateExecutionPlan = async (input: {
     return null;
   }
 
-  const plannerModel = await resolveVercelLanguageModel('fast');
+  const plannerModel = await resolveVercelLanguageModel(
+    'fast',
+    input.runtime.agentDefinition ?? undefined,
+  );
   const result = await runWithModelCircuitBreaker(
     plannerModel.effectiveProvider,
     'desktop_planner',
@@ -4299,6 +4355,7 @@ const runDesktopDelegatedAgentStep = async (input: {
     departmentId: input.runtime.departmentId,
     departmentName: input.runtime.departmentName,
     departmentRoleSlug: input.runtime.departmentRoleSlug,
+    agentDefinition: input.runtime.agentDefinition,
     departmentSystemPrompt: input.runtime.departmentSystemPrompt,
     departmentSkillsMarkdown: input.runtime.departmentSkillsMarkdown,
     dateScope: familySelection.runtime.dateScope,
@@ -4463,6 +4520,10 @@ export const executeAutomatedDesktopTurn = async (input: {
 
   try {
     const resolvedUserContext = resolveDesktopTaskReferences(input.prompt, threadMemory.taskState);
+    const mappedAgent = await resolveMappedDesktopAgent({
+      companyId: input.session.companyId,
+      threadId: input.threadId,
+    });
     const runtime: VercelRuntimeRequestContext = {
       channel: 'desktop',
       threadId: input.threadId,
@@ -4488,6 +4549,7 @@ export const executeAutomatedDesktopTurn = async (input: {
       allowedActionsByTool: departmentRuntime.allowedActionsByTool,
       departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
       departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+      agentDefinition: mappedAgent,
     };
     logger.info('desktop.workflow.execution.runtime', {
       executionId,
@@ -4610,6 +4672,7 @@ export const executeAutomatedDesktopTurn = async (input: {
       departmentRoleSlug: departmentRuntime.departmentRoleSlug,
       departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
       departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+      agentDefinition: effectiveRuntime.agentDefinition,
       dateScope: effectiveRuntime.dateScope,
       activeAttachments: grounding.attachments,
       allowedToolIds: effectiveRuntime.allowedToolIds,
@@ -4957,7 +5020,12 @@ export const executeAutomatedDesktopTurn = async (input: {
 };
 
 export class VercelDesktopEngine {
-  async stream(req: Request, res: Response, session: MemberSessionDTO): Promise<void> {
+  async stream(
+    req: Request,
+    res: Response,
+    session: MemberSessionDTO,
+    options?: DesktopEngineOptions,
+  ): Promise<void> {
     const threadId = req.params.threadId;
     const {
       message,
@@ -5352,6 +5420,11 @@ export class VercelDesktopEngine {
         });
       }
 
+      const mappedAgent = await resolveMappedDesktopAgent({
+        companyId: session.companyId,
+        threadId,
+        agentDefinition: options?.agentDefinition,
+      });
       const runtime: VercelRuntimeRequestContext = {
         channel: 'desktop',
         threadId,
@@ -5379,6 +5452,7 @@ export class VercelDesktopEngine {
         allowedToolIds: departmentRuntime.allowedToolIds,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+        agentDefinition: mappedAgent,
       };
       const grounding = await resolveDesktopGroundingAttachments({
         companyId: session.companyId,
@@ -5512,6 +5586,7 @@ export class VercelDesktopEngine {
         departmentZohoRateLimitConfig: departmentRuntime.departmentZohoRateLimitConfig,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+        agentDefinition: effectiveRuntime.agentDefinition,
         dateScope: effectiveRuntime.dateScope,
         activeAttachments,
         allowedToolIds: effectiveRuntime.allowedToolIds,
@@ -6199,7 +6274,12 @@ export class VercelDesktopEngine {
     }
   }
 
-  async act(req: Request, res: Response, session: MemberSessionDTO): Promise<Response> {
+  async act(
+    req: Request,
+    res: Response,
+    session: MemberSessionDTO,
+    options?: DesktopEngineOptions,
+  ): Promise<Response> {
     const threadId = req.params.threadId;
     const {
       message,
@@ -6316,6 +6396,11 @@ export class VercelDesktopEngine {
         });
       }
 
+      const mappedAgent = await resolveMappedDesktopAgent({
+        companyId: session.companyId,
+        threadId,
+        agentDefinition: options?.agentDefinition,
+      });
       const runtime: VercelRuntimeRequestContext = {
         threadId,
         executionId,
@@ -6342,6 +6427,7 @@ export class VercelDesktopEngine {
         allowedActionsByTool: departmentRuntime.allowedActionsByTool,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+        agentDefinition: mappedAgent,
       };
 
       let persistedBlocks: PersistedContentBlock[] = continuationState.persistedBlocks;
@@ -6500,6 +6586,7 @@ export class VercelDesktopEngine {
         departmentZohoRateLimitConfig: departmentRuntime.departmentZohoRateLimitConfig,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+        agentDefinition: effectiveRuntime.agentDefinition,
         dateScope: effectiveRuntime.dateScope,
         latestActionResult: actionResult,
         activeAttachments,
@@ -6885,7 +6972,12 @@ export class VercelDesktopEngine {
     }
   }
 
-  async streamAct(req: Request, res: Response, session: MemberSessionDTO): Promise<void> {
+  async streamAct(
+    req: Request,
+    res: Response,
+    session: MemberSessionDTO,
+    options?: DesktopEngineOptions,
+  ): Promise<void> {
     const threadId = req.params.threadId;
     const {
       message,
@@ -7013,6 +7105,11 @@ export class VercelDesktopEngine {
         });
       }
 
+      const mappedAgent = await resolveMappedDesktopAgent({
+        companyId: session.companyId,
+        threadId,
+        agentDefinition: options?.agentDefinition,
+      });
       const runtime: VercelRuntimeRequestContext = {
         channel: 'desktop',
         threadId,
@@ -7041,6 +7138,7 @@ export class VercelDesktopEngine {
         allowedActionsByTool: departmentRuntime.allowedActionsByTool,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+        agentDefinition: mappedAgent,
       };
 
       let persistedBlocks: PersistedContentBlock[] = continuationState.persistedBlocks;
@@ -7210,6 +7308,7 @@ export class VercelDesktopEngine {
         departmentZohoRateLimitConfig: departmentRuntime.departmentZohoRateLimitConfig,
         departmentSystemPrompt: departmentRuntime.departmentSystemPrompt,
         departmentSkillsMarkdown: departmentRuntime.departmentSkillsMarkdown,
+        agentDefinition: effectiveRuntime.agentDefinition,
         dateScope: effectiveRuntime.dateScope,
         latestActionResult: actionResult,
         activeAttachments,

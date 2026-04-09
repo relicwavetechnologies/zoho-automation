@@ -182,6 +182,62 @@ model Company {
   userMemoryProfiles     UserMemoryProfile[]
   taskRuns               TaskRun[]
   userDepartmentPreferences UserDepartmentPreference[]
+  agentDefinitions       AgentDefinition[]
+  channelAgentMappings   ChannelAgentMapping[]
+}
+
+model RegisteredTool {
+  id            String   @id @default(cuid())
+  toolId        String   @unique
+  name          String
+  description   String
+  category      String
+  domain        String
+  promptSnippet String?
+  recoveryHint  String?
+  hitlRequired  Boolean  @default(false)
+  guardrails    String[]
+  deprecated    Boolean  @default(false)
+  engines       String[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model AgentDefinition {
+  id           String            @id @default(cuid())
+  companyId    String
+  company      Company           @relation(fields: [companyId], references: [id])
+  name         String
+  description  String?
+  systemPrompt String
+  isRootAgent  Boolean           @default(false)
+  isActive     Boolean           @default(true)
+  toolIds      String[]
+  modelId      String?
+  provider     String?
+  parentId     String?
+  parent       AgentDefinition?  @relation("AgentChildren", fields: [parentId], references: [id])
+  children     AgentDefinition[] @relation("AgentChildren")
+  channelMappings ChannelAgentMapping[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@unique([companyId, name])
+}
+
+model ChannelAgentMapping {
+  id                String          @id @default(cuid())
+  companyId         String
+  company           Company         @relation(fields: [companyId], references: [id])
+  channelType       String
+  channelIdentifier String
+  agentDefinitionId String
+  agentDefinition   AgentDefinition @relation(fields: [agentDefinitionId], references: [id])
+  isActive          Boolean         @default(true)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@unique([companyId, channelType, channelIdentifier])
 }
 
 model CompanyPromptProfile {

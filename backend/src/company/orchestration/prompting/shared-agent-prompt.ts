@@ -1,4 +1,5 @@
 import config from '../../../config';
+import type { AgentDefinition } from '../../../generated/prisma';
 import type { ToolActionGroup } from '../../tools/tool-action-groups';
 import { TOOL_REGISTRY_MAP } from '../../tools/tool-registry';
 import type { GroundedFilePromptInfo } from '../../../modules/desktop-chat/file-vision.builder';
@@ -258,9 +259,14 @@ export type SharedAgentPromptInput = {
   hasActiveSourceArtifacts?: boolean;
   resolvedReplyModeHint?: 'thread' | 'reply' | 'plain' | 'dm';
   groundedFiles?: GroundedFilePromptInfo[];
+  agentDefinition?: Pick<AgentDefinition, 'id' | 'name' | 'systemPrompt' | 'toolIds'>;
 };
 
 export const buildSharedAgentSystemPrompt = (input: SharedAgentPromptInput): string => {
+  if (input.agentDefinition?.systemPrompt?.trim()) {
+    return input.agentDefinition.systemPrompt.trim();
+  }
+
   const latestMessage = input.latestUserMessage?.trim() ?? '';
   const pendingFiles = (input.groundedFiles ?? []).filter((file) => file.ingestionPending);
   const parts = [
@@ -739,6 +745,31 @@ const buildSharedAgentStaticOverlay = (input: SharedAgentPromptInput): string =>
       allowedActionsByTool: input.allowedActionsByTool,
     }),
   );
+  if (input.agentDefinition?.toolIds?.length) {
+    const lines: string[] = ['## Tool Usage Instructions'];
+    for (const toolId of input.agentDefinition.toolIds) {
+      const tool = TOOL_REGISTRY_MAP.get(toolId);
+      if (!tool) {
+        continue;
+      }
+      lines.push(`### ${sanitizePromptLiteral(tool.name)} (${sanitizePromptLiteral(tool.id)})`);
+      if (tool.promptSnippet?.trim()) {
+        lines.push(sanitizePromptMultiline(tool.promptSnippet));
+      }
+      if (tool.guardrails?.length) {
+        lines.push('Constraints:');
+        for (const guardrail of tool.guardrails) {
+          lines.push(`- ${sanitizePromptLiteral(guardrail)}`);
+        }
+      }
+      if (tool.hitlRequired) {
+        lines.push('⚠ Requires human confirmation before use.');
+      }
+    }
+    if (lines.length > 1) {
+      parts.push(lines.join('\n'));
+    }
+  }
   return parts.filter(Boolean).join('\n');
 };
 
@@ -760,6 +791,12 @@ export const buildSharedAgentSystemPromptWithCache = async (
     departmentProfileHash: sanitizePromptLiteral([
       input.departmentSystemPrompt?.trim() ?? '',
       input.departmentSkillsMarkdown?.trim() ?? '',
+    ].join('|')),
+    agentDefinitionHash: sanitizePromptLiteral([
+      input.agentDefinition?.id ?? '',
+      input.agentDefinition?.name ?? '',
+      input.agentDefinition?.systemPrompt ?? '',
+      (input.agentDefinition?.toolIds ?? []).join('|'),
     ].join('|')),
     runtimeLabel: input.runtimeLabel,
     builder: () => buildSharedAgentStaticOverlay(input),
