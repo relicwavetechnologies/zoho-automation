@@ -37,7 +37,8 @@ import { redisConnection, stateRedisConnection } from './redis.connection';
 
 const conversationLocks = new Map<string, Promise<void>>();
 const taskAbortControllers = new Map<string, AbortController>();
-const CONVERSATION_LOCK_TTL_MS = config.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS + 15_000;
+const CONVERSATION_LOCK_TTL_MS =
+  Math.min(config.ORCHESTRATION_QUEUE_JOB_TIMEOUT_MS, 120_000) + 15_000;
 const CONVERSATION_LOCK_REQUEUE_DELAY_MS = 2_000;
 const CONVERSATION_LOCK_REQUEUE_MAX_DELAY_MS = 30_000;
 
