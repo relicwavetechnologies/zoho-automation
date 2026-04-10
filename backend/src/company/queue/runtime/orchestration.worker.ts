@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { Job, Worker } from 'bullmq';
 
 import config from '../../../config';
+import { Prisma } from '../../../generated/prisma';
 import { logger } from '../../../utils/logger';
 import { orangeDebug } from '../../../utils/orange-debug';
 import { LarkChannelAdapter } from '../../channels/lark/lark.adapter';
@@ -246,6 +247,13 @@ const appendExecutionEventSafe = async (
       executionId,
     });
   } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      logger.debug('lark.execution.event_append_skipped_missing_run', {
+        executionId,
+        eventType: input.eventType,
+      });
+      return;
+    }
     logger.warn('lark.execution.event_append_failed', {
       executionId,
       eventType: input.eventType,
@@ -818,6 +826,16 @@ export const startOrchestrationWorker = async (): Promise<Worker<OrchestrationJo
         const requeueCount = currentSnapshot?.conversationRequeueCount ?? 0;
         const requeueDelayMs = computeConversationRequeueDelayMs(requeueCount);
         const executionId = buildExecutionId(job.data.taskId, job.data.message.trace?.requestId);
+        await startLarkExecutionRun({
+          executionId,
+          taskId: job.data.taskId,
+          companyId: job.data.message.trace?.companyId,
+          userId:
+            typeof job.data.message.trace?.linkedUserId === 'string'
+              ? job.data.message.trace.linkedUserId
+              : undefined,
+          message: job.data.message,
+        });
         await appendExecutionEventSafe(executionId, {
           executionId,
           phase: 'queued',
