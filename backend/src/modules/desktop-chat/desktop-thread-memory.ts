@@ -907,7 +907,7 @@ export const resolveDesktopTaskReferences = (message: string, taskState: Desktop
 
 const SOURCE_ARTIFACT_LIMIT = 8;
 
-const FOLLOW_UP_SOURCE_PATTERN = /\b(next task|pick the next|move on|move to next|continue|next one|what next|do the next)\b/i;
+const FOLLOW_UP_SOURCE_PATTERN = /\b(next task|pick the next|move on|move to next|continue|next one|what next|do the next|again|try again|retry|rerun|re-run|please try again)\b/i;
 const DOC_GROUNDED_PATTERN = /\b(document|doc|file|csv|sheet|spreadsheet|task list|assignment)\b/i;
 const VISUAL_GROUNDED_PATTERN = /\b(image|img|screenshot|screen shot|photo|picture|pic|scan|diagram|chart)\b/i;
 const REFERENTIAL_SOURCE_PATTERN = /\b(check|see|read|review|inspect|summari[sz]e|analy[sz]e|parse|extract|tell me|what(?:'s| is)|what do you see)\b/i;

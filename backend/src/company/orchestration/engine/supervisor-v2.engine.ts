@@ -1989,6 +1989,39 @@ const isDocumentFocusedObjective = (objective: string): boolean => {
   );
 };
 
+const defaultContextAgentSources = (params: {
+  objective: string;
+  webSearch?: boolean;
+  contactSearch?: boolean;
+}): {
+  web: boolean;
+  larkContacts: boolean;
+  personalHistory: boolean;
+  files: boolean;
+  zohoCrmContext: boolean;
+  skills: boolean;
+} => {
+  if (isDocumentFocusedObjective(params.objective)) {
+    return {
+      web: false,
+      larkContacts: false,
+      personalHistory: false,
+      files: true,
+      zohoCrmContext: false,
+      skills: false,
+    };
+  }
+
+  return {
+    web: params.webSearch ?? false,
+    larkContacts: params.contactSearch ?? true,
+    personalHistory: true,
+    files: true,
+    zohoCrmContext: true,
+    skills: false,
+  };
+};
+
 const buildFileRetrievalFallbackSummary = async (
   contextSearchTool: LegacyExecutableTool,
   objective: string,
@@ -2877,6 +2910,7 @@ const runSubAgent = async (
     onStepFinish?: (step: unknown) => Promise<void>;
   },
 ): Promise<SubAgentTextResult> => {
+  const placeholderText = `${input.label} completed without a textual summary.`;
   const resolvedModel = await resolveVercelLanguageModel(
     input.runtime.mode,
     input.runtime.agentDefinition ?? undefined,
@@ -2907,7 +2941,7 @@ const runSubAgent = async (
   const fallbackText =
     summarizeText(result.text, 800)
     || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n')
-    || `${input.label} completed without a textual summary.`;
+    || placeholderText;
 
   return {
     text: fallbackText,
@@ -2966,18 +3000,19 @@ async function runContextAgent(
               sources,
               contactSearch: params.contactSearch,
             });
+            const defaultSources = defaultContextAgentSources(params);
             const effectivePayload = {
               query,
               operation,
               sources: {
-                web: sources?.web ?? (params.webSearch ?? false),
-                larkContacts: sources?.larkContacts ?? (params.contactSearch ?? true),
-                personalHistory: sources?.personalHistory ?? true,
-                files: sources?.files ?? true,
-                zohoCrmContext: sources?.zohoCrmContext ?? true,
+                web: sources?.web ?? defaultSources.web,
+                larkContacts: sources?.larkContacts ?? defaultSources.larkContacts,
+                personalHistory: sources?.personalHistory ?? defaultSources.personalHistory,
+                files: sources?.files ?? defaultSources.files,
+                zohoCrmContext: sources?.zohoCrmContext ?? defaultSources.zohoCrmContext,
                 skills: false,
               },
-              scopes: ['all'] as const,
+              scopes: isDocumentFocusedObjective(params.objective) ? ['files'] as const : ['all'] as const,
               limit: effectiveLimit,
               ...(chunkRef ? { chunkRef } : {}),
             };
@@ -3002,8 +3037,11 @@ async function runContextAgent(
     abortSignal,
     onStepFinish,
   }).then(async (result) => {
-    if (
+    const hasMeaningfulText =
       (result.text?.trim() || '').length > 0
+      && result.text !== 'retrieval specialist completed without a textual summary.';
+    if (
+      hasMeaningfulText
       || result.toolResults.length > 0
       || !isDocumentFocusedObjective(params.objective)
     ) {

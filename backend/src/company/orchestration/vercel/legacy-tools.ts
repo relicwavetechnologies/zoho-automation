@@ -1135,10 +1135,10 @@ const normalizeContextSearchSources = (input: {
 }): Record<(typeof CONTEXT_SEARCH_SOURCE_KEYS)[number], boolean> | undefined => {
   if (input.sources) {
     return {
-      personalHistory: input.sources.personalHistory ?? true,
-      files: input.sources.files ?? true,
-      larkContacts: input.sources.larkContacts ?? true,
-      zohoCrmContext: input.sources.zohoCrmContext ?? true,
+      personalHistory: input.sources.personalHistory ?? false,
+      files: input.sources.files ?? false,
+      larkContacts: input.sources.larkContacts ?? false,
+      zohoCrmContext: input.sources.zohoCrmContext ?? false,
       zohoBooksLive: input.sources.zohoBooksLive ?? false,
       workspace: input.sources.workspace ?? false,
       web: input.sources.web ?? false,
