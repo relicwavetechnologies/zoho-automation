@@ -22,6 +22,7 @@ type StoredChatMessage = {
   role: 'user' | 'assistant';
   content: string;
   createdAt: string;
+  threadRootId?: string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -51,6 +52,7 @@ const parseStoredChatMessages = (value: unknown): StoredChatMessage[] => {
       role,
       content,
       createdAt,
+      threadRootId: asString(record?.threadRootId) ?? null,
       metadata: asRecord(record?.metadata),
     }];
   });
@@ -163,6 +165,7 @@ export class LarkChatContextService {
     messageId?: string;
     role: 'user' | 'assistant';
     content: string;
+    threadRootId?: string | null;
     metadata?: Record<string, unknown>;
   }): Promise<StoredChatMessage | null> {
     const content = input.content.trim();
@@ -180,6 +183,7 @@ export class LarkChatContextService {
       role: input.role,
       content,
       createdAt: nowIso,
+      threadRootId: input.threadRootId ?? null,
       metadata: input.metadata,
     };
     const nextMessages = [...existingMessages, nextMessage];
@@ -292,6 +296,102 @@ export class LarkChatContextService {
         taskStateUpdatedAt: null,
         recentMessagesJson: JSON.parse(JSON.stringify([])),
         sourceMessageCount: 0,
+        lastMessageAt: new Date(),
+      },
+    });
+  }
+
+  async clearAllMessages(input: {
+    companyId: string;
+    chatId: string;
+  }) {
+    await this.clear(input);
+  }
+
+  async clearThreadMessages(input: {
+    companyId: string;
+    chatId: string;
+    threadRootId: string;
+  }) {
+    const context = await this.getOrCreate({
+      companyId: input.companyId,
+      chatId: input.chatId,
+    });
+    const currentSummary = parseDesktopThreadSummary(context.summaryJson);
+    const currentTaskState = parseDesktopTaskState(context.taskStateJson);
+    const existingMessages = parseStoredChatMessages(context.recentMessagesJson);
+    const retainedMessages = existingMessages.filter((message) => message.threadRootId !== input.threadRootId);
+
+    if (retainedMessages.length === existingMessages.length) {
+      return;
+    }
+
+    const nextSummary = retainedMessages.length > 0
+      ? await refreshDesktopThreadSummary({
+          messages: toThreadMessages(retainedMessages),
+          taskState: currentTaskState,
+          currentSummary,
+        })
+      : null;
+
+    await prisma.larkChatContext.update({
+      where: { id: context.id },
+      data: {
+        summaryJson: nextSummary
+          ? JSON.parse(JSON.stringify({
+              ...nextSummary,
+              sourceMessageCount: undefined,
+            }))
+          : Prisma.DbNull,
+        summaryUpdatedAt: nextSummary ? new Date() : null,
+        recentMessagesJson: JSON.parse(JSON.stringify(retainedMessages)),
+        sourceMessageCount: retainedMessages.length,
+        lastMessageAt: new Date(),
+      },
+    });
+  }
+
+  async clearMainMessages(input: {
+    companyId: string;
+    chatId: string;
+    upToMessageId: string;
+  }) {
+    const context = await this.getOrCreate({
+      companyId: input.companyId,
+      chatId: input.chatId,
+    });
+    const currentSummary = parseDesktopThreadSummary(context.summaryJson);
+    const currentTaskState = parseDesktopTaskState(context.taskStateJson);
+    const existingMessages = parseStoredChatMessages(context.recentMessagesJson);
+    const splitIndex = existingMessages.findIndex((message) => message.id === input.upToMessageId);
+    const retainedMessages = splitIndex >= 0
+      ? existingMessages.slice(splitIndex + 1)
+      : existingMessages;
+
+    if (retainedMessages.length === existingMessages.length) {
+      return;
+    }
+
+    const nextSummary = retainedMessages.length > 0
+      ? await refreshDesktopThreadSummary({
+          messages: toThreadMessages(retainedMessages),
+          taskState: currentTaskState,
+          currentSummary,
+        })
+      : null;
+
+    await prisma.larkChatContext.update({
+      where: { id: context.id },
+      data: {
+        summaryJson: nextSummary
+          ? JSON.parse(JSON.stringify({
+              ...nextSummary,
+              sourceMessageCount: undefined,
+            }))
+          : Prisma.DbNull,
+        summaryUpdatedAt: nextSummary ? new Date() : null,
+        recentMessagesJson: JSON.parse(JSON.stringify(retainedMessages)),
+        sourceMessageCount: retainedMessages.length,
         lastMessageAt: new Date(),
       },
     });
