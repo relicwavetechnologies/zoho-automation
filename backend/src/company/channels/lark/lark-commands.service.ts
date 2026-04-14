@@ -5,6 +5,7 @@ import { createEmptyTaskState } from '../../../modules/desktop-chat/desktop-thre
 export const handleLarkCommand = async (input: {
   commandText: string;
   chatId: string;
+  chatType?: string;
   companyId: string;
   threadRootId: string | null;
   adapter: Pick<LarkChannelAdapter, 'sendMessage'>;
@@ -21,7 +22,7 @@ export const handleLarkCommand = async (input: {
     await larkChatContextService.persistTaskState({
       companyId: input.companyId,
       chatId: input.chatId,
-      chatType: 'group',
+      chatType: input.chatType,
       taskState: {
         ...createEmptyTaskState(),
         supervisorProgress: null,

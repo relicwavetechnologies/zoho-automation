@@ -3039,10 +3039,11 @@ export const createLarkWebhookEventHandler = (
 
       if (parsed.kind === 'event_callback_message' && isCommand) {
         try {
-          if (scopedCompanyId && tracedMessageBase.chatType === 'group') {
+          if (scopedCompanyId) {
             const result = await handleLarkCommand({
               commandText: tracedMessageBase.text.trim(),
               chatId: tracedMessageBase.chatId,
+              chatType: tracedMessageBase.chatType,
               companyId: scopedCompanyId,
               threadRootId: tracedMessageBase.trace?.threadRootId ?? null,
               adapter: dependencies.adapter,
@@ -3083,7 +3084,7 @@ export const createLarkWebhookEventHandler = (
           }
           await dependencies.adapter.sendMessage({
             chatId: tracedMessageBase.chatId,
-            text: 'Slash commands are only available in shared group chats.',
+            text: 'I could not resolve company context for this command in the current chat.',
             correlationId: requestId,
             replyToMessageId: tracedMessageBase.messageId,
             replyInThread: Boolean(tracedMessageBase.trace?.threadRootId),
