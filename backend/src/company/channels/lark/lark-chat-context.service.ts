@@ -282,11 +282,18 @@ export class LarkChatContextService {
   async clear(input: {
     companyId: string;
     chatId: string;
-  }) {
+  }): Promise<{
+    clearedRecentMessageCount: number;
+    hadSummary: boolean;
+    hadTaskState: boolean;
+  }> {
     const context = await this.getOrCreate({
       companyId: input.companyId,
       chatId: input.chatId,
     });
+    const existingMessages = parseStoredChatMessages(context.recentMessagesJson);
+    const currentSummary = parseDesktopThreadSummary(context.summaryJson);
+    const currentTaskState = parseDesktopTaskState(context.taskStateJson);
     await prisma.larkChatContext.update({
       where: { id: context.id },
       data: {
@@ -299,20 +306,37 @@ export class LarkChatContextService {
         lastMessageAt: new Date(),
       },
     });
+    return {
+      clearedRecentMessageCount: existingMessages.length,
+      hadSummary: Boolean(currentSummary.summary || currentSummary.sourceMessageCount > 0),
+      hadTaskState: Boolean(
+        currentTaskState.activeObjective
+        || currentTaskState.pendingApproval
+        || Object.keys(currentTaskState.workingSets).length > 0
+        || currentTaskState.activeSourceArtifacts.length > 0
+        || currentTaskState.completedMutations.length > 0
+        || currentTaskState.latestToolResults.length > 0,
+      ),
+    };
   }
 
   async clearAllMessages(input: {
     companyId: string;
     chatId: string;
   }) {
-    await this.clear(input);
+    return this.clear(input);
   }
 
   async clearThreadMessages(input: {
     companyId: string;
     chatId: string;
     threadRootId: string;
-  }) {
+  }): Promise<{
+    clearedRecentMessageCount: number;
+    retainedRecentMessageCount: number;
+    hadSummary: boolean;
+    hadTaskState: boolean;
+  }> {
     const context = await this.getOrCreate({
       companyId: input.companyId,
       chatId: input.chatId,
@@ -321,9 +345,22 @@ export class LarkChatContextService {
     const currentTaskState = parseDesktopTaskState(context.taskStateJson);
     const existingMessages = parseStoredChatMessages(context.recentMessagesJson);
     const retainedMessages = existingMessages.filter((message) => message.threadRootId !== input.threadRootId);
+    const clearedRecentMessageCount = existingMessages.length - retainedMessages.length;
 
     if (retainedMessages.length === existingMessages.length) {
-      return;
+      return {
+        clearedRecentMessageCount: 0,
+        retainedRecentMessageCount: retainedMessages.length,
+        hadSummary: Boolean(currentSummary.summary || currentSummary.sourceMessageCount > 0),
+        hadTaskState: Boolean(
+          currentTaskState.activeObjective
+          || currentTaskState.pendingApproval
+          || Object.keys(currentTaskState.workingSets).length > 0
+          || currentTaskState.activeSourceArtifacts.length > 0
+          || currentTaskState.completedMutations.length > 0
+          || currentTaskState.latestToolResults.length > 0,
+        ),
+      };
     }
 
     const nextSummary = retainedMessages.length > 0
@@ -349,13 +386,31 @@ export class LarkChatContextService {
         lastMessageAt: new Date(),
       },
     });
+    return {
+      clearedRecentMessageCount,
+      retainedRecentMessageCount: retainedMessages.length,
+      hadSummary: Boolean(currentSummary.summary || currentSummary.sourceMessageCount > 0),
+      hadTaskState: Boolean(
+        currentTaskState.activeObjective
+        || currentTaskState.pendingApproval
+        || Object.keys(currentTaskState.workingSets).length > 0
+        || currentTaskState.activeSourceArtifacts.length > 0
+        || currentTaskState.completedMutations.length > 0
+        || currentTaskState.latestToolResults.length > 0,
+      ),
+    };
   }
 
   async clearMainMessages(input: {
     companyId: string;
     chatId: string;
     upToMessageId: string;
-  }) {
+  }): Promise<{
+    clearedRecentMessageCount: number;
+    retainedRecentMessageCount: number;
+    hadSummary: boolean;
+    hadTaskState: boolean;
+  }> {
     const context = await this.getOrCreate({
       companyId: input.companyId,
       chatId: input.chatId,
@@ -367,9 +422,22 @@ export class LarkChatContextService {
     const retainedMessages = splitIndex >= 0
       ? existingMessages.slice(splitIndex + 1)
       : existingMessages;
+    const clearedRecentMessageCount = existingMessages.length - retainedMessages.length;
 
     if (retainedMessages.length === existingMessages.length) {
-      return;
+      return {
+        clearedRecentMessageCount: 0,
+        retainedRecentMessageCount: retainedMessages.length,
+        hadSummary: Boolean(currentSummary.summary || currentSummary.sourceMessageCount > 0),
+        hadTaskState: Boolean(
+          currentTaskState.activeObjective
+          || currentTaskState.pendingApproval
+          || Object.keys(currentTaskState.workingSets).length > 0
+          || currentTaskState.activeSourceArtifacts.length > 0
+          || currentTaskState.completedMutations.length > 0
+          || currentTaskState.latestToolResults.length > 0,
+        ),
+      };
     }
 
     const nextSummary = retainedMessages.length > 0
@@ -395,6 +463,19 @@ export class LarkChatContextService {
         lastMessageAt: new Date(),
       },
     });
+    return {
+      clearedRecentMessageCount,
+      retainedRecentMessageCount: retainedMessages.length,
+      hadSummary: Boolean(currentSummary.summary || currentSummary.sourceMessageCount > 0),
+      hadTaskState: Boolean(
+        currentTaskState.activeObjective
+        || currentTaskState.pendingApproval
+        || Object.keys(currentTaskState.workingSets).length > 0
+        || currentTaskState.activeSourceArtifacts.length > 0
+        || currentTaskState.completedMutations.length > 0
+        || currentTaskState.latestToolResults.length > 0,
+      ),
+    };
   }
 
   async compactNow(input: {

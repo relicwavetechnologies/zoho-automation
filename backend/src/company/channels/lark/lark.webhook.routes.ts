@@ -740,18 +740,16 @@ const normalizeLarkCommandText = (text: string): string => {
     const strippedBotMention = strippedPunctuation
       .replace(/^@?(?:divo(?: ai)?)\b[\s,:\-]*/i, '')
       .trim();
-    const slashIndex = strippedBotMention.search(/\/[a-z]/i);
-    if (slashIndex > 0) {
-      return strippedBotMention.slice(slashIndex).trim();
-    }
     if (strippedBotMention === current) {
-      const directSlashIndex = current.search(/\/[a-z]/i);
-      return directSlashIndex >= 0 ? current.slice(directSlashIndex).trim() : current;
+      return current;
     }
     current = strippedBotMention;
   }
   return current;
 };
+
+const isStandaloneLarkSlashCommand = (text: string): boolean =>
+  normalizeLarkCommandText(text).startsWith('/');
 
 const parseLarkWorkflowCommand = (
   text: string,
@@ -831,16 +829,16 @@ const isLarkCompactCommand = (text: string): boolean => {
 };
 
 const isLarkDeptCommand = (text: string): boolean =>
-  /^\/dept(\s|$)/i.test(text.trim());
+  /^\/dept(\s|$)/i.test(normalizeLarkCommandText(text));
 
 const parseLarkDeptCommand = (
   text: string,
-):
+): 
   | { kind: 'status' }
   | { kind: 'list' }
   | { kind: 'switch'; name: string }
   | { kind: 'unknown' } => {
-  const normalized = text.trim().replace(/^\/dept\s*/i, '');
+  const normalized = normalizeLarkCommandText(text).replace(/^\/dept\s*/i, '');
   if (!normalized) return { kind: 'status' };
   if (normalized === '--list') return { kind: 'list' };
   const switchMatch = normalized.match(/^--switch\s+(.+)$/i);
@@ -2125,7 +2123,7 @@ export const createLarkWebhookEventHandler = (
       });
 
       let attachedFiles = normalized.attachedFiles ?? [];
-      const isCommand = parsed.kind === 'event_callback_message' && tracedMessageBase.text.trim().startsWith('/');
+      const isCommand = parsed.kind === 'event_callback_message' && isStandaloneLarkSlashCommand(tracedMessageBase.text);
       const effectiveUploaderId = linkedUserId ?? channelIdentityId ?? normalized.userId;
       const allowedRoles = scopedCompanyId
         ? await resolveAllowedRolesForVisibilityScope({

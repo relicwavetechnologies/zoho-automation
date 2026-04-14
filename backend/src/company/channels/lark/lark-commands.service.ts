@@ -1,6 +1,7 @@
 import type { LarkChannelAdapter } from './lark.adapter';
 import { larkChatContextService } from './lark-chat-context.service';
 import { createEmptyTaskState } from '../../../modules/desktop-chat/desktop-thread-memory';
+import { logger } from '../../../utils/logger';
 
 export const handleLarkCommand = async (input: {
   commandText: string;
@@ -35,39 +36,86 @@ export const handleLarkCommand = async (input: {
 
   if (command === '/clear') {
     if (!input.threadRootId || clearAll) {
-      await larkChatContextService.clearAllMessages({
+      const result = await larkChatContextService.clearAllMessages({
         companyId: input.companyId,
         chatId: input.chatId,
       });
       await clearTaskState();
-      return { responseText: '✓ Conversation history cleared.' };
+      logger.info('lark.chat_context.clear_completed', {
+        companyId: input.companyId,
+        chatId: input.chatId,
+        chatType: input.chatType ?? 'unknown',
+        mode: 'all',
+        threadRootId: null,
+        clearedRecentMessageCount: result.clearedRecentMessageCount,
+        hadSummary: result.hadSummary,
+        hadTaskState: result.hadTaskState,
+      });
+      return {
+        responseText: [
+          'All set.',
+          'I cleared this chat\'s live conversation context and task state.',
+          'I can start fresh from here.',
+        ].join('\n'),
+      };
     }
 
     if (!clearMain) {
-      await larkChatContextService.clearThreadMessages({
+      const result = await larkChatContextService.clearThreadMessages({
         companyId: input.companyId,
         chatId: input.chatId,
         threadRootId: input.threadRootId,
       });
       await clearTaskState();
+      logger.info('lark.chat_context.clear_completed', {
+        companyId: input.companyId,
+        chatId: input.chatId,
+        chatType: input.chatType ?? 'unknown',
+        mode: 'thread_only',
+        threadRootId: input.threadRootId,
+        clearedRecentMessageCount: result.clearedRecentMessageCount,
+        retainedRecentMessageCount: result.retainedRecentMessageCount,
+        hadSummary: result.hadSummary,
+        hadTaskState: result.hadTaskState,
+      });
       return {
-        responseText: '✓ Thread history cleared. Main conversation context is preserved.',
+        responseText: [
+          'All set.',
+          'I cleared this thread\'s live context.',
+          'The main chat context is still preserved.',
+        ].join('\n'),
       };
     }
 
-    await larkChatContextService.clearThreadMessages({
+    const threadResult = await larkChatContextService.clearThreadMessages({
       companyId: input.companyId,
       chatId: input.chatId,
       threadRootId: input.threadRootId,
     });
-    await larkChatContextService.clearMainMessages({
+    const mainResult = await larkChatContextService.clearMainMessages({
       companyId: input.companyId,
       chatId: input.chatId,
       upToMessageId: input.threadRootId,
     });
     await clearTaskState();
+    logger.info('lark.chat_context.clear_completed', {
+      companyId: input.companyId,
+      chatId: input.chatId,
+      chatType: input.chatType ?? 'unknown',
+      mode: 'thread_and_main',
+      threadRootId: input.threadRootId,
+      clearedThreadRecentMessageCount: threadResult.clearedRecentMessageCount,
+      clearedMainRecentMessageCount: mainResult.clearedRecentMessageCount,
+      retainedRecentMessageCount: mainResult.retainedRecentMessageCount,
+      hadSummary: threadResult.hadSummary || mainResult.hadSummary,
+      hadTaskState: threadResult.hadTaskState || mainResult.hadTaskState,
+    });
     return {
-      responseText: '✓ Thread history and main conversation context cleared.',
+      responseText: [
+        'All set.',
+        'I cleared this thread and the related main-chat context for this conversation.',
+        'I can continue from a clean slate.',
+      ].join('\n'),
     };
   }
 
