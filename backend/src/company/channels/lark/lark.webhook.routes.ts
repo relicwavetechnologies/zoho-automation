@@ -2123,7 +2123,8 @@ export const createLarkWebhookEventHandler = (
       });
 
       let attachedFiles = normalized.attachedFiles ?? [];
-      const isCommand = parsed.kind === 'event_callback_message' && isStandaloneLarkSlashCommand(tracedMessageBase.text);
+      const normalizedCommandText = normalizeLarkCommandText(tracedMessageBase.text);
+      const isCommand = parsed.kind === 'event_callback_message' && normalizedCommandText.startsWith('/');
       const effectiveUploaderId = linkedUserId ?? channelIdentityId ?? normalized.userId;
       const allowedRoles = scopedCompanyId
         ? await resolveAllowedRolesForVisibilityScope({
@@ -3039,7 +3040,7 @@ export const createLarkWebhookEventHandler = (
         try {
           if (scopedCompanyId) {
             const result = await handleLarkCommand({
-              commandText: tracedMessageBase.text.trim(),
+              commandText: normalizedCommandText,
               chatId: tracedMessageBase.chatId,
               chatType: tracedMessageBase.chatType,
               companyId: scopedCompanyId,
@@ -3060,6 +3061,7 @@ export const createLarkWebhookEventHandler = (
                 companyId: scopedCompanyId,
               }),
               commandText: tracedMessageBase.text.trim(),
+              normalizedCommandText,
               threadRootId: tracedMessageBase.trace?.threadRootId ?? null,
             });
             await dependencies.adapter.sendMessage({
