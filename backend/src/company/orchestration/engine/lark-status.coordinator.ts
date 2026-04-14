@@ -53,7 +53,9 @@ export class LarkStatusCoordinator {
   private heartbeatTimer?: NodeJS.Timeout;
   private inFlight = false;
   private terminalLocked = false;
+  private liveTextTerminalLocked = false;
   private closed = false;
+  private liveTextChain: Promise<void> = Promise.resolve();
 
   public constructor(input: LarkStatusCoordinatorInput) {
     this.adapter = input.adapter;
@@ -106,107 +108,113 @@ export class LarkStatusCoordinator {
 
   public async updateLiveText(text: string): Promise<void> {
     const nextText = text.trim();
-    if (this.closed || !nextText) return;
-    try {
-      if (this.liveTextMessageId) {
-        logger.info('supervisor_v2.live_text.update_attempt', {
-          branch: 'update',
-          chatId: this.chatId,
-          correlationId: this.correlationId,
-          liveTextMessageId: this.liveTextMessageId,
-          textLength: nextText.length,
-          preview: nextText.slice(0, 160),
-        });
-        const result = await this.adapter.updateMessage({
-          messageId: this.liveTextMessageId,
-          text: nextText,
-          format: 'interactive',
-          correlationId: this.correlationId,
-        });
-        logger.info('supervisor_v2.live_text.update_ok', {
-          liveTextMessageId: this.liveTextMessageId,
-          resultStatus: result.status,
-          resultMessageId: result.messageId ?? null,
-          hasProviderResponse: Boolean(result.providerResponse),
-        });
-      } else {
-        logger.info('supervisor_v2.live_text.send_attempt', {
-          branch: 'send',
+    if (this.closed || !nextText || this.liveTextTerminalLocked) return;
+    await this.enqueueLiveText(async () => {
+      if (this.closed || this.liveTextTerminalLocked) return;
+      try {
+        if (this.liveTextMessageId) {
+          logger.info('supervisor_v2.live_text.update_attempt', {
+            branch: 'update',
+            chatId: this.chatId,
+            correlationId: this.correlationId,
+            liveTextMessageId: this.liveTextMessageId,
+            textLength: nextText.length,
+            preview: nextText.slice(0, 160),
+          });
+          const result = await this.adapter.updateMessage({
+            messageId: this.liveTextMessageId,
+            text: nextText,
+            format: 'interactive',
+            correlationId: this.correlationId,
+          });
+          logger.info('supervisor_v2.live_text.update_ok', {
+            liveTextMessageId: this.liveTextMessageId,
+            resultStatus: result.status,
+            resultMessageId: result.messageId ?? null,
+            hasProviderResponse: Boolean(result.providerResponse),
+          });
+        } else {
+          logger.info('supervisor_v2.live_text.send_attempt', {
+            branch: 'send',
+            chatId: this.chatId,
+            correlationId: this.correlationId,
+            replyToMessageId: this.replyToMessageId ?? null,
+            replyInThread: this.replyInThread ?? null,
+            textLength: nextText.length,
+            preview: nextText.slice(0, 160),
+          });
+          const result = await this.adapter.sendMessage({
+            chatId: this.chatId,
+            text: nextText,
+            format: 'interactive',
+            correlationId: this.correlationId,
+            replyToMessageId: this.replyToMessageId,
+            replyInThread: this.replyInThread,
+          });
+          this.liveTextMessageId = result?.messageId;
+          logger.info('supervisor_v2.live_text.send_ok', {
+            chatId: this.chatId,
+            liveTextMessageId: this.liveTextMessageId,
+            hasMessageId: Boolean(this.liveTextMessageId),
+            resultStatus: result.status,
+            resultMessageId: result.messageId ?? null,
+            hasProviderResponse: Boolean(result.providerResponse),
+          });
+        }
+      } catch (err) {
+        logger.warn('supervisor_v2.live_text.failed', {
           chatId: this.chatId,
           correlationId: this.correlationId,
           replyToMessageId: this.replyToMessageId ?? null,
           replyInThread: this.replyInThread ?? null,
+          liveTextMessageId: this.liveTextMessageId,
           textLength: nextText.length,
           preview: nextText.slice(0, 160),
-        });
-        const result = await this.adapter.sendMessage({
-          chatId: this.chatId,
-          text: nextText,
-          format: 'interactive',
-          correlationId: this.correlationId,
-          replyToMessageId: this.replyToMessageId,
-          replyInThread: this.replyInThread,
-        });
-        this.liveTextMessageId = result?.messageId;
-        logger.info('supervisor_v2.live_text.send_ok', {
-          chatId: this.chatId,
-          liveTextMessageId: this.liveTextMessageId,
-          hasMessageId: Boolean(this.liveTextMessageId),
-          resultStatus: result.status,
-          resultMessageId: result.messageId ?? null,
-          hasProviderResponse: Boolean(result.providerResponse),
+          error: err instanceof Error ? err.message : 'unknown',
         });
       }
-    } catch (err) {
-      logger.warn('supervisor_v2.live_text.failed', {
-        chatId: this.chatId,
-        correlationId: this.correlationId,
-        replyToMessageId: this.replyToMessageId ?? null,
-        replyInThread: this.replyInThread ?? null,
-        liveTextMessageId: this.liveTextMessageId,
-        textLength: nextText.length,
-        preview: nextText.slice(0, 160),
-        error: err instanceof Error ? err.message : 'unknown',
-      });
-    }
+    });
   }
 
   public async finalizeLiveText(text: string): Promise<void> {
     if (this.closed || !this.liveTextMessageId) return;
+    this.liveTextTerminalLocked = true;
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
-    try {
-      logger.info('supervisor_v2.live_text.finalize_attempt', {
-        chatId: this.chatId,
-        correlationId: this.correlationId,
-        liveTextMessageId: this.liveTextMessageId,
-        textLength: text.length,
-        preview: text.slice(0, 160),
-      });
-      const result = await this.adapter.updateMessage({
-        messageId: this.liveTextMessageId,
-        text,
-        format: 'interactive',
-        correlationId: this.correlationId,
-      });
-      logger.info('supervisor_v2.live_text.finalize_ok', {
-        liveTextMessageId: this.liveTextMessageId,
-        resultStatus: result.status,
-        resultMessageId: result.messageId ?? null,
-        hasProviderResponse: Boolean(result.providerResponse),
-      });
-    } catch (err) {
-      logger.warn('supervisor_v2.live_text.finalize_failed', {
-        chatId: this.chatId,
-        correlationId: this.correlationId,
-        liveTextMessageId: this.liveTextMessageId,
-        textLength: text.length,
-        preview: text.slice(0, 160),
-        error: err instanceof Error ? err.message : 'unknown',
-      });
-    }
+    await this.enqueueLiveText(async () => {
+      try {
+        logger.info('supervisor_v2.live_text.finalize_attempt', {
+          chatId: this.chatId,
+          correlationId: this.correlationId,
+          liveTextMessageId: this.liveTextMessageId,
+          textLength: text.length,
+          preview: text.slice(0, 160),
+        });
+        const result = await this.adapter.updateMessage({
+          messageId: this.liveTextMessageId,
+          text,
+          format: 'interactive',
+          correlationId: this.correlationId,
+        });
+        logger.info('supervisor_v2.live_text.finalize_ok', {
+          liveTextMessageId: this.liveTextMessageId,
+          resultStatus: result.status,
+          resultMessageId: result.messageId ?? null,
+          hasProviderResponse: Boolean(result.providerResponse),
+        });
+      } catch (err) {
+        logger.warn('supervisor_v2.live_text.finalize_failed', {
+          chatId: this.chatId,
+          correlationId: this.correlationId,
+          liveTextMessageId: this.liveTextMessageId,
+          textLength: text.length,
+          preview: text.slice(0, 160),
+          error: err instanceof Error ? err.message : 'unknown',
+        });
+      }
+    });
   }
 
   public startHeartbeat(getRenderable: () => LarkStatusRenderable): void {
@@ -251,6 +259,14 @@ export class LarkStatusCoordinator {
   private async flushPending(): Promise<void> {
     if (this.closed) return;
     await this.pump();
+  }
+
+  private async enqueueLiveText(fn: () => Promise<void>): Promise<void> {
+    const next = this.liveTextChain
+      .catch(() => undefined)
+      .then(fn);
+    this.liveTextChain = next;
+    await next;
   }
 
   private async pump(): Promise<void> {
