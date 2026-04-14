@@ -1865,6 +1865,8 @@ const buildContextAgentPrompt = (): string => [
   '',
   'TOOLS: contextSearch only.',
   'Always search first. Use fetch only when you already have a chunkRef.',
+  'For document or file questions, you must search with files: true only, then fetch the best chunkRefs before answering.',
+  'If the user asks whether two places in a document are consistent, do not answer from search summaries alone. Fetch the relevant chunks and compare the actual text.',
   '',
   'SOURCE SELECTION — choose based on what is being searched:',
   '',
@@ -1952,6 +1954,7 @@ const buildContextAgentPrompt = (): string => [
   'Objective: "find the contract we uploaded last week"',
   '→ sources: files: true only',
   '→ query: "contract document upload"',
+  '→ then fetch the top chunkRefs before answering',
   '',
   'Objective: "find Tamanna Jangid email"',
   '→ sources: larkContacts: true, zohoCrmContext: true',
@@ -1970,6 +1973,92 @@ const buildContextAgentPrompt = (): string => [
   'If nothing was found: "No results found for [query] in [sources checked]."',
   'Never return raw JSON. Always return a readable summary.',
 ].join('\n');
+
+const isDocumentFocusedObjective = (objective: string): boolean => {
+  const normalized = objective.toLowerCase();
+  return (
+    normalized.includes('.pdf')
+    || normalized.includes('document')
+    || normalized.includes('file')
+    || normalized.includes('glossary')
+    || normalized.includes('section')
+    || normalized.includes('page')
+    || normalized.includes('mentions')
+    || normalized.includes('uploaded')
+    || normalized.includes('attachment')
+  );
+};
+
+const buildFileRetrievalFallbackSummary = async (
+  contextSearchTool: LegacyExecutableTool,
+  objective: string,
+): Promise<SubAgentTextResult | null> => {
+  const searchEnvelope = asRecord(await contextSearchTool.execute({
+    operation: 'search',
+    query: objective,
+    sources: {
+      files: true,
+      personalHistory: false,
+      larkContacts: false,
+      zohoCrmContext: false,
+      web: false,
+      skills: false,
+    },
+    scopes: ['files'],
+    limit: 5,
+  }));
+
+  const searchSummary = asString(searchEnvelope.summary)?.trim() ?? '';
+  const fullPayload = asRecord(searchEnvelope.fullPayload);
+  const keyData = asRecord(searchEnvelope.keyData);
+  const nextFetchRefs = [
+    ...asArray(fullPayload?.nextFetchRefs).map(asString).filter(Boolean),
+    ...asArray(keyData?.chunkRefs).map(asString).filter(Boolean),
+  ];
+
+  if (nextFetchRefs.length === 0) {
+    return {
+      text: searchSummary || `No matching indexed file chunks were found for "${objective}".`,
+      toolResults: [],
+      pendingApproval: null,
+    };
+  }
+
+  const excerpts: string[] = [];
+  for (const chunkRef of nextFetchRefs.slice(0, 3)) {
+    const fetchEnvelope = asRecord(await contextSearchTool.execute({
+      operation: 'fetch',
+      chunkRef,
+    }));
+    const fetchedPayload = asRecord(fetchEnvelope.fullPayload);
+    const fetchedText = asString(fetchedPayload?.text)?.trim();
+    if (!fetchedText) {
+      continue;
+    }
+    excerpts.push([
+      `Chunk ${chunkRef}:`,
+      summarizeText(fetchedText, 1200) ?? fetchedText.slice(0, 1200),
+    ].join('\n'));
+  }
+
+  if (excerpts.length === 0) {
+    return {
+      text: searchSummary || `Matching file chunks were found for "${objective}", but their text could not be fetched.`,
+      toolResults: [],
+      pendingApproval: null,
+    };
+  }
+
+  return {
+    text: [
+      searchSummary || `Retrieved indexed file evidence for "${objective}".`,
+      'Use the fetched excerpts below as the source of truth for the document answer:',
+      ...excerpts,
+    ].join('\n\n'),
+    toolResults: [],
+    pendingApproval: null,
+  };
+};
 
 const buildGoogleWorkspaceAgentPrompt = (): string => `You are a Google Workspace specialist. You handle Gmail, Google Drive, and Google Calendar.
 You do NOT create Lark tasks or meetings — those belong to larkAgent.
@@ -2912,6 +3001,27 @@ async function runContextAgent(
     runtime,
     abortSignal,
     onStepFinish,
+  }).then(async (result) => {
+    if (
+      (result.text?.trim() || '').length > 0
+      || result.toolResults.length > 0
+      || !isDocumentFocusedObjective(params.objective)
+    ) {
+      return result;
+    }
+
+    redDebug('supervisor_v2.context_agent.file_fallback.start', {
+      objective: params.objective,
+    });
+    const fallback = await buildFileRetrievalFallbackSummary(contextSearchTool, params.objective);
+    if (!fallback) {
+      return result;
+    }
+    redDebug('supervisor_v2.context_agent.file_fallback.done', {
+      objective: params.objective,
+      textLength: fallback.text.length,
+    });
+    return fallback;
   });
 }
 
