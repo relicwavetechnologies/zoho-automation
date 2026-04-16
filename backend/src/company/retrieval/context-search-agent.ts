@@ -36,6 +36,7 @@ import {
   type ContextSearchBrokerResult,
   type ContextSearchBrokerSourceKey,
 } from './context-search-broker.service';
+import { fileRetrievalService } from './file-retrieval.service';
 import { llmRerankerService, type RerankCandidate } from './llm-reranker.service';
 import {
   isFilenameQuery,
@@ -445,6 +446,16 @@ const runFilenameFastPath = async (input: {
   if (strongTrigramMatch) {
     const asset = fileAssets.find((f) => f.fileName === strongTrigramMatch.filename);
     if (asset) {
+      let fileContent = '';
+      try {
+        fileContent = await fileRetrievalService.getIndexedFileText({
+          companyId: input.companyId,
+          fileAssetId: asset.id,
+          maxChars: 8_000,
+        });
+      } catch {
+        // non-fatal — return metadata only if content fetch fails
+      }
       return {
         hit: true,
         strongMatch: true,
@@ -456,7 +467,10 @@ const runFilenameFastPath = async (input: {
           sourceId: asset.id,
           chunkIndex: 0,
           score: strongTrigramMatch.score,
-          excerpt: `File: ${asset.fileName}`,
+          excerpt: fileContent
+            ? fileContent.slice(0, 500)
+            : `File: ${asset.fileName}`,
+          content: fileContent || undefined,
           chunkRef: `files:file_document:${asset.id}:0`,
           sourceLabel: `Company file · ${asset.fileName}`,
           fileName: asset.fileName,
@@ -496,6 +510,16 @@ const runFilenameFastPath = async (input: {
     if (groqResult?.match && groqResult.confidence >= 0.7) {
       const asset = fileAssets.find((f) => f.fileName === groqResult.match);
       if (asset) {
+        let fileContent = '';
+        try {
+          fileContent = await fileRetrievalService.getIndexedFileText({
+            companyId: input.companyId,
+            fileAssetId: asset.id,
+            maxChars: 8_000,
+          });
+        } catch {
+          // non-fatal — return metadata only if content fetch fails
+        }
         return {
           hit: true,
           strongMatch: true,
@@ -507,7 +531,10 @@ const runFilenameFastPath = async (input: {
             sourceId: asset.id,
             chunkIndex: 0,
             score: groqResult.confidence,
-            excerpt: `File: ${asset.fileName}`,
+            excerpt: fileContent
+              ? fileContent.slice(0, 500)
+              : `File: ${asset.fileName}`,
+            content: fileContent || undefined,
             chunkRef: `files:file_document:${asset.id}:0`,
             sourceLabel: `Company file · ${asset.fileName}`,
             fileName: asset.fileName,
@@ -762,21 +789,25 @@ class ContextSearchAgent {
         fastPathUsed = true;
         allResults = fastPath.results;
 
-        // Still do semantic search for content but merge filename hits at top
+        const matchedFileName = fastPath.results[0]?.fileName ?? query;
+        const matchedFileAssetId = fastPath.results[0]?.sourceId;
+
         const semanticOut = await runParallelSearch({
-          brokerInput: { ...input, query },
+          brokerInput: {
+            ...input,
+            query: matchedFileName,
+          },
           sources: ['files'],
           tier,
         });
         if (semanticOut.output.results.length > 0) {
-          // Merge: fast path results first (they have correct file), then semantic content chunks
-          const seenIds = new Set(allResults.map((r) => r.sourceId));
-          for (const r of semanticOut.output.results) {
-            if (!seenIds.has(r.sourceId)) {
-              allResults.push(r);
-              seenIds.add(r.sourceId);
-            }
-          }
+          const relevantChunks = matchedFileAssetId
+            ? semanticOut.output.results.filter((r) =>
+              r.chunkRef.includes(matchedFileAssetId) ||
+              r.fileName === matchedFileName)
+            : semanticOut.output.results.slice(0, 5);
+
+          allResults = [...allResults, ...relevantChunks];
           lastOutput = semanticOut.output;
         }
       } else if (fastPath.hit) {

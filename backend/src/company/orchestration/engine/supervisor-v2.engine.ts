@@ -1882,8 +1882,7 @@ const buildContextAgentPrompt = (): string => [
   '',
   'TOOLS: contextSearch only.',
   'Always search first. Use fetch only when you already have a chunkRef.',
-  'For document or file questions, you must search with files: true only, then fetch the best chunkRefs before answering.',
-  'If the user asks whether two places in a document are consistent, do not answer from search summaries alone. Fetch the relevant chunks and compare the actual text.',
+  'Your job is RETRIEVAL ONLY. Return what you found with chunkRefs. Never summarize file content. Never answer questions from document content. Return the filename, score, and chunkRefs. The supervisor will fetch content and synthesize separately.',
   '',
   'SOURCE SELECTION — choose based on what is being searched:',
   '',
@@ -1971,7 +1970,7 @@ const buildContextAgentPrompt = (): string => [
   'Objective: "find the contract we uploaded last week"',
   '→ sources: files: true only',
   '→ query: "contract document upload"',
-  '→ then fetch the top chunkRefs before answering',
+  '→ return the best filename matches with chunkRefs',
   '',
   'Objective: "find Tamanna Jangid email"',
   '→ sources: larkContacts: true, zohoCrmContext: true',
@@ -1983,12 +1982,14 @@ const buildContextAgentPrompt = (): string => [
   '- Do not use web: true for contact lookups — Lark contacts are far more accurate',
   '- Do not run multiple searches for the same thing — one well-formed search is enough, except for current public product/pricing questions where one broader retry is required if the first search is empty',
   '- Do not search personalHistory when looking for a contact — that is not where contacts live',
+  '- Do not summarize file content, answer questions from file content, or synthesize across chunks — that belongs to the supervisor after fetch',
   '',
   'OUTPUT FORMAT:',
-  'Return a clear summary of what you found.',
+  'Return a clear retrieval summary of what you found.',
+  'If you found file results: list filename, score, and chunkRefs.',
   'If you found contacts: list them with **Name:** email format.',
   'If nothing was found: "No results found for [query] in [sources checked]."',
-  'Never return raw JSON. Always return a readable summary.',
+  'Never summarize document content. Never return raw JSON. Always return a readable retrieval summary.',
 ].join('\n');
 
 const isDocumentFocusedObjective = (objective: string): boolean => {
@@ -4830,9 +4831,9 @@ Always receives a file PATH — never raw data. Only call after the file already
       }),
       zohoAgent: tool({
         description:
-          `Fetch invoices, overdue reports, payments, CRM records, and financial data from Zoho.
-Use directly for any financial or CRM query — never route through contextAgent first.
-Returns structured data that may be saved as an artifact for large results.`,
+          `Fetch invoices, overdue reports, payments, CRM records, and financial data from Zoho Books and Zoho CRM only.
+Use for any financial or CRM query — never route through contextAgent first. Returns structured data that may be saved as an artifact for large results.
+NEVER use for Lark tasks, Lark messages, or Lark calendar — use larkAgent for all Lark operations.`,
         inputSchema: z.object({
           objective: z.string().describe('What Zoho data to fetch or action to perform'),
         }),
@@ -4867,8 +4868,8 @@ Returns structured data that may be saved as an artifact for large results.`,
       }),
       larkAgent: tool({
         description:
-          `Create/read Lark tasks, schedule meetings, list calendar events, send Lark messages,
-create Lark docs. Use for all internal team actions inside Lark.
+          `Create/read Lark tasks, schedule meetings, list calendar events, send Lark messages, create Lark docs. Use for ALL Lark operations including:
+getting my tasks, listing tasks, creating tasks, checking calendar, sending messages in Lark. This is the ONLY agent for anything inside Lark workspace.
 Never use for Gmail — use googleWorkspaceAgent for that.`,
         inputSchema: z.object({
           objective: z.string().describe('What Lark action to perform. If creating a doc, say doc/document explicitly. If creating a task, say task/todo/action item explicitly.'),

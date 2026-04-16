@@ -73,6 +73,7 @@ export type ContextSearchBrokerResult = {
   chunkIndex: number;
   score: number;
   excerpt: string;
+  content?: string;
   chunkRef: string;
   sourceLabel: string;
   asOf?: string;
