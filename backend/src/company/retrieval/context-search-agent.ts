@@ -17,6 +17,7 @@
  *
  * Emits structured ExecutionEvents for full observability in admin dashboard.
  * Filter by actorKey=context_search to see the full lifecycle.
+ * Comment-only deploy bump: this line intentionally exists to trigger redeploys when needed.
  */
 
 import OpenAI from 'openai';
