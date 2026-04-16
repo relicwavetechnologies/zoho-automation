@@ -848,18 +848,6 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     aliases: ['searchRead', 'search-read', 'webSearch', 'search'],
   },
   {
-    ...TOOL_CONTRACT_REGISTRY["context-search"],
-    id: 'context-search',
-    name: 'Context Search',
-    description: 'Unified retrieval broker for conversation history, indexed documents, Lark contacts, Zoho context, workspace lookup, web research, and skill discovery.',
-    category: 'search',
-    engines: ['vercel'],
-    defaultPermissions: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-    domain: 'context_search',
-    aliases: ['contextSearch', 'context-search', 'memorySearch', 'historySearch'],
-    deprecated: true,
-  },
-  {
     ...TOOL_CONTRACT_REGISTRY["lark-base-read"],
     id: 'lark-base-read',
     name: 'Lark Base Read',

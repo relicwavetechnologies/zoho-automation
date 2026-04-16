@@ -33,6 +33,8 @@ export type VectorSearchQuery = {
   requesterUserId?: string;
   requesterEmail?: string;
   requesterAiRole?: string;
+  dateFrom?: string;
+  dateTo?: string;
   conversationKey?: string;
   enforceEmailMatch?: boolean;
   denseVector: number[];

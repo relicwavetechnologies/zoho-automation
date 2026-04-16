@@ -89,7 +89,10 @@ export type ValidatedEnv = {
   GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: string;
   RAG_CHAT_RERANK_OPTIONAL: boolean;
   ORCHESTRATION_ENGINE: 'legacy' | 'vercel' | 'langgraph';
+  OPENAI_API_KEY: string;
   GROQ_API_KEY: string;
+  CONTEXT_SEARCH_TIMEOUT_ENABLED: boolean;
+  CONTEXT_SEARCH_TIMEOUT_MS: number;
   GROQ_ROUTER_MODEL: string;
   GEMINI_API_KEY: string;
   OPENAI_ROUTER_MODEL: string;
@@ -137,6 +140,11 @@ const readString = (value: unknown, defaultValue = ''): string => {
     return defaultValue;
   }
   return String(value).trim();
+};
+
+const readNumber = (value: string | undefined, defaultValue: number): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 };
 
 const parseInteger = (input: {
@@ -734,7 +742,10 @@ export const validateEnvironmentContract = (raw: NodeJS.ProcessEnv): EnvValidati
       readString(parsedRaw.ORCHESTRATION_ENGINE, 'langgraph'),
       issues,
     ),
+    OPENAI_API_KEY: readString(parsedRaw.OPENAI_API_KEY),
     GROQ_API_KEY: readString(parsedRaw.GROQ_API_KEY),
+    CONTEXT_SEARCH_TIMEOUT_ENABLED: parseBoolean({ key: 'CONTEXT_SEARCH_TIMEOUT_ENABLED', value: parsedRaw.CONTEXT_SEARCH_TIMEOUT_ENABLED ?? '', defaultValue: true, issues }),
+    CONTEXT_SEARCH_TIMEOUT_MS: readNumber(parsedRaw.CONTEXT_SEARCH_TIMEOUT_MS, 8_000),
     GROQ_ROUTER_MODEL: readString(parsedRaw.GROQ_ROUTER_MODEL, 'llama-3.1-8b-instant'),
     GEMINI_API_KEY: readString(parsedRaw.GEMINI_API_KEY, readString(parsedRaw.GOOGLE_API_KEY)),
     OPENAI_ROUTER_MODEL: readString(parsedRaw.OPENAI_ROUTER_MODEL, 'gpt-4o-mini'),

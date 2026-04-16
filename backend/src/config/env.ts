@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import dotenv from 'dotenv';
 
 import {
@@ -6,7 +8,16 @@ import {
   validateEnvironmentContract,
 } from './env.contract';
 
-dotenv.config();
+const envPath = path.resolve(process.cwd(), '.env');
+const envLocalPath = path.resolve(process.cwd(), '.env.local');
+
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath });
+}
+
+if (fs.existsSync(envLocalPath)) {
+  dotenv.config({ path: envLocalPath, override: true });
+}
 
 const IS_DEV_BOOT = process.env['NODE_ENV'] !== 'production';
 
@@ -201,7 +212,10 @@ export const GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY =
   validated.config.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
 export const RAG_CHAT_RERANK_OPTIONAL = validated.config.RAG_CHAT_RERANK_OPTIONAL;
 export const ORCHESTRATION_ENGINE = validated.config.ORCHESTRATION_ENGINE;
+export const OPENAI_API_KEY = validated.config.OPENAI_API_KEY;
 export const GROQ_API_KEY = validated.config.GROQ_API_KEY;
+export const CONTEXT_SEARCH_TIMEOUT_ENABLED = validated.config.CONTEXT_SEARCH_TIMEOUT_ENABLED;
+export const CONTEXT_SEARCH_TIMEOUT_MS = validated.config.CONTEXT_SEARCH_TIMEOUT_MS;
 export const GROQ_ROUTER_MODEL = validated.config.GROQ_ROUTER_MODEL;
 export const GEMINI_API_KEY = validated.config.GEMINI_API_KEY;
 export const OPENAI_ROUTER_MODEL = validated.config.OPENAI_ROUTER_MODEL;

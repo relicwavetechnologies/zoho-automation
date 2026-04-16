@@ -10,6 +10,7 @@ import { conversationMemoryStore } from '../../state/conversation';
 import { logger } from '../../../utils/logger';
 import { withProviderRetry } from '../../../utils/provider-retry';
 import { contextSearchBrokerService } from '../../retrieval/context-search-broker.service';
+import { contextSearchAgent } from '../../retrieval/context-search-agent';
 import { getSupportedToolActionGroups, type ToolActionGroup } from '../../tools/tool-action-groups';
 import { ALIAS_TO_CANONICAL_ID } from '../../tools/tool-registry';
 import { type CanonicalToolId, toCanonicalToolId } from '../../tools/canonical-tool-id';
@@ -4060,13 +4061,15 @@ export const createVercelDesktopTools = (
             normalizedSources: normalizedSources ?? null,
             limit: input.limit ?? null,
           });
-          const result = await contextSearchBrokerService.search({
+          const result = await contextSearchAgent.search({
             runtime,
             query,
             limit: Math.max(1, Math.min(25, input.limit ?? 5)),
             dateFrom: input.dateFrom,
             dateTo: input.dateTo,
             sources: normalizedSources,
+            executionId: hooks?.executionId ?? undefined,
+            executionSequenceBase: hooks?.currentSequence ?? undefined,
           });
           redDebug('legacy_tools.context_search.result', {
             delegatedAgentId: runtime.delegatedAgentId ?? 'unknown',
@@ -4075,7 +4078,7 @@ export const createVercelDesktopTools = (
             searchSummary: result.searchSummary,
             resultCount: result.results.length,
           });
-          const citations = contextSearchBrokerService.toVercelCitationsFromSearch(result);
+          const citations = contextSearchAgent.toVercelCitationsFromSearch(result);
 
           return buildEnvelope({
             success: true,

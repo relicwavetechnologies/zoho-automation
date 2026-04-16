@@ -103,24 +103,15 @@ export class ExecutionRepository {
         const updatedRun = await tx.executionRun.update({
           where: { id: input.executionId },
           data: {
-            lastSequence: {
-              increment: 1,
-            },
-            ...(input.summary
-              ? {
-                latestSummary: input.summary,
-              }
-              : {}),
+            lastSequence: { increment: 1 },
+            ...(input.summary ? { latestSummary: input.summary } : {}),
           },
-          select: {
-            id: true,
-            lastSequence: true,
-          },
+          select: { id: true, lastSequence: true },
         });
 
         return tx.executionEvent.create({
           data: {
-            executionId: updatedRun.id,
+            executionId: input.executionId,
             sequence: updatedRun.lastSequence,
             phase: input.phase,
             eventType: input.eventType,

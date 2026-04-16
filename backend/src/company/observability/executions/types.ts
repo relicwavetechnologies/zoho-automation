@@ -19,7 +19,7 @@ export type StartExecutionRunInput = {
   companyId: string;
   userId?: string | null;
   channel: ExecutionChannel;
-  entrypoint: 'desktop_send' | 'desktop_act' | 'lark_inbound';
+  entrypoint: 'desktop_send' | 'desktop_act' | 'lark_inbound' | 'supervisor_v2';
   requestId?: string | null;
   taskId?: string | null;
   threadId?: string | null;

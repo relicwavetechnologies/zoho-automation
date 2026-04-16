@@ -169,12 +169,10 @@ export class GoogleRankingService {
     }
 
     if (!this.isConfigured()) {
-      if (options.required) {
-        logger.warn('google.ranking.unconfigured', {
-          model: config.GOOGLE_RANKING_MODEL,
-          required: true,
-        });
-      }
+      logger.warn('google.ranking.unconfigured', {
+        model: config.GOOGLE_RANKING_MODEL,
+        required: Boolean(options.required),
+      });
       return this.fallback(normalizedRecords, topN);
     }
 
@@ -185,7 +183,11 @@ export class GoogleRankingService {
     try {
       const token = await this.tokenProvider.getToken();
       if (!token) {
-        throw new Error('No Google Cloud access token available for ranking');
+        logger.warn('google.ranking.token_missing', {
+          model: config.GOOGLE_RANKING_MODEL,
+          required: Boolean(options.required),
+        });
+        return this.fallback(normalizedRecords, topN);
       }
 
       const response = await fetch(
@@ -214,6 +216,12 @@ export class GoogleRankingService {
         const body = await response.text();
         if (response.status === 401) {
           this.unauthorizedCooldownUntil = Date.now() + GOOGLE_RERANK_401_COOLDOWN_MS;
+          logger.warn('google.ranking.unauthorized_fallback', {
+            model: config.GOOGLE_RANKING_MODEL,
+            required: Boolean(options.required),
+            reason: body || 'HTTP 401',
+          });
+          return this.fallback(normalizedRecords, topN);
         }
         throw new Error(
           `Google ranking request failed: HTTP ${response.status}${body ? ` - ${body}` : ''}`,

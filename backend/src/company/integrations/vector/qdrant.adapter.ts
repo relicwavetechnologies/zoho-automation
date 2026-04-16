@@ -215,6 +215,16 @@ const buildSearchFilter = (query: VectorSearchQuery): Record<string, unknown> =>
     });
   }
 
+  if (query.dateFrom || query.dateTo) {
+    const rangeFilter: Record<string, unknown> = {};
+    if (query.dateFrom) rangeFilter.gte = query.dateFrom;
+    if (query.dateTo) rangeFilter.lte = query.dateTo;
+    must.push({
+      key: 'sourceUpdatedAt',
+      range: rangeFilter,
+    });
+  }
+
   const isFileDoctypeRequested =
     !query.sourceTypes ||
     query.sourceTypes.length === 0 ||

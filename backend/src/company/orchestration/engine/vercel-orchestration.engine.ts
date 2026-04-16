@@ -118,6 +118,7 @@ import {
   type ConversationRetrievalItem,
   type RetrievalSnippet,
 } from './context-compaction';
+import type { AgentDefinition } from '../../../generated/prisma';
 
 const LOCAL_TIME_ZONE = 'Asia/Kolkata';
 const LARK_BLOCKED_TOOL_IDS = new Set<string>();
@@ -3861,13 +3862,24 @@ export const buildDelegatedLarkStepPrompt = (input: {
   return parts.join('\n');
 };
 
-export const buildDelegatedAgentSystemPrompt = (baseSystemPrompt: string, agentId: SupervisorStep['agentId']): string => {
+export const buildDelegatedAgentSystemPrompt = (
+  baseSystemPrompt: string,
+  agentId: SupervisorStep['agentId'],
+  runtime: VercelRuntimeRequestContext,
+): string => {
   const ACTION_AGENTS: Array<SupervisorStep['agentId']> = [
     'google-workspace-agent',
     'lark-ops-agent',
     'zoho-ops-agent',
     'workspace-agent',
   ];
+  const AGENT_ID_TO_DB_NAME: Record<SupervisorStep['agentId'], string> = {
+    'lark-ops-agent': 'Lark Ops Agent',
+    'google-workspace-agent': 'Google Workspace Agent',
+    'zoho-ops-agent': 'Zoho Ops Agent',
+    'context-agent': 'Context Agent',
+    'workspace-agent': 'Workspace Agent',
+  };
   const retrievalPolicy = ACTION_AGENTS.includes(agentId)
     ? `Your context is provided in the handoff input above.
 If you are missing critical information needed to complete your objective, do not search.
@@ -3887,9 +3899,18 @@ Return a concise explanation of exactly what data is missing and the supervisor 
     'If a required parameter is already present in that block, pass it directly to the tool instead of asking for it again or omitting it.',
     retrievalPolicy,
   ].join('\n');
-  const profile = AGENT_CAPABILITY_PROFILES[agentId];
-  if (profile) {
-    systemPrompt += `\n\n[Agent Capability Profile]\n${profile.trim()}`;
+  const dbAgentName = AGENT_ID_TO_DB_NAME[agentId];
+  const childAgentDefinition = dbAgentName
+    ? runtime.childAgentDefinitions?.get(dbAgentName)
+    : undefined;
+  const dbSystemPrompt = childAgentDefinition?.systemPrompt?.trim();
+  if (dbSystemPrompt) {
+    systemPrompt += `\n\n${dbSystemPrompt}`;
+  } else {
+    const profile = AGENT_CAPABILITY_PROFILES[agentId];
+    if (profile) {
+      systemPrompt += `\n\n[Agent Capability Profile]\n${profile.trim()}`;
+    }
   }
   return systemPrompt;
 };
@@ -4003,15 +4024,69 @@ const resolveRuntimeContext = async (
       contextSearch: ['read'],
     };
   }
-  const mappedAgent = await channelMappingService.resolveAgent(
+  const mappedAgentFromChannel = await channelMappingService.resolveAgent(
     companyId,
     'lark',
     message.chatId,
   );
+  const rootAgents = mappedAgentFromChannel
+    ? []
+    : await prisma.agentDefinition.findMany({
+        where: {
+          companyId,
+          isActive: true,
+          parentId: null,
+        },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          systemPrompt: true,
+          toolIds: true,
+          isActive: true,
+          modelId: true,
+          provider: true,
+        },
+        take: 2,
+        orderBy: { createdAt: 'asc' },
+      });
+  const mappedAgent = mappedAgentFromChannel ?? (
+    rootAgents.length === 1
+      ? rootAgents[0]
+      : null
+  );
+  const agentResolutionSource = mappedAgentFromChannel?.isActive
+    ? 'db_agent'
+    : mappedAgent && rootAgents.length === 1
+      ? 'db_agent'
+      : 'hardcoded_fallback';
+  const childAgentDefinitions = mappedAgent?.id
+    ? new Map<string, Pick<AgentDefinition, 'id' | 'name' | 'systemPrompt' | 'toolIds' | 'modelId' | 'provider'>>(
+        (await prisma.agentDefinition.findMany({
+          where: {
+            companyId,
+            isActive: true,
+            parentId: mappedAgent.id,
+          },
+          select: {
+            id: true,
+            name: true,
+            systemPrompt: true,
+            toolIds: true,
+            modelId: true,
+            provider: true,
+          },
+        })).map((agent) => [agent.name, agent]),
+      )
+    : undefined;
   logger.error('orchestration.engine.selection.agent_source', {
     channel: 'lark',
-    source: mappedAgent?.isActive ? 'db_mapped' : 'hardcoded_fallback',
-    resolution: 'channel_mapping_lookup',
+    source: agentResolutionSource,
+    resolution: mappedAgentFromChannel?.isActive
+      ? 'channel_mapping_lookup'
+      : mappedAgent && rootAgents.length === 1
+        ? 'single_root_agent_fallback'
+        : 'channel_mapping_lookup',
     companyId,
     chatId: message.chatId,
     messageId: message.messageId,
@@ -4077,6 +4152,7 @@ const resolveRuntimeContext = async (
         )
       : undefined,
     agentDefinition: mappedAgent?.isActive ? mappedAgent : undefined,
+    childAgentDefinitions,
     departmentSystemPrompt,
     departmentSkillsMarkdown,
   };
@@ -5279,6 +5355,16 @@ const executeLarkVercelTask = async (
     effectiveRuntime.mode,
     effectiveRuntime.agentDefinition ?? undefined,
   );
+  logger.info('orchestration.engine.selection.model', {
+    executionId,
+    channel: 'lark',
+    source: effectiveRuntime.agentDefinition?.id ? 'db_agent' : 'hardcoded_fallback',
+    agentId: effectiveRuntime.agentDefinition?.id ?? null,
+    agentName: effectiveRuntime.agentDefinition?.name ?? null,
+    modelId: resolvedModel.effectiveModelId,
+    provider: resolvedModel.effectiveProvider,
+    mode: effectiveRuntime.mode,
+  });
   const contextClass = chooseLarkContextClass({
     latestUserMessage: resolvedUserMessage,
     taskState: activeTaskState,
@@ -5809,6 +5895,16 @@ const executeLarkVercelTask = async (
           if (step.sourceSystem === 'context' && !stepAllowedActionsByTool.contextSearch?.includes('read')) {
             stepAllowedActionsByTool.contextSearch = ['read'];
           }
+          const stepDbAgentName = ({
+            'lark-ops-agent': 'Lark Ops Agent',
+            'google-workspace-agent': 'Google Workspace Agent',
+            'zoho-ops-agent': 'Zoho Ops Agent',
+            'context-agent': 'Context Agent',
+            'workspace-agent': 'Workspace Agent',
+          } as const)[step.agentId];
+          const stepAgentDefinition = stepDbAgentName
+            ? effectiveRuntime.childAgentDefinitions?.get(stepDbAgentName)
+            : undefined;
           const stepRuntime: VercelRuntimeRequestContext = {
             ...effectiveRuntime,
             allowedToolIds: familyToolIds,
@@ -5817,6 +5913,7 @@ const executeLarkVercelTask = async (
             runExposedToolIds: familyToolIds,
             plannerCandidateToolIds: familyToolIds,
             toolSelectionReason: `supervisor delegated to ${step.agentId}`,
+            agentDefinition: stepAgentDefinition,
           };
           if (step.agentId === 'google-workspace-agent') {
             logger.info('agent.google_workspace.step.start', {
@@ -5878,7 +5975,15 @@ const executeLarkVercelTask = async (
               taskState: {},
             } satisfies DelegatedAgentExecutionResult;
           }
-          const stepSystemPrompt = buildDelegatedAgentSystemPrompt(compactedSystemPrompt, step.agentId);
+          const stepSystemPrompt = buildDelegatedAgentSystemPrompt(
+            compactedSystemPrompt,
+            step.agentId,
+            stepRuntime,
+          );
+          const stepResolvedModel = await resolveVercelLanguageModel(
+            stepRuntime.mode,
+            stepRuntime.agentDefinition ?? undefined,
+          );
           const upstreamStepSummaries = summarizeUpstreamStepOutputs(upstreamResults);
           const stepMessages: ModelMessage[] = [
             ...primaryMessages.map(({ role, content }) => ({ role, content })),
@@ -6144,11 +6249,11 @@ const executeLarkVercelTask = async (
           ) => {
             try {
               return await runWithModelCircuitBreaker(
-                resolvedModel.effectiveProvider,
+                stepResolvedModel.effectiveProvider,
                 `lark_delegate_${step.agentId}${labelSuffix}`,
                 () =>
                   generateText({
-                    model: resolvedModel.model,
+                    model: stepResolvedModel.model,
                     system: stepSystemPrompt,
                     messages: messagesForStep,
                     tools: stepTools,
@@ -6156,8 +6261,8 @@ const executeLarkVercelTask = async (
                     providerOptions: {
                       google: {
                         thinkingConfig: {
-                          includeThoughts: resolvedModel.includeThoughts,
-                          thinkingLevel: resolvedModel.thinkingLevel,
+                          includeThoughts: stepResolvedModel.includeThoughts,
+                          thinkingLevel: stepResolvedModel.thinkingLevel,
                         },
                       },
                     },
@@ -6184,11 +6289,11 @@ const executeLarkVercelTask = async (
                 resolvedUserMessage,
               );
               return runWithModelCircuitBreaker(
-                resolvedModel.effectiveProvider,
+                stepResolvedModel.effectiveProvider,
                 `lark_delegate_${step.agentId}${labelSuffix}_provider_retry`,
                 () =>
                   generateText({
-                    model: resolvedModel.model,
+                    model: stepResolvedModel.model,
                     system: stepSystemPrompt,
                     messages: sanitizedMessages,
                     tools: stepTools,
@@ -6196,8 +6301,8 @@ const executeLarkVercelTask = async (
                     providerOptions: {
                       google: {
                         thinkingConfig: {
-                          includeThoughts: resolvedModel.includeThoughts,
-                          thinkingLevel: resolvedModel.thinkingLevel,
+                          includeThoughts: stepResolvedModel.includeThoughts,
+                          thinkingLevel: stepResolvedModel.thinkingLevel,
                         },
                       },
                     },

@@ -231,7 +231,8 @@ export type VercelRuntimeRequestContext = {
   companyPromptProfile?: CompanyPromptProfileRuntime;
   departmentSystemPrompt?: string;
   departmentSkillsMarkdown?: string;
-  agentDefinition?: Pick<AgentDefinition, 'id' | 'name' | 'description' | 'systemPrompt' | 'toolIds' | 'isActive'>;
+  agentDefinition?: Pick<AgentDefinition, 'id' | 'name' | 'description' | 'systemPrompt' | 'toolIds' | 'isActive' | 'modelId' | 'provider'>;
+  childAgentDefinitions?: Map<string, Pick<AgentDefinition, 'id' | 'name' | 'systemPrompt' | 'toolIds' | 'modelId' | 'provider'>> | undefined;
   searchIntent?: SearchIntent;
   searchIntentPromise?: Promise<SearchIntent>;
   canonicalIntent?: CanonicalIntent;

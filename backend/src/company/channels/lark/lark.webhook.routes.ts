@@ -2590,6 +2590,10 @@ export const createLarkWebhookEventHandler = (
         parsed.kind === 'event_callback_message'
         && tracedMessageBase.chatType === 'group'
         && !botMentioned
+        && !memoryCommand
+        && !workflowCommand
+        && !shareCommand
+        && !isStandaloneLarkSlashCommand(tracedMessageBase.text)
       ) {
         dependencies.log.info('lark.webhook.event.ignored', {
           requestId,

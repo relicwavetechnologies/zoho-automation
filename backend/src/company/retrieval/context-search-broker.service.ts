@@ -1147,6 +1147,8 @@ class ContextSearchBrokerService {
           requesterUserId: input.runtime.userId,
           text: query,
           limit: internalLimit,
+          dateFrom: dateFrom?.toISOString(),
+          dateTo: dateTo?.toISOString(),
         });
         const normalized = await Promise.all(matches.map(async (match) => {
           const chunk = await vectorDocumentRepository.findChunkByText({

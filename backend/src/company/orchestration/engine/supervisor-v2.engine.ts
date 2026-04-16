@@ -12,9 +12,11 @@ import {
   type NormalizedIncomingMessageDTO,
   type OrchestrationTaskDTO,
 } from '../../contracts';
+import { channelMappingService } from '../../agents/dynamic/channel-mapping.service';
 import { departmentPreferenceService } from '../../departments/department-preference.service';
 import { departmentService } from '../../departments/department.service';
 import {
+  executionRepository,
   executionService,
   buildExecutionModelInputPayload,
 } from '../../observability';
@@ -24,6 +26,7 @@ import { conversationMemoryStore } from '../../state/conversation';
 import { toolPermissionService } from '../../tools/tool-permission.service';
 import { DOMAIN_TO_TOOL_IDS } from '../../tools/tool-registry';
 import { resolveCanonicalIntent } from '../intent/canonical-intent';
+import { buildSharedAgentSystemPrompt } from '../prompting/shared-agent-prompt';
 import { getOrBuildStaticPromptLayer } from '../prompting/static-prompt-cache';
 import type { OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
 import { createVercelDesktopTools } from '../vercel/legacy-tools';
@@ -1422,6 +1425,20 @@ const buildSupervisorCompanyProfileBlock = (runtime: VercelRuntimeRequestContext
 
 const buildSupervisorStaticOverlay = (runtime: VercelRuntimeRequestContext): string => {
   const parts: string[] = [];
+  const agentDefinitionPrompt = buildSharedAgentSystemPrompt({
+    runtimeLabel: 'divo-supervisor',
+    conversationKey: runtime.threadId,
+    allowedToolIds: runtime.allowedToolIds,
+    runExposedToolIds: runtime.allowedToolIds,
+    companyPromptProfile: runtime.companyPromptProfile,
+    departmentId: runtime.departmentId,
+    departmentSystemPrompt: runtime.departmentSystemPrompt,
+    departmentSkillsMarkdown: runtime.departmentSkillsMarkdown,
+    agentDefinition: runtime.agentDefinition ?? undefined,
+  });
+  if (agentDefinitionPrompt.trim()) {
+    parts.push(agentDefinitionPrompt);
+  }
   const companyBlock = buildSupervisorCompanyProfileBlock(runtime);
   if (companyBlock) {
     parts.push(companyBlock);
@@ -2264,6 +2281,12 @@ const buildSupervisorSystemPromptWithCache = async (
       sanitizePromptBlock(runtime.departmentSystemPrompt ?? ''),
       sanitizePromptBlock(runtime.departmentSkillsMarkdown ?? ''),
     ].join('|'),
+    agentDefinitionHash: [
+      runtime.agentDefinition?.id ?? '',
+      runtime.agentDefinition?.name ?? '',
+      runtime.agentDefinition?.systemPrompt ?? '',
+      (runtime.agentDefinition?.toolIds ?? []).join('|'),
+    ].join('|'),
     runtimeLabel: 'divo-supervisor',
     builder: () => buildSupervisorStaticOverlay(runtime),
   });
@@ -2778,6 +2801,52 @@ const resolveRuntimeContext = async (
   if (!companyId) {
     throw new Error('Missing companyId for supervisor-v2 runtime.');
   }
+  const mappedAgentFromChannel = await channelMappingService.resolveAgent(
+    companyId,
+    message.channel === 'lark' ? 'lark' : 'desktop',
+    message.chatId || message.trace?.channelIdentityId || '*',
+  );
+  let mappedAgent = mappedAgentFromChannel;
+  if (!mappedAgentFromChannel) {
+    const activeRootAgents = await prisma.agentDefinition.findMany({
+      where: {
+        companyId,
+        isActive: true,
+        parentId: null,
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        systemPrompt: true,
+        toolIds: true,
+        isActive: true,
+        modelId: true,
+        provider: true,
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+    });
+    if (activeRootAgents.length === 1) {
+      mappedAgent = activeRootAgents[0];
+    }
+  }
+  logger.info('supervisor_v2.selection.agent_source', {
+    channel: message.channel,
+    source: mappedAgent?.id ? 'db_agent' : 'hardcoded_fallback',
+    resolution: mappedAgentFromChannel
+      ? 'channel_mapping'
+      : mappedAgent?.id
+        ? 'single_root_agent_fallback'
+        : 'none',
+    companyId,
+    chatId: message.chatId ?? null,
+    messageId: message.messageId,
+    agentId: mappedAgent?.id ?? null,
+    agentName: mappedAgent?.name ?? null,
+    mappedAgentActive: mappedAgent?.isActive ?? false,
+  });
 
   const canonicalIntent = task.canonicalIntent ?? await resolveCanonicalIntent({
     message: message.text,
@@ -2891,6 +2960,7 @@ const resolveRuntimeContext = async (
     allowedActionsByTool,
     departmentSystemPrompt,
     departmentSkillsMarkdown,
+    agentDefinition: mappedAgent?.isActive ? mappedAgent : undefined,
     canonicalIntent,
   };
 };
@@ -4059,6 +4129,29 @@ const executeTask = async (
 ): Promise<SupervisorV2ExecutionOutput> => {
   const { task, message, abortSignal } = input;
   const executionId = resolveCanonicalExecutionId(task, message);
+  try {
+    const companyId = message.trace?.companyId?.trim();
+    const executionUserId = await resolveWorkspaceUserIdForLarkMessage(message);
+    if (companyId) {
+      await executionRepository.createRun({
+        id: executionId,
+        companyId,
+        userId: executionUserId ?? null,
+        channel: message.channel,
+        entrypoint: 'supervisor_v2',
+        requestId: executionId,
+        taskId: task.taskId ?? null,
+        threadId: message.trace?.threadRootId ?? null,
+        chatId: task.chatId ?? null,
+        messageId: message.messageId ?? task.messageId ?? null,
+        mode: LARK_V2_MODE,
+        agentTarget: 'vercel',
+        latestSummary: summarizeText(message.text ?? ''),
+      });
+    }
+  } catch {
+    // Run may already exist if created upstream; ignore duplicate/ordering races.
+  }
   const executionStartMs = Date.now();
   _vibeIndex = Math.floor(Math.random() * DIVO_VIBES.length);
   _dotIndex = 0;
@@ -4188,6 +4281,14 @@ const executeTask = async (
       runtime.mode,
       runtime.agentDefinition ?? undefined,
     );
+    logger.info('supervisor_v2.selection.model', {
+      source: runtime.agentDefinition?.id ? 'db_agent' : 'hardcoded_fallback',
+      agentId: runtime.agentDefinition?.id ?? null,
+      agentName: runtime.agentDefinition?.name ?? null,
+      modelId: resolvedModel.effectiveModelId,
+      provider: resolvedModel.effectiveProvider,
+      mode: runtime.mode,
+    });
     const attachmentContextMessages: string[] = [];
     if (input.message.attachedFiles?.length) {
       for (const file of input.message.attachedFiles) {
