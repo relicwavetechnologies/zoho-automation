@@ -66,6 +66,9 @@ importers:
       multer:
         specifier: ^2.1.1
         version: 2.1.1
+      openai:
+        specifier: ^6.25.0
+        version: 6.25.0(ws@8.20.0)(zod@3.25.76)
       pdf-parse:
         specifier: ^2.4.5
         version: 2.4.5
