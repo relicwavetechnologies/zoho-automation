@@ -691,6 +691,10 @@ class ContextSearchAgent {
       workspaceAvailable,
     });
 
+    const filesOnlySearch =
+      Object.entries(input.sources ?? {}).filter(([, v]) => Boolean(v)).length === 1 &&
+      Boolean(input.sources?.files);
+
     // Emit start event
     await emitEvent(emitter, {
       eventType: 'context_search.start',
@@ -709,7 +713,7 @@ class ContextSearchAgent {
           sourcesSelected: scopeDecision.sources,
           reasoning: scopeDecision.reasoning,
         },
-        filenameFastPathTriggered: isFilenameQuery(query),
+        filenameFastPathTriggered: isFilenameQuery(query) || filesOnlySearch,
         workspaceAvailable,
         timeoutEnabled: config.CONTEXT_SEARCH_TIMEOUT_ENABLED,
       },
@@ -723,7 +727,7 @@ class ContextSearchAgent {
     let searchedSources = new Set<ContextSearchBrokerSourceKey>(scopeDecision.sources);
 
     // [4] Filename Fast Path
-    if (isFilenameQuery(query)) {
+    if (isFilenameQuery(query) || filesOnlySearch) {
       const fastPath = await runFilenameFastPath({
         companyId: input.runtime.companyId,
         query,
