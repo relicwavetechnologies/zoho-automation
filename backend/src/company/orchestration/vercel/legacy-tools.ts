@@ -1872,9 +1872,14 @@ const ensureAnyActionPermission = (
   });
 };
 
+const MANAGER_APPROVAL_BYPASS_ENABLED = false;
+
 const isRequesterResolvedApprover = async (
   runtime: VercelRuntimeRequestContext,
 ): Promise<boolean> => {
+  if (!MANAGER_APPROVAL_BYPASS_ENABLED) {
+    return false;
+  }
   if (runtime.departmentRoleSlug?.trim().toUpperCase() === 'MANAGER') {
     return true;
   }
