@@ -4,6 +4,7 @@ import { generateText, stepCountIs, tool } from 'ai';
 import { z } from 'zod';
 
 import config from '../../../config';
+import type { ChannelAction } from '../../channels/base/channel-adapter';
 import { larkChatContextService } from '../../channels/lark/lark-chat-context.service';
 import { resolveChannelAdapter } from '../../channels/channel-adapter.registry';
 import {
@@ -2624,6 +2625,107 @@ const buildHitlAction = (
   };
 };
 
+const buildLarkApprovalActions = (pendingApproval: PendingApprovalAction): ChannelAction[] => {
+  if (pendingApproval.kind !== 'tool_action') {
+    return [];
+  }
+  return [
+    {
+      id: 'hitl_approve',
+      label: 'Approve',
+      style: 'primary',
+      value: {
+        kind: 'hitl_tool_action',
+        actionId: pendingApproval.approvalId,
+        decision: 'confirmed',
+      },
+    },
+    {
+      id: 'hitl_reject',
+      label: 'Reject',
+      style: 'danger',
+      value: {
+        kind: 'hitl_tool_action',
+        actionId: pendingApproval.approvalId,
+        decision: 'cancelled',
+      },
+    },
+  ];
+};
+
+const requiresManagerApproval = (
+  runtime: VercelRuntimeRequestContext,
+  pendingApproval: PendingApprovalAction,
+): boolean =>
+  pendingApproval.kind === 'tool_action'
+  && Boolean(runtime.departmentManagerApprovalConfig?.enabled)
+  && runtime.departmentManagerApprovalConfig!.requiredToolIds.includes(
+    pendingApproval.toolId,
+  );
+
+const buildManagerApprovalText = (input: {
+  pendingApproval: PendingApprovalAction;
+  requesterLabel: string;
+  departmentName?: string;
+}): string => {
+  const { pendingApproval } = input;
+  const departmentLine = input.departmentName ? `Department: ${input.departmentName}` : null;
+  const targetLine =
+    pendingApproval.kind === 'tool_action'
+      ? `Tool: ${pendingApproval.toolId} (${pendingApproval.actionGroup})`
+      : null;
+  return [
+    'Manager approval needed.',
+    '',
+    `Requester: ${input.requesterLabel}`,
+    departmentLine,
+    targetLine,
+    `Summary: ${pendingApproval.kind === 'tool_action' ? pendingApproval.summary : pendingApproval.title ?? pendingApproval.kind}`,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join('\n');
+};
+
+const sendManagerApprovalRequest = async (input: {
+  runtime: VercelRuntimeRequestContext;
+  message: NormalizedIncomingMessageDTO;
+  pendingApproval: PendingApprovalAction;
+}): Promise<{ sent: boolean; approverName?: string; approverOpenId?: string; reason?: string }> => {
+  if (!requiresManagerApproval(input.runtime, input.pendingApproval)) {
+    return { sent: false, reason: 'manager_approval_not_required' };
+  }
+
+  const approver = await departmentService.resolveDepartmentApprover({
+    companyId: input.runtime.companyId,
+    departmentId: input.runtime.departmentId,
+  });
+  if (!approver?.larkOpenId) {
+    return { sent: false, reason: 'no_lark_manager_available' };
+  }
+
+  const adapter = resolveChannelAdapter('lark');
+  const requesterLabel =
+    input.runtime.requesterEmail?.trim()
+    || input.message.trace?.requesterEmail?.trim()
+    || input.runtime.userId;
+  await adapter.sendMessage({
+    chatId: approver.larkOpenId,
+    text: buildManagerApprovalText({
+      pendingApproval: input.pendingApproval,
+      requesterLabel,
+      departmentName: input.runtime.departmentName,
+    }),
+    actions: buildLarkApprovalActions(input.pendingApproval),
+    correlationId: input.runtime.executionId,
+  });
+
+  return {
+    sent: true,
+    approverName: approver.name ?? approver.email ?? undefined,
+    approverOpenId: approver.larkOpenId,
+  };
+};
+
 const resolveWorkspaceUserIdForLarkMessage = async (
   message: NormalizedIncomingMessageDTO,
 ): Promise<string | undefined> => {
@@ -5097,16 +5199,33 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
     const rawText = supervisorResult.text?.trim()
       || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n\n')
       || 'Completed the request.';
-    const finalText = rawText.length > 50_000
+    let finalText = rawText.length > 50_000
       ? `${rawText.slice(0, 50_000)}\n\n*(Response truncated — showing first portion)*`
       : rawText;
+    let managerApprovalResult: Awaited<ReturnType<typeof sendManagerApprovalRequest>> | null = null;
+    if (message.channel === 'lark' && pendingApproval) {
+      managerApprovalResult = await sendManagerApprovalRequest({
+        runtime,
+        message,
+        pendingApproval,
+      });
+      if (managerApprovalResult.sent) {
+        finalText = `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`;
+      }
+    }
     const hasToolResults =
       toolResults.length > 0
       || asArray(supervisorResult.steps).some((step) => asArray(asRecord(step)?.toolCalls).length > 0);
     const agentResults = toSupervisorAgentResults(toolResults, task.taskId);
 
     const durationSec = Math.round((Date.now() - executionStartMs) / 1000);
-    await statusCoordinator?.finalizeLiveText(`Completed in ${durationSec}s ✓`);
+    await statusCoordinator?.finalizeLiveText(
+      pendingApproval
+        ? (managerApprovalResult?.sent
+          ? `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`
+          : 'Approval required.')
+        : `Completed in ${durationSec}s ✓`,
+    );
     await memoryService.recordUserTurn({
       userId: runtime.userId,
       companyId: runtime.companyId,
