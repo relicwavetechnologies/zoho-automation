@@ -443,6 +443,24 @@ const loadStoredContextSnapshot = async (input: {
   };
 };
 
+const sendRealHarnessAnchorMessage = async (input: {
+  chatId: string;
+  messageText: string;
+}): Promise<string> => {
+  const adapter = new LarkChannelAdapter();
+  const outbound = await adapter.sendMessage({
+    chatId: input.chatId,
+    text: `[Harness input]\n${input.messageText}`,
+    format: 'text',
+    replyInThread: false,
+    correlationId: `harness-anchor-${Date.now()}`,
+  });
+  if (outbound.status !== 'sent' || !outbound.messageId) {
+    throw new Error('Failed to create real Lark anchor message for harness run.');
+  }
+  return outbound.messageId;
+};
+
 const main = async (): Promise<void> => {
   const messageText = asString(readArg('--message') || readArg('-m'));
   if (!messageText) {
@@ -450,6 +468,7 @@ const main = async (): Promise<void> => {
   }
 
   const chatType = readArg('--chat-type') === 'group' ? 'group' : 'p2p';
+  const selfDm = hasFlag('--self-dm') || hasFlag('--dm');
   const seedMessages = loadSeedMessages();
   const clearHistory = hasFlag('--clear-history') || hasFlag('--fresh-thread') || hasFlag('--fresh-chat');
   const resolved = (await resolveExplicitHarnessContext())
@@ -457,6 +476,10 @@ const main = async (): Promise<void> => {
 
   if (chatType === 'group' && hasFlag('--fresh-chat')) {
     resolved.chatId = `oc_harness_${Date.now()}`;
+  }
+
+  if (chatType === 'p2p' && selfDm) {
+    resolved.chatId = resolved.larkOpenId;
   }
 
   if (chatType === 'p2p' && !resolved.linkedUserId) {
@@ -486,9 +509,16 @@ const main = async (): Promise<void> => {
 
   try {
     const taskId = randomUUID();
-    const messageId = `om_harness_${Date.now()}`;
+    const explicitReplyToMessageId = asString(readArg('--reply-to-message-id'));
+    const anchorMessageId = !stubbedEgress && !explicitReplyToMessageId
+      ? await sendRealHarnessAnchorMessage({
+        chatId: resolved.chatId,
+        messageText,
+      })
+      : undefined;
+    const messageId = anchorMessageId ?? `om_harness_${Date.now()}`;
     const timestamp = new Date().toISOString();
-    const replyToMessageId = asString(readArg('--reply-to-message-id'));
+    const replyToMessageId = explicitReplyToMessageId ?? anchorMessageId;
     const message = buildHarnessMessage({
       taskId,
       context: resolved,
@@ -514,6 +544,8 @@ const main = async (): Promise<void> => {
     console.log(JSON.stringify({
       harness: 'local-lark-execution',
       stubbedLarkEgress: !hasFlag('--real-lark-egress'),
+      deliveryTarget: selfDm && chatType === 'p2p' ? 'self_dm_open_id' : 'chat_id',
+      anchorMessageId: anchorMessageId ?? null,
       taskId,
       messageId,
       chatType,

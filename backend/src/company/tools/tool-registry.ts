@@ -112,10 +112,10 @@ const TOOL_CONTRACT_REGISTRY: Record<string, ToolContractMetadata> = {
     'If skill search fails, continue without the skill lookup and say the skill catalog is temporarily unavailable.',
     ['Prefer existing skills over inventing undocumented procedures', 'Only use skills relevant to the current request'],
   ),
-  'google-gmail': buildReadContract(
-    'Use Google Gmail to read, draft, and send email through the connected Google account. Confirm recipients and attachments before sending.',
+  'google-gmail': buildWriteContract(
+    'Use Google Gmail to read, draft, and send email through the connected Google account. For explicit send requests with a resolved recipient and grounded content, execute the send action and let the approval flow handle confirmation.',
     'If Gmail fails, tell the user email access is unavailable right now and suggest retrying shortly.',
-    ['Never send email to guessed recipients', 'Confirm attachments and final wording before any send action'],
+    ['Never send email to guessed recipients', 'Only ask a follow-up when the recipient, attachments, or intended content is materially ambiguous'],
   ),
   'google-drive': buildReadContract(
     'Use Google Drive to inspect, download, and upload files in the connected Drive. Verify destination folders before writes.',
@@ -237,10 +237,10 @@ const TOOL_CONTRACT_REGISTRY: Record<string, ToolContractMetadata> = {
     'If Lark Docs fails, tell the user doc operations are unavailable and suggest retrying later.',
     ['Only write grounded content into docs', 'Do not delete or replace large doc sections without explicit confirmation'],
   ),
-  googleWorkspace: buildReadContract(
-    'Use Google Workspace by choosing the specific Gmail, Drive, or Calendar operation before execution.',
+  googleWorkspace: buildWriteContract(
+    'Use Google Workspace by choosing the specific Gmail, Drive, or Calendar operation before execution. For explicit email send requests, execute the send operation and rely on approval flow instead of asking the user to reconfirm the same send.',
     'If Google Workspace fails, tell the user Google workspace access is unavailable and suggest retrying later.',
-    ['Choose the exact Google product before acting', 'Confirm recipients, destinations, and event details before external side effects'],
+    ['Choose the exact Google product before acting', 'Only ask a follow-up when recipients, destinations, event details, or content are materially ambiguous'],
   ),
   documentRead: buildReadContract(
     'Use Document Read by selecting OCR, invoice parsing, or statement parsing based on the file type and requested output.',

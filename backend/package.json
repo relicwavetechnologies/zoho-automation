@@ -24,6 +24,7 @@
     "executions:cleanup": "tsx scripts/cleanup-execution-history.ts",
     "harness:lark:routing": "tsx scripts/run-lark-routing-harness.ts",
     "harness:lark:local": "tsx scripts/run-local-lark-execution-harness.ts",
+    "harness:lark:dm": "tsx scripts/run-local-lark-execution-harness.ts --chat-type p2p --self-dm --real-lark-egress",
     "harness:context-search:sources": "tsx scripts/run-context-search-source-harness.ts",
     "harness:context-search:ladder": "tsx scripts/run-context-search-ladder-harness.ts",
     "harness:supervisor:structured": "tsx scripts/run-supervisor-structured-harness.ts",

@@ -29,6 +29,7 @@ import { DOMAIN_TO_TOOL_IDS } from '../../tools/tool-registry';
 import { resolveCanonicalIntent } from '../intent/canonical-intent';
 import { buildSharedAgentSystemPrompt } from '../prompting/shared-agent-prompt';
 import { getOrBuildStaticPromptLayer } from '../prompting/static-prompt-cache';
+import { buildSupervisorResolvedContext } from '../supervisor/handoff-context';
 import type { OrchestrationExecutionInput, OrchestrationExecutionResult } from './types';
 import { createVercelDesktopTools } from '../vercel/legacy-tools';
 import { resolveVercelLanguageModel } from '../vercel/model-factory';
@@ -244,6 +245,88 @@ const asNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+const normalizeWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
+
+const stripWrappingQuotes = (value: string): string =>
+  value
+    .trim()
+    .replace(/^["'“”‘’]+/, '')
+    .replace(/["'“”‘’]+$/, '')
+    .trim();
+
+const extractDirectEmailBody = (text: string): string | null => {
+  const quoted = text.match(/["“](.+?)["”]|['‘](.+?)['’]/);
+  const quotedBody = stripWrappingQuotes(quoted?.[1] ?? quoted?.[2] ?? '');
+  if (quotedBody) {
+    return quotedBody;
+  }
+
+  const explicitBody = text.match(
+    /\b(?:send\s+(?:an?\s+)?email\s+to|email|mail)\s+.+?\s+(?:saying|with message|that says)\s+(.+)$/i,
+  );
+  const explicitBodyText = stripWrappingQuotes(
+    normalizeWhitespace((explicitBody?.[1] ?? '').replace(/\s+via\s+(?:mail|email)\s*$/i, '')),
+  );
+  if (explicitBodyText) {
+    return explicitBodyText;
+  }
+
+  const inlineBody = text.match(
+    /\b(?:send|email|mail)\s+(?!an?\s+email\b)(.+?)\s+to\s+.+?(?:\s+via\s+(?:mail|email))?\s*$/i,
+  );
+  const inlineBodyText = stripWrappingQuotes(normalizeWhitespace(inlineBody?.[1] ?? ''));
+  if (!inlineBodyText || /^(?:an?|the)\s+email$/i.test(inlineBodyText)) {
+    return null;
+  }
+  return inlineBodyText;
+};
+
+const deriveEmailSubject = (text: string): string => {
+  const explicitSubject = text.match(/\bsubject\s*[:=-]\s*(.+?)(?:\s+body\s*[:=-]|\s*$)/i);
+  const subject = stripWrappingQuotes(normalizeWhitespace(explicitSubject?.[1] ?? ''));
+  if (subject) {
+    return subject;
+  }
+  return 'Quick note';
+};
+
+const inferDirectEmailSendRequest = (input: {
+  messageText: string;
+  canonicalIntent?: { domain?: string; operationClass?: string; isSendLike?: boolean };
+  conversation: ConversationContextSnapshot;
+}): { recipientEmail: string; subject: string; body: string } | null => {
+  if (input.canonicalIntent?.domain !== 'gmail') {
+    return null;
+  }
+  if (!(input.canonicalIntent?.operationClass === 'send' || input.canonicalIntent?.isSendLike)) {
+    return null;
+  }
+
+  const body = extractDirectEmailBody(input.messageText);
+  if (!body) {
+    return null;
+  }
+
+  const resolvedContext = buildSupervisorResolvedContext({
+    objective: input.messageText,
+    threadSummary: input.conversation.threadSummaryContext,
+    scopedContext: [
+      input.conversation.taskStateContext ?? '',
+      ...input.conversation.recentTurns.slice(-6).map((turn) => turn.content),
+    ],
+  });
+  const recipientEmail = resolvedContext.recipientEmail ?? resolvedContext.email;
+  if (!recipientEmail) {
+    return null;
+  }
+
+  return {
+    recipientEmail,
+    subject: deriveEmailSubject(input.messageText),
+    body,
+  };
+};
 
 const extractFirstJsonObject = (text: string): string | null => {
   const trimmed = text.trim();
@@ -1685,6 +1768,9 @@ WEB RESEARCH:
 EMAIL (SEND / SEARCH / DRAFT):
   Trigger: "send email", "email to X", "draft", "check inbox", "search emails"
   → googleWorkspaceAgent({ objective: "[email task]", recipientEmail, subject, body if known })
+  - For a direct send request like "send hi there to Anish via mail", treat "hi there" as the email body.
+  - If the user did not provide a subject, derive a simple one such as "Quick note".
+  - Do NOT ask the user to reconfirm an email send they just requested. Call googleWorkspaceAgent and let approval flow handle the pause/approval step.
 
   When sending a document summary via email, the body must be structured as:
   - Greeting
@@ -2115,6 +2201,8 @@ const buildFileRetrievalFallbackSummary = async (
 const buildGoogleWorkspaceAgentPrompt = (): string => `You are a Google Workspace specialist. You handle Gmail, Google Drive, and Google Calendar.
 You do NOT create Lark tasks or meetings — those belong to larkAgent.
 You do NOT search contacts — use the contact details provided in your objective.
+Any status claim about sent email, queued approval, or created draft must come from a real tool call in this turn.
+If you did not call a tool, you must not claim an action happened.
 
 TOOLS:
 - listInbox: list recent emails
@@ -2139,6 +2227,10 @@ DECISION EXAMPLES:
 Objective: "send email to anish with the invoice findings"
 → sendEmail({ to: "anishsuman2305@gmail.com", subject: "Invoice Findings", body: "[findings]" })
 → Return: "Email queued for approval. Recipient: Anish Suman. Subject: Invoice Findings."
+
+Objective: "send hi there to anish via mail"
+→ sendEmail({ to: "anishsuman2305@gmail.com", subject: "Quick note", body: "hi there" })
+→ Return: "Email queued for approval. Recipient: Anish Suman. Subject: Quick note."
 
 Objective: "send agentic platforms research to anishsuman2305@gmail.com"
 → sendEmail({ to: "anishsuman2305@gmail.com", subject: "Agentic AI Platforms 2026", body: "[research]" })
@@ -2175,6 +2267,8 @@ WHAT NOT TO DO:
 - Do not look up contacts — use the email/name provided in your objective
 - Do not use searchEmail when the user just wants to check their inbox
 - Never send without approval — always return pending approval status clearly
+- Never simulate "Email queued for approval", "Draft created", or "Email sent" without invoking the matching Gmail tool first
+- Do not ask for an extra "please confirm" when the user already issued a clear send instruction with a resolved recipient and grounded body content
 
 ERROR HANDLING:
 - Missing recipient → Return: "Cannot send: recipient email address not provided."
@@ -2186,6 +2280,7 @@ OUTPUT FORMAT:
 - For sent/pending emails: confirm recipient, subject, status
 - For inbox/search: sender, subject, date — max 10 items
 - For approval-pending: always say "Email queued for approval" clearly
+- If no tool was called, return a tool/input issue instead of an action confirmation
 - Never return raw API response. Always return readable summary.`;
 
 const buildZohoAgentPrompt = (): string => `You are a Zoho specialist. You fetch financial data from Zoho Books
@@ -2546,27 +2641,80 @@ type DesktopWsGatewayLike = {
 const loadDesktopWsGateway = (): DesktopWsGatewayLike =>
   require('../../../modules/desktop-live/desktop-ws.gateway').desktopWsGateway as DesktopWsGatewayLike;
 
-const extractToolEnvelopes = (steps: unknown): VercelToolEnvelope[] => {
-  const envelopes: VercelToolEnvelope[] = [];
-  for (const step of asArray(steps)) {
-    const stepRecord = asRecord(step);
-    for (const toolResult of asArray(stepRecord?.toolResults)) {
-      const output = asRecord(asRecord(toolResult)?.output);
-      if (!output) {
-        continue;
-      }
-      const success = asBoolean(output.success);
-      const summary = asString(output.summary);
-      const toolId = asString(output.toolId);
-      const status = asString(output.status);
-      if (success === undefined || !summary || !toolId || !status) {
-        continue;
-      }
-      envelopes.push(output as VercelToolEnvelope);
-    }
+const normalizeToolEnvelope = (
+  output: unknown,
+  fallbackToolId?: string | null,
+): VercelToolEnvelope | null => {
+  const record = asRecord(output);
+  if (!record) {
+    return null;
   }
+  const success = asBoolean(record.success);
+  const summary = asString(record.summary);
+  const status = asString(record.status);
+  const toolId = asString(record.toolId) ?? fallbackToolId ?? undefined;
+  if (success === undefined || !summary || !toolId || !status) {
+    return null;
+  }
+  return {
+    ...(record as VercelToolEnvelope),
+    toolId,
+  };
+};
+
+const extractStepToolEnvelopes = (step: unknown): VercelToolEnvelope[] => {
+  const stepRecord = asRecord(step);
+  if (!stepRecord) {
+    return [];
+  }
+
+  const envelopes: VercelToolEnvelope[] = [];
+  const seen = new Set<string>();
+  const pushEnvelope = (candidate: VercelToolEnvelope | null) => {
+    if (!candidate) {
+      return;
+    }
+    const dedupeKey = JSON.stringify({
+      toolId: candidate.toolId,
+      status: candidate.status,
+      summary: candidate.summary,
+      approvalId: candidate.pendingApprovalAction?.approvalId ?? null,
+    });
+    if (seen.has(dedupeKey)) {
+      return;
+    }
+    seen.add(dedupeKey);
+    envelopes.push(candidate);
+  };
+
+  for (const toolResult of asArray(stepRecord.toolResults)) {
+    const toolResultRecord = asRecord(toolResult);
+    pushEnvelope(
+      normalizeToolEnvelope(
+        toolResultRecord?.output,
+        asString(toolResultRecord?.toolName) ?? asString(toolResultRecord?.toolCallId) ?? null,
+      ),
+    );
+  }
+
+  for (const contentEntry of asArray(stepRecord.content)) {
+    const entryRecord = asRecord(contentEntry);
+    if (asString(entryRecord?.type) !== 'tool-result') {
+      continue;
+    }
+    pushEnvelope(
+      normalizeToolEnvelope(
+        entryRecord?.output,
+        asString(entryRecord?.toolName) ?? asString(entryRecord?.toolCallId) ?? null,
+      ),
+    );
+  }
+
   return envelopes;
 };
+
+const extractToolEnvelopes = (steps: unknown): VercelToolEnvelope[] =>
+  asArray(steps).flatMap((step) => extractStepToolEnvelopes(step));
 
 const extractPendingApproval = (toolResults: VercelToolEnvelope[]): PendingApprovalAction | null => {
   for (const toolResult of toolResults) {
@@ -2686,13 +2834,12 @@ const buildManagerApprovalText = (input: {
     .join('\n');
 };
 
-const sendManagerApprovalRequest = async (input: {
+const resolveManagerApprovalTarget = async (input: {
   runtime: VercelRuntimeRequestContext;
-  message: NormalizedIncomingMessageDTO;
   pendingApproval: PendingApprovalAction;
-}): Promise<{ sent: boolean; approverName?: string; approverOpenId?: string; reason?: string }> => {
+}): Promise<{ required: boolean; approverName?: string; approverOpenId?: string; reason?: string }> => {
   if (!requiresManagerApproval(input.runtime, input.pendingApproval)) {
-    return { sent: false, reason: 'manager_approval_not_required' };
+    return { required: false, reason: 'manager_approval_not_required' };
   }
 
   const approver = await departmentService.resolveDepartmentApprover({
@@ -2700,27 +2847,11 @@ const sendManagerApprovalRequest = async (input: {
     departmentId: input.runtime.departmentId,
   });
   if (!approver?.larkOpenId) {
-    return { sent: false, reason: 'no_lark_manager_available' };
+    return { required: false, reason: 'no_lark_manager_available' };
   }
 
-  const adapter = resolveChannelAdapter('lark');
-  const requesterLabel =
-    input.runtime.requesterEmail?.trim()
-    || input.message.trace?.requesterEmail?.trim()
-    || input.runtime.userId;
-  await adapter.sendMessage({
-    chatId: approver.larkOpenId,
-    text: buildManagerApprovalText({
-      pendingApproval: input.pendingApproval,
-      requesterLabel,
-      departmentName: input.runtime.departmentName,
-    }),
-    actions: buildLarkApprovalActions(input.pendingApproval),
-    correlationId: input.runtime.executionId,
-  });
-
   return {
-    sent: true,
+    required: true,
     approverName: approver.name ?? approver.email ?? undefined,
     approverOpenId: approver.larkOpenId,
   };
@@ -3268,7 +3399,7 @@ async function runGoogleWorkspaceAgent(
     };
   }
 
-  return runSubAgent({
+  const result = await runSubAgent({
     label: 'Google Workspace specialist',
     prompt: buildGoogleWorkspaceAgentPrompt(),
     message: buildSubAgentUserMessage(params.objective, {
@@ -3437,6 +3568,60 @@ async function runGoogleWorkspaceAgent(
     abortSignal,
     onStepFinish,
   });
+
+  if (params.recipientEmail && result.toolResults.length === 0) {
+    return {
+      text: 'Google Workspace agent returned text without invoking a Gmail tool. Email was not queued.',
+      toolResults: [],
+      pendingApproval: null,
+    };
+  }
+
+  return result;
+}
+
+async function runDirectGoogleWorkspaceSend(
+  params: { recipientEmail: string; subject: string; body: string },
+  runtime: VercelRuntimeRequestContext,
+): Promise<SubAgentTextResult> {
+  const legacyTools = getLegacyTools({
+    ...runtime,
+    delegatedAgentId: 'google-workspace-agent',
+  });
+  const googleWorkspaceTool = legacyTools.googleWorkspace;
+  if (!googleWorkspaceTool) {
+    return {
+      text: 'Google Workspace tools are not available for this user.',
+      toolResults: [],
+      pendingApproval: null,
+    };
+  }
+
+  const rawResult = await googleWorkspaceTool.execute({
+    operation: 'sendMessage',
+    to: params.recipientEmail,
+    subject: params.subject,
+    body: params.body,
+  });
+  const envelope = normalizeToolEnvelope(rawResult, 'googleWorkspace');
+  if (!envelope) {
+    const rawRecord = asRecord(rawResult);
+    const fallbackText =
+      summarizeText(asString(rawRecord?.summary), 800)
+      || summarizeText(JSON.stringify(rawResult ?? {}), 800)
+      || 'Google Workspace returned no structured result.';
+    return {
+      text: fallbackText,
+      toolResults: [],
+      pendingApproval: null,
+    };
+  }
+
+  return {
+    text: envelope.summary,
+    toolResults: [envelope],
+    pendingApproval: envelope.pendingApprovalAction ?? null,
+  };
 }
 
 async function runWorkspaceAgent(
@@ -5019,157 +5204,214 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       });
     }
 
-    const todoContext = buildTodoContext();
-    const messages = [
-      ...conversation.recentTurns,
-      ...(todoContext ? [{ role: 'user' as const, content: todoContext }] : []),
-      ...attachmentContextMessages.map((content) => ({
-        role: 'user' as const,
-        content,
-      })),
-      { role: 'user' as const, content: message.text },
-    ];
-    const supervisorPromptBuild = await buildSupervisorSystemPromptWithCache(runtime, conversation, {
-      behaviorProfile: memoryPromptContext.behaviorProfileContext ?? undefined,
-      durableMemory: memoryPromptContext.durableTaskContextText ?? undefined,
-      relevantFacts: memoryPromptContext.relevantMemoryFactsText ?? undefined,
-      isScheduledRun,
+    const handleSupervisorStepFinish = async (step: unknown) => {
+      const stepRecord = asRecord(step) ?? {};
+      const toolCalls = asArray(stepRecord.toolCalls)
+        .map(asRecord)
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+      const toolResults = asArray(stepRecord.toolResults)
+        .map(asRecord)
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+      const usage = asRecord(stepRecord.usage);
+      await appendExecutionEventSafe({
+        executionId,
+        phase: 'tools',
+        eventType: 'agent.step.io',
+        actorType: 'agent',
+        actorKey: 'supervisor',
+        title: 'Supervisor step',
+        status: 'done',
+        payload: {
+          input: {
+            toolCallsMade: toolCalls.map((toolCall) => ({
+              tool: asString(toolCall.toolName) ?? 'unknown',
+              args: asRecord(toolCall.input) ?? {},
+            })),
+          },
+          output: {
+            toolResults: toolResults.map((toolResult) => {
+              const output = asRecord(toolResult.output);
+              return {
+                tool: asString(toolResult.toolName) ?? 'unknown',
+                success: asBoolean(output?.success) ?? true,
+                summary:
+                  asString(output?.text)
+                  ?? asString(output?.summary)
+                  ?? summarizeText(JSON.stringify(output ?? {}), 180),
+                error: asString(output?.error) ?? null,
+              };
+            }),
+            text: summarizeText(asString(stepRecord.text), 300),
+          },
+          processing: {
+            inputTokens: asNumber(usage?.inputTokens) ?? 0,
+            outputTokens: asNumber(usage?.outputTokens) ?? 0,
+          },
+        },
+      });
+
+      const stepLine = buildStepProgressText(step);
+      appendStatusLine(stepLine);
+
+      if (statusCoordinator) {
+        const todoSection = buildTodoContext();
+        const logSection = formatStepLog();
+        const vibeText = nextVibeText();
+        const cardText = buildLiveTextBody(todoSection, logSection, vibeText);
+        await statusCoordinator.updateLiveText(cardText);
+      }
+    };
+
+    const directEmailSend = inferDirectEmailSendRequest({
+      messageText: message.text,
+      canonicalIntent: runtime.canonicalIntent,
+      conversation,
     });
-    await appendExecutionEventSafe({
-      executionId,
-      phase: 'planning',
-      eventType: 'model.input',
-      actorType: 'model',
-      actorKey: resolvedModel.effectiveModelId,
-      title: 'Prepared model input',
-      summary: message.text.slice(0, 220) || 'Prepared supervisor input.',
-      status: 'done',
-      payload: buildExecutionModelInputPayload({
-        label: 'supervisor_v2',
-        systemPrompt: supervisorPromptBuild.prompt,
+
+    let toolResults: VercelToolEnvelope[] = [];
+    let rawText = 'Completed the request.';
+    let supervisorSteps: unknown[] = [];
+    let directPendingApproval: PendingApprovalAction | null = null;
+
+    if (directEmailSend) {
+      await appendExecutionEventSafe({
+        executionId,
+        phase: 'planning',
+        eventType: 'agent.step.io',
+        actorType: 'agent',
+        actorKey: 'supervisor',
+        title: 'Direct Gmail fast-path',
+        summary: `Bypassed supervisor planning and invoked Google Workspace sendMessage directly for ${directEmailSend.recipientEmail}.`,
+        status: 'done',
+        payload: {
+          input: {
+            recipientEmail: directEmailSend.recipientEmail,
+            subject: directEmailSend.subject,
+          },
+          output: {
+            text: 'Direct Gmail send fast-path selected.',
+          },
+        },
+      });
+      await updateLiveStatus(
+        buildAgentStartStatus('Google Workspace', `send email to ${directEmailSend.recipientEmail}`),
+      );
+      const directResult = await runDirectGoogleWorkspaceSend(
+        {
+          recipientEmail: directEmailSend.recipientEmail,
+          subject: directEmailSend.subject,
+          body: directEmailSend.body,
+        },
+        runtime,
+      );
+      await updateLiveStatus(buildAgentFinishStatus('Google Workspace', directResult));
+      toolResults = directResult.toolResults;
+      directPendingApproval = directResult.pendingApproval;
+      rawText = directResult.text?.trim()
+        || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n\n')
+        || rawText;
+    } else {
+      const todoContext = buildTodoContext();
+      const messages = [
+        ...conversation.recentTurns,
+        ...(todoContext ? [{ role: 'user' as const, content: todoContext }] : []),
+        ...attachmentContextMessages.map((content) => ({
+          role: 'user' as const,
+          content,
+        })),
+        { role: 'user' as const, content: message.text },
+      ];
+      const supervisorPromptBuild = await buildSupervisorSystemPromptWithCache(runtime, conversation, {
+        behaviorProfile: memoryPromptContext.behaviorProfileContext ?? undefined,
+        durableMemory: memoryPromptContext.durableTaskContextText ?? undefined,
+        relevantFacts: memoryPromptContext.relevantMemoryFactsText ?? undefined,
+        isScheduledRun,
+      });
+      await appendExecutionEventSafe({
+        executionId,
+        phase: 'planning',
+        eventType: 'model.input',
+        actorType: 'model',
+        actorKey: resolvedModel.effectiveModelId,
+        title: 'Prepared model input',
+        summary: message.text.slice(0, 220) || 'Prepared supervisor input.',
+        status: 'done',
+        payload: buildExecutionModelInputPayload({
+          label: 'supervisor_v2',
+          systemPrompt: supervisorPromptBuild.prompt,
+          messages,
+          contextSummary: {
+            modelId: resolvedModel.effectiveModelId,
+            threadId: runtime.threadId,
+            isScheduledRun,
+            recentTurnCount: conversation.recentTurns.length,
+            attachmentContextCount: attachmentContextMessages.length,
+          },
+          toolAvailability: {
+            allowedToolIds: runtime.allowedToolIds,
+            allowedActionsByTool: runtime.allowedActionsByTool ?? {},
+            promptCache: supervisorPromptBuild.promptCacheMetadata,
+          },
+        }),
+      });
+
+      const supervisorResult = await generateText({
+        model: resolvedModel.model,
+        system: supervisorPromptBuild.prompt,
         messages,
-        contextSummary: {
-          modelId: resolvedModel.effectiveModelId,
-          threadId: runtime.threadId,
-          isScheduledRun,
-          recentTurnCount: conversation.recentTurns.length,
-          attachmentContextCount: attachmentContextMessages.length,
-        },
-        toolAvailability: {
-          allowedToolIds: runtime.allowedToolIds,
-          allowedActionsByTool: runtime.allowedActionsByTool ?? {},
-          promptCache: supervisorPromptBuild.promptCacheMetadata,
-        },
-      }),
-    });
-
-    const supervisorResult = await generateText({
-      model: resolvedModel.model,
-      system: supervisorPromptBuild.prompt,
-      messages,
-      tools: supervisorTools,
-      temperature: 0,
-      ...(resolvedModel.effectiveProvider === 'google' ? {
-        providerOptions: {
-          google: {
-            thinkingConfig: {
-              includeThoughts: resolvedModel.includeThoughts,
-              thinkingLevel: resolvedModel.thinkingLevel,
+        tools: supervisorTools,
+        temperature: 0,
+        ...(resolvedModel.effectiveProvider === 'google' ? {
+          providerOptions: {
+            google: {
+              thinkingConfig: {
+                includeThoughts: resolvedModel.includeThoughts,
+                thinkingLevel: resolvedModel.thinkingLevel,
+              },
             },
           },
-        },
-      } : {}),
-      stopWhen: stepCountIs(10),
-      abortSignal,
-      onStepFinish: async (step) => {
-        const stepRecord = asRecord(step) ?? {};
-        const toolCalls = asArray(stepRecord.toolCalls)
-          .map(asRecord)
-          .filter((entry): entry is Record<string, unknown> => Boolean(entry));
-        const toolResults = asArray(stepRecord.toolResults)
-          .map(asRecord)
-          .filter((entry): entry is Record<string, unknown> => Boolean(entry));
-        const usage = asRecord(stepRecord.usage);
-        await appendExecutionEventSafe({
-          executionId,
-          phase: 'tools',
-          eventType: 'agent.step.io',
-          actorType: 'agent',
-          actorKey: 'supervisor',
-          title: 'Supervisor step',
-          status: 'done',
-          payload: {
-            input: {
-              toolCallsMade: toolCalls.map((toolCall) => ({
-                tool: asString(toolCall.toolName) ?? 'unknown',
-                args: asRecord(toolCall.input) ?? {},
-              })),
-            },
-            output: {
-              toolResults: toolResults.map((toolResult) => {
-                const output = asRecord(toolResult.output);
-                return {
-                  tool: asString(toolResult.toolName) ?? 'unknown',
-                  success: asBoolean(output?.success) ?? true,
-                  summary:
-                    asString(output?.text)
-                    ?? asString(output?.summary)
-                    ?? summarizeText(JSON.stringify(output ?? {}), 180),
-                  error: asString(output?.error) ?? null,
-                };
-              }),
-              text: summarizeText(asString(stepRecord.text), 300),
-            },
-            processing: {
-              inputTokens: asNumber(usage?.inputTokens) ?? 0,
-              outputTokens: asNumber(usage?.outputTokens) ?? 0,
-            },
-          },
-        });
+        } : {}),
+        stopWhen: stepCountIs(10),
+        abortSignal,
+        onStepFinish: handleSupervisorStepFinish,
+      });
 
-        const stepLine = buildStepProgressText(step);
-        appendStatusLine(stepLine);
+      supervisorSteps = asArray(supervisorResult.steps);
+      logger.info('hitl.steps.raw', {
+        stepCount: supervisorSteps.length,
+        steps: supervisorSteps.map((step, i) => {
+          const s = asRecord(step);
+          const stepToolResults = asArray(s?.toolResults);
+          return {
+            stepIndex: i,
+            toolResultCount: stepToolResults.length,
+            toolResults: stepToolResults.map((tr) => {
+              const r = asRecord(tr);
+              const output = r?.output;
+              return {
+                toolName: asString(r?.toolName),
+                outputType: typeof output,
+                outputIsNull: output === null,
+                outputKeys: output && typeof output === 'object'
+                  ? Object.keys(output as object)
+                  : [],
+                hasPendingApproval: output && typeof output === 'object'
+                  ? Boolean((output as Record<string, unknown>).pendingApproval)
+                  : false,
+              };
+            }),
+          };
+        }),
+      });
 
-        if (statusCoordinator) {
-          const todoSection = buildTodoContext();
-          const logSection = formatStepLog();
-          const vibeText = nextVibeText();
-          const cardText = buildLiveTextBody(todoSection, logSection, vibeText);
-          await statusCoordinator.updateLiveText(cardText);
-        }
-      },
-    });
+      toolResults = extractNestedToolResults(supervisorSteps);
+      rawText = supervisorResult.text?.trim()
+        || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n\n')
+        || rawText;
+    }
 
-    logger.info('hitl.steps.raw', {
-      stepCount: asArray(supervisorResult.steps).length,
-      steps: asArray(supervisorResult.steps).map((step, i) => {
-        const s = asRecord(step);
-        const toolResults = asArray(s?.toolResults);
-        return {
-          stepIndex: i,
-          toolResultCount: toolResults.length,
-          toolResults: toolResults.map(tr => {
-            const r = asRecord(tr);
-            const output = r?.output;
-            return {
-              toolName: asString(r?.toolName),
-              outputType: typeof output,
-              outputIsNull: output === null,
-              outputKeys: output && typeof output === 'object'
-                ? Object.keys(output as object)
-                : [],
-              hasPendingApproval: output && typeof output === 'object'
-                ? Boolean((output as Record<string, unknown>).pendingApproval)
-                : false,
-            };
-          }),
-        };
-      }),
-    });
-
-    const toolResults = extractNestedToolResults(supervisorResult.steps);
     const extractSubAgentPendingApproval = (): PendingApprovalAction | null => {
-      for (const step of asArray(supervisorResult.steps)) {
+      for (const step of supervisorSteps) {
         const stepRecord = asRecord(step);
         const stepToolResults = asArray(stepRecord?.toolResults);
         for (const tr of stepToolResults) {
@@ -5193,35 +5435,32 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
     };
 
     const pendingApproval =
-      extractNestedPendingApproval(supervisorResult.steps)
+      directPendingApproval
+      ?? extractNestedPendingApproval(supervisorSteps)
       ?? extractPendingApproval(toolResults)
       ?? extractSubAgentPendingApproval();
-    const rawText = supervisorResult.text?.trim()
-      || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n\n')
-      || 'Completed the request.';
     let finalText = rawText.length > 50_000
       ? `${rawText.slice(0, 50_000)}\n\n*(Response truncated — showing first portion)*`
       : rawText;
-    let managerApprovalResult: Awaited<ReturnType<typeof sendManagerApprovalRequest>> | null = null;
+    let managerApprovalResult: Awaited<ReturnType<typeof resolveManagerApprovalTarget>> | null = null;
     if (message.channel === 'lark' && pendingApproval) {
-      managerApprovalResult = await sendManagerApprovalRequest({
+      managerApprovalResult = await resolveManagerApprovalTarget({
         runtime,
-        message,
         pendingApproval,
       });
-      if (managerApprovalResult.sent) {
+      if (managerApprovalResult.required) {
         finalText = `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`;
       }
     }
     const hasToolResults =
       toolResults.length > 0
-      || asArray(supervisorResult.steps).some((step) => asArray(asRecord(step)?.toolCalls).length > 0);
+      || supervisorSteps.some((step) => asArray(asRecord(step)?.toolCalls).length > 0);
     const agentResults = toSupervisorAgentResults(toolResults, task.taskId);
 
     const durationSec = Math.round((Date.now() - executionStartMs) / 1000);
     await statusCoordinator?.finalizeLiveText(
       pendingApproval
-        ? (managerApprovalResult?.sent
+        ? (managerApprovalResult?.required
           ? `Sent to ${managerApprovalResult.approverName ?? 'the manager'} for approval.`
           : 'Approval required.')
         : `Completed in ${durationSec}s ✓`,
@@ -5251,7 +5490,7 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
           ? `${runtime.canonicalIntent.domain}:${runtime.canonicalIntent.operationClass}`
           : undefined,
         canonicalIntent: runtime.canonicalIntent,
-        supervisorWaveCount: asArray(supervisorResult.steps).length,
+        supervisorWaveCount: directEmailSend ? 1 : supervisorSteps.length,
         conversationHistorySource: conversation.historySource,
       },
       finalText,
