@@ -111,22 +111,25 @@ export class LarkStatusCoordinator {
     if (this.closed || !nextText || this.liveTextTerminalLocked) return;
     await this.enqueueLiveText(async () => {
       if (this.closed || this.liveTextTerminalLocked) return;
+      const targetMessageId = this.liveTextMessageId ?? this.statusMessageId;
       try {
-        if (this.liveTextMessageId) {
+        if (targetMessageId) {
           logger.info('supervisor_v2.live_text.update_attempt', {
             branch: 'update',
             chatId: this.chatId,
             correlationId: this.correlationId,
-            liveTextMessageId: this.liveTextMessageId,
+            liveTextMessageId: targetMessageId,
             textLength: nextText.length,
             preview: nextText.slice(0, 160),
           });
           const result = await this.adapter.updateMessage({
-            messageId: this.liveTextMessageId,
+            messageId: targetMessageId,
             text: nextText,
             format: 'interactive',
             correlationId: this.correlationId,
           });
+          this.liveTextMessageId = result.messageId ?? targetMessageId;
+          this.statusMessageId = result.messageId ?? targetMessageId;
           logger.info('supervisor_v2.live_text.update_ok', {
             liveTextMessageId: this.liveTextMessageId,
             resultStatus: result.status,
@@ -152,6 +155,7 @@ export class LarkStatusCoordinator {
             replyInThread: this.replyInThread,
           });
           this.liveTextMessageId = result?.messageId;
+          this.statusMessageId = result?.messageId ?? this.statusMessageId;
           logger.info('supervisor_v2.live_text.send_ok', {
             chatId: this.chatId,
             liveTextMessageId: this.liveTextMessageId,
@@ -177,7 +181,8 @@ export class LarkStatusCoordinator {
   }
 
   public async finalizeLiveText(text: string): Promise<void> {
-    if (this.closed || !this.liveTextMessageId) return;
+    const targetMessageId = this.liveTextMessageId ?? this.statusMessageId;
+    if (this.closed || !targetMessageId) return;
     this.liveTextTerminalLocked = true;
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
@@ -188,16 +193,18 @@ export class LarkStatusCoordinator {
         logger.info('supervisor_v2.live_text.finalize_attempt', {
           chatId: this.chatId,
           correlationId: this.correlationId,
-          liveTextMessageId: this.liveTextMessageId,
+          liveTextMessageId: targetMessageId,
           textLength: text.length,
           preview: text.slice(0, 160),
         });
         const result = await this.adapter.updateMessage({
-          messageId: this.liveTextMessageId,
+          messageId: targetMessageId,
           text,
           format: 'interactive',
           correlationId: this.correlationId,
         });
+        this.liveTextMessageId = result.messageId ?? targetMessageId;
+        this.statusMessageId = result.messageId ?? targetMessageId;
         logger.info('supervisor_v2.live_text.finalize_ok', {
           liveTextMessageId: this.liveTextMessageId,
           resultStatus: result.status,
