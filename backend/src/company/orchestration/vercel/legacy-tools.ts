@@ -1949,7 +1949,7 @@ const createPendingRemoteApproval = async (input: {
   const hitlActionService = loadHitlActionService();
   const shouldBypassApproval = await isRequesterResolvedApprover(input.runtime);
   const pending = await hitlActionService.createPending({
-    taskId: input.runtime.executionId,
+    taskId: input.runtime.taskId ?? input.runtime.executionId,
     actionType,
     summary: input.summary,
     chatId: input.runtime.chatId ?? input.runtime.threadId,
@@ -2220,7 +2220,7 @@ const createPendingDesktopRemoteApproval = async (input: {
           ? 'update'
           : 'write';
   const pending = await loadHitlActionService().createPending({
-    taskId: input.runtime.executionId,
+    taskId: input.runtime.taskId ?? input.runtime.executionId,
     actionType,
     summary: input.summary,
     chatId: input.runtime.chatId ?? input.runtime.threadId,
@@ -3047,7 +3047,7 @@ const buildAgentInvokeInput = (
   objective: string,
   contextPacket: Record<string, unknown> = {},
 ) => ({
-  taskId: runtime.executionId,
+  taskId: runtime.taskId ?? runtime.executionId,
   agentKey,
   objective,
   constraints: ['vercel-tool'],

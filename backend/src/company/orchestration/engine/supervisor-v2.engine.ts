@@ -3154,6 +3154,7 @@ const resolveRuntimeContext = async (
     channel: message.channel === 'lark' ? 'lark' : 'desktop',
     threadId: contextStorageId ?? buildConversationKey(message),
     chatId: message.chatId,
+    taskId: task.taskId,
     attachedFiles: message.attachedFiles,
     executionId: resolveCanonicalExecutionId(task, message),
     companyId,
