@@ -3650,11 +3650,17 @@ const requiresManagerApproval = (
   runtime: VercelRuntimeRequestContext,
   pendingApproval: PendingApprovalAction,
 ): boolean =>
+  (logger.info('hitl.requiresManagerApproval.check', {
+    pendingApprovalKind: pendingApproval.kind,
+    toolId: pendingApproval.kind === 'tool_action' ? pendingApproval.toolId : null,
+    configEnabled: runtime.departmentManagerApprovalConfig?.enabled ?? null,
+    requiredToolIds: runtime.departmentManagerApprovalConfig?.requiredToolIds ?? null,
+  }),
   pendingApproval.kind === 'tool_action'
-  && Boolean(runtime.departmentManagerApprovalConfig?.enabled)
-  && runtime.departmentManagerApprovalConfig!.requiredToolIds.includes(
-    pendingApproval.toolId,
-  );
+    && Boolean(runtime.departmentManagerApprovalConfig?.enabled)
+    && runtime.departmentManagerApprovalConfig!.requiredToolIds.includes(
+      pendingApproval.toolId,
+    ));
 
 const buildManagerApprovalText = (input: {
   pendingApproval: PendingApprovalAction;
@@ -4929,6 +4935,13 @@ const executeLarkVercelTask = async (
       || supervisorPayload.latestSynthesis?.trim()
       || 'Done.';
     const pendingApproval = supervisorPayload.pendingApproval ?? null;
+    logger.info('supervisor_v2.hitl.debug', {
+      hasPendingApproval: Boolean(pendingApproval),
+      pendingApprovalKind: pendingApproval?.kind ?? null,
+      approvalId: pendingApproval?.kind === 'tool_action'
+        ? pendingApproval.approvalId
+        : null,
+    });
     const hasToolResults =
       supervisorPayload.hasToolResults ?? Boolean((supervisorPayload.agentResults ?? []).length);
     const isSensitiveContent = supervisorPayload.isSensitiveContent ?? false;

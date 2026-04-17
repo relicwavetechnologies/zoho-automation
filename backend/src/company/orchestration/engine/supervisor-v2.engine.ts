@@ -3852,7 +3852,8 @@ const extractNestedToolResults = (steps: unknown): VercelToolEnvelope[] => {
 };
 
 const extractNestedPendingApproval = (steps: unknown): PendingApprovalAction | null => {
-  for (const output of extractSupervisorToolOutputs(steps)) {
+  const outputs = extractSupervisorToolOutputs(steps);
+  for (const output of outputs) {
     const pending = asRecord(output.pendingApproval);
     if (pending) {
       return pending as PendingApprovalAction;
@@ -5037,9 +5038,62 @@ Never use for Gmail — use googleWorkspaceAgent for that.`,
       },
     });
 
+    logger.info('hitl.steps.raw', {
+      stepCount: asArray(supervisorResult.steps).length,
+      steps: asArray(supervisorResult.steps).map((step, i) => {
+        const s = asRecord(step);
+        const toolResults = asArray(s?.toolResults);
+        return {
+          stepIndex: i,
+          toolResultCount: toolResults.length,
+          toolResults: toolResults.map(tr => {
+            const r = asRecord(tr);
+            const output = r?.output;
+            return {
+              toolName: asString(r?.toolName),
+              outputType: typeof output,
+              outputIsNull: output === null,
+              outputKeys: output && typeof output === 'object'
+                ? Object.keys(output as object)
+                : [],
+              hasPendingApproval: output && typeof output === 'object'
+                ? Boolean((output as Record<string, unknown>).pendingApproval)
+                : false,
+            };
+          }),
+        };
+      }),
+    });
+
     const toolResults = extractNestedToolResults(supervisorResult.steps);
+    const extractSubAgentPendingApproval = (): PendingApprovalAction | null => {
+      for (const step of asArray(supervisorResult.steps)) {
+        const stepRecord = asRecord(step);
+        const stepToolResults = asArray(stepRecord?.toolResults);
+        for (const tr of stepToolResults) {
+          const trRecord = asRecord(tr);
+          const output = trRecord?.output;
+          if (!output || typeof output !== 'object') continue;
+          const outputObj = output as Record<string, unknown>;
+
+          // SubAgentTextResult shape: output.pendingApproval is PendingApprovalAction
+          if (outputObj.pendingApproval && typeof outputObj.pendingApproval === 'object') {
+            return outputObj.pendingApproval as PendingApprovalAction;
+          }
+
+          // VercelToolEnvelope shape: output.pendingApprovalAction
+          if (outputObj.pendingApprovalAction && typeof outputObj.pendingApprovalAction === 'object') {
+            return outputObj.pendingApprovalAction as PendingApprovalAction;
+          }
+        }
+      }
+      return null;
+    };
+
     const pendingApproval =
-      extractNestedPendingApproval(supervisorResult.steps) ?? extractPendingApproval(toolResults);
+      extractNestedPendingApproval(supervisorResult.steps)
+      ?? extractPendingApproval(toolResults)
+      ?? extractSubAgentPendingApproval();
     const rawText = supervisorResult.text?.trim()
       || toolResults.map((entry) => entry.summary).filter(Boolean).join('\n\n')
       || 'Completed the request.';
