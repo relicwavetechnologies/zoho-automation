@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: divo-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: pnpm install && pnpm build
+    startCommand: pnpm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 24.14.1
