@@ -5,7 +5,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "pnpm install --frozen-lockfile && prisma generate",
+    "build": "pnpm install --no-frozen-lockfile && prisma generate",
     "build:lean": "prisma generate",
     "build:start": "pnpm run build && pnpm run start",
     "start": "node --import tsx src/server.ts",
