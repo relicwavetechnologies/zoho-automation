@@ -619,7 +619,9 @@ const continueAfterApproval = async (input: {
 }): Promise<string> => {
   const continuationMessage: NormalizedLarkMessage = {
     ...input.tracedMessage,
-    messageId: randomUUID(),
+    // Do NOT override messageId with randomUUID() — the inherited Lark message ID
+    // (om_*) from tracedMessage is what the egress uses as replyToMessageId.
+    // A UUID here causes Lark API error 99992354 ("not a valid open_message_id").
     timestamp: new Date().toISOString(),
     text: input.continuationText,
     rawEvent: {
@@ -635,11 +637,11 @@ const continueAfterApproval = async (input: {
       requestId: input.requestId,
       receivedAt: new Date().toISOString(),
       textHash: buildLarkTextHash(input.continuationText),
-      statusMessageId:
-        input.tracedMessage.trace?.statusMessageId
-        ?? (input.parsedKind === 'event_callback_card_action'
-          ? input.tracedMessage.messageId
-          : undefined),
+      // Do NOT carry statusMessageId into the continuation — it would cause the
+      // "Waiting for approval" bubble to be overwritten again with live-status
+      // updates from the continuation job ("Finalizing the response / Checking…").
+      // The continuation sends a fresh reply message instead.
+      statusMessageId: undefined,
     },
   };
 
@@ -3262,6 +3264,19 @@ export const createLarkWebhookEventHandler = (
       const cardHitlDecision = parsed.kind === 'event_callback_card_action'
         ? parseHitlCardDecision(parsed.actionValue)
         : null;
+      // [HITL-DEBUG] Log card action parsing so we can trace approval button clicks
+      if (parsed.kind === 'event_callback_card_action') {
+        dependencies.log.info('hitl.card_action.parsed', {
+          requestId,
+          actionValue: JSON.stringify(parsed.actionValue).slice(0, 300),
+          cardHitlDecision: cardHitlDecision ? { actionId: cardHitlDecision.actionId, decision: cardHitlDecision.decision } : null,
+          tracedChatId: tracedMessage.chatId,
+          tracedUserId: tracedMessage.userId,
+          tracedLarkOpenId: tracedMessage.trace?.larkOpenId,
+          scopedCompanyId,
+          linkedUserId,
+        });
+      }
       const knowledgeShareCardAction = parsed.kind === 'event_callback_card_action'
         ? parseKnowledgeShareCardAction(parsed.actionValue)
         : null;
@@ -3373,6 +3388,15 @@ export const createLarkWebhookEventHandler = (
       }
       const hitlDecision = cardHitlDecision ?? textHitlDecision;
       if (hitlDecision) {
+        dependencies.log.info('hitl.decision.entered', {
+          requestId,
+          actionId: hitlDecision.actionId,
+          decision: hitlDecision.decision,
+          source: cardHitlDecision ? 'card' : 'text',
+          scopedCompanyId,
+          linkedUserId,
+          tracedLarkOpenId: tracedMessage.trace?.larkOpenId,
+        });
         const pendingThreadApprovalContext = scopedCompanyId && linkedUserId
           ? await loadPendingLarkApprovalContext({
             companyId: scopedCompanyId,
@@ -3382,6 +3406,14 @@ export const createLarkWebhookEventHandler = (
           })
           : null;
         const storedAction = await dependencies.getStoredHitlAction(hitlDecision.actionId);
+        dependencies.log.info('hitl.stored_action.fetched', {
+          requestId,
+          actionId: hitlDecision.actionId,
+          found: Boolean(storedAction),
+          storedStatus: storedAction ? (storedAction as Record<string, unknown>).status : null,
+          hasMetadata: storedAction ? Boolean((storedAction as Record<string, unknown>).metadata) : false,
+          hasPayload: storedAction ? Boolean((storedAction as Record<string, unknown>).payload) : false,
+        });
         const fallbackStoredAction = !storedAction && implicitTextHitlDecision && pendingThreadApprovalContext
           ? buildStoredActionFromPendingApproval({
             pendingContext: pendingThreadApprovalContext,
@@ -3397,6 +3429,13 @@ export const createLarkWebhookEventHandler = (
           linkedUserId,
           larkOpenId: tracedMessage.trace?.larkOpenId,
           action: approvalAction,
+        });
+        dependencies.log.info('hitl.actor_check', {
+          requestId,
+          actionId: hitlDecision.actionId,
+          approvalActorAllowed,
+          linkedUserId,
+          larkOpenId: tracedMessage.trace?.larkOpenId,
         });
         if (!approvalActorAllowed) {
           if (parsed.kind === 'event_callback_card_action') {
@@ -3487,6 +3526,21 @@ export const createLarkWebhookEventHandler = (
         let executionPayload: Record<string, unknown> | undefined;
         let executionKind: string | undefined;
         let resumedTaskId: string | undefined;
+        // For card actions, respond to Lark immediately before any slow tool execution.
+        // Lark times out card-action callbacks after ~5 s; Gmail / remote tool calls
+        // can take longer.  We send the early ACK here and then patch the card via
+        // updateMessage() once execution has finished.
+        const isCardAction = parsed.kind === 'event_callback_card_action';
+        let respondedEarlyToLark = false;
+        if (isCardAction && resolved) {
+          res.status(200).json(
+            buildLarkCardActionResponse(
+              hitlDecision.decision === 'cancelled' ? 'Request rejected.' : 'Approved. Processing…',
+              'success',
+            ),
+          );
+          respondedEarlyToLark = true;
+        }
         if (resolved && hitlDecision.decision === 'confirmed' && approvalAction) {
           try {
             const executionResult = await dependencies.executeStoredHitlAction(approvalAction);
@@ -3520,19 +3574,31 @@ export const createLarkWebhookEventHandler = (
                 actionSummary: typeof approvalAction.summary === 'string' ? approvalAction.summary : undefined,
                 payload: executionResult.payload,
               });
-              resumedTaskId = await continueAfterApproval({
-                dependencies,
-                taskId: typeof approvalAction.taskId === 'string' ? approvalAction.taskId : undefined,
-                tracedMessage: continuationTargetMessage,
-                requestId,
-                sourceActionId: hitlDecision.actionId,
-                sourceMessageId: tracedMessage.messageId,
-                continuationText,
-                parsedKind: parsed.kind,
-                executionSummary,
-                executionOk: executionResult.ok,
-                executionPayload: executionResult.payload,
-              });
+              // Continuation failures (e.g. DB unreachable) must NOT overwrite executionOk —
+              // the tool action already ran successfully at this point.
+              try {
+                resumedTaskId = await continueAfterApproval({
+                  dependencies,
+                  taskId: typeof approvalAction.taskId === 'string' ? approvalAction.taskId : undefined,
+                  tracedMessage: continuationTargetMessage,
+                  requestId,
+                  sourceActionId: hitlDecision.actionId,
+                  sourceMessageId: tracedMessage.messageId,
+                  continuationText,
+                  parsedKind: parsed.kind,
+                  executionSummary,
+                  executionOk: executionResult.ok,
+                  executionPayload: executionResult.payload,
+                });
+              } catch (continuationError) {
+                dependencies.log.warn('hitl.continuation.failed', {
+                  requestId,
+                  actionId: hitlDecision.actionId,
+                  taskId: typeof approvalAction.taskId === 'string' ? approvalAction.taskId : undefined,
+                  error: continuationError instanceof Error ? continuationError.message : String(continuationError),
+                });
+                // executionOk stays true — the action itself succeeded
+              }
             }
           } catch (error) {
             executionSummary = error instanceof Error ? error.message : 'Stored approval action execution failed';
@@ -3619,6 +3685,8 @@ export const createLarkWebhookEventHandler = (
                 ? `Approved and executed.\n\n${executionSummary ?? approvalAction?.summary ?? hitlDecision.actionId}`
                 : `Approval was recorded, but execution failed.\n\n${executionSummary ?? approvalAction?.summary ?? hitlDecision.actionId}`;
         if (parsed.kind === 'event_callback_card_action') {
+          // Patch the card with the final result text (buttons already cleared by
+          // the early-ACK response above; this updates the body copy).
           await dependencies.adapter.updateMessage({
             messageId: tracedMessage.messageId,
             text: responseText,
@@ -3629,6 +3697,10 @@ export const createLarkWebhookEventHandler = (
             chatId: tracedMessage.chatId,
             text: responseText,
           });
+        }
+        if (respondedEarlyToLark) {
+          // Already sent 200 to Lark above — do not send a second response.
+          return;
         }
         if (parsed.kind === 'event_callback_card_action') {
           return res.status(200).json(

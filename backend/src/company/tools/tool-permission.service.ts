@@ -7,6 +7,7 @@ import {
 } from './tool-action-permission.repository';
 import { aiRoleService, type AiRoleDTO } from './ai-role.service';
 import { toolAccessCache } from './tool-access.cache';
+import { departmentRuntimeCache } from '../departments/department-runtime.cache';
 import {
   getSupportedToolActionGroups,
   type ToolActionGroup,
@@ -109,6 +110,9 @@ export class ToolPermissionService {
     }
     const result = await this.repo.upsert(companyId, canonicalToolId, role, enabled, actorId);
     await toolAccessCache.invalidateCompany(companyId);
+    // Cascade: department runtime caches embed company-role fallback resolution,
+    // so a company-level toggle must blow them away too.
+    await departmentRuntimeCache.invalidateCompany(companyId);
     return result;
   }
 
@@ -247,6 +251,11 @@ export class ToolPermissionService {
       actorId,
     );
     await toolAccessCache.invalidateCompany(companyId);
+    // Cascade: department runtime caches embed company-role fallback resolution,
+    // so a company-level action toggle must blow them away too. Without this,
+    // department-scoped runs keep reading a stale resolved permission set for
+    // up to the cache TTL after an admin toggles a tool action group.
+    await departmentRuntimeCache.invalidateCompany(companyId);
     return result;
   }
 

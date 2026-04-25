@@ -122,6 +122,22 @@ class DepartmentRuntimeCache {
       deleted,
     });
   }
+
+  /**
+   * Invalidate every department-runtime cache entry for the company. Use this
+   * when a company-wide permission change happens (e.g. company tool action
+   * matrix toggle) — those changes cascade into every department's resolved
+   * runtime via the company_role_fallback layer in resolveDepartmentToolAction.
+   */
+  async invalidateCompany(companyId: string): Promise<void> {
+    const deleted = await invalidateByPattern(
+      `company:${companyId}:department_runtime:${DEPARTMENT_RUNTIME_CACHE_VERSION}:*`,
+    );
+    logger.info('department_runtime.cache.invalidated_company', {
+      companyId,
+      deleted,
+    });
+  }
 }
 
 export const departmentRuntimeCache = new DepartmentRuntimeCache();

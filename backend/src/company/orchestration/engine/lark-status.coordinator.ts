@@ -91,6 +91,18 @@ export class LarkStatusCoordinator {
       return;
     }
 
+    // When delivering the terminal (final) response, lock live-text updates and stop
+    // the heartbeat immediately — before any async work — so that a heartbeat tick
+    // that fires while the Lark API call is in-flight cannot win the race and
+    // overwrite the final agent response with an intermediate status string.
+    if (options?.terminal) {
+      this.liveTextTerminalLocked = true;
+      if (this.heartbeatTimer) {
+        clearInterval(this.heartbeatTimer);
+        this.heartbeatTimer = undefined;
+      }
+    }
+
     this.pending = {
       renderable: next,
       terminal: Boolean(options?.terminal),
@@ -322,10 +334,19 @@ export class LarkStatusCoordinator {
     this.lastActionsKey = actionsKey(renderable.actions);
     if (terminal) {
       this.terminalLocked = true;
+      // Also stop the heartbeat and lock live-text so no async heartbeat tick can
+      // fire after the final response has been delivered and overwrite it with an
+      // intermediate status string like "Finalizing the response / Checking the
+      // latest progress before moving ahead."
+      this.liveTextTerminalLocked = true;
       this.pending = undefined;
       if (this.flushTimer) {
         clearTimeout(this.flushTimer);
         this.flushTimer = undefined;
+      }
+      if (this.heartbeatTimer) {
+        clearInterval(this.heartbeatTimer);
+        this.heartbeatTimer = undefined;
       }
     }
   }

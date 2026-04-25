@@ -1,0 +1,108 @@
+/**
+ * AuditService — compliance audit logging for privileged actions.
+ *
+ * Records who did what, when, and whether it succeeded. Called from:
+ *   - Admin permission mutation routes (set/delete company or dept permissions)
+ *   - Any future admin action (agent config changes, user overrides, etc.)
+ *
+ * All writes are fire-and-forget (non-fatal on DB failure).
+ * All reads are company-scoped.
+ */
+
+import type { PrismaClient } from '../../generated/prisma';
+import type { Logger } from '../../shared/logger';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface RecordAuditInput {
+  actorId:    string;
+  companyId?: string;
+  action:     string;            // e.g. 'permission.set_company', 'permission.delete_dept'
+  outcome:    'success' | 'failure';
+  metadata?:  Record<string, unknown>;
+}
+
+export interface AuditLogView {
+  id:        string;
+  actorId:   string;
+  companyId: string | null;
+  action:    string;
+  outcome:   string;
+  metadata:  unknown;
+  createdAt: string;
+}
+
+export interface QueryAuditInput {
+  companyId: string;
+  actorId?:  string;
+  action?:   string;
+  limit?:    number;
+  offset?:   number;
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
+
+export class AuditService {
+  constructor(
+    private readonly prisma:  PrismaClient,
+    private readonly logger:  Logger,
+  ) {}
+
+  /** Record an administrative action. Non-fatal — logs and swallows DB errors. */
+  record(input: RecordAuditInput): void {
+    const safeMetadata = input.metadata
+      ? sanitizeMeta(input.metadata)
+      : undefined;
+
+    this.prisma.auditLog.create({
+      data: {
+        actorId:   input.actorId,
+        action:    input.action,
+        outcome:   input.outcome,
+        ...(input.companyId  ? { companyId: input.companyId }              : {}),
+        ...(safeMetadata     ? { metadata:  safeMetadata as object }       : {}),
+      },
+    }).catch(e => {
+      this.logger.warn('audit.record.failed', {
+        action: input.action,
+        error:  String(e),
+      });
+    });
+  }
+
+  /** Query audit logs for a company, newest first. */
+  async query(input: QueryAuditInput): Promise<AuditLogView[]> {
+    const logs = await this.prisma.auditLog.findMany({
+      where: {
+        companyId: input.companyId,
+        ...(input.actorId ? { actorId: input.actorId } : {}),
+        ...(input.action  ? { action:  { contains: input.action } } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take:    Math.min(input.limit ?? 100, 500),
+      skip:    input.offset ?? 0,
+    });
+
+    return logs.map(l => ({
+      id:        l.id,
+      actorId:   l.actorId,
+      companyId: l.companyId,
+      action:    l.action,
+      outcome:   l.outcome,
+      metadata:  l.metadata,
+      createdAt: l.createdAt.toISOString(),
+    }));
+  }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const AUDIT_REDACT_KEYS = new Set(['password', 'token', 'secret', 'apiKey', 'api_key', 'authorization']);
+
+function sanitizeMeta(meta: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(meta)) {
+    out[k] = AUDIT_REDACT_KEYS.has(k) ? '[REDACTED]' : v;
+  }
+  return out;
+}

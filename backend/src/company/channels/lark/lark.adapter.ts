@@ -481,6 +481,16 @@ export class LarkChannelAdapter implements ChannelAdapter {
     const eventType = readString(envelope.header?.event_type);
     const nestedAction = envelope.event && typeof envelope.event === 'object' ? asRecord(envelope.event.action) : null;
     const cardAction = asRecord(envelope.action) ?? nestedAction;
+    // [HITL-DEBUG] Log card action normalization attempts
+    if (cardAction || eventType === 'card.action.trigger') {
+      console.log('[HITL-DEBUG] normalizeIncomingEvent card branch:', JSON.stringify({
+        eventType,
+        hasTopLevelAction: Boolean(asRecord(envelope.action)),
+        hasNestedAction: Boolean(nestedAction),
+        cardActionValueKeys: cardAction ? Object.keys(cardAction.value && typeof cardAction.value === 'object' ? cardAction.value as Record<string,unknown> : {}) : null,
+        willEnterCardBlock: eventType === 'card.action.trigger' && Boolean(cardAction),
+      }));
+    }
     if (eventType === 'card.action.trigger' && cardAction) {
       const context = envelope.event?.context;
       const operator = envelope.event?.operator;

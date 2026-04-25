@@ -639,21 +639,42 @@ class DepartmentService {
       vercelToolIds,
     );
 
+    logger.info('perm.debug.dept_resolution.company_fallback', {
+      userId: input.userId,
+      departmentId: input.departmentId,
+      deptRoleSlug: membership.role.slug,
+      requesterAiRole: input.requesterAiRole ?? null,
+      companyFallbackLarkTask: companyAllowedActionsByTool['larkTask'] ?? null,
+      companyFallbackIsEmpty: Object.keys(companyAllowedActionsByTool).length === 0,
+      rolePermissionRowCount: rolePermissions.length,
+      larkTaskRoleRows: rolePermissions.filter(r => r.toolId === 'larkTask'),
+    });
+
     const rolePermissionMap = buildActionLookup(rolePermissions);
     const overrideMap = buildActionLookup(userOverrides);
 
     const allowedActionsByTool = Object.fromEntries(
       vercelToolIds
         .map((toolId) => {
-          const actions = getSupportedToolActionGroups(toolId).filter((actionGroup) =>
-            resolveDepartmentToolAction({
+          const actions = getSupportedToolActionGroups(toolId).filter((actionGroup) => {
+            const result = resolveDepartmentToolAction({
               toolId,
               actionGroup,
               rolePermissionMap,
               overrideMap,
               companyAllowedActionsByTool,
-            }).allowed,
-          );
+            });
+            if (toolId === 'larkTask') {
+              logger.info('perm.debug.larkTask.resolution', {
+                userId: input.userId,
+                actionGroup,
+                allowed: result.allowed,
+                source: result.source,
+                roleMapHasEntry: rolePermissionMap.get('larkTask')?.has(actionGroup) ?? false,
+              });
+            }
+            return result.allowed;
+          });
           return [toolId, actions] as const;
         })
         .filter(([, actions]) => actions.length > 0),

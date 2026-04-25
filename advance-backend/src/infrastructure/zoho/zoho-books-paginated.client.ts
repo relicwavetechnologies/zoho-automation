@@ -1,0 +1,371 @@
+/**
+ * ZohoBooksPaginatedClient — production-grade Zoho Books API client.
+ *
+ * Key improvements over the simple ZohoBooksClient:
+ *   - Proper pagination: loops pages until `has_more_page = false` (up to 20 pages × 200 = 4 000 records)
+ *   - Deduplication across pages (Zoho can return the same record on adjacent pages)
+ *   - Full multi-org support via listOrganizations()
+ *   - Contact name + company name exact-match search (mirrors old backend behaviour)
+ *   - All 11 Zoho Books modules supported
+ *   - getRecord() for single-record fetch
+ *
+ * Used by:
+ *   - ZohoFinanceOps (overdue report, etc.)
+ *   - ZohoBooksSearchAdapter (context search broker)
+ *
+ * Ported from:
+ *   backend/src/company/integrations/zoho/zoho-books.client.ts
+ */
+
+import type { ZohoTokenService } from './zoho-token.service';
+
+// ─── Module types ─────────────────────────────────────────────────────────────
+
+export type ZohoBooksModule =
+  | 'contacts'
+  | 'invoices'
+  | 'estimates'
+  | 'creditnotes'
+  | 'bills'
+  | 'salesorders'
+  | 'purchaseorders'
+  | 'customerpayments'
+  | 'vendorpayments'
+  | 'bankaccounts'
+  | 'banktransactions'
+  | 'expenses'
+  | 'items';
+
+// ─── Response shapes ──────────────────────────────────────────────────────────
+
+export interface ZohoBooksOrganization {
+  readonly organizationId: string;
+  readonly name?:          string;
+  readonly isDefault?:     boolean;
+}
+
+export interface ZohoBooksListResult {
+  readonly organizationId: string;
+  readonly items:          Array<Record<string, unknown>>;
+  readonly hasMore:        boolean;
+  readonly page:           number;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const asRecord = (v: unknown): Record<string, unknown> | undefined =>
+  v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+
+const asString = (v: unknown): string | undefined =>
+  typeof v === 'string' ? v : undefined;
+
+const asBoolean = (v: unknown): boolean | undefined =>
+  typeof v === 'boolean' ? v : undefined;
+
+const asArrayOfRecords = (v: unknown): Array<Record<string, unknown>> =>
+  Array.isArray(v) ? v.filter(x => x && typeof x === 'object' && !Array.isArray(x)) : [];
+
+const toPrimitive = (v: unknown): string | undefined => {
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return undefined;
+};
+
+/** Read `page_context.has_more_page` from any Zoho Books list response. */
+function hasMorePage(raw: Record<string, unknown>): boolean {
+  const ctx = asRecord(raw['page_context']);
+  return asBoolean(ctx?.['has_more_page']) ?? false;
+}
+
+/** Extract the canonical record ID regardless of which module it is. */
+function recordId(item: Record<string, unknown>): string {
+  return (
+    asString(item['invoice_id'])        ??
+    asString(item['contact_id'])        ??
+    asString(item['estimate_id'])       ??
+    asString(item['creditnote_id'])     ??
+    asString(item['bill_id'])           ??
+    asString(item['salesorder_id'])     ??
+    asString(item['purchaseorder_id'])  ??
+    asString(item['payment_id'])        ??
+    asString(item['transaction_id'])    ??
+    asString(item['expense_id'])        ??
+    asString(item['item_id'])           ??
+    asString(item['account_id'])        ??
+    asString(item['id'])                ??
+    JSON.stringify(item)
+  );
+}
+
+function dedupeRecords(items: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  const out:  Array<Record<string, unknown>> = [];
+  for (const item of items) {
+    const id = recordId(item);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(item);
+  }
+  return out;
+}
+
+// ─── Client ───────────────────────────────────────────────────────────────────
+
+export class ZohoBooksPaginatedClient {
+  private readonly booksBase: string;
+
+  constructor(
+    private readonly tokenService: ZohoTokenService,
+    apiBaseUrl = 'https://www.zohoapis.com',
+  ) {
+    this.booksBase = `${apiBaseUrl.replace(/\/$/, '')}/books/v3`;
+  }
+
+  // ─── Private HTTP ───────────────────────────────────────────────────────────
+
+  private async request<T>(
+    companyId: string,
+    path:      string,
+    init:      RequestInit = {},
+  ): Promise<T> {
+    const token = await this.tokenService.getValidToken(companyId);
+    const sep   = path.includes('?') ? '&' : '?';
+    const url   = `${this.booksBase}${path}${sep}`;
+
+    const res = await fetch(url, {
+      ...init,
+      headers: {
+        'Authorization': `Zoho-oauthtoken ${token}`,
+        'Content-Type':  'application/json',
+        ...(init.headers ?? {}),
+      },
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Zoho Books ${res.status} ${res.statusText}: ${body.slice(0, 300)}`);
+    }
+
+    return res.json() as Promise<T>;
+  }
+
+  // ─── Public API ─────────────────────────────────────────────────────────────
+
+  /**
+   * Fetch all Zoho Books organizations accessible for this company's OAuth token.
+   * Returns at least one item if the connection is valid.
+   */
+  async listOrganizations(companyId: string): Promise<ZohoBooksOrganization[]> {
+    try {
+      const data = await this.request<Record<string, unknown>>(
+        companyId,
+        '/organizations',
+      );
+      return asArrayOfRecords(data['organizations']).map(org => {
+        const name      = asString(org['name']);
+        const isDefault = asBoolean(org['is_default_org']) ?? asBoolean(org['is_default']);
+        return {
+          organizationId: asString(org['organization_id']) ?? asString(org['organizationId']) ?? '',
+          ...(name      !== undefined ? { name }      : {}),
+          ...(isDefault !== undefined ? { isDefault } : {}),
+        };
+      }).filter(o => o.organizationId.length > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Resolve organization ID — uses provided one or fetches the default from API.
+   */
+  async resolveOrganizationId(companyId: string, preferred?: string): Promise<string> {
+    if (preferred) return preferred;
+    const orgs = await this.listOrganizations(companyId);
+    return orgs[0]?.organizationId ?? companyId;
+  }
+
+  /**
+   * List records from any Zoho Books module with full automatic pagination.
+   *
+   * Behaviour:
+   *   - When `page` is specified: fetches that exact page only (caller controls pagination)
+   *   - When `page` is omitted: loops pages 1..maxPages until `has_more_page = false`,
+   *     collecting up to `perPage` deduplicated records
+   *
+   * Special contact handling: when module='contacts' and a query is given without
+   * explicit name filters, tries exact contact_name then company_name lookups first
+   * (mirrors old backend behaviour for accurate name matching).
+   */
+  async listRecords(input: {
+    companyId:      string;
+    moduleName:     ZohoBooksModule;
+    organizationId?: string;
+    filters?:       Record<string, unknown>;
+    query?:         string;
+    page?:          number;         // if set, fetch only this page
+    perPage?:       number;         // 1-200, default 25
+    maxPages?:      number;         // override 20-page cap
+  }): Promise<ZohoBooksListResult> {
+    const orgId   = await this.resolveOrganizationId(input.companyId, input.organizationId);
+    const perPage = Math.max(1, Math.min(200, input.perPage ?? 25));
+    const maxPg   = input.maxPages ?? 20;
+    const query   = input.query?.trim();
+
+    // Special: exact-name search for contacts
+    if (input.moduleName === 'contacts' && query) {
+      const hasNameFilter = Boolean(
+        asString(input.filters?.['contact_name']) || asString(input.filters?.['company_name']),
+      );
+      if (!hasNameFilter) {
+        for (const nameField of ['contact_name', 'company_name'] as const) {
+          const pg = await this.fetchPage(
+            input.companyId,
+            input.moduleName,
+            orgId,
+            { ...(input.filters ?? {}), [nameField]: query },
+            undefined,
+            1,
+            perPage,
+          );
+          if (pg.items.length > 0) return { organizationId: orgId, items: pg.items, hasMore: pg.hasMore, page: 1 };
+        }
+      }
+    }
+
+    // Single-page mode
+    if (input.page !== undefined) {
+      const pg = await this.fetchPage(
+        input.companyId, input.moduleName, orgId,
+        input.filters, query, input.page, perPage,
+      );
+      return { organizationId: orgId, items: pg.items, hasMore: pg.hasMore, page: input.page };
+    }
+
+    // Multi-page exhaust mode
+    const collected: Array<Record<string, unknown>> = [];
+    let lastHasMore = false;
+
+    for (let page = 1; page <= maxPg; page++) {
+      const pg = await this.fetchPage(
+        input.companyId, input.moduleName, orgId,
+        input.filters, query, page, perPage,
+      );
+      collected.push(...pg.items);
+      const deduped = dedupeRecords(collected);
+      lastHasMore   = pg.hasMore;
+
+      if (deduped.length >= perPage || !pg.hasMore) {
+        return {
+          organizationId: orgId,
+          items:          deduped.slice(0, perPage),
+          hasMore:        pg.hasMore,
+          page,
+        };
+      }
+    }
+
+    return {
+      organizationId: orgId,
+      items:          dedupeRecords(collected).slice(0, perPage),
+      hasMore:        lastHasMore,
+      page:           maxPg,
+    };
+  }
+
+  /**
+   * Exhaust ALL pages for a module — used by finance ops that need the full dataset.
+   * Returns every record across all pages (deduplicated), up to maxPages × 200.
+   */
+  async listAllRecords(input: {
+    companyId:       string;
+    moduleName:      ZohoBooksModule;
+    organizationId?: string;
+    filters?:        Record<string, unknown>;
+    query?:          string;
+    maxPages?:       number;   // default 20
+  }): Promise<{ organizationId: string; items: Array<Record<string, unknown>>; truncated: boolean }> {
+    const orgId   = await this.resolveOrganizationId(input.companyId, input.organizationId);
+    const maxPg   = input.maxPages ?? 20;
+    const query   = input.query?.trim();
+    const all:    Array<Record<string, unknown>> = [];
+    const seen    = new Set<string>();
+    let truncated = false;
+
+    for (let page = 1; page <= maxPg; page++) {
+      const pg = await this.fetchPage(
+        input.companyId, input.moduleName, orgId,
+        input.filters, query, page, 200,
+      );
+
+      for (const item of pg.items) {
+        const id = recordId(item);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        all.push(item);
+      }
+
+      if (!pg.hasMore) break;
+      if (page === maxPg) { truncated = true; break; }
+    }
+
+    return { organizationId: orgId, items: all, truncated };
+  }
+
+  /**
+   * Fetch a single record by ID from any module.
+   */
+  async getRecord(input: {
+    companyId:      string;
+    moduleName:     ZohoBooksModule;
+    recordId:       string;
+    organizationId?: string;
+  }): Promise<Record<string, unknown> | null> {
+    const orgId = await this.resolveOrganizationId(input.companyId, input.organizationId);
+    try {
+      const data = await this.request<Record<string, unknown>>(
+        input.companyId,
+        `/${input.moduleName}/${encodeURIComponent(input.recordId)}?organization_id=${orgId}`,
+      );
+      // Zoho wraps in the singular module name, e.g. { invoice: {...} }
+      const singular = input.moduleName.replace(/s$/, '');
+      const inner    = asRecord(data[singular]) ?? asRecord(data[input.moduleName]);
+      return inner ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ─── Private ────────────────────────────────────────────────────────────────
+
+  private async fetchPage(
+    companyId:      string,
+    moduleName:     ZohoBooksModule,
+    organizationId: string,
+    filters:        Record<string, unknown> | undefined,
+    query:          string | undefined,
+    page:           number,
+    perPage:        number,
+  ): Promise<{ items: Array<Record<string, unknown>>; hasMore: boolean; raw: Record<string, unknown> }> {
+    const params = new URLSearchParams({
+      organization_id: organizationId,
+      page:            String(Math.max(1, page)),
+      per_page:        String(perPage),
+    });
+
+    if (query) params.set('search_text', query);
+
+    for (const [k, v] of Object.entries(filters ?? {})) {
+      const s = toPrimitive(v);
+      if (s !== undefined) params.set(k, s);
+    }
+
+    const raw = await this.request<Record<string, unknown>>(
+      companyId,
+      `/${moduleName}?${params}`,
+    );
+
+    // Zoho wraps records in the plural module key, e.g. { invoices: [...] }
+    const items = asArrayOfRecords(raw[moduleName]);
+
+    return { items, hasMore: hasMorePage(raw), raw };
+  }
+}

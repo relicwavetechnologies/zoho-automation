@@ -4850,7 +4850,13 @@ const executeLarkVercelTask = async (
     proposedReplyMode?: ReplyModeHint;
   }): Promise<{ statusMessageId?: string }> => {
     await assertExecutionRunnable(task.taskId, abortSignal);
-    await updateStatus('analyzing', 'Wrapping up your answer…');
+    // NOTE: Do NOT call updateStatus('analyzing', ...) here. Supervisor-v2 already
+    // finalized the live-text bubble to "Completed in Xs ✓". Calling updateStatus
+    // would overwrite that with "Finalizing the response / Wrapping up your answer…"
+    // and create a race where the heartbeat timer could then write
+    // "Finalizing the response / Checking the latest progress before moving ahead."
+    // on top of the final agent response. deliverTerminalResponse below will replace
+    // the bubble with the actual final text directly.
 
     let deliveredStatusMessageId: string | undefined;
     if (input.pendingApproval) {
@@ -5901,10 +5907,33 @@ const executeLarkVercelTask = async (
             familyToolIds = familyToolIds.filter((toolId) => toolId !== 'contextSearch');
           }
           familyToolIds = Array.from(new Set(familyToolIds));
-          const stepAllowedActionsByTool = await ensureAllowedActionsByTool({
-            companyId: effectiveRuntime.companyId,
+          // Build stepAllowedActionsByTool directly from effectiveRuntime.allowedActionsByTool
+          // filtered to familyToolIds. This avoids Redis cache-poisoning where step N caches
+          // only its own tool IDs, causing step N+1 to receive an empty map for its tools.
+          const runtimeActionsMap = effectiveRuntime.allowedActionsByTool;
+          const stepAllowedActionsByTool: Record<string, string[]> = runtimeActionsMap != null
+            ? familyToolIds.reduce<Record<string, string[]>>((acc, toolId) => {
+                const actions = runtimeActionsMap[toolId];
+                if (Array.isArray(actions) && actions.length > 0) {
+                  acc[toolId] = actions;
+                }
+                return acc;
+              }, {})
+            : await ensureAllowedActionsByTool({
+                companyId: effectiveRuntime.companyId,
+                requesterAiRole: effectiveRuntime.requesterAiRole,
+                allowedToolIds: familyToolIds,
+              });
+          logger.info('perm.debug.step_delegation', {
+            stepId: step.stepId,
+            agentId: step.agentId,
+            sourceSystem: step.sourceSystem,
+            action: step.action,
+            familyToolIds,
             requesterAiRole: effectiveRuntime.requesterAiRole,
-            allowedToolIds: familyToolIds,
+            stepAllowedActionsByTool_larkTask: stepAllowedActionsByTool['larkTask'] ?? null,
+            effectiveRuntime_allowedActionsByTool_larkTask: runtimeActionsMap?.['larkTask'] ?? null,
+            effectiveRuntime_allowedToolIds_hasLarkTask: effectiveRuntime.allowedToolIds.includes('larkTask'),
           });
           if (step.sourceSystem === 'context' && !stepAllowedActionsByTool.contextSearch?.includes('read')) {
             stepAllowedActionsByTool.contextSearch = ['read'];
@@ -6828,8 +6857,19 @@ const executeLarkVercelTask = async (
       ? __vercelMutationGuardTestUtils.finalizeNoActionAttemptText(preferredGeneratedText)
       : mutationGuard.forcedFinalText
       ?? (blockingUserInput
-      ? (buildMissingInputResponseText(blockingUserInput) ?? preferredGeneratedText) ||
-        'I need one more detail from you before I can continue.'
+      ? (() => {
+          const blockingMsg = buildMissingInputResponseText(blockingUserInput);
+          const hasPartialSuccess =
+            trimmedGeneratedText
+            && delegatedAgentResults.some((r) => r.status === 'success')
+            && trimmedGeneratedText !== blockingMsg;
+          if (hasPartialSuccess) {
+            return blockingMsg
+              ? `${trimmedGeneratedText}\n\n---\n${blockingMsg}`
+              : trimmedGeneratedText;
+          }
+          return blockingMsg ?? (preferredGeneratedText || 'I need one more detail from you before I can continue.');
+        })()
       : pendingApproval
         ? `Approval required before continuing: ${pendingApproval.kind === 'run_command' ? pendingApproval.command : pendingApproval.kind}.`
         : preferredGeneratedText || 'Done.');

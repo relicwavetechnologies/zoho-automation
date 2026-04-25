@@ -83,15 +83,22 @@ export class TaskFsm {
   }
 
   async requeue(taskId: string): Promise<void> {
-    await prisma.taskRun.update({
-      where: { id: taskId },
-      data: {
-        status: 'pending',
-        requeueCount: { increment: 1 },
-        failureReason: null,
-        failedAt: null,
-      },
-    });
+    try {
+      await prisma.taskRun.update({
+        where: { id: taskId },
+        data: {
+          status: 'pending',
+          requeueCount: { increment: 1 },
+          failureReason: null,
+          failedAt: null,
+        },
+      });
+    } catch (error: unknown) {
+      // P2025: record not found (e.g. harness-created tasks that bypassed the queue).
+      // Safe to skip — the in-memory store is the source of truth for active tasks.
+      const code = (error as { code?: string })?.code;
+      if (code !== 'P2025') throw error;
+    }
     runtimeTaskStore.update(taskId, { status: 'pending' });
   }
 

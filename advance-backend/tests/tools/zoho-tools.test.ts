@@ -1,0 +1,260 @@
+/**
+ * Unit tests for Zoho tool families: CRM and Books.
+ */
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { makeAllowedPerm, makeDeniedPerm, makeCtx } from './tool-test.helpers.ts';
+
+import { createZohoCrmTool }   from '../../src/application/orchestration/tools/families/zoho-crm.tool.ts';
+import { createZohoBooksTool } from '../../src/application/orchestration/tools/families/zoho-books.tool.ts';
+import type { ZohoFinanceOps } from '../../src/application/zoho/zoho-finance-ops.ts';
+
+// ─── zoho-crm ─────────────────────────────────────────────────────────────────
+
+describe('zohoCrm tool', () => {
+  const fakeCrmClient = {
+    searchRecords: async () => [{ id: 'lead-1', name: 'Alice' }],
+    getRecord:     async () => ({ id: 'lead-1', name: 'Alice' }),
+    createRecord:  async () => ({ recordId: 'lead-new' }),
+    updateRecord:  async () => {},
+    deleteRecord:  async () => {},
+  };
+
+  const noClient  = async () => null;
+  const yesClient = async () => fakeCrmClient;
+
+  describe('permissionCheck', () => {
+    it('denies when not in allowedActionsByTool', () => {
+      const tool = createZohoCrmTool({ getClient: noClient });
+      const r = tool.permissionCheck({ op: 'search' }, makeDeniedPerm());
+      assert.equal(r.ok, false);
+    });
+
+    it('returns "read" for op=search', () => {
+      const tool = createZohoCrmTool({ getClient: noClient });
+      const r = tool.permissionCheck({ op: 'search' }, makeAllowedPerm('zohoCrm', ['read']));
+      assert.equal((r as any).value, 'read');
+    });
+
+    it('returns "read" for op=get', () => {
+      const tool = createZohoCrmTool({ getClient: noClient });
+      const r = tool.permissionCheck({ op: 'get' }, makeAllowedPerm('zohoCrm', ['read']));
+      assert.equal((r as any).value, 'read');
+    });
+
+    it('returns "create" for op=create', () => {
+      const tool = createZohoCrmTool({ getClient: noClient });
+      const r = tool.permissionCheck({ op: 'create' }, makeAllowedPerm('zohoCrm', ['create']));
+      assert.equal((r as any).value, 'create');
+    });
+
+    it('returns "update" for op=update', () => {
+      const tool = createZohoCrmTool({ getClient: noClient });
+      const r = tool.permissionCheck({ op: 'update' }, makeAllowedPerm('zohoCrm', ['update']));
+      assert.equal((r as any).value, 'update');
+    });
+
+    it('returns "delete" for op=delete', () => {
+      const tool = createZohoCrmTool({ getClient: noClient });
+      const r = tool.permissionCheck({ op: 'delete' }, makeAllowedPerm('zohoCrm', ['delete']));
+      assert.equal((r as any).value, 'delete');
+    });
+
+    it('denies create when only read allowed', () => {
+      const tool = createZohoCrmTool({ getClient: noClient });
+      const r = tool.permissionCheck({ op: 'create' }, makeAllowedPerm('zohoCrm', ['read']));
+      assert.equal(r.ok, false);
+    });
+  });
+
+  describe('execute', () => {
+    const ctx = makeCtx('zohoCrm', ['read', 'create', 'update', 'delete']);
+
+    it('no client → unrecoverable', async () => {
+      const tool = createZohoCrmTool({ getClient: noClient });
+      const r = await tool.execute({ op: 'search' }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'unrecoverable');
+    });
+
+    it('search: ok with records', async () => {
+      const tool = createZohoCrmTool({ getClient: yesClient });
+      const r = await tool.execute({ op: 'search', query: 'Alice', module: 'Leads' }, ctx);
+      assert.equal(r.ok, true);
+    });
+
+    it('get: bad_args when recordId missing', async () => {
+      const tool = createZohoCrmTool({ getClient: yesClient });
+      const r = await tool.execute({ op: 'get' }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
+    });
+
+    it('get: ok with record', async () => {
+      const tool = createZohoCrmTool({ getClient: yesClient });
+      const r = await tool.execute({ op: 'get', recordId: 'lead-1', module: 'Leads' }, ctx);
+      assert.equal(r.ok, true);
+    });
+
+    it('create: ok with recordId', async () => {
+      const tool = createZohoCrmTool({ getClient: yesClient });
+      const r = await tool.execute({ op: 'create', module: 'Leads', fields: { Last_Name: 'Smith' } }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.recordId, 'lead-new');
+    });
+
+    it('create: bad_args when fields missing', async () => {
+      const tool = createZohoCrmTool({ getClient: yesClient });
+      const r = await tool.execute({ op: 'create', module: 'Leads' }, ctx);
+      assert.equal(r.ok, false);
+    });
+
+    it('update: bad_args when recordId missing', async () => {
+      const tool = createZohoCrmTool({ getClient: yesClient });
+      const r = await tool.execute({ op: 'update', fields: { Last_Name: 'Jones' } }, ctx);
+      assert.equal(r.ok, false);
+    });
+
+    it('update: ok when recordId and fields present', async () => {
+      const tool = createZohoCrmTool({ getClient: yesClient });
+      const r = await tool.execute({ op: 'update', recordId: 'lead-1', module: 'Leads', fields: { Last_Name: 'Jones' } }, ctx);
+      assert.equal(r.ok, true);
+    });
+
+    it('delete: bad_args when recordId missing', async () => {
+      const tool = createZohoCrmTool({ getClient: yesClient });
+      const r = await tool.execute({ op: 'delete' }, ctx);
+      assert.equal(r.ok, false);
+    });
+
+    it('delete: ok when recordId present', async () => {
+      const tool = createZohoCrmTool({ getClient: yesClient });
+      const r = await tool.execute({ op: 'delete', recordId: 'lead-1', module: 'Leads' }, ctx);
+      assert.equal(r.ok, true);
+    });
+
+    it('infra throws → upstream_failure', async () => {
+      const throwing = async () => ({ ...fakeCrmClient, searchRecords: async () => { throw new Error('err'); } });
+      const tool = createZohoCrmTool({ getClient: throwing });
+      const r = await tool.execute({ op: 'search', query: 'x' }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'upstream_failure');
+    });
+  });
+});
+
+// ─── zoho-books ───────────────────────────────────────────────────────────────
+
+describe('zohoBooks tool', () => {
+  const fakeBooksClient = {
+    listInvoices:  async () => [{ invoiceId: 'inv-1', total: 100 }],
+    getInvoice:    async () => ({ invoiceId: 'inv-1', total: 100 }),
+    createInvoice: async () => ({ invoiceId: 'inv-new' }),
+    listContacts:  async () => [{ contactId: 'con-1', name: 'Alice' }],
+    getContact:    async () => ({ contactId: 'con-1', name: 'Alice' }),
+    listExpenses:  async () => [{ expenseId: 'exp-1', amount: 50 }],
+  };
+
+  const fakeFinanceOps: Partial<ZohoFinanceOps> = {
+    buildOverdueReport: async () => ({
+      summary: '2 invoices overdue',
+      overdueCount: 2,
+      totalOverdueAmount: 1500,
+      buckets: {},
+      topCustomers: [],
+      csvLink: null,
+      invoices: [],
+      generatedAt: new Date().toISOString(),
+    } as any),
+  };
+
+  const noClient  = async () => null;
+  const yesClient = async () => fakeBooksClient;
+
+  describe('permissionCheck', () => {
+    it('returns "read" for op=list_invoices', () => {
+      const tool = createZohoBooksTool({ getClient: noClient, financeOps: fakeFinanceOps as ZohoFinanceOps });
+      const r = tool.permissionCheck({ op: 'list_invoices' }, makeAllowedPerm('zohoBooks', ['read']));
+      assert.equal((r as any).value, 'read');
+    });
+
+    it('returns "create" for op=create_invoice', () => {
+      const tool = createZohoBooksTool({ getClient: noClient, financeOps: fakeFinanceOps as ZohoFinanceOps });
+      const r = tool.permissionCheck({ op: 'create_invoice' }, makeAllowedPerm('zohoBooks', ['create']));
+      assert.equal((r as any).value, 'create');
+    });
+
+    it('denies when not in allowedActionsByTool', () => {
+      const tool = createZohoBooksTool({ getClient: noClient, financeOps: fakeFinanceOps as ZohoFinanceOps });
+      const r = tool.permissionCheck({ op: 'list_invoices' }, makeDeniedPerm());
+      assert.equal(r.ok, false);
+    });
+
+    it('denies create when only read allowed', () => {
+      const tool = createZohoBooksTool({ getClient: noClient, financeOps: fakeFinanceOps as ZohoFinanceOps });
+      const r = tool.permissionCheck({ op: 'create_invoice' }, makeAllowedPerm('zohoBooks', ['read']));
+      assert.equal(r.ok, false);
+    });
+  });
+
+  describe('execute', () => {
+    const ctx = makeCtx('zohoBooks', ['read', 'create']);
+
+    it('list_invoices: no client → unrecoverable', async () => {
+      const tool = createZohoBooksTool({ getClient: noClient, financeOps: fakeFinanceOps as ZohoFinanceOps });
+      const r = await tool.execute({ op: 'list_invoices' }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'unrecoverable');
+    });
+
+    it('list_invoices: ok with invoices', async () => {
+      const tool = createZohoBooksTool({ getClient: yesClient, financeOps: fakeFinanceOps as ZohoFinanceOps });
+      const r = await tool.execute({ op: 'list_invoices' }, ctx);
+      assert.equal(r.ok, true);
+    });
+
+    it('get_invoice: ok with invoice', async () => {
+      const tool = createZohoBooksTool({ getClient: yesClient, financeOps: fakeFinanceOps as ZohoFinanceOps });
+      const r = await tool.execute({ op: 'get_invoice', invoiceId: 'inv-1' }, ctx);
+      assert.equal(r.ok, true);
+    });
+
+    it('list_contacts: ok with contacts', async () => {
+      const tool = createZohoBooksTool({ getClient: yesClient, financeOps: fakeFinanceOps as ZohoFinanceOps });
+      const r = await tool.execute({ op: 'list_contacts' }, ctx);
+      assert.equal(r.ok, true);
+    });
+
+    it('list_expenses: ok with expenses', async () => {
+      const tool = createZohoBooksTool({ getClient: yesClient, financeOps: fakeFinanceOps as ZohoFinanceOps });
+      const r = await tool.execute({ op: 'list_expenses' }, ctx);
+      assert.equal(r.ok, true);
+    });
+
+    it('build_overdue_report: ok using financeOps (bypasses client)', async () => {
+      const tool = createZohoBooksTool({ getClient: noClient, financeOps: fakeFinanceOps as ZohoFinanceOps });
+      const r = await tool.execute({ op: 'build_overdue_report' }, ctx);
+      assert.equal(r.ok, true);
+      assert.ok((r as any).value.report);
+    });
+
+    it('build_overdue_report: upstream_failure when financeOps throws', async () => {
+      const throwingOps: Partial<ZohoFinanceOps> = {
+        buildOverdueReport: async () => { throw new Error('finance down'); },
+      };
+      const tool = createZohoBooksTool({ getClient: noClient, financeOps: throwingOps as ZohoFinanceOps });
+      const r = await tool.execute({ op: 'build_overdue_report' }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'upstream_failure');
+    });
+
+    it('infra throws on list → upstream_failure', async () => {
+      const throwing = async () => ({ ...fakeBooksClient, listInvoices: async () => { throw new Error('err'); } });
+      const tool = createZohoBooksTool({ getClient: throwing, financeOps: fakeFinanceOps as ZohoFinanceOps });
+      const r = await tool.execute({ op: 'list_invoices' }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'upstream_failure');
+    });
+  });
+});

@@ -1830,6 +1830,14 @@ export const ensureActionPermission = (
     ?? runtime.allowedActionsByTool?.[normalizedToolId];
   const allowed = getAllowedActionGroups(runtime, toolId);
   const isAllowed = allowed.includes(actionGroup);
+
+  // Deep instrumentation — when verdict is DENY we want to know exactly what the
+  // runtime looked like. Cheap stack-frame capture so we know which call site
+  // triggered the check (supervisor delegation vs direct vs sub-agent etc).
+  const callSite = !isAllowed
+    ? new Error('perm-check').stack?.split('\n').slice(2, 6).join(' | ')
+    : undefined;
+
   logger.info('tool.permission.check', {
     toolId,
     canonicalToolId,
@@ -1839,6 +1847,16 @@ export const ensureActionPermission = (
     allowedActionsForTool: allowedActions ?? null,
     allowedToolIds: runtime.allowedToolIds,
     verdict: isAllowed ? 'PASS' : 'DENY',
+    // Extra context — only useful when verdict is DENY but always logged so
+    // we can correlate PASS results with the runtime state too.
+    companyId: runtime.companyId,
+    requesterAiRole: runtime.requesterAiRole,
+    departmentId: (runtime as { departmentId?: string }).departmentId ?? null,
+    departmentRoleSlug: (runtime as { departmentRoleSlug?: string }).departmentRoleSlug ?? null,
+    delegatedAgentId: (runtime as { delegatedAgentId?: string }).delegatedAgentId ?? null,
+    runExposedToolIds: (runtime as { runExposedToolIds?: string[] }).runExposedToolIds ?? null,
+    fullAllowedActionsByTool: !isAllowed ? runtime.allowedActionsByTool : undefined,
+    callSite,
   });
   if (isAllowed) {
     return null;
@@ -12910,37 +12928,19 @@ export const createVercelDesktopTools = (
 
   tools.googleWorkspace = tool({
     description: 'Google Workspace operations for Gmail (sendMessage, searchMessages, createDraft, sendDraft, listMessages, getMessage, getThread), Drive (listFiles, getFile, downloadFile, createFolder, uploadFile, updateFile, deleteFile), and Calendar. Use operation="sendMessage" to send email, operation="searchMessages" to search inbox, operation="createDraft" to draft, operation="drive" for Drive, operation="calendar" for Calendar.',
-    inputSchema: z.discriminatedUnion('operation', [
-      z.object({
-        operation: z.literal('sendMessage'),
-        to: z.union([z.string().min(1), z.array(z.string().email()).min(1)]),
-        subject: z.string().min(1),
-        body: z.string().min(1),
-        cc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
-        bcc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
-        isHtml: z.boolean().optional(),
-        threadId: z.string().optional(),
-      }).passthrough(),
-      z.object({
-        operation: z.literal('createDraft'),
-        to: z.union([z.string().min(1), z.array(z.string().email()).min(1)]),
-        subject: z.string().optional(),
-        body: z.string().optional(),
-        cc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
-        bcc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
-        isHtml: z.boolean().optional(),
-        threadId: z.string().optional(),
-        purpose: z.string().optional(),
-        facts: z.array(z.string()).optional(),
-      }).passthrough(),
-      z.object({
-        operation: z.literal('sendDraft'),
-        draftId: z.string().min(1),
-      }).passthrough(),
-      z.object({
-        operation: z.enum(['gmail', 'drive', 'calendar', 'searchMessages', 'listMessages', 'getMessage', 'getThread']),
-      }).passthrough(),
-    ]),
+    inputSchema: z.object({
+      operation: z.enum(['sendMessage', 'createDraft', 'sendDraft', 'gmail', 'drive', 'calendar', 'searchMessages', 'listMessages', 'getMessage', 'getThread']),
+      to: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
+      subject: z.string().optional(),
+      body: z.string().optional(),
+      cc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
+      bcc: z.union([z.string().min(1), z.array(z.string().email()).min(1)]).optional(),
+      isHtml: z.boolean().optional(),
+      threadId: z.string().optional(),
+      draftId: z.string().optional(),
+      purpose: z.string().optional(),
+      facts: z.array(z.string()).optional(),
+    }).passthrough(),
     execute: async (input, options) => {
       const GMAIL_OPERATIONS = ['gmail', 'sendMessage', 'searchMessages', 'createDraft', 'sendDraft', 'listMessages', 'getMessage', 'getThread'] as const;
       if ((GMAIL_OPERATIONS as readonly string[]).includes(input.operation)) {

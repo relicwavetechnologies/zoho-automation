@@ -1,0 +1,57 @@
+import type { ZodType } from 'zod';
+import type { Result } from '../../../shared/result';
+import type { PermissionError, ToolError } from '../../../shared/errors';
+import type { Logger } from '../../../shared/logger';
+import type { Clock } from '../../../shared/clock';
+import type { ToolId } from '../../../shared/ids';
+import type { ToolFamily } from '../../../domain/tools/tool-id';
+import type { ToolActionGroup } from '../../../domain/permissions/tool-action-group';
+import type { PermissionResult } from '../../permissions/permission.types';
+import type { RunContext } from '../../../domain/orchestration/run-context';
+
+// ─── Tool execution context ────────────────────────────────────────────────
+
+export interface ToolExecutionContext {
+  readonly runContext: RunContext;
+  readonly perm: PermissionResult;
+  readonly correlationId: string;
+  readonly logger: Logger;
+  readonly clock: Clock;
+}
+
+// ─── The Tool contract ─────────────────────────────────────────────────────
+
+export interface Tool<TArgs, TOut> {
+  /** Canonical tool ID (e.g. 'larkTask'). Must match domain/tools/tool-id.ts. */
+  readonly id: ToolId;
+  readonly family: ToolFamily;
+  /** All action groups this tool supports (superset of what any one call may do). */
+  readonly actionGroups: ReadonlySet<ToolActionGroup>;
+  /** Zod schema for argument validation. */
+  readonly argsSchema: ZodType<TArgs>;
+  /** Zod schema for return value validation. */
+  readonly resultSchema: ZodType<TOut>;
+  /** Short description for LLM tool-choice prompt. */
+  readonly description: string;
+  /** Detailed parameter documentation for the LLM. */
+  readonly parameterDocs: string;
+
+  /**
+   * Pre-execution permission check.
+   * Returns the action group being performed (for logging) or PermissionError.
+   * Called by the executor before execute().
+   */
+  permissionCheck(
+    args: TArgs,
+    perm: PermissionResult,
+  ): Result<ToolActionGroup, PermissionError>;
+
+  /**
+   * Execute the tool.
+   * Must NEVER throw — always return Result<TOut, ToolError>.
+   */
+  execute(
+    args: TArgs,
+    ctx: ToolExecutionContext,
+  ): Promise<Result<TOut, ToolError>>;
+}
