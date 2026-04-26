@@ -385,13 +385,19 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Context search broker ─────────────────────────────────────────────────
   const contextSearchBroker = new ContextSearchBroker({
-    vectorStore:  qdrantAdapter,
-    embedding:    embeddingService,
-    webSearch:    webSearchService,
-    larkContacts: channelIdentityRepo,
-    zohoBooks:    zohoBooksSearchAdapter,
-    skills:       skillsService,
-    logger:       logger.child({ service: 'context-search' }),
+    vectorStore:    qdrantAdapter,
+    embedding:      embeddingService,
+    webSearch:      webSearchService,
+    larkContacts:   channelIdentityRepo,
+    zohoBooks:      zohoBooksSearchAdapter,
+    skills:         skillsService,
+    logger:         logger.child({ service: 'context-search' }),
+    fileAssetRepo,
+    vectorDocRepo,
+    ...(env.GROQ_API_KEY ? { groqApiKey: env.GROQ_API_KEY } : {}),
+    ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY)
+      ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string }
+      : {}),
   });
 
   // Thin adapter: WebSearchService → WebSearchClientPort (used by web-search tool)

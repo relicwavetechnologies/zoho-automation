@@ -18,6 +18,9 @@
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import type { Logger } from '../../shared/logger';
+import { rankByTrigram, TRIGRAM_STRONG_THRESHOLD, TRIGRAM_CANDIDATE_THRESHOLD } from '../retrieval/trigram';
+import { resolveFilenameWithGroq } from '../retrieval/filename-resolver';
+import { expandFileSearchQuery, broadenQuery } from '../retrieval/file-query-expander';
 import type {
   ContextSearchInput,
   ContextSearchOutput,
@@ -532,14 +535,26 @@ function toCitations(results: ContextSearchResult[]): ContextCitation[] {
 
 // ─── Broker ───────────────────────────────────────────────────────────────────
 
+export interface FileAssetSearchPort {
+  searchByFilename(companyId: string, query: string, uploaderUserId?: string): Promise<{ ok: boolean; value?: Array<{ id: string; fileName: string; mimeType: string; cloudinaryUrl: string; ingestionStatus: string; createdAt: Date }> }>;
+}
+
+export interface VectorDocReaderPort {
+  findByFileAsset(fileAssetId: string): Promise<{ ok: boolean; value?: Array<{ chunkIndex: number; chunkText?: string | null; payload: unknown }> }>;
+}
+
 export interface ContextSearchBrokerDeps {
-  vectorStore:  VectorStoreAdapter;
-  embedding:    EmbeddingPort;
-  webSearch:    WebSearchService;
-  larkContacts: LarkContactPort;
-  zohoBooks:    ZohoBooksPort;
-  skills:       SkillPort;
-  logger:       Logger;
+  vectorStore:      VectorStoreAdapter;
+  embedding:        EmbeddingPort;
+  webSearch:        WebSearchService;
+  larkContacts:     LarkContactPort;
+  zohoBooks:        ZohoBooksPort;
+  skills:           SkillPort;
+  logger:           Logger;
+  fileAssetRepo?:   FileAssetSearchPort;
+  vectorDocRepo?:   VectorDocReaderPort;
+  groqApiKey?:      string;
+  geminiApiKey?:    string;
 }
 
 export class ContextSearchBroker {
@@ -588,56 +603,239 @@ export class ContextSearchBroker {
   }
 
   private async runFiles(input: ContextSearchInput, limit: number): Promise<ContextSearchResult[]> {
-    const qv = await this.deps.embedding.embedQuery(input.query);
-
-    // Smart multimodal: when the query mentions images/diagrams/screenshots,
-    // also query the multimodal vector branch so image-dense files surface.
     const wantsVisual = isVisualQuery(input.query);
 
-    const groups = await this.deps.vectorStore.search({
-      companyId:         input.companyId,
-      requesterUserId:   input.userId,
-      ...(input.requesterAiRole ? { requesterAiRole: input.requesterAiRole } : {}),
-      denseVector:       qv,
-      limit,
-      retrievalProfile:  'file',
-      sourceTypes:       ['file_document'],
-      includePersonal:   false,
-      includeShared:     true,
-      includePublic:     true,
-      enforceEmailMatch: false,
-      groupByField:      'documentKey',
-      groupSize:         3,
-      ...(wantsVisual ? { useMultimodal: true, queryMode: 'multimodal' as const } : {}),
-    });
-    const results: ContextSearchResult[] = [];
-    for (const group of groups) {
-      for (const hit of group.hits) {
-        const chunkText = readString(hit.payload._chunk) ?? readString(hit.payload.text);
-        if (!chunkText) continue;
-        const fileName     = readString(hit.payload.fileName) ?? readString(hit.payload.title);
-        const cloudUrl     = readString(hit.payload.cloudinaryUrl) ?? readString(hit.payload.sourceUrl);
-        const mimeType     = readString(hit.payload.mimeType) ?? '';
-        const isImage      = mimeType.startsWith('image/');
-        results.push({
-          scope: 'files', sourceType: 'file_document',
-          sourceId: hit.sourceId, chunkIndex: hit.chunkIndex,
-          score: hit.score,
-          excerpt: excerptFrom(chunkText),
-          chunkRef: buildChunkRef('files', 'file_document', hit.sourceId, hit.chunkIndex),
-          sourceLabel: buildSourceLabel({
-            scope: 'files',
-            ...opt('fileName', fileName ? `${isImage ? '🖼️ ' : '📄 '}${fileName}` : undefined),
-            sourceType: 'file_document',
-          }),
-          ...opt('fileName', fileName),
-          ...opt('title', fileName),
-          ...opt('url', cloudUrl),
-          authorityLevel: 'documentary',
-        });
+    // ── Stage 0: Trigram filename fast-path ─────────────────────────────────
+    // Fetch all filenames from DB, score with trigram. If a strong match (≥0.8)
+    // is found, surface it immediately without semantic search.
+    // If uncertain (0.2–0.8), pass top-10 candidates to Groq for LLM resolution.
+    if (this.deps.fileAssetRepo) {
+      const allFiles = await this.deps.fileAssetRepo.searchByFilename(
+        input.companyId,
+        '',              // empty query = list all accessible files
+        input.userId,
+      );
+
+      if (allFiles.ok && allFiles.value && allFiles.value.length > 0) {
+        const filenames  = allFiles.value.map(f => f.fileName);
+        const ranked     = rankByTrigram(input.query, filenames);
+        const topScore   = ranked[0]?.score ?? 0;
+
+        if (topScore >= TRIGRAM_STRONG_THRESHOLD) {
+          const matchedFile = allFiles.value.find(f => f.fileName === ranked[0]!.filename)!;
+          this.log.info('files.trigram.strong_match', { query: input.query, matched: matchedFile.fileName, score: topScore });
+          const content = await this.readFileContent(matchedFile);
+          return [this.buildFileResult(matchedFile, topScore, content)];
+        }
+
+        // Groq resolver: fires when trigram is uncertain OR when no trigram match
+        // but we have few files (e.g. wrong name given, only 1 HTML file exists).
+        const groqShouldFire =
+          this.deps.groqApiKey &&
+          (topScore >= TRIGRAM_CANDIDATE_THRESHOLD || allFiles.value.length <= 20);
+
+        if (groqShouldFire && this.deps.groqApiKey) {
+          const candidates = ranked.length > 0
+            ? ranked.slice(0, 10).map(r => r.filename)
+            : filenames.slice(0, 20);
+          const resolved = await resolveFilenameWithGroq(input.query, candidates, this.deps.groqApiKey);
+          if (resolved.match && resolved.confidence >= 0.7) {
+            const matchedFile = allFiles.value.find(f => f.fileName === resolved.match);
+            if (matchedFile) {
+              this.log.info('files.groq.resolved', { query: input.query, matched: matchedFile.fileName, confidence: resolved.confidence });
+              const content = await this.readFileContent(matchedFile);
+              return [this.buildFileResult(matchedFile, resolved.confidence, content)];
+            }
+          }
+        }
       }
     }
-    return results.slice(0, limit);
+
+    // ── Stage 1: Multi-query semantic search ────────────────────────────────
+    // Expand the query into 2-6 variants, run them in parallel, dedup by chunk.
+    const queries    = expandFileSearchQuery(input.query);
+    const hitMap     = new Map<string, { score: number; payload: Record<string, unknown>; sourceId: string; chunkIndex: number }>();
+
+    const runSemanticSearch = async (q: string) => {
+      const qv = await this.deps.embedding.embedQuery(q);
+      const groups = await this.deps.vectorStore.search({
+        companyId:         input.companyId,
+        requesterUserId:   input.userId,
+        ...(input.requesterAiRole ? { requesterAiRole: input.requesterAiRole } : {}),
+        denseVector:       qv,
+        limit,
+        retrievalProfile:  'file',
+        sourceTypes:       ['file_document'],
+        includePersonal:   true,
+        includeShared:     true,
+        includePublic:     true,
+        enforceEmailMatch: false,
+        groupByField:      'documentKey',
+        groupSize:         3,
+        ...(wantsVisual ? { useMultimodal: true, queryMode: 'multimodal' as const } : {}),
+      });
+      for (const group of groups) {
+        for (const hit of group.hits) {
+          const key = `${hit.sourceId}:${hit.chunkIndex}`;
+          const existing = hitMap.get(key);
+          if (!existing || existing.score < hit.score) {
+            hitMap.set(key, { score: hit.score, payload: hit.payload as Record<string, unknown>, sourceId: hit.sourceId, chunkIndex: hit.chunkIndex });
+          }
+        }
+      }
+    };
+
+    await Promise.all(queries.map(q => runSemanticSearch(q).catch(() => {})));
+
+    // ── Stage 2: Corrective retry if too few results ──────────────────────
+    if (hitMap.size < 2) {
+      const broadened = broadenQuery(input.query);
+      if (broadened && !queries.includes(broadened)) {
+        await runSemanticSearch(broadened).catch(() => {});
+      }
+    }
+
+    // ── Assemble results ──────────────────────────────────────────────────
+    const results: ContextSearchResult[] = [];
+    for (const { score, payload, sourceId, chunkIndex } of hitMap.values()) {
+      const chunkText = readString(payload['_chunk']) ?? readString(payload['text']);
+      if (!chunkText) continue;
+      const fileName = readString(payload['fileName']) ?? readString(payload['title']);
+      const cloudUrl = readString(payload['cloudinaryUrl']) ?? readString(payload['sourceUrl']);
+      const mimeType = readString(payload['mimeType']) ?? '';
+      const isImage  = mimeType.startsWith('image/');
+      results.push({
+        scope: 'files', sourceType: 'file_document',
+        sourceId, chunkIndex, score,
+        excerpt: excerptFrom(chunkText),
+        chunkRef: buildChunkRef('files', 'file_document', sourceId, chunkIndex),
+        sourceLabel: buildSourceLabel({
+          scope: 'files',
+          ...opt('fileName', fileName ? `${isImage ? '🖼️ ' : '📄 '}${fileName}` : undefined),
+          sourceType: 'file_document',
+        }),
+        ...opt('fileName', fileName),
+        ...opt('title', fileName),
+        ...opt('url', cloudUrl),
+        authorityLevel: 'documentary',
+      });
+    }
+
+    // ── Stage 3: Filename fuzzy DB fallback if still sparse ───────────────
+    // Catches files that are indexed but scored low on vectors (e.g. wrong query language)
+    if (results.length < 2 && this.deps.fileAssetRepo) {
+      const fnResult = await this.deps.fileAssetRepo.searchByFilename(input.companyId, input.query, input.userId);
+      if (fnResult.ok && fnResult.value) {
+        const seenIds = new Set(results.map(r => r.sourceId));
+        for (const fa of fnResult.value) {
+          if (seenIds.has(fa.id)) continue;
+          const isImg = fa.mimeType.startsWith('image/');
+          results.push({
+            scope: 'files', sourceType: 'file_document',
+            sourceId: fa.id, chunkIndex: 0, score: 0.5,
+            excerpt: `${fa.fileName} (${fa.ingestionStatus === 'done' ? 'indexed' : 'indexing…'})`,
+            chunkRef: buildChunkRef('files', 'file_document', fa.id, 0),
+            sourceLabel: buildSourceLabel({ scope: 'files', fileName: `${isImg ? '🖼️ ' : '📄 '}${fa.fileName}`, sourceType: 'file_document' }),
+            fileName: fa.fileName, title: fa.fileName, url: fa.cloudinaryUrl,
+            authorityLevel: 'documentary',
+          });
+        }
+      }
+    }
+
+    return results.sort((a, b) => b.score - a.score).slice(0, limit);
+  }
+
+  // ─── File content helpers ────────────────────────────────────────────────
+
+  // ─── File content helpers ────────────────────────────────────────────────
+
+  /**
+   * Read the actual text of a matched file: VectorDocument chunks first,
+   * Cloudinary re-fetch as fallback. Returns a formatted string with system
+   * markers that teach the supervisor what it has and how to get more.
+   */
+  private async readFileContent(
+    file: { id: string; fileName: string; mimeType: string; cloudinaryUrl: string; ingestionStatus: string },
+  ): Promise<string> {
+    const MAX_CHARS = 12_000;
+
+    // 1. Try reassembling from VectorDocument chunks (fast, already extracted)
+    if (this.deps.vectorDocRepo) {
+      const chunksResult = await this.deps.vectorDocRepo.findByFileAsset(file.id);
+      if (chunksResult.ok && chunksResult.value && chunksResult.value.length > 0) {
+        const parts = chunksResult.value
+          .sort((a, b) => a.chunkIndex - b.chunkIndex)
+          .map(row => {
+            const p = row.payload as Record<string, unknown>;
+            return (p['rawChunkText'] ?? p['chunkText'] ?? row.chunkText ?? '') as string;
+          })
+          .filter(Boolean);
+        if (parts.length > 0) {
+          const full  = parts.join('\n\n');
+          return this.formatFileContent(file.fileName, full, MAX_CHARS);
+        }
+      }
+    }
+
+    // 2. Cloudinary fallback: re-fetch and extract
+    if (file.cloudinaryUrl) {
+      try {
+        this.log.info('files.content.cloudinary_fallback', { fileName: file.fileName });
+        const { extractFromBuffer } = await import('../ingestion/text-extraction/extract');
+        const res = await fetch(file.cloudinaryUrl);
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          const out = await extractFromBuffer(buf, file.mimeType, this.deps.geminiApiKey ?? '', 20_000, file.fileName);
+          if (out.text) return this.formatFileContent(file.fileName, out.text, MAX_CHARS);
+        }
+      } catch (e) {
+        this.log.warn('files.content.cloudinary_failed', { fileName: file.fileName, error: String(e) });
+      }
+    }
+
+    return `[FILE FOUND: "${file.fileName}" — content not yet available. File may still be indexing.]`;
+  }
+
+  /**
+   * Format file content with system-level markers that teach the supervisor:
+   * - [FULL CONTENT OF "..."] when everything fits
+   * - [CONTENT OF "..." (showing X/Y chars)] + retrieval hint when truncated
+   */
+  private formatFileContent(fileName: string, text: string, maxChars: number): string {
+    const total = text.length;
+    if (total <= maxChars) {
+      return `[FULL CONTENT OF "${fileName}" (${total} chars):\n${text}\n]`;
+    }
+    const excerpt = text.slice(0, maxChars);
+    return `[CONTENT OF "${fileName}" (showing ${maxChars}/${total} chars):\n${excerpt}\n[To read more, call contextSearch again with query="${fileName}"]]`;
+  }
+
+  /** Build a ContextSearchResult for a file matched by name (trigram/Groq fast path). */
+  private buildFileResult(
+    file:    { id: string; fileName: string; mimeType: string; cloudinaryUrl: string },
+    score:   number,
+    content: string,
+  ): ContextSearchResult {
+    const isImg = file.mimeType.startsWith('image/');
+    return {
+      scope:      'files',
+      sourceType: 'file_document',
+      sourceId:   file.id,
+      chunkIndex: 0,
+      score,
+      excerpt:    content,
+      chunkRef:   buildChunkRef('files', 'file_document', file.id, 0),
+      sourceLabel: buildSourceLabel({
+        scope:      'files',
+        fileName:   `${isImg ? '🖼️ ' : '📄 '}${file.fileName}`,
+        sourceType: 'file_document',
+      }),
+      fileName:       file.fileName,
+      title:          file.fileName,
+      url:            file.cloudinaryUrl,
+      authorityLevel: 'documentary',
+    };
   }
 
   private async runLarkContacts(input: ContextSearchInput, limit: number): Promise<ContextSearchResult[]> {

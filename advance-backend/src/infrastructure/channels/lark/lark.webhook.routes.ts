@@ -246,18 +246,24 @@ async function processInBackground(
   };
 
   // ── File/image attachment handling ────────────────────────────────────────
-  // When a file or image is received: download it once, enqueue for full
-  // background indexing, acknowledge receipt, and return — no engine run.
-  // The worker will quote-reply with success/failure when indexing finishes.
+  // Flow:
+  //   1. Download buffer + extract inline context (fast, sync with timeout).
+  //   2. Enqueue for full background indexing (always).
+  //   3. If text could be extracted → inject into message and run the engine
+  //      so the AI can immediately reason about the file contents.
+  //      If nothing was extractable → send a plain ack and return.
   const attachments = parseLarkAttachments(rawEvent);
 
   if (attachments.length > 0) {
     const { LarkFileClient } = await import('./clients/lark-file.client');
+    const { extractAttachmentInlineContext } = await import('./lark-inline-context');
     const fileClient = new LarkFileClient(deps.env, deps.logger);
 
     try {
       await deps.adapter.reactToIncoming(incoming.messageId, '📥');
     } catch { /* non-fatal */ }
+
+    const contextParts: string[] = [];
 
     for (const att of attachments) {
       let buf: Buffer | undefined;
@@ -269,6 +275,15 @@ async function processInBackground(
         log.warn('webhook.attachment.download.failed', { fileName: att.fileName, error: String(e) });
       }
 
+      // Extract inline context (with timeout fallback)
+      if (buf) {
+        const { context } = await extractAttachmentInlineContext(att, buf, deps.env, deps.logger);
+        if (context) contextParts.push(context);
+      } else {
+        contextParts.push(`[File: "${att.fileName}" — could not download]`);
+      }
+
+      // Enqueue for full background indexing
       if (deps.ingestionQueue) {
         try {
           await deps.ingestionQueue.enqueue(buf ? {
@@ -302,13 +317,46 @@ async function processInBackground(
       }
     }
 
-    // Simple acknowledgment — indexing happens in the background
-    const n = attachments.length;
-    await deps.adapter.sendFinalReply(conversation, {
-      kind:   'final',
-      text:   n === 1 ? 'Got your file! Indexing it in the background — I\'ll let you know when it\'s ready.' : `Got your ${n} files! Indexing them in the background — I'll let you know when they're ready.`,
-      format: 'text',
-    }).catch(() => { /* non-fatal */ });
+    // Build a synthetic message that includes the file content so the engine
+    // can immediately reason about it.  Append any text the user typed alongside.
+    const userText        = incoming.text?.trim() ?? '';
+    const contextBlock    = contextParts.join('\n\n');
+    const hasContext      = contextBlock.length > 0 && !contextBlock.startsWith('[File:') && !contextBlock.includes('could not download');
+
+    if (!hasContext) {
+      // Nothing useful extracted — plain ack, no engine run
+      const n = attachments.length;
+      await deps.adapter.sendFinalReply(conversation, {
+        kind:   'final',
+        text:   n === 1
+          ? 'Got your file! Indexing it in the background — I\'ll let you know when it\'s ready.'
+          : `Got your ${n} files! Indexing them in the background — I'll let you know when they're ready.`,
+        format: 'text',
+      }).catch(() => { /* non-fatal */ });
+      return;
+    }
+
+    // Run the engine with the file contents injected into the message
+    const syntheticText = userText
+      ? `${contextBlock}\n\n${userText}`
+      : contextBlock;
+
+    const enrichedIncoming: typeof incoming = {
+      ...incoming,
+      text: syntheticText,
+    };
+
+    const result = await deps.engine.run({
+      incoming:       enrichedIncoming,
+      runContext,
+      conversation,
+      channelAdapter: deps.adapter,
+      ...(approvalGate ? { approvalGate } : {}),
+    });
+
+    if (!result.ok) {
+      log.error('webhook.engine.failed', { error: result.error.message, correlationId });
+    }
     return;
   }
 

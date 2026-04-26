@@ -102,6 +102,34 @@ export class FileAssetRepository {
     }
   }
 
+  /**
+   * Fuzzy filename search — returns files whose name contains `query` (case-insensitive).
+   * Pass an empty `query` to list all accessible files (used by trigram pre-pass).
+   * When `uploaderUserId` is given, returns that user's files plus any shared/done files.
+   */
+  async searchByFilename(
+    companyId: string,
+    query: string,
+    uploaderUserId?: string,
+  ): Promise<Result<FileAssetRow[], Error>> {
+    try {
+      const rows = await this.prisma.fileAsset.findMany({
+        where: {
+          companyId,
+          ...(query ? { fileName: { contains: query, mode: 'insensitive' } } : {}),
+          ...(uploaderUserId
+            ? { OR: [{ uploaderUserId }, { ingestionStatus: 'done' }] }
+            : {}),
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 500,   // cap for trigram scoring pass
+      });
+      return ok(rows as FileAssetRow[]);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'fileAsset.searchByFilename', e));
+    }
+  }
+
   async listVisible(input: ListVisibleFilesInput): Promise<Result<FileAssetRow[], Error>> {
     try {
       const { companyId, aiRole, isAdmin, ownerUserId } = input;
