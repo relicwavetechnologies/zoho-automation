@@ -20,6 +20,8 @@ import type { SupervisorAgent } from '../agents/supervisor';
 import type { ApprovalGateService } from '../../approval/approval-gate.service';
 import type { ExecutionRepository } from '../../../infrastructure/persistence/execution.repository';
 import { OrchestrationTracer } from '../../observability/orchestration-tracer';
+import { resolveBranding } from '../department-branding';
+import { RunStatusAggregator } from '../run-status.aggregator';
 
 // ─── Public I/O types ──────────────────────────────────────────────────────
 
@@ -127,6 +129,9 @@ export class OrchestrationEngine {
       hasDept: !!perm.department,
     });
 
+    const branding   = resolveBranding(perm);
+    const aggregator = new RunStatusAggregator();
+
     // ── 2. Discover allowed tools ─────────────────────────────────────────
     const availableTools = this.deps.toolRegistry.forRuntime(perm);
     if (availableTools.length === 0) {
@@ -153,17 +158,17 @@ export class OrchestrationEngine {
     // ── 4. Build status channel wrapper ───────────────────────────────────
     let currentStatusHandle: StatusHandle | null = null;
     const statusChannel: StatusChannel = {
-      async sendStatus(text: string) {
+      async sendStatus(update) {
         const result = await channelAdapter.sendStatus(conversation, {
-          kind: 'status', text, terminal: false,
+          ...update, branding,
         });
         if (result.ok) { currentStatusHandle = result.value; return result.value; }
         return null;
       },
-      async editStatus(handle: StatusHandle | null, text: string) {
-        if (!handle) return statusChannel.sendStatus(text);
+      async editStatus(handle, update) {
+        if (!handle) return statusChannel.sendStatus(update);
         const result = await channelAdapter.editStatus(handle, {
-          kind: 'status', text, terminal: false,
+          ...update, branding,
         });
         if (result.ok) { currentStatusHandle = result.value; return result.value; }
         return handle;
@@ -181,7 +186,7 @@ export class OrchestrationEngine {
       );
     }
 
-    await statusChannel.sendStatus('🤔 Thinking…');
+    await statusChannel.sendStatus({ kind: 'status', terminal: false, branding, timeline: { liveLabel: 'Routing…' } });
 
     // ── 5. Run supervisor ─────────────────────────────────────────────────
     const supervisorResult = await this.deps.supervisor.run({
@@ -192,6 +197,7 @@ export class OrchestrationEngine {
       perm,
       runContext,
       statusChannel,
+      aggregator,
       permittedTools: availableTools,
       ...(tracer !== undefined ? { tracer } : {}),
       ...(approvalGate !== undefined ? { approvalGate } : {}),
@@ -210,7 +216,8 @@ export class OrchestrationEngine {
       return ok({ finalReply: errReply, toolsCalled: [] });
     }
 
-    const { finalReply, toolsCalled } = supervisorResult.value;
+    const { toolsCalled } = supervisorResult.value;
+    const finalReply: FinalReply = { ...supervisorResult.value.finalReply, branding };
 
     // ── 6. Persist conversation turn ──────────────────────────────────────
     await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {

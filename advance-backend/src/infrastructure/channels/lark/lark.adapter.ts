@@ -10,6 +10,7 @@ import type { Logger } from '../../../shared/logger';
 import type { TypedEnv } from '../../../config/env';
 import { LarkMessagingClient } from './clients/lark-messaging.client';
 import { LarkStatusCoordinator } from './lark-status.coordinator';
+import { buildFinalCard } from './lark-card.builder';
 
 export class LarkChannelAdapter implements ChannelAdapter {
   readonly key = 'lark' as const;
@@ -156,7 +157,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
         }));
       }
       const coordinator = this.coordinators.get(corrId)!;
-      await coordinator.update({ text: update.text });
+      await coordinator.update({
+        ...(update.branding  ? { branding:  update.branding  } : {}),
+        ...(update.timeline  ? { timeline:  update.timeline  } : {}),
+      });
       const mid = coordinator.getStatusMessageId() ?? '';
       return ok({
         channel: 'lark',
@@ -184,7 +188,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
       const corrId = String(handle.correlationId);
       const coordinator = this.coordinators.get(corrId);
       if (coordinator) {
-        await coordinator.update({ text: update.text });
+        await coordinator.update({
+          ...(update.branding ? { branding: update.branding } : {}),
+          ...(update.timeline ? { timeline: update.timeline } : {}),
+        });
       }
       return ok(handle);
     } catch (e) {
@@ -213,9 +220,11 @@ export class LarkChannelAdapter implements ChannelAdapter {
     }
 
     try {
-      // Always use an interactive card so we can update the existing status bubble.
-      // If the reply format is plain text, wrap it in a minimal card.
-      const content = this.buildInteractiveCard(reply.text, reply.actions);
+      const content = buildFinalCard({
+        markdown: reply.text,
+        ...(reply.branding ? { branding: reply.branding } : {}),
+        ...(reply.actions  ? { actions:  reply.actions  } : {}),
+      });
 
       if (statusMessageId) {
         // Update the existing "Working..." card in-place → single bubble.
@@ -305,36 +314,6 @@ export class LarkChannelAdapter implements ChannelAdapter {
     }
   }
 
-  // ── Private card builders ────────────────────────────────────────────
-
-  private buildInteractiveCard(
-    text: string,
-    actions?: readonly { label: string; value: string }[],
-  ): string {
-    const elements: unknown[] = [{
-      tag: 'div',
-      text: { tag: 'lark_md', content: text },
-    }];
-    if (actions?.length) {
-      elements.push({
-        tag: 'action',
-        actions: actions.map(a => ({
-          tag: 'button',
-          text: { tag: 'plain_text', content: a.label },
-          value: { action: a.value },
-          type: 'default',
-        })),
-      });
-    }
-    return JSON.stringify({
-      msg_type: 'interactive',
-      card: JSON.stringify({ elements }),
-    });
-  }
-
-  private buildTextMessage(text: string): string {
-    return JSON.stringify({ msg_type: 'text', content: JSON.stringify({ text }) });
-  }
 }
 
 // ── Module-level helpers ────────────────────────────────────────────────────

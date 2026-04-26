@@ -38,7 +38,7 @@ import type { AgentDefinitionView } from '../../../infrastructure/persistence/ag
 import type { AgentResolver } from './agent-resolver';
 import type { ApprovalGateService } from '../../approval/approval-gate.service';
 import { buildSupervisorSystemPrompt } from './supervisor.prompt';
-import { getLabelForTool } from './status-labels';
+import type { RunStatusAggregator } from '../run-status.aggregator';
 import { runLarkAgent } from '../agent-runners/lark.runner';
 import { runGoogleAgent } from '../agent-runners/google.runner';
 import { runZohoAgent } from '../agent-runners/zoho.runner';
@@ -64,6 +64,7 @@ export interface SupervisorInput {
   perm:           PermissionResult;
   runContext:     RunContext;
   statusChannel:  StatusChannel;
+  aggregator:     RunStatusAggregator;
   permittedTools: ReadonlyArray<AppTool<unknown, unknown>>;
   tracer?:        OrchestrationTracer;
   approvalGate?:  ApprovalGateService;
@@ -95,7 +96,7 @@ export class SupervisorAgent {
   async run(input: SupervisorInput): Promise<Result<SupervisorOutput, OrchestrationError>> {
     const {
       userMessage, history, channelType, channelId,
-      perm, runContext, statusChannel, permittedTools, tracer,
+      perm, runContext, statusChannel, aggregator, permittedTools, tracer,
       approvalGate, chatId,
     } = input;
     const { model, agentResolver, todoRepo, prisma, logger, clock } = this.deps;
@@ -228,8 +229,10 @@ export class SupervisorAgent {
 
           for await (const chunk of result.fullStream) {
             if (chunk.type === 'tool-call') {
-              const label = getLabelForTool(chunk.toolName);
-              currentStatusHandle = await statusChannel.editStatus(currentStatusHandle, label);
+              aggregator.recordCall(chunk.toolName);
+              currentStatusHandle = await statusChannel.editStatus(currentStatusHandle, {
+                kind: 'status', terminal: false, timeline: aggregator.snapshot(),
+              });
               innerCalled.push(chunk.toolName);
 
               tracer?.emit({
@@ -242,6 +245,11 @@ export class SupervisorAgent {
             }
 
             if (chunk.type === 'tool-result') {
+              aggregator.recordResult(chunk.toolName, chunk.output);
+              currentStatusHandle = await statusChannel.editStatus(currentStatusHandle, {
+                kind: 'status', terminal: false, timeline: aggregator.snapshot(),
+              });
+
               tracer?.emit({
                 phase: 'execute', eventType: 'tool_call_finished',
                 actorType: 'supervisor', actorKey: chunk.toolName,
