@@ -23,9 +23,17 @@ const EnvSchema = z.object({
   APP_BASE_URL:     z.string().default('http://localhost:5173'),
   BACKEND_PUBLIC_URL: z.string().default('http://localhost:8000'),
 
-  // ── Database + cache ──────────────────────────────────────────────────────
-  DATABASE_URL: z.string().min(1),
-  REDIS_URL:    z.string().min(1),
+  // ── Database + Redis ──────────────────────────────────────────────────────
+  DATABASE_URL:     z.string().min(1),
+  // Required fallback — used for all Redis connections in local dev (single instance).
+  REDIS_URL:        z.string().min(1),
+  // Optional dedicated connections. Each falls back to REDIS_URL when not set.
+  //   REDIS_QUEUE_URL  → BullMQ ingestion queue only (blocking cmds, Lua scripts).
+  //   REDIS_CACHE_URL  → hot-path app cache: permissions, OAuth tokens, agent defs.
+  //   REDIS_MEMORY_URL → memory system cache + nonces + knowledge-share + Cloudinary.
+  REDIS_QUEUE_URL:  z.string().default(''),
+  REDIS_CACHE_URL:  z.string().default(''),
+  REDIS_MEMORY_URL: z.string().default(''),
 
   // ── Logging ───────────────────────────────────────────────────────────────
   LOG_LEVEL:              z.enum(['debug', 'info', 'warn', 'error']).default('info'),
@@ -156,6 +164,14 @@ const EnvSchema = z.object({
 });
 
 export type TypedEnv = z.infer<typeof EnvSchema>;
+
+/**
+ * Returns `specific` when it is a non-empty string, otherwise falls back to
+ * `fallback`. Use this to resolve the three purposeful Redis URLs so that local
+ * dev with a single `REDIS_URL` still works with zero friction.
+ */
+export const resolveRedisUrl = (specific: string, fallback: string): string =>
+  specific.length > 0 ? specific : fallback;
 
 export const loadAndValidateEnv = (raw: NodeJS.ProcessEnv): TypedEnv => {
   const result = EnvSchema.safeParse(raw);

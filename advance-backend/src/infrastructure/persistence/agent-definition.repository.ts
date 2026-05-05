@@ -110,6 +110,95 @@ function mapRoot(r: {
   };
 }
 
+// ─── Admin view types (includes mutable fields for CRUD surface) ──────────────
+
+export interface AgentAdminView {
+  readonly id:           string;
+  readonly companyId:    string;
+  readonly name:         string;
+  readonly description?: string;
+  readonly systemPrompt: string;
+  readonly isRootAgent:  boolean;
+  readonly isActive:     boolean;
+  readonly toolIds:      string[];
+  readonly modelId?:     string;
+  readonly provider?:    string;
+  readonly parentId?:    string;
+  readonly children:     AgentChildView[];
+  readonly createdAt:    Date;
+  readonly updatedAt:    Date;
+}
+
+export interface CreateAgentInput {
+  companyId:     string;
+  name:          string;
+  description?:  string | undefined;
+  systemPrompt:  string;
+  isRootAgent?:  boolean | undefined;
+  toolIds?:      string[] | undefined;
+  modelId?:      string | null | undefined;
+  provider?:     string | null | undefined;
+  parentId?:     string | null | undefined;
+}
+
+export interface UpdateAgentInput {
+  name?:         string | undefined;
+  description?:  string | undefined;
+  systemPrompt?: string | undefined;
+  isRootAgent?:  boolean | undefined;
+  isActive?:     boolean | undefined;
+  toolIds?:      string[] | undefined;
+  modelId?:      string | null | undefined;
+  provider?:     string | null | undefined;
+  parentId?:     string | null | undefined;
+}
+
+const adminSelect = {
+  id:           true,
+  companyId:    true,
+  name:         true,
+  description:  true,
+  systemPrompt: true,
+  isRootAgent:  true,
+  isActive:     true,
+  toolIds:      true,
+  modelId:      true,
+  provider:     true,
+  parentId:     true,
+  createdAt:    true,
+  updatedAt:    true,
+  children: { select: childSelect },
+} as const;
+
+function mapAdmin(r: {
+  id: string; companyId: string; name: string; description: string | null;
+  systemPrompt: string; isRootAgent: boolean; isActive: boolean; toolIds: string[];
+  modelId: string | null; provider: string | null; parentId: string | null;
+  createdAt: Date; updatedAt: Date;
+  children: Array<{
+    id: string; name: string; description: string | null;
+    systemPrompt: string; toolIds: string[];
+    modelId: string | null; provider: string | null;
+  }>;
+}): AgentAdminView {
+  return {
+    id:           r.id,
+    companyId:    r.companyId,
+    name:         r.name,
+    systemPrompt: r.systemPrompt,
+    isRootAgent:  r.isRootAgent,
+    isActive:     r.isActive,
+    toolIds:      r.toolIds,
+    children:     r.children.map(mapChild),
+    createdAt:    r.createdAt,
+    updatedAt:    r.updatedAt,
+    ...(r.description ? { description: r.description } : {}),
+    ...(r.modelId     ? { modelId:     r.modelId }     : {}),
+    ...(r.provider    ? { provider:    r.provider }    : {}),
+    ...(r.parentId    ? { parentId:    r.parentId }    : {}),
+  };
+}
+
 // ─── Repository ───────────────────────────────────────────────────────────────
 
 export class AgentDefinitionRepository {
@@ -202,6 +291,119 @@ export class AgentDefinitionRepository {
       return ok(row ? mapRoot(row) : null);
     } catch (e) {
       return err(wrapInfra('prisma', 'AgentDefinition.findById', e));
+    }
+  }
+
+  // ── Admin CRUD ────────────────────────────────────────────────────────────
+
+  /** All agents for a company (active + inactive) for the admin UI. */
+  async adminFindAll(companyId: string): Promise<Result<AgentAdminView[], InfraError>> {
+    try {
+      const rows = await this.db.agentDefinition.findMany({
+        where:   { companyId },
+        select:  adminSelect,
+        orderBy: { createdAt: 'asc' },
+      });
+      return ok(rows.map(mapAdmin));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'AgentDefinition.adminFindAll', e));
+    }
+  }
+
+  /** Single agent by id scoped to company, including inactive. */
+  async adminFindById(id: string, companyId: string): Promise<Result<AgentAdminView | null, InfraError>> {
+    try {
+      const row = await this.db.agentDefinition.findFirst({
+        where:  { id, companyId },
+        select: adminSelect,
+      });
+      return ok(row ? mapAdmin(row) : null);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'AgentDefinition.adminFindById', e));
+    }
+  }
+
+  async create(input: CreateAgentInput): Promise<Result<AgentAdminView, InfraError>> {
+    try {
+      const row = await this.db.agentDefinition.create({
+        data: {
+          companyId:    input.companyId,
+          name:         input.name,
+          systemPrompt: input.systemPrompt,
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.isRootAgent !== undefined ? { isRootAgent: input.isRootAgent } : {}),
+          ...(input.toolIds     !== undefined ? { toolIds:     input.toolIds }     : {}),
+          ...(input.modelId     !== undefined ? { modelId:     input.modelId }     : {}),
+          ...(input.provider    !== undefined ? { provider:    input.provider }    : {}),
+          ...(input.parentId    !== undefined ? { parentId:    input.parentId }    : {}),
+        },
+        select: adminSelect,
+      });
+      return ok(mapAdmin(row));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'AgentDefinition.create', e));
+    }
+  }
+
+  async update(id: string, companyId: string, input: UpdateAgentInput): Promise<Result<AgentAdminView, InfraError>> {
+    try {
+      const row = await this.db.agentDefinition.update({
+        where: { id },
+        data: {
+          ...(input.name         !== undefined ? { name:         input.name }         : {}),
+          ...(input.description  !== undefined ? { description:  input.description }  : {}),
+          ...(input.systemPrompt !== undefined ? { systemPrompt: input.systemPrompt } : {}),
+          ...(input.isRootAgent  !== undefined ? { isRootAgent:  input.isRootAgent }  : {}),
+          ...(input.isActive     !== undefined ? { isActive:     input.isActive }     : {}),
+          ...(input.toolIds      !== undefined ? { toolIds:      input.toolIds }      : {}),
+          ...(input.modelId      !== undefined ? { modelId:      input.modelId }      : {}),
+          ...(input.provider     !== undefined ? { provider:     input.provider }     : {}),
+          ...(input.parentId     !== undefined ? { parentId:     input.parentId }     : {}),
+        },
+        select: adminSelect,
+      });
+      void companyId; // scoping enforced by service before calling
+      return ok(mapAdmin(row));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'AgentDefinition.update', e));
+    }
+  }
+
+  async delete(id: string): Promise<Result<void, InfraError>> {
+    try {
+      await this.db.agentDefinition.delete({ where: { id } });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'AgentDefinition.delete', e));
+    }
+  }
+
+  /** Count direct children so callers can guard deletion. */
+  async countChildren(parentId: string): Promise<Result<number, InfraError>> {
+    try {
+      const count = await this.db.agentDefinition.count({ where: { parentId } });
+      return ok(count);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'AgentDefinition.countChildren', e));
+    }
+  }
+
+  /** Walk ancestor chain from startId upward. Returns ordered ancestor IDs. */
+  async ancestorIds(startId: string): Promise<Result<string[], InfraError>> {
+    try {
+      const ids: string[] = [];
+      let currentId: string | null = startId;
+      while (currentId) {
+        const row: { parentId: string | null } | null = await this.db.agentDefinition.findUnique({
+          where:  { id: currentId },
+          select: { parentId: true },
+        });
+        currentId = row?.parentId ?? null;
+        if (currentId) ids.push(currentId);
+      }
+      return ok(ids);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'AgentDefinition.ancestorIds', e));
     }
   }
 }

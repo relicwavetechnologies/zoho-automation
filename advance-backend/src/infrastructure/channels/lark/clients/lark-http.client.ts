@@ -26,6 +26,8 @@ export class LarkHttpClient {
   private readonly fixedUserToken: string | undefined;
   private token?: string;
   private tokenExpiresAt = 0;
+  /** Deduplicate concurrent refresh calls — all waiters share one in-flight fetch. */
+  private tokenRefreshPromise: Promise<string> | undefined;
 
   constructor(deps: LarkHttpClientDeps) {
     this.appId = deps.appId;
@@ -79,6 +81,20 @@ export class LarkHttpClient {
     if (this.token && Date.now() < this.tokenExpiresAt - 60_000) {
       return this.token;
     }
+    // If a refresh is already in-flight, all concurrent callers share that same
+    // promise. This prevents multiple simultaneous token fetches that would race
+    // to overwrite this.token, causing some callers to hold a token that has since
+    // been superseded and rejected by Lark (error 99991663).
+    if (this.tokenRefreshPromise) {
+      return this.tokenRefreshPromise;
+    }
+    this.tokenRefreshPromise = this.fetchNewToken().finally(() => {
+      this.tokenRefreshPromise = undefined;
+    });
+    return this.tokenRefreshPromise;
+  }
+
+  private async fetchNewToken(): Promise<string> {
     const res = await fetch(TOKEN_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

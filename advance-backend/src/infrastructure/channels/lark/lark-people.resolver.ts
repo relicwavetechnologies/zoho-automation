@@ -73,8 +73,12 @@ function matchEntry(query: string, dir: DirEntry[]): ResolveResult {
   if (exact.length === 1) return { kind: 'resolved', person: toPerson(exact[0]!) };
   if (exact.length > 1)  return { kind: 'ambiguous', matches: exact.map(toPerson) };
 
-  // Stage 2 — substring
-  const sub = dir.filter(e => e.normName.includes(q) || q.includes(e.normName));
+  // Stage 2 — whole-token containment (avoids matching "anish" inside "kanishka")
+  const sub = dir.filter(e => {
+    const qAllInName = [...qTokens].every(t => e.tokens.has(t));
+    const nameAllInQ = [...e.tokens].every(t => qTokens.has(t));
+    return qAllInName || nameAllInQ;
+  });
   if (sub.length === 1) return { kind: 'resolved', person: toPerson(sub[0]!) };
   if (sub.length > 1)  return { kind: 'ambiguous', matches: sub.map(toPerson) };
 

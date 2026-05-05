@@ -4,6 +4,7 @@ import type { Container } from './composition';
 import { createHealthRoutes } from './http/health.routes';
 import { createErrorBoundary } from './http/error-boundary';
 import { createLarkWebhookRoutes } from './infrastructure/channels/lark/lark.webhook.routes';
+import { createAdminAuthRoutes } from './http/admin/admin-auth.routes';
 import { createAdminPermissionRoutes } from './http/admin/permission.routes';
 import { createGoogleAuthRoutes } from './http/google/google-auth.routes';
 import { createZohoAuthRoutes } from './http/zoho/zoho-auth.routes';
@@ -11,14 +12,31 @@ import { createExecutionRoutes } from './http/executions/execution.routes';
 import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middleware';
 import { createMemberAuthMiddleware } from './http/middleware/member-auth.middleware';
 import { createFilesRouter } from './http/files/files.routes';
+import { createAgentsRoutes } from './http/agents/agents.routes';
+import { createDepartmentRoutes } from './http/admin/departments.routes';
+import { createCompanyRoutes } from './http/admin/company.routes';
+import { createAuditRoutes } from './http/admin/audit.routes';
+import { createControlsRoutes } from './http/admin/controls.routes';
+import { createRbacRoutes } from './http/admin/rbac.routes';
+import { createAiModelsRoutes } from './http/admin/ai-models.routes';
+import { createRuntimeRoutes } from './http/admin/runtime.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
 
 export const createServer = (c: Container) => {
   const app = express();
+  const allowedOrigins = new Set(
+    [
+      c.env.APP_BASE_URL,
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      'http://localhost:4173',
+      'http://127.0.0.1:4173',
+    ].filter(Boolean),
+  );
 
   // Boot BullMQ ingestion worker (queue lives in container, shared with webhook routes)
   const ingestionWorker = new IngestionWorker({
-    redisUrl:         c.env.REDIS_URL,
+    redisUrl:         c.queueRedisUrl,   // isolated BullMQ connection → REDIS_QUEUE_URL
     ingestionService: c.ingestionService,
     larkAdapter:      c.larkAdapter,
     env:              c.env,
@@ -26,6 +44,24 @@ export const createServer = (c: Container) => {
     concurrency:      c.env.INGESTION_WORKER_CONCURRENCY,
   });
   ingestionWorker.start();
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.has(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+    }
+    res.header('Vary', 'Origin');
+    res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, x-api-key, x-company-id');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Credentials', 'true');
+
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+
+    next();
+  });
 
   // Capture the raw JSON body string on every request before parsing.
   // The webhook handler needs it to verify the HMAC-SHA256 signature.
@@ -51,11 +87,14 @@ export const createServer = (c: Container) => {
   });
 
   // ── Structured HTTP request logging ────────────────────────────────────
+  // Use req.originalUrl (always the full path) — req.path gets stripped by sub-routers
+  // and would show just "/me" instead of "/api/admin/auth/me" in the finish callback.
   app.use((req, res, next) => {
-    const start = process.hrtime.bigint();
+    const start    = process.hrtime.bigint();
+    const fullPath = req.originalUrl.split('?')[0] ?? req.originalUrl;
     c.logger.debug('http.request', {
       method:    req.method,
-      path:      req.path,
+      path:      fullPath,
       requestId: (req as unknown as Record<string, unknown>)['requestId'],
       ip:        req.ip,
       userAgent: req.headers['user-agent'],
@@ -67,7 +106,7 @@ export const createServer = (c: Container) => {
         : 'debug';
       c.logger[level]('http.response', {
         method:    req.method,
-        path:      req.path,
+        path:      fullPath,
         status:    res.statusCode,
         durationMs: Math.round(durationMs * 100) / 100,
         requestId: (req as unknown as Record<string, unknown>)['requestId'],
@@ -78,6 +117,16 @@ export const createServer = (c: Container) => {
 
   // Routes
   app.use('/health', createHealthRoutes(c.prisma));
+
+  app.use(
+    '/api/admin/auth',
+    createAdminAuthRoutes({
+      prisma: c.prisma,
+      env: c.env,
+      auditService: c.auditService,
+      logger: c.logger,
+    }),
+  );
 
   app.use(
     '/admin',
@@ -105,6 +154,7 @@ export const createServer = (c: Container) => {
       ingestionQueue:        c.ingestionQueue,
       knowledgeShareService: c.knowledgeShareService,
       shareResolverService:  c.shareResolverService,
+      serializer:            c.chatSerializer,
     }),
   );
 
@@ -115,7 +165,7 @@ export const createServer = (c: Container) => {
       googleOAuthService:    c.googleOAuthService,
       googleUserLinkRepo:    c.googleUserLinkRepo,
       companyGoogleAuthRepo: c.companyGoogleLinkRepo,
-      cache:                 c.cache,
+      cache:                 c.memoryCache,   // nonces → REDIS_MEMORY_URL
       logger:                c.logger,
       frontendBaseUrl:       c.env.APP_BASE_URL,
     }),
@@ -127,7 +177,7 @@ export const createServer = (c: Container) => {
     createZohoAuthRoutes({
       zohoTokenService:   c.zohoTokenService,
       zohoConnectionRepo: c.zohoConnectionRepo,
-      cache:              c.cache,
+      cache:              c.memoryCache,    // nonces → REDIS_MEMORY_URL
       logger:             c.logger,
       env:                c.env,
       frontendBaseUrl:    c.env.APP_BASE_URL,
@@ -143,6 +193,14 @@ export const createServer = (c: Container) => {
   });
   app.use(
     '/api/executions',
+    adminAuth,
+    createExecutionRoutes({
+      executionQueryService: c.executionQueryService,
+      logger:                c.logger,
+    }),
+  );
+  app.use(
+    '/api/admin/executions',
     adminAuth,
     createExecutionRoutes({
       executionQueryService: c.executionQueryService,
@@ -169,6 +227,51 @@ export const createServer = (c: Container) => {
       maxFileSizeMb:         c.env.DOC_UPLOAD_MAX_MB,
     }),
   );
+
+  // Agent definition + channel mapping CRUD (admin auth required)
+  app.use(
+    '/api',
+    adminAuth,
+    createAgentsRoutes({
+      agentAdminService: c.agentAdminService,
+      logger:            c.logger,
+    }),
+  );
+
+  // Department admin CRUD
+  app.use(
+    '/api/admin/departments',
+    adminAuth,
+    createDepartmentRoutes({
+      deptAdminService: c.departmentAdminService,
+      logger:           c.logger,
+    }),
+  );
+
+  // Company admin surface (members, directory, invites, onboarding, tool-permissions)
+  const companyRoutes = createCompanyRoutes({ prisma: c.prisma, logger: c.logger });
+  app.use('/api/admin/company', adminAuth, companyRoutes);
+  // Alias: GET /api/admin/members → GET /api/admin/company/members (used by OverviewPage)
+  // The company router handles /members as a sub-path, so rewrite the URL before dispatching.
+  app.get('/api/admin/members', adminAuth, (req, res, next) => {
+    req.url = '/members';
+    companyRoutes(req, res, next);
+  });
+
+  // Audit logs
+  app.use('/api/admin/audit', adminAuth, createAuditRoutes({ auditService: c.auditService, logger: c.logger }));
+
+  // Admin controls
+  app.use('/api/admin/controls', adminAuth, createControlsRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  // RBAC permissions
+  app.use('/api/admin/rbac', adminAuth, createRbacRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  // AI model target configs
+  app.use('/api/admin/ai-models', adminAuth, createAiModelsRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  // Runtime task list (delegates to execution query service)
+  app.use('/api/admin/runtime', adminAuth, createRuntimeRoutes({ executionQueryService: c.executionQueryService, logger: c.logger }));
 
   // 404
   app.use((_req, res) => {

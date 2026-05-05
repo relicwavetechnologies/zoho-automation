@@ -62,17 +62,34 @@ export class ConversationRepository implements ConversationRepoPort {
       });
 
       if (!conv) {
-        conv = await this.db.runtimeConversation.create({
-          data: {
-            companyId,
-            channel,
-            channelConversationKey: chatId,
-            rawChannelKey: chatId,
-          },
-        });
+        try {
+          conv = await this.db.runtimeConversation.create({
+            data: {
+              companyId,
+              channel,
+              channelConversationKey: chatId,
+              rawChannelKey: chatId,
+            },
+          });
+        } catch {
+          // Race: another concurrent request created the conversation first — re-fetch.
+          const refetched = await this.db.runtimeConversation.findFirst({
+            where: { channelConversationKey: chatId },
+          });
+          if (!refetched) throw new Error(`conversation_repo: failed to find or create conv for chatId=${chatId}`);
+          conv = refetched;
+        }
       }
 
-      const sequence = conv.lastMessageSequence + 1;
+      // Atomically claim the next sequence number. This single UPDATE is the only
+      // writer of lastMessageSequence, so concurrent calls always get distinct values
+      // and the unique constraint on (conversationId, sequence) can never be violated.
+      const claimed = await this.db.runtimeConversation.update({
+        where: { id: conv.id },
+        data:  { lastMessageSequence: { increment: 1 } },
+        select: { lastMessageSequence: true },
+      });
+      const sequence = claimed.lastMessageSequence;
 
       const row = await this.db.runtimeConversationMessage.create({
         data: {
@@ -86,11 +103,7 @@ export class ConversationRepository implements ConversationRepoPort {
           ...(turn.toolOutcome !== undefined ? { toolResultJson: turn.toolOutcome as object } : {}),
         },
       });
-
-      await this.db.runtimeConversation.update({
-        where: { id: conv.id },
-        data: { lastMessageSequence: sequence },
-      });
+      // No separate lastMessageSequence update needed — already incremented above.
 
       const appended: Turn = {
         id: row.id,

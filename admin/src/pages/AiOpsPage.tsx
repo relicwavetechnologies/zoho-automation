@@ -1,101 +1,87 @@
-import { useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Activity, Cpu, Zap, BarChart3, Layers3 } from 'lucide-react';
+import { Activity, Brain, Cpu, Gauge } from "lucide-react"
+import { DataTable } from "@/components/admin/data-table"
+import { MetricCard } from "@/components/admin/metric-card"
+import { PageHeader } from "@/components/admin/page-header"
+import { SectionCard } from "@/components/admin/section-card"
+import { StatusBadge } from "@/components/admin/status-badge"
+import { useApiList } from "@/components/admin/use-api-list"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useAdminAuth } from "@/auth/AdminAuthProvider"
+import type { JsonRecord } from "@/components/admin/types"
 
-import { useAdminAuth } from '../auth/AdminAuthProvider';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
-import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { ExecutionsPage } from './ExecutionsPage';
-import TokenUsagePage from './TokenUsagePage';
-import { AiModelsPage } from './AiModelsPage';
-import { RagDiagnosticsPage } from './RagDiagnosticsPage';
-
-const AI_OPS_TABS = ['executions', 'token-usage', 'rag-diagnostics', 'models'] as const;
-type AiOpsTab = (typeof AI_OPS_TABS)[number];
-
-const isAiOpsTab = (value: string | null): value is AiOpsTab =>
-  Boolean(value && AI_OPS_TABS.includes(value as AiOpsTab));
-
-export const AiOpsPage = () => {
-  const { session } = useAdminAuth();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const isSuperAdmin = session?.role === 'SUPER_ADMIN';
-
-  const selectedTab = useMemo<AiOpsTab>(() => {
-    const rawTab = searchParams.get('tab');
-    if (isAiOpsTab(rawTab)) {
-      if (rawTab === 'models' && !isSuperAdmin) {
-        return 'executions';
-      }
-      return rawTab;
-    }
-    return 'executions';
-  }, [isSuperAdmin, searchParams]);
-
-  const setTab = (tab: AiOpsTab) => {
-    const next = new URLSearchParams(searchParams);
-    next.set('tab', tab);
-    setSearchParams(next, { replace: true });
-  };
+export function AiOpsPage() {
+  const { token } = useAdminAuth()
+  const executions = useApiList<JsonRecord>("/api/admin/executions?limit=25", token, ["items", "runs"])
+  const models = useApiList<JsonRecord>("/api/admin/ai-models", token, ["items", "targets"])
+  const tasks = useApiList<JsonRecord>("/api/admin/runtime/tasks?limit=25", token, ["items", "tasks"])
 
   return (
-    <div className="flex flex-col gap-8 w-full animate-in fade-in duration-700">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
-          <Activity className="h-6 w-6 text-primary" />
-          AI Operations
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Monitor execution traces, analyze token consumption, and manage model posture.
-        </p>
-      </div>
-
-      <Card className="bg-card border-border/50 shadow-sm overflow-hidden">
-        <CardHeader className="border-b border-border/50 bg-secondary/5 px-6 py-4">
-          <Tabs value={selectedTab} onValueChange={(value) => isAiOpsTab(value) && setTab(value)} className="w-full">
-            <TabsList className="bg-transparent h-10 gap-6 border-none p-0">
-              <TabsTrigger 
-                value="executions" 
-                className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-10 text-xs font-bold tracking-wider uppercase transition-all flex items-center gap-2"
-              >
-                <Zap className="h-3.5 w-3.5" />
-                Executions
-              </TabsTrigger>
-              <TabsTrigger 
-                value="token-usage" 
-                className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-10 text-xs font-bold tracking-wider uppercase transition-all flex items-center gap-2"
-              >
-                <BarChart3 className="h-3.5 w-3.5" />
-                Token Usage
-              </TabsTrigger>
-              <TabsTrigger
-                value="rag-diagnostics"
-                className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-10 text-xs font-bold tracking-wider uppercase transition-all flex items-center gap-2"
-              >
-                <Layers3 className="h-3.5 w-3.5" />
-                RAG Diagnostics
-              </TabsTrigger>
-              {isSuperAdmin ? (
-                <TabsTrigger 
-                  value="models" 
-                  className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:text-primary rounded-none px-0 h-10 text-xs font-bold tracking-wider uppercase transition-all flex items-center gap-2"
-                >
-                  <Cpu className="h-3.5 w-3.5" />
-                  Models
-                </TabsTrigger>
-              ) : null}
-            </TabsList>
-          </Tabs>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="p-4 md:p-6 lg:p-8 animate-in slide-in-from-bottom-2 duration-500 min-w-0">
-            {selectedTab === 'executions' ? <ExecutionsPage /> : null}
-            {selectedTab === 'token-usage' ? <TokenUsagePage /> : null}
-            {selectedTab === 'rag-diagnostics' ? <RagDiagnosticsPage /> : null}
-            {selectedTab === 'models' && isSuperAdmin ? <AiModelsPage /> : null}
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-};
+    <>
+      <PageHeader
+        eyebrow="AI Ops"
+        title="Runtime and model operations"
+        description="Execution traces, model targets, and runtime controls rebuilt with a single admin design language."
+      />
+      <section className="grid gap-3 md:grid-cols-3">
+        <MetricCard label="Executions" value={String(executions.data.length)} detail="Visible in current query" icon={Activity} tone="emphasis" />
+        <MetricCard label="Model targets" value={String(models.data.length)} detail="Configured model routes" icon={Brain} tone="accent" />
+        <MetricCard label="Runtime tasks" value={String(tasks.data.length)} detail="Recent control surface" icon={Cpu} />
+      </section>
+      <Tabs defaultValue="executions">
+        <TabsList className="rounded-full">
+          <TabsTrigger value="executions" className="rounded-full">Executions</TabsTrigger>
+          <TabsTrigger value="models" className="rounded-full">Models</TabsTrigger>
+          <TabsTrigger value="runtime" className="rounded-full">Runtime</TabsTrigger>
+        </TabsList>
+        <TabsContent value="executions">
+          <SectionCard title="Execution traces" description="Read-only execution inspection using the migrated admin route.">
+            <DataTable
+              rows={executions.data}
+              loading={executions.loading}
+              emptyTitle="No executions"
+              emptyDescription="Execution traces will appear after agent runs complete."
+              columns={[
+                { key: "id", header: "Run" },
+                { key: "channel", header: "Channel" },
+                { key: "status", header: "Status", render: (row) => <StatusBadge value={String(row.status ?? "")} /> },
+                { key: "createdAt", header: "Created" },
+              ]}
+            />
+          </SectionCard>
+        </TabsContent>
+        <TabsContent value="models">
+          <SectionCard title="Model targets" description="Provider and model routing from the admin AI models API.">
+            <DataTable
+              rows={models.data}
+              loading={models.loading}
+              emptyTitle="No model targets"
+              emptyDescription="Model configuration rows will appear when the backend exposes them."
+              columns={[
+                { key: "targetKey", header: "Target" },
+                { key: "provider", header: "Provider" },
+                { key: "modelId", header: "Model" },
+                { key: "updatedAt", header: "Updated" },
+              ]}
+            />
+          </SectionCard>
+        </TabsContent>
+        <TabsContent value="runtime">
+          <SectionCard title="Runtime tasks" description="Recent queue/runtime tasks with control status.">
+            <DataTable
+              rows={tasks.data}
+              loading={tasks.loading}
+              emptyTitle="No runtime tasks"
+              emptyDescription="Runtime tasks will appear as orchestration work is queued."
+              columns={[
+                { key: "taskId", header: "Task" },
+                { key: "status", header: "Status", render: (row) => <StatusBadge value={String(row.status ?? "")} /> },
+                { key: "engine", header: "Engine" },
+                { key: "updatedAt", header: "Updated" },
+              ]}
+            />
+          </SectionCard>
+        </TabsContent>
+      </Tabs>
+    </>
+  )
+}

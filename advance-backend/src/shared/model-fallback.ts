@@ -25,9 +25,9 @@ function isTransientProviderError(e: unknown): boolean {
 }
 
 /**
- * Wraps `primary` so that any transient availability error silently falls
- * back to `fallback`. Non-transient errors (bad args, auth, etc.) are
- * re-thrown immediately without hitting the fallback.
+ * Wraps `primary` so any transient availability error silently falls back to
+ * `fallback`. Non-transient errors (bad args, auth, malformed history, etc.)
+ * are re-thrown so callers can fix them.
  */
 export function withFallback(primary: LanguageModelV3, fallback: LanguageModelV3): LanguageModelV3 {
   return wrapLanguageModel({

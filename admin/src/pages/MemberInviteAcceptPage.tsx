@@ -1,113 +1,64 @@
-import { FormEvent, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { FormEvent, useState } from "react"
+import { Link } from "react-router-dom"
+import { Loader2 } from "lucide-react"
+import { toast } from "sonner"
+import { AuthCard } from "@/components/admin/auth-card"
+import { ErrorCallout } from "@/components/admin/error-callout"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { api } from "@/lib/api"
 
-import { Button } from '../components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
-import { Input } from '../components/ui/input';
-import { api } from '../lib/api';
-import { roleLabel } from '../lib/labels';
+type InviteResult = {
+  role: string
+  companyId: string
+}
 
-export const MemberInviteAcceptPage = () => {
-  const [inviteToken, setInviteToken] = useState('');
-  const [name, setName] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+export function MemberInviteAcceptPage() {
+  const [inviteToken, setInviteToken] = useState("")
+  const [name, setName] = useState("")
+  const [password, setPassword] = useState("")
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  const onSubmit = async (event: FormEvent) => {
-    event.preventDefault();
-    setError(null);
-    setSuccess(null);
-
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
     try {
-      const result = await api.post<{ role: string; companyId: string }>(
-        '/api/admin/auth/signup/member-invite',
-        {
-          inviteToken,
-          password,
-          name: name || undefined,
-        },
-      );
-
-      setSuccess(
-        `Invite accepted as ${roleLabel(result.role)} for workspace ${result.companyId}. You can now sign in.`,
-      );
-    } catch (error) {
-      if (error instanceof Error) {
-        setError(error.message);
-        return;
-      }
-      setError('Could not accept invite. Check token validity and try again.');
+      const result = await api.post<InviteResult>("/api/admin/auth/signup/member-invite", { inviteToken, name, password })
+      toast.success("Invite accepted", { description: `${result.role} access granted for ${result.companyId}` })
+    } catch (inviteError) {
+      setError(inviteError instanceof Error ? inviteError.message : "Invite acceptance failed.")
+    } finally {
+      setSubmitting(false)
     }
-  };
+  }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#0c0c0c] p-4 text-zinc-300 antialiased font-sans">
-      <Card className="w-full max-w-md bg-[#111] border-[#1a1a1a] shadow-xl shadow-black">
-        <CardHeader className="space-y-2 border-b border-[#1a1a1a] pb-6">
-          <CardTitle className="text-xl text-zinc-100 flex items-center justify-center gap-2">
-            Accept Invite
-          </CardTitle>
-          <CardDescription className="text-center text-zinc-500">
-            Use the invite token provided by your workspace admin.
-          </CardDescription>
-        </CardHeader>
-
-        <CardContent className="pt-6">
-          <form onSubmit={onSubmit} className="flex flex-col gap-5">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-zinc-300">Invite Token</label>
-              <Input
-                value={inviteToken}
-                onChange={(event) => setInviteToken(event.target.value)}
-                className="bg-[#0a0a0a] border-[#222] focus-visible:ring-zinc-700"
-                required
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-zinc-300">Name (optional)</label>
-              <Input
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                className="bg-[#0a0a0a] border-[#222] focus-visible:ring-zinc-700"
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-zinc-300">Password</label>
-              <Input
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                type="password"
-                minLength={8}
-                className="bg-[#0a0a0a] border-[#222] focus-visible:ring-zinc-700"
-                required
-              />
-            </div>
-
-            {error ? (
-              <div className="bg-red-950/30 border border-red-900/50 text-red-400 p-3 rounded-md text-sm">
-                {error}
-              </div>
-            ) : null}
-
-            {success ? (
-              <div className="bg-emerald-950/30 border border-emerald-900/50 text-emerald-400 p-3 rounded-md text-sm">
-                {success}
-              </div>
-            ) : null}
-
-            <Button type="submit" className="w-full mt-2 bg-zinc-100 text-zinc-900 hover:bg-zinc-200 font-medium">
-              Accept Invite
-            </Button>
-
-            <div className="text-sm text-center text-zinc-500 mt-2">
-              Back to <Link to="/login" className="text-zinc-400 hover:text-zinc-200 underline decoration-zinc-700 underline-offset-4">sign in</Link>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
-    </div>
-  );
-};
+    <AuthCard title="Accept invite" description="Use the invite token from your workspace admin to finish account setup.">
+      <form className="space-y-5" onSubmit={submit}>
+        <div className="space-y-2">
+          <Label htmlFor="inviteToken">Invite token</Label>
+          <Input id="inviteToken" value={inviteToken} onChange={(event) => setInviteToken(event.target.value)} required />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="name">Your name</Label>
+          <Input id="name" value={name} onChange={(event) => setName(event.target.value)} required />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="password">Password</Label>
+          <Input id="password" type="password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} required />
+        </div>
+        <ErrorCallout message={error} />
+        <Button type="submit" className="w-full rounded-full" disabled={submitting}>
+          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          Accept invite
+        </Button>
+        <p className="text-center text-sm text-muted-foreground">
+          Ready to sign in? <Link className="font-semibold text-foreground" to="/login">Go to login</Link>
+        </p>
+      </form>
+    </AuthCard>
+  )
+}

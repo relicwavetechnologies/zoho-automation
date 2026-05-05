@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import type { TypedEnv } from './config/env';
+import { resolveRedisUrl } from './config/env';
 import { RuntimeApprovalRepository } from './infrastructure/persistence/runtime-approval.repository';
 import { ApprovalResolverService } from './application/approval/approval-resolver.service';
 import { ApprovalGateService } from './application/approval/approval-gate.service';
@@ -67,7 +68,11 @@ import { HistoryService } from './application/orchestration/engine/history';
 import { OrchestrationEngine } from './application/orchestration/engine/core';
 // Multi-agent layer
 import { AgentDefinitionRepository } from './infrastructure/persistence/agent-definition.repository';
+import { ChannelMappingRepository } from './infrastructure/persistence/channel-mapping.repository';
+import { AgentAdminService } from './application/agents/agent-admin.service';
+import { DepartmentAdminService } from './application/departments/department-admin.service';
 import { AgentResolver } from './application/orchestration/agents/agent-resolver';
+import { ChatMessageSerializer } from './application/orchestration/chat-message-serializer';
 import { SupervisorAgent } from './application/orchestration/agents/supervisor';
 import { SupervisorTodoRepository } from './infrastructure/persistence/supervisor-todo.repository';
 
@@ -104,6 +109,7 @@ import { createWebSearchTool } from './application/orchestration/tools/families/
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { withFallback } from './shared/model-fallback';
+import { withGeminiSignatures, createGeminiFetch } from './shared/gemini-thought-signatures';
 
 export interface Container {
   env: TypedEnv;
@@ -114,12 +120,22 @@ export interface Container {
   conversationRepo: ConversationRepository;
   logger: import('./shared/logger').Logger;
   prisma: ReturnType<typeof getPrismaClient>;
+  /** Hot-path app cache: permissions, OAuth tokens, agent defs. → REDIS_CACHE_URL */
   cache: CachePort;
+  /** Memory system + short-lived keys: nonces, knowledge-share, Cloudinary. → REDIS_MEMORY_URL */
+  memoryCache: CachePort;
+  /** Resolved Redis URL for the BullMQ queue — exposed so workers can share the same URL. */
+  queueRedisUrl: string;
+  /** Per-chat message serializer — one engine.run() at a time per chatId. */
+  chatSerializer: ChatMessageSerializer;
   // Admin surface
   permissions: PermissionService;
   toolPermRepo: ToolPermissionRepository;
   toolActionRepo: ToolActionPermissionRepository;
   deptToolPermRepo: DeptToolPermissionRepository;
+  // Agent admin CRUD
+  agentAdminService:      AgentAdminService;
+  departmentAdminService: DepartmentAdminService;
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
   googleUserLinkRepo: GoogleUserAuthLinkRepository;
@@ -154,8 +170,18 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Infra ──────────────────────────────────────────────────────────────
   const prisma = getPrismaClient();
-  const redis = getRedisClient(env.REDIS_URL);
-  const cache = new RedisCache(redis);
+
+  // Three purposeful Redis connections. Each falls back to REDIS_URL in local
+  // dev so a single Redis instance continues to work with no config changes.
+  //   queueRedisUrl  → BullMQ only (blocking cmds, Lua scripts, pub/sub)
+  //   cacheRedisUrl  → hot-path app cache (permissions, tokens, agent defs)
+  //   memoryRedisUrl → memory system + nonces + knowledge-share + Cloudinary
+  const queueRedisUrl  = resolveRedisUrl(env.REDIS_QUEUE_URL,  env.REDIS_URL);
+  const cacheRedisUrl  = resolveRedisUrl(env.REDIS_CACHE_URL,  env.REDIS_URL);
+  const memoryRedisUrl = resolveRedisUrl(env.REDIS_MEMORY_URL, env.REDIS_URL);
+
+  const cache       = new RedisCache(getRedisClient(cacheRedisUrl));
+  const memoryCache = new RedisCache(getRedisClient(memoryRedisUrl));
 
   // ── Observability ──────────────────────────────────────────────────────
   const executionRepo      = new ExecutionRepository(prisma);
@@ -198,8 +224,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     if (env.MODEL_PROVIDER === 'google') {
       const apiKey = env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY;
       if (!apiKey) throw new Error('MODEL_PROVIDER=google but neither GOOGLE_GENERATIVE_AI_API_KEY nor GEMINI_API_KEY is set');
-      const google = createGoogleGenerativeAI({ apiKey });
-      return google(env.MODEL_ID);
+      // Layer 1: custom fetch fixes sig attribution in raw API responses
+      // before @ai-sdk/google parses them. Layer 2 (withGeminiSignatures)
+      // is defence-in-depth for the outgoing prompt direction.
+      const google = createGoogleGenerativeAI({ apiKey, fetch: createGeminiFetch() });
+      return withGeminiSignatures(google(env.MODEL_ID));
     }
     return openai(env.MODEL_ID);
   })();
@@ -324,7 +353,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const cloudinaryAdapter = new CloudinaryAdapter(
     cloudinaryConfig,
-    cache,
+    memoryCache,
     logger.child({ service: 'cloudinary' }),
   );
 
@@ -344,7 +373,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger,
   );
 
-  const ingestionQueue = new IngestionQueue(env.REDIS_URL, env.REDIS_INGESTION_QUEUE_NAME);
+  const ingestionQueue = new IngestionQueue(queueRedisUrl, env.REDIS_INGESTION_QUEUE_NAME);
 
   const llmReranker = new LlmRerankerService(
     env.GROQ_API_KEY,
@@ -435,7 +464,18 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const history = new HistoryService({ conversationRepo, logger: logger.child({ service: 'history' }) });
 
   // ── Multi-agent layer ──────────────────────────────────────────────────
-  const agentDefRepo  = new AgentDefinitionRepository(prisma);
+  const agentDefRepo       = new AgentDefinitionRepository(prisma);
+  const channelMappingRepo = new ChannelMappingRepository(prisma);
+  const agentAdminService  = new AgentAdminService({
+    agentDefRepo,
+    channelMappingRepo,
+    prisma,
+    logger: logger.child({ service: 'agent-admin' }),
+  });
+  const departmentAdminService = new DepartmentAdminService({
+    prisma,
+    logger: logger.child({ service: 'department-admin' }),
+  });
   const agentResolver = new AgentResolver(agentDefRepo, cache, logger.child({ service: 'agent-resolver' }));
   const todoRepo      = new SupervisorTodoRepository(prisma);
 
@@ -447,6 +487,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger:        logger.child({ service: 'supervisor' }),
     clock:         systemClock,
     ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
+  });
+
+  // Per-chat serializer: ensures only one engine.run() runs per chatId at a time.
+  // Timeout of 90 s — if an engine run hangs longer than this, the queue slot is
+  // released so the next queued message is not blocked indefinitely.
+  const chatSerializer = new ChatMessageSerializer({
+    timeoutMs: 90_000,
+    onTimeout: (chatId) => {
+      logger.warn('chat_serializer.timeout', { chatId });
+    },
   });
 
   const engine = new OrchestrationEngine({
@@ -497,12 +547,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     vectorDocRepo,
     qdrantAdapter,
     larkAdapter,
-    cache,
+    memoryCache,
     logger,
   );
   const shareResolverService = new ShareResolverService(
     knowledgeShareService,
-    cache,
+    memoryCache,
     larkAdapter,
     logger.child({ service: 'share-resolver' }),
   );
@@ -519,10 +569,15 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger,
     prisma,
     cache,
+    memoryCache,
+    queueRedisUrl,
     permissions,
     toolPermRepo,
     toolActionRepo,
     deptToolPermRepo,
+    // Agent admin CRUD
+    agentAdminService,
+    departmentAdminService,
     // OAuth surfaces
     googleOAuthService,
     googleUserLinkRepo,
@@ -546,5 +601,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // Knowledge Share
     knowledgeShareService,
     shareResolverService,
+    // Message serialization
+    chatSerializer,
   };
 }

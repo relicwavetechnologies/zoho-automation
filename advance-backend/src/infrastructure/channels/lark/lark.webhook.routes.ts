@@ -10,6 +10,7 @@ import type { LarkApprovalCardHandler } from './lark-approval-card.handler';
 import type { IngestionQueue } from '../../../application/ingestion/ingestion.queue';
 import type { ShareResolverService } from '../../../application/knowledge-share/share-resolver.service';
 import type { KnowledgeShareService } from '../../../application/knowledge-share/knowledge-share.service';
+import type { ChatMessageSerializer } from '../../../application/orchestration/chat-message-serializer';
 import { asCompanyId, asUserId, asCorrelationId, asDepartmentId } from '../../../shared/ids';
 import { asCompanyRoleSlug } from '../../../domain/permissions/company-role';
 import type { ConversationHandle } from '../../../application/channels/channel.adapter';
@@ -32,6 +33,8 @@ export const createLarkWebhookRoutes = (deps: {
   ingestionQueue?: IngestionQueue;
   knowledgeShareService?: KnowledgeShareService;
   shareResolverService?: ShareResolverService;
+  /** Per-chat message serializer — ensures only one engine.run() per chat at a time. */
+  serializer: ChatMessageSerializer;
 }): Router => {
   const router = Router();
   const log = deps.logger.child({ route: 'lark-webhook' });
@@ -172,8 +175,13 @@ export const createLarkWebhookRoutes = (deps: {
     // ── Step 5: Respond immediately to Lark (5s timeout requirement) ─────────
     res.status(200).json({ ok: true });
 
-    // ── Step 6: Process asynchronously ───────────────────────────────────────
-    void processInBackground(incoming, event, deps, log, deps.approvalGate, deps.knowledgeShareService);
+    // ── Step 6: Enqueue for per-chat sequential processing ────────────────────
+    // serializer.run() returns immediately. The task will start after any
+    // currently-running task for this chatId completes — so two simultaneous
+    // prompts in the same group are processed one at a time, in arrival order.
+    deps.serializer.run(String(incoming.chatId), () =>
+      processInBackground(incoming, event, deps, log, deps.approvalGate, deps.knowledgeShareService),
+    );
   };
 
   // Both /events and /card route to the same handler. Some Lark configs send

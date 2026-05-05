@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BTW Visa Services — AI Automation Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #f0f4f8; color: #1e293b; min-height: 100vh; }
+
+  /* HEADER */
+  .header { background: #fff; border-bottom: 1px solid #e2e8f0; padding: 0 40px; display: flex; align-items: center; justify-content: space-between; height: 60px; position: sticky; top: 0; z-index: 100; }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, #6366f1, #8b5cf6); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+  .logo-icon svg { width: 18px; height: 18px; fill: white; }
+  .logo-name { font-weight: 700; font-size: 17px; color: #1e293b; }
+  .logo-tag { font-size: 12px; color: #64748b; margin-left: 4px; font-weight: 400; }
+  .header-right { display: flex; align-items: center; gap: 12px; }
+  .badge { background: #f0fdf4; color: #16a34a; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 20px; border: 1px solid #bbf7d0; }
+  .branch-sel { font-size: 13px; color: #475569; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+
+  /* STEPS BAR */
+  .steps-bar { background: #fff; border-bottom: 1px solid #e2e8f0; padding: 0 40px; display: flex; align-items: center; gap: 0; height: 52px; }
+  .step { display: flex; align-items: center; gap: 8px; padding: 0 20px 0 0; cursor: pointer; position: relative; }
+  .step-num { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; transition: all 0.3s; }
+  .step-label { font-size: 13px; font-weight: 500; color: #94a3b8; transition: all 0.3s; }
+  .step.done .step-num { background: #6366f1; color: white; }
+  .step.done .step-label { color: #6366f1; }
+  .step.active .step-num { background: #6366f1; color: white; box-shadow: 0 0 0 4px #e0e7ff; }
+  .step.active .step-label { color: #1e293b; font-weight: 600; }
+  .step.inactive .step-num { background: #f1f5f9; color: #94a3b8; border: 1px solid #e2e8f0; }
+  .step-arrow { color: #cbd5e1; font-size: 16px; margin-right: 20px; }
+
+  /* MAIN */
+  .main { padding: 32px 40px; max-width: 1200px; margin: 0 auto; }
+
+  /* PANEL */
+  .panel { display: none; animation: fadeIn 0.35s ease; }
+  .panel.active { display: block; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* PANEL 1 — UPLOAD */
+  .panel-title { font-size: 20px; font-weight: 700; color: #0f172a; margin-bottom: 6px; }
+  .panel-sub { font-size: 14px; color: #64748b; margin-bottom: 28px; }
+  .upload-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .doc-card { background: #fff; border: 2px dashed #e2e8f0; border-radius: 14px; padding: 24px; display: flex; flex-direction: column; align-items: center; gap: 12px; cursor: pointer; transition: all 0.2s; position: relative; }
+  .doc-card:hover { border-color: #6366f1; background: #f8f7ff; }
+  .doc-card.loaded { border-style: solid; border-color: #6366f1; background: #f8f7ff; }
+  .doc-icon { width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 24px; }
+  .doc-icon.passport { background: #ede9fe; }
+  .doc-icon.bank { background: #dcfce7; }
+  .doc-icon.salary { background: #fef9c3; }
+  .doc-type { font-size: 13px; font-weight: 600; color: #475569; }
+  .doc-hint { font-size: 12px; color: #94a3b8; }
+  .doc-filename { font-size: 12px; color: #6366f1; font-weight: 600; }
+  .doc-check { position: absolute; top: 12px; right: 12px; width: 22px; height: 22px; border-radius: 50%; background: #6366f1; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.3s; }
+  .doc-card.loaded .doc-check { opacity: 1; }
+  .doc-check svg { width: 12px; height: 12px; stroke: white; fill: none; stroke-width: 2.5; }
+  .drop-zone { background: #fff; border: 2px dashed #cbd5e1; border-radius: 14px; padding: 32px; text-align: center; color: #94a3b8; font-size: 14px; margin-bottom: 24px; cursor: pointer; }
+  .drop-zone:hover { border-color: #6366f1; color: #6366f1; }
+  .gmail-notice { background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 10px; padding: 14px 18px; font-size: 13px; color: #0369a1; display: flex; align-items: center; gap: 10px; margin-bottom: 24px; }
+  .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; border: none; border-radius: 10px; padding: 12px 28px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 8px; }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(99,102,241,0.4); }
+  .btn-secondary { background: #fff; color: #475569; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 28px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+  .btn-secondary:hover { background: #f8fafc; }
+  .btn-row { display: flex; gap: 12px; align-items: center; }
+
+  /* PANEL 2 — EXTRACTION */
+  .extract-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .extract-card { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; overflow: hidden; }
+  .extract-card-header { padding: 16px 20px; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 10px; }
+  .extract-card-title { font-size: 14px; font-weight: 600; color: #1e293b; }
+  .doc-pill { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px; }
+  .pill-passport { background: #ede9fe; color: #7c3aed; }
+  .pill-bank { background: #dcfce7; color: #15803d; }
+  .pill-salary { background: #fef9c3; color: #a16207; }
+  .extract-fields { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .field-row { display: flex; flex-direction: column; gap: 4px; }
+  .field-label { font-size: 11px; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+  .field-value { font-size: 14px; color: #1e293b; font-weight: 500; }
+  .confidence { font-size: 11px; display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+  .conf-bar { height: 4px; border-radius: 2px; background: #f1f5f9; flex: 1; max-width: 80px; }
+  .conf-fill { height: 100%; border-radius: 2px; }
+  .conf-high { background: #22c55e; }
+  .conf-mid { background: #f59e0b; }
+  .conf-text { font-size: 11px; color: #94a3b8; }
+  .loading-overlay { padding: 60px 20px; text-align: center; }
+  .spinner { width: 40px; height: 40px; border: 3px solid #e2e8f0; border-top-color: #6366f1; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { font-size: 14px; color: #64748b; }
+  .loading-step { font-size: 12px; color: #94a3b8; margin-top: 6px; }
+
+  /* PANEL 3 — REVIEW */
+  .review-layout { display: grid; grid-template-columns: 1fr 340px; gap: 24px; }
+  .review-main { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; }
+  .review-header { padding: 20px 24px; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; justify-content: space-between; }
+  .review-title { font-size: 16px; font-weight: 700; color: #0f172a; }
+  .review-meta { font-size: 13px; color: #64748b; }
+  .applicant-banner { padding: 16px 24px; background: #f8f7ff; border-bottom: 1px solid #ede9fe; display: flex; align-items: center; gap: 14px; }
+  .applicant-avatar { width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, #6366f1, #8b5cf6); display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 16px; }
+  .applicant-name { font-size: 15px; font-weight: 600; color: #1e293b; }
+  .applicant-sub { font-size: 12px; color: #64748b; margin-top: 2px; }
+  .review-section { padding: 20px 24px; border-bottom: 1px solid #f8fafc; }
+  .review-section-title { font-size: 12px; font-weight: 700; color: #6366f1; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 14px; }
+  .review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .review-field { display: flex; flex-direction: column; gap: 3px; }
+  .review-field label { font-size: 11px; color: #94a3b8; font-weight: 600; text-transform: uppercase; }
+  .review-field input { font-size: 14px; color: #1e293b; border: 1px solid #e2e8f0; border-radius: 7px; padding: 8px 10px; background: #fff; outline: none; transition: border 0.2s; }
+  .review-field input:focus { border-color: #6366f1; }
+  .flag-field input { border-color: #f59e0b; background: #fffbeb; }
+  .flag-hint { font-size: 11px; color: #f59e0b; margin-top: 2px; }
+  .review-actions { padding: 20px 24px; display: flex; gap: 12px; }
+  .btn-approve { background: #22c55e; color: white; border: none; border-radius: 10px; padding: 12px 24px; font-size: 14px; font-weight: 600; cursor: pointer; flex: 1; transition: all 0.2s; }
+  .btn-approve:hover { background: #16a34a; }
+  .btn-reject { background: #fff; color: #ef4444; border: 1px solid #fecaca; border-radius: 10px; padding: 12px 24px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+  .btn-reject:hover { background: #fef2f2; }
+  .review-sidebar { display: flex; flex-direction: column; gap: 16px; }
+  .sidebar-card { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; padding: 18px; }
+  .sidebar-card-title { font-size: 13px; font-weight: 700; color: #1e293b; margin-bottom: 12px; }
+  .doc-list-item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #f8fafc; }
+  .doc-list-item:last-child { border-bottom: none; }
+  .doc-list-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+  .doc-list-name { font-size: 13px; font-weight: 500; color: #1e293b; }
+  .doc-list-status { font-size: 11px; color: #22c55e; display: flex; align-items: center; gap: 4px; }
+  .risk-score { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; padding: 14px; text-align: center; }
+  .risk-num { font-size: 32px; font-weight: 800; color: #22c55e; }
+  .risk-label { font-size: 12px; color: #64748b; margin-top: 2px; }
+  .audit-item { font-size: 12px; color: #64748b; padding: 6px 0; border-bottom: 1px solid #f8fafc; display: flex; align-items: center; gap: 6px; }
+  .audit-dot { width: 6px; height: 6px; border-radius: 50%; background: #6366f1; flex-shrink: 0; }
+
+  /* PANEL 4 — PORTAL PREVIEW */
+  .portal-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .portal-card { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; overflow: hidden; }
+  .portal-header { padding: 16px 20px; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; justify-content: space-between; }
+  .portal-title { font-size: 14px; font-weight: 600; color: #1e293b; }
+  .portal-body { padding: 24px; display: flex; flex-direction: column; gap: 14px; }
+  .form-section-title { font-size: 11px; font-weight: 700; color: #6366f1; text-transform: uppercase; letter-spacing: 0.6px; padding-bottom: 8px; border-bottom: 1px solid #ede9fe; margin-bottom: 6px; }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .form-field { display: flex; flex-direction: column; gap: 4px; }
+  .form-field label { font-size: 11px; color: #64748b; font-weight: 600; }
+  .form-field .filled { font-size: 14px; color: #1e293b; background: #f8f7ff; border: 1px solid #ede9fe; border-radius: 7px; padding: 8px 10px; }
+  .form-field .filled.auto { color: #6366f1; }
+  .portal-footer { padding: 16px 20px; border-top: 1px solid #f1f5f9; display: flex; gap: 10px; align-items: center; }
+  .btn-submit { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; border: none; border-radius: 8px; padding: 10px 20px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .btn-dl { background: #f8fafc; color: #475569; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 20px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .auto-tag { font-size: 11px; background: #ede9fe; color: #7c3aed; padding: 2px 7px; border-radius: 10px; font-weight: 600; }
+  .success-banner { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px; padding: 20px 24px; display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+  .success-icon { width: 40px; height: 40px; background: #22c55e; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+  .success-icon svg { width: 20px; height: 20px; stroke: white; fill: none; stroke-width: 2.5; }
+  .success-title { font-size: 15px; font-weight: 700; color: #15803d; }
+  .success-sub { font-size: 13px; color: #64748b; margin-top: 2px; }
+  .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+  .stat-card { background: #fff; border-radius: 12px; border: 1px solid #e2e8f0; padding: 18px; text-align: center; }
+  .stat-num { font-size: 28px; font-weight: 800; color: #6366f1; }
+  .stat-label { font-size: 12px; color: #64748b; margin-top: 4px; }
+  .stat-sub { font-size: 11px; color: #22c55e; font-weight: 600; margin-top: 2px; }
+
+  /* LARK TOAST */
+  .lark-toast { position: fixed; bottom: 28px; right: 28px; background: #1e293b; color: white; border-radius: 12px; padding: 14px 20px; font-size: 13px; display: flex; align-items: center; gap: 10px; box-shadow: 0 8px 32px rgba(0,0,0,0.2); transform: translateY(80px); opacity: 0; transition: all 0.35s ease; z-index: 999; max-width: 320px; }
+  .lark-toast.show { transform: translateY(0); opacity: 1; }
+  .lark-avatar { width: 28px; height: 28px; border-radius: 6px; background: #3b82f6; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="logo">
+    <div class="logo-icon">
+      <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+    </div>
+    <span class="logo-name">Divo</span>
+    <span class="logo-tag">for BTW Visa Services</span>
+  </div>
+  <div class="header-right">
+    <div class="badge">● Live Demo</div>
+    <select class="branch-sel">
+      <option>Delhi — Connaught Place</option>
+      <option>Mumbai — BKC</option>
+      <option>Bengaluru — Koramangala</option>
+    </select>
+  </div>
+</div>
+
+<!-- STEPS BAR -->
+<div class="steps-bar">
+  <div class="step done" onclick="goStep(1)" id="s1">
+    <div class="step-num">1</div>
+    <div class="step-label">Upload Documents</div>
+  </div>
+  <span class="step-arrow">›</span>
+  <div class="step inactive" onclick="goStep(2)" id="s2">
+    <div class="step-num">2</div>
+    <div class="step-label">AI Extraction</div>
+  </div>
+  <span class="step-arrow">›</span>
+  <div class="step inactive" onclick="goStep(3)" id="s3">
+    <div class="step-num">3</div>
+    <div class="step-label">Ops Review</div>
+  </div>
+  <span class="step-arrow">›</span>
+  <div class="step inactive" onclick="goStep(4)" id="s4">
+    <div class="step-num">4</div>
+    <div class="step-label">Portal Preview</div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+  <!-- PANEL 1: UPLOAD -->
+  <div class="panel active" id="panel1">
+    <div class="panel-title">Upload Client Documents</div>
+    <div class="panel-sub">Documents arrive via Gmail — Divo detects and pulls them automatically, or upload manually below.</div>
+
+    <div class="gmail-notice">
+      <span style="font-size:18px">📧</span>
+      <div>
+        <strong>Gmail Integration Active</strong> — 3 new emails detected from Rahul Sharma with attachments. Divo auto-imported them below.
+      </div>
+    </div>
+
+    <div class="upload-grid">
+      <div class="doc-card loaded" onclick="toggleDoc(this)">
+        <div class="doc-check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
+        <div class="doc-icon passport">🛂</div>
+        <div class="doc-type">Passport</div>
+        <div class="doc-filename">passport_rahul.pdf</div>
+        <div class="doc-hint">Auto-imported from Gmail</div>
+      </div>
+      <div class="doc-card loaded" onclick="toggleDoc(this)">
+        <div class="doc-check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
+        <div class="doc-icon bank">🏦</div>
+        <div class="doc-type">Bank Statement</div>
+        <div class="doc-filename">hdfc_statement_mar25.pdf</div>
+        <div class="doc-hint">Auto-imported from Gmail</div>
+      </div>
+      <div class="doc-card loaded" onclick="toggleDoc(this)">
+        <div class="doc-check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
+        <div class="doc-icon salary">💼</div>
+        <div class="doc-type">Salary Slip</div>
+        <div class="doc-filename">infosys_salary_mar25.pdf</div>
+        <div class="doc-hint">Auto-imported from Gmail</div>
+      </div>
+    </div>
+
+    <div class="drop-zone" ondragover="event.preventDefault()" ondrop="handleDrop(event)">
+      ＋ Drop additional documents here — PDF, JPG, PNG, DOC supported
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-primary" onclick="startExtraction()">
+        <svg width="16" height="16" fill="none" stroke="white" stroke-width="2.5" viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+        Extract with AI
+      </button>
+      <button class="btn-secondary">Add More Documents</button>
+      <span style="font-size:13px; color:#94a3b8; margin-left:4px;">3 documents ready</span>
+    </div>
+  </div>
+
+  <!-- PANEL 2: EXTRACTION -->
+  <div class="panel" id="panel2">
+    <div class="panel-title">AI Document Extraction</div>
+    <div class="panel-sub">Divo extracts structured fields from each document — no manual copy-paste.</div>
+
+    <div id="loading-state" class="extract-layout" style="display:grid">
+      <div class="extract-card" style="grid-column: 1/-1;">
+        <div class="loading-overlay">
+          <div class="spinner"></div>
+          <div class="loading-text" id="loading-text">Reading passport_rahul.pdf...</div>
+          <div class="loading-step" id="loading-step">Running OCR extraction</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="extracted-state" class="extract-layout" style="display:none">
+      <!-- Passport -->
+      <div class="extract-card">
+        <div class="extract-card-header">
+          <span style="font-size:20px">🛂</span>
+          <div class="extract-card-title">Passport Details</div>
+          <span class="doc-pill pill-passport">passport_rahul.pdf</span>
+        </div>
+        <div class="extract-fields">
+          <div class="field-row">
+            <div class="field-label">Full Name</div>
+            <div class="field-value">RAHUL SHARMA</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:98%"></div></div><span class="conf-text">98% confidence</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Date of Birth</div>
+            <div class="field-value">15 March 1990</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:99%"></div></div><span class="conf-text">99%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Passport Number</div>
+            <div class="field-value">J1234567</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:97%"></div></div><span class="conf-text">97%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Nationality</div>
+            <div class="field-value">Indian</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:99%"></div></div><span class="conf-text">99%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Expiry Date</div>
+            <div class="field-value">22 August 2029</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:95%"></div></div><span class="conf-text">95%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Place of Birth</div>
+            <div class="field-value">New Delhi, India</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:96%"></div></div><span class="conf-text">96%</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bank Statement -->
+      <div class="extract-card">
+        <div class="extract-card-header">
+          <span style="font-size:20px">🏦</span>
+          <div class="extract-card-title">Bank Statement</div>
+          <span class="doc-pill pill-bank">hdfc_statement_mar25.pdf</span>
+        </div>
+        <div class="extract-fields">
+          <div class="field-row">
+            <div class="field-label">Account Holder</div>
+            <div class="field-value">Rahul Sharma</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:99%"></div></div><span class="conf-text">99%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Bank</div>
+            <div class="field-value">HDFC Bank Ltd.</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:99%"></div></div><span class="conf-text">99%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Account Number</div>
+            <div class="field-value">XXXX XXXX 4821</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:98%"></div></div><span class="conf-text">98%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Closing Balance (Mar 2025)</div>
+            <div class="field-value">₹4,82,500</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:96%"></div></div><span class="conf-text">96%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Avg Monthly Credit</div>
+            <div class="field-value">₹95,000</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-mid" style="width:82%"></div></div><span class="conf-text">82% — verify</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Statement Period</div>
+            <div class="field-value">01 Jan 2025 – 31 Mar 2025</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:99%"></div></div><span class="conf-text">99%</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Salary Slip -->
+      <div class="extract-card">
+        <div class="extract-card-header">
+          <span style="font-size:20px">💼</span>
+          <div class="extract-card-title">Salary Slip</div>
+          <span class="doc-pill pill-salary">infosys_salary_mar25.pdf</span>
+        </div>
+        <div class="extract-fields">
+          <div class="field-row">
+            <div class="field-label">Employee Name</div>
+            <div class="field-value">Rahul Sharma</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:99%"></div></div><span class="conf-text">99%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Employer</div>
+            <div class="field-value">Infosys Ltd.</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:99%"></div></div><span class="conf-text">99%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Designation</div>
+            <div class="field-value">Senior Systems Engineer</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:97%"></div></div><span class="conf-text">97%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Gross Monthly Salary</div>
+            <div class="field-value">₹95,000</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:98%"></div></div><span class="conf-text">98%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Net Take-Home</div>
+            <div class="field-value">₹82,400</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:96%"></div></div><span class="conf-text">96%</span></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Pay Period</div>
+            <div class="field-value">March 2025</div>
+            <div class="confidence"><div class="conf-bar"><div class="conf-fill conf-high" style="width:99%"></div></div><span class="conf-text">99%</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Summary -->
+      <div class="extract-card" style="background: #f8f7ff;">
+        <div class="extract-card-header" style="background: #f8f7ff; border-bottom: 1px solid #ede9fe;">
+          <span style="font-size:20px">✅</span>
+          <div class="extract-card-title">Extraction Summary</div>
+        </div>
+        <div class="extract-fields">
+          <div class="field-row">
+            <div class="field-label">Documents Processed</div>
+            <div class="field-value">3 of 3</div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Fields Extracted</div>
+            <div class="field-value">18 fields</div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">High Confidence (&gt;90%)</div>
+            <div class="field-value" style="color: #22c55e;">17 fields ✓</div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Needs Verification</div>
+            <div class="field-value" style="color: #f59e0b;">1 field ⚠</div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Time Taken</div>
+            <div class="field-value">8.2 seconds</div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">Manual time saved</div>
+            <div class="field-value" style="color: #6366f1; font-weight: 700;">~38 minutes</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="extract-btn-row" class="btn-row" style="margin-top: 24px; display: none;">
+      <button class="btn-primary" onclick="goStep(3)">
+        Send to Ops Review →
+      </button>
+      <button class="btn-secondary" onclick="goStep(1)">← Back</button>
+    </div>
+  </div>
+
+  <!-- PANEL 3: OPS REVIEW (HITL) -->
+  <div class="panel" id="panel3">
+    <div class="panel-title">Ops Review — Human-in-the-Loop</div>
+    <div class="panel-sub">Review extracted data before it is used to fill any form or portal. Edit inline if needed.</div>
+
+    <div class="review-layout">
+      <div class="review-main">
+        <div class="review-header">
+          <div class="review-title">Visa Application #VZ-2025-0847</div>
+          <div class="review-meta">Assigned to: Priya Mehta · Delhi Branch · Schengen – Germany</div>
+        </div>
+        <div class="applicant-banner">
+          <div class="applicant-avatar">R</div>
+          <div>
+            <div class="applicant-name">Rahul Sharma</div>
+            <div class="applicant-sub">Passport J1234567 · DOB 15 Mar 1990 · Infosys Ltd.</div>
+          </div>
+          <div style="margin-left:auto; background:#ede9fe; color:#7c3aed; font-size:12px; font-weight:600; padding:6px 12px; border-radius:20px;">Schengen Visa</div>
+        </div>
+
+        <div class="review-section">
+          <div class="review-section-title">📘 Passport Information</div>
+          <div class="review-grid">
+            <div class="review-field"><label>Full Name</label><input type="text" value="RAHUL SHARMA" /></div>
+            <div class="review-field"><label>Passport Number</label><input type="text" value="J1234567" /></div>
+            <div class="review-field"><label>Date of Birth</label><input type="text" value="15/03/1990" /></div>
+            <div class="review-field"><label>Nationality</label><input type="text" value="Indian" /></div>
+            <div class="review-field"><label>Place of Birth</label><input type="text" value="New Delhi, India" /></div>
+            <div class="review-field"><label>Expiry Date</label><input type="text" value="22/08/2029" /></div>
+          </div>
+        </div>
+
+        <div class="review-section">
+          <div class="review-section-title">🏦 Financial Information</div>
+          <div class="review-grid">
+            <div class="review-field"><label>Bank Name</label><input type="text" value="HDFC Bank Ltd." /></div>
+            <div class="review-field"><label>Account (masked)</label><input type="text" value="XXXX XXXX 4821" /></div>
+            <div class="review-field"><label>Closing Balance</label><input type="text" value="₹4,82,500" /></div>
+            <div class="review-field flag-field">
+              <label>Avg Monthly Credit</label>
+              <input type="text" value="₹95,000" />
+              <div class="flag-hint">⚠ 82% confidence — please verify against statement</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="review-section">
+          <div class="review-section-title">💼 Employment Information</div>
+          <div class="review-grid">
+            <div class="review-field"><label>Employer</label><input type="text" value="Infosys Ltd." /></div>
+            <div class="review-field"><label>Designation</label><input type="text" value="Senior Systems Engineer" /></div>
+            <div class="review-field"><label>Gross Monthly Salary</label><input type="text" value="₹95,000" /></div>
+            <div class="review-field"><label>Net Take-Home</label><input type="text" value="₹82,400" /></div>
+          </div>
+        </div>
+
+        <div class="review-actions">
+          <button class="btn-approve" onclick="approveAndNext()">✓ Approve & Generate Form</button>
+          <button class="btn-reject" onclick="showToast('Application sent back for re-collection', '⚠️')">✗ Request Re-upload</button>
+        </div>
+      </div>
+
+      <div class="review-sidebar">
+        <div class="sidebar-card">
+          <div class="sidebar-card-title">Documents</div>
+          <div class="doc-list-item">
+            <div class="doc-list-icon" style="background:#ede9fe">🛂</div>
+            <div>
+              <div class="doc-list-name">passport_rahul.pdf</div>
+              <div class="doc-list-status">● Extracted</div>
+            </div>
+          </div>
+          <div class="doc-list-item">
+            <div class="doc-list-icon" style="background:#dcfce7">🏦</div>
+            <div>
+              <div class="doc-list-name">hdfc_statement_mar25.pdf</div>
+              <div class="doc-list-status">● Extracted</div>
+            </div>
+          </div>
+          <div class="doc-list-item">
+            <div class="doc-list-icon" style="background:#fef9c3">💼</div>
+            <div>
+              <div class="doc-list-name">infosys_salary_mar25.pdf</div>
+              <div class="doc-list-status">● Extracted</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-card">
+          <div class="sidebar-card-title">Risk Assessment</div>
+          <div class="risk-score">
+            <div class="risk-num">Low</div>
+            <div class="risk-label">Document authenticity: Normal</div>
+          </div>
+          <div style="margin-top: 12px; font-size: 12px; color: #64748b;">
+            <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;"><span style="color:#22c55e">✓</span> Passport valid for 4+ years</div>
+            <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;"><span style="color:#22c55e">✓</span> Bank balance meets Schengen minimum</div>
+            <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;"><span style="color:#22c55e">✓</span> Stable employment confirmed</div>
+            <div style="display:flex; align-items:center; gap:6px;"><span style="color:#f59e0b">⚠</span> Verify avg monthly credit manually</div>
+          </div>
+        </div>
+
+        <div class="sidebar-card">
+          <div class="sidebar-card-title">Audit Trail</div>
+          <div class="audit-item"><div class="audit-dot"></div>9:14 AM — Email received from client</div>
+          <div class="audit-item"><div class="audit-dot"></div>9:14 AM — 3 docs auto-imported</div>
+          <div class="audit-item"><div class="audit-dot"></div>9:15 AM — AI extraction complete</div>
+          <div class="audit-item"><div class="audit-dot" style="background:#f59e0b"></div>9:16 AM — Assigned to Priya Mehta</div>
+          <div class="audit-item" style="color:#94a3b8"><div class="audit-dot" style="background:#e2e8f0"></div>Awaiting review...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PANEL 4: PORTAL PREVIEW -->
+  <div class="panel" id="panel4">
+    <div class="success-banner">
+      <div class="success-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
+      <div>
+        <div class="success-title">Approved by Priya Mehta at 9:17 AM</div>
+        <div class="success-sub">All fields auto-filled into the Schengen visa form and offline template. Ready to submit.</div>
+      </div>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-num">3 min</div>
+        <div class="stat-label">Total ops time</div>
+        <div class="stat-sub">↓ 93% vs. 45 min manual</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num">18</div>
+        <div class="stat-label">Fields auto-filled</div>
+        <div class="stat-sub">0 manual entries needed</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num">₹0</div>
+        <div class="stat-label">External tool cost</div>
+        <div class="stat-sub">No Gemini API call needed</div>
+      </div>
+    </div>
+
+    <div class="portal-layout">
+      <!-- Schengen Form -->
+      <div class="portal-card">
+        <div class="portal-header">
+          <div class="portal-title">🇩🇪 Schengen Visa Application — Germany</div>
+          <span class="auto-tag">Auto-filled</span>
+        </div>
+        <div class="portal-body">
+          <div class="form-section-title">Personal Details</div>
+          <div class="form-row">
+            <div class="form-field"><label>Surname</label><div class="filled auto">SHARMA</div></div>
+            <div class="form-field"><label>Given Names</label><div class="filled auto">RAHUL</div></div>
+          </div>
+          <div class="form-row">
+            <div class="form-field"><label>Date of Birth</label><div class="filled auto">15/03/1990</div></div>
+            <div class="form-field"><label>Nationality</label><div class="filled auto">Indian</div></div>
+          </div>
+          <div class="form-row">
+            <div class="form-field"><label>Place of Birth</label><div class="filled auto">New Delhi, India</div></div>
+            <div class="form-field"><label>Passport No.</label><div class="filled auto">J1234567</div></div>
+          </div>
+          <div class="form-row">
+            <div class="form-field"><label>Passport Expiry</label><div class="filled auto">22/08/2029</div></div>
+            <div class="form-field"><label>Visa Type</label><div class="filled">Tourist (C)</div></div>
+          </div>
+
+          <div class="form-section-title" style="margin-top:8px">Financial Details</div>
+          <div class="form-row">
+            <div class="form-field"><label>Bank Name</label><div class="filled auto">HDFC Bank Ltd.</div></div>
+            <div class="form-field"><label>Balance</label><div class="filled auto">₹4,82,500</div></div>
+          </div>
+          <div class="form-row">
+            <div class="form-field"><label>Employer</label><div class="filled auto">Infosys Ltd.</div></div>
+            <div class="form-field"><label>Monthly Income</label><div class="filled auto">₹95,000</div></div>
+          </div>
+        </div>
+        <div class="portal-footer">
+          <button class="btn-submit" onclick="showToast('Form submitted to VFS Global portal', '🚀')">Submit to VFS Portal</button>
+          <button class="btn-dl" onclick="showToast('Downloading pre-filled PDF...', '📄')">Download PDF</button>
+        </div>
+      </div>
+
+      <!-- Offline Form -->
+      <div class="portal-card">
+        <div class="portal-header">
+          <div class="portal-title">📄 BTW Internal — Standardized Form</div>
+          <span class="auto-tag">Auto-filled</span>
+        </div>
+        <div class="portal-body">
+          <div class="form-section-title">Application Record</div>
+          <div class="form-row">
+            <div class="form-field"><label>Application ID</label><div class="filled">VZ-2025-0847</div></div>
+            <div class="form-field"><label>Branch</label><div class="filled">Delhi — CP</div></div>
+          </div>
+          <div class="form-row">
+            <div class="form-field"><label>Ops Officer</label><div class="filled">Priya Mehta</div></div>
+            <div class="form-field"><label>Date Processed</label><div class="filled auto">24/04/2025</div></div>
+          </div>
+
+          <div class="form-section-title" style="margin-top:8px">Applicant</div>
+          <div class="form-row">
+            <div class="form-field"><label>Name</label><div class="filled auto">Rahul Sharma</div></div>
+            <div class="form-field"><label>Passport No.</label><div class="filled auto">J1234567</div></div>
+          </div>
+          <div class="form-row">
+            <div class="form-field"><label>Visa Type</label><div class="filled">Schengen – Germany</div></div>
+            <div class="form-field"><label>Status</label><div class="filled" style="color:#22c55e; font-weight:700;">✓ Ready to Submit</div></div>
+          </div>
+
+          <div class="form-section-title" style="margin-top:8px">Document Checklist</div>
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <div style="display:flex; align-items:center; gap:8px; font-size:13px;"><span style="color:#22c55e; font-size:16px;">✓</span> Passport (valid, 4+ years)</div>
+            <div style="display:flex; align-items:center; gap:8px; font-size:13px;"><span style="color:#22c55e; font-size:16px;">✓</span> Bank Statement (3 months, sufficient balance)</div>
+            <div style="display:flex; align-items:center; gap:8px; font-size:13px;"><span style="color:#22c55e; font-size:16px;">✓</span> Salary Slip (current month)</div>
+            <div style="display:flex; align-items:center; gap:8px; font-size:13px; color:#94a3b8;"><span style="font-size:16px;">○</span> ITR / Form 16 — Not uploaded yet</div>
+          </div>
+        </div>
+        <div class="portal-footer">
+          <button class="btn-submit" onclick="showToast('Saved to Lark Base — Application Dashboard', '📊')">Save to Dashboard</button>
+          <button class="btn-dl" onclick="showToast('Google Sheet generated and shared with team', '📊')">Export to Sheets</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top: 24px; display:flex; gap:12px;">
+      <button class="btn-primary" onclick="resetDemo()">
+        ↩ Process Next Application
+      </button>
+      <button class="btn-secondary" onclick="goStep(3)">← Back to Review</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- LARK TOAST -->
+<div class="lark-toast" id="toast">
+  <div class="lark-avatar" id="toast-icon">✓</div>
+  <div id="toast-text">Done</div>
+</div>
+
+<script>
+let currentStep = 1;
+
+function goStep(n) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel' + n).classList.add('active');
+
+  for (let i = 1; i <= 4; i++) {
+    const el = document.getElementById('s' + i);
+    el.classList.remove('active', 'done', 'inactive');
+    if (i < n) el.classList.add('done');
+    else if (i === n) el.classList.add('active');
+    else el.classList.add('inactive');
+  }
+  currentStep = n;
+  window.scrollTo(0, 0);
+}
+
+function toggleDoc(el) {
+  // docs are already loaded in demo — just visual feedback
+  el.style.transform = 'scale(0.97)';
+  setTimeout(() => el.style.transform = '', 150);
+}
+
+function handleDrop(e) {
+  e.preventDefault();
+  showToast('File detected — queued for extraction', '📎');
+}
+
+let loadingInterval;
+function startExtraction() {
+  goStep(2);
+  const texts = [
+    ['Reading passport_rahul.pdf...', 'Running OCR extraction'],
+    ['Parsing passport fields...', 'Extracting name, DOB, number, expiry'],
+    ['Reading hdfc_statement_mar25.pdf...', 'Extracting bank transactions'],
+    ['Parsing salary slip...', 'Extracting employer, salary, designation'],
+    ['Cross-referencing fields...', 'Matching names across documents'],
+    ['Calculating confidence scores...', 'Flagging low-confidence fields'],
+  ];
+  let idx = 0;
+  document.getElementById('loading-state').style.display = 'grid';
+  document.getElementById('extracted-state').style.display = 'none';
+  document.getElementById('extract-btn-row').style.display = 'none';
+
+  loadingInterval = setInterval(() => {
+    if (idx < texts.length) {
+      document.getElementById('loading-text').textContent = texts[idx][0];
+      document.getElementById('loading-step').textContent = texts[idx][1];
+      idx++;
+    } else {
+      clearInterval(loadingInterval);
+      document.getElementById('loading-state').style.display = 'none';
+      document.getElementById('extracted-state').style.display = 'grid';
+      document.getElementById('extract-btn-row').style.display = 'flex';
+      showToast('Extraction complete — 18 fields captured', '✅');
+    }
+  }, 700);
+}
+
+function approveAndNext() {
+  showToast('Approved by Priya Mehta · Form generated', '✅');
+  setTimeout(() => goStep(4), 800);
+}
+
+function resetDemo() {
+  goStep(1);
+  showToast('Ready for next application', '🔄');
+}
+
+function showToast(msg, icon) {
+  const t = document.getElementById('toast');
+  document.getElementById('toast-text').textContent = msg;
+  document.getElementById('toast-icon').textContent = icon || '✓';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3200);
+}
+</script>
+</body>
+</html>

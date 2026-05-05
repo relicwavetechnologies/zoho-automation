@@ -34,6 +34,13 @@ Treat updating the feature doc as the last line of code you write in every sessi
 Copy `docs/features/TEMPLATE.md` to `docs/features/NN-feature-name.md` and fill it in
 before writing any code. Plan first, then implement.
 
+### Before writing any admin UI code
+**Read `docs/UI-DESIGN-SYSTEM.md` end-to-end.** It is the canonical guide for the admin
+visual language: floor/mat/card surface system, color tokens, typography scale, density
+rules, component patterns, and anti-patterns. Every UI change in `admin/` must trace
+back to a rule in that doc. If you need to break a rule, document why in the relevant
+feature doc's Key Decisions table.
+
 ---
 
 ## What This Project Is
@@ -57,6 +64,9 @@ Core runtime — supervisor-delegation pattern:
 | Feature | Status | Doc |
 |---|---|---|
 | Scheduled Workflows | in-progress | `docs/features/01-scheduled-workflows.md` |
+| Admin UI Redesign | in-progress | `docs/features/02-admin-ui-redesign.md` |
+| Backend Migration (backend → advance-backend) | in-progress | `docs/features/03-backend-migration.md` |
+| Agent Builder Canvas (React Flow stub) | in-progress | `docs/features/04-agent-builder-canvas.md` |
 
 **Template for new features:** `docs/features/TEMPLATE.md`
 
@@ -165,6 +175,7 @@ channels → orchestration → agents → integrations
 5. Shared types live in `contracts/` — never define them inside feature modules
 6. `pnpm typecheck` must pass before committing
 7. Vercel AI SDK for all LLM calls — never import raw provider SDKs (`@anthropic-ai/sdk`, `openai`) directly
+8. **advance-backend uses test-driven development** — every new route file gets a matching test file in `tests/http/`. Use Node's built-in `node:test` runner (no Jest/Vitest). Run a single file with `node --import tsx --test tests/http/your.routes.test.ts`. See `tests/http/execution.routes.test.ts` for the established pattern: mock req/res objects, extract handlers from the Router stack, no real Express server or DB needed.
 
 ---
 
@@ -172,6 +183,7 @@ channels → orchestration → agents → integrations
 
 | Doc | Purpose |
 |---|---|
+| `docs/UI-DESIGN-SYSTEM.md` | **Mandatory** for any admin UI work — surface system, tokens, components, rules |
 | `docs/Company-Architecture-Planning-v3.0.md` | Full 47-section architecture plan |
 | `docs/ARCHITECTURE-REFERENCE-MAP.md` | Quick reference map |
 | `docs/V0-DTO-SYNC-CONTRACT.md` | DTO contracts between layers |

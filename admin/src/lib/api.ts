@@ -1,4 +1,4 @@
-import { toast } from "../components/ui/use-toast";
+import { toast } from "sonner";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -44,11 +44,7 @@ const request = async <T>(
 
   if (!response.ok) {
     const errorMsg = await extractErrorMessage(response);
-    toast({
-      title: `Error ${response.status}`,
-      description: errorMsg,
-      variant: "destructive",
-    });
+    toast.error(`Error ${response.status}`, { description: errorMsg });
     throw new Error(errorMsg);
   }
 

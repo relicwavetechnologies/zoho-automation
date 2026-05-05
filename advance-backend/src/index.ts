@@ -3,7 +3,7 @@ import { loadAndValidateEnv } from './config/env';
 import { buildContainer } from './composition';
 import { createServer } from './server';
 import { disconnectPrisma } from './infrastructure/persistence/prisma.client';
-import { disconnectRedis } from './infrastructure/cache/redis.client';
+import { disconnectAllRedis } from './infrastructure/cache/redis.client';
 
 const main = async () => {
   const env = loadAndValidateEnv(process.env);
@@ -18,7 +18,7 @@ const main = async () => {
     container.logger.info('server.shutdown', { signal });
     server.close(async () => {
       await disconnectPrisma();
-      await disconnectRedis();
+      await disconnectAllRedis(); // closes cacheRedis + memoryRedis (queueRedis is managed by BullMQ)
       process.exit(0);
     });
     // Force shutdown after 10s
