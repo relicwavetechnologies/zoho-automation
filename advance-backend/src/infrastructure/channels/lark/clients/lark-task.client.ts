@@ -46,24 +46,21 @@ export class LarkTaskClient implements LarkTaskClientPort {
     assigneeIds?: string[];
     notes?: string;
   }): Promise<void> {
-    const task: Record<string, unknown> = {};
+    const body: Record<string, unknown> = {};
     const update_fields: string[] = [];
 
-    if (params.title !== undefined) { task['summary'] = params.title; update_fields.push('summary'); }
-    if (params.notes !== undefined) { task['description'] = params.notes; update_fields.push('description'); }
-    if (params.dueDate !== undefined) { task['due'] = { timestamp: String(Math.floor(new Date(params.dueDate).getTime() / 1000)), is_all_day: false }; update_fields.push('due'); }
+    if (params.title !== undefined) { body['summary'] = params.title; update_fields.push('summary'); }
+    if (params.notes !== undefined) { body['description'] = params.notes; update_fields.push('description'); }
+    if (params.dueDate !== undefined) { body['due'] = { timestamp: String(Math.floor(new Date(params.dueDate).getTime() / 1000)), is_all_day: false }; update_fields.push('due'); }
 
-    // update_fields goes in the body alongside the task object (not as a query param).
     await this.http.request('PATCH', `/open-apis/task/v2/tasks/${encodeURIComponent(taskId)}`, {
-      body: { task, update_fields },
+      query: { update_fields: update_fields.join(',') },
+      body,
     });
   }
 
   async completeTask(taskId: string): Promise<void> {
-    // Task API v2: complete by setting completed_at to current time.
-    await this.http.request('PATCH', `/open-apis/task/v2/tasks/${encodeURIComponent(taskId)}`, {
-      body: { task: { completed_at: String(Date.now()) }, update_fields: ['completed_at'] },
-    });
+    await this.http.request('POST', `/open-apis/task/v2/tasks/${encodeURIComponent(taskId)}/complete`);
   }
 
   async deleteTask(taskId: string): Promise<void> {

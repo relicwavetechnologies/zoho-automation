@@ -112,7 +112,7 @@ describe('PermissionService', () => {
   // ── Company-only: MEMBER defaults ─────────────────────────────────────────
 
   describe('company-only resolution (no department)', () => {
-    it('MEMBER gets default lark tools (messaging, task, calendar, doc) and NOT larkBase/larkApproval', async () => {
+    it('MEMBER gets default operational tools and NOT larkBase/larkApproval', async () => {
       const svc = new PermissionServiceImpl(buildDeps());
       const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any }));
 
@@ -124,7 +124,8 @@ describe('PermissionService', () => {
       assert.ok(ids.includes('larkDoc'),       'MEMBER should have larkDoc');
       assert.ok(!ids.includes('larkBase'),     'MEMBER should NOT have larkBase by default');
       assert.ok(!ids.includes('larkApproval'), 'MEMBER should NOT have larkApproval by default');
-      assert.ok(!ids.includes('zohoCrm'),      'MEMBER should NOT have zohoCrm by default');
+      assert.ok(ids.includes('zohoCrm'),       'MEMBER should have zohoCrm by default');
+      assert.ok(ids.includes('zohoBooks'),     'MEMBER should have zohoBooks by default');
     });
 
     it('COMPANY_ADMIN gets every tool including larkBase, larkApproval, zoho', async () => {

@@ -59,7 +59,12 @@ export const createLarkCalendarTool = (deps: { client: LarkCalendarClientPort })
         }
         case 'create': {
           if (!args.title || !args.startTime || !args.endTime) return err(new ToolError({ toolId: 'larkCalendar', reason: 'bad_args', message: 'title, startTime, endTime required' }));
-          const r = await deps.client.createEvent(calId, { title: args.title, startTime: args.startTime, endTime: args.endTime, ...(args.attendeeIds !== undefined ? { attendeeIds: args.attendeeIds } : {}), ...(args.description !== undefined ? { description: args.description } : {}) });
+          const attendees = args.attendeeIds ? [...args.attendeeIds] : [];
+          const requesterId = ctx.runContext.userExternalId;
+          if (requesterId && !attendees.includes(requesterId)) {
+            attendees.push(requesterId);
+          }
+          const r = await deps.client.createEvent(calId, { title: args.title, startTime: args.startTime, endTime: args.endTime, ...(attendees.length > 0 ? { attendeeIds: attendees } : {}), ...(args.description !== undefined ? { description: args.description } : {}) });
           return ok({ success: true, eventId: r.eventId, message: 'Event created' });
         }
         case 'update': {

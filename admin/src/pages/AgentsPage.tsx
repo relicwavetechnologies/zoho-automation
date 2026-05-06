@@ -1,21 +1,22 @@
 import { useMemo, useState } from "react"
 import { Background, Controls, MiniMap, ReactFlow, type Edge, type Node, type NodeMouseHandler } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
-import { Bot, Building2, ChevronDown, Crown, Plus } from "lucide-react"
+import { Bot, Building2, ChevronDown, Crown, Loader2, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { MetricCard } from "@/components/admin/metric-card"
 import { PageHeader } from "@/components/admin/page-header"
 import { AgentDrawer } from "./agents/AgentDrawer"
 import { AgentNode } from "./agents/AgentNode"
-import { agents, agentById, platformStats, type AgentDef } from "./agents/agent-platform-data"
+import { CreateAgentDialog } from "./agents/CreateAgentDialog"
+import { useAgentData } from "./agents/use-agent-data"
+import type { AgentDef } from "./agents/agent-platform-data"
 
 const NODE_WIDTH = 220
 const NODE_HEIGHT = 124
 const H_GAP = 40
 const V_GAP = 90
 
-function layoutTree(): { nodes: Node[]; edges: Edge[] } {
-  // Group by depth based on parent chain
+function layoutTree(agents: AgentDef[], agentById: Record<string, AgentDef>): { nodes: Node[]; edges: Edge[] } {
   const depthOf = (id: string): number => {
     const a = agentById[id]
     if (!a || !a.parentId) return 0
@@ -66,9 +67,11 @@ function layoutTree(): { nodes: Node[]; edges: Edge[] } {
 const nodeTypes = { agent: AgentNode }
 
 export function AgentsPage() {
+  const { agents, agentById, tools, toolById, loading, error, stats, toggleAgent, updateAgent, createAgent, deleteAgent } = useAgentData()
   const [selectedAgent, setSelectedAgent] = useState<AgentDef | null>(null)
-  const stats = useMemo(platformStats, [])
-  const { nodes, edges } = useMemo(layoutTree, [])
+  const [createOpen, setCreateOpen] = useState(false)
+
+  const { nodes, edges } = useMemo(() => layoutTree(agents, agentById), [agents, agentById])
 
   const nodesWithSelection = useMemo(
     () =>
@@ -84,6 +87,23 @@ export function AgentsPage() {
     if (a) setSelectedAgent(a)
   }
 
+  if (loading) {
+    return (
+      <div className="flex h-96 items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex h-96 flex-col items-center justify-center gap-2 text-muted-foreground">
+        <p className="text-[13px]">Failed to load agents</p>
+        <p className="text-[11px]">{error}</p>
+      </div>
+    )
+  }
+
   return (
     <>
       <PageHeader
@@ -97,7 +117,11 @@ export function AgentsPage() {
               Finance Co.
               <ChevronDown className="h-3 w-3" />
             </Button>
-            <Button type="button" className="h-8 gap-1.5 rounded-md bg-emphasis px-3 text-[12px] font-semibold text-emphasis-foreground hover:bg-emphasis/90">
+            <Button
+              type="button"
+              className="h-8 gap-1.5 rounded-md bg-emphasis px-3 text-[12px] font-semibold text-emphasis-foreground hover:bg-emphasis/90"
+              onClick={() => setCreateOpen(true)}
+            >
               <Plus className="h-3.5 w-3.5" />
               New agent
             </Button>
@@ -143,7 +167,23 @@ export function AgentsPage() {
         </ReactFlow>
       </div>
 
-      <AgentDrawer agent={selectedAgent} onClose={() => setSelectedAgent(null)} />
+      <AgentDrawer
+        agent={selectedAgent}
+        agentById={agentById}
+        toolById={toolById}
+        onClose={() => setSelectedAgent(null)}
+        onToggle={toggleAgent}
+        onSave={updateAgent}
+        onDelete={deleteAgent}
+      />
+
+      <CreateAgentDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        agents={agents}
+        tools={tools}
+        onCreate={createAgent}
+      />
     </>
   )
 }

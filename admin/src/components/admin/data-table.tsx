@@ -16,6 +16,7 @@ type DataTableProps<T extends JsonRecord> = {
   loading?: boolean
   emptyTitle: string
   emptyDescription: string
+  onRowClick?: (row: T) => void
 }
 
 const renderValue = (value: unknown): ReactNode => {
@@ -24,7 +25,7 @@ const renderValue = (value: unknown): ReactNode => {
   return <span className="text-muted-foreground">{JSON.stringify(value)}</span>
 }
 
-export function DataTable<T extends JsonRecord>({ columns, rows, loading, emptyTitle, emptyDescription }: DataTableProps<T>) {
+export function DataTable<T extends JsonRecord>({ columns, rows, loading, emptyTitle, emptyDescription, onRowClick }: DataTableProps<T>) {
   if (loading) {
     return (
       <div className="space-y-3">
@@ -51,7 +52,7 @@ export function DataTable<T extends JsonRecord>({ columns, rows, loading, emptyT
         </TableHeader>
         <TableBody>
           {rows.map((row, index) => (
-            <TableRow key={String(row.id ?? row._id ?? index)}>
+            <TableRow key={String(row.id ?? row._id ?? index)} className={onRowClick ? "cursor-pointer hover:bg-accent/5" : ""} onClick={() => onRowClick?.(row)}>
               {columns.map((column) => (
                 <TableCell key={column.key}>{column.render ? column.render(row) : renderValue(row[column.key])}</TableCell>
               ))}

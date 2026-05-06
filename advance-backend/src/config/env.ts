@@ -161,6 +161,13 @@ const EnvSchema = z.object({
   LANGSMITH_API_KEY:  z.string().optional(),
   LANGSMITH_PROJECT:  z.string().optional(),
   LANGSMITH_ENDPOINT: z.string().default('https://api.smith.langchain.com'),
+
+  // ── Dynamic agent graph cutover ───────────────────────────────────────────
+  DYNAMIC_GRAPH_ENABLED: booleanStr.default('false'),
+  DYNAMIC_GRAPH_SHADOW:  booleanStr.default('false'),
+
+  // Set to 0 to disable supervisor timeout (useful for local dev with slow models)
+  SUPERVISOR_TIMEOUT_MS: z.coerce.number().int().min(0).default(300_000),
 });
 
 export type TypedEnv = z.infer<typeof EnvSchema>;

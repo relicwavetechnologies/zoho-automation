@@ -18,122 +18,180 @@ import { ok, err, type Result } from '../../shared/result';
 // ─── View types ───────────────────────────────────────────────────────────────
 
 export interface AgentDefinitionView {
-  readonly id:           string;
-  readonly companyId:    string;
-  readonly name:         string;
-  readonly description?: string;
-  readonly systemPrompt: string;
-  readonly isRootAgent:  boolean;
-  readonly toolIds:      string[];
-  readonly modelId?:     string;
-  readonly provider?:    string;
-  readonly parentId?:    string;
-  readonly children:     AgentChildView[];
+  readonly id:                    string;
+  readonly companyId:             string;
+  readonly name:                  string;
+  readonly slug:                  string;
+  readonly description?:          string;
+  readonly capabilityDescription?: string;
+  readonly systemPrompt:          string;
+  readonly hookId?:               string;
+  readonly maxSteps:              number;
+  readonly temperature:           number;
+  readonly isRootAgent:           boolean;
+  readonly isActive:              boolean;
+  readonly toolIds:               string[];
+  readonly modelId?:              string;
+  readonly provider?:             string;
+  readonly parentId?:             string;
+  readonly children:              AgentChildView[];
 }
 
 export interface AgentChildView {
-  readonly id:           string;
-  readonly name:         string;
-  readonly description?: string;
-  readonly systemPrompt: string;
-  readonly toolIds:      string[];
-  readonly modelId?:     string;
-  readonly provider?:    string;
+  readonly id:                    string;
+  readonly companyId:             string;
+  readonly name:                  string;
+  readonly slug:                  string;
+  readonly description?:          string;
+  readonly capabilityDescription?: string;
+  readonly systemPrompt:          string;
+  readonly hookId?:               string;
+  readonly maxSteps:              number;
+  readonly temperature:           number;
+  readonly isRootAgent:           boolean;
+  readonly isActive:              boolean;
+  readonly toolIds:               string[];
+  readonly modelId?:              string;
+  readonly provider?:             string;
+  readonly parentId?:             string;
 }
 
 // ─── Prisma select shapes ─────────────────────────────────────────────────────
 
 const childSelect = {
-  id:           true,
-  name:         true,
-  description:  true,
-  systemPrompt: true,
-  toolIds:      true,
-  modelId:      true,
-  provider:     true,
+  id:                    true,
+  companyId:             true,
+  name:                  true,
+  slug:                  true,
+  description:           true,
+  capabilityDescription: true,
+  systemPrompt:          true,
+  hookId:                true,
+  maxSteps:              true,
+  temperature:           true,
+  isRootAgent:           true,
+  isActive:              true,
+  toolIds:               true,
+  modelId:               true,
+  provider:              true,
+  parentId:              true,
 } as const;
 
 const rootSelect = {
-  id:           true,
-  companyId:    true,
-  name:         true,
-  description:  true,
-  systemPrompt: true,
-  isRootAgent:  true,
-  toolIds:      true,
-  modelId:      true,
-  provider:     true,
-  parentId:     true,
-  children:     { where: { isActive: true }, select: childSelect },
+  id:                    true,
+  companyId:             true,
+  name:                  true,
+  slug:                  true,
+  description:           true,
+  capabilityDescription: true,
+  systemPrompt:          true,
+  hookId:                true,
+  maxSteps:              true,
+  temperature:           true,
+  isRootAgent:           true,
+  isActive:              true,
+  toolIds:               true,
+  modelId:               true,
+  provider:              true,
+  parentId:              true,
+  children:              { where: { isActive: true }, select: childSelect },
 } as const;
 
 // ─── Mappers ──────────────────────────────────────────────────────────────────
 
 function mapChild(r: {
-  id: string; name: string; description: string | null;
-  systemPrompt: string; toolIds: string[];
-  modelId: string | null; provider: string | null;
+  id: string; companyId: string; name: string; slug: string; description: string | null;
+  capabilityDescription: string | null; systemPrompt: string; hookId: string | null;
+  maxSteps: number; temperature: number; isRootAgent: boolean; isActive: boolean;
+  toolIds: string[]; modelId: string | null; provider: string | null; parentId: string | null;
 }): AgentChildView {
   return {
     id:           r.id,
+    companyId:    r.companyId,
     name:         r.name,
+    slug:         r.slug,
     systemPrompt: r.systemPrompt,
+    maxSteps:     r.maxSteps,
+    temperature:  r.temperature,
+    isRootAgent:  r.isRootAgent,
+    isActive:     r.isActive,
     toolIds:      r.toolIds,
-    ...(r.description ? { description: r.description } : {}),
-    ...(r.modelId     ? { modelId:     r.modelId }     : {}),
-    ...(r.provider    ? { provider:    r.provider }    : {}),
+    ...(r.description           ? { description:           r.description }           : {}),
+    ...(r.capabilityDescription ? { capabilityDescription: r.capabilityDescription } : {}),
+    ...(r.hookId                ? { hookId:                r.hookId }                : {}),
+    ...(r.modelId               ? { modelId:               r.modelId }               : {}),
+    ...(r.provider              ? { provider:              r.provider }              : {}),
+    ...(r.parentId              ? { parentId:              r.parentId }              : {}),
   };
 }
 
 function mapRoot(r: {
-  id: string; companyId: string; name: string; description: string | null;
-  systemPrompt: string; isRootAgent: boolean; toolIds: string[];
+  id: string; companyId: string; name: string; slug: string; description: string | null;
+  capabilityDescription: string | null; systemPrompt: string; hookId: string | null;
+  maxSteps: number; temperature: number; isRootAgent: boolean; isActive: boolean; toolIds: string[];
   modelId: string | null; provider: string | null; parentId: string | null;
   children: Array<{
-    id: string; name: string; description: string | null;
-    systemPrompt: string; toolIds: string[];
-    modelId: string | null; provider: string | null;
+    id: string; companyId: string; name: string; slug: string; description: string | null;
+    capabilityDescription: string | null; systemPrompt: string; hookId: string | null;
+    maxSteps: number; temperature: number; isRootAgent: boolean; isActive: boolean;
+    toolIds: string[]; modelId: string | null; provider: string | null; parentId: string | null;
   }>;
 }): AgentDefinitionView {
   return {
     id:           r.id,
     companyId:    r.companyId,
     name:         r.name,
+    slug:         r.slug,
     systemPrompt: r.systemPrompt,
+    maxSteps:     r.maxSteps,
+    temperature:  r.temperature,
     isRootAgent:  r.isRootAgent,
+    isActive:     r.isActive,
     toolIds:      r.toolIds,
     children:     r.children.map(mapChild),
-    ...(r.description ? { description: r.description } : {}),
-    ...(r.modelId     ? { modelId:     r.modelId }     : {}),
-    ...(r.provider    ? { provider:    r.provider }    : {}),
-    ...(r.parentId    ? { parentId:    r.parentId }    : {}),
+    ...(r.description           ? { description:           r.description }           : {}),
+    ...(r.capabilityDescription ? { capabilityDescription: r.capabilityDescription } : {}),
+    ...(r.hookId                ? { hookId:                r.hookId }                : {}),
+    ...(r.modelId               ? { modelId:               r.modelId }               : {}),
+    ...(r.provider              ? { provider:              r.provider }              : {}),
+    ...(r.parentId              ? { parentId:              r.parentId }              : {}),
   };
 }
 
 // ─── Admin view types (includes mutable fields for CRUD surface) ──────────────
 
 export interface AgentAdminView {
-  readonly id:           string;
-  readonly companyId:    string;
-  readonly name:         string;
-  readonly description?: string;
-  readonly systemPrompt: string;
-  readonly isRootAgent:  boolean;
-  readonly isActive:     boolean;
-  readonly toolIds:      string[];
-  readonly modelId?:     string;
-  readonly provider?:    string;
-  readonly parentId?:    string;
-  readonly children:     AgentChildView[];
-  readonly createdAt:    Date;
-  readonly updatedAt:    Date;
+  readonly id:                    string;
+  readonly companyId:             string;
+  readonly name:                  string;
+  readonly slug:                  string;
+  readonly description?:          string;
+  readonly capabilityDescription?: string;
+  readonly systemPrompt:          string;
+  readonly hookId?:               string;
+  readonly maxSteps:              number;
+  readonly temperature:           number;
+  readonly isRootAgent:           boolean;
+  readonly isActive:              boolean;
+  readonly toolIds:               string[];
+  readonly modelId?:              string;
+  readonly provider?:             string;
+  readonly parentId?:             string;
+  readonly children:              AgentChildView[];
+  readonly createdAt:             Date;
+  readonly updatedAt:             Date;
 }
 
 export interface CreateAgentInput {
   companyId:     string;
   name:          string;
+  slug:          string;
   description?:  string | undefined;
+  capabilityDescription?: string | undefined;
   systemPrompt:  string;
+  hookId?:       string | null | undefined;
+  maxSteps?:     number | undefined;
+  temperature?:  number | undefined;
   isRootAgent?:  boolean | undefined;
   toolIds?:      string[] | undefined;
   modelId?:      string | null | undefined;
@@ -143,8 +201,13 @@ export interface CreateAgentInput {
 
 export interface UpdateAgentInput {
   name?:         string | undefined;
+  slug?:         string | undefined;
   description?:  string | undefined;
+  capabilityDescription?: string | undefined;
   systemPrompt?: string | undefined;
+  hookId?:       string | null | undefined;
+  maxSteps?:     number | undefined;
+  temperature?:  number | undefined;
   isRootAgent?:  boolean | undefined;
   isActive?:     boolean | undefined;
   toolIds?:      string[] | undefined;
@@ -154,48 +217,60 @@ export interface UpdateAgentInput {
 }
 
 const adminSelect = {
-  id:           true,
-  companyId:    true,
-  name:         true,
-  description:  true,
-  systemPrompt: true,
-  isRootAgent:  true,
-  isActive:     true,
-  toolIds:      true,
-  modelId:      true,
-  provider:     true,
-  parentId:     true,
-  createdAt:    true,
-  updatedAt:    true,
+  id:                    true,
+  companyId:             true,
+  name:                  true,
+  slug:                  true,
+  description:           true,
+  capabilityDescription: true,
+  systemPrompt:          true,
+  hookId:                true,
+  maxSteps:              true,
+  temperature:           true,
+  isRootAgent:           true,
+  isActive:              true,
+  toolIds:               true,
+  modelId:               true,
+  provider:              true,
+  parentId:              true,
+  createdAt:             true,
+  updatedAt:             true,
   children: { select: childSelect },
 } as const;
 
 function mapAdmin(r: {
-  id: string; companyId: string; name: string; description: string | null;
-  systemPrompt: string; isRootAgent: boolean; isActive: boolean; toolIds: string[];
+  id: string; companyId: string; name: string; slug: string; description: string | null;
+  capabilityDescription: string | null; systemPrompt: string; hookId: string | null;
+  maxSteps: number; temperature: number; isRootAgent: boolean; isActive: boolean; toolIds: string[];
   modelId: string | null; provider: string | null; parentId: string | null;
   createdAt: Date; updatedAt: Date;
   children: Array<{
-    id: string; name: string; description: string | null;
-    systemPrompt: string; toolIds: string[];
-    modelId: string | null; provider: string | null;
+    id: string; companyId: string; name: string; slug: string; description: string | null;
+    capabilityDescription: string | null; systemPrompt: string; hookId: string | null;
+    maxSteps: number; temperature: number; isRootAgent: boolean; isActive: boolean;
+    toolIds: string[]; modelId: string | null; provider: string | null; parentId: string | null;
   }>;
 }): AgentAdminView {
   return {
     id:           r.id,
     companyId:    r.companyId,
     name:         r.name,
+    slug:         r.slug,
     systemPrompt: r.systemPrompt,
+    maxSteps:     r.maxSteps,
+    temperature:  r.temperature,
     isRootAgent:  r.isRootAgent,
     isActive:     r.isActive,
     toolIds:      r.toolIds,
     children:     r.children.map(mapChild),
     createdAt:    r.createdAt,
     updatedAt:    r.updatedAt,
-    ...(r.description ? { description: r.description } : {}),
-    ...(r.modelId     ? { modelId:     r.modelId }     : {}),
-    ...(r.provider    ? { provider:    r.provider }    : {}),
-    ...(r.parentId    ? { parentId:    r.parentId }    : {}),
+    ...(r.description           ? { description:           r.description }           : {}),
+    ...(r.capabilityDescription ? { capabilityDescription: r.capabilityDescription } : {}),
+    ...(r.hookId                ? { hookId:                r.hookId }                : {}),
+    ...(r.modelId               ? { modelId:               r.modelId }               : {}),
+    ...(r.provider              ? { provider:              r.provider }              : {}),
+    ...(r.parentId              ? { parentId:              r.parentId }              : {}),
   };
 }
 
@@ -329,8 +404,13 @@ export class AgentDefinitionRepository {
         data: {
           companyId:    input.companyId,
           name:         input.name,
+          slug:         input.slug,
           systemPrompt: input.systemPrompt,
           ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.capabilityDescription !== undefined ? { capabilityDescription: input.capabilityDescription } : {}),
+          ...(input.hookId      !== undefined ? { hookId:      input.hookId }      : {}),
+          ...(input.maxSteps    !== undefined ? { maxSteps:    input.maxSteps }    : {}),
+          ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
           ...(input.isRootAgent !== undefined ? { isRootAgent: input.isRootAgent } : {}),
           ...(input.toolIds     !== undefined ? { toolIds:     input.toolIds }     : {}),
           ...(input.modelId     !== undefined ? { modelId:     input.modelId }     : {}),
@@ -351,8 +431,13 @@ export class AgentDefinitionRepository {
         where: { id },
         data: {
           ...(input.name         !== undefined ? { name:         input.name }         : {}),
+          ...(input.slug         !== undefined ? { slug:         input.slug }         : {}),
           ...(input.description  !== undefined ? { description:  input.description }  : {}),
+          ...(input.capabilityDescription !== undefined ? { capabilityDescription: input.capabilityDescription } : {}),
           ...(input.systemPrompt !== undefined ? { systemPrompt: input.systemPrompt } : {}),
+          ...(input.hookId       !== undefined ? { hookId:       input.hookId }       : {}),
+          ...(input.maxSteps     !== undefined ? { maxSteps:     input.maxSteps }     : {}),
+          ...(input.temperature  !== undefined ? { temperature:  input.temperature }  : {}),
           ...(input.isRootAgent  !== undefined ? { isRootAgent:  input.isRootAgent }  : {}),
           ...(input.isActive     !== undefined ? { isActive:     input.isActive }     : {}),
           ...(input.toolIds      !== undefined ? { toolIds:      input.toolIds }      : {}),

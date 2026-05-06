@@ -146,6 +146,7 @@ const updateSkillSchema = z.object({
 });
 
 const allowedSchema = z.object({ allowed: z.boolean() });
+const detailSectionSchema = z.enum(['overview', 'roles', 'members', 'permissions', 'config']);
 
 // ── Route factory ─────────────────────────────────────────────────────────────
 
@@ -167,7 +168,12 @@ export function createDepartmentRoutes(deps: DepartmentRoutesDeps): Router {
   router.get('/:id', asyncRoute(async (req, res) => {
     const { id }    = req.params as { id: string };
     const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
-    const result    = await svc.getDepartmentDetail(id, companyId);
+    const sections  = typeof req.query.sections === 'string' && req.query.sections.trim()
+      ? req.query.sections
+          .split(',')
+          .map(section => detailSectionSchema.parse(section.trim()))
+      : undefined;
+    const result    = await svc.getDepartmentDetail(id, companyId, sections);
     if (!result.ok) { resolveServiceError(res, result.error); return; }
     success(res, result.value, 'Department detail loaded');
   }));

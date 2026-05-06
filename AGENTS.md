@@ -67,6 +67,7 @@ Core runtime — supervisor-delegation pattern:
 | Admin UI Redesign | in-progress | `docs/features/02-admin-ui-redesign.md` |
 | Backend Migration (backend → advance-backend) | in-progress | `docs/features/03-backend-migration.md` |
 | Agent Builder Canvas (React Flow stub) | in-progress | `docs/features/04-agent-builder-canvas.md` |
+| Dynamic Agent Platform | in-progress | `docs/features/05-dynamic-agent-platform.md` |
 
 **Template for new features:** `docs/features/TEMPLATE.md`
 

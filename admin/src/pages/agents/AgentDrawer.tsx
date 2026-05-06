@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState } from "react"
-import { Activity, Bot, Building2, Clock, Cog, Crown, FlaskConical, Globe, GripVertical, Power, Save, Wrench } from "lucide-react"
+import { Activity, AlertTriangle, Bot, Building2, Clock, Cog, Crown, FlaskConical, Globe, GripVertical, Power, Save, Trash2, Wrench } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { cn } from "@/lib/utils"
-import { agentById, toolById, type AgentDef } from "./agent-platform-data"
+import type { UpdateAgentInput } from "@/lib/api"
+import type { AgentDef, ToolDef } from "./agent-platform-data"
 
 type AgentDrawerProps = {
   agent: AgentDef | null
+  agentById: Record<string, AgentDef>
+  toolById: Record<string, ToolDef>
   onClose: () => void
+  onToggle: (id: string) => Promise<void>
+  onSave: (id: string, data: UpdateAgentInput) => Promise<void>
+  onDelete: (id: string) => Promise<void>
 }
 
 const familyColor: Record<string, string> = {
@@ -31,16 +37,7 @@ const MAX_W = 900
 const DEFAULT_W = 460
 const STORAGE_KEY = "divo_admin_agent_drawer_width"
 
-const mockStats = (id: string) => {
-  const seed = id.charCodeAt(0) + id.length * 7
-  return {
-    runs: 120 + (seed % 800),
-    lastActive: ["2m ago", "12m ago", "1h ago", "3h ago", "yesterday"][seed % 5],
-    avgLatency: `${(0.4 + (seed % 30) / 10).toFixed(1)}s`,
-  }
-}
-
-export function AgentDrawer({ agent, onClose }: AgentDrawerProps) {
+export function AgentDrawer({ agent, agentById, toolById, onClose, onToggle, onSave, onDelete }: AgentDrawerProps) {
   const [width, setWidth] = useState<number>(() => {
     if (typeof window === "undefined") return DEFAULT_W
     const stored = Number(localStorage.getItem(STORAGE_KEY))
@@ -82,7 +79,6 @@ export function AgentDrawer({ agent, onClose }: AgentDrawerProps) {
         className="overflow-hidden border-l border-border/40 bg-mat p-0 sm:!max-w-none"
         style={{ width }}
       >
-        {/* Resize handle */}
         <div
           role="separator"
           aria-orientation="vertical"
@@ -106,18 +102,87 @@ export function AgentDrawer({ agent, onClose }: AgentDrawerProps) {
           </div>
         </div>
 
-        {agent ? <AgentDrawerContent agent={agent} /> : null}
+        {agent ? (
+          <AgentDrawerContent
+            agent={agent}
+            agentById={agentById}
+            toolById={toolById}
+            onToggle={onToggle}
+            onSave={onSave}
+            onDelete={onDelete}
+          />
+        ) : null}
       </SheetContent>
     </Sheet>
   )
 }
 
-function AgentDrawerContent({ agent }: { agent: AgentDef }) {
-  const stats = mockStats(agent.id)
+function AgentDrawerContent({
+  agent,
+  agentById,
+  toolById,
+  onToggle,
+  onSave,
+  onDelete,
+}: {
+  agent: AgentDef
+  agentById: Record<string, AgentDef>
+  toolById: Record<string, ToolDef>
+  onToggle: (id: string) => Promise<void>
+  onSave: (id: string, data: UpdateAgentInput) => Promise<void>
+  onDelete: (id: string) => Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [capDesc, setCapDesc] = useState(agent.capabilityDescription)
+  const [sysPrompt, setSysPrompt] = useState(agent.systemPromptSections.role)
+  const [busy, setBusy] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  useEffect(() => {
+    setCapDesc(agent.capabilityDescription)
+    setSysPrompt(agent.systemPromptSections.role)
+    setEditing(false)
+    setConfirmDelete(false)
+  }, [agent.id, agent.capabilityDescription, agent.systemPromptSections.role])
+
   const isSupervisor = agent.role === "supervisor"
   const isDeptHead = agent.role === "dept-head"
   const RoleIcon = isSupervisor ? Crown : isDeptHead ? Building2 : Bot
   const roleLabel = isSupervisor ? "Root agent" : isDeptHead ? "Department head" : "Specialist sub-agent"
+
+  const dirty = capDesc !== agent.capabilityDescription || sysPrompt !== agent.systemPromptSections.role
+
+  const handleSave = async () => {
+    setBusy(true)
+    try {
+      await onSave(agent.id, {
+        ...(capDesc !== agent.capabilityDescription ? { description: capDesc } : {}),
+        ...(sysPrompt !== agent.systemPromptSections.role ? { systemPrompt: sysPrompt } : {}),
+      })
+      setEditing(false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleToggle = async () => {
+    setBusy(true)
+    try {
+      await onToggle(agent.id)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    setBusy(true)
+    try {
+      await onDelete(agent.id)
+    } finally {
+      setBusy(false)
+      setConfirmDelete(false)
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -142,25 +207,33 @@ function AgentDrawerContent({ agent }: { agent: AgentDef }) {
               className={cn(
                 "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
                 agent.enabled
-                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
-                : "bg-secondary text-muted-foreground",
+                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+                  : "bg-secondary text-muted-foreground",
               )}
             >
               {agent.enabled ? "Live" : "Off"}
             </span>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2 pt-1">
-            <StatPill icon={Activity} label="Runs (30d)" value={stats.runs.toLocaleString()} />
-            <StatPill icon={Clock} label="Last active" value={stats.lastActive} />
-            <StatPill icon={Globe} label="Avg latency" value={stats.avgLatency} />
           </div>
         </SheetHeader>
 
         {/* Body */}
         <div className="space-y-5 p-5 pl-6">
           <Section label="Capability">
-            <p className="text-[13px] leading-6 text-foreground/85">{agent.capabilityDescription}</p>
+            {editing ? (
+              <textarea
+                className="w-full rounded-md border border-border/60 bg-card p-2.5 text-[13px] leading-6 text-foreground/85 focus:outline-none focus:ring-1 focus:ring-accent"
+                rows={3}
+                value={capDesc}
+                onChange={(e) => setCapDesc(e.target.value)}
+              />
+            ) : (
+              <p
+                className="cursor-pointer rounded-md p-1 text-[13px] leading-6 text-foreground/85 hover:bg-card"
+                onClick={() => setEditing(true)}
+              >
+                {agent.capabilityDescription || "Click to add a capability description"}
+              </p>
+            )}
           </Section>
 
           {agent.toolIds.length > 0 ? (
@@ -168,7 +241,16 @@ function AgentDrawerContent({ agent }: { agent: AgentDef }) {
               <div className="space-y-1.5">
                 {agent.toolIds.map((toolId) => {
                   const tool = toolById[toolId]
-                  if (!tool) return null
+                  if (!tool) {
+                    return (
+                      <div key={toolId} className="flex items-center gap-2.5 rounded-md bg-card p-2.5 shadow-soft opacity-50">
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-secondary">
+                          <span className="text-[10px] font-bold">?</span>
+                        </div>
+                        <p className="truncate font-mono text-[12px] text-muted-foreground">{toolId}</p>
+                      </div>
+                    )
+                  }
                   return (
                     <div key={toolId} className="flex items-center gap-2.5 rounded-md bg-card p-2.5 shadow-soft">
                       <div className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-white", familyColor[tool.family])}>
@@ -210,7 +292,7 @@ function AgentDrawerContent({ agent }: { agent: AgentDef }) {
                       {!child.enabled ? (
                         <span className="rounded-sm bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">off</span>
                       ) : (
-                        <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">●</span>
+                        <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">{"●"}</span>
                       )}
                     </div>
                   )
@@ -220,13 +302,25 @@ function AgentDrawerContent({ agent }: { agent: AgentDef }) {
           ) : null}
 
           <Section label="System prompt" icon={Cog}>
-            <div className="overflow-hidden rounded-md bg-card shadow-soft">
-              <PromptRow label="Role" value={agent.systemPromptSections.role} />
-              <PromptRow label="Can do" value={agent.systemPromptSections.canDo} />
-              <PromptRow label="Cannot do" value={agent.systemPromptSections.cannotDo} />
-              <PromptRow label="Rules" value={agent.systemPromptSections.rules} />
-              <PromptRow label="Tone" value={agent.systemPromptSections.tone} last />
-            </div>
+            {editing ? (
+              <textarea
+                className="w-full rounded-md border border-border/60 bg-card p-3 font-mono text-[12px] leading-5 text-foreground/85 focus:outline-none focus:ring-1 focus:ring-accent"
+                rows={12}
+                value={sysPrompt}
+                onChange={(e) => setSysPrompt(e.target.value)}
+              />
+            ) : (
+              <div
+                className="cursor-pointer overflow-hidden rounded-md bg-card shadow-soft hover:ring-1 hover:ring-accent/30"
+                onClick={() => setEditing(true)}
+              >
+                <div className="p-3">
+                  <p className="whitespace-pre-wrap text-[12px] leading-5 text-foreground/85">
+                    {agent.systemPromptSections.role || "Click to add a system prompt"}
+                  </p>
+                </div>
+              </div>
+            )}
           </Section>
 
           <Section label="Routing">
@@ -245,32 +339,53 @@ function AgentDrawerContent({ agent }: { agent: AgentDef }) {
           <FlaskConical className="h-3.5 w-3.5" />
           Test
         </Button>
-        <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 rounded-md text-[12px] font-medium" disabled>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1.5 rounded-md text-[12px] font-medium"
+          disabled={busy}
+          onClick={handleToggle}
+        >
           <Power className="h-3.5 w-3.5" />
           {agent.enabled ? "Disable" : "Enable"}
         </Button>
+        {!confirmDelete ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5 rounded-md text-[12px] font-medium text-destructive hover:bg-destructive/10"
+            disabled={busy || isSupervisor}
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            className="h-8 gap-1.5 rounded-md text-[12px] font-medium"
+            disabled={busy}
+            onClick={handleDelete}
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />
+            Confirm delete
+          </Button>
+        )}
         <Button
           type="button"
           size="sm"
           className="ml-auto h-8 gap-1.5 rounded-md bg-emphasis px-3 text-[12px] font-semibold text-emphasis-foreground hover:bg-emphasis/90"
-          disabled
+          disabled={busy || !dirty}
+          onClick={handleSave}
         >
           <Save className="h-3.5 w-3.5" />
           Save changes
         </Button>
       </div>
-    </div>
-  )
-}
-
-function StatPill({ icon: Icon, label, value }: { icon: typeof Activity; label: string; value: string }) {
-  return (
-    <div className="rounded-md bg-mat px-2 py-1.5">
-      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-        <Icon className="h-2.5 w-2.5" />
-        {label}
-      </div>
-      <p className="mt-0.5 text-[13px] font-semibold">{value}</p>
     </div>
   )
 }
@@ -298,15 +413,6 @@ function Section({
         ) : null}
       </div>
       {children}
-    </div>
-  )
-}
-
-function PromptRow({ label, value, last }: { label: string; value: string; last?: boolean }) {
-  return (
-    <div className={cn("space-y-1 p-3", !last && "border-b border-border/40")}>
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="text-[12px] leading-5 text-foreground/85">{value}</p>
     </div>
   )
 }

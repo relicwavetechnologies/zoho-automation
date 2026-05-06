@@ -1,0 +1,224 @@
+import { useEffect, useMemo, useState } from "react"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import type { DepartmentAvailableTool, DepartmentMembership, DepartmentRole, DepartmentToolPermission, DepartmentUserOverride } from "@/lib/api"
+import type { DepartmentToolCatalogEntry } from "../use-department-data"
+
+type Props = {
+  departmentId: string
+  roles: DepartmentRole[]
+  memberships: DepartmentMembership[]
+  availableTools: DepartmentAvailableTool[]
+  toolPermissions: DepartmentToolPermission[]
+  userOverrides: DepartmentUserOverride[]
+  toolCatalogById: Record<string, DepartmentToolCatalogEntry>
+  onSetRolePermission: (departmentId: string, roleId: string, toolId: string, actionGroup: string, allowed: boolean) => Promise<void>
+  onSetUserOverride: (departmentId: string, userId: string, toolId: string, actionGroup: string, allowed: boolean) => Promise<void>
+}
+
+const familyClass: Record<DepartmentToolCatalogEntry["family"], string> = {
+  zoho: "bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-300",
+  lark: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
+  google: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
+  context: "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
+  internal: "bg-secondary text-muted-foreground",
+}
+
+export function PermissionsTab({
+  departmentId,
+  roles,
+  memberships,
+  availableTools,
+  toolPermissions,
+  userOverrides,
+  toolCatalogById,
+  onSetRolePermission,
+  onSetUserOverride,
+}: Props) {
+  const [selectedUserId, setSelectedUserId] = useState("")
+  const [busyKey, setBusyKey] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!memberships.find((membership) => membership.userId === selectedUserId)) {
+      setSelectedUserId(memberships[0]?.userId ?? "")
+    }
+  }, [memberships, selectedUserId])
+
+  const permissionMap = useMemo(
+    () =>
+      new Map(
+        toolPermissions.map((permission) => [
+          `${permission.roleId}:${permission.toolId}:${permission.actionGroup}`,
+          permission.allowed,
+        ]),
+      ),
+    [toolPermissions],
+  )
+
+  const overrideMap = useMemo(
+    () =>
+      new Map(
+        userOverrides.map((override) => [
+          `${override.userId}:${override.toolId}:${override.actionGroup}`,
+          override.allowed,
+        ]),
+      ),
+    [userOverrides],
+  )
+
+  return (
+    <div className="space-y-5">
+      <div className="space-y-2">
+        <div>
+          <p className="text-[13px] font-semibold">Role permissions</p>
+          <p className="text-[11px] text-muted-foreground">
+            Toggle the action groups each role can use per tool. Unchecked means denied by default.
+          </p>
+        </div>
+
+        {availableTools.length === 0 ? (
+          <div className="rounded-lg bg-card p-4 text-[12px] text-muted-foreground shadow-soft">
+            No tool catalog is available for this department.
+          </div>
+        ) : null}
+
+        <div className="space-y-3">
+          {availableTools.map((tool) => {
+            const meta = toolCatalogById[tool.toolId]
+            return (
+              <div key={tool.toolId} className="rounded-lg bg-card p-3 shadow-soft">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <p className="text-[13px] font-semibold">{meta?.name ?? tool.toolId}</p>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${familyClass[meta?.family ?? "internal"]}`}>
+                    {meta?.family ?? "internal"}
+                  </span>
+                  <span className="rounded-full bg-secondary px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    {tool.toolId}
+                  </span>
+                </div>
+                {meta?.description ? <p className="mb-3 text-[11px] text-muted-foreground">{meta.description}</p> : null}
+
+                <div className="overflow-x-auto">
+                  <div
+                    className="grid min-w-[520px] gap-2"
+                    style={{ gridTemplateColumns: `minmax(140px, 1.2fr) repeat(${tool.supportedActionGroups.length}, minmax(88px, 1fr))` }}
+                  >
+                    <div className="px-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Role</div>
+                    {tool.supportedActionGroups.map((actionGroup) => (
+                      <div key={actionGroup} className="px-2 text-center text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        {actionGroup}
+                      </div>
+                    ))}
+
+                    {roles.map((role) => (
+                      <div key={role.id} className="contents">
+                        <div className="rounded-md bg-secondary/50 px-2 py-2 text-[12px] font-medium text-foreground/85">
+                          {role.name}
+                        </div>
+                        {tool.supportedActionGroups.map((actionGroup) => {
+                          const key = `${role.id}:${tool.toolId}:${actionGroup}`
+                          const checked = permissionMap.get(key) === true
+                          return (
+                            <label key={key} className="flex items-center justify-center rounded-md border border-border/40 bg-card px-2 py-2">
+                              <Checkbox
+                                checked={checked}
+                                disabled={busyKey === key}
+                                onCheckedChange={async (value) => {
+                                  setBusyKey(key)
+                                  try {
+                                    await onSetRolePermission(departmentId, role.id, tool.toolId, actionGroup, value === true)
+                                  } finally {
+                                    setBusyKey(null)
+                                  }
+                                }}
+                              />
+                            </label>
+                          )
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <p className="text-[13px] font-semibold">User overrides</p>
+          <p className="text-[11px] text-muted-foreground">
+            Apply per-member exceptions on top of the role matrix when someone needs broader or narrower access.
+          </p>
+        </div>
+
+        {memberships.length > 0 ? (
+          <div className="space-y-3">
+            <div className="max-w-sm space-y-1.5">
+              <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Member</Label>
+              <Select value={selectedUserId} onValueChange={setSelectedUserId}>
+                <SelectTrigger className="h-9 bg-card text-[13px]">
+                  <SelectValue placeholder="Select a member" />
+                </SelectTrigger>
+                <SelectContent>
+                  {memberships.map((membership) => (
+                    <SelectItem key={membership.userId} value={membership.userId}>
+                      {membership.name || membership.email}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {selectedUserId ? (
+              <div className="space-y-3">
+                {availableTools.map((tool) => {
+                  const meta = toolCatalogById[tool.toolId]
+                  return (
+                    <div key={`${selectedUserId}:${tool.toolId}`} className="rounded-lg bg-card p-3 shadow-soft">
+                      <div className="mb-3 flex flex-wrap items-center gap-2">
+                        <p className="text-[12px] font-semibold">{meta?.name ?? tool.toolId}</p>
+                        <span className="rounded-full bg-secondary px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          {tool.toolId}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {tool.supportedActionGroups.map((actionGroup) => {
+                          const key = `${selectedUserId}:${tool.toolId}:${actionGroup}`
+                          const checked = overrideMap.get(key) === true
+                          return (
+                            <label key={key} className="flex items-center gap-2 rounded-md border border-border/40 bg-card px-3 py-2 text-[12px]">
+                              <Checkbox
+                                checked={checked}
+                                disabled={busyKey === key}
+                                onCheckedChange={async (value) => {
+                                  setBusyKey(key)
+                                  try {
+                                    await onSetUserOverride(departmentId, selectedUserId, tool.toolId, actionGroup, value === true)
+                                  } finally {
+                                    setBusyKey(null)
+                                  }
+                                }}
+                              />
+                              {actionGroup}
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="rounded-lg bg-card p-4 text-[12px] text-muted-foreground shadow-soft">
+            Add a department member before configuring user-specific overrides.
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

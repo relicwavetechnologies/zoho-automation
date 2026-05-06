@@ -69,10 +69,10 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps): Router {
         ...(req.query['userId']  ? { userId:  String(req.query['userId']) }  : {}),
       });
 
-      res.json({ runs, total: runs.length });
+      res.json({ success: true, data: runs, total: runs.length });
     } catch (e) {
       logger.error('execution.routes.list.failed', { error: String(e), companyId });
-      res.status(500).json({ error: 'internal_error' });
+      res.status(500).json({ success: false, message: 'internal_error' });
     }
   });
 
@@ -93,14 +93,14 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps): Router {
       });
 
       if (!run) {
-        res.status(404).json({ error: 'not_found' });
+        res.status(404).json({ success: false, message: 'not_found' });
         return;
       }
 
-      res.json({ run });
+      res.json({ success: true, data: run });
     } catch (e) {
       logger.error('execution.routes.get.failed', { error: String(e), id: req.params['id'] });
-      res.status(500).json({ error: 'internal_error' });
+      res.status(500).json({ success: false, message: 'internal_error' });
     }
   });
 
@@ -122,10 +122,10 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps): Router {
         ...(req.query['phase'] ? { phase: String(req.query['phase']) } : {}),
       });
 
-      res.json({ events, total: events.length });
+      res.json({ success: true, data: events, total: events.length });
     } catch (e) {
       logger.error('execution.routes.events.failed', { error: String(e), id: req.params['id'] });
-      res.status(500).json({ error: 'internal_error' });
+      res.status(500).json({ success: false, message: 'internal_error' });
     }
   });
 

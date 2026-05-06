@@ -1,7 +1,7 @@
 # Feature: Backend Migration (backend → advance-backend)
 
 > **Status:** `in-progress`
-> **Last updated:** 2026-05-06 by claude (session 2)
+> **Last updated:** 2026-05-06 by codex
 
 ---
 
@@ -74,6 +74,8 @@ All endpoints the admin frontend (`admin/src/lib/api.ts` + pages) calls that wer
 - Phase 2 (departments) complete — 17 endpoints, 48/48 tests  
   `src/application/departments/department-admin.service.ts` (15 methods, no Redis/BooksModule)  
   `src/http/admin/departments.routes.ts` + `tests/http/departments.routes.test.ts`
+- Department list summaries now include `roleCount` in addition to member/manager counts, so the admin UI can render department registry metrics without fetching detail for every row.
+- Department detail endpoint now accepts `?sections=overview,roles,members,permissions,config` and returns `loadedSections`, allowing the admin drawer to fetch tabs lazily instead of hydrating every relation up front.
 - Phase 3 (company admin surface) complete — all admin-app-facing endpoints:
   - `company.routes.ts` — members, directory, invites, onboarding/status, tool-permissions
   - `audit.routes.ts` — audit log query
@@ -115,10 +117,21 @@ All endpoints the admin frontend (`admin/src/lib/api.ts` + pages) calls that wer
 | `noUncheckedIndexedAccess` — cast `req.params` to typed object | tsconfig enforces this; `req.params.id` is `string|undefined`, fix: `const { id } = req.params as { id: string }` |
 | `DepartmentAdminService` has no Redis caching | advance-backend doesn't share Redis cache with permission system; DB queries are fast enough for admin surface |
 | `LarkUserAuthLink`/`GoogleUserAuthLink` use `revokedAt` | These models have no `isActive` field; check `revokedAt === null` for active link |
+| Department list endpoint exposes `roleCount` in `DeptSummary` | Admin UI needs a dense registry view with role counts without forcing one detail request per row |
+| Department detail endpoint supports `sections` query loading | Admin drawer tabs should fetch independently to avoid eager loading all roles/members/permissions/config data on first open |
 
 ---
 
 ## Progress Log
+
+### 2026-05-06 — codex
+- Extended `GET /api/admin/departments/:id` to accept a `sections` query and return `loadedSections`.
+- Refactored `DepartmentAdminService.getDepartmentDetail()` to fetch department subgraphs conditionally (`roles`, `members`, `permissions`, `config`) instead of always hydrating the full detail payload.
+- Verified `cd advance-backend && pnpm typecheck` passes after the section-aware detail change.
+
+### 2026-05-06 — codex
+- Extended `DepartmentAdminService.listDepartments()` to include `roleCount` in `DeptSummary` and the `/api/admin/departments` response.
+- Verified `cd advance-backend && pnpm typecheck` passes after the summary contract change.
 
 ### 2026-05-06 — claude (session 1)
 - Created feature doc.

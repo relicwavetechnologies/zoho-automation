@@ -19,10 +19,11 @@ export class LarkCalendarClient implements LarkCalendarClientPort {
 
   async listEvents(calendarId: string, limit?: number): Promise<unknown[]> {
     type ListResponse = { items?: EventRecord[] };
+    const pageSize = Math.min(50, Math.max(1, limit ?? 50));
     const data = await this.http.request<ListResponse>(
       'GET',
       `/open-apis/calendar/v4/calendars/${encodeURIComponent(calendarId)}/events`,
-      { query: { page_size: Math.max(50, limit ?? 50) } },
+      { query: { page_size: pageSize } },
     );
     return (data.items ?? []).map(normalizeEvent);
   }

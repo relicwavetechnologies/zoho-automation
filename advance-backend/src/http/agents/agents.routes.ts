@@ -89,28 +89,38 @@ const companyQuerySchema = z.object({
 });
 
 const createAgentSchema = z.object({
-  companyId:    z.string().uuid().optional(),
-  name:         z.string().trim().min(1).max(120),
-  description:  z.string().trim().max(1000).optional(),
-  systemPrompt: z.string().trim().min(1).max(50_000),
-  isRootAgent:  z.boolean().optional(),
-  toolIds:      z.array(z.string().trim().min(1)).max(500).optional(),
-  modelId:      z.string().trim().min(1).max(255).nullable().optional(),
-  provider:     z.string().trim().min(1).max(64).nullable().optional(),
-  parentId:     z.string().cuid().nullable().optional(),
+  companyId:             z.string().uuid().optional(),
+  name:                  z.string().trim().min(1).max(120),
+  slug:                  z.string().trim().min(1).max(120).optional(),
+  description:           z.string().trim().max(1000).optional(),
+  capabilityDescription: z.string().trim().max(2000).optional(),
+  systemPrompt:          z.string().trim().min(1).max(50_000),
+  hookId:                z.string().trim().min(1).max(120).nullable().optional(),
+  maxSteps:              z.number().int().min(1).max(30).optional(),
+  temperature:           z.number().min(0).max(2).optional(),
+  isRootAgent:           z.boolean().optional(),
+  toolIds:               z.array(z.string().trim().min(1)).max(500).optional(),
+  modelId:               z.string().trim().min(1).max(255).nullable().optional(),
+  provider:              z.string().trim().min(1).max(64).nullable().optional(),
+  parentId:              z.string().cuid().nullable().optional(),
 });
 
 const updateAgentSchema = z.object({
-  companyId:    z.string().uuid().optional(),
-  name:         z.string().trim().min(1).max(120).optional(),
-  description:  z.string().trim().max(1000).optional(),
-  systemPrompt: z.string().trim().min(1).max(50_000).optional(),
-  isRootAgent:  z.boolean().optional(),
-  isActive:     z.boolean().optional(),
-  toolIds:      z.array(z.string().trim().min(1)).max(500).optional(),
-  modelId:      z.string().trim().min(1).max(255).nullable().optional(),
-  provider:     z.string().trim().min(1).max(64).nullable().optional(),
-  parentId:     z.string().cuid().nullable().optional(),
+  companyId:             z.string().uuid().optional(),
+  name:                  z.string().trim().min(1).max(120).optional(),
+  slug:                  z.string().trim().min(1).max(120).optional(),
+  description:           z.string().trim().max(1000).optional(),
+  capabilityDescription: z.string().trim().max(2000).optional(),
+  systemPrompt:          z.string().trim().min(1).max(50_000).optional(),
+  hookId:                z.string().trim().min(1).max(120).nullable().optional(),
+  maxSteps:              z.number().int().min(1).max(30).optional(),
+  temperature:           z.number().min(0).max(2).optional(),
+  isRootAgent:           z.boolean().optional(),
+  isActive:              z.boolean().optional(),
+  toolIds:               z.array(z.string().trim().min(1)).max(500).optional(),
+  modelId:               z.string().trim().min(1).max(255).nullable().optional(),
+  provider:              z.string().trim().min(1).max(64).nullable().optional(),
+  parentId:              z.string().cuid().nullable().optional(),
 });
 
 const setMappingSchema = z.object({
@@ -169,14 +179,19 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps): Router {
     const payload = createAgentSchema.parse(req.body);
     const companyId = resolveCompanyId(res, payload.companyId);
     const result = await deps.agentAdminService.createAgent(companyId, {
-      name:         payload.name,
-      description:  payload.description,
-      systemPrompt: payload.systemPrompt,
-      isRootAgent:  payload.isRootAgent,
-      toolIds:      payload.toolIds,
-      modelId:      payload.modelId,
-      provider:     payload.provider,
-      parentId:     payload.parentId,
+      name:                  payload.name,
+      slug:                  payload.slug,
+      description:           payload.description,
+      capabilityDescription: payload.capabilityDescription,
+      systemPrompt:          payload.systemPrompt,
+      hookId:                payload.hookId,
+      maxSteps:              payload.maxSteps,
+      temperature:           payload.temperature,
+      isRootAgent:           payload.isRootAgent,
+      toolIds:               payload.toolIds,
+      modelId:               payload.modelId,
+      provider:              payload.provider,
+      parentId:              payload.parentId,
     });
     if (!result.ok) { handleServiceError(res, result.error); return; }
     success(res, result.value, 'Agent created', 201);
@@ -198,15 +213,20 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps): Router {
     const payload = updateAgentSchema.parse(req.body);
     const companyId = resolveCompanyId(res, payload.companyId);
     const result = await deps.agentAdminService.updateAgent(id, companyId, {
-      name:         payload.name,
-      description:  payload.description,
-      systemPrompt: payload.systemPrompt,
-      isRootAgent:  payload.isRootAgent,
-      isActive:     payload.isActive,
-      toolIds:      payload.toolIds,
-      modelId:      payload.modelId,
-      provider:     payload.provider,
-      parentId:     payload.parentId,
+      name:                  payload.name,
+      slug:                  payload.slug,
+      description:           payload.description,
+      capabilityDescription: payload.capabilityDescription,
+      systemPrompt:          payload.systemPrompt,
+      hookId:                payload.hookId,
+      maxSteps:              payload.maxSteps,
+      temperature:           payload.temperature,
+      isRootAgent:           payload.isRootAgent,
+      isActive:              payload.isActive,
+      toolIds:               payload.toolIds,
+      modelId:               payload.modelId,
+      provider:              payload.provider,
+      parentId:              payload.parentId,
     });
     if (!result.ok) { handleServiceError(res, result.error); return; }
     success(res, result.value, 'Agent updated');

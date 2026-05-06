@@ -1,9 +1,13 @@
 /** Rules for conversation history windowing and poison filtering. */
 export const HISTORY_POLICY = {
   /** Max turns to include (user + assistant pairs) */
-  MAX_TURNS: 20,
+  MAX_TURNS: 30,
   /** Approximate max token budget for history */
-  MAX_TOKEN_BUDGET: 8_000,
+  MAX_TOKEN_BUDGET: 12_000,
+  /** Most recent turns kept verbatim. */
+  FULL_TIER_COUNT: 4,
+  /** Turns before the full tier kept in condensed form. */
+  CONDENSED_TIER_COUNT: 6,
   /** Regex patterns that indicate a poisoned turn (agent confused by past failures) */
   POISON_PATTERNS: [
     /permission denied for tool/i,
