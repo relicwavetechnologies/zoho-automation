@@ -216,8 +216,12 @@ export class OrchestrationEngine {
       return ok({ finalReply: errReply, toolsCalled: [] });
     }
 
-    const { toolsCalled } = supervisorResult.value;
+    const { toolsCalled, toolResults } = supervisorResult.value;
     const finalReply: FinalReply = { ...supervisorResult.value.finalReply, branding };
+    const actionLog = buildActionLog(toolResults);
+    const assistantHistoryContent = actionLog
+      ? `[Actions]\n${actionLog}\n\n[Reply]\n${finalReply.text}`
+      : finalReply.text;
 
     // ── 6. Persist conversation turn ──────────────────────────────────────
     await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
@@ -227,7 +231,7 @@ export class OrchestrationEngine {
     });
     await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
       role:      'assistant',
-      content:   finalReply.text,
+      content:   assistantHistoryContent,
       timestamp: this.deps.clock.now().toISOString(),
     });
 
@@ -256,4 +260,28 @@ export class OrchestrationEngine {
 
     return ok({ finalReply, toolsCalled });
   }
+}
+
+export interface SupervisorToolResultLogEntry {
+  readonly toolName: string;
+  readonly output: string;
+}
+
+export function buildActionLog(
+  toolResults: ReadonlyArray<SupervisorToolResultLogEntry>,
+): string | null {
+  const lines = toolResults
+    .filter(result => result.toolName !== 'manageTodos')
+    .map(result => {
+      const output = truncateForActionLog(result.output);
+      return output ? `- ${result.toolName}: ${output}` : `- ${result.toolName}:`;
+    });
+
+  return lines.length > 0 ? lines.join('\n') : null;
+}
+
+function truncateForActionLog(output: string): string {
+  const normalized = output.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= 200) return normalized;
+  return `${normalized.slice(0, 197)}...`;
 }

@@ -3,7 +3,7 @@
  *
  * Mounted at /api/admin/ai-models.
  *
- *   GET /   — list AI model target configurations
+ *   GET /   — list AI model target configurations (SUPER_ADMIN only)
  *   PUT /:targetKey  — update a target config (SUPER_ADMIN only)
  */
 
@@ -55,8 +55,7 @@ export function createAiModelsRoutes(deps: AiModelsRoutesDeps): Router {
   const router = Router();
   const { prisma } = deps;
 
-  // SUPER_ADMIN guard — only writes are restricted (global config).
-  // Reads are allowed for any authenticated admin (COMPANY_ADMIN can view).
+  // SUPER_ADMIN guard: model routing is global runtime configuration.
   function assertSuperAdmin(res: Response): void {
     if (!Boolean(res.locals['isSuperAdmin'])) {
       const e = new Error('Super admin access required') as RouteError;
@@ -66,6 +65,7 @@ export function createAiModelsRoutes(deps: AiModelsRoutesDeps): Router {
   }
 
   router.get('/', asyncRoute(async (_req, res) => {
+    assertSuperAdmin(res);
     const rows = await prisma.aiModelTargetConfig.findMany({ orderBy: { targetKey: 'asc' } });
     const targets = rows.map(r => ({
       id:                  r.id,

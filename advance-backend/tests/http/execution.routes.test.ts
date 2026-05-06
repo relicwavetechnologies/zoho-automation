@@ -146,8 +146,9 @@ describe('GET /executions', () => {
     const { status, body } = await callRoute(router, 'GET', '/');
     assert.equal(status, 200);
     const b = body as any;
-    assert.ok(Array.isArray(b.runs));
-    assert.equal(b.runs.length, 1);
+    assert.equal(b.success, true);
+    assert.ok(Array.isArray(b.data));
+    assert.equal(b.data.length, 1);
     assert.equal(b.total, 1);
   });
 
@@ -206,8 +207,9 @@ describe('GET /executions/:id', () => {
     const router = createExecutionRoutes({ executionQueryService: makeService(), logger: noopLogger });
     const { status, body } = await callRoute(router, 'GET', '/run-1');
     assert.equal(status, 200);
-    assert.equal((body as any).run.id, 'run-1');
-    assert.equal((body as any).run.userId, 'u-1');
+    assert.equal((body as any).success, true);
+    assert.equal((body as any).data.id, 'run-1');
+    assert.equal((body as any).data.userId, 'u-1');
   });
 
   it('returns 401 when companyId is missing', async () => {
@@ -248,8 +250,9 @@ describe('GET /executions/:id/events', () => {
     const { status, body } = await callRoute(router, 'GET', '/run-1/events');
     assert.equal(status, 200);
     const b = body as any;
-    assert.ok(Array.isArray(b.events));
-    assert.equal(b.events.length, 1);
+    assert.equal(b.success, true);
+    assert.ok(Array.isArray(b.data));
+    assert.equal(b.data.length, 1);
     assert.equal(b.total, 1);
   });
 

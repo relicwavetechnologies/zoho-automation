@@ -135,7 +135,10 @@ const fakeAgent: AgentAdminView = {
   id:           'ag-1',
   companyId:    'co-1',
   name:         'Sales Agent',
+  slug:         'sales-agent',
   systemPrompt: 'You are a sales agent.',
+  maxSteps:     8,
+  temperature:  0,
   isRootAgent:  true,
   isActive:     true,
   toolIds:      ['zoho-crm'],
@@ -322,6 +325,33 @@ describe('POST /agents', () => {
     });
     assert.equal(capturedCompanyId, 'cccccccc-cccc-cccc-cccc-000000000099');
   });
+
+  it('passes dynamic runtime fields to service', async () => {
+    let capturedInput: any;
+    const router = createAgentsRoutes({
+      agentAdminService: makeService({
+        createAgent: async (_cid, input) => { capturedInput = input; return { ok: true, value: fakeAgent }; },
+      }),
+      logger: noopLogger,
+    });
+
+    await callRoute(router, 'POST', '/agents', {
+      body: {
+        ...validBody,
+        slug:                  'sales-research',
+        capabilityDescription: 'Handles sales research.',
+        hookId:                'zoho-read',
+        maxSteps:              12,
+        temperature:           0.2,
+      },
+    });
+
+    assert.equal(capturedInput.slug, 'sales-research');
+    assert.equal(capturedInput.capabilityDescription, 'Handles sales research.');
+    assert.equal(capturedInput.hookId, 'zoho-read');
+    assert.equal(capturedInput.maxSteps, 12);
+    assert.equal(capturedInput.temperature, 0.2);
+  });
 });
 
 // ─── GET /agents/:id ──────────────────────────────────────────────────────────
@@ -409,6 +439,35 @@ describe('PUT /agents/:id', () => {
     assert.equal(capturedId, 'ag-99');
     assert.equal(capturedInput.name, 'Renamed');
     assert.equal(capturedInput.isActive, false);
+  });
+
+  it('passes dynamic runtime fields on update', async () => {
+    let capturedInput: any;
+    const router = createAgentsRoutes({
+      agentAdminService: makeService({
+        updateAgent: async (_id, _cid, input) => {
+          capturedInput = input;
+          return { ok: true, value: fakeAgent };
+        },
+      }),
+      logger: noopLogger,
+    });
+
+    await callRoute(router, 'PUT', '/agents/ag-99', {
+      body: {
+        slug:                  'sales-ops',
+        capabilityDescription: 'Routes sales operations tasks.',
+        hookId:                null,
+        maxSteps:              10,
+        temperature:           0.1,
+      },
+    });
+
+    assert.equal(capturedInput.slug, 'sales-ops');
+    assert.equal(capturedInput.capabilityDescription, 'Routes sales operations tasks.');
+    assert.equal(capturedInput.hookId, null);
+    assert.equal(capturedInput.maxSteps, 10);
+    assert.equal(capturedInput.temperature, 0.1);
   });
 });
 

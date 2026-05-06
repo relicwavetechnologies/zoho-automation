@@ -58,6 +58,7 @@ export interface DeptSummary {
   status:        string;
   managerCount:  number;
   memberCount:   number;
+  roleCount:     number;
   hasAgentConfig: boolean;
   createdAt:     string;
   updatedAt:     string;
@@ -115,7 +116,17 @@ export interface SkillView {
   departmentId: string | null;
 }
 
+export type DeptDetailSection =
+  | 'overview'
+  | 'roles'
+  | 'members'
+  | 'permissions'
+  | 'config';
+
+const ALL_DEPT_DETAIL_SECTIONS: DeptDetailSection[] = ['overview', 'roles', 'members', 'permissions', 'config'];
+
 export interface DeptDetail {
+  loadedSections: DeptDetailSection[];
   department: {
     id:          string;
     companyId:   string;
@@ -185,6 +196,7 @@ export class DepartmentAdminService {
         where:   { companyId },
         include: {
           memberships: { where: { status: 'active' }, include: { role: true } },
+          roles: { select: { id: true } },
           agentConfig: { select: { id: true } },
         },
         orderBy: [{ status: 'asc' }, { name: 'asc' }],
@@ -199,6 +211,7 @@ export class DepartmentAdminService {
         status:         r.status,
         managerCount:   r.memberships.filter(m => m.role.slug === 'MANAGER').length,
         memberCount:    r.memberships.length,
+        roleCount:      r.roles.length,
         hasAgentConfig: Boolean(r.agentConfig),
         createdAt:      r.createdAt.toISOString(),
         updatedAt:      r.updatedAt.toISOString(),
@@ -211,33 +224,68 @@ export class DepartmentAdminService {
 
   // ── Detail ────────────────────────────────────────────────────────────────
 
-  async getDepartmentDetail(departmentId: string, companyId: string): Promise<ServiceResult<DeptDetail>> {
+  async getDepartmentDetail(
+    departmentId: string,
+    companyId: string,
+    sections?: DeptDetailSection[],
+  ): Promise<ServiceResult<DeptDetail>> {
     try {
+      const requestedSections = sections && sections.length > 0 ? [...new Set(sections)] : ALL_DEPT_DETAIL_SECTIONS;
+      const includeRoles = requestedSections.includes('roles') || requestedSections.includes('members') || requestedSections.includes('permissions');
+      const includeMembers = requestedSections.includes('members') || requestedSections.includes('permissions');
+      const includePermissions = requestedSections.includes('permissions');
+      const includeConfig = requestedSections.includes('config');
+
       const dept = await this.deps.prisma.department.findFirst({
-        where: { id: departmentId, companyId },
-        include: {
-          agentConfig: true,
-          roles:       { orderBy: [{ isSystem: 'desc' }, { name: 'asc' }] },
-          memberships: {
-            where:   { status: 'active' },
-            include: { role: true, user: { select: { id: true, name: true, email: true } } },
-            orderBy: [{ role: { name: 'asc' } }, { createdAt: 'asc' }],
-          },
-          toolPermissions:   true,
-          userToolOverrides: true,
+        where:  { id: departmentId, companyId },
+        select: {
+          id: true,
+          companyId: true,
+          name: true,
+          slug: true,
+          description: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
         },
       });
       if (!dept) return fail({ kind: 'not_found', message: 'Department not found' });
 
-      const [departmentSkillRows, globalSkillRows] = await Promise.all([
-        this.deps.prisma.skill.findMany({
-          where:   { departmentId, status: { not: 'deleted' } },
-          orderBy: { sortOrder: 'asc' },
-        }),
-        this.deps.prisma.skill.findMany({
-          where:   { companyId, departmentId: null, status: { not: 'deleted' } },
-          orderBy: { sortOrder: 'asc' },
-        }),
+      const [agentConfig, roleRows, membershipRows, permissionRows, userOverrideRows, departmentSkillRows, globalSkillRows] = await Promise.all([
+        includeConfig
+          ? this.deps.prisma.departmentAgentConfig.findUnique({ where: { departmentId } })
+          : Promise.resolve(null),
+        includeRoles
+          ? this.deps.prisma.departmentRole.findMany({
+              where: { departmentId },
+              orderBy: [{ isSystem: 'desc' }, { name: 'asc' }],
+            })
+          : Promise.resolve([]),
+        includeMembers
+          ? this.deps.prisma.departmentMembership.findMany({
+              where:   { departmentId, status: 'active' },
+              include: { role: true, user: { select: { id: true, name: true, email: true } } },
+              orderBy: [{ role: { name: 'asc' } }, { createdAt: 'asc' }],
+            })
+          : Promise.resolve([]),
+        includePermissions
+          ? this.deps.prisma.departmentToolPermission.findMany({ where: { departmentId } })
+          : Promise.resolve([]),
+        includePermissions
+          ? this.deps.prisma.departmentUserToolOverride.findMany({ where: { departmentId } })
+          : Promise.resolve([]),
+        includeConfig
+          ? this.deps.prisma.skill.findMany({
+              where:   { departmentId, status: { not: 'deleted' } },
+              orderBy: { sortOrder: 'asc' },
+            })
+          : Promise.resolve([]),
+        includeConfig
+          ? this.deps.prisma.skill.findMany({
+              where:   { companyId, departmentId: null, status: { not: 'deleted' } },
+              orderBy: { sortOrder: 'asc' },
+            })
+          : Promise.resolve([]),
       ]);
 
       const mapSkill = (s: { id: string; name: string; slug: string; summary: string; markdown: string; tags: string[]; status: string; scope: string; departmentId: string | null }): SkillView => ({
@@ -247,6 +295,7 @@ export class DepartmentAdminService {
       });
 
       return ok({
+        loadedSections: requestedSections,
         department: {
           id:          dept.id,
           companyId:   dept.companyId,
@@ -258,13 +307,13 @@ export class DepartmentAdminService {
           updatedAt:   dept.updatedAt.toISOString(),
         },
         config: {
-          systemPrompt:    dept.agentConfig?.systemPrompt ?? '',
-          skillsMarkdown:  dept.agentConfig?.skillsMarkdown ?? '',
-          zohoRateLimit:   dept.agentConfig?.zohoRateLimitJson ?? null,
-          managerApproval: dept.agentConfig?.managerApprovalJson ?? null,
-          isActive:        dept.agentConfig?.isActive ?? true,
+          systemPrompt:    agentConfig?.systemPrompt ?? '',
+          skillsMarkdown:  agentConfig?.skillsMarkdown ?? '',
+          zohoRateLimit:   agentConfig?.zohoRateLimitJson ?? null,
+          managerApproval: agentConfig?.managerApprovalJson ?? null,
+          isActive:        agentConfig?.isActive ?? true,
         },
-        roles: dept.roles.map(r => ({
+        roles: roleRows.map(r => ({
           id:            r.id,
           name:          r.name,
           slug:          r.slug,
@@ -274,7 +323,7 @@ export class DepartmentAdminService {
           createdAt:     r.createdAt.toISOString(),
           updatedAt:     r.updatedAt.toISOString(),
         })),
-        memberships: dept.memberships.map(m => ({
+        memberships: membershipRows.map(m => ({
           id:        m.id,
           userId:    m.userId,
           name:      m.user.name,
@@ -286,14 +335,14 @@ export class DepartmentAdminService {
           createdAt: m.createdAt.toISOString(),
           updatedAt: m.updatedAt.toISOString(),
         })),
-        toolPermissions: dept.toolPermissions.map(p => ({
+        toolPermissions: permissionRows.map(p => ({
           id:          p.id,
           roleId:      p.roleId,
           toolId:      p.toolId,
           actionGroup: p.actionGroup,
           allowed:     p.allowed,
         })),
-        userOverrides: dept.userToolOverrides.map(o => ({
+        userOverrides: userOverrideRows.map(o => ({
           id:          o.id,
           userId:      o.userId,
           toolId:      o.toolId,
@@ -302,13 +351,15 @@ export class DepartmentAdminService {
         })),
         departmentSkills: departmentSkillRows.map(mapSkill),
         globalSkills:     globalSkillRows.map(mapSkill),
-        availableTools:   CANONICAL_TOOL_IDS.map(toolId => ({
-          toolId,
-          supportedActionGroups: [...TOOL_SUPPORTED_ACTIONS[toolId]],
-        })),
+        availableTools:   includePermissions
+          ? CANONICAL_TOOL_IDS.map(toolId => ({
+              toolId,
+              supportedActionGroups: [...TOOL_SUPPORTED_ACTIONS[toolId]],
+            }))
+          : [],
       });
     } catch (e) {
-      this.log.error('dept.detail.failed', { departmentId, error: String(e) });
+      this.log.error('dept.detail.failed', { departmentId, sections, error: String(e) });
       return fail({ kind: 'internal', message: 'Failed to load department detail' });
     }
   }

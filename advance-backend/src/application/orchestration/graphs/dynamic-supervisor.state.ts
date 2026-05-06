@@ -1,0 +1,56 @@
+import { Annotation } from '@langchain/langgraph';
+import type { Tool as AppTool } from '../tools/tool.contract';
+import type { PermissionResult } from '../../permissions/permission.types';
+import type { RunContext } from '../../../domain/orchestration/run-context';
+
+export interface SupervisorGraphMessage {
+  readonly role: 'user' | 'assistant';
+  readonly content: string;
+}
+
+export interface SupervisorGraphDelegation {
+  readonly slug: string;
+  readonly task: string;
+  readonly result: string;
+}
+
+export const SupervisorGraphState = Annotation.Root({
+  userMessage: Annotation<string>(),
+  conversationHistory: Annotation<SupervisorGraphMessage[]>({
+    reducer: (_prev, next) => next,
+    default: () => [],
+  }),
+  companyId: Annotation<string>(),
+  perm: Annotation<PermissionResult>(),
+  runContext: Annotation<RunContext>(),
+  permittedTools: Annotation<ReadonlyArray<AppTool<unknown, unknown>>>({
+    reducer: (_prev, next) => next,
+    default: () => [],
+  }),
+  chatId: Annotation<string | null>({
+    reducer: (_prev, next) => next,
+    default: () => null,
+  }),
+  supervisorResult: Annotation<string | null>({
+    reducer: (_prev, next) => next,
+    default: () => null,
+  }),
+  toolCallsMade: Annotation<string[]>({
+    default: () => [],
+    reducer: (prev, next) => [...prev, ...next],
+  }),
+  agentDelegations: Annotation<SupervisorGraphDelegation[]>({
+    default: () => [],
+    reducer: (prev, next) => [...prev, ...next],
+  }),
+  status: Annotation<'thinking' | 'done' | 'error'>({
+    reducer: (_prev, next) => next,
+    default: () => 'thinking',
+  }),
+  error: Annotation<string | null>({
+    reducer: (_prev, next) => next,
+    default: () => null,
+  }),
+});
+
+export type SupervisorGraphStateValue = typeof SupervisorGraphState.State;

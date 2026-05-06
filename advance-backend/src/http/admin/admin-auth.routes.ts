@@ -1,6 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { Prisma } from '../../generated/prisma';
@@ -30,7 +29,7 @@ type AdminJwtPayload = {
 type RouteError = Error & { status: number };
 
 const require = createRequire(__filename);
-const bcrypt = require(join(__dirname, '../../../../backend/node_modules/bcryptjs')) as {
+const bcrypt = require('bcryptjs') as {
   hash(input: string, rounds: number): Promise<string>;
   compare(input: string, hashed: string): Promise<boolean>;
 };

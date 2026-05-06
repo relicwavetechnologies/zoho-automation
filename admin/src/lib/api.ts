@@ -130,3 +130,287 @@ export const channelMappingsApi = {
   remove: (body: RemoveMappingInput, token?: string) =>
     api.delete("/api/channel-mappings", body, token),
 };
+
+export type DepartmentSummary = {
+  id: string;
+  companyId: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  status: "active" | "archived" | string;
+  managerCount: number;
+  memberCount: number;
+  roleCount: number;
+  hasAgentConfig: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DepartmentRole = {
+  id: string;
+  name: string;
+  slug: string;
+  isSystem: boolean;
+  isDefault: boolean;
+  zohoReadScope: "personalized" | "show_all" | string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DepartmentMembership = {
+  id: string;
+  userId: string;
+  name: string | null;
+  email: string;
+  roleId: string;
+  roleSlug: string;
+  roleName: string;
+  status: "active" | "inactive" | string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DepartmentToolPermission = {
+  id: string;
+  roleId: string;
+  toolId: string;
+  actionGroup: string;
+  allowed: boolean;
+};
+
+export type DepartmentUserOverride = {
+  id: string;
+  userId: string;
+  toolId: string;
+  actionGroup: string;
+  allowed: boolean;
+};
+
+export type DepartmentSkill = {
+  id: string;
+  name: string;
+  slug: string;
+  summary: string;
+  markdown: string;
+  tags: string[];
+  status: string;
+  scope: string;
+  departmentId: string | null;
+};
+
+export type DepartmentAvailableTool = {
+  toolId: string;
+  supportedActionGroups: string[];
+};
+
+export type DepartmentDetailSection =
+  | "overview"
+  | "roles"
+  | "members"
+  | "permissions"
+  | "config";
+
+export type DepartmentDetail = {
+  loadedSections: DepartmentDetailSection[];
+  department: {
+    id: string;
+    companyId: string;
+    name: string;
+    slug: string;
+    description: string | null;
+    status: "active" | "archived" | string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  config: {
+    systemPrompt: string;
+    skillsMarkdown: string;
+    zohoRateLimit: unknown;
+    managerApproval: unknown;
+    isActive: boolean;
+  };
+  roles: DepartmentRole[];
+  memberships: DepartmentMembership[];
+  toolPermissions: DepartmentToolPermission[];
+  userOverrides: DepartmentUserOverride[];
+  departmentSkills: DepartmentSkill[];
+  globalSkills: DepartmentSkill[];
+  availableTools: DepartmentAvailableTool[];
+};
+
+export type DepartmentCandidate = {
+  channelIdentityId: string;
+  userId?: string;
+  name?: string;
+  email?: string;
+  workspaceRole?: string;
+  isWorkspaceMember: boolean;
+  isAlreadyAssigned: boolean;
+  larkDisplayName?: string;
+  larkUserId?: string;
+  larkOpenId?: string;
+  larkSourceRoles: string[];
+};
+
+export type CreateDepartmentInput = {
+  companyId?: string;
+  name: string;
+  description?: string;
+};
+
+export type UpdateDepartmentInput = {
+  name?: string;
+  description?: string | null;
+  status?: "active" | "archived";
+};
+
+export type UpdateDepartmentConfigInput = {
+  systemPrompt: string;
+  skillsMarkdown: string;
+  zohoRateLimit?: unknown;
+  managerApproval?: unknown;
+  isActive?: boolean;
+};
+
+export type CreateDepartmentRoleInput = {
+  name: string;
+  slug: string;
+  zohoReadScope?: "personalized" | "show_all";
+};
+
+export type UpdateDepartmentRoleInput = {
+  name: string;
+  isDefault?: boolean;
+  zohoReadScope?: "personalized" | "show_all";
+};
+
+export type UpsertDepartmentMembershipInput = {
+  userId?: string;
+  channelIdentityId?: string;
+  roleId?: string;
+  status?: "active" | "inactive";
+};
+
+export const departmentsApi = {
+  list: (token?: string) =>
+    api.get<DepartmentSummary[]>("/api/admin/departments", token),
+  get: (id: string, token?: string, sections?: DepartmentDetailSection[]) =>
+    api.get<DepartmentDetail>(
+      `/api/admin/departments/${id}${
+        sections && sections.length > 0
+          ? `?sections=${encodeURIComponent(sections.join(","))}`
+          : ""
+      }`,
+      token,
+    ),
+  create: (body: CreateDepartmentInput, token?: string) =>
+    api.post<{
+      id: string;
+      companyId: string;
+      name: string;
+      slug: string;
+      status: string;
+      managerRoleId: string;
+      memberRoleId: string;
+    }>("/api/admin/departments", body, token),
+  update: (id: string, body: UpdateDepartmentInput, token?: string) =>
+    api.put<{
+      id: string;
+      name: string;
+      slug: string;
+      description: string | null;
+      status: string;
+      updatedAt: string;
+    }>(`/api/admin/departments/${id}`, body, token),
+  archive: (id: string, token?: string) =>
+    api.post<{ id: string; status: string }>(
+      `/api/admin/departments/${id}/archive`,
+      {},
+      token,
+    ),
+  updateConfig: (
+    id: string,
+    body: UpdateDepartmentConfigInput,
+    token?: string,
+  ) =>
+    api.put<{
+      departmentId: string;
+      systemPrompt: string;
+      skillsMarkdown: string;
+      isActive: boolean;
+      updatedAt: string;
+    }>(`/api/admin/departments/${id}/config`, body, token),
+  createRole: (id: string, body: CreateDepartmentRoleInput, token?: string) =>
+    api.post<{
+      id: string;
+      name: string;
+      slug: string;
+      zohoReadScope: string;
+    }>(`/api/admin/departments/${id}/roles`, body, token),
+  updateRole: (
+    id: string,
+    roleId: string,
+    body: UpdateDepartmentRoleInput,
+    token?: string,
+  ) =>
+    api.put<{
+      id: string;
+      name: string;
+      slug: string;
+      isDefault: boolean;
+      zohoReadScope: string;
+    }>(`/api/admin/departments/${id}/roles/${roleId}`, body, token),
+  deleteRole: (id: string, roleId: string, token?: string) =>
+    api.delete<{ deleted: boolean }>(
+      `/api/admin/departments/${id}/roles/${roleId}`,
+      {},
+      token,
+    ),
+  upsertMembership: (
+    id: string,
+    body: UpsertDepartmentMembershipInput,
+    token?: string,
+  ) =>
+    api.put<DepartmentMembership>(
+      `/api/admin/departments/${id}/memberships`,
+      body,
+      token,
+    ),
+  removeMembership: (id: string, userId: string, token?: string) =>
+    api.delete<{ deleted: boolean }>(
+      `/api/admin/departments/${id}/memberships/${userId}`,
+      {},
+      token,
+    ),
+  searchCandidates: (id: string, query: string, token?: string) =>
+    api.get<DepartmentCandidate[]>(
+      `/api/admin/departments/${id}/candidates?query=${encodeURIComponent(query)}`,
+      token,
+    ),
+  setRolePermission: (
+    id: string,
+    roleId: string,
+    toolId: string,
+    actionGroup: string,
+    allowed: boolean,
+    token?: string,
+  ) =>
+    api.put<DepartmentToolPermission>(
+      `/api/admin/departments/${id}/role-permissions/${roleId}/${toolId}/${actionGroup}`,
+      { allowed },
+      token,
+    ),
+  setUserOverride: (
+    id: string,
+    userId: string,
+    toolId: string,
+    actionGroup: string,
+    allowed: boolean,
+    token?: string,
+  ) =>
+    api.put<DepartmentUserOverride>(
+      `/api/admin/departments/${id}/user-overrides/${userId}/${toolId}/${actionGroup}`,
+      { allowed },
+      token,
+    ),
+};

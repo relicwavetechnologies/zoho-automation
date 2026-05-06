@@ -1,7 +1,7 @@
 # Feature: Admin UI Redesign
 
 > **Status:** `in-progress`
-> **Last updated:** 2026-05-06 by claude
+> **Last updated:** 2026-05-06 by codex
 
 ---
 
@@ -93,69 +93,48 @@ Order by visibility:
 <!-- AI: overwrite this entire section every session. Do not append. -->
 
 **What is working:**
-- **Dark mode + theme toggle**:
-  - `useTheme()` hook in `admin/src/lib/use-theme.ts` — `light | dark | system` with localStorage persistence (`divo_admin_theme`) and live `prefers-color-scheme` listener
-  - `<ThemeToggle />` in `admin/src/components/admin/theme-toggle.tsx` — Sun/Moon/Monitor icon swap, mounted in TopBar
-  - No-flash inline init script in `admin/index.html` reads localStorage synchronously and applies `.dark` before React mounts
-  - Dark tokens refined in `global.css`: floor `222 32% 5%` → mat `222 28% 9%` → card `222 22% 13%` (proper hierarchy preserved)
-  - **Emphasis stays dark in both themes** (`222 35% 3%` in dark, `222 34% 11%` in light) — does NOT flip to white. White-on-dark would be harsh; the deeper-than-floor "void" effect is the dark-mode hero treatment
-  - Accent (maroon) brightens to `350 70% 52%` in dark for readability
-  - Shadow recipe in dark uses hairline ring + soft drop (drop alone disappears on dark surfaces)
-  - Avatar tone classes in `OverviewPage.toneClasses` and AgentDrawer status pills now have `dark:` variants (light tint vs `bg-{color}-500/15 dark:text-{color}-300`)
-  - StatTile chevron circle and AgentNode icon containers use `bg-emphasis-foreground/15` instead of hardcoded `bg-white/15` so they adapt to token semantics
-- All TopBar icon buttons standardized to h-8 with shadow-soft, matching the new ThemeToggle visual weight
-- **L-shape root layout** in `admin-shell.tsx`:
-  - Outer container is `h-screen overflow-hidden` — page itself never scrolls
-  - Top strip (`TopBar`, h-16) sits on the floor — full width across the top
-  - Below the strip: sidebar on the left (floor) + mat on the right
-  - Mat is `flex-1 bg-mat lg:rounded-tl-[2rem]` — only the top-left corner is rounded (the L-corner), other edges are flush with viewport
-  - Mat has `overflow-hidden` and contains a `h-full overflow-y-auto` scroller — only mat content scrolls, never the page
-  - On `<lg` screens the sidebar collapses into Sheet (mobile menu in TopBar)
-- **TopBar redesign**: no longer sticky, no special bg — just a thin strip that sits on the floor surface
-- **Sidebar redesign**: `bg-transparent` (lets floor show through), no border-r, smaller header (h-12 vs h-20), active nav items now render as white-pill-on-floor (`bg-card shadow-soft`) instead of black blob
-- **Floor + Mat + Card 3-tier surface system** in `admin/src/styles/global.css`:
-  - `--background` (floor): warm grey `24 14% 89%` — outer page surface, sidebar sits on this
-  - `--mat`: warmer cream `30 22% 96%` — large rounded container holding all main content
-  - `--card`: pure white `0 0% 100%` — floating widgets on the mat
-- `tailwind.config.js` exposes `mat` colour group
-- `admin-shell.tsx` wraps content in a `rounded-3xl bg-mat` container with floor padding around it (the "mat on floor" effect)
-- `top-bar.tsx` is now transparent over mat (was `bg-background/80`)
-- **OverviewPage rewritten from scratch** to match Codename.com reference layout:
-  - User-chip row at top (PersonChip helper inlined — pill-shaped chip with avatar + name)
-  - Faded large page title ("Operations dashboard")
-  - Hero with `text-6xl` total executions number + pink primary pill (+12.4%) + outline pink pill (+342 runs) + subtitle
-  - 5 stat tiles in a horizontal scroll row: Top agent / Best run (BLACK emphasis with chevron) / Members / Cost (outlined primary border) / Success
-  - Person stat pill row (3 long pills + black "Details" CTA)
-  - 3-column grid: channel breakdown card / vertical bar chart card / right-rail leaderboard with gradient pink-to-white
-  - Bottom card: pink hero panel + bar chart with peak labels
-- All cards use shadcn `Card` + `CardContent` primitives (no custom card shells)
-- `tsc -b` passes
-- Data wiring: pulls live counts from `/api/admin/executions`, `/api/admin/members`, `/api/admin/departments` with sensible fallback values when empty
+- Theme, floor/mat/card surface system, dark mode toggle, and redesigned shell remain in place from earlier sessions.
+- `OverviewPage` and `AgentsPage` keep the newer visual language and still build cleanly.
+- **Departments page is now fully rebuilt around live `advance-backend` data**:
+  - `admin/src/lib/api.ts` now exports typed department contracts plus a `departmentsApi` client for list/detail/config/role/member/permission calls.
+  - `admin/src/pages/departments/use-department-data.ts` owns list loading, section-scoped detail loading, tool catalog lookup, per-section error/loading state, and all department mutations.
+  - `admin/src/pages/DepartmentsPage.tsx` now shows real metrics, a richer registry table, row-click drawer opening, and a working “New department” flow.
+  - `admin/src/pages/departments/DepartmentDrawer.tsx` implements the resizable sheet pattern used by `AgentDrawer`, with tabs for `Overview`, `Roles`, `Members`, `Permissions`, and `Config`.
+  - Department tabs no longer hydrate one big payload up front. The drawer loads `overview` first, then fetches each tab’s data only when that tab is opened.
+  - Every tab now renders a purpose-built skeleton while its own section is loading, instead of blocking the whole drawer behind one spinner.
+  - Permission and user-override checkboxes in `PermissionsTab` now update optimistically from local cache, then reconcile against the backend in the background.
+  - `OverviewTab` edits name/description/status.
+  - `RolesTab` creates custom roles and updates default/scope settings.
+  - `MembersTab` searches synced candidates, adds members, updates role assignments, and removes members.
+  - `PermissionsTab` edits role-level tool permissions and per-user overrides against the backend action-group matrix.
+  - `ConfigTab` edits prompt/skills plus JSON-backed `zohoRateLimit` and `managerApproval` settings, and exposes the config `isActive` switch.
+- `admin` build verification passes:
+  - `cd admin && pnpm exec tsc -b`
+  - `cd admin && pnpm build`
 
 **What is in progress:**
-- Nothing — clean stop. Awaiting visual feedback.
+- Nothing — implementation is complete at code/build level.
 
 **What is not started:**
-- Sidebar visual refresh (still uses old style — looks fine on the floor but not redesigned to match references)
-- Other pages (Members, Departments, Agents, AiOps, Settings) — still use old layout
-- Real data wiring for the placeholder numbers (top agent, best run cost, KPI numbers, percentage breakdowns). Currently shows realistic-looking placeholders — backend endpoints for these don't exist yet.
-- Bar chart and "sales dynamic" line chart are CSS placeholders, not real charts — would need `recharts` or similar for proper rendering
-- Brand logos for integrations are colored circles with letters — could be replaced with real SVG logos later
+- Sidebar visual refresh is still incomplete relative to the original reference set.
+- Members, AiOps, and Settings pages still need the same redesign pass that Departments now has.
+- Overview still contains placeholder analytics for top-agent/cost style KPIs because the backend does not expose those rollups yet.
+- No browser/manual interaction pass has been done yet on `/departments`; only TypeScript and production build verification is complete.
 
 **Blockers:**
 - None.
 
 **Next action:**
-> Spin up `cd admin && pnpm dev`, open `/home`. Confirm:
-> 1. Floor + mat layering is visible (rounded warm-cream container on slightly darker warm-grey floor)
-> 2. Hero number is huge with pink delta pill
-> 3. Black "Best run" tile stands out among the 5 stat tiles
-> 4. Person pill rows render correctly with avatars
-> 5. 3-column grid breaks on smaller screens but keeps card identity
-> 6. Bottom pink hero panel + bar chart card renders
+> Start `cd admin && pnpm dev`, open `/departments`, and manually verify:
+> 1. department list loads from `advance-backend`
+> 2. create dialog creates a department and opens its drawer
+> 3. only the `Overview` tab loads initially; `Roles`, `Members`, `Permissions`, and `Config` fetch only when opened
+> 4. each unopened tab shows a skeleton first, then resolves into live data
+> 5. permission ticks flip immediately on click, then stay in sync after the request resolves
+> 6. role/member/permission/config mutations persist and refresh the right tab
+> 7. drawer layout remains usable on narrower widths
 >
-> Once user approves the visual, replace placeholder numbers with real data sources (will need backend endpoints for top-agent / cost-per-run / kpi).
-> Then move to other pages (Members, Departments, etc.) using the same patterns.
+> If manual QA is clean, move the same drawer/detail treatment to the next admin page that still uses placeholder UI.
 
 ---
 
@@ -167,6 +146,7 @@ Order by visibility:
 | Custom layer lives in `components/admin/` | Already established pattern — keep it |
 | Token-driven recolour, never hardcoded | Future palette swaps stay one-file changes |
 | Light theme is default | All reference screenshots are light-first; dark mode stays supported but secondary |
+| Department config uses JSON editors for `zohoRateLimit` and `managerApproval` | The `advance-backend` contract stores these as arbitrary JSON blobs, not simple booleans; exposing toggles would hide real backend behavior |
 
 ---
 
@@ -193,6 +173,21 @@ Order by visibility:
 ---
 
 ## Progress Log
+
+### 2026-05-06 — codex
+- Implemented the department management surface in `admin/` against the existing `advance-backend` API: typed `departmentsApi`, `useDepartmentData`, `CreateDepartmentDialog`, `DepartmentDrawer`, and the five drawer tabs (`Overview`, `Roles`, `Members`, `Permissions`, `Config`).
+- Rewrote `DepartmentsPage.tsx` to use live list/detail data, open the resizable drawer on row click, and show real department/member/role metrics.
+- Chose JSON editors for `zohoRateLimit` / `managerApproval` because the backend stores structured JSON rather than booleans.
+- Verification: `cd admin && pnpm exec tsc -b` and `cd admin && pnpm build` both pass.
+
+### 2026-05-06 — codex
+- Reworked the department drawer to load data per tab instead of fetching all department detail up front.
+- Added section-aware skeleton loaders and section-scoped error/loading state so each tab can fetch, retry, and refresh independently.
+- Verification: `cd admin && pnpm exec tsc -b`, `cd admin && pnpm build`, and `cd advance-backend && pnpm typecheck` pass.
+
+### 2026-05-07 — codex
+- Made department permission and user-override checkboxes optimistic inside `useDepartmentData()`: local cache updates immediately, network reconcile happens in the background, and failed writes roll back to the previous state.
+- Verification: `cd admin && pnpm exec tsc -b` and `cd admin && pnpm build` pass.
 
 ### 2026-05-06 — claude (session 7)
 - User feedback: the "New department" button (and all `bg-primary` action buttons) was still orange-red, despite the dashboard moving to maroon. They wanted the orange replaced.

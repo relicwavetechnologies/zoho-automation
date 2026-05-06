@@ -17,6 +17,7 @@ export interface AgentAdminServiceDeps {
   channelMappingRepo:  ChannelMappingRepository;
   prisma:              PrismaClient;
   logger:              Logger;
+  invalidateAgentCache?: (companyId: string) => Promise<void>;
 }
 
 
@@ -44,6 +45,19 @@ type ServiceResult<T> = { ok: true; value: T } | { ok: false; error: AgentServic
 
 function ok<T>(value: T): ServiceResult<T> { return { ok: true,  value }; }
 function fail<T>(error: AgentServiceError): ServiceResult<T> { return { ok: false, error }; }
+
+function slugify(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'agent';
+}
+
+function isValidSlug(value: string): boolean {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
+}
 
 export class AgentAdminService {
   private readonly log: Logger;
@@ -92,13 +106,17 @@ export class AgentAdminService {
 
   async createAgent(
     companyId: string,
-    input: Omit<CreateAgentInput, 'companyId'>,
+    input: Omit<CreateAgentInput, 'companyId' | 'slug'> & { slug?: string | undefined },
   ): Promise<ServiceResult<AgentAdminView>> {
     // Deduplicate tool IDs
     const toolIds = input.toolIds ? [...new Set(input.toolIds)] : [];
+    const slug = input.slug ? slugify(input.slug) : slugify(input.name);
 
     const toolErr = await this.validateToolIds(toolIds);
     if (toolErr) return fail(toolErr);
+    if (!isValidSlug(slug)) {
+      return fail({ kind: 'validation', message: 'Agent slug must be URL-safe lowercase text' });
+    }
 
     // Validate parent
     if (input.parentId) {
@@ -111,14 +129,15 @@ export class AgentAdminService {
       }
     }
 
-    const result = await this.deps.agentDefRepo.create({ ...input, companyId, toolIds });
+    const result = await this.deps.agentDefRepo.create({ ...input, companyId, slug, toolIds });
     if (!result.ok) {
       if (this.isUniqueConstraint(result.error)) {
-        return fail({ kind: 'conflict', message: 'An agent with this name already exists for this company' });
+        return fail({ kind: 'conflict', message: 'An agent with this name or slug already exists for this company' });
       }
       this.log.error('agent.create.failed', { error: String(result.error) });
       return fail({ kind: 'internal', message: 'Failed to create agent' });
     }
+    await this.invalidateCache(companyId);
     return ok(result.value);
   }
 
@@ -136,6 +155,14 @@ export class AgentAdminService {
       input = { ...input, toolIds };
       const toolErr = await this.validateToolIds(toolIds);
       if (toolErr) return fail(toolErr);
+    }
+
+    if (input.slug !== undefined) {
+      const slug = slugify(input.slug);
+      if (!isValidSlug(slug)) {
+        return fail({ kind: 'validation', message: 'Agent slug must be URL-safe lowercase text' });
+      }
+      input = { ...input, slug };
     }
 
     // Validate parentId if being changed
@@ -165,11 +192,12 @@ export class AgentAdminService {
     const result = await this.deps.agentDefRepo.update(id, companyId, input);
     if (!result.ok) {
       if (this.isUniqueConstraint(result.error)) {
-        return fail({ kind: 'conflict', message: 'An agent with this name already exists for this company' });
+        return fail({ kind: 'conflict', message: 'An agent with this name or slug already exists for this company' });
       }
       this.log.error('agent.update.failed', { id, error: String(result.error) });
       return fail({ kind: 'internal', message: 'Failed to update agent' });
     }
+    await this.invalidateCache(companyId);
     return ok(result.value);
   }
 
@@ -191,6 +219,7 @@ export class AgentAdminService {
       this.log.error('agent.delete.failed', { id, error: String(result.error) });
       return fail({ kind: 'internal', message: 'Failed to delete agent' });
     }
+    await this.invalidateCache(companyId);
     return ok(undefined);
   }
 
@@ -202,6 +231,7 @@ export class AgentAdminService {
       isActive: !existing.value.isActive,
     });
     if (!result.ok) return fail({ kind: 'internal', message: 'Failed to toggle agent status' });
+    await this.invalidateCache(companyId);
     return ok(result.value);
   }
 
@@ -238,5 +268,13 @@ export class AgentAdminService {
 
   private isUniqueConstraint(e: unknown): boolean {
     return e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
+  }
+
+  private async invalidateCache(companyId: string): Promise<void> {
+    try {
+      await this.deps.invalidateAgentCache?.(companyId);
+    } catch (e) {
+      this.log.warn('agent.cache.invalidate_failed', { companyId, error: String(e) });
+    }
   }
 }

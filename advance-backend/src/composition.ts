@@ -70,6 +70,8 @@ import { OrchestrationEngine } from './application/orchestration/engine/core';
 import { AgentDefinitionRepository } from './infrastructure/persistence/agent-definition.repository';
 import { ChannelMappingRepository } from './infrastructure/persistence/channel-mapping.repository';
 import { AgentAdminService } from './application/agents/agent-admin.service';
+import { AgentCatalogService } from './application/agents/agent-catalog.service';
+import { AgentCatalogCache } from './application/agents/agent-catalog.cache';
 import { DepartmentAdminService } from './application/departments/department-admin.service';
 import { AgentResolver } from './application/orchestration/agents/agent-resolver';
 import { ChatMessageSerializer } from './application/orchestration/chat-message-serializer';
@@ -135,6 +137,7 @@ export interface Container {
   deptToolPermRepo: DeptToolPermissionRepository;
   // Agent admin CRUD
   agentAdminService:      AgentAdminService;
+  agentCatalogCache:      AgentCatalogCache;
   departmentAdminService: DepartmentAdminService;
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
@@ -466,26 +469,36 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // ── Multi-agent layer ──────────────────────────────────────────────────
   const agentDefRepo       = new AgentDefinitionRepository(prisma);
   const channelMappingRepo = new ChannelMappingRepository(prisma);
+  const agentResolver = new AgentResolver(agentDefRepo, cache, logger.child({ service: 'agent-resolver' }));
+  const agentCatalogService = new AgentCatalogService(agentDefRepo, logger.child({ service: 'agent-catalog' }));
+  const agentCatalogCache = new AgentCatalogCache(agentCatalogService, logger.child({ service: 'agent-catalog-cache' }));
   const agentAdminService  = new AgentAdminService({
     agentDefRepo,
     channelMappingRepo,
     prisma,
     logger: logger.child({ service: 'agent-admin' }),
+    invalidateAgentCache: async (companyId: string) => {
+      await agentResolver.invalidate(companyId);
+      agentCatalogCache.invalidate(companyId);
+    },
   });
   const departmentAdminService = new DepartmentAdminService({
     prisma,
     logger: logger.child({ service: 'department-admin' }),
   });
-  const agentResolver = new AgentResolver(agentDefRepo, cache, logger.child({ service: 'agent-resolver' }));
   const todoRepo      = new SupervisorTodoRepository(prisma);
 
   const supervisor = new SupervisorAgent({
     model,
     agentResolver,
+    agentCatalogCache,
     todoRepo,
     prisma,
     logger:        logger.child({ service: 'supervisor' }),
     clock:         systemClock,
+    dynamicGraphEnabled: env.DYNAMIC_GRAPH_ENABLED,
+    dynamicGraphShadow:  env.DYNAMIC_GRAPH_SHADOW,
+    supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
     ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
   });
 
@@ -577,6 +590,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     deptToolPermRepo,
     // Agent admin CRUD
     agentAdminService,
+    agentCatalogCache,
     departmentAdminService,
     // OAuth surfaces
     googleOAuthService,
