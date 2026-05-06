@@ -7,39 +7,91 @@
 ## MANDATORY: How Every AI Session Must Work
 
 These rules exist so that switching between Claude, Codex, Cursor, or any other tool mid-feature
-causes zero context loss. The feature docs in `docs/features/` are the shared memory.
+causes zero context loss. The **Lark Wiki** is the source of truth for all plans and progress.
+
+### Lark Wiki — Source of Truth
+
+All project documentation lives in the **Lark Wiki** under `Tech Hub > 02 — Internal Projects > Divo`.
+Use the `lark-wiki` skill (via `lark-cli`) to read and write wiki pages. Do NOT maintain separate
+local markdown files for plans or progress — the wiki is canonical.
+
+**Wiki structure:**
+```
+Divo
+├── Divo — Overview                    (project summary)
+├── Divo — Architecture & Tech Stack   (stack, infra)
+├── Divo — URLs & Access               (endpoints, credentials)
+├── Divo — Reviews & MoMs              (meeting notes)
+├── Divo — References/                 (stable reference docs)
+│    ├── UI Design System              (mandatory for admin UI work)
+│    ├── Architecture Vision           (long-term platform vision)
+│    └── DTO Sync Contract             (layer contracts)
+└── Divo — Updates/                    (active feature work)
+     └── <Feature Name>/              (one folder per active feature)
+          ├── Plan                     (phases, decisions, architecture)
+          └── Updates                  (current state, progress log)
+```
+
+**Wiki page tokens (for lark-cli):**
+
+| Page | obj_token |
+|---|---|
+| Divo — References (parent) | `UYPad3dGMoIh4kx4mOqleaaKg2f` |
+| UI Design System | `JKjQds9SGoOT6oxlPYDlqQX6gIe` |
+| Architecture Vision | `PyIId3wFyo7rpIx6hJwlQVjogRh` |
+| DTO Sync Contract | `Oc4Wd9eJMoTs5AxudrSlfQhSgtd` |
+| Divo — Updates (parent) | `UB95dbVBuotWHZx1VQYlZubRgT4` |
+| Dynamic Agent Platform / Plan | `Na3EddgpMohPKFxaZovlkxUygkg` |
+| Dynamic Agent Platform / Updates | `BfIdddnZwoqwzRxwIg8lt1JBgKh` |
+
+**Wiki space ID:** `7635896570625396443` (Tech Hub)
+**Divo node token:** `XzW1wZDlJirIx1kPB0VlE2gfg7b`
+
+### How to read/write wiki pages
+
+```bash
+# Read a page
+lark-cli docs +fetch --api-version v2 --doc <obj_token> --doc-format markdown
+
+# Overwrite a page with new content
+lark-cli docs +update --api-version v2 --doc <obj_token> --command overwrite --doc-format markdown --content @path/to/file.md
+
+# Append to a page
+lark-cli docs +update --api-version v2 --doc <obj_token> --command append --doc-format markdown --content "## New section\n\nContent here"
+
+# Create a new sub-page under a parent node
+lark-cli wiki +node-create --space-id 7635896570625396443 --parent-node-token <parent_node_token> --title "Page Title"
+```
 
 ### At the START of every session
-1. Read `docs/features/` — find the feature doc for what you are about to work on
+1. Fetch the **Updates** page for the feature you're working on from the wiki
 2. Read its **Current State** section — this is where the last AI left off
-3. If the user's request doesn't match any existing feature doc, ask before creating code
+3. If the user's request doesn't match any existing feature, ask before creating code
 
 ### During a session
-- If you make an architectural decision that isn't obvious from the code, record it in the **Key Decisions** table
-- If you hit a blocker, write it under **Blockers** in Current State immediately
+- If you make an architectural decision that isn't obvious from the code, add it to the **Plan** page's Key Decisions table
+- If you hit a blocker, note it in the **Updates** page immediately
 
 ### At the END of every session (before stopping)
-1. **Overwrite** the **Current State** section with a fresh snapshot of RIGHT NOW
+1. **Overwrite** the **Updates** page with a fresh snapshot of RIGHT NOW
    - What is working
    - What is in progress (be specific: file + function level)
    - What is not started
    - The exact next action for whoever picks this up next
-2. **Append** one entry to the **Progress Log** (date, tool name, what you did)
-3. Update the `Status` badge at the top of the feature doc
+   - Append a progress log entry (date, tool name, what you did)
+2. Push the updated content to the wiki using `lark-cli docs +update`
 
 **This is not optional.** If you skip this step, the next AI session starts blind.
-Treat updating the feature doc as the last line of code you write in every session.
+Treat updating the wiki as the last action you take in every session.
 
 ### When starting a brand-new feature
-Copy `docs/features/TEMPLATE.md` to `docs/features/NN-feature-name.md` and fill it in
-before writing any code. Plan first, then implement.
+1. Create a new folder under `Divo — Updates` in the wiki with **Plan** and **Updates** sub-pages
+2. Fill in the Plan page before writing any code
 
 ### Before writing any admin UI code
-**Read `docs/UI-DESIGN-SYSTEM.md` end-to-end.** It is the canonical guide for the admin
-visual language: floor/mat/card surface system, color tokens, typography scale, density
-rules, component patterns, and anti-patterns. Every UI change in `admin/` must trace
-back to a rule in that doc. If you need to break a rule, document why in the relevant
-feature doc's Key Decisions table.
+**Fetch and read the UI Design System page from the wiki** (`obj_token: JKjQds9SGoOT6oxlPYDlqQX6gIe`).
+It is the canonical guide for the admin visual language. Every UI change in `admin/` must trace
+back to a rule in that doc.
 
 ---
 
@@ -57,19 +109,17 @@ Core runtime — supervisor-delegation pattern:
 
 ---
 
-## Feature Docs (Living State of the Project)
+## Active Features (Living State)
 
-> Always check here before starting work. These are the authoritative "where are we?" files.
+> Source of truth is in the **Lark Wiki** under `Divo — Updates`. Each feature has a Plan + Updates page.
+> Fetch the Updates page at session start to know where things stand.
 
-| Feature | Status | Doc |
-|---|---|---|
-| Scheduled Workflows | in-progress | `docs/features/01-scheduled-workflows.md` |
-| Admin UI Redesign | in-progress | `docs/features/02-admin-ui-redesign.md` |
-| Backend Migration (backend → advance-backend) | in-progress | `docs/features/03-backend-migration.md` |
-| Agent Builder Canvas (React Flow stub) | in-progress | `docs/features/04-agent-builder-canvas.md` |
-| Dynamic Agent Platform | in-progress | `docs/features/05-dynamic-agent-platform.md` |
+| Feature | Status | Wiki Plan token | Wiki Updates token |
+|---|---|---|---|
+| Dynamic Agent Platform | in-progress | `Na3EddgpMohPKFxaZovlkxUygkg` | `BfIdddnZwoqwzRxwIg8lt1JBgKh` |
 
-**Template for new features:** `docs/features/TEMPLATE.md`
+**Legacy local docs** in `docs/features/` are stale — wiki is authoritative. To add a new feature,
+create a folder under `Divo — Updates` in the wiki with Plan + Updates sub-pages.
 
 ---
 
@@ -182,15 +232,16 @@ channels → orchestration → agents → integrations
 
 ## Architecture Reference Docs
 
-| Doc | Purpose |
-|---|---|
-| `docs/UI-DESIGN-SYSTEM.md` | **Mandatory** for any admin UI work — surface system, tokens, components, rules |
-| `docs/Company-Architecture-Planning-v3.0.md` | Full 47-section architecture plan |
-| `docs/ARCHITECTURE-REFERENCE-MAP.md` | Quick reference map |
-| `docs/V0-DTO-SYNC-CONTRACT.md` | DTO contracts between layers |
-| `docs/GENERIC-AGENT-PLATFORM-VISION.md` | Long-term platform vision |
+> Canonical versions live in the **Lark Wiki** under `Divo — References`.
+> Local copies in `docs/` may be stale — always fetch from wiki for the latest.
 
-Reference section numbers in commits when relevant (e.g., "Section 25 — BullMQ contract").
+| Doc | Wiki token | Purpose |
+|---|---|---|
+| UI Design System | `JKjQds9SGoOT6oxlPYDlqQX6gIe` | **Mandatory** for any admin UI work — surface system, tokens, components, rules |
+| Architecture Vision | `PyIId3wFyo7rpIx6hJwlQVjogRh` | Long-term platform vision (dynamic agents, RBAC, channels) |
+| DTO Sync Contract | `Oc4Wd9eJMoTs5AxudrSlfQhSgtd` | DTO contracts between layers |
+| `docs/Company-Architecture-Planning-v3.0.md` | — | Full 47-section architecture plan (local only, not yet in wiki) |
+| `docs/ARCHITECTURE-REFERENCE-MAP.md` | — | Quick reference map (local only) |
 
 ---
 
