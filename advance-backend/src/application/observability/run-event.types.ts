@@ -31,6 +31,7 @@ export type ActorType =
   | 'specialist'
   | 'executor'
   | 'tool'
+  | 'mem0'
   | 'synthesis';
 
 // ─── Event type literals ──────────────────────────────────────────────────────
@@ -54,7 +55,8 @@ export type RunEventType =
   | 'supervisor_started'
   | 'tool_call_started'
   | 'tool_call_finished'
-  | 'supervisor_complete';
+  | 'supervisor_complete'
+  | 'memory_extracted';
 
 // ─── Payload shapes (one per event type) ────────────────────────────────────
 
@@ -161,6 +163,13 @@ export interface SupervisorCompletePayload {
   replyLength:  number;
 }
 
+export interface MemoryExtractedPayload {
+  userId:          string;
+  attemptedScopes: string[];
+  storedMemories:  number;
+  scopes:          Array<{ scope: string; count: number }>;
+}
+
 export interface RunFailedPayload {
   stage:  string;
   reason: string;
@@ -187,7 +196,8 @@ export type RunEventPayload =
   | SupervisorStartedPayload
   | ToolCallStartedPayload
   | ToolCallFinishedPayload
-  | SupervisorCompletePayload;
+  | SupervisorCompletePayload
+  | MemoryExtractedPayload;
 
 // ─── Emit input ──────────────────────────────────────────────────────────────
 

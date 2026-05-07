@@ -22,6 +22,7 @@ import type { ExecutionRepository } from '../../../infrastructure/persistence/ex
 import { OrchestrationTracer } from '../../observability/orchestration-tracer';
 import { resolveBranding } from '../department-branding';
 import { RunStatusAggregator } from '../run-status.aggregator';
+import type { Mem0Service } from '../../memory/mem0.service';
 
 // ─── Public I/O types ──────────────────────────────────────────────────────
 
@@ -51,6 +52,7 @@ export interface OrchestrationEngineDeps {
   logger:       Logger;
   clock:        Clock;
   executionRepo?: ExecutionRepository;
+  mem0?: Mem0Service;
 }
 
 // ─── Engine ───────────────────────────────────────────────────────────────
@@ -188,6 +190,21 @@ export class OrchestrationEngine {
 
     await statusChannel.sendStatus({ kind: 'status', terminal: false, branding, timeline: { liveLabel: 'Routing…' } });
 
+    // ── 4c. Load persistent memory context ────────────────────────────────
+    let memoryContext = '';
+    if (this.deps.mem0) {
+      try {
+        memoryContext = await this.deps.mem0.searchForContext({
+          query:        incoming.text,
+          userId:       String(runContext.userId),
+          companyId:    String(runContext.companyId),
+          ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
+        });
+      } catch (error) {
+        log.warn('engine.mem0.search_failed', { error: String(error) });
+      }
+    }
+
     // ── 5. Run supervisor ─────────────────────────────────────────────────
     const supervisorResult = await this.deps.supervisor.run({
       userMessage:    incoming.text,
@@ -201,6 +218,7 @@ export class OrchestrationEngine {
       permittedTools: availableTools,
       ...(tracer !== undefined ? { tracer } : {}),
       ...(approvalGate !== undefined ? { approvalGate } : {}),
+      ...(memoryContext ? { memoryContext } : {}),
       chatId:         String(conversation.chatId),
     });
 
@@ -237,6 +255,40 @@ export class OrchestrationEngine {
 
     // ── 7. Send final reply ───────────────────────────────────────────────
     await channelAdapter.sendFinalReply(conversation, finalReply);
+
+    // ── 8. Background memory extraction ───────────────────────────────────
+    if (this.deps.mem0) {
+      const mem0 = this.deps.mem0;
+      const extractionContext = {
+        userId:         String(runContext.userId),
+        companyId:      String(runContext.companyId),
+        ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
+        userRole:       String(runContext.companyRole),
+        userMessage:    incoming.text,
+        assistantReply: finalReply.text,
+      };
+      setImmediate(() => {
+        mem0.extractAndStore(extractionContext)
+          .then(summary => {
+            tracer?.emit({
+              phase: 'complete',
+              eventType: 'memory_extracted',
+              actorType: 'mem0',
+              title: 'Memory extraction complete',
+              status: 'info',
+              payload: {
+                userId: runContext.userId,
+                attemptedScopes: summary.attemptedScopes,
+                storedMemories: summary.storedMemories,
+                scopes: summary.scopes,
+              },
+            });
+          })
+          .catch(error => {
+            log.warn('engine.mem0.extract_failed', { error: String(error) });
+          });
+      });
+    }
 
     const totalMs = this.deps.clock.nowMs() - runStartMs;
     log.info('engine.run.complete', {

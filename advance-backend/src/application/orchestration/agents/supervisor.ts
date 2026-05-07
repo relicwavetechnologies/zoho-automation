@@ -50,8 +50,10 @@ import { createScheduleTaskTool } from '../tools/orchestration/schedule-task.too
 import { createListScheduledTasksTool } from '../tools/orchestration/list-scheduled-tasks.tool';
 import { createCancelScheduledTaskTool } from '../tools/orchestration/cancel-scheduled-task.tool';
 import { createRunScheduledNowTool } from '../tools/orchestration/run-scheduled-now.tool';
+import { createRememberFactTool } from '../tools/orchestration/remember-fact.tool';
 import { buildCapabilitiesForAgent } from '../agent-runners/dynamic/agent-as-tool';
 import { buildDynamicSupervisorGraph } from '../graphs/dynamic-supervisor.graph';
+import type { Mem0Service } from '../../memory/mem0.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -72,6 +74,7 @@ export interface SupervisorInput {
   permittedTools: ReadonlyArray<AppTool<unknown, unknown>>;
   tracer?:        OrchestrationTracer;
   approvalGate?:  ApprovalGateService;
+  memoryContext?: string;
   chatId?:        string;
 }
 
@@ -88,6 +91,8 @@ interface DynamicGraphRunInput {
   readonly runContext: RunContext;
   readonly permittedTools: ReadonlyArray<AppTool<unknown, unknown>>;
   readonly approvalGate?: ApprovalGateService;
+  readonly memoryContext?: string;
+  readonly mem0?: Mem0Service;
   readonly chatId?: string;
 }
 
@@ -105,6 +110,7 @@ export interface SupervisorDeps {
   dynamicGraphEnabled?: boolean;
   dynamicGraphShadow?: boolean;
   supervisorTimeoutMs?: number;
+  mem0?: Mem0Service;
 }
 
 // ─── Supervisor ───────────────────────────────────────────────────────────────
@@ -116,7 +122,7 @@ export class SupervisorAgent {
     const {
       userMessage, history, channelType, channelId,
       perm, runContext, statusChannel, aggregator, permittedTools, tracer,
-      approvalGate, chatId,
+      approvalGate, memoryContext, chatId,
     } = input;
     const { model, agentResolver, todoRepo, prisma, logger, clock } = this.deps;
 
@@ -138,6 +144,9 @@ export class SupervisorAgent {
       agentDef?.systemPrompt,
       perm.department?.systemPrompt,
     );
+    const fullSystemPrompt = memoryContext
+      ? `${systemPrompt}\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user:\n${memoryContext}`
+      : systemPrompt;
 
     // ── 2. Build conversation messages ────────────────────────────────────────
     const messages = [
@@ -171,6 +180,8 @@ export class SupervisorAgent {
         permittedTools,
         chatId: chatId ?? String(channelId),
         ...(approvalGate ? { approvalGate } : {}),
+        ...(memoryContext ? { memoryContext } : {}),
+        ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
       });
 
       if (graphResult.ok) {
@@ -244,6 +255,7 @@ export class SupervisorAgent {
       listScheduledTasks: createListScheduledTasksTool(prisma, runContext),
       cancelScheduledTask: createCancelScheduledTaskTool(prisma, runContext),
       runScheduledTaskNow: createRunScheduledNowTool(prisma, runContext),
+      ...(this.deps.mem0 ? { rememberFact: createRememberFactTool(this.deps.mem0, runContext) } : {}),
     } as unknown as ToolSet;
 
     let dynamicCapabilities = {} as ToolSet;
@@ -287,7 +299,7 @@ export class SupervisorAgent {
           const timeoutMs = this.deps.supervisorTimeoutMs ?? DEFAULT_SUPERVISOR_TIMEOUT_MS;
           const result = streamText({
             model,
-            system:  systemPrompt,
+            system:  fullSystemPrompt,
             messages,
             tools:   supervisorTools,
             stopWhen: [stepCountIs(MAX_SUPERVISOR_STEPS)],
@@ -480,6 +492,8 @@ export class SupervisorAgent {
         permittedTools,
         chatId: chatId ?? String(channelId),
         ...(approvalGate ? { approvalGate } : {}),
+        ...(memoryContext ? { memoryContext } : {}),
+        ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
       }).then(graphResult => {
         if (!graphResult.ok) {
           log.warn('dynamic_graph.shadow_parity', {
@@ -534,7 +548,10 @@ export class SupervisorAgent {
       clock: this.deps.clock,
       ...(this.deps.geminiApiKey ? { geminiApiKey: this.deps.geminiApiKey } : {}),
       ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
+      ...(input.mem0 ? { mem0: input.mem0 } : {}),
     });
+
+    const memoryContext = input.memoryContext ?? '';
 
     const output = await graph.invoke({
       userMessage: input.userMessage,
@@ -549,6 +566,7 @@ export class SupervisorAgent {
       runContext: input.runContext,
       permittedTools: input.permittedTools,
       chatId: input.chatId ?? null,
+      memoryContext,
     } as any);
 
     if (output.status === 'error') {

@@ -69,6 +69,10 @@ const runContext = {
   channel: 'test',
 } as any;
 
+const mem0 = {
+  rememberExplicit: async () => {},
+} as any;
+
 describe('dynamic supervisor graph', () => {
   it('builds dynamic child-agent tools and returns graph output', async () => {
     const root = makeAgent({
@@ -144,5 +148,80 @@ describe('dynamic supervisor graph', () => {
 
     assert.equal(output.status, 'error');
     assert.match(output.error ?? '', /No active root dynamic agent/);
+  });
+
+  it('injects memory context into the dynamic supervisor system prompt', async () => {
+    const root = makeAgent({
+      id: 'root',
+      slug: 'divo-supervisor',
+      isRootAgent: true,
+    });
+
+    let systemPrompt = '';
+    const graph = buildDynamicSupervisorGraph({
+      model: {} as any,
+      agentCatalogCache: {
+        getForCompany: async () => [root],
+      } as any,
+      todoRepo: {} as any,
+      prisma: {} as any,
+      logger: noopLogger,
+      clock,
+      executeText: async ({ system }) => {
+        systemPrompt = system;
+        return { text: 'graph done', toolCalls: [] };
+      },
+    });
+
+    await graph.invoke({
+      userMessage: 'format this report',
+      conversationHistory: [],
+      companyId: 'co-1',
+      perm,
+      runContext,
+      permittedTools: [],
+      chatId: 'chat-1',
+      memoryContext: 'User memory:\n- User prefers tables.',
+    });
+
+    assert.match(systemPrompt, /MEMORY CONTEXT/);
+    assert.match(systemPrompt, /User prefers tables/);
+  });
+
+  it('registers rememberFact when Mem0 is available', async () => {
+    const root = makeAgent({
+      id: 'root',
+      slug: 'divo-supervisor',
+      isRootAgent: true,
+    });
+
+    let toolNames: string[] = [];
+    const graph = buildDynamicSupervisorGraph({
+      model: {} as any,
+      agentCatalogCache: {
+        getForCompany: async () => [root],
+      } as any,
+      todoRepo: {} as any,
+      prisma: {} as any,
+      logger: noopLogger,
+      clock,
+      mem0,
+      executeText: async ({ tools }) => {
+        toolNames = Object.keys(tools);
+        return { text: 'graph done', toolCalls: [] };
+      },
+    });
+
+    await graph.invoke({
+      userMessage: 'remember Acme uses net-60',
+      conversationHistory: [],
+      companyId: 'co-1',
+      perm,
+      runContext,
+      permittedTools: [],
+      chatId: 'chat-1',
+    });
+
+    assert.ok(toolNames.includes('rememberFact'));
   });
 });

@@ -14,6 +14,7 @@ import { createMemberAuthMiddleware } from './http/middleware/member-auth.middle
 import { createFilesRouter } from './http/files/files.routes';
 import { createAgentsRoutes } from './http/agents/agents.routes';
 import { createDepartmentRoutes } from './http/admin/departments.routes';
+import { createMemoryRoutes } from './http/admin/memory.routes';
 import { createCompanyRoutes } from './http/admin/company.routes';
 import { createAuditRoutes } from './http/admin/audit.routes';
 import { createControlsRoutes } from './http/admin/controls.routes';
@@ -154,6 +155,7 @@ export const createServer = (c: Container) => {
       ingestionQueue:        c.ingestionQueue,
       knowledgeShareService: c.knowledgeShareService,
       shareResolverService:  c.shareResolverService,
+      ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
       serializer:            c.chatSerializer,
     }),
   );
@@ -246,6 +248,12 @@ export const createServer = (c: Container) => {
       deptAdminService: c.departmentAdminService,
       logger:           c.logger,
     }),
+  );
+
+  app.use(
+    '/api/admin/memories',
+    adminAuth,
+    createMemoryRoutes({ mem0: c.mem0Service, logger: c.logger }),
   );
 
   // Company admin surface (members, directory, invites, onboarding, tool-permissions)

@@ -68,23 +68,24 @@ const nodeTypes = { agent: AgentNode }
 
 export function AgentsPage() {
   const { agents, agentById, tools, toolById, loading, error, stats, toggleAgent, updateAgent, createAgent, deleteAgent } = useAgentData()
-  const [selectedAgent, setSelectedAgent] = useState<AgentDef | null>(null)
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
 
   const { nodes, edges } = useMemo(() => layoutTree(agents, agentById), [agents, agentById])
+  const selectedAgent = selectedAgentId ? agentById[selectedAgentId] ?? null : null
 
   const nodesWithSelection = useMemo(
     () =>
       nodes.map((n) => ({
         ...n,
-        data: { ...n.data, selected: selectedAgent?.id === n.id },
+        data: { ...n.data, selected: selectedAgentId === n.id },
       })),
-    [nodes, selectedAgent],
+    [nodes, selectedAgentId],
   )
 
   const onNodeClick: NodeMouseHandler = (_, node) => {
     const a = agentById[node.id]
-    if (a) setSelectedAgent(a)
+    if (a) setSelectedAgentId(a.id)
   }
 
   if (loading) {
@@ -171,7 +172,7 @@ export function AgentsPage() {
         agent={selectedAgent}
         agentById={agentById}
         toolById={toolById}
-        onClose={() => setSelectedAgent(null)}
+        onClose={() => setSelectedAgentId(null)}
         onToggle={toggleAgent}
         onSave={updateAgent}
         onDelete={deleteAgent}

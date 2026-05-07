@@ -3,6 +3,7 @@ import { NavLink, useLocation } from "react-router-dom"
 import {
   Activity,
   Bot,
+  Brain,
   Building2,
   ChevronLeft,
   ChevronRight,
@@ -32,6 +33,7 @@ const iconMap = {
   members: Users,
   departments: Building2,
   "ai-ops": Workflow,
+  memories: Brain,
   settings: Settings2,
 } as const
 
@@ -40,6 +42,7 @@ const fallbackItems: NavItem[] = [
   { id: "people", label: "People", path: "/people", icon: Users },
   { id: "departments", label: "Departments", path: "/departments", icon: Building2 },
   { id: "ai-ops", label: "AI Ops", path: "/ai-ops", icon: Workflow },
+  { id: "memories", label: "Memories", path: "/memories", icon: Brain },
   { id: "settings", label: "Settings", path: "/settings", icon: Settings2 },
 ]
 
@@ -74,7 +77,7 @@ export function AdminSidebar({ mobile, onNavigate }: AdminSidebarProps) {
       {
         label: "Operations",
         items: [
-          ...base.filter((item) => ["ai-ops", "settings"].includes(item.id)),
+          ...base.filter((item) => ["ai-ops", "memories", "settings"].includes(item.id)),
           { id: "agents", label: "Agents", path: "/agents", icon: Bot },
         ],
       },

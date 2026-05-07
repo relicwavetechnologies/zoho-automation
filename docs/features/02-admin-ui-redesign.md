@@ -95,6 +95,22 @@ Order by visibility:
 **What is working:**
 - Theme, floor/mat/card surface system, dark mode toggle, and redesigned shell remain in place from earlier sessions.
 - `OverviewPage` and `AgentsPage` keep the newer visual language and still build cleanly.
+- **Admin data fetching now has a shared React Query cache layer**:
+  - `admin/package.json` includes `@tanstack/react-query`.
+  - `admin/src/main.tsx` mounts a shared `QueryClientProvider`.
+  - `admin/src/auth/AdminAuthProvider.tsx` clears the query cache whenever the admin token changes or is removed, so company-scoped data does not leak across sessions.
+  - `admin/src/components/admin/use-api-list.ts` now runs through React Query instead of raw `useEffect` fetch state, and exposes `refresh` / `refreshing`.
+- The main list-style pages now benefit from cached requests, deduping, and background-safe refreshes without bespoke refetch hacks:
+  - `OverviewPage`
+  - `MembersPage`
+  - `SettingsPage`
+  - `AiOpsPage`
+- `MembersPage` no longer uses a `refreshKey` querystring cache-buster. Invite creation and the manual refresh button now refetch through the shared query layer.
+- `AiOpsPage` execution drawers now cache execution run detail and event timelines per run ID, so reopening the same run does not always cold-fetch both endpoints.
+- `AgentsPage` and `DepartmentsPage` now sit on top of query-backed hooks:
+  - `admin/src/pages/agents/use-agent-data.ts` uses React Query for the agent list and tool registry, invalidates the agent cache on CRUD, and applies an optimistic active-toggle update.
+  - `admin/src/pages/AgentsPage.tsx` tracks `selectedAgentId` instead of a frozen object snapshot, so drawer state stays aligned with refreshed cache data.
+  - `admin/src/pages/departments/use-department-data.ts` uses React Query for department lists, shared tool registry data, and a cached department-detail map while preserving section-level lazy loading, skeletons, and optimistic permission ticks.
 - **Departments page is now fully rebuilt around live `advance-backend` data**:
   - `admin/src/lib/api.ts` now exports typed department contracts plus a `departmentsApi` client for list/detail/config/role/member/permission calls.
   - `admin/src/pages/departments/use-department-data.ts` owns list loading, section-scoped detail loading, tool catalog lookup, per-section error/loading state, and all department mutations.
@@ -113,28 +129,27 @@ Order by visibility:
   - `cd admin && pnpm build`
 
 **What is in progress:**
-- Nothing — implementation is complete at code/build level.
+- Manual QA has not yet been done on the new cache behavior across route transitions, invite creation, agent toggle/update flows, and reopening AI Ops execution drawers.
 
 **What is not started:**
 - Sidebar visual refresh is still incomplete relative to the original reference set.
 - Members, AiOps, and Settings pages still need the same redesign pass that Departments now has.
 - Overview still contains placeholder analytics for top-agent/cost style KPIs because the backend does not expose those rollups yet.
-- No browser/manual interaction pass has been done yet on `/departments`; only TypeScript and production build verification is complete.
+- No browser/manual interaction pass has been done yet on `/departments` or the other cache-enabled admin pages; only TypeScript and production build verification is complete.
 
 **Blockers:**
 - None.
 
 **Next action:**
-> Start `cd admin && pnpm dev`, open `/departments`, and manually verify:
-> 1. department list loads from `advance-backend`
-> 2. create dialog creates a department and opens its drawer
-> 3. only the `Overview` tab loads initially; `Roles`, `Members`, `Permissions`, and `Config` fetch only when opened
-> 4. each unopened tab shows a skeleton first, then resolves into live data
-> 5. permission ticks flip immediately on click, then stay in sync after the request resolves
-> 6. role/member/permission/config mutations persist and refresh the right tab
-> 7. drawer layout remains usable on narrower widths
+> Start `cd admin && pnpm dev`, then manually verify cache behavior on the main admin pages:
+> 1. page-to-page navigation does not cold-refetch every list immediately after returning
+> 2. `MembersPage` invite creation refreshes directory/invites without `r=` query busting
+> 3. `AgentsPage` toggle/update/create/delete flows reconcile cleanly with the cached graph and drawer selection
+> 4. `DepartmentsPage` still preserves lazy section loading, skeletons, optimistic permission ticks, and post-mutation refreshes
+> 5. `AiOpsPage` execution drawer reopens recent run details from cache and still refreshes cleanly when needed
+> 6. logout/login between different admin accounts clears stale cached company data
 >
-> If manual QA is clean, move the same drawer/detail treatment to the next admin page that still uses placeholder UI.
+> If manual QA is clean, decide whether to extend React Query deeper into auth/session bootstrap and add page-specific stale times for the noisier operational surfaces.
 
 ---
 
@@ -187,6 +202,12 @@ Order by visibility:
 
 ### 2026-05-07 — codex
 - Made department permission and user-override checkboxes optimistic inside `useDepartmentData()`: local cache updates immediately, network reconcile happens in the background, and failed writes roll back to the previous state.
+- Verification: `cd admin && pnpm exec tsc -b` and `cd admin && pnpm build` pass.
+
+### 2026-05-07 — codex
+- Added a shared React Query layer to the admin app: new query client, provider wiring, token-scoped cache keys, and auth-time cache clearing.
+- Migrated `useApiList()` to React Query and removed `MembersPage`'s `refreshKey` querystring cache-busting in favor of proper refetches.
+- Migrated `useAgentData()` and `useDepartmentData()` onto query-backed caches while preserving department tab lazy-loading and optimistic permission toggles; also cached AI Ops execution drawer detail queries.
 - Verification: `cd admin && pnpm exec tsc -b` and `cd admin && pnpm build` pass.
 
 ### 2026-05-06 — claude (session 7)

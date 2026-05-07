@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import {
@@ -16,6 +17,7 @@ import {
   type UpdateDepartmentRoleInput,
   type UpsertDepartmentMembershipInput,
 } from "@/lib/api"
+import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
 
 type BackendToolRegistryEntry = {
   toolId: string
@@ -205,42 +207,42 @@ function patchUserOverride(
 
 export function useDepartmentData(): DepartmentDataState {
   const { token } = useAdminAuth()
-  const [departments, setDepartments] = useState<DepartmentSummary[]>([])
-  const [detailById, setDetailById] = useState<Record<string, DepartmentDetail>>({})
+  const queryClient = useQueryClient()
+  const scope = getAdminQueryScope(token)
   const [sectionErrorById, setSectionErrorById] = useState<Record<string, Partial<Record<DepartmentDetailSection, string | null>>>>({})
   const [sectionLoadingById, setSectionLoadingById] = useState<SectionLoadingMap>({})
-  const [toolCatalog, setToolCatalog] = useState<DepartmentToolCatalogEntry[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const departmentsQuery = useQuery({
+    queryKey: adminQueryKeys.departments(scope),
+    enabled: Boolean(token),
+    queryFn: async () => {
+      const departmentData = await departmentsApi.list(token ?? undefined)
+      return Array.isArray(departmentData) ? departmentData : []
+    },
+  })
+  const toolCatalogQuery = useQuery({
+    queryKey: adminQueryKeys.toolRegistry(scope),
+    enabled: Boolean(token),
+    queryFn: async () => {
+      const toolData = await agentsApi.toolRegistry<BackendToolRegistryEntry>(token ?? undefined)
+      return Array.isArray(toolData) ? toolData.map(toToolCatalogEntry) : []
+    },
+  })
+  const detailByIdQuery = useQuery({
+    queryKey: adminQueryKeys.departmentDetails(scope),
+    enabled: Boolean(token),
+    queryFn: async () => ({} as Record<string, DepartmentDetail>),
+    initialData: {} as Record<string, DepartmentDetail>,
+    staleTime: Number.POSITIVE_INFINITY,
+  })
 
-  const fetchAll = useCallback(async () => {
-    if (!token) {
-      setDepartments([])
-      setToolCatalog([])
-      setLoading(false)
-      return
-    }
-
-    setLoading(true)
-    setError(null)
-    try {
-      const [departmentData, toolData] = await Promise.all([
-        departmentsApi.list(token),
-        agentsApi.toolRegistry<BackendToolRegistryEntry>(token),
-      ])
-      setDepartments(Array.isArray(departmentData) ? departmentData : [])
-      setToolCatalog(Array.isArray(toolData) ? toolData.map(toToolCatalogEntry) : [])
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load departments"
-      setError(message)
-    } finally {
-      setLoading(false)
-    }
-  }, [token])
-
-  useEffect(() => {
-    void fetchAll()
-  }, [fetchAll])
+  const departments = departmentsQuery.data ?? []
+  const detailById = detailByIdQuery.data ?? {}
+  const toolCatalog = toolCatalogQuery.data ?? []
+  const loading = departmentsQuery.isPending || toolCatalogQuery.isPending
+  const error = useMemo(() => {
+    const source = departmentsQuery.error ?? toolCatalogQuery.error
+    return source instanceof Error ? source.message : null
+  }, [departmentsQuery.error, toolCatalogQuery.error])
 
   const isSectionLoaded = useCallback(
     (id: string, section: DepartmentDetailSection) => Boolean(detailById[id]?.loadedSections.includes(section)),
@@ -266,7 +268,9 @@ export function useDepartmentData(): DepartmentDataState {
       if (!token) return null
 
       const requestedSections = toSectionArray(sections)
-      const cached = detailById[id]
+      const detailMapKey = adminQueryKeys.departmentDetails(scope)
+      const cachedMap = queryClient.getQueryData<Record<string, DepartmentDetail>>(detailMapKey) ?? {}
+      const cached = cachedMap[id]
       if (!force && cached && requestedSections.every((section) => cached.loadedSections.includes(section))) {
         return cached
       }
@@ -288,11 +292,11 @@ export function useDepartmentData(): DepartmentDataState {
 
       try {
         const detail = await departmentsApi.get(id, token, requestedSections)
-        let merged: DepartmentDetail | null = null
-        setDetailById((prev) => {
-          merged = mergeDetail(prev[id], detail)
-          return { ...prev, [id]: merged }
-        })
+        const merged = mergeDetail(cachedMap[id], detail)
+        queryClient.setQueryData<Record<string, DepartmentDetail>>(detailMapKey, (prev = {}) => ({
+          ...prev,
+          [id]: mergeDetail(prev[id], detail),
+        }))
         return merged
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to load department detail"
@@ -314,15 +318,15 @@ export function useDepartmentData(): DepartmentDataState {
         }))
       }
     },
-    [detailById, token],
+    [queryClient, scope, token],
   )
 
   const refreshDepartment = useCallback(
     async (departmentId: string, sections: DepartmentDetailSection | DepartmentDetailSection[]) => {
-      await fetchAll()
+      await queryClient.invalidateQueries({ queryKey: adminQueryKeys.departments(scope) })
       await loadDetailSection(departmentId, sections, true)
     },
-    [fetchAll, loadDetailSection],
+    [loadDetailSection, queryClient, scope],
   )
 
   const createDepartment = async (data: CreateDepartmentInput) => {
@@ -330,7 +334,7 @@ export function useDepartmentData(): DepartmentDataState {
     try {
       const created = await departmentsApi.create(data, token)
       toast.success("Department created")
-      await fetchAll()
+      await queryClient.invalidateQueries({ queryKey: adminQueryKeys.departments(scope) })
       return { id: created.id }
     } catch {
       return null
@@ -414,39 +418,39 @@ export function useDepartmentData(): DepartmentDataState {
 
   const setRolePermission = async (departmentId: string, roleId: string, toolId: string, actionGroup: string, allowed: boolean) => {
     if (!token) return
-    const previousDetail = detailById[departmentId]
+    const detailMapKey = adminQueryKeys.departmentDetails(scope)
+    const previousMap = queryClient.getQueryData<Record<string, DepartmentDetail>>(detailMapKey) ?? {}
+    const previousDetail = previousMap[departmentId]
     if (previousDetail) {
-      setDetailById((prev) => ({
-        ...prev,
-        [departmentId]: patchRolePermission(prev[departmentId] ?? previousDetail, roleId, toolId, actionGroup, allowed),
+      queryClient.setQueryData<Record<string, DepartmentDetail>>(detailMapKey, (current = {}) => ({
+        ...current,
+        [departmentId]: patchRolePermission(current[departmentId] ?? previousDetail, roleId, toolId, actionGroup, allowed),
       }))
     }
     try {
       await departmentsApi.setRolePermission(departmentId, roleId, toolId, actionGroup, allowed, token)
       void loadDetailSection(departmentId, "permissions", true)
     } catch {
-      if (previousDetail) {
-        setDetailById((prev) => ({ ...prev, [departmentId]: previousDetail }))
-      }
+      queryClient.setQueryData(detailMapKey, previousMap)
     }
   }
 
   const setUserOverride = async (departmentId: string, userId: string, toolId: string, actionGroup: string, allowed: boolean) => {
     if (!token) return
-    const previousDetail = detailById[departmentId]
+    const detailMapKey = adminQueryKeys.departmentDetails(scope)
+    const previousMap = queryClient.getQueryData<Record<string, DepartmentDetail>>(detailMapKey) ?? {}
+    const previousDetail = previousMap[departmentId]
     if (previousDetail) {
-      setDetailById((prev) => ({
-        ...prev,
-        [departmentId]: patchUserOverride(prev[departmentId] ?? previousDetail, userId, toolId, actionGroup, allowed),
+      queryClient.setQueryData<Record<string, DepartmentDetail>>(detailMapKey, (current = {}) => ({
+        ...current,
+        [departmentId]: patchUserOverride(current[departmentId] ?? previousDetail, userId, toolId, actionGroup, allowed),
       }))
     }
     try {
       await departmentsApi.setUserOverride(departmentId, userId, toolId, actionGroup, allowed, token)
       void loadDetailSection(departmentId, "permissions", true)
     } catch {
-      if (previousDetail) {
-        setDetailById((prev) => ({ ...prev, [departmentId]: previousDetail }))
-      }
+      queryClient.setQueryData(detailMapKey, previousMap)
     }
   }
 
@@ -483,7 +487,7 @@ export function useDepartmentData(): DepartmentDataState {
     loading,
     error,
     stats,
-    refresh: fetchAll,
+    refresh: () => Promise.all([departmentsQuery.refetch(), toolCatalogQuery.refetch()]).then(() => undefined),
     loadDetailSection,
     isSectionLoaded,
     isSectionLoading,

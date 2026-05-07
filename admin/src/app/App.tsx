@@ -12,6 +12,7 @@ import { MemberLoginPage } from "@/pages/MemberLoginPage"
 import { MembersPage } from "@/pages/MembersPage"
 import { OAuthCallbackPage } from "@/pages/OAuthCallbackPage"
 import { OverviewPage } from "@/pages/OverviewPage"
+import { MemoriesPage } from "@/pages/MemoriesPage"
 import { SettingsPage } from "@/pages/SettingsPage"
 
 type ProtectedProps = {
@@ -72,6 +73,7 @@ export function App() {
           <Route path="departments" element={<DepartmentsPage />} />
           <Route path="ai-ops" element={<AiOpsPage />} />
           <Route path="agents" element={<AgentsPage />} />
+          <Route path="memories" element={<MemoriesPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="rbac" element={<Navigate to="/settings?tab=governance" replace />} />
           <Route path="executions" element={<Navigate to="/ai-ops?tab=executions" replace />} />

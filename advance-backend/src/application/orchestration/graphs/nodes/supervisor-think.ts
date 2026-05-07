@@ -12,7 +12,9 @@ import { createScheduleTaskTool } from '../../tools/orchestration/schedule-task.
 import { createListScheduledTasksTool } from '../../tools/orchestration/list-scheduled-tasks.tool';
 import { createCancelScheduledTaskTool } from '../../tools/orchestration/cancel-scheduled-task.tool';
 import { createRunScheduledNowTool } from '../../tools/orchestration/run-scheduled-now.tool';
+import { createRememberFactTool } from '../../tools/orchestration/remember-fact.tool';
 import type { SupervisorGraphStateValue } from '../dynamic-supervisor.state';
+import type { Mem0Service } from '../../../memory/mem0.service';
 
 const SUPERVISOR_TIMEOUT_MS = 90_000;
 
@@ -25,6 +27,7 @@ export interface SupervisorThinkDeps {
   readonly clock: Clock;
   readonly geminiApiKey?: string;
   readonly approvalGate?: ApprovalGateService;
+  readonly mem0?: Mem0Service;
   readonly executeText?: (input: {
     readonly system: string;
     readonly messages: Array<{ role: 'user' | 'assistant'; content: string }>;
@@ -68,6 +71,7 @@ export async function supervisorThink(
       listScheduledTasks: createListScheduledTasksTool(deps.prisma, state.runContext),
       cancelScheduledTask: createCancelScheduledTaskTool(deps.prisma, state.runContext),
       runScheduledTaskNow: createRunScheduledNowTool(deps.prisma, state.runContext),
+      ...(deps.mem0 ? { rememberFact: createRememberFactTool(deps.mem0, state.runContext) } : {}),
     } as unknown as ToolSet;
 
     const tools = {
@@ -79,10 +83,13 @@ export async function supervisorThink(
       ...state.conversationHistory,
       { role: 'user' as const, content: state.userMessage },
     ];
+    const systemPrompt = state.memoryContext
+      ? `${rootAgent.systemPrompt}\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user:\n${state.memoryContext}`
+      : rootAgent.systemPrompt;
 
     const outcome = deps.executeText
       ? await deps.executeText({
-        system: rootAgent.systemPrompt,
+        system: systemPrompt,
         messages,
         tools,
         maxSteps: rootAgent.maxSteps,
@@ -90,7 +97,7 @@ export async function supervisorThink(
       })
       : await runSupervisorStream({
         model: deps.model,
-        system: rootAgent.systemPrompt,
+        system: systemPrompt,
         messages,
         tools,
         maxSteps: rootAgent.maxSteps,
