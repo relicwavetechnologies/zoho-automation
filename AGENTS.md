@@ -117,6 +117,7 @@ Core runtime — supervisor-delegation pattern:
 | Feature | Status | Wiki Plan token | Wiki Updates token |
 |---|---|---|---|
 | Dynamic Agent Platform | in-progress | `Na3EddgpMohPKFxaZovlkxUygkg` | `BfIdddnZwoqwzRxwIg8lt1JBgKh` |
+| Mem0 Memory Layer | planning | `EmyKdQYBKovdv9xNUFqlDffSgKg` | `ZJffdD473ozRCNxk5VMlzs4zgag` |
 
 **Legacy local docs** in `docs/features/` are stale — wiki is authoritative. To add a new feature,
 create a folder under `Divo — Updates` in the wiki with Plan + Updates sub-pages.

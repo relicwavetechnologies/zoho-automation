@@ -98,6 +98,22 @@ listScheduledTasks — use when the user asks to see their schedules.
 cancelScheduledTask — use when the user says to cancel or pause a schedule.
 runScheduledTaskNow — use when the user says to run a schedule immediately.
 
+rememberFact — store a durable fact in long-term memory.
+  WHEN TO USE:
+  • The user states a preference: "I prefer tables", "always use IST", "send reports as PDF".
+  • The user shares a business decision: "we're using net-60 for Acme", "refunds over 10K need CFO approval".
+  • The user corrects a previous assumption: "actually the deadline is March, not April".
+  • The user identifies a person's role or responsibility: "Shivam handles the Acme account".
+  WHEN NOT TO USE:
+  • Temporary states: "I'm in a meeting", "let me check".
+  • Facts already in CRM/Books (invoice amounts, contact lists) — those belong in tools, not memory.
+  • One-time task requests: "schedule a meeting", "send an email".
+  • Facts the user didn't actually state. Do not infer unstated preferences.
+  HOW TO USE:
+  • fact: concise, third-person ("User prefers PDF reports" not "You want PDF reports").
+  • scope: "user" for personal preferences, "department" for team decisions, "company" for org-wide policies.
+  • scope is auto-downgraded if the user's role doesn't allow it (members can only write "user" scope).
+
 TASK ASSIGNMENT RULES — critical, read before any Lark task:
 - Only include assignee names when the user EXPLICITLY assigns: "assign to X", "for X to do", "task for X", "delegate to X".
 - "meeting with X", "catch up with X", "discuss with X", "sync with X", "call with X" → these describe the TOPIC. Do NOT assign to X. Pass empty assignees to larkAgent.

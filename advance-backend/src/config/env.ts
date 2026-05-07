@@ -168,6 +168,12 @@ const EnvSchema = z.object({
 
   // Set to 0 to disable supervisor timeout (useful for local dev with slow models)
   SUPERVISOR_TIMEOUT_MS: z.coerce.number().int().min(0).default(300_000),
+
+  // ── Mem0 persistent memory layer ─────────────────────────────────────────
+  MEM0_ENABLED:           booleanStr.default('false'),
+  MEM0_EXTRACTION_MODEL:  z.string().default('gpt-4o-mini'),
+  MEM0_QDRANT_COLLECTION: z.string().default('divo_memories'),
+  MEM0_MAX_RESULTS:       positiveInt(10),
 });
 
 export type TypedEnv = z.infer<typeof EnvSchema>;

@@ -11,6 +11,7 @@ import type { IngestionQueue } from '../../../application/ingestion/ingestion.qu
 import type { ShareResolverService } from '../../../application/knowledge-share/share-resolver.service';
 import type { KnowledgeShareService } from '../../../application/knowledge-share/knowledge-share.service';
 import type { ChatMessageSerializer } from '../../../application/orchestration/chat-message-serializer';
+import type { Mem0Service } from '../../../application/memory/mem0.service';
 import { asCompanyId, asUserId, asCorrelationId, asDepartmentId } from '../../../shared/ids';
 import { asCompanyRoleSlug } from '../../../domain/permissions/company-role';
 import type { ConversationHandle } from '../../../application/channels/channel.adapter';
@@ -33,6 +34,7 @@ export const createLarkWebhookRoutes = (deps: {
   ingestionQueue?: IngestionQueue;
   knowledgeShareService?: KnowledgeShareService;
   shareResolverService?: ShareResolverService;
+  mem0?: Mem0Service;
   /** Per-chat message serializer — ensures only one engine.run() per chat at a time. */
   serializer: ChatMessageSerializer;
 }): Router => {
@@ -216,6 +218,7 @@ async function processInBackground(
     logger: Logger;
     env: TypedEnv;
     ingestionQueue?: IngestionQueue;
+    mem0?: Mem0Service;
   },
   log: Logger,
   approvalGate?: ApprovalGateService,
@@ -404,11 +407,12 @@ async function handleSlashCommand(args: {
   text: string;
   incoming: IncomingMessage;
   conversation: ConversationHandle;
-  identity: { companyId: string; userId: string; aiRole: string };
+  identity: { companyId: string; userId: string; aiRole: string; activeDepartmentId?: string | null };
   deps: {
     adapter: LarkChannelAdapter;
     conversationRepo: ConversationRepoPort;
     logger: Logger;
+    mem0?: Mem0Service;
   };
   log: Logger;
   correlationId: ReturnType<typeof asCorrelationId>;
@@ -444,6 +448,48 @@ async function handleSlashCommand(args: {
     return;
   }
 
+  if (cmd === '/remember') {
+    const fact = text.slice(cmd.length).trim();
+    if (!fact) {
+      await reply('Usage: /remember <fact to remember>\nExample: /remember Acme Corp uses net-30 payment terms');
+      return;
+    }
+
+    if (!deps.mem0) {
+      await reply('Memory system is not enabled.');
+      return;
+    }
+
+    const role = identity.aiRole;
+    const scope = role === 'COMPANY_ADMIN' || role === 'SUPER_ADMIN'
+      ? 'company'
+      : role === 'MANAGER' && identity.activeDepartmentId
+        ? 'department'
+        : 'user';
+
+    try {
+      await deps.mem0.rememberExplicit({
+        fact,
+        scope,
+        userId:    identity.userId,
+        companyId: identity.companyId,
+        ...(identity.activeDepartmentId ? { departmentId: identity.activeDepartmentId } : {}),
+      });
+
+      const scopeLabel = scope === 'company'
+        ? 'the company'
+        : scope === 'department'
+          ? 'your team'
+          : 'you';
+      log.info('webhook.command.remember.ok', { scope, factLength: fact.length, correlationId });
+      await reply(`Got it. I'll remember that for ${scopeLabel}.`);
+    } catch (error) {
+      log.warn('webhook.command.remember.failed', { error: String(error), correlationId });
+      await reply('Could not store that memory. Please try again.');
+    }
+    return;
+  }
+
   if (cmd === '/share') {
     if (!knowledgeShareService) {
       await reply('File sharing is not configured on this server.');
@@ -476,6 +522,7 @@ async function handleSlashCommand(args: {
     await reply(
       'Available commands:\n' +
       '• `/clear` — clear my conversation memory for this chat\n' +
+      '• `/remember <fact>` — store a durable fact for future conversations\n' +
       '• `/share` — share your most recently indexed file with your team\n' +
       '• `/help` — show this message',
     );

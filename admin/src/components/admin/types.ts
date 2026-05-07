@@ -17,5 +17,7 @@ export type JsonRecord = Record<string, unknown>
 export type ApiListState<T> = {
   data: T[]
   loading: boolean
+  refreshing: boolean
   error: string | null
+  refresh: () => Promise<void>
 }

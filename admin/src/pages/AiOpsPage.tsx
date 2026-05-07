@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react"
+import { useState } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { Activity, Brain, ChevronRight, ClipboardCopy, Cpu, Loader2, X } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -11,6 +12,7 @@ import { useApiList } from "@/components/admin/use-api-list"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { api } from "@/lib/api"
+import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
 import { cn } from "@/lib/utils"
 import type { JsonRecord } from "@/components/admin/types"
 
@@ -240,28 +242,23 @@ function ExecutionDetailDrawer({
   token: string | null
   onClose: () => void
 }) {
-  const [run, setRun] = useState<RunDetail | null>(null)
-  const [events, setEvents] = useState<ExecutionEvent[]>([])
-  const [loading, setLoading] = useState(true)
-
-  const fetchDetail = useCallback(async () => {
-    if (!token) return
-    setLoading(true)
-    try {
-      const [runData, eventsData] = await Promise.all([
-        api.get<RunDetail>(`/api/admin/executions/${runId}`, token),
-        api.get<ExecutionEvent[]>(`/api/admin/executions/${runId}/events`, token),
-      ])
-      setRun(runData as RunDetail)
-      setEvents(Array.isArray(eventsData) ? eventsData : [])
-    } catch {
-      /* toast handled by api.ts */
-    } finally {
-      setLoading(false)
-    }
-  }, [runId, token])
-
-  useEffect(() => { fetchDetail() }, [fetchDetail])
+  const scope = getAdminQueryScope(token)
+  const runQuery = useQuery({
+    queryKey: adminQueryKeys.executionRun(scope, runId),
+    enabled: Boolean(token),
+    queryFn: () => api.get<RunDetail>(`/api/admin/executions/${runId}`, token!),
+  })
+  const eventsQuery = useQuery({
+    queryKey: adminQueryKeys.executionEvents(scope, runId),
+    enabled: Boolean(token),
+    queryFn: async () => {
+      const eventsData = await api.get<ExecutionEvent[]>(`/api/admin/executions/${runId}/events`, token!)
+      return Array.isArray(eventsData) ? eventsData : []
+    },
+  })
+  const run = runQuery.data ?? null
+  const events = eventsQuery.data ?? []
+  const loading = runQuery.isPending || eventsQuery.isPending
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">

@@ -31,6 +31,10 @@ export const SupervisorGraphState = Annotation.Root({
     reducer: (_prev, next) => next,
     default: () => null,
   }),
+  memoryContext: Annotation<string>({
+    reducer: (_prev, next) => next,
+    default: () => '',
+  }),
   supervisorResult: Annotation<string | null>({
     reducer: (_prev, next) => next,
     default: () => null,

@@ -91,6 +91,7 @@ import { DocumentRagTool } from './application/orchestration/tools/families/docu
 // Knowledge Share
 import { KnowledgeShareService } from './application/knowledge-share/knowledge-share.service';
 import { ShareResolverService } from './application/knowledge-share/share-resolver.service';
+import { Mem0Service } from './application/memory/mem0.service';
 
 // Tools
 import { createLarkTaskTool } from './application/orchestration/tools/families/lark-task.tool';
@@ -162,6 +163,8 @@ export interface Container {
   // Knowledge Share
   knowledgeShareService: KnowledgeShareService;
   shareResolverService: ShareResolverService;
+  // Persistent memory
+  mem0Service: Mem0Service | null;
 }
 
 export async function buildContainer(env: TypedEnv): Promise<Container> {
@@ -488,6 +491,29 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   });
   const todoRepo      = new SupervisorTodoRepository(prisma);
 
+  logger.info('mem0.config', {
+    MEM0_ENABLED: env.MEM0_ENABLED,
+    MEM0_EXTRACTION_MODEL: env.MEM0_EXTRACTION_MODEL,
+    MEM0_QDRANT_COLLECTION: env.MEM0_QDRANT_COLLECTION,
+    QDRANT_URL: env.QDRANT_URL,
+    hasQdrantApiKey: !!env.QDRANT_API_KEY,
+    qdrantApiKeyLength: env.QDRANT_API_KEY?.length ?? 0,
+  });
+
+  const mem0Service = env.MEM0_ENABLED
+    ? new Mem0Service({
+      openaiApiKey:    env.OPENAI_API_KEY,
+      qdrantUrl:       env.QDRANT_URL,
+      ...(env.QDRANT_API_KEY ? { qdrantApiKey: env.QDRANT_API_KEY } : {}),
+      collectionName:  env.MEM0_QDRANT_COLLECTION,
+      extractionModel: env.MEM0_EXTRACTION_MODEL,
+      maxResults:      env.MEM0_MAX_RESULTS,
+      logger:          logger.child({ service: 'mem0' }),
+    })
+    : null;
+
+  logger.info('mem0.status', { enabled: !!mem0Service });
+
   const supervisor = new SupervisorAgent({
     model,
     agentResolver,
@@ -499,6 +525,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     dynamicGraphEnabled: env.DYNAMIC_GRAPH_ENABLED,
     dynamicGraphShadow:  env.DYNAMIC_GRAPH_SHADOW,
     supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
+    ...(mem0Service ? { mem0: mem0Service } : {}),
     ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
   });
 
@@ -518,6 +545,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     supervisor,
     history,
     executionRepo,
+    ...(mem0Service ? { mem0: mem0Service } : {}),
     logger: logger.child({ service: 'engine' }),
     clock:  systemClock,
   });
@@ -615,6 +643,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // Knowledge Share
     knowledgeShareService,
     shareResolverService,
+    mem0Service,
     // Message serialization
     chatSerializer,
   };

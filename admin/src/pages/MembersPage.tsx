@@ -28,16 +28,19 @@ const withQuery = (path: string, params: Record<string, string | undefined>) => 
 
 export function MembersPage() {
   const { token, session } = useAdminAuth()
-  const [refreshKey, setRefreshKey] = useState(0)
   const [open, setOpen] = useState(false)
   const [email, setEmail] = useState("")
   const [roleId, setRoleId] = useState<InviteRole>("MEMBER")
   const [submitting, setSubmitting] = useState(false)
   const companyId = session?.role === "SUPER_ADMIN" ? session.companyId : undefined
-  const directoryPath = useMemo(() => withQuery("/api/admin/company/directory", { companyId, r: String(refreshKey) }), [companyId, refreshKey])
-  const invitesPath = useMemo(() => withQuery("/api/admin/company/invites", { companyId, r: String(refreshKey) }), [companyId, refreshKey])
+  const directoryPath = useMemo(() => withQuery("/api/admin/company/directory", { companyId }), [companyId])
+  const invitesPath = useMemo(() => withQuery("/api/admin/company/invites", { companyId }), [companyId])
   const directory = useApiList<JsonRecord>(directoryPath, token, ["items", "members"])
   const invites = useApiList<JsonRecord>(invitesPath, token, ["items", "invites"])
+
+  const refreshAll = async () => {
+    await Promise.all([directory.refresh(), invites.refresh()])
+  }
 
   const createInvite = async (event: FormEvent) => {
     event.preventDefault()
@@ -49,7 +52,7 @@ export function MembersPage() {
       setEmail("")
       setRoleId("MEMBER")
       setOpen(false)
-      setRefreshKey((value) => value + 1)
+      await refreshAll()
     } finally {
       setSubmitting(false)
     }
@@ -63,8 +66,8 @@ export function MembersPage() {
         description="Review workspace identities and send onboarding invites from the live company admin API."
         actions={
           <>
-            <Button type="button" variant="outline" className="rounded-full" onClick={() => setRefreshKey((value) => value + 1)}>
-              <RefreshCw className="h-4 w-4" />
+            <Button type="button" variant="outline" className="rounded-full" onClick={() => void refreshAll()} disabled={directory.refreshing || invites.refreshing}>
+              <RefreshCw className={directory.refreshing || invites.refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
               Refresh
             </Button>
             <Dialog open={open} onOpenChange={setOpen}>
