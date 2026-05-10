@@ -684,9 +684,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
   toolRegistry.register(new DocumentRagTool(documentRagBroker));
   toolRegistry.register(createDataProcessorTool({
-    cloudinary:      cloudinaryAdapter,
-    booksClient:     zohoPaginatedBooksClient,
-    csvLinkTtl:      env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+    cloudinary:  cloudinaryAdapter,
+    booksClient: zohoPaginatedBooksClient,
+    csvLinkTtl:  env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   }));
 
   logger.info('tool.registry.built', { toolCount: toolRegistry.ids().length, tools: toolRegistry.ids() });

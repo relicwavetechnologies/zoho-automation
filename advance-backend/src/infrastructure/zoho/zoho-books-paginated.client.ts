@@ -70,6 +70,7 @@ const toPrimitive = (v: unknown): string | undefined => {
   return undefined;
 };
 
+
 /** Read `page_context.has_more_page` from any Zoho Books list response. */
 function hasMorePage(raw: Record<string, unknown>): boolean {
   const ctx = asRecord(raw['page_context']);

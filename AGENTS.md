@@ -54,6 +54,10 @@ Divo
 | Performance Optimizations / Plan | `FnjadCDq9oYPJ6xx6bQl4AxYgch` |
 | Performance Optimizations / Progress | `FEBEd8I57okKsFxjXhIl4uVBgGd` |
 | Performance Optimizations / Updates | `GwGbdEmPsoJ5xixjRNali7n5gle` |
+| Mailing UX & Attachment Pipeline / Plan | `ACt3dqCsQo5HC2x9eFflVYaRgHh` |
+| Mailing UX & Attachment Pipeline / Progress | `KQyKdfAVwoVYLzxiJ7jleK5cg7g` |
+| Mailing UX & Attachment Pipeline / Updates | `Rs4QdrZzNo9EUExFMhEl8YuhgZg` |
+| Mailing UX & Attachment Pipeline / References | `ZJRmdc7QLovOqMxAExQltaR7gfc` |
 
 **Wiki space ID:** `7635896570625396443` (Tech Hub)
 **Divo node token:** `XzW1wZDlJirIx1kPB0VlE2gfg7b`
@@ -132,6 +136,7 @@ Core runtime — supervisor-delegation pattern:
 | OpenAI Codex Integration | planning | `EGYOdu14PoEFJTxgu6DlnwchgWc` | `F2grdvPBWovgtBx5N7ulC3i4gjf` |
 | Zoho Books Finance Tools | planning | `A4X2d9LCboW8Gdxn8jNlQglJgug` | `ZUD8ddSi5oCntrxazbuliSZ2gjh` |
 | Performance Optimizations | planning | `FnjadCDq9oYPJ6xx6bQl4AxYgch` | `GwGbdEmPsoJ5xixjRNali7n5gle` |
+| Mailing UX & Attachment Pipeline | planning | `ACt3dqCsQo5HC2x9eFflVYaRgHh` | `Rs4QdrZzNo9EUExFMhEl8YuhgZg` |
 
 **Legacy local docs** in `docs/features/` are stale — wiki is authoritative. To add a new feature,
 create a folder under `Divo — Updates` in the wiki with Plan + Updates sub-pages.

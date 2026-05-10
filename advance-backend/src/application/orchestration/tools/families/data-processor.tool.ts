@@ -21,6 +21,7 @@ import type { ToolActionGroup } from '../../../../domain/permissions/tool-action
 import { asToolId } from '../../../../shared/ids';
 import type { CloudinaryAdapter } from '../../../../infrastructure/cloudinary/cloudinary.adapter';
 import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../../infrastructure/zoho/zoho-books-paginated.client';
+import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../../infrastructure/zoho/zoho-books-schema.cache';
 import { formatAmount, formatDate } from '../../../zoho/zoho-format.utils';
 
 const EXECUTION_TIMEOUT_MS = 5_000;
@@ -40,7 +41,10 @@ const zohoSourceSchema = z.object({
 
 const Schema = z.object({
   script: z.string().describe(
-    'JavaScript code to execute. Receives `data` (array) and `args` (object). Must return the result. Example: "const grouped = {}; for (const b of data) { const v = b.vendor_name || \'Unknown\'; if (!grouped[v]) grouped[v] = { vendor: v, count: 0, total: 0 }; grouped[v].count++; grouped[v].total += b.total || 0; } return Object.values(grouped).sort((a,b) => b.count - a.count)"',
+    'JavaScript code to execute. Receives `data` (array) and `args` (object). Must return the result. ' +
+    'ALWAYS use `item._amount` for monetary values when data comes from zohoSource — each record has a pre-computed `_amount` field with the correct value for that module (e.g. expenses use `total`, bills use `total`, payments use `amount`). ' +
+    'Example (vendor bill grouping): "const g = {}; for (const b of data) { const v = b.vendor_name || \'Unknown\'; if (!g[v]) g[v] = { vendor: v, count: 0, total: 0 }; g[v].count++; g[v].total += b._amount || 0; } return Object.values(g).sort((a,b) => b.total - a.total)" ' +
+    'Example (expense by month): "const m = {}; for (const e of data) { const mon = (e.date || \'\').slice(0,7); if (!mon) continue; if (!m[mon]) m[mon] = { month: mon, count: 0, total: 0 }; m[mon].count++; m[mon].total += e._amount || 0; } return Object.values(m).sort((a,b) => a.month.localeCompare(b.month))"',
   ),
   data: z.unknown().optional().describe(
     'Direct data to process (small datasets from a previous tool call). Omit this when using zohoSource.',
@@ -69,6 +73,7 @@ const ResultSchema = z.object({
   message: z.string().optional(),
   csvLink: z.string().optional(),
   csvExpiresAt: z.string().optional(),
+  moduleSchema: z.unknown().optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
@@ -95,7 +100,7 @@ function arrayToCsv(headers: string[], rows: unknown[]): Buffer {
 }
 
 export const createDataProcessorTool = (deps: {
-  cloudinary: CloudinaryAdapter;
+  cloudinary:  CloudinaryAdapter;
   booksClient: ZohoBooksPaginatedClient;
   csvLinkTtl?: number;
 }): Tool<Args, Res> => ({
@@ -110,17 +115,22 @@ export const createDataProcessorTool = (deps: {
     'Two modes: (1) pass data directly for small datasets, (2) set zohoSource to fetch ALL records from a Zoho Books module internally (exhaustive pagination, up to 4000 records) then process.',
     'Use zohoSource for grouping/aggregation/analysis queries — the tool fetches the complete dataset, runs your script, and returns only the processed result.',
     'The script receives `data` (array) and `args` (object). It must return a value.',
+    'IMPORTANT: Every record fetched via zohoSource has a synthetic `_amount` field with the correct monetary value for that module — always use `item._amount` for totals instead of guessing field names like `amount` or `total`.',
     'Set exportCsv=true to get a downloadable CSV of the processed result.',
   ].join(' '),
 
   parameterDocs: [
     'script: JS code. Receives `data` (array) and `args` (object). Must `return` a value.',
-    '  Example: "const grouped = {}; for (const b of data) { const v = b.vendor_name; if (!grouped[v]) grouped[v] = { vendor: v, count: 0, total: 0 }; grouped[v].count++; grouped[v].total += b.total || 0; } return Object.values(grouped).sort((a,b) => b.count - a.count)"',
+    '  ALWAYS use `item._amount` for the monetary value — Zoho uses different field names per module.',
+    '  expenses/_amount = total, bills/_amount = total, invoices/_amount = total, payments/_amount = amount',
+    '  Example (expense breakdown by month):',
+    '  "const m = {}; for (const e of data) { const mon = (e.date||e.expense_date||\'\').slice(0,7); if (!m[mon]) m[mon]={month:mon,count:0,total:0,currency:e.currency_code||\'INR\'}; m[mon].count++; m[mon].total+=e._amount||0; } return Object.values(m).sort((a,b)=>a.month.localeCompare(b.month))"',
     '',
-    'zohoSource: { module: "bills", filters: { from_date: "2025-04-01", to_date: "2026-03-31" } }',
+    'zohoSource: { module: "expenses", filters: { from_date: "2025-11-01", to_date: "2026-04-30" } }',
     '  Fetches ALL records from the specified Zoho Books module with filters.',
     '  Supported modules: invoices, bills, expenses, contacts, customerpayments, bankaccounts, banktransactions, items',
     '  The fetched records become `data` in the script. You do NOT need to call zohoBooks separately.',
+    '  Note: For expenses, date filtering uses from_date/to_date but Zoho may return all records — filter in the script using the date field.',
     '',
     'data: pass directly for small datasets (< 100 items). Omit when using zohoSource.',
     'args: optional extra parameters for the script',
@@ -141,6 +151,7 @@ export const createDataProcessorTool = (deps: {
     // ── Resolve input data ─────────────────────────────────────────────────
     let inputData: unknown;
     let totalFetched: number | undefined;
+    let moduleSchemaHint: Record<string, unknown> | undefined;
 
     if (args.zohoSource) {
       // Fetch from Zoho Books internally — LLM never sees the raw records
@@ -151,22 +162,14 @@ export const createDataProcessorTool = (deps: {
         query: args.zohoSource.query,
       });
 
+      // 1. Fetch data from Zoho
+      let fetchResult: Awaited<ReturnType<typeof deps.booksClient.listAllRecords>>;
       try {
-        const result = await deps.booksClient.listAllRecords({
+        fetchResult = await deps.booksClient.listAllRecords({
           companyId,
           moduleName: args.zohoSource.module as ZohoBooksModule,
           ...(args.zohoSource.filters ? { filters: args.zohoSource.filters as Record<string, string> } : {}),
           ...(args.zohoSource.query ? { query: args.zohoSource.query } : {}),
-        });
-
-        inputData = result.items;
-        totalFetched = result.items.length;
-
-        ctx.logger.info('data_processor.zoho_fetch.done', {
-          companyId,
-          module: args.zohoSource.module,
-          recordsFetched: totalFetched,
-          truncated: result.truncated,
         });
       } catch (e) {
         ctx.logger.error('data_processor.zoho_fetch.failed', {
@@ -180,6 +183,30 @@ export const createDataProcessorTool = (deps: {
           message: `Failed to fetch ${args.zohoSource.module} from Zoho Books: ${e instanceof Error ? e.message : String(e)}`,
         }));
       }
+
+      // 2. Resolve field schema from static registry (zero API calls, no async)
+      const schema = getModuleSchema(args.zohoSource.module);
+
+      // 3. Inject _amount / _date / _id synthetic fields so LLM scripts use consistent names
+      const items = injectSyntheticFields(fetchResult.items, schema);
+      moduleSchemaHint = toSchemaHint(schema);
+
+      ctx.logger.info('data_processor.schema_injected', {
+        companyId,
+        module:        args.zohoSource.module,
+        primaryAmount: schema.primaryAmount,
+        primaryDate:   schema.primaryDate,
+      });
+
+      inputData    = items;
+      totalFetched = items.length;
+
+      ctx.logger.info('data_processor.zoho_fetch.done', {
+        companyId,
+        module:         args.zohoSource.module,
+        recordsFetched: totalFetched,
+        truncated:      fetchResult.truncated,
+      });
     } else if (args.data !== undefined) {
       inputData = args.data;
     } else {
@@ -212,8 +239,9 @@ export const createDataProcessorTool = (deps: {
 
     // ── Build sandbox ──────────────────────────────────────────────────────
     const sandbox = {
-      data: JSON.parse(dataStr),
-      args: args.args ?? {},
+      data:   JSON.parse(dataStr),
+      args:   args.args ?? {},
+      schema: moduleSchemaHint ?? null,  // available in script as `schema.primaryAmount` etc.
       formatAmount,
       formatDate,
       Math,
@@ -340,6 +368,7 @@ export const createDataProcessorTool = (deps: {
       message: parts.join(' '),
       ...(csvLink ? { csvLink } : {}),
       ...(csvExpiresAt ? { csvExpiresAt } : {}),
+      ...(moduleSchemaHint ? { moduleSchema: moduleSchemaHint } : {}),
     });
   },
 });
