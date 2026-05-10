@@ -8,19 +8,29 @@
  *   GET  /invites               — list pending invites
  *   POST /invites               — create invite
  *   GET  /onboarding/status     — integration provider status
+ *   POST /onboarding/zoho-start — build backend-managed Zoho OAuth URL
+ *   POST /onboarding/connect    — complete backend-managed Zoho OAuth callback
  *   GET  /tool-permissions      — company tool permissions matrix
  */
 
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
+import type { CachePort } from '../../shared/cache';
+import type { TypedEnv } from '../../config/env';
+import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
+import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
 
 export interface CompanyRoutesDeps {
   prisma: PrismaClient;
   logger: Logger;
+  env: TypedEnv;
+  cache: CachePort;
+  zohoTokenService: ZohoTokenService;
+  zohoConnectionRepo: ZohoConnectionRepository;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -69,6 +79,72 @@ const createInviteSchema = z.object({
   roleId:    z.string().min(1).max(50),
   companyId: z.string().uuid().optional(),
 });
+
+const zohoStartSchema = z.object({
+  companyId: z.string().uuid().optional(),
+  returnTo:  z.string().url().optional(),
+});
+
+const zohoConnectSchema = z.object({
+  code:  z.string().min(1),
+  state: z.string().min(1),
+});
+
+interface ZohoOAuthState {
+  companyId:   string;
+  environment: string;
+  nonce:       string;
+  returnTo?:   string;
+}
+
+const ZOHO_NONCE_TTL_SECONDS = 600;
+const DEFAULT_ZOHO_SCOPES = [
+  'ZohoCRM.modules.ALL',
+  'ZohoCRM.settings.ALL',
+  'ZohoBooks.fullaccess.all',
+  'ZohoBooks.contacts.all',
+  'ZohoBooks.invoices.all',
+  'ZohoBooks.expenses.all',
+];
+
+const zohoNonceKey = (nonce: string): string => `zoho:oauth:nonce:${nonce}`;
+
+function encodeZohoState(state: ZohoOAuthState): string {
+  return Buffer.from(JSON.stringify(state)).toString('base64url');
+}
+
+function decodeZohoState(raw: string): ZohoOAuthState | null {
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
+    if (typeof parsed.companyId !== 'string' || typeof parsed.nonce !== 'string') return null;
+    return {
+      companyId: parsed.companyId,
+      environment: typeof parsed.environment === 'string' ? parsed.environment : 'prod',
+      nonce: parsed.nonce,
+      ...(typeof parsed.returnTo === 'string' ? { returnTo: parsed.returnTo } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildZohoAuthorizeUrl(opts: {
+  clientId: string;
+  redirectUri: string;
+  scopes: readonly string[];
+  state: string;
+  accountsBaseUrl: string;
+}): string {
+  const url = new URL(`${opts.accountsBaseUrl.replace(/\/$/, '')}/oauth/v2/auth`);
+  url.searchParams.set('client_id', opts.clientId);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('scope', opts.scopes.join(' '));
+  url.searchParams.set('redirect_uri', opts.redirectUri);
+  url.searchParams.set('access_type', 'offline');
+  url.searchParams.set('prompt', 'consent');
+  url.searchParams.set('state', opts.state);
+  return url.toString();
+}
 
 // ── Route factory ─────────────────────────────────────────────────────────────
 
@@ -257,6 +333,83 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     ];
 
     success(res, providers, 'Onboarding status loaded');
+  }));
+
+  router.post('/onboarding/zoho-start', asyncRoute(async (req, res) => {
+    const body = zohoStartSchema.parse(req.body ?? {});
+    const companyId = resolveCompanyId(res, body.companyId);
+    const userId = res.locals['userId'] as string | undefined;
+    const clientId = (deps.env.ZOHO_CLIENT_ID ?? '').trim();
+    const redirectUri = (deps.env.ZOHO_REDIRECT_URI ?? '').trim();
+    const accountsBaseUrl = deps.env.ZOHO_ACCOUNTS_BASE_URL.trim();
+
+    if (!userId) throw routeError(401, 'Admin user context is required');
+    if (!deps.zohoTokenService.isConfigured() || !clientId || !redirectUri) {
+      throw routeError(503, 'Zoho OAuth is handled by backend env for now, but backend Zoho env is not configured');
+    }
+
+    const nonce = randomBytes(24).toString('hex');
+    await deps.cache.set(zohoNonceKey(nonce), { companyId, userId }, ZOHO_NONCE_TTL_SECONDS);
+
+    const state: ZohoOAuthState = {
+      companyId,
+      environment: 'prod',
+      nonce,
+      returnTo: body.returnTo ?? `${deps.env.APP_BASE_URL}/settings?tab=integrations`,
+    };
+    const authUrl = buildZohoAuthorizeUrl({
+      clientId,
+      redirectUri,
+      scopes: DEFAULT_ZOHO_SCOPES,
+      state: encodeZohoState(state),
+      accountsBaseUrl,
+    });
+
+    deps.logger.info('zoho.admin_oauth.start', { companyId, userId });
+    success(res, {
+      authUrl,
+      provider: 'zoho',
+      message: 'Zoho OAuth is handled by backend env for now.',
+    }, 'Zoho OAuth URL created');
+  }));
+
+  router.post('/onboarding/connect', asyncRoute(async (req, res) => {
+    const body = zohoConnectSchema.parse(req.body ?? {});
+    const state = decodeZohoState(body.state);
+    if (!state) throw routeError(400, 'Invalid Zoho OAuth state');
+
+    const companyId = resolveCompanyId(res, state.companyId);
+    const stored = await deps.cache.get<{ companyId: string; userId: string }>(zohoNonceKey(state.nonce));
+    if (!stored.ok || !stored.value || stored.value.companyId !== companyId) {
+      throw routeError(400, 'Zoho OAuth state expired or invalid');
+    }
+    await deps.cache.del(zohoNonceKey(state.nonce));
+
+    const redirectUri = (deps.env.ZOHO_REDIRECT_URI ?? '').trim();
+    const tokens = await deps.zohoTokenService.exchangeAuthorizationCode({
+      companyId,
+      environment: state.environment,
+      authorizationCode: body.code,
+      ...(redirectUri ? { redirectUri } : {}),
+    });
+
+    const upsertResult = await deps.zohoConnectionRepo.upsertFromExchange({
+      companyId,
+      environment: state.environment,
+      accessToken: tokens.accessToken,
+      ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+      expiresIn: tokens.expiresIn,
+      scopes: tokens.scopes,
+    });
+    if (!upsertResult.ok) throw routeError(500, upsertResult.error.message);
+
+    deps.logger.info('zoho.admin_oauth.connected', { companyId, environment: state.environment, scopes: tokens.scopes });
+    success(res, {
+      provider: 'zoho',
+      connected: true,
+      returnTo: state.returnTo ?? `${deps.env.APP_BASE_URL}/settings?tab=integrations`,
+      scopes: tokens.scopes,
+    }, 'Zoho connected');
   }));
 
   // ── Tool permissions ──────────────────────────────────────────────────────

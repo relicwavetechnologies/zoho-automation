@@ -134,6 +134,17 @@ export const channelMappingsApi = {
     api.delete("/api/channel-mappings", body, token),
 };
 
+export type ZohoConnectStart = {
+  authUrl: string;
+  provider: "zoho";
+  message: string;
+};
+
+export const companyIntegrationsApi = {
+  startZoho: (token?: string) =>
+    api.post<ZohoConnectStart>("/api/admin/company/onboarding/zoho-start", {}, token),
+};
+
 export type AiProviderStatus = {
   companyId: string;
   providers: {

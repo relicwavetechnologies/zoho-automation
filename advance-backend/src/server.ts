@@ -274,7 +274,14 @@ export const createServer = (c: Container) => {
   );
 
   // Company admin surface (members, directory, invites, onboarding, tool-permissions)
-  const companyRoutes = createCompanyRoutes({ prisma: c.prisma, logger: c.logger });
+  const companyRoutes = createCompanyRoutes({
+    prisma: c.prisma,
+    logger: c.logger,
+    env: c.env,
+    cache: c.memoryCache,
+    zohoTokenService: c.zohoTokenService,
+    zohoConnectionRepo: c.zohoConnectionRepo,
+  });
   app.use('/api/admin/company', adminAuth, companyRoutes);
   // Alias: GET /api/admin/members → GET /api/admin/company/members (used by OverviewPage)
   // The company router handles /members as a sub-path, so rewrite the URL before dispatching.

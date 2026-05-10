@@ -188,8 +188,47 @@ function makePrisma(overrides: {
   } as any;
 }
 
+const testEnv = {
+  APP_BASE_URL: 'http://localhost:5173',
+  ZOHO_CLIENT_ID: 'zoho-client',
+  ZOHO_CLIENT_SECRET: 'zoho-secret',
+  ZOHO_REDIRECT_URI: 'http://localhost:5173/zoho/callback',
+  ZOHO_ACCOUNTS_BASE_URL: 'https://accounts.zoho.in',
+  ZOHO_API_BASE_URL: 'https://www.zohoapis.in',
+} as any;
+
+function makeRouteDeps(prisma: any, overrides: {
+  cache?: any;
+  zohoTokenService?: any;
+  zohoConnectionRepo?: any;
+} = {}) {
+  return {
+    prisma,
+    logger: noopLogger,
+    env: testEnv,
+    cache: overrides.cache ?? {
+      get: async () => ({ ok: true, value: { companyId: 'co-1', userId: 'u-1' } }),
+      set: async () => ({ ok: true, value: undefined }),
+      del: async () => ({ ok: true, value: undefined }),
+      scanDel: async () => ({ ok: true, value: 0 }),
+    } as any,
+    zohoTokenService: overrides.zohoTokenService ?? {
+      isConfigured: () => true,
+      exchangeAuthorizationCode: async () => ({
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        expiresIn: 3600,
+        scopes: ['ZohoBooks.fullaccess.all'],
+      }),
+    } as any,
+    zohoConnectionRepo: overrides.zohoConnectionRepo ?? {
+      upsertFromExchange: async () => ({ ok: true, value: undefined }),
+    } as any,
+  };
+}
+
 function makeRouter(overrides?: Parameters<typeof makePrisma>[0]) {
-  return createCompanyRoutes({ prisma: makePrisma(overrides), logger: noopLogger });
+  return createCompanyRoutes(makeRouteDeps(makePrisma(overrides)));
 }
 
 // ─── GET /members ─────────────────────────────────────────────────────────────
@@ -341,12 +380,109 @@ describe('POST /invites', () => {
         create: async (args: any) => { capturedData = args.data; return fakeInvite; },
       },
     } as any;
-    const router = createCompanyRoutes({ prisma, logger: noopLogger });
+    const router = createCompanyRoutes(makeRouteDeps(prisma));
     await callRoute(router, 'POST', '/invites', {
       locals: SUPER_ADMIN_LOCALS,
       body:   { ...validBody, companyId: 'aaaaaaaa-aaaa-aaaa-aaaa-000000000001' },
     });
     assert.equal(capturedData.companyId, 'aaaaaaaa-aaaa-aaaa-aaaa-000000000001');
+  });
+});
+
+// ─── POST /onboarding/zoho-start ─────────────────────────────────────────────
+
+describe('POST /onboarding/zoho-start', () => {
+  it('returns a Zoho authorization URL built from backend env', async () => {
+    let cachedKey = '';
+    let cachedValue: unknown;
+    const router = createCompanyRoutes(makeRouteDeps(makePrisma(), {
+      cache: {
+        get: async () => ({ ok: true, value: null }),
+        set: async (key: string, value: unknown) => { cachedKey = key; cachedValue = value; return { ok: true, value: undefined }; },
+        del: async () => ({ ok: true, value: undefined }),
+        scanDel: async () => ({ ok: true, value: 0 }),
+      },
+    }));
+
+    const { status, body } = await callRoute(router, 'POST', '/onboarding/zoho-start');
+
+    assert.equal(status, 200);
+    const data = (body as any).data;
+    const url = new URL(data.authUrl);
+    assert.equal(url.origin, 'https://accounts.zoho.in');
+    assert.equal(url.pathname, '/oauth/v2/auth');
+    assert.equal(url.searchParams.get('client_id'), 'zoho-client');
+    assert.equal(url.searchParams.get('redirect_uri'), 'http://localhost:5173/zoho/callback');
+    assert.equal(url.searchParams.get('access_type'), 'offline');
+    assert.equal(url.searchParams.get('prompt'), 'consent');
+    assert.equal(data.message, 'Zoho OAuth is handled by backend env for now.');
+    assert.ok(cachedKey.startsWith('zoho:oauth:nonce:'));
+    assert.deepEqual(cachedValue, { companyId: 'co-1', userId: 'u-1' });
+  });
+
+  it('returns 401 when admin user context is missing', async () => {
+    const { status } = await callRoute(makeRouter(), 'POST', '/onboarding/zoho-start', {
+      locals: { companyId: 'co-1', isSuperAdmin: false },
+    });
+    assert.equal(status, 401);
+  });
+});
+
+// ─── POST /onboarding/connect ────────────────────────────────────────────────
+
+describe('POST /onboarding/connect', () => {
+  it('exchanges the Zoho callback code and stores the company connection', async () => {
+    let exchangeArgs: any;
+    let upsertArgs: any;
+    const router = createCompanyRoutes(makeRouteDeps(makePrisma(), {
+      zohoTokenService: {
+        isConfigured: () => true,
+        exchangeAuthorizationCode: async (args: any) => {
+          exchangeArgs = args;
+          return {
+            accessToken: 'new-access-token',
+            refreshToken: 'new-refresh-token',
+            expiresIn: 3600,
+            scopes: ['ZohoBooks.fullaccess.all'],
+          };
+        },
+      },
+      zohoConnectionRepo: {
+        upsertFromExchange: async (args: any) => {
+          upsertArgs = args;
+          return { ok: true, value: undefined };
+        },
+      },
+    }));
+    const state = Buffer.from(JSON.stringify({
+      companyId: 'co-1',
+      environment: 'prod',
+      nonce: 'nonce-1',
+      returnTo: 'http://localhost:5173/settings?tab=integrations',
+    })).toString('base64url');
+
+    const { status, body } = await callRoute(router, 'POST', '/onboarding/connect', {
+      body: { code: 'auth-code', state },
+    });
+
+    assert.equal(status, 200);
+    assert.equal((body as any).data.connected, true);
+    assert.deepEqual(exchangeArgs, {
+      companyId: 'co-1',
+      environment: 'prod',
+      authorizationCode: 'auth-code',
+      redirectUri: 'http://localhost:5173/zoho/callback',
+    });
+    assert.equal(upsertArgs.companyId, 'co-1');
+    assert.equal(upsertArgs.accessToken, 'new-access-token');
+    assert.equal(upsertArgs.refreshToken, 'new-refresh-token');
+  });
+
+  it('returns 400 for an invalid Zoho state', async () => {
+    const { status } = await callRoute(makeRouter(), 'POST', '/onboarding/connect', {
+      body: { code: 'auth-code', state: 'not-json' },
+    });
+    assert.equal(status, 400);
   });
 });
 
