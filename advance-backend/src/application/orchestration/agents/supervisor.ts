@@ -100,6 +100,10 @@ interface DynamicGraphRunInput {
 
 export interface SupervisorDeps {
   model:             LanguageModel;
+  defaultModel?:     {
+    provider: string;
+    modelId:  string;
+  };
   resolveModel?:     (input: {
     provider: string;
     modelId: string;
@@ -548,6 +552,7 @@ export class SupervisorAgent {
 
     const graph = buildDynamicSupervisorGraph({
       model: this.deps.model,
+      ...(this.deps.defaultModel ? { defaultModel: this.deps.defaultModel } : {}),
       ...(this.deps.resolveModel ? { resolveModel: this.deps.resolveModel } : {}),
       agentCatalogCache: this.deps.agentCatalogCache,
       todoRepo: this.deps.todoRepo,

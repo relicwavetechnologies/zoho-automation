@@ -115,6 +115,7 @@ import type { LanguageModel } from 'ai';
 import { withFallback } from './shared/model-fallback';
 import { withGeminiSignatures, createGeminiFetch } from './shared/gemini-thought-signatures';
 import { decryptToken, TokenCryptoError } from './infrastructure/shared/token.crypto';
+import { redModelSelection } from './shared/model-selection-log';
 
 type ZohoBooksOrganizationPayload = {
   organizations?: Array<{
@@ -287,6 +288,26 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const primaryModel    = createConfiguredModel(primaryProvider, primaryModelId);
   const fallbackModel   = createConfiguredModel(fastProvider, fastModelId);
   const model = withFallback(primaryModel, fallbackModel);
+  logger.warn('ai.model.selected', {
+    provider: primaryProvider,
+    modelId: primaryModelId,
+    source: 'company_default_startup',
+    selection: redModelSelection({
+      provider: primaryProvider,
+      modelId: primaryModelId,
+      source: 'company_default_startup',
+    }),
+  });
+  logger.warn('ai.model.selected', {
+    provider: fastProvider,
+    modelId: fastModelId,
+    source: 'fallback_startup',
+    selection: redModelSelection({
+      provider: fastProvider,
+      modelId: fastModelId,
+      source: 'fallback_startup',
+    }),
+  });
   const resolveModel = async (input: {
     provider: string;
     modelId: string;
@@ -663,6 +684,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const supervisor = new SupervisorAgent({
     model,
+    defaultModel: { provider: primaryProvider, modelId: primaryModelId },
     resolveModel,
     agentResolver,
     agentCatalogCache,

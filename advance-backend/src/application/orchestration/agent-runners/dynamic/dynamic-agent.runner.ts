@@ -9,6 +9,7 @@ import {
   CircuitBreakerOpenError,
   GEMINI_CIRCUIT_OPTIONS,
 } from '../../../../shared/circuit-breaker';
+import { redModelSelection } from '../../../../shared/model-selection-log';
 import { getISTDateTime } from '../../agents/supervisor.prompt';
 
 const DYNAMIC_AGENT_TIMEOUT_MS = 60_000;
@@ -78,6 +79,21 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
     ].filter(Boolean).join('\n\n');
 
     const task = pre.modifiedTask ?? input.task;
+    const selectedProvider = agent.provider ?? ctx.defaultModel?.provider ?? 'default';
+    const selectedModelId = agent.modelId ?? ctx.defaultModel?.modelId ?? 'default';
+    const modelSource = agent.provider && agent.modelId && ctx.resolveModel ? 'agent_override' : 'company_default';
+    log.warn('ai.model.selected', {
+      provider: selectedProvider,
+      modelId: selectedModelId,
+      source: modelSource,
+      selection: redModelSelection({
+        provider:  selectedProvider,
+        modelId:   selectedModelId,
+        source:    modelSource,
+        agentSlug: agent.slug,
+      }),
+    });
+
     const model = agent.provider && agent.modelId && ctx.resolveModel
       ? await ctx.resolveModel({
         provider:  agent.provider,

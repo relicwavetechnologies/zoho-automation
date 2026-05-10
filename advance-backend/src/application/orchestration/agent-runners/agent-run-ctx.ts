@@ -15,6 +15,11 @@ import type { ApprovalGateService } from '../../approval/approval-gate.service';
 export interface AgentRunCtx {
   /** The LLM used by all runners — same model as the supervisor. */
   model:       LanguageModel;
+  /** Human-readable default model metadata for logs. */
+  defaultModel?: {
+    provider: string;
+    modelId:  string;
+  };
   /** Optional per-agent model resolver. Falls back to model when unset. */
   resolveModel?: (input: {
     provider: string;

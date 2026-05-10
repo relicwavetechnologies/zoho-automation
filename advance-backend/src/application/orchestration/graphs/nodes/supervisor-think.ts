@@ -15,11 +15,16 @@ import { createRunScheduledNowTool } from '../../tools/orchestration/run-schedul
 import { createRememberFactTool } from '../../tools/orchestration/remember-fact.tool';
 import type { SupervisorGraphStateValue } from '../dynamic-supervisor.state';
 import type { Mem0Service } from '../../../memory/mem0.service';
+import { redModelSelection } from '../../../../shared/model-selection-log';
 
 const SUPERVISOR_TIMEOUT_MS = 90_000;
 
 export interface SupervisorThinkDeps {
   readonly model: LanguageModel;
+  readonly defaultModel?: {
+    provider: string;
+    modelId:  string;
+  };
   readonly resolveModel?: (input: {
     provider: string;
     modelId: string;
@@ -60,6 +65,7 @@ export async function supervisorThink(
 
     const agentCtx = {
       model: deps.model,
+      ...(deps.defaultModel ? { defaultModel: deps.defaultModel } : {}),
       ...(deps.resolveModel ? { resolveModel: deps.resolveModel } : {}),
       allTools: state.permittedTools,
       perm: state.perm,
@@ -93,6 +99,21 @@ export async function supervisorThink(
     const systemPrompt = state.memoryContext
       ? `${rootAgent.systemPrompt}\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user:\n${state.memoryContext}`
       : rootAgent.systemPrompt;
+
+    const selectedProvider = rootAgent.provider ?? deps.defaultModel?.provider ?? 'default';
+    const selectedModelId = rootAgent.modelId ?? deps.defaultModel?.modelId ?? 'default';
+    const modelSource = rootAgent.provider && rootAgent.modelId && deps.resolveModel ? 'agent_override' : 'company_default';
+    deps.logger.warn('ai.model.selected', {
+      provider: selectedProvider,
+      modelId: selectedModelId,
+      source: modelSource,
+      selection: redModelSelection({
+        provider:  selectedProvider,
+        modelId:   selectedModelId,
+        source:    modelSource,
+        agentSlug: rootAgent.slug,
+      }),
+    });
 
     const rootModel = rootAgent.provider && rootAgent.modelId && deps.resolveModel
       ? await deps.resolveModel({
