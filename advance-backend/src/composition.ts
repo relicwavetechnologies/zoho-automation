@@ -220,25 +220,38 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'permissions' }),
   });
 
-  // ── AI model (switch via MODEL_PROVIDER + MODEL_ID in .env) ─────────────
-  // Primary model follows MODEL_PROVIDER + MODEL_ID.
-  // Falls back silently to gpt-4o-mini on rate-limit / high-demand errors.
+  // ── AI model (DB config first, env fallback) ────────────────────────────
+  // Primary model follows AiModelTargetConfig(targetKey='default') when present,
+  // then falls back to MODEL_PROVIDER + MODEL_ID for backward compatibility.
+  // Falls back silently to configured fast model, or gpt-4o-mini by default,
+  // on rate-limit / high-demand errors.
+  const defaultModelTarget = await prisma.aiModelTargetConfig.findUnique({
+    where: { targetKey: 'default' },
+  });
   const openai = createOpenAI({ apiKey: env.OPENAI_API_KEY });
-  const fallbackModel = openai('gpt-4o-mini');
 
-  const primaryModel = (() => {
-    if (env.MODEL_PROVIDER === 'google') {
+  const createConfiguredModel = (provider: string, modelId: string) => {
+    if (provider === 'google') {
       const apiKey = env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error('MODEL_PROVIDER=google but neither GOOGLE_GENERATIVE_AI_API_KEY nor GEMINI_API_KEY is set');
+      if (!apiKey) throw new Error('AI provider google selected but neither GOOGLE_GENERATIVE_AI_API_KEY nor GEMINI_API_KEY is set');
       // Layer 1: custom fetch fixes sig attribution in raw API responses
       // before @ai-sdk/google parses them. Layer 2 (withGeminiSignatures)
       // is defence-in-depth for the outgoing prompt direction.
       const google = createGoogleGenerativeAI({ apiKey, fetch: createGeminiFetch() });
-      return withGeminiSignatures(google(env.MODEL_ID));
+      return withGeminiSignatures(google(modelId));
     }
-    return openai(env.MODEL_ID);
-  })();
+    if (provider === 'openai') {
+      return openai(modelId);
+    }
+    throw new Error(`Unsupported AI model provider: ${provider}`);
+  };
 
+  const primaryProvider = defaultModelTarget?.provider ?? env.MODEL_PROVIDER;
+  const primaryModelId  = defaultModelTarget?.modelId ?? env.MODEL_ID;
+  const fastProvider    = defaultModelTarget?.fastProvider ?? 'openai';
+  const fastModelId     = defaultModelTarget?.fastModelId ?? 'gpt-4o-mini';
+  const primaryModel    = createConfiguredModel(primaryProvider, primaryModelId);
+  const fallbackModel   = createConfiguredModel(fastProvider, fastModelId);
   const model = withFallback(primaryModel, fallbackModel);
 
   // ── Lark tool clients ──────────────────────────────────────────────────
