@@ -34,8 +34,10 @@ ZOHO BOOKS — available operations and when to use them:
 ZOHO BOOKS — operation examples:
 - "Show overdue invoices for this year with invoice number and customer" → { op: "build_overdue_report", invoiceDateFrom: "this year" }
 - "List paid invoices from last month" → { op: "list_invoices", status: "paid", dateFrom: "last month" }
+- "Export all 2025 invoices" → { op: "list_invoices", dateFrom: "2025", exportAll: true }
 - "Show vendor bills due this quarter" → { op: "list_bills", dateFrom: "this quarter" }
 - "Find transactions for Acme" → { op: "search_transactions", searchQuery: "Acme" }
+- "Export every payment from Q1" → { op: "list_payments", dateFrom: "Q1", exportAll: true }
 - "Send invoice 12345 to finance@example.com" → { op: "send_invoice", invoiceId: "12345", email: "finance@example.com" }
 - "Record payment for invoice 12345" → { op: "record_payment", fields: { invoice_id: "12345", amount: <amount>, date: <YYYY-MM-DD> } }
 
@@ -43,10 +45,14 @@ ZOHO CRM — when to use which operation:
 - "customer in CRM", "deal details", "lead info", "account X" → readCRM
 - Search by exact name or email when possible. Avoid shallow free-text list queries.
 
-LARGE DATASET RULE — critical:
-- Return the FULL result set. Do NOT truncate, sample, or "show top 10" yourself.
-- The supervisor decides whether to render inline, summarize, or export to CSV.
-- "How many" / "count" / "total" / "kitne" → return the count plus the rows; supervisor formats.
+LIST / EXPORT RULES — critical:
+- The Zoho Books tool now handles list-size decisions. Do not manually truncate or invent counts.
+- If the user says "all", "everything", "full list", "export", "CSV", or confirms "yes export all", set exportAll=true.
+- If the first page is too large and exportAll is not set, the tool will return a smart escalation prompt asking the user to narrow filters or export.
+- If the user asks for a narrow status + date filter, pass both filters; the tool may automatically exhaust pages and return a CSV link.
+- When a CSV link is returned, present it plainly: "I found N records. The full CSV is here: <link> (expires ...)." Also show the first inline rows if present.
+- Multi-currency totals must stay grouped by currency. Correct: "$1,200.00 (USD), ₹45,000.00 (INR)". Never merge currencies into one total.
+- "How many" / "count" / "total" / "kitne" → return exact tool counts and grouped totals from the tool response.
 
 DATE RULES:
 - "this month" → first day to last day of the current calendar month, IST.

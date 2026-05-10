@@ -111,9 +111,18 @@ import { createWebSearchTool } from './application/orchestration/tools/families/
 // AI model
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import type { LanguageModel } from 'ai';
 import { withFallback } from './shared/model-fallback';
 import { withGeminiSignatures, createGeminiFetch } from './shared/gemini-thought-signatures';
 import { decryptToken, TokenCryptoError } from './infrastructure/shared/token.crypto';
+
+type ZohoBooksOrganizationPayload = {
+  organizations?: Array<{
+    organization_id?: string;
+    is_default?: boolean;
+    is_default_org?: boolean;
+  }>;
+};
 
 export interface Container {
   env: TypedEnv;
@@ -159,6 +168,7 @@ export interface Container {
   // Document RAG
   ingestionService: IngestionService;
   ingestionQueue: IngestionQueue;
+  cloudinaryAdapter: CloudinaryAdapter;
   fileAssetRepo: FileAssetRepository;
   fileAccessPolicyRepo: FileAccessPolicyRepository;
   // Knowledge Share
@@ -277,6 +287,48 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const primaryModel    = createConfiguredModel(primaryProvider, primaryModelId);
   const fallbackModel   = createConfiguredModel(fastProvider, fastModelId);
   const model = withFallback(primaryModel, fallbackModel);
+  const resolveModel = async (input: {
+    provider: string;
+    modelId: string;
+    companyId: string;
+    agentSlug?: string;
+  }): Promise<LanguageModel> => {
+    if (input.provider === 'google') {
+      return createConfiguredModel(input.provider, input.modelId);
+    }
+    if (input.provider !== 'openai') {
+      throw new Error(`Unsupported AI model provider: ${input.provider}`);
+    }
+
+    const company = await prisma.company.findUnique({
+      where:  { id: input.companyId },
+      select: { id: true, gatewayApiKey: true, gatewayUrl: true },
+    });
+    const companyGatewayBaseUrl = (company?.gatewayUrl ?? env.GATEWAY_BASE_URL).trim().replace(/\/+$/, '');
+    if (company?.gatewayApiKey && companyGatewayBaseUrl) {
+      try {
+        const apiKey = decryptToken(company.gatewayApiKey, env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '');
+        logger.info('ai.openai.gateway.agent_model.enabled', {
+          companyId: input.companyId,
+          agentSlug: input.agentSlug,
+          gatewayBaseUrl: companyGatewayBaseUrl,
+        });
+        return createOpenAI({ apiKey, baseURL: `${companyGatewayBaseUrl}/v1` })(input.modelId);
+      } catch (error) {
+        if (error instanceof TokenCryptoError) {
+          logger.warn('ai.openai.gateway.agent_model.decrypt_failed', {
+            companyId: input.companyId,
+            agentSlug: input.agentSlug,
+            error: error.message,
+          });
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    return createOpenAI({ apiKey: env.OPENAI_API_KEY })(input.modelId);
+  };
 
   // ── Lark tool clients ──────────────────────────────────────────────────
   const larkClientDeps = { appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET };
@@ -373,16 +425,67 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     }
   }
 
+  const zohoBooksOrgCache = new Map<string, { organizationId: string; expiresAtMs: number }>();
+
+  async function resolveZohoBooksOrganizationId(companyId: string, token: string): Promise<string | null> {
+    const cached = zohoBooksOrgCache.get(companyId);
+    if (cached && cached.expiresAtMs > Date.now()) {
+      return cached.organizationId;
+    }
+
+    try {
+      const apiRoot = env.ZOHO_API_BASE_URL.replace(/\/$/, '');
+      const res = await fetch(`${apiRoot}/books/v3/organizations`, {
+        headers: { Authorization: `Zoho-oauthtoken ${token}` },
+      });
+
+      const payload = (await res.json().catch(() => ({}))) as ZohoBooksOrganizationPayload & {
+        code?: number;
+        message?: string;
+      };
+
+      if (!res.ok) {
+        logger.warn('zoho.books.organization_lookup.failed', {
+          companyId,
+          status: res.status,
+          code: payload.code,
+          message: payload.message,
+        });
+        return null;
+      }
+
+      const orgs = Array.isArray(payload.organizations) ? payload.organizations : [];
+      const selected = orgs.find((org) => org.is_default_org === true || org.is_default === true) ?? orgs[0];
+      const organizationId = selected?.organization_id;
+      if (!organizationId) {
+        logger.warn('zoho.books.organization_lookup.empty', { companyId });
+        return null;
+      }
+
+      zohoBooksOrgCache.set(companyId, {
+        organizationId,
+        expiresAtMs: Date.now() + 10 * 60 * 1000,
+      });
+      return organizationId;
+    } catch (error) {
+      logger.warn('zoho.books.organization_lookup.error', {
+        companyId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
   const getZohoCrmClient = async (companyId: string, _userId: string) => {
     const token = await resolveZohoToken(companyId);
-    return token ? new ZohoCrmClient(token) : null;
+    return token ? new ZohoCrmClient(token, env.ZOHO_API_BASE_URL) : null;
   };
 
   const getZohoBooksClient = async (companyId: string, _userId: string) => {
     const token = await resolveZohoToken(companyId);
     if (!token) return null;
-    // organizationId defaults to companyId in phase 1; override later when multi-org
-    return new ZohoBooksClient(token, companyId);
+    const organizationId = await resolveZohoBooksOrganizationId(companyId, token);
+    return organizationId ? new ZohoBooksClient(token, organizationId, env.ZOHO_API_BASE_URL) : null;
   };
 
   // ── Cloudinary adapter (graceful no-op when credentials absent) ──────────
@@ -435,7 +538,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   );
 
   // ── Zoho Books paginated client + finance ops ────────────────────────────
-  const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService);
+  const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
 
   const zohoFinanceOps = new ZohoFinanceOps(
     zohoPaginatedBooksClient,
@@ -497,9 +600,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createGoogleCalendarTool({ getClient: getCalendarClient }));
   toolRegistry.register(createZohoCrmTool({ getClient: getZohoCrmClient }));
   toolRegistry.register(createZohoBooksTool({
-    getClient:   getZohoBooksClient,
-    booksClient: zohoPaginatedBooksClient,
-    financeOps:  zohoFinanceOps,
+    getClient:       getZohoBooksClient,
+    booksClient:     zohoPaginatedBooksClient,
+    financeOps:      zohoFinanceOps,
+    cloudinary:      cloudinaryAdapter,
+    inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
+    csvLinkTtl:      env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   }));
   toolRegistry.register(createContextSearchTool({ broker: contextSearchBroker }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
@@ -557,6 +663,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const supervisor = new SupervisorAgent({
     model,
+    resolveModel,
     agentResolver,
     agentCatalogCache,
     todoRepo,
@@ -679,6 +786,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // Document RAG
     ingestionService,
     ingestionQueue,
+    cloudinaryAdapter,
     fileAssetRepo,
     fileAccessPolicyRepo,
     // Knowledge Share

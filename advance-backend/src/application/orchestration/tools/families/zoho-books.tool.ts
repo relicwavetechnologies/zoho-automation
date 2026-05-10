@@ -40,9 +40,11 @@ import { PermissionError, ToolError }      from '../../../../shared/errors';
 import type { ToolActionGroup }            from '../../../../domain/permissions/tool-action-group';
 import { asToolId }                        from '../../../../shared/ids';
 import type { ZohoFinanceOps }             from '../../../zoho/zoho-finance-ops';
+import type { CloudinaryAdapter }          from '../../../../infrastructure/cloudinary/cloudinary.adapter';
 import { mapZohoError }                    from '../../../zoho/zoho-error.utils';
 import { formatAmount, formatDate }        from '../../../zoho/zoho-format.utils';
 import { normalizeStatus, parseDateFilter } from '../../../zoho/zoho-filter.utils';
+import { handleZohoList, type ZohoListCsvColumn } from '../../../zoho/zoho-list-handler';
 import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../../infrastructure/zoho/zoho-books-paginated.client';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
@@ -80,6 +82,7 @@ const Schema = z.object({
   email:          z.string().email().optional(),
   fields:         z.record(z.unknown()).optional(),
   limit:          z.number().int().min(1).max(100).optional(),
+  exportAll:      z.boolean().optional(),
   organizationId: z.string().optional(),
   dateFrom:       z.string().optional(),
   dateTo:         z.string().optional(),
@@ -102,6 +105,11 @@ const ResultSchema = z.object({
   message:      z.string().optional(),
   // Report fields (present only for build_overdue_report)
   report:       z.unknown().optional(),
+  csvLink:      z.string().optional(),
+  csvExpiresAt: z.string().optional(),
+  truncated:    z.boolean().optional(),
+  hasMore:      z.boolean().optional(),
+  suggestExport: z.boolean().optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
@@ -195,6 +203,50 @@ const numericAmount = (value: unknown): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const stringValue = (record: Record<string, unknown>, ...keys: string[]): string =>
+  keys.map(key => record[key]).find(value => typeof value === 'string' && value.trim().length > 0) as string | undefined ?? '';
+
+const amountValue = (record: Record<string, unknown>, ...keys: string[]): number => {
+  for (const key of keys) {
+    const amount = numericAmount(record[key]);
+    if (amount !== null) return amount;
+  }
+  return 0;
+};
+
+const summarizeRecords = (
+  moduleLabel: string,
+  amountKeys: string[],
+  items: readonly Record<string, unknown>[],
+): string => {
+  if (items.length === 0) return `No ${moduleLabel.toLowerCase()} matched the current criteria.`;
+  if (amountKeys.length === 0) return `Found ${items.length} ${moduleLabel.toLowerCase()}.`;
+
+  const totals = new Map<string, number>();
+  for (const item of items) {
+    const currency = currencyFrom(item);
+    totals.set(currency, (totals.get(currency) ?? 0) + amountValue(item, ...amountKeys));
+  }
+  const totalText = [...totals.entries()]
+    .filter(([, total]) => total !== 0)
+    .map(([currency, total]) => `${formatAmount(Math.round(total * 100), currency)} (${currency})`)
+    .join(', ');
+  return totalText
+    ? `Found ${items.length} ${moduleLabel.toLowerCase()}: ${totalText}.`
+    : `Found ${items.length} ${moduleLabel.toLowerCase()}.`;
+};
+
+const commonColumns = {
+  id: (header = 'ID'): ZohoListCsvColumn<Record<string, unknown>> => ({
+    key: 'id',
+    header,
+    value: item => stringValue(item, 'invoice_id', 'bill_id', 'payment_id', 'expense_id', 'contact_id', 'transaction_id', 'id'),
+  }),
+  date: { key: 'date', header: 'Date' } satisfies ZohoListCsvColumn<Record<string, unknown>>,
+  status: { key: 'status', header: 'Status' } satisfies ZohoListCsvColumn<Record<string, unknown>>,
+  currency: { key: 'currency_code', header: 'Currency' } satisfies ZohoListCsvColumn<Record<string, unknown>>,
+};
+
 function formatZohoResult(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(formatZohoResult);
   if (!isRecord(value)) return value;
@@ -265,6 +317,10 @@ export const createZohoBooksTool = (deps: {
   booksClient:  ZohoBooksPaginatedClient;
   /** Finance ops service for deep report operations. */
   financeOps:   ZohoFinanceOps;
+  /** CSV export storage for generic list operations. */
+  cloudinary:    CloudinaryAdapter;
+  inlineThreshold?: number;
+  csvLinkTtl?:      number;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoBooks'),
   family:       'zoho',
@@ -280,7 +336,7 @@ export const createZohoBooksTool = (deps: {
 
   parameterDocs: [
     'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|list_bills|list_payments|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
-    'new read params: accountId, searchQuery, dateFrom, dateTo, status, taxYear',
+    'new read params: accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll',
     'write params: invoiceId, email, fields',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
     'CRUD params: invoiceId, contactId, fields, limit (1-100)',
@@ -343,10 +399,84 @@ export const createZohoBooksTool = (deps: {
         perPage: args.limit ?? 25,
       });
 
+    const dateFilter = dateParams(args);
+    const isNarrowList = Boolean(args.status && (args.dateFrom || args.dateTo));
+    const listWithExport = async (
+      moduleName: ZohoBooksModule,
+      moduleLabel: string,
+      options: {
+        filters?: Record<string, unknown>;
+        query?: string;
+        amountKeys?: string[];
+        columns: readonly ZohoListCsvColumn<Record<string, unknown>>[];
+        fileNameParts?: readonly string[];
+      },
+    ) => {
+      const result = await handleZohoList({
+        companyId,
+        moduleName,
+        moduleLabel,
+        ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+        ...(options.filters ? { filters: options.filters } : {}),
+        ...(options.query ? { query: options.query } : {}),
+        exportAll: args.exportAll === true,
+        narrowFilter: isNarrowList,
+        inlineThreshold: args.limit ?? deps.inlineThreshold ?? 25,
+        csvTtlSeconds: deps.csvLinkTtl ?? 86_400,
+        fileNameParts: options.fileNameParts ?? [
+          ...(args.dateFrom ? [args.dateFrom] : []),
+          ...(args.dateTo ? [args.dateTo] : []),
+          ...(args.status ? [args.status] : []),
+        ],
+        csvColumns: options.columns,
+        summarize: (items) => summarizeRecords(moduleLabel, options.amountKeys ?? [], items),
+        booksClient: deps.booksClient,
+        cloudinary: deps.cloudinary,
+        logger: ctx.logger,
+      });
+
+      return {
+        success: true,
+        message: result.summary,
+        data: formatZohoResult({
+          items: result.items,
+          totalCount: result.totalCount,
+          ...(result.csvLink ? { csvLink: result.csvLink } : {}),
+          ...(result.csvExpiresAt ? { csvExpiresAt: result.csvExpiresAt } : {}),
+          truncated: result.truncated,
+          hasMore: result.hasMore,
+          suggestExport: result.suggestExport,
+        }),
+        report: {
+          ...result,
+          items: formatZohoResult(result.items),
+        },
+        ...(result.csvLink ? { csvLink: result.csvLink } : {}),
+        ...(result.csvExpiresAt ? { csvExpiresAt: result.csvExpiresAt } : {}),
+        truncated: result.truncated,
+        hasMore: result.hasMore,
+        suggestExport: result.suggestExport,
+      } satisfies Res;
+    };
+
     try {
       switch (args.op) {
         case 'list_invoices':
-          return ok({ success: true, data: formatZohoResult(await client.listInvoices(args.limit)) });
+          return ok(await listWithExport('invoices', 'invoices', {
+            filters: dateFilter,
+            amountKeys: ['total', 'balance', 'amount_due'],
+            columns: [
+              commonColumns.id('Invoice ID'),
+              { key: 'invoice_number', header: 'Invoice Number' },
+              { key: 'customer_name', header: 'Customer' },
+              commonColumns.date,
+              { key: 'due_date', header: 'Due Date' },
+              commonColumns.status,
+              { key: 'total', header: 'Total' },
+              { key: 'balance', header: 'Balance' },
+              commonColumns.currency,
+            ],
+          }));
 
         case 'get_invoice': {
           if (!args.invoiceId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'invoiceId required for get_invoice' }));
@@ -390,7 +520,18 @@ export const createZohoBooksTool = (deps: {
         }
 
         case 'list_contacts':
-          return ok({ success: true, data: formatZohoResult(await client.listContacts(args.limit)) });
+          return ok(await listWithExport('contacts', 'contacts', {
+            ...(args.searchQuery ? { query: args.searchQuery } : {}),
+            columns: [
+              commonColumns.id('Contact ID'),
+              { key: 'contact_name', header: 'Contact Name' },
+              { key: 'company_name', header: 'Company' },
+              { key: 'email', header: 'Email' },
+              { key: 'phone', header: 'Phone' },
+              { key: 'status', header: 'Status' },
+              commonColumns.currency,
+            ],
+          }));
 
         case 'get_contact': {
           if (!args.contactId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'contactId required for get_contact' }));
@@ -398,13 +539,51 @@ export const createZohoBooksTool = (deps: {
         }
 
         case 'list_expenses':
-          return ok({ success: true, data: formatZohoResult(await client.listExpenses(args.limit)) });
+          return ok(await listWithExport('expenses', 'expenses', {
+            filters: dateFilter,
+            amountKeys: ['total', 'amount'],
+            columns: [
+              commonColumns.id('Expense ID'),
+              commonColumns.date,
+              { key: 'account_name', header: 'Account' },
+              { key: 'vendor_name', header: 'Vendor' },
+              { key: 'amount', header: 'Amount' },
+              commonColumns.currency,
+              commonColumns.status,
+            ],
+          }));
 
         case 'list_bills':
-          return ok({ success: true, data: formatZohoResult(await listRecords('bills', dateParams(args))) });
+          return ok(await listWithExport('bills', 'bills', {
+            filters: dateFilter,
+            amountKeys: ['total', 'balance', 'amount_due'],
+            columns: [
+              commonColumns.id('Bill ID'),
+              { key: 'bill_number', header: 'Bill Number' },
+              { key: 'vendor_name', header: 'Vendor' },
+              commonColumns.date,
+              { key: 'due_date', header: 'Due Date' },
+              commonColumns.status,
+              { key: 'total', header: 'Total' },
+              { key: 'balance', header: 'Balance' },
+              commonColumns.currency,
+            ],
+          }));
 
         case 'list_payments':
-          return ok({ success: true, data: formatZohoResult(await listRecords('customerpayments', dateParams(args))) });
+          return ok(await listWithExport('customerpayments', 'payments', {
+            filters: dateFilter,
+            amountKeys: ['amount', 'payment_amount'],
+            columns: [
+              commonColumns.id('Payment ID'),
+              { key: 'payment_number', header: 'Payment Number' },
+              { key: 'customer_name', header: 'Customer' },
+              commonColumns.date,
+              { key: 'amount', header: 'Amount' },
+              commonColumns.currency,
+              commonColumns.status,
+            ],
+          }));
 
         case 'get_chart_of_accounts': {
           const data = await deps.booksClient.getEndpoint({
@@ -427,17 +606,37 @@ export const createZohoBooksTool = (deps: {
         }
 
         case 'list_bank_transactions':
-          return ok({ success: true, data: formatZohoResult(await listRecords('banktransactions', dateParams(args))) });
+          return ok(await listWithExport('banktransactions', 'bank transactions', {
+            filters: dateFilter,
+            amountKeys: ['amount'],
+            columns: [
+              commonColumns.id('Transaction ID'),
+              { key: 'transaction_type', header: 'Type' },
+              commonColumns.date,
+              { key: 'description', header: 'Description' },
+              { key: 'amount', header: 'Amount' },
+              commonColumns.currency,
+              commonColumns.status,
+            ],
+          }));
 
         case 'search_transactions': {
           if (!args.searchQuery) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'searchQuery required for search_transactions' }));
-          const data = await deps.booksClient.getEndpoint({
-            companyId,
-            path: '/search',
-            ...(args.organizationId ? { organizationId: args.organizationId } : {}),
-            params: { search_text: args.searchQuery, ...dateParams(args) },
-          });
-          return ok({ success: true, data: formatZohoResult(data) });
+          return ok(await listWithExport('banktransactions', 'transaction search results', {
+            filters: dateFilter,
+            query: args.searchQuery,
+            amountKeys: ['amount'],
+            fileNameParts: ['search', args.searchQuery],
+            columns: [
+              commonColumns.id('Transaction ID'),
+              { key: 'transaction_type', header: 'Type' },
+              commonColumns.date,
+              { key: 'description', header: 'Description' },
+              { key: 'amount', header: 'Amount' },
+              commonColumns.currency,
+              commonColumns.status,
+            ],
+          }));
         }
 
         case 'get_tax_summary': {

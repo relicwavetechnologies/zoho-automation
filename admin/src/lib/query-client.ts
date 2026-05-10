@@ -22,6 +22,10 @@ export const adminQueryKeys = {
   apiList: (scope: string, path: string | null, keySignature: string) =>
     ["admin", scope, "api-list", path ?? "disabled", keySignature] as const,
   agents: (scope: string) => ["admin", scope, "agents"] as const,
+  agentModelCatalog: (scope: string) =>
+    ["admin", scope, "agent-model-catalog"] as const,
+  aiProviderStatus: (scope: string) =>
+    ["admin", scope, "ai-provider-status"] as const,
   toolRegistry: (scope: string) => ["admin", scope, "tool-registry"] as const,
   departments: (scope: string) => ["admin", scope, "departments"] as const,
   departmentDetails: (scope: string) =>

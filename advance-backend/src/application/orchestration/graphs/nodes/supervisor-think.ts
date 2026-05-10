@@ -20,6 +20,12 @@ const SUPERVISOR_TIMEOUT_MS = 90_000;
 
 export interface SupervisorThinkDeps {
   readonly model: LanguageModel;
+  readonly resolveModel?: (input: {
+    provider: string;
+    modelId: string;
+    companyId: string;
+    agentSlug?: string;
+  }) => Promise<LanguageModel> | LanguageModel;
   readonly agentCatalogCache: AgentCatalogCache;
   readonly todoRepo: SupervisorTodoRepository;
   readonly prisma: PrismaClient;
@@ -54,6 +60,7 @@ export async function supervisorThink(
 
     const agentCtx = {
       model: deps.model,
+      ...(deps.resolveModel ? { resolveModel: deps.resolveModel } : {}),
       allTools: state.permittedTools,
       perm: state.perm,
       runContext: state.runContext,
@@ -87,6 +94,15 @@ export async function supervisorThink(
       ? `${rootAgent.systemPrompt}\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user:\n${state.memoryContext}`
       : rootAgent.systemPrompt;
 
+    const rootModel = rootAgent.provider && rootAgent.modelId && deps.resolveModel
+      ? await deps.resolveModel({
+        provider:  rootAgent.provider,
+        modelId:   rootAgent.modelId,
+        companyId: rootAgent.companyId,
+        agentSlug: rootAgent.slug,
+      })
+      : deps.model;
+
     const outcome = deps.executeText
       ? await deps.executeText({
         system: systemPrompt,
@@ -96,7 +112,7 @@ export async function supervisorThink(
         temperature: rootAgent.temperature,
       })
       : await runSupervisorStream({
-        model: deps.model,
+        model: rootModel,
         system: systemPrompt,
         messages,
         tools,

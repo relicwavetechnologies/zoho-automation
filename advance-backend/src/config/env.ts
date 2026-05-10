@@ -126,6 +126,8 @@ const EnvSchema = z.object({
   ZOHO_BOOKS_CSV_INLINE_THRESHOLD: positiveInt(10),
   /** Signed-URL TTL for exported CSVs in seconds (default 24 h). */
   ZOHO_BOOKS_CSV_LINK_TTL_SECONDS: positiveInt(86_400),
+  /** How often to scan Cloudinary for expired temp exports. */
+  CLOUDINARY_TEMP_EXPORT_CLEANUP_INTERVAL_SECONDS: positiveInt(21_600),
 
   // ── Admin auth ────────────────────────────────────────────────────────────
   /** HS256 secret for signing admin JWTs. Required in production. */

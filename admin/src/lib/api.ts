@@ -88,9 +88,11 @@ export type ModelCatalogEntry = {
   modelId: string;
   label: string;
   description: string;
-  speed: "fast" | "balanced" | "strong";
-  cost: "cheap" | "balanced" | "premium";
+  speed: "fast" | "medium" | "slow";
+  cost: "low" | "medium" | "high";
   maxContextTokens: number;
+  outputReserveTokens?: number;
+  preview?: boolean;
   supportsThinking?: boolean;
 };
 

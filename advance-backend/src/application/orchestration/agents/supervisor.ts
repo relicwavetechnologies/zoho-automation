@@ -100,6 +100,12 @@ interface DynamicGraphRunInput {
 
 export interface SupervisorDeps {
   model:             LanguageModel;
+  resolveModel?:     (input: {
+    provider: string;
+    modelId: string;
+    companyId: string;
+    agentSlug?: string;
+  }) => Promise<LanguageModel> | LanguageModel;
   agentResolver:     AgentResolver;
   agentCatalogCache?: AgentCatalogCache;
   todoRepo:          SupervisorTodoRepository;
@@ -161,6 +167,7 @@ export class SupervisorAgent {
     const { geminiApiKey } = this.deps;
     const agentCtx = {
       model,
+      ...(this.deps.resolveModel ? { resolveModel: this.deps.resolveModel } : {}),
       allTools: permittedTools,
       perm,
       runContext,
@@ -541,6 +548,7 @@ export class SupervisorAgent {
 
     const graph = buildDynamicSupervisorGraph({
       model: this.deps.model,
+      ...(this.deps.resolveModel ? { resolveModel: this.deps.resolveModel } : {}),
       agentCatalogCache: this.deps.agentCatalogCache,
       todoRepo: this.deps.todoRepo,
       prisma: this.deps.prisma,

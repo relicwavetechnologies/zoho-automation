@@ -35,6 +35,12 @@ export interface TempExportLink {
   readonly expiresAt:  string;  // ISO-8601
 }
 
+export interface CloudinaryCleanupResult {
+  readonly scanned: number;
+  readonly deleted: number;
+  readonly failed:  number;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function mimeToResourceType(mimeType: string): CloudinaryResourceType {
@@ -210,16 +216,68 @@ export class CloudinaryAdapter {
   }
 
   /**
-   * Scan Redis for any `cloudinary:temp_export:*` keys whose TTL has expired
-   * and delete the corresponding Cloudinary assets.
-   *
-   * Call this on app startup or from a scheduled job.
+   * Delete expired temp exports from Cloudinary itself. Redis TTL only removes
+   * tracking keys; it does not remove the uploaded raw assets.
    */
-  async cleanupExpiredExports(): Promise<void> {
-    if (!this.configured) return;
-    // Cache scan is best-effort — implementation depends on CachePort having a scan method.
-    // For now we rely on Redis TTL to expire keys; this is a future enhancement hook.
-    this.logger.debug('cloudinary.cleanup.noop', { note: 'TTL-based expiry via Redis' });
+  async cleanupExpiredExports(input: {
+    ttlSeconds?: number;
+    now?: Date;
+    maxPages?: number;
+  } = {}): Promise<CloudinaryCleanupResult> {
+    if (!this.configured) return { scanned: 0, deleted: 0, failed: 0 };
+
+    const ttlSeconds = input.ttlSeconds ?? 86_400;
+    const nowMs = (input.now ?? new Date()).getTime();
+    const maxPages = input.maxPages ?? 20;
+    let nextCursor: string | undefined;
+    let scanned = 0;
+    let deleted = 0;
+    let failed = 0;
+
+    for (let page = 0; page < maxPages; page++) {
+      const response = await cloudinary.api.resources_by_tag('temp_export', {
+        resource_type: 'raw',
+        max_results:  500,
+        ...(nextCursor ? { next_cursor: nextCursor } : {}),
+      }) as {
+        resources?: Array<{ public_id?: string; created_at?: string }>;
+        next_cursor?: string;
+      };
+
+      const resources = Array.isArray(response.resources) ? response.resources : [];
+      scanned += resources.length;
+      const expiredIds = resources
+        .filter((resource) => {
+          if (!resource.public_id || !resource.created_at) return false;
+          const createdAtMs = new Date(resource.created_at).getTime();
+          return Number.isFinite(createdAtMs) && createdAtMs + ttlSeconds * 1000 <= nowMs;
+        })
+        .map(resource => resource.public_id as string);
+
+      if (expiredIds.length > 0) {
+        try {
+          const result = await cloudinary.api.delete_resources(expiredIds, { resource_type: 'raw' }) as {
+            deleted?: Record<string, string>;
+          };
+          const deletedMap = result.deleted ?? {};
+          const deletedCount = Object.values(deletedMap).filter(status => status === 'deleted' || status === 'not_found').length;
+          deleted += deletedCount;
+          failed += expiredIds.length - deletedCount;
+        } catch (error) {
+          failed += expiredIds.length;
+          this.logger.warn('cloudinary.cleanup.delete_failed', {
+            count: expiredIds.length,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      nextCursor = response.next_cursor;
+      if (!nextCursor) break;
+    }
+
+    this.logger.info('cloudinary.cleanup.temp_exports.done', { scanned, deleted, failed });
+    return { scanned, deleted, failed };
   }
 
   // ─── Signed URL ─────────────────────────────────────────────────────────────

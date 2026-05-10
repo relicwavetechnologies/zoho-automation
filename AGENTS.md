@@ -43,6 +43,14 @@ Divo
 | Divo — Updates (parent) | `UB95dbVBuotWHZx1VQYlZubRgT4` |
 | Dynamic Agent Platform / Plan | `Na3EddgpMohPKFxaZovlkxUygkg` |
 | Dynamic Agent Platform / Updates | `BfIdddnZwoqwzRxwIg8lt1JBgKh` |
+| OpenAI Codex Integration / Plan | `EGYOdu14PoEFJTxgu6DlnwchgWc` |
+| OpenAI Codex Integration / Progress | `EzokdcK6XoL3B4xmsyJlGKUggQg` |
+| OpenAI Codex Integration / Updates | `F2grdvPBWovgtBx5N7ulC3i4gjf` |
+| OpenAI Codex Integration / References | `Zi44dgZNPouB3BxUwTql1UWrg7b` |
+| Zoho Books Finance Tools / Plan | `A4X2d9LCboW8Gdxn8jNlQglJgug` |
+| Zoho Books Finance Tools / Progress | `NZ8PddLT7oJ5DcxttetltSs9gjh` |
+| Zoho Books Finance Tools / Updates | `ZUD8ddSi5oCntrxazbuliSZ2gjh` |
+| Zoho Books Finance Tools / References | `FhW2dP34coJhkix86qMlIq47g4e` |
 
 **Wiki space ID:** `7635896570625396443` (Tech Hub)
 **Divo node token:** `XzW1wZDlJirIx1kPB0VlE2gfg7b`
@@ -118,6 +126,8 @@ Core runtime — supervisor-delegation pattern:
 |---|---|---|---|
 | Dynamic Agent Platform | in-progress | `Na3EddgpMohPKFxaZovlkxUygkg` | `BfIdddnZwoqwzRxwIg8lt1JBgKh` |
 | Mem0 Memory Layer | planning | `EmyKdQYBKovdv9xNUFqlDffSgKg` | `ZJffdD473ozRCNxk5VMlzs4zgag` |
+| OpenAI Codex Integration | planning | `EGYOdu14PoEFJTxgu6DlnwchgWc` | `F2grdvPBWovgtBx5N7ulC3i4gjf` |
+| Zoho Books Finance Tools | planning | `A4X2d9LCboW8Gdxn8jNlQglJgug` | `ZUD8ddSi5oCntrxazbuliSZ2gjh` |
 
 **Legacy local docs** in `docs/features/` are stale — wiki is authoritative. To add a new feature,
 create a folder under `Divo — Updates` in the wiki with Plan + Updates sub-pages.
@@ -283,3 +293,13 @@ CLOUDINARY_URL=
 - Vercel AI SDK (`generateText`, `streamText`) for all LLM calls
 - Arrow functions for callbacks, named functions for top-level declarations
 - No default exports except Express router files
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- ALWAYS read graphify-out/GRAPH_REPORT.md before reading any source files, running grep/glob searches, or answering codebase questions. The graph is your primary map of the codebase.
+- IF graphify-out/wiki/index.md EXISTS, navigate it instead of reading raw files
+- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

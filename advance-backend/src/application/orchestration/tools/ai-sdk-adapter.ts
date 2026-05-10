@@ -20,6 +20,7 @@ import type { Clock } from '../../../shared/clock';
 import type { PermissionResult } from '../../permissions/permission.types';
 import type { RunContext } from '../../../domain/orchestration/run-context';
 import type { ApprovalGateService } from '../../approval/approval-gate.service';
+import { formatAmount, formatDate } from '../../zoho/zoho-format.utils';
 
 export interface AdapterContext {
   runContext:    RunContext;
@@ -141,6 +142,24 @@ function buildArgsSummary(toolId: string, action: string, args: unknown): string
       if (a[key] !== undefined) {
         const val = String(a[key]).slice(0, 80);
         parts.push(`${key}=${val}`);
+      }
+    }
+    if (toolId === 'zohoBooks') {
+      const fields = a['fields'] && typeof a['fields'] === 'object' && !Array.isArray(a['fields'])
+        ? a['fields'] as Record<string, unknown>
+        : {};
+      const merged = { ...fields, ...a };
+      const currency = typeof merged['currency_code'] === 'string' ? merged['currency_code'] : 'USD';
+      for (const key of ['customer_name', 'vendor_name', 'invoice_id', 'bill_id', 'expense_id']) {
+        if (merged[key] !== undefined) parts.push(`${key}=${String(merged[key]).slice(0, 80)}`);
+      }
+      for (const key of ['amount', 'total', 'balance']) {
+        const raw = merged[key];
+        const amount = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+        if (Number.isFinite(amount)) parts.push(`${key}=${formatAmount(Math.round(amount * 100), currency)}`);
+      }
+      for (const key of ['date', 'due_date', 'payment_date']) {
+        if (typeof merged[key] === 'string') parts.push(`${key}=${formatDate(merged[key])}`);
       }
     }
     return parts.join(' | ');

@@ -2,9 +2,9 @@ import { useMemo } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
-import { agentsApi, type CreateAgentInput, type UpdateAgentInput } from "@/lib/api"
+import { agentsApi, aiProvidersApi, type AiProviderStatus, type CreateAgentInput, type ModelCatalogEntry, type UpdateAgentInput } from "@/lib/api"
 import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
-import type { AgentDef, AgentRole, ToolDef } from "./agent-platform-data"
+import type { AgentDef, AgentModelProvider, AgentRole, ToolDef } from "./agent-platform-data"
 
 type BackendAgent = {
   id: string
@@ -76,6 +76,8 @@ function toAgentDef(agent: BackendAgent, allAgents: BackendAgent[]): AgentDef {
     role: parentAgent && deriveRole(parentAgent) !== "supervisor" ? "specialist" : role,
     parentId: agent.parentId,
     enabled: agent.isActive,
+    provider: isAgentModelProvider(agent.provider) ? agent.provider : null,
+    modelId: agent.modelId,
     capabilityDescription: agent.capabilityDescription ?? agent.description ?? "",
     toolIds: agent.toolIds,
     subAgentIds: children.map((c) => c.id),
@@ -91,11 +93,17 @@ function toAgentDef(agent: BackendAgent, allAgents: BackendAgent[]): AgentDef {
   }
 }
 
+function isAgentModelProvider(value: string | null): value is AgentModelProvider {
+  return value === "google" || value === "openai"
+}
+
 export type AgentDataState = {
   agents: AgentDef[]
   agentById: Record<string, AgentDef>
   tools: ToolDef[]
   toolById: Record<string, ToolDef>
+  modelCatalog: ModelCatalogEntry[]
+  providerStatus: AiProviderStatus | null
   loading: boolean
   error: string | null
   stats: { total: number; heads: number; specialists: number; enabled: number }
@@ -126,18 +134,30 @@ export function useAgentData(): AgentDataState {
       return Array.isArray(toolData) ? toolData : []
     },
   })
+  const modelCatalogQuery = useQuery({
+    queryKey: adminQueryKeys.agentModelCatalog(scope),
+    enabled: Boolean(token),
+    queryFn: async () => agentsApi.modelCatalog(token ?? undefined),
+  })
+  const providerStatusQuery = useQuery({
+    queryKey: adminQueryKeys.aiProviderStatus(scope),
+    enabled: Boolean(token),
+    queryFn: async () => aiProvidersApi.status(token ?? undefined),
+  })
 
   const rawAgents = agentsQuery.data ?? []
   const rawTools = toolsQuery.data ?? []
+  const modelCatalog = modelCatalogQuery.data ?? []
+  const providerStatus = providerStatusQuery.data ?? null
   const agents = rawAgents.map((a) => toAgentDef(a, rawAgents))
   const agentById = Object.fromEntries(agents.map((a) => [a.id, a])) as Record<string, AgentDef>
   const tools = rawTools.map(toToolDef)
   const toolById = Object.fromEntries(tools.map((t) => [t.id, t])) as Record<string, ToolDef>
-  const loading = agentsQuery.isPending || toolsQuery.isPending
+  const loading = agentsQuery.isPending || toolsQuery.isPending || modelCatalogQuery.isPending || providerStatusQuery.isPending
   const error = useMemo(() => {
-    const source = agentsQuery.error ?? toolsQuery.error
+    const source = agentsQuery.error ?? toolsQuery.error ?? modelCatalogQuery.error ?? providerStatusQuery.error
     return source instanceof Error ? source.message : null
-  }, [agentsQuery.error, toolsQuery.error])
+  }, [agentsQuery.error, toolsQuery.error, modelCatalogQuery.error, providerStatusQuery.error])
 
   const stats = {
     total: agents.length,
@@ -193,6 +213,8 @@ export function useAgentData(): AgentDataState {
     agentById,
     tools,
     toolById,
+    modelCatalog,
+    providerStatus,
     loading,
     error,
     stats,

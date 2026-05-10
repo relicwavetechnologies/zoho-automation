@@ -42,6 +42,7 @@ const fakeFinanceOps: Partial<ZohoFinanceOps> = {
 function makeBooksClient(captures: {
   listInput?: unknown;
   endpointInput?: unknown;
+  allInput?: unknown;
 } = {}) {
   return {
     listRecords: async (input: unknown) => {
@@ -53,6 +54,16 @@ function makeBooksClient(captures: {
         ],
         hasMore: false,
         page: 1,
+      };
+    },
+    listAllRecords: async (input: unknown) => {
+      captures.allInput = input;
+      return {
+        organizationId: 'org-1',
+        items: [
+          { bill_id: 'bill-1', total: '120.50', currency_code: 'INR', date: '2026-05-01' },
+        ],
+        truncated: false,
       };
     },
     getEndpoint: async (input: unknown) => {
@@ -72,9 +83,11 @@ function makeTool(overrides: {
   financeOps?:   ZohoFinanceOps;
 } = {}) {
   return createZohoBooksTool({
-    getClient:   async () => overrides.simpleClient ?? fakeSimpleClient,
-    booksClient: overrides.booksClient ?? makeBooksClient(),
-    financeOps:  overrides.financeOps ?? (fakeFinanceOps as ZohoFinanceOps),
+    getClient:       async () => overrides.simpleClient ?? fakeSimpleClient,
+    booksClient:     overrides.booksClient ?? makeBooksClient(),
+    financeOps:      overrides.financeOps ?? (fakeFinanceOps as ZohoFinanceOps),
+    cloudinary:      { isAvailable: false, uploadCsvBuffer: async () => null } as any,
+    inlineThreshold: 25,
   });
 }
 
@@ -112,7 +125,7 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(captures.listInput.filters.from_date, '2026-01-01');
     assert.equal(captures.listInput.filters.to_date, '2026-12-31');
     assert.equal(captures.listInput.filters.status, 'partially_paid');
-    assert.equal(captures.listInput.perPage, 10);
+    assert.equal(captures.listInput.perPage, 25);
 
     const item = ((result as any).value.data.items as any[])[0];
     assert.equal(item.totalFormatted, '\u20b9120.50');
@@ -130,18 +143,17 @@ describe('zohoBooks expanded execution', () => {
     }, ctx);
 
     assert.equal(result.ok, true);
-    assert.equal(captures.endpointInput.path, '/search');
-    assert.equal(captures.endpointInput.params.search_text, 'Acme');
-    assert.equal(captures.endpointInput.params.from_date, '2026-01-01');
-    assert.equal(captures.endpointInput.params.to_date, '2026-03-31');
+    assert.equal(captures.listInput.moduleName, 'banktransactions');
+    assert.equal(captures.listInput.query, 'Acme');
+    assert.equal(captures.listInput.filters.from_date, '2026-01-01');
+    assert.equal(captures.listInput.filters.to_date, '2026-03-31');
   });
 
   it('returns mapped Zoho error messages from upstream failures', async () => {
-    const throwingClient: ZohoBooksClientPort = {
-      ...fakeSimpleClient,
-      listInvoices: async () => { throw new Error('Zoho Books 400: {"code":4823}'); },
-    };
-    const tool = makeTool({ simpleClient: throwingClient });
+    const throwingBooksClient = {
+      listRecords: async () => { throw new Error('Zoho Books 400: {"code":4823}'); },
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ booksClient: throwingBooksClient });
 
     const result = await tool.execute({ op: 'list_invoices' }, ctx);
 
@@ -164,6 +176,70 @@ describe('zohoBooks expanded execution', () => {
     assert.equal((expense as any).value.id, 'exp-new');
     assert.equal((bill as any).value.id, 'bill-new');
     assert.equal((voided as any).value.id, 'inv-1');
+  });
+
+  it('exports every list operation through the tool contract when exportAll=true', async () => {
+    const modules: string[] = [];
+    const uploads: string[] = [];
+    const booksClient = {
+      listRecords: async (input: any) => {
+        modules.push(`page:${input.moduleName}`);
+        return { organizationId: 'org-1', items: [{ id: 'first' }], hasMore: true, page: 1 };
+      },
+      listAllRecords: async (input: any) => {
+        modules.push(`all:${input.moduleName}`);
+        return {
+          organizationId: 'org-1',
+          items: Array.from({ length: 30 }, (_, i) => ({
+            id: `${input.moduleName}-${i}`,
+            total: i + 1,
+            amount: i + 1,
+            currency_code: 'USD',
+          })),
+          truncated: false,
+        };
+      },
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = createZohoBooksTool({
+      getClient: async () => fakeSimpleClient,
+      booksClient,
+      financeOps: fakeFinanceOps as ZohoFinanceOps,
+      cloudinary: {
+        isAvailable: true,
+        uploadCsvBuffer: async (input: { fileName: string }) => {
+          uploads.push(input.fileName);
+          return { publicId: input.fileName, signedUrl: `https://cdn.example.com/${input.fileName}`, expiresAt: '2026-05-11T00:00:00.000Z' };
+        },
+      } as any,
+      inlineThreshold: 25,
+    });
+
+    const ops = [
+      { op: 'list_invoices' as const },
+      { op: 'list_bills' as const },
+      { op: 'list_payments' as const },
+      { op: 'list_expenses' as const },
+      { op: 'list_contacts' as const },
+      { op: 'list_bank_transactions' as const },
+      { op: 'search_transactions' as const, searchQuery: 'Acme' },
+    ];
+
+    for (const args of ops) {
+      const result = await tool.execute({ ...args, exportAll: true }, ctx);
+      assert.equal(result.ok, true);
+      assert.match((result as any).value.csvLink, /^https:\/\/cdn\.example\.com\//);
+    }
+
+    assert.deepEqual(modules.filter(m => m.startsWith('all:')), [
+      'all:invoices',
+      'all:bills',
+      'all:customerpayments',
+      'all:expenses',
+      'all:contacts',
+      'all:banktransactions',
+      'all:banktransactions',
+    ]);
+    assert.equal(uploads.length, ops.length);
   });
 });
 

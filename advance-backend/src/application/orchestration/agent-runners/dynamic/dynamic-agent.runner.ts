@@ -78,6 +78,14 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
     ].filter(Boolean).join('\n\n');
 
     const task = pre.modifiedTask ?? input.task;
+    const model = agent.provider && agent.modelId && ctx.resolveModel
+      ? await ctx.resolveModel({
+        provider:  agent.provider,
+        modelId:   agent.modelId,
+        companyId: agent.companyId,
+        agentSlug: agent.slug,
+      })
+      : ctx.model;
 
     const toolNames = Object.keys(tools);
     log.info('dynamic_agent.start', {
@@ -87,15 +95,18 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       maxSteps: agent.maxSteps,
       systemPromptLength: system.length,
       hookId: agent.hookId,
+      provider: agent.provider,
+      modelId: agent.modelId,
       depth,
     });
 
+    const circuitProvider = agent.provider ?? 'gemini';
     const genResult = await runWithCircuitBreaker(
-      'gemini',
+      circuitProvider,
       `dynamic-agent:${agent.slug}`,
       GEMINI_CIRCUIT_OPTIONS,
       () => generateText({
-        model:       ctx.model,
+        model,
         system,
         prompt:      task,
         tools,

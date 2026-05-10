@@ -47,6 +47,22 @@ export const createServer = (c: Container) => {
   });
   ingestionWorker.start();
 
+  const runCloudinaryCleanup = () => {
+    void c.cloudinaryAdapter.cleanupExpiredExports({
+      ttlSeconds: c.env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+    }).catch((error) => {
+      c.logger.warn('cloudinary.cleanup.temp_exports.failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+  runCloudinaryCleanup();
+  const cloudinaryCleanupTimer = setInterval(
+    runCloudinaryCleanup,
+    c.env.CLOUDINARY_TEMP_EXPORT_CLEANUP_INTERVAL_SECONDS * 1000,
+  );
+  cloudinaryCleanupTimer.unref?.();
+
   app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (origin && allowedOrigins.has(origin)) {

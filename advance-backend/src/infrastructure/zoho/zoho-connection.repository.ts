@@ -24,6 +24,7 @@ export interface ActiveZohoConnection {
   readonly scopes:              string[];
   readonly accessToken?:        string;  // decrypted
   readonly refreshToken?:       string;  // decrypted
+  readonly refreshTokenCipher?: string;  // encrypted, used to preserve refresh token on access-only refreshes
   readonly accessTokenExpiresAt?: Date;
   readonly tokenMetadata?:      Record<string, unknown>;
   /** Zoho API domain (may be in tokenMetadata). */
@@ -83,6 +84,7 @@ export class ZohoConnectionRepository {
       scopes:      record.scopes,
       ...(accessToken                  ? { accessToken }                  : {}),
       ...(refreshToken                 ? { refreshToken }                 : {}),
+      ...(record.refreshTokenEncrypted ? { refreshTokenCipher: record.refreshTokenEncrypted } : {}),
       ...(record.accessTokenExpiresAt  ? { accessTokenExpiresAt: record.accessTokenExpiresAt } : {}),
       ...(meta                         ? { tokenMetadata: meta }          : {}),
       ...(apiDomain                    ? { apiDomain }                    : {}),

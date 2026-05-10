@@ -15,6 +15,13 @@ import type { ApprovalGateService } from '../../approval/approval-gate.service';
 export interface AgentRunCtx {
   /** The LLM used by all runners — same model as the supervisor. */
   model:       LanguageModel;
+  /** Optional per-agent model resolver. Falls back to model when unset. */
+  resolveModel?: (input: {
+    provider: string;
+    modelId: string;
+    companyId: string;
+    agentSlug?: string;
+  }) => Promise<LanguageModel> | LanguageModel;
   /** All tools the current runtime is allowed to use (permission-filtered). */
   allTools:    ReadonlyArray<Tool<unknown, unknown>>;
   perm:        PermissionResult;
