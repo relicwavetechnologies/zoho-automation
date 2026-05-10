@@ -40,6 +40,9 @@ import { PermissionError, ToolError }      from '../../../../shared/errors';
 import type { ToolActionGroup }            from '../../../../domain/permissions/tool-action-group';
 import { asToolId }                        from '../../../../shared/ids';
 import type { ZohoFinanceOps }             from '../../../zoho/zoho-finance-ops';
+import { mapZohoError }                    from '../../../zoho/zoho-error.utils';
+import { formatAmount, formatDate }        from '../../../zoho/zoho-format.utils';
+import { normalizeStatus, parseDateFilter } from '../../../zoho/zoho-filter.utils';
 import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../../infrastructure/zoho/zoho-books-paginated.client';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
@@ -80,6 +83,7 @@ const Schema = z.object({
   organizationId: z.string().optional(),
   dateFrom:       z.string().optional(),
   dateTo:         z.string().optional(),
+  status:         z.string().optional(),
   taxYear:        z.string().optional(),
 
   // Report params
@@ -142,10 +146,115 @@ const createOps = new Set<Args['op']>([
   'create_bill',
 ]);
 
+const amountFields = new Set([
+  'amount',
+  'balance',
+  'total',
+  'sub_total',
+  'subtotal',
+  'tax_total',
+  'discount_total',
+  'payment_made',
+  'payment_received',
+  'amount_due',
+  'amount_applied',
+  'bcy_total',
+  'bcy_balance',
+  'fc_total',
+  'fc_balance',
+  'outstanding',
+  'totalOutstanding',
+]);
+
+const dateFields = new Set([
+  'date',
+  'due_date',
+  'created_time',
+  'last_modified_time',
+  'invoice_date',
+  'payment_date',
+  'transaction_date',
+]);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const displayKey = (key: string): string =>
+  key.includes('_') ? `${key}_formatted` : `${key}Formatted`;
+
+const currencyFrom = (record: Record<string, unknown>): string => {
+  const currency = record['currency_code'] ?? record['currencyCode'] ?? record['currency'];
+  return typeof currency === 'string' && currency.trim() ? currency : 'USD';
+};
+
+const numericAmount = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || !/^-?\d+(\.\d+)?$/.test(value.trim())) return null;
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+function formatZohoResult(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(formatZohoResult);
+  if (!isRecord(value)) return value;
+
+  const formatted: Record<string, unknown> = {};
+  const currency = currencyFrom(value);
+
+  for (const [key, fieldValue] of Object.entries(value)) {
+    formatted[key] = formatZohoResult(fieldValue);
+
+    if (key.endsWith('_formatted') || key.endsWith('Formatted')) continue;
+
+    if (amountFields.has(key)) {
+      const amount = numericAmount(fieldValue);
+      if (amount !== null) formatted[displayKey(key)] = formatAmount(Math.round(amount * 100), currency);
+    }
+
+    if (dateFields.has(key) && typeof fieldValue === 'string') {
+      formatted[displayKey(key)] = formatDate(fieldValue);
+    }
+  }
+
+  return formatted;
+}
+
+const buildDateRangeParams = (from?: string, to?: string): Record<string, string> => {
+  if (from && to) {
+    return {
+      from_date: parseDateFilter(from).from,
+      to_date:   parseDateFilter(to).to,
+    };
+  }
+
+  if (from) {
+    const range = parseDateFilter(from);
+    return { from_date: range.from, to_date: range.to };
+  }
+
+  if (to) {
+    const range = parseDateFilter(to);
+    return { from_date: range.from, to_date: range.to };
+  }
+
+  return {};
+};
+
 const dateParams = (args: Args): Record<string, unknown> => ({
-  ...(args.dateFrom ? { from_date: args.dateFrom } : {}),
-  ...(args.dateTo   ? { to_date:   args.dateTo   } : {}),
+  ...buildDateRangeParams(args.dateFrom, args.dateTo),
+  ...(args.status ? { status: normalizeStatus(args.status) } : {}),
 });
+
+const reportDateParams = (args: Args): Record<string, string> => {
+  const range = buildDateRangeParams(args.invoiceDateFrom, args.invoiceDateTo);
+  return {
+    ...(range['from_date'] ? { invoiceDateFrom: range['from_date'] } : {}),
+    ...(range['to_date'] ? { invoiceDateTo: range['to_date'] } : {}),
+  };
+};
+
+const singleDateValue = (input: string): string => parseDateFilter(input).to;
 
 // ─── Tool factory ─────────────────────────────────────────────────────────────
 
@@ -164,14 +273,14 @@ export const createZohoBooksTool = (deps: {
   resultSchema: ResultSchema,
 
   description: [
-    'Access Zoho Books: list/read invoices, contacts, expenses, bills, payments, bank transactions, accounts, and tax summaries; create invoices, bills, expenses, payments; send or void invoices.',
+    'Access Zoho Books with 19 operations: list_invoices, get_invoice, create_invoice, list_contacts, get_contact, list_expenses, list_bills, list_payments, get_chart_of_accounts, get_account_balance, list_bank_transactions, search_transactions, get_tax_summary, send_invoice, record_payment, create_expense, create_bill, void_invoice, and build_overdue_report.',
     'For financial analysis use build_overdue_report which scans ALL invoices deeply,',
     'computes aging buckets and top customers, and returns a CSV link for large datasets.',
   ].join(' '),
 
   parameterDocs: [
     'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|list_bills|list_payments|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
-    'new read params: accountId, searchQuery, dateFrom, dateTo, taxYear',
+    'new read params: accountId, searchQuery, dateFrom, dateTo, status, taxYear',
     'write params: invoiceId, email, fields',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
     'CRUD params: invoiceId, contactId, fields, limit (1-100)',
@@ -194,23 +303,22 @@ export const createZohoBooksTool = (deps: {
         const report = await deps.financeOps.buildOverdueReport({
           companyId,
           ...(args.organizationId  ? { organizationId:  args.organizationId  } : {}),
-          ...(args.asOfDate        ? { asOfDate:        args.asOfDate        } : {}),
+          ...(args.asOfDate        ? { asOfDate:        singleDateValue(args.asOfDate) } : {}),
           ...(args.minOverdueDays !== undefined ? { minOverdueDays: args.minOverdueDays } : {}),
-          ...(args.invoiceDateFrom ? { invoiceDateFrom: args.invoiceDateFrom } : {}),
-          ...(args.invoiceDateTo   ? { invoiceDateTo:   args.invoiceDateTo   } : {}),
+          ...reportDateParams(args),
         });
 
         return ok({
           success: true,
           message: report.summary,
-          report,   // full structured data — synthesis uses this to format the reply
+          report:  formatZohoResult(report),   // full structured data — synthesis uses this to format the reply
         });
       } catch (e) {
         return err(new ToolError({
           toolId:  'zohoBooks',
           reason:  'upstream_failure',
           cause:   e,
-          message: `Overdue report failed: ${e instanceof Error ? e.message : String(e)}`,
+          message: `Overdue report failed: ${mapZohoError(e)}`,
         }));
       }
     }
@@ -238,11 +346,11 @@ export const createZohoBooksTool = (deps: {
     try {
       switch (args.op) {
         case 'list_invoices':
-          return ok({ success: true, data: await client.listInvoices(args.limit) });
+          return ok({ success: true, data: formatZohoResult(await client.listInvoices(args.limit)) });
 
         case 'get_invoice': {
           if (!args.invoiceId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'invoiceId required for get_invoice' }));
-          return ok({ success: true, data: await client.getInvoice(args.invoiceId) });
+          return ok({ success: true, data: formatZohoResult(await client.getInvoice(args.invoiceId)) });
         }
 
         case 'create_invoice': {
@@ -282,21 +390,21 @@ export const createZohoBooksTool = (deps: {
         }
 
         case 'list_contacts':
-          return ok({ success: true, data: await client.listContacts(args.limit) });
+          return ok({ success: true, data: formatZohoResult(await client.listContacts(args.limit)) });
 
         case 'get_contact': {
           if (!args.contactId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'contactId required for get_contact' }));
-          return ok({ success: true, data: await client.getContact(args.contactId) });
+          return ok({ success: true, data: formatZohoResult(await client.getContact(args.contactId)) });
         }
 
         case 'list_expenses':
-          return ok({ success: true, data: await client.listExpenses(args.limit) });
+          return ok({ success: true, data: formatZohoResult(await client.listExpenses(args.limit)) });
 
         case 'list_bills':
-          return ok({ success: true, data: await listRecords('bills', dateParams(args)) });
+          return ok({ success: true, data: formatZohoResult(await listRecords('bills', dateParams(args))) });
 
         case 'list_payments':
-          return ok({ success: true, data: await listRecords('customerpayments', dateParams(args)) });
+          return ok({ success: true, data: formatZohoResult(await listRecords('customerpayments', dateParams(args))) });
 
         case 'get_chart_of_accounts': {
           const data = await deps.booksClient.getEndpoint({
@@ -304,7 +412,7 @@ export const createZohoBooksTool = (deps: {
             path: '/chartofaccounts',
             ...(args.organizationId ? { organizationId: args.organizationId } : {}),
           });
-          return ok({ success: true, data: data['chartofaccounts'] ?? data });
+          return ok({ success: true, data: formatZohoResult(data['chartofaccounts'] ?? data) });
         }
 
         case 'get_account_balance': {
@@ -315,11 +423,11 @@ export const createZohoBooksTool = (deps: {
               ...(args.organizationId ? { organizationId: args.organizationId } : {}),
             })
             : await listRecords('bankaccounts');
-          return ok({ success: true, data });
+          return ok({ success: true, data: formatZohoResult(data) });
         }
 
         case 'list_bank_transactions':
-          return ok({ success: true, data: await listRecords('banktransactions', dateParams(args)) });
+          return ok({ success: true, data: formatZohoResult(await listRecords('banktransactions', dateParams(args))) });
 
         case 'search_transactions': {
           if (!args.searchQuery) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'searchQuery required for search_transactions' }));
@@ -329,7 +437,7 @@ export const createZohoBooksTool = (deps: {
             ...(args.organizationId ? { organizationId: args.organizationId } : {}),
             params: { search_text: args.searchQuery, ...dateParams(args) },
           });
-          return ok({ success: true, data });
+          return ok({ success: true, data: formatZohoResult(data) });
         }
 
         case 'get_tax_summary': {
@@ -342,7 +450,7 @@ export const createZohoBooksTool = (deps: {
               ...dateParams(args),
             },
           });
-          return ok({ success: true, data });
+          return ok({ success: true, data: formatZohoResult(data) });
         }
       }
     } catch (e) {
@@ -350,7 +458,7 @@ export const createZohoBooksTool = (deps: {
         toolId:  'zohoBooks',
         reason:  'upstream_failure',
         cause:   e,
-        message: e instanceof Error ? e.message : String(e),
+        message: mapZohoError(e),
       }));
     }
   },
