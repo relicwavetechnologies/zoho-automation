@@ -113,6 +113,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { withFallback } from './shared/model-fallback';
 import { withGeminiSignatures, createGeminiFetch } from './shared/gemini-thought-signatures';
+import { decryptToken, TokenCryptoError } from './infrastructure/shared/token.crypto';
 
 export interface Container {
   env: TypedEnv;
@@ -228,7 +229,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const defaultModelTarget = await prisma.aiModelTargetConfig.findUnique({
     where: { targetKey: 'default' },
   });
-  const openai = createOpenAI({ apiKey: env.OPENAI_API_KEY });
 
   const createConfiguredModel = (provider: string, modelId: string) => {
     if (provider === 'google') {
@@ -250,6 +250,30 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const primaryModelId  = defaultModelTarget?.modelId ?? env.MODEL_ID;
   const fastProvider    = defaultModelTarget?.fastProvider ?? 'openai';
   const fastModelId     = defaultModelTarget?.fastModelId ?? 'gpt-4o-mini';
+  const needsOpenAi     = primaryProvider === 'openai' || fastProvider === 'openai';
+  const gatewayCompany  = needsOpenAi
+    ? await prisma.company.findFirst({
+      where:   { gatewayApiKey: { not: null } },
+      select:  { id: true, gatewayApiKey: true, gatewayUrl: true },
+      orderBy: { updatedAt: 'desc' },
+    })
+    : null;
+  const gatewayBaseUrl = (gatewayCompany?.gatewayUrl ?? env.GATEWAY_BASE_URL).trim().replace(/\/+$/, '');
+  const gatewayOpenAi = (() => {
+    if (!gatewayCompany?.gatewayApiKey || !gatewayBaseUrl) return null;
+    try {
+      const apiKey = decryptToken(gatewayCompany.gatewayApiKey, env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '');
+      logger.info('ai.openai.gateway.enabled', { companyId: gatewayCompany.id, gatewayBaseUrl });
+      return createOpenAI({ apiKey, baseURL: `${gatewayBaseUrl}/v1` });
+    } catch (error) {
+      if (error instanceof TokenCryptoError) {
+        logger.warn('ai.openai.gateway.decrypt_failed', { companyId: gatewayCompany.id, error: error.message });
+        return null;
+      }
+      throw error;
+    }
+  })();
+  const openai          = gatewayOpenAi ?? createOpenAI({ apiKey: env.OPENAI_API_KEY });
   const primaryModel    = createConfiguredModel(primaryProvider, primaryModelId);
   const fallbackModel   = createConfiguredModel(fastProvider, fastModelId);
   const model = withFallback(primaryModel, fallbackModel);
