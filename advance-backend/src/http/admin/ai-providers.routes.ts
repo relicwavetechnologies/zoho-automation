@@ -81,14 +81,15 @@ export function createAiProvidersRoutes(deps: AiProvidersRoutesDeps): Router {
   const { prisma, env, logger } = deps;
   const log = logger.child({ routes: 'ai-providers' });
 
-  function assertSuperAdmin(res: Response): void {
-    if (!Boolean(res.locals['isSuperAdmin'])) {
-      throw routeError(403, 'Super admin access required');
-    }
+  function isSuperAdmin(res: Response): boolean {
+    return Boolean(res.locals['isSuperAdmin']);
   }
 
   function resolveCompanyId(res: Response, providedId?: string): string {
     const localId = (res.locals['companyId'] as string | undefined) ?? '';
+    if (!isSuperAdmin(res) && providedId && providedId !== localId) {
+      throw routeError(403, 'Cannot manage AI providers for another company');
+    }
     if (providedId) return providedId;
     if (!localId) throw routeError(400, 'companyId is required');
     return localId;
@@ -117,7 +118,6 @@ export function createAiProvidersRoutes(deps: AiProvidersRoutesDeps): Router {
   }
 
   router.get('/status', asyncRoute(async (req, res) => {
-    assertSuperAdmin(res);
     const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
     const company = await prisma.company.findUnique({
       where:  { id: companyId },
@@ -159,7 +159,6 @@ export function createAiProvidersRoutes(deps: AiProvidersRoutesDeps): Router {
   }));
 
   router.post('/openai/connect', asyncRoute(async (req, res) => {
-    assertSuperAdmin(res);
     const payload = connectOpenAiSchema.parse(req.body);
     const companyId = resolveCompanyId(res, payload.companyId);
     const gatewayUrl = normalizeGatewayUrl(payload.gatewayUrl);
@@ -190,7 +189,6 @@ export function createAiProvidersRoutes(deps: AiProvidersRoutesDeps): Router {
   }));
 
   router.delete('/openai/disconnect', asyncRoute(async (req, res) => {
-    assertSuperAdmin(res);
     const payload = companyScopedSchema.parse(req.body ?? {});
     const companyId = resolveCompanyId(res, payload.companyId);
 
@@ -212,7 +210,6 @@ export function createAiProvidersRoutes(deps: AiProvidersRoutesDeps): Router {
   }));
 
   router.post('/openai/test', asyncRoute(async (req, res) => {
-    assertSuperAdmin(res);
     const payload = companyScopedSchema.parse(req.body ?? {});
     const companyId = resolveCompanyId(res, payload.companyId);
     const company = await prisma.company.findUnique({
@@ -257,7 +254,6 @@ export function createAiProvidersRoutes(deps: AiProvidersRoutesDeps): Router {
   }));
 
   router.put('/settings', asyncRoute(async (req, res) => {
-    assertSuperAdmin(res);
     const payload = settingsSchema.parse(req.body);
     const companyId = resolveCompanyId(res, payload.companyId);
 

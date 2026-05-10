@@ -1,12 +1,12 @@
 /**
  * Unit tests for ai-models.routes.ts.
  *
- *   GET /         — list AI model target configs (SUPER_ADMIN only)
- *   PUT /:key     — upsert AI model target config (SUPER_ADMIN only)
+ *   GET /         — list AI model target configs
+ *   PUT /:key     — upsert AI model target config
  *
  * Verifies:
- *   - 200/200 happy paths
- *   - 403 when non-super-admin calls either endpoint
+ *   - 200/200 happy paths for super admins and company admins
+ *   - 403 when company context is missing
  *   - 400 when required fields are missing on PUT
  */
 
@@ -149,9 +149,17 @@ describe('GET / (ai-models)', () => {
     assert.equal(b.data[0].provider, 'anthropic');
   });
 
-  it('returns 403 for COMPANY_ADMIN', async () => {
-    const { status } = await callRoute(makeRouter(), 'GET', '/', {
+  it('returns 200 with target list for COMPANY_ADMIN', async () => {
+    const { status, body } = await callRoute(makeRouter(), 'GET', '/', {
       locals: COMPANY_ADMIN_LOCALS,
+    });
+    assert.equal(status, 200);
+    assert.equal((body as any).data[0].targetKey, 'default');
+  });
+
+  it('returns 403 when company context is missing for non-super-admin', async () => {
+    const { status } = await callRoute(makeRouter(), 'GET', '/', {
+      locals: { companyId: '', isSuperAdmin: false, userId: 'u-1' },
     });
     assert.equal(status, 403);
   });
@@ -183,9 +191,19 @@ describe('PUT /:targetKey (ai-models)', () => {
     assert.equal((body as any).data.targetKey, 'default');
   });
 
-  it('returns 403 for COMPANY_ADMIN', async () => {
-    const { status } = await callRoute(makeRouter(), 'PUT', '/default', {
+  it('returns 200 on successful upsert for COMPANY_ADMIN', async () => {
+    const { status, body } = await callRoute(makeRouter(), 'PUT', '/default', {
       locals: COMPANY_ADMIN_LOCALS,
+      body:   validPutBody,
+    });
+    assert.equal(status, 200);
+    assert.equal((body as any).success, true);
+    assert.equal((body as any).data.targetKey, 'default');
+  });
+
+  it('returns 403 when company context is missing for non-super-admin', async () => {
+    const { status } = await callRoute(makeRouter(), 'PUT', '/default', {
+      locals: { companyId: '', isSuperAdmin: false, userId: 'u-1' },
       body:   validPutBody,
     });
     assert.equal(status, 403);

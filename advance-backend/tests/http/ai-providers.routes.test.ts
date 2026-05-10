@@ -13,7 +13,9 @@ import { decryptToken, encryptToken } from '../../src/infrastructure/shared/toke
 
 const ENCRYPTION_KEY = 'test-token-encryption-key';
 const COMPANY_ID = '00000000-0000-4000-8000-000000000001';
+const OTHER_COMPANY_ID = '00000000-0000-4000-8000-000000000002';
 const UPDATED_AT = new Date('2026-05-10T08:00:00.000Z');
+const COMPANY_ADMIN_LOCALS = { companyId: COMPANY_ID, isSuperAdmin: false, userId: 'u-1' };
 
 const noopLogger = {
   info:  () => {},
@@ -124,8 +126,10 @@ function makeRouter(prisma = makePrisma(), envOverrides: Record<string, unknown>
 }
 
 describe('GET /status (ai-providers)', () => {
-  it('returns provider status without exposing the Gateway API key', async () => {
-    const { status, body } = await callRoute(makeRouter(), 'GET', '/status');
+  it('returns provider status for company admins without exposing the Gateway API key', async () => {
+    const { status, body } = await callRoute(makeRouter(), 'GET', '/status', {
+      locals: COMPANY_ADMIN_LOCALS,
+    });
     assert.equal(status, 200);
 
     const response = body as any;
@@ -137,9 +141,10 @@ describe('GET /status (ai-providers)', () => {
     assert.equal(JSON.stringify(response).includes('gw-secret'), false);
   });
 
-  it('requires super admin access', async () => {
+  it('prevents company admins from reading another company', async () => {
     const { status } = await callRoute(makeRouter(), 'GET', '/status', {
-      locals: { companyId: COMPANY_ID, isSuperAdmin: false, userId: 'u-1' },
+      locals: COMPANY_ADMIN_LOCALS,
+      query:  { companyId: OTHER_COMPANY_ID },
     });
     assert.equal(status, 403);
   });
@@ -161,8 +166,8 @@ describe('POST /openai/connect (ai-providers)', () => {
     });
 
     const { status, body } = await callRoute(makeRouter(prisma), 'POST', '/openai/connect', {
+      locals: COMPANY_ADMIN_LOCALS,
       body: {
-        companyId:           COMPANY_ID,
         apiKey:              'sk-gateway-test',
         gatewayUrl:          'https://gateway.example.com///',
         dedicatedAccountId:  ' acct-trim ',
@@ -175,6 +180,20 @@ describe('POST /openai/connect (ai-providers)', () => {
     assert.equal(capturedArgs.data.gatewayDedicatedAccountId, 'acct-trim');
     assert.notEqual(capturedArgs.data.gatewayApiKey, 'sk-gateway-test');
     assert.equal(decryptToken(capturedArgs.data.gatewayApiKey, ENCRYPTION_KEY), 'sk-gateway-test');
+  });
+
+  it('prevents company admins from connecting another company', async () => {
+    const { status } = await callRoute(makeRouter(), 'POST', '/openai/connect', {
+      locals: COMPANY_ADMIN_LOCALS,
+      body: {
+        companyId:          OTHER_COMPANY_ID,
+        apiKey:             'sk-gateway-test',
+        gatewayUrl:         'https://gateway.example.com',
+        dedicatedAccountId: 'acct-2',
+      },
+    });
+
+    assert.equal(status, 403);
   });
 });
 
@@ -189,7 +208,7 @@ describe('DELETE /openai/disconnect (ai-providers)', () => {
     });
 
     const { status, body } = await callRoute(makeRouter(prisma), 'DELETE', '/openai/disconnect', {
-      body: { companyId: COMPANY_ID },
+      locals: COMPANY_ADMIN_LOCALS,
     });
 
     assert.equal(status, 200);
@@ -211,7 +230,7 @@ describe('POST /openai/test (ai-providers)', () => {
     };
 
     const { status, body } = await callRoute(makeRouter(), 'POST', '/openai/test', {
-      body: { companyId: COMPANY_ID },
+      locals: COMPANY_ADMIN_LOCALS,
     });
 
     assert.equal(status, 200);
@@ -238,8 +257,8 @@ describe('PUT /settings (ai-providers)', () => {
     });
 
     const { status, body } = await callRoute(makeRouter(prisma), 'PUT', '/settings', {
+      locals: COMPANY_ADMIN_LOCALS,
       body: {
-        companyId:          COMPANY_ID,
         defaultAiProvider:  'google',
         defaultAiModel:     'gemini-3.1-flash-lite-preview',
       },
