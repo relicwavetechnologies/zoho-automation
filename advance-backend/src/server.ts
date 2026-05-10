@@ -8,6 +8,7 @@ import { createAdminAuthRoutes } from './http/admin/admin-auth.routes';
 import { createAdminPermissionRoutes } from './http/admin/permission.routes';
 import { createGoogleAuthRoutes } from './http/google/google-auth.routes';
 import { createZohoAuthRoutes } from './http/zoho/zoho-auth.routes';
+import { createLarkAuthRoutes } from './http/lark/lark-auth.routes';
 import { createExecutionRoutes } from './http/executions/execution.routes';
 import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middleware';
 import { createMemberAuthMiddleware } from './http/middleware/member-auth.middleware';
@@ -173,6 +174,8 @@ export const createServer = (c: Container) => {
       knowledgeShareService: c.knowledgeShareService,
       shareResolverService:  c.shareResolverService,
       ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
+      larkOAuthService:      c.larkOAuthService,
+      larkUserAuthLinkRepo:  c.larkUserAuthLinkRepo,
       serializer:            c.chatSerializer,
     }),
   );
@@ -200,6 +203,20 @@ export const createServer = (c: Container) => {
       logger:             c.logger,
       env:                c.env,
       frontendBaseUrl:    c.env.APP_BASE_URL,
+    }),
+  );
+
+  // Lark user OAuth connect + callback
+  app.use(
+    '/api/lark/auth',
+    createLarkAuthRoutes({
+      larkOAuthService:     c.larkOAuthService,
+      larkUserAuthLinkRepo: c.larkUserAuthLinkRepo,
+      cache:                c.memoryCache,   // nonces → REDIS_MEMORY_URL
+      logger:               c.logger,
+      appId:                c.env.LARK_APP_ID,
+      appSecret:            c.env.LARK_APP_SECRET,
+      apiBase:              c.env.LARK_API_BASE_URL,
     }),
   );
 

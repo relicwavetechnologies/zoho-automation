@@ -89,6 +89,8 @@ const EnvSchema = z.object({
   LARK_TENANT_TOKEN_REFRESH_BUFFER_SECONDS: positiveInt(180),
   LARK_TENANT_TOKEN_FETCH_MAX_RETRIES:      positiveInt(3),
   LARK_TENANT_TOKEN_RETRY_BASE_DELAY_MS:    positiveInt(250),
+  // User OAuth — set LARK_OAUTH_REDIRECT_URI to <BACKEND_PUBLIC_URL>/api/lark/auth/callback
+  LARK_OAUTH_REDIRECT_URI: z.string().optional(),
 
   // ── Qdrant vector store ───────────────────────────────────────────────────
   QDRANT_URL:                  z.string().default('http://127.0.0.1:6333'),

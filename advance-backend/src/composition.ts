@@ -35,6 +35,8 @@ import { QdrantAdapter } from './infrastructure/ai/vector/qdrant.adapter';
 import { SerperClient } from './infrastructure/ai/search/serper.client';
 import { WebSearchService } from './infrastructure/ai/search/web-search.service';
 import { ContextSearchBroker } from './application/context-search/context-search.broker';
+import { LarkOAuthService } from './infrastructure/lark/lark-oauth.service';
+import { LarkUserAuthLinkRepository } from './infrastructure/persistence/lark-user-auth-link.repository';
 import { GoogleOAuthService } from './infrastructure/google/google-oauth.service';
 import { GoogleUserAuthLinkRepository } from './infrastructure/google/google-user-auth-link.repository';
 import { CompanyGoogleAuthLinkRepository } from './infrastructure/google/company-google-auth-link.repository';
@@ -162,6 +164,9 @@ export interface Container {
   agentAdminService:      AgentAdminService;
   agentCatalogCache:      AgentCatalogCache;
   departmentAdminService: DepartmentAdminService;
+  // Lark user OAuth
+  larkOAuthService:     LarkOAuthService;
+  larkUserAuthLinkRepo: LarkUserAuthLinkRepository;
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
   googleUserLinkRepo: GoogleUserAuthLinkRepository;
@@ -421,6 +426,18 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const webSearchService    = new WebSearchService(
     serperClient,
     logger.child({ service: 'web-search' }),
+  );
+
+  // ── Lark user OAuth ───────────────────────────────────────────────────────
+  const larkOAuthService = new LarkOAuthService(
+    env.LARK_APP_ID,
+    env.LARK_APP_SECRET,
+    env.LARK_OAUTH_REDIRECT_URI ?? `${env.BACKEND_PUBLIC_URL}/api/lark/auth/callback`,
+    env.LARK_API_BASE_URL,
+  );
+  const larkUserAuthLinkRepo = new LarkUserAuthLinkRepository(
+    prisma,
+    env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '',
   );
 
   // ── Google OAuth + repositories ──────────────────────────────────────────
@@ -863,6 +880,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     agentAdminService,
     agentCatalogCache,
     departmentAdminService,
+    // Lark user OAuth
+    larkOAuthService,
+    larkUserAuthLinkRepo,
     // OAuth surfaces
     googleOAuthService,
     googleUserLinkRepo,
