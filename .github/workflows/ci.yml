@@ -127,4 +127,4 @@ jobs:
         run: docker build --build-arg VITE_API_BASE_URL=http://127.0.0.1:3001 -t divo-admin:ci ./admin
 
       - name: Validate Compose config
-        run: docker compose --env-file .env.production.example config >/dev/null
+        run: DIVO_ENV_FILE=/dev/null docker compose --env-file .env.production.example config >/dev/null
