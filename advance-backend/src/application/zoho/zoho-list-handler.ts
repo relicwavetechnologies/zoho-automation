@@ -17,6 +17,7 @@ export interface ListHandlerResult<T extends Record<string, unknown> = Record<st
   readonly totalCount: number;
   readonly summary: string;
   readonly csvLink?: string;
+  readonly csvPublicId?: string;
   readonly csvExpiresAt?: string;
   readonly truncated: boolean;
   readonly hasMore: boolean;
@@ -180,6 +181,7 @@ export async function handleZohoList<T extends Record<string, unknown> = Record<
   const allItems = exhausted.items as T[];
   const visible = allItems.slice(0, inlineThreshold);
   let csvLink: string | undefined;
+  let csvPublicId: string | undefined;
   let csvExpiresAt: string | undefined;
 
   if (allItems.length > inlineThreshold && input.cloudinary.isAvailable) {
@@ -198,6 +200,7 @@ export async function handleZohoList<T extends Record<string, unknown> = Record<
     });
     if (uploaded) {
       csvLink = uploaded.signedUrl;
+      csvPublicId = uploaded.publicId;
       csvExpiresAt = uploaded.expiresAt;
       input.logger.info('zoho.list_handler.csv_exported', {
         companyId: input.companyId,
@@ -225,6 +228,7 @@ export async function handleZohoList<T extends Record<string, unknown> = Record<
     totalCount: allItems.length,
     summary,
     ...(csvLink ? { csvLink } : {}),
+    ...(csvPublicId ? { csvPublicId } : {}),
     ...(csvExpiresAt ? { csvExpiresAt } : {}),
     truncated: exhausted.truncated,
     hasMore: exhausted.truncated,

@@ -122,6 +122,72 @@ describe('googleGmail tool', () => {
       assert.equal((r as any).value.messageId, 'm-sent');
     });
 
+    it('send: resolves attachments and passes resolved bytes to the client', async () => {
+      let sentArgs: any;
+      let resolveCtx: any;
+      const resolved = [{
+        fileName: 'report.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 3,
+        content: Buffer.from('pdf'),
+        source: 'file_asset' as const,
+      }];
+      const tool = createGoogleGmailTool({
+        getClient: async () => ({
+          ...fakeGmailClient,
+          sendMessage: async (args: any) => {
+            sentArgs = args;
+            return { messageId: 'm-sent' };
+          },
+        }),
+        resolveAttachments: async (refs, rctx) => {
+          resolveCtx = rctx;
+          assert.deepEqual(refs, [{ source: 'file_asset', fileAssetId: 'f1' }]);
+          return { ok: true, value: resolved };
+        },
+      });
+
+      const r = await tool.execute({
+        op: 'send',
+        to: ['b@c.com'],
+        subject: 'Greet',
+        bodyText: 'Hello',
+        attachments: [{ source: 'file_asset', fileAssetId: 'f1' }],
+      }, ctx);
+
+      assert.equal(r.ok, true);
+      assert.deepEqual(resolveCtx, { companyId: 'co-test', userId: 'user-test' });
+      assert.equal(sentArgs.attachments, resolved);
+    });
+
+    it('send: rejects attachment resolution failures before Gmail API calls', async () => {
+      let called = false;
+      const tool = createGoogleGmailTool({
+        getClient: async () => ({
+          ...fakeGmailClient,
+          sendMessage: async () => {
+            called = true;
+            return { messageId: 'm-sent' };
+          },
+        }),
+        resolveAttachments: async () => ({
+          ok: false,
+          error: { code: 'file_too_large', message: 'File exceeds the 10 MB limit.' },
+        }),
+      });
+      const r = await tool.execute({
+        op: 'send',
+        to: ['b@c.com'],
+        subject: 'Greet',
+        bodyText: 'Hello',
+        attachments: [{ source: 'google_drive', fileId: 'drive-1' }],
+      }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal(called, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
+      assert.match((r as any).error.message, /10 MB/);
+    });
+
     it('send: accepts bodyText alias and cc recipients', async () => {
       let sentArgs: unknown;
       const tool = createGoogleGmailTool({
@@ -146,14 +212,225 @@ describe('googleGmail tool', () => {
         cc: ['c@d.com'],
         subject: 'Greet',
         body: 'Hello',
+        template: {
+          variant: 'standard',
+          title: 'Greet',
+          intro: 'Hello',
+          footerNote: 'Sent with Divo.',
+        },
       });
     });
 
+    it('send: defaults plain composed emails into Divo standard HTML template', async () => {
+      let sentArgs: any;
+      const tool = createGoogleGmailTool({
+        getClient: async () => ({
+          ...fakeGmailClient,
+          sendMessage: async (args: any) => {
+            sentArgs = args;
+            return { messageId: 'm-sent' };
+          },
+        }),
+      });
+      const r = await tool.execute({
+        op: 'send',
+        to: ['client@acme.co'],
+        subject: 'Stock price',
+        bodyText: 'Hi Anish,\n\nThe latest stock price is ₹107.60.\n\nBest regards,\nDivo',
+      }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal(sentArgs.template.variant, 'standard');
+      assert.equal(sentArgs.template.title, 'Stock price');
+      assert.match(sentArgs.template.intro, /latest stock price/);
+    });
+
+    it('send: rejects title-only templates with no rendered body content', async () => {
+      let called = false;
+      const tool = createGoogleGmailTool({
+        getClient: async () => ({
+          ...fakeGmailClient,
+          sendMessage: async () => {
+            called = true;
+            return { messageId: 'm-sent' };
+          },
+        }),
+      });
+      const r = await tool.execute({
+        op: 'send',
+        to: ['anishsuman2305@gmail.com'],
+        subject: 'Total Payment Received',
+        templateId: 'divo-finance-v1',
+        templateData: { title: 'Total Payment Received' },
+      }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal(called, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
+      assert.match((r as any).error.message, /Email body content required/);
+    });
+
+    it('send: renders finance body text into visible finance metadata', async () => {
+      let sentArgs: any;
+      const tool = createGoogleGmailTool({
+        getClient: async () => ({
+          ...fakeGmailClient,
+          sendMessage: async (args: any) => {
+            sentArgs = args;
+            return { messageId: 'm-sent' };
+          },
+        }),
+      });
+      const bodyText = 'The total payment received by the company to date is ₹62,71,81,387.60 across 4,000 transactions.';
+      const r = await tool.execute({
+        op: 'send',
+        to: ['anishsuman2305@gmail.com'],
+        subject: 'Total Payment Received',
+        bodyText,
+        templateId: 'divo-finance-v1',
+        templateData: { title: 'Total Payment Received' },
+      }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal(sentArgs.body, bodyText);
+      assert.equal(sentArgs.template.variant, 'invoice_or_finance');
+      assert.equal(sentArgs.template.title, 'Total Payment Received');
+      assert.equal(sentArgs.template.intro, bodyText);
+      assert.deepEqual(sentArgs.template.metadata, [
+        { label: 'Amount', value: '₹62,71,81,387.60' },
+        { label: 'Transactions', value: '4,000 transactions' },
+      ]);
+    });
+
+    it('send: passes configurable CTA buttons through Divo template data', async () => {
+      let sentArgs: any;
+      const tool = createGoogleGmailTool({
+        getClient: async () => ({
+          ...fakeGmailClient,
+          sendMessage: async (args: any) => {
+            sentArgs = args;
+            return { messageId: 'm-sent' };
+          },
+        }),
+      });
+      const r = await tool.execute({
+        op: 'send',
+        to: ['client@acme.co'],
+        subject: 'Set up your Divo account',
+        bodyText: 'Your workspace account is ready. Use the button below to finish setup.',
+        templateId: 'divo-executive-v1',
+        templateData: {
+          title: 'Set up your Divo account',
+          cta: {
+            label: 'Set Up My Account',
+            url: 'https://app.divo.example/setup?token=abc123',
+          },
+        },
+      }, ctx);
+      assert.equal(r.ok, true);
+      assert.deepEqual(sentArgs.template.cta, {
+        label: 'Set Up My Account',
+        url: 'https://app.divo.example/setup?token=abc123',
+      });
+    });
+
+    it('send: extracts multiple bodyText URLs into fixed-design link cards', async () => {
+      let sentArgs: any;
+      const tool = createGoogleGmailTool({
+        getClient: async () => ({
+          ...fakeGmailClient,
+          sendMessage: async (args: any) => {
+            sentArgs = args;
+            return { messageId: 'm-sent' };
+          },
+        }),
+      });
+      const bodyText = [
+        'Hi Anish, here are two links for the best bikes of 2026:',
+        '1. https://www.bicycling.com/bikes-gear/a123/best-bikes-2026',
+        '2. https://www.cyclingweekly.com/group-tests/best-road-bikes',
+      ].join('\n');
+      const r = await tool.execute({
+        op: 'send',
+        to: ['anishsuman2305@gmail.com'],
+        subject: 'Best Bikes 2026',
+        bodyText,
+      }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal(sentArgs.template.intro, 'Hi Anish, here are two links for the best bikes of 2026:');
+      assert.deepEqual(sentArgs.template.links, [
+        { label: 'bicycling.com link', url: 'https://www.bicycling.com/bikes-gear/a123/best-bikes-2026' },
+        { label: 'cyclingweekly.com link', url: 'https://www.cyclingweekly.com/group-tests/best-road-bikes' },
+      ]);
+    });
+
+    it('send: rejects link promises when URLs are missing', async () => {
+      let called = false;
+      const tool = createGoogleGmailTool({
+        getClient: async () => ({
+          ...fakeGmailClient,
+          sendMessage: async () => {
+            called = true;
+            return { messageId: 'm-sent' };
+          },
+        }),
+      });
+      const r = await tool.execute({
+        op: 'send',
+        to: ['anishsuman2305@gmail.com'],
+        subject: 'Best Bikes 2026',
+        bodyText: 'Hi Anish, here are two links for the best bikes of 2026:',
+      }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal(called, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
+      assert.match((r as any).error.message, /mentions links\/buttons but no URL/);
+    });
+
     it('draft_create: creates a real draft through the client', async () => {
-      const tool = createGoogleGmailTool({ getClient: yesClient });
+      let draftArgs: any;
+      const tool = createGoogleGmailTool({
+        getClient: async () => ({
+          ...fakeGmailClient,
+          createDraft: async (args: any) => {
+            draftArgs = args;
+            return { draftId: 'd1', messageId: 'm-draft', threadId: 'th1' };
+          },
+        }),
+      });
       const r = await tool.execute({ op: 'draft_create', to: ['b@c.com'], subject: 'Draft', bodyText: 'Hello' }, ctx);
       assert.equal(r.ok, true);
       assert.equal((r as any).value.draftId, 'd1');
+      assert.equal(draftArgs.template.variant, 'standard');
+      assert.equal(draftArgs.template.title, 'Draft');
+      assert.equal(draftArgs.template.intro, 'Hello');
+    });
+
+    it('draft_create: passes attachments through after resolution', async () => {
+      let draftArgs: any;
+      const resolved = [{
+        fileName: 'export.csv',
+        mimeType: 'text/csv',
+        sizeBytes: 3,
+        content: Buffer.from('csv'),
+        source: 'outbound_artifact' as const,
+      }];
+      const tool = createGoogleGmailTool({
+        getClient: async () => ({
+          ...fakeGmailClient,
+          createDraft: async (args: any) => {
+            draftArgs = args;
+            return { draftId: 'd1' };
+          },
+        }),
+        resolveAttachments: async () => ({ ok: true, value: resolved }),
+      });
+      const r = await tool.execute({
+        op: 'draft_create',
+        to: ['b@c.com'],
+        subject: 'Draft',
+        bodyText: 'Hello',
+        attachments: [{ source: 'outbound_artifact', artifactId: 'a1' }],
+      }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal(draftArgs.attachments, resolved);
     });
 
     it('send: passes bcc, html, and Divo template data to client', async () => {
@@ -178,7 +455,7 @@ describe('googleGmail tool', () => {
       }, ctx);
       assert.equal(r.ok, true);
       assert.deepEqual(sentArgs.bcc, ['secret@acme.co']);
-      assert.equal(sentArgs.bodyHtml, '<p>Hello</p>');
+      assert.equal(sentArgs.bodyHtml, undefined);
       assert.equal(sentArgs.template.variant, 'standard');
     });
 
@@ -225,13 +502,29 @@ describe('googleGmail tool', () => {
     });
 
     it('reply_all and forward use message context methods', async () => {
-      const tool = createGoogleGmailTool({ getClient: yesClient });
+      const calls: any[] = [];
+      const tool = createGoogleGmailTool({
+        getClient: async () => ({
+          ...fakeGmailClient,
+          replyToMessage: async (_messageId: string, args: any) => {
+            calls.push({ kind: 'reply', args });
+            return { messageId: 'm-reply', threadId: 'th1' };
+          },
+          forwardMessage: async (_messageId: string, args: any) => {
+            calls.push({ kind: 'forward', args });
+            return { messageId: 'm-forward', threadId: 'th2' };
+          },
+        }),
+      });
       const reply = await tool.execute({ op: 'reply_all', messageId: 'm1', bodyText: 'ok' }, ctx);
       const forward = await tool.execute({ op: 'forward', messageId: 'm1', to: ['next@acme.co'] }, ctx);
       assert.equal(reply.ok, true);
       assert.equal((reply as any).value.messageId, 'm-reply');
       assert.equal(forward.ok, true);
       assert.equal((forward as any).value.messageId, 'm-forward');
+      assert.equal(calls[0].args.template.variant, 'standard');
+      assert.equal(calls[0].args.template.intro, 'ok');
+      assert.equal(calls[1].args.template, undefined);
     });
 
     it('thread and mailbox operations execute through the client', async () => {
@@ -263,6 +556,22 @@ describe('googleGmail tool', () => {
       assert.match(summary, /bcc=1/);
       assert.match(summary, /template=divo-proposal-v1/);
       assert.doesNotMatch(summary, /raw-message-id/);
+    });
+
+    it('approval summary includes attachment count and sources', () => {
+      const summary = buildArgsSummary('googleGmail', 'send', {
+        op: 'send',
+        to: ['client@example.com'],
+        subject: 'Report',
+        bodyText: 'Attached.',
+        attachments: [
+          { source: 'file_asset', fileAssetId: 'f1' },
+          { source: 'google_drive', fileId: 'd1' },
+        ],
+      });
+
+      assert.match(summary, /attachments=2/);
+      assert.match(summary, /sources=file_asset,google_drive/);
     });
 
     it('getClient throws → client is null so unrecoverable', async () => {

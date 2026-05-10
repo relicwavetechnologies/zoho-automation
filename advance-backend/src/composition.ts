@@ -26,8 +26,10 @@ import { LarkChannelAdapter } from './infrastructure/channels/lark/lark.adapter'
 import { LarkPeopleResolver } from './infrastructure/channels/lark/lark-people.resolver';
 import { LarkTaskClient } from './infrastructure/channels/lark/clients/lark-task.client';
 import { LarkToolMessagingClient } from './infrastructure/channels/lark/clients/lark-messaging.client';
+import { LarkContactsClient } from './infrastructure/channels/lark/clients/lark-contacts.client';
 import { LarkCalendarClient } from './infrastructure/channels/lark/clients/lark-calendar.client';
 import { LarkDocClient } from './infrastructure/channels/lark/clients/lark-doc.client';
+import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { LarkBaseClient } from './infrastructure/channels/lark/clients/lark-base.client';
 import { LarkApprovalClient } from './infrastructure/channels/lark/clients/lark-approval.client';
 import { createEmbeddingService } from './infrastructure/ai/embedding/embedding.service';
@@ -95,10 +97,20 @@ import { DocumentRagTool } from './application/orchestration/tools/families/docu
 import { KnowledgeShareService } from './application/knowledge-share/knowledge-share.service';
 import { ShareResolverService } from './application/knowledge-share/share-resolver.service';
 import { Mem0Service } from './application/memory/mem0.service';
+import { AttachmentResolverService } from './application/email/attachment-resolver.service';
+import type { AttachmentSource, AttachmentSourceAdapter } from './application/email/attachment.types';
+import {
+  FileAssetAttachmentAdapter,
+  GoogleDriveAttachmentAdapter,
+  LarkAttachmentAdapter,
+  OutboundArtifactAttachmentAdapter,
+  CloudinaryExportAttachmentAdapter,
+} from './application/email/adapters';
 
 // Tools
 import { createLarkTaskTool } from './application/orchestration/tools/families/lark-task.tool';
 import { createLarkMessagingTool } from './application/orchestration/tools/families/lark-messaging.tool';
+import { createLarkContactsTool } from './application/orchestration/tools/families/lark-contacts.tool';
 import { createLarkCalendarTool } from './application/orchestration/tools/families/lark-calendar.tool';
 import { createLarkDocTool } from './application/orchestration/tools/families/lark-doc.tool';
 import { createLarkBaseTool } from './application/orchestration/tools/families/lark-base.tool';
@@ -407,8 +419,10 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const larkPeopleResolver = new LarkPeopleResolver(prisma);
   const larkTaskClient     = new LarkTaskClient(larkClientDeps);
   const larkMsgToolClient  = new LarkToolMessagingClient(larkClientDeps);
+  const larkContactsClient = new LarkContactsClient(larkClientDeps);
   const larkCalendarClient = new LarkCalendarClient(larkClientDeps);
   const larkDocClient      = new LarkDocClient(larkClientDeps);
+  const larkFileClient     = new LarkFileClient(env, logger);
   const larkBaseClient     = new LarkBaseClient(larkClientDeps);
   const larkApprovalClient = new LarkApprovalClient(larkClientDeps);
 
@@ -597,6 +611,14 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const fileAssetRepo       = new FileAssetRepository(prisma);
   const vectorDocRepo       = new VectorDocumentRepository(prisma);
   const fileAccessPolicyRepo = new FileAccessPolicyRepository(prisma);
+  const attachmentAdapters = new Map<AttachmentSource, AttachmentSourceAdapter>([
+    ['file_asset', new FileAssetAttachmentAdapter(fileAssetRepo, cloudinaryAdapter)],
+    ['outbound_artifact', new OutboundArtifactAttachmentAdapter(prisma)],
+    ['google_drive', new GoogleDriveAttachmentAdapter(getDriveClient)],
+    ['lark', new LarkAttachmentAdapter(larkFileClient)],
+    ['cloudinary', new CloudinaryExportAttachmentAdapter(cloudinaryAdapter)],
+  ]);
+  const attachmentResolver = new AttachmentResolverService(attachmentAdapters);
 
   const ingestionService = new IngestionService(
     env,
@@ -680,12 +702,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // ── Tool registry ──────────────────────────────────────────────────────
   const toolRegistry = new ToolRegistry();
   toolRegistry.register(createLarkTaskTool({ client: larkTaskClient, peopleResolver: larkPeopleResolver }));
-  toolRegistry.register(createLarkMessagingTool({ client: larkMsgToolClient }));
-  toolRegistry.register(createLarkCalendarTool({ client: larkCalendarClient }));
+  toolRegistry.register(createLarkMessagingTool({ client: larkMsgToolClient, peopleResolver: larkPeopleResolver }));
+  toolRegistry.register(createLarkContactsTool({ peopleResolver: larkPeopleResolver, contactsClient: larkContactsClient }));
+  toolRegistry.register(createLarkCalendarTool({ client: larkCalendarClient, peopleResolver: larkPeopleResolver }));
   toolRegistry.register(createLarkDocTool({ client: larkDocClient }));
   toolRegistry.register(createLarkBaseTool({ client: larkBaseClient }));
   toolRegistry.register(createLarkApprovalTool({ client: larkApprovalClient }));
-  toolRegistry.register(createGoogleGmailTool({ getClient: getGmailClient }));
+  toolRegistry.register(createGoogleGmailTool({
+    getClient: getGmailClient,
+    resolveAttachments: (refs, ctx) => attachmentResolver.resolve(refs, ctx),
+  }));
   toolRegistry.register(createGoogleDriveTool({ getClient: getDriveClient }));
   toolRegistry.register(createGoogleCalendarTool({ getClient: getCalendarClient }));
   toolRegistry.register(createZohoCrmTool({ getClient: getZohoCrmClient }));

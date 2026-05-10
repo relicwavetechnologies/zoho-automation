@@ -3,6 +3,7 @@ import type { ToolId } from '../../shared/ids';
 /** All canonical tool IDs in the system. Add new tools here. */
 export const CANONICAL_TOOL_IDS = [
   'larkMessaging',
+  'larkContacts',
   'larkTask',
   'larkCalendar',
   'larkDoc',
@@ -25,6 +26,7 @@ export type ToolFamily = 'lark' | 'google' | 'zoho' | 'context' | 'rag' | 'data'
 
 export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   larkMessaging:  'lark',
+  larkContacts:   'lark',
   larkTask:       'lark',
   larkCalendar:   'lark',
   larkDoc:        'lark',
@@ -44,6 +46,7 @@ export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
 /** Action groups each tool supports. Drives permission defaults. */
 export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> = {
   larkMessaging:  ['read', 'send'],
+  larkContacts:   ['read'],
   larkTask:       ['read', 'create', 'update', 'delete'],
   larkCalendar:   ['read', 'create', 'update', 'delete'],
   larkDoc:        ['read', 'create', 'update'],
@@ -63,6 +66,7 @@ export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> 
 /** Default permission per tool per built-in company role. */
 export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean; COMPANY_ADMIN: boolean; SUPER_ADMIN: boolean }> = {
   larkMessaging:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
+  larkContacts:   { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   larkTask:       { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   larkCalendar:   { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   larkDoc:        { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },

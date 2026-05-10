@@ -192,6 +192,18 @@ function buildGmailArgsSummary(action: string, a: Record<string, unknown>): stri
   if (typeof a['templateId'] === 'string') parts.push(`template=${a['templateId']}`);
   if (typeof a['draftId'] === 'string') parts.push('draft=yes');
   if (messageCount > 0) parts.push(`messages=${messageCount}`);
+  const attachments = Array.isArray(a['attachments']) ? a['attachments'] : [];
+  if (attachments.length) {
+    parts.push(`attachments=${attachments.length}`);
+    const sources = Array.from(new Set(
+      attachments
+        .map(attachment => attachment && typeof attachment === 'object' && !Array.isArray(attachment)
+          ? (attachment as Record<string, unknown>)['source']
+          : undefined)
+        .filter((source): source is string => typeof source === 'string' && source.length > 0),
+    ));
+    if (sources.length) parts.push(`sources=${sources.join(',')}`);
+  }
 
   const labels = [...stringArray(a['labelNames']), ...stringArray(a['labelIds'])];
   if (labels.length) parts.push(`labels=${labels.join(', ').slice(0, 120)}`);

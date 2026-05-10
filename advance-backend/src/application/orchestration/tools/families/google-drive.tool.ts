@@ -23,6 +23,8 @@ export interface GoogleDriveClientPort {
   getFile(fileId: string): Promise<unknown>;
   searchFiles(query: string, limit?: number): Promise<unknown[]>;
   createFolder(name: string): Promise<{ fileId: string }>;
+  downloadFile?(fileId: string): Promise<Buffer>;
+  exportFile?(fileId: string, mimeType: string): Promise<Buffer>;
 }
 
 export const createGoogleDriveTool = (deps: { getClient: (companyId: string, userId: string) => Promise<GoogleDriveClientPort | null> }): Tool<Args, Res> => ({

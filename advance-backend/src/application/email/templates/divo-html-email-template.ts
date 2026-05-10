@@ -1,4 +1,5 @@
 import type {
+  DivoEmailLink,
   DivoEmailSection,
   DivoEmailTemplateData,
   RenderedEmailBody,
@@ -56,10 +57,11 @@ export class DivoHtmlEmailTemplate {
               <td style="padding:34px 32px 10px 32px;">
                 ${input.eyebrow ? `<div style="font-size:12px;text-transform:uppercase;letter-spacing:.16em;color:${PALETTE.wine};font-weight:800;margin-bottom:14px;">${escapeHtml(input.eyebrow)}</div>` : ''}
                 <h1 style="margin:0;color:${PALETTE.ink};font-size:34px;line-height:1.08;letter-spacing:-.04em;font-weight:800;">${escapeHtml(input.title)}</h1>
-                ${input.intro ? `<p style="margin:18px 0 0 0;color:${PALETTE.muted};font-size:16px;line-height:1.7;">${escapeHtml(input.intro)}</p>` : ''}
+                ${input.intro ? `<div style="margin:18px 0 0 0;color:${PALETTE.muted};font-size:16px;line-height:1.7;">${paragraphsToHtml(input.intro)}</div>` : ''}
               </td>
             </tr>
             ${input.metadata?.length ? this.renderMetadata(input.metadata) : ''}
+            ${input.links?.length ? this.renderLinks(input.links) : ''}
             ${sections.map(section => this.renderSection(section)).join('')}
             ${input.cta ? this.renderCta(input.cta.label, input.cta.url) : ''}
             ${this.renderSignature(input)}
@@ -97,7 +99,39 @@ export class DivoHtmlEmailTemplate {
               <td style="padding:22px 22px 20px 22px;">
                 ${section.heading ? `<h2 style="margin:0 0 10px 0;color:${PALETTE.ink};font-size:18px;line-height:1.3;font-weight:800;">${escapeHtml(section.heading)}</h2>` : ''}
                 <div style="color:${PALETTE.ink};font-size:15px;line-height:1.7;">${paragraphsToHtml(section.body)}</div>
-                ${section.bullets?.length ? `<ul style="margin:14px 0 0 20px;padding:0;color:${PALETTE.ink};font-size:15px;line-height:1.7;">${section.bullets.map(b => `<li>${escapeHtml(b)}</li>`).join('')}</ul>` : ''}
+                ${section.bullets?.length ? `<ul style="margin:14px 0 0 20px;padding:0;color:${PALETTE.ink};font-size:15px;line-height:1.7;">${section.bullets.map(b => `<li>${linkifyText(b)}</li>`).join('')}</ul>` : ''}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>`;
+  }
+
+  private renderLinks(links: readonly DivoEmailLink[]): string {
+    const rows = links.map(link => `
+      <tr>
+        <td style="padding:14px 0;border-top:1px solid ${PALETTE.border};">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="padding-right:14px;">
+                <div style="color:${PALETTE.ink};font-size:15px;line-height:1.4;font-weight:800;">${escapeHtml(link.label)}</div>
+                <div style="margin-top:4px;color:${PALETTE.muted};font-size:12px;line-height:1.5;word-break:break-all;">${linkifyText(link.url)}</div>
+              </td>
+              <td align="right" style="white-space:nowrap;">
+                <a href="${escapeAttribute(link.url)}" style="display:inline-block;background:${PALETTE.wine};color:#FFFFFF;text-decoration:none;border-radius:999px;padding:10px 15px;font-size:13px;line-height:1;font-weight:800;">Open</a>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>`).join('');
+
+    return `
+      <tr>
+        <td style="padding:18px 32px 4px 32px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${PALETTE.soft};border:1px solid ${PALETTE.border};border-radius:18px;">
+            <tr>
+              <td style="padding:8px 20px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${rows}</table>
               </td>
             </tr>
           </table>
@@ -144,6 +178,7 @@ export class DivoHtmlEmailTemplate {
       input.title,
       input.intro,
       ...(input.metadata?.map(item => `${item.label}: ${item.value}`) ?? []),
+      ...(input.links?.map(item => `${item.label}: ${item.url}`) ?? []),
       ...(input.sections ?? []).flatMap(section => [
         section.heading,
         section.body,
@@ -173,8 +208,14 @@ function variantLabelFor(variant: DivoEmailTemplateData['variant']): string {
 function paragraphsToHtml(value: string): string {
   return value
     .split(/\n{2,}/)
-    .map(paragraph => `<p style="margin:0 0 12px 0;">${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`)
+    .map(paragraph => `<p style="margin:0 0 12px 0;">${linkifyText(paragraph).replace(/\n/g, '<br>')}</p>`)
     .join('');
+}
+
+function linkifyText(value: string): string {
+  return escapeHtml(value).replace(/https?:\/\/[^\s<>"']+/g, url => (
+    `<a href="${escapeAttribute(url)}" style="color:${PALETTE.wine};text-decoration:underline;">${url}</a>`
+  ));
 }
 
 function escapeHtml(value: string): string {
@@ -188,4 +229,3 @@ function escapeHtml(value: string): string {
 function escapeAttribute(value: string): string {
   return escapeHtml(value).replace(/'/g, '&#39;');
 }
-

@@ -106,6 +106,7 @@ const ResultSchema = z.object({
   // Report fields (present only for build_overdue_report)
   report:       z.unknown().optional(),
   csvLink:      z.string().optional(),
+  csvPublicId:  z.string().optional(),
   csvExpiresAt: z.string().optional(),
   truncated:    z.boolean().optional(),
   hasMore:      z.boolean().optional(),
@@ -445,6 +446,7 @@ export const createZohoBooksTool = (deps: {
           items: result.items,
           totalCount: result.totalCount,
           ...(result.csvLink ? { csvLink: result.csvLink } : {}),
+          ...(result.csvPublicId ? { csvPublicId: result.csvPublicId } : {}),
           ...(result.csvExpiresAt ? { csvExpiresAt: result.csvExpiresAt } : {}),
           truncated: result.truncated,
           hasMore: result.hasMore,
@@ -455,6 +457,7 @@ export const createZohoBooksTool = (deps: {
           items: formatZohoResult(result.items),
         },
         ...(result.csvLink ? { csvLink: result.csvLink } : {}),
+        ...(result.csvPublicId ? { csvPublicId: result.csvPublicId } : {}),
         ...(result.csvExpiresAt ? { csvExpiresAt: result.csvExpiresAt } : {}),
         truncated: result.truncated,
         hasMore: result.hasMore,

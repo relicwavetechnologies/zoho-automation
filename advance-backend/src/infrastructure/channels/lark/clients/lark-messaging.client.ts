@@ -246,4 +246,61 @@ export class LarkToolMessagingClient implements LarkMessagingClientPort {
       timestamp: m['create_time'] as string ?? '',
     };
   }
+
+  async sendDm(openId: string, text: string): Promise<{ messageId: string }> {
+    type SendResponse = { message_id?: string; message?: Record<string, unknown> };
+    const data = await this.http.request<SendResponse>(
+      'POST',
+      '/open-apis/im/v1/messages?receive_id_type=open_id',
+      { body: { receive_id: openId, msg_type: 'text', content: JSON.stringify({ text }) } },
+    );
+    return { messageId: (data.message_id ?? (data.message as Record<string, unknown>)?.['message_id'] ?? '') as string };
+  }
+
+  async listChats(limit?: number): Promise<Array<{ chatId: string; name: string; type: string; memberCount?: number }>> {
+    type ListChatsResponse = { items?: Array<Record<string, unknown>> };
+    const data = await this.http.request<ListChatsResponse>(
+      'GET',
+      '/open-apis/im/v1/chats',
+      { query: { page_size: limit ?? 20 } },
+    );
+    return (data.items ?? []).map(c => ({
+      chatId:      c['chat_id'] as string ?? '',
+      name:        c['name'] as string ?? '',
+      type:        c['chat_type'] as string ?? '',
+      ...(c['member_count'] !== undefined ? { memberCount: c['member_count'] as number } : {}),
+    }));
+  }
+
+  async mentionMessage(chatId: string, text: string, mentionOpenIds: string[]): Promise<{ messageId: string }> {
+    const elements: Array<Record<string, unknown>> = [];
+    for (const userId of mentionOpenIds) {
+      elements.push({ tag: 'at', user_id: userId });
+      elements.push({ tag: 'text', text: ' ' });
+    }
+    if (text) elements.push({ tag: 'text', text });
+    const postContent = JSON.stringify({ zh_cn: { title: '', content: [elements] } });
+    type SendResponse = { message_id?: string; message?: Record<string, unknown> };
+    const data = await this.http.request<SendResponse>(
+      'POST',
+      '/open-apis/im/v1/messages?receive_id_type=chat_id',
+      { body: { receive_id: chatId, msg_type: 'post', content: postContent } },
+    );
+    return { messageId: (data.message_id ?? (data.message as Record<string, unknown>)?.['message_id'] ?? '') as string };
+  }
+
+  async searchMessages(chatId: string, query: string, limit?: number): Promise<Array<{ messageId: string; text: string; senderId: string; timestamp: string }>> {
+    type SearchResponse = { items?: Array<Record<string, unknown>> };
+    const data = await this.http.request<SearchResponse>(
+      'GET',
+      '/open-apis/im/v1/messages',
+      { query: { container_id_type: 'chat', container_id: chatId, query, page_size: limit ?? 20 } },
+    );
+    return (data.items ?? []).map(m => ({
+      messageId: m['message_id'] as string ?? '',
+      text: (() => { try { return (JSON.parse(m['body'] as string ?? '{}') as Record<string, unknown>)['text'] as string ?? ''; } catch { return ''; } })(),
+      senderId:  (m['sender'] as Record<string, unknown>)?.['id'] as string ?? '',
+      timestamp: m['create_time'] as string ?? '',
+    }));
+  }
 }

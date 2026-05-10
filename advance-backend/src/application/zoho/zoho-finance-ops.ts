@@ -133,6 +133,7 @@ export interface OverdueReportResult {
   inlineInvoices:       OverdueInvoice[];
   /** Set when totalCount > inlineThreshold — Cloudinary signed URL. */
   csvLink?:             string;
+  csvPublicId?:         string;
   csvExpiresAt?:        string;
   sourceTruncated:      boolean;
   appliedFilters: {
@@ -274,6 +275,7 @@ export class ZohoFinanceOps {
 
     // ── 4. CSV export for large result sets ──────────────────────────────────
     let csvLink:     string | undefined;
+    let csvPublicId: string | undefined;
     let csvExpiresAt: string | undefined;
 
     if (invoiceCount > this.inlineThreshold && this.cloudinary.isAvailable) {
@@ -295,6 +297,7 @@ export class ZohoFinanceOps {
 
         if (exported) {
           csvLink     = exported.signedUrl;
+          csvPublicId = exported.publicId;
           csvExpiresAt = exported.expiresAt;
 
           this.logger.info('zoho.finance.overdue_report.csv_exported', {
@@ -354,6 +357,7 @@ export class ZohoFinanceOps {
         ...(input.invoiceDateTo   ? { invoiceDateTo:   input.invoiceDateTo   } : {}),
       },
       ...(csvLink     ? { csvLink }     : {}),
+      ...(csvPublicId ? { csvPublicId } : {}),
       ...(csvExpiresAt ? { csvExpiresAt } : {}),
     };
   }

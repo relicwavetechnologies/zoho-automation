@@ -33,6 +33,19 @@ export class GoogleDriveClient implements GoogleDriveClientPort {
     return res.json() as Promise<T>;
   }
 
+  private async download(path: string): Promise<Buffer> {
+    const res = await fetch(`${DRIVE_BASE}${path}`, {
+      headers: {
+        Authorization: `Bearer ${this.accessToken}`,
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Drive API ${res.status}: ${text.slice(0, 200)}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+  }
+
   private normalizeFile(f: unknown): Record<string, unknown> {
     const r = asRec(f);
     return {
@@ -87,5 +100,14 @@ export class GoogleDriveClient implements GoogleDriveClientPort {
     const fileId = typeof data['id'] === 'string' ? data['id'] : '';
     if (!fileId) throw new Error('Drive createFolder: response missing file id');
     return { fileId };
+  }
+
+  async downloadFile(fileId: string): Promise<Buffer> {
+    return this.download(`/files/${encodeURIComponent(fileId)}?alt=media`);
+  }
+
+  async exportFile(fileId: string, mimeType: string): Promise<Buffer> {
+    const params = new URLSearchParams({ mimeType });
+    return this.download(`/files/${encodeURIComponent(fileId)}/export?${params}`);
   }
 }

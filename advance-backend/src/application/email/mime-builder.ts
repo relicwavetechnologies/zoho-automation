@@ -11,6 +11,11 @@ export interface BuildMimeMessageInput {
   readonly threadId?: string;
   readonly inReplyTo?: string;
   readonly references?: readonly string[];
+  readonly attachments?: readonly {
+    readonly fileName: string;
+    readonly mimeType: string;
+    readonly content: Buffer;
+  }[];
 }
 
 export interface BuiltMimeMessage {
@@ -30,12 +35,16 @@ export class MimeBuilder {
         body: normalizeLineEndings(input.text),
       };
 
+    const messageBody = input.attachments?.length
+      ? this.buildMixedBody(body, input.attachments)
+      : body;
+
     const raw = [
       ...headers,
-      `Content-Type: ${body.contentType}`,
+      `Content-Type: ${messageBody.contentType}`,
       'MIME-Version: 1.0',
       '',
-      body.body,
+      messageBody.body,
     ].join(CRLF);
 
     return {
@@ -77,6 +86,34 @@ export class MimeBuilder {
     return {
       contentType: `multipart/alternative; boundary="${boundary}"`,
       body,
+    };
+  }
+
+  private buildMixedBody(
+    bodyPart: { readonly contentType: string; readonly body: string },
+    attachments: readonly NonNullable<BuildMimeMessageInput['attachments']>[number][],
+  ): { contentType: string; body: string } {
+    const boundary = `divo_mixed_${randomBoundaryToken()}`;
+    const parts = [
+      `--${boundary}`,
+      `Content-Type: ${bodyPart.contentType}`,
+      '',
+      bodyPart.body,
+      ...attachments.flatMap(attachment => [
+        `--${boundary}`,
+        `Content-Type: ${sanitizeMimeType(attachment.mimeType)}; name="${escapeMimeParam(attachment.fileName)}"`,
+        `Content-Disposition: attachment; filename="${escapeMimeParam(attachment.fileName)}"`,
+        'Content-Transfer-Encoding: base64',
+        '',
+        wrapBase64(attachment.content.toString('base64')),
+      ]),
+      `--${boundary}--`,
+      '',
+    ];
+
+    return {
+      contentType: `multipart/mixed; boundary="${boundary}"`,
+      body: parts.join(CRLF),
     };
   }
 }
@@ -122,3 +159,17 @@ function sanitizeHeaderValue(value: string): string {
   return value.replace(/[\r\n]+/g, ' ').trim();
 }
 
+function sanitizeMimeType(value: string): string {
+  const trimmed = value.trim();
+  return /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(trimmed)
+    ? trimmed
+    : 'application/octet-stream';
+}
+
+function escapeMimeParam(value: string): string {
+  return sanitizeHeaderValue(value).replace(/["\\]/g, '_') || 'attachment';
+}
+
+function wrapBase64(value: string): string {
+  return value.match(/.{1,76}/g)?.join(CRLF) ?? '';
+}

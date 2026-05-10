@@ -22,6 +22,11 @@ export interface DivoEmailCta {
   readonly url: string;
 }
 
+export interface DivoEmailLink {
+  readonly label: string;
+  readonly url: string;
+}
+
 export interface DivoEmailTemplateData {
   readonly variant?: DivoEmailTemplateVariant;
   readonly preheader?: string;
@@ -30,6 +35,7 @@ export interface DivoEmailTemplateData {
   readonly intro?: string;
   readonly sections?: readonly DivoEmailSection[];
   readonly cta?: DivoEmailCta;
+  readonly links?: readonly DivoEmailLink[];
   readonly metadata?: readonly { readonly label: string; readonly value: string }[];
   readonly signatureName?: string;
   readonly signatureTitle?: string;
@@ -40,4 +46,3 @@ export interface RenderedEmailBody {
   readonly html: string;
   readonly text: string;
 }
-

@@ -7,6 +7,7 @@
 
 import { EmailComposerService } from '../../application/email/email-composer.service';
 import type { EmailAddress, DivoEmailTemplateData } from '../../application/email/email.types';
+import type { ResolvedAttachment } from '../../application/email/attachment.types';
 import type {
   GmailClientPort,
   GmailDraftDetail,
@@ -189,6 +190,7 @@ export class GmailClient implements GmailClientPort {
     threadId?: string;
     inReplyTo?: string;
     references?: string[];
+    attachments?: readonly ResolvedAttachment[];
   }): Promise<{ messageId: string; threadId?: string }> {
     const built = this.buildRawMessage(params);
     const body: Record<string, unknown> = { raw: built.encodedRaw };
@@ -218,6 +220,7 @@ export class GmailClient implements GmailClientPort {
     threadId?: string;
     inReplyTo?: string;
     references?: string[];
+    attachments?: readonly ResolvedAttachment[];
   }): Promise<{ draftId: string; messageId?: string; threadId?: string }> {
     const built = this.buildRawMessage(params);
     const draft = await this.call<Record<string, unknown>>('/drafts', {
@@ -243,6 +246,7 @@ export class GmailClient implements GmailClientPort {
     threadId?: string;
     inReplyTo?: string;
     references?: string[];
+    attachments?: readonly ResolvedAttachment[];
   }): Promise<{ draftId: string; messageId?: string; threadId?: string }> {
     const built = this.buildRawMessage(params);
     const draft = await this.call<Record<string, unknown>>(`/drafts/${encodeURIComponent(draftId)}`, {
@@ -319,6 +323,7 @@ export class GmailClient implements GmailClientPort {
     cc?: string[];
     bcc?: string[];
     replyAll?: boolean;
+    attachments?: readonly ResolvedAttachment[];
   }): Promise<{ messageId: string; threadId?: string }> {
     const original = await this.getMessage(messageId);
     const profileEmail = await this.getProfileEmail().catch(() => '');
@@ -340,6 +345,7 @@ export class GmailClient implements GmailClientPort {
       threadId: original.threadId,
       ...(original.rfcMessageId ? { inReplyTo: original.rfcMessageId } : {}),
       references: [...original.references, ...(original.rfcMessageId ? [original.rfcMessageId] : [])],
+      ...(params.attachments?.length ? { attachments: params.attachments } : {}),
     });
   }
 
@@ -352,6 +358,7 @@ export class GmailClient implements GmailClientPort {
     bodyHtml?: string;
     template?: DivoEmailTemplateData;
     includeOriginal?: boolean;
+    attachments?: readonly ResolvedAttachment[];
   }): Promise<{ messageId: string; threadId?: string }> {
     const original = await this.getMessage(messageId);
     const forwardText = params.includeOriginal === false
@@ -375,6 +382,7 @@ export class GmailClient implements GmailClientPort {
       ...(forwardText !== undefined ? { body: forwardText } : {}),
       ...(params.bodyHtml !== undefined ? { bodyHtml: params.bodyHtml } : {}),
       ...(params.template !== undefined ? { template: params.template } : {}),
+      ...(params.attachments?.length ? { attachments: params.attachments } : {}),
     });
   }
 
@@ -446,6 +454,7 @@ export class GmailClient implements GmailClientPort {
     threadId?: string;
     inReplyTo?: string;
     references?: string[];
+    attachments?: readonly ResolvedAttachment[];
   }): { encodedRaw: string } {
     return this.composer.compose({
       to: toEmailAddresses(params.to),
@@ -458,6 +467,7 @@ export class GmailClient implements GmailClientPort {
       ...(params.threadId ? { threadId: params.threadId } : {}),
       ...(params.inReplyTo ? { inReplyTo: params.inReplyTo } : {}),
       ...(params.references?.length ? { references: params.references } : {}),
+      ...(params.attachments?.length ? { attachments: params.attachments } : {}),
     });
   }
 

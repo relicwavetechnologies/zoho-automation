@@ -7,6 +7,7 @@ import type { PermissionResult } from '../../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../../shared/ids';
 import type { DivoEmailTemplateData, DivoEmailTemplateVariant } from '../../../email/email.types';
+import type { AttachmentPolicyViolation, AttachmentRef, ResolvedAttachment } from '../../../email/attachment.types';
 
 const GmailOpSchema = z.enum([
   'list',
@@ -44,6 +45,14 @@ const DivoTemplateIdSchema = z.enum([
   'divo-finance-v1',
 ]);
 
+const AttachmentArgSchema = z.discriminatedUnion('source', [
+  z.object({ source: z.literal('file_asset'), fileAssetId: z.string() }),
+  z.object({ source: z.literal('outbound_artifact'), artifactId: z.string() }),
+  z.object({ source: z.literal('google_drive'), fileId: z.string(), exportMimeType: z.string().optional() }),
+  z.object({ source: z.literal('lark'), messageId: z.string(), fileKey: z.string(), fileName: z.string().optional() }),
+  z.object({ source: z.literal('cloudinary'), publicId: z.string(), fileName: z.string().optional(), resourceType: z.string().optional() }),
+]);
+
 const GmailArgsSchema = z.object({
   op: GmailOpSchema,
   messageId: z.string().optional(),
@@ -66,6 +75,7 @@ const GmailArgsSchema = z.object({
   includeOriginal: z.boolean().optional(),
   inReplyTo: z.string().optional(),
   references: z.array(z.string()).optional(),
+  attachments: z.array(AttachmentArgSchema).max(10).optional(),
   limit: z.number().int().min(1).max(50).optional(),
 });
 type GmailArgs = z.infer<typeof GmailArgsSchema>;
@@ -143,6 +153,7 @@ export interface GmailClientPort {
     threadId?: string;
     inReplyTo?: string;
     references?: string[];
+    attachments?: readonly ResolvedAttachment[];
   }): Promise<{ messageId: string; threadId?: string }>;
   searchMessages(query: string, limit?: number): Promise<GmailMessageListItem[]>;
   createDraft(params: {
@@ -156,6 +167,7 @@ export interface GmailClientPort {
     threadId?: string;
     inReplyTo?: string;
     references?: string[];
+    attachments?: readonly ResolvedAttachment[];
   }): Promise<{ draftId: string; messageId?: string; threadId?: string }>;
   getDraft(draftId: string): Promise<GmailDraftDetail>;
   updateDraft(draftId: string, params: {
@@ -169,6 +181,7 @@ export interface GmailClientPort {
     threadId?: string;
     inReplyTo?: string;
     references?: string[];
+    attachments?: readonly ResolvedAttachment[];
   }): Promise<{ draftId: string; messageId?: string; threadId?: string }>;
   deleteDraft(draftId: string): Promise<void>;
   sendDraft(draftId: string): Promise<{ messageId: string; threadId?: string }>;
@@ -181,6 +194,7 @@ export interface GmailClientPort {
     cc?: string[];
     bcc?: string[];
     replyAll?: boolean;
+    attachments?: readonly ResolvedAttachment[];
   }): Promise<{ messageId: string; threadId?: string }>;
   forwardMessage(messageId: string, params: {
     to: string[];
@@ -191,6 +205,7 @@ export interface GmailClientPort {
     bodyHtml?: string;
     template?: DivoEmailTemplateData;
     includeOriginal?: boolean;
+    attachments?: readonly ResolvedAttachment[];
   }): Promise<{ messageId: string; threadId?: string }>;
   listLabels(): Promise<GmailLabel[]>;
   applyLabels(messageIds: string[], labelIds: string[], labelNames?: string[]): Promise<{ modified: number; labelIds: string[] }>;
@@ -218,13 +233,17 @@ const inferAction = (op: GmailArgs['op']): ToolActionGroup => {
 
 export const createGoogleGmailTool = (deps: {
   getClient: (companyId: string, userId: string) => Promise<GmailClientPort | null>;
+  resolveAttachments?: (
+    refs: readonly AttachmentRef[],
+    ctx: { readonly companyId: string; readonly userId: string },
+  ) => Promise<Result<ResolvedAttachment[], AttachmentPolicyViolation>>;
 }): Tool<GmailArgs, GmailResult> => ({
   id: asToolId('googleGmail'),
   family: 'google',
   actionGroups: new Set(['read', 'send', 'create', 'update', 'delete']),
   argsSchema: GmailArgsSchema,
   resultSchema: GmailResultSchema,
-  description: 'List, read, search, draft, send, reply, reply-all, forward, thread, label, and organize Gmail messages. Attachments are intentionally deferred to Phase 2.',
+  description: 'List, read, search, draft, send, reply, reply-all, forward, thread, label, organize Gmail messages, and attach resolved files.',
   parameterDocs: `
 - op: list | get | search | send | reply | reply_all | forward | thread_list | thread_get | draft_create | draft_get | draft_update | draft_delete | draft_send | label_list | label_apply | label_remove | archive | mark_read | mark_unread | star | unstar | trash | untrash
 - messageId: Gmail message ID for get/reply/reply_all/forward or single-message mailbox actions
@@ -236,9 +255,10 @@ export const createGoogleGmailTool = (deps: {
 - bcc: BCC recipient email addresses
 - Recipient safety: every to/cc/bcc value must be a real resolved email. Placeholder/test domains are rejected; resolve named people through context/Lark contacts or ask the user.
 - subject: Email subject
-- body/bodyText: Plain-text email body. body is a legacy alias.
+- body/bodyText: Semantic email body text. By default the Gmail tool inserts this content into the Divo HTML template and sends a multipart HTML+text email. body is a legacy alias.
 - bodyHtml: HTML body. Always provide bodyText too unless templateId is used.
-- templateId/templateData: Divo branded HTML template selection and semantic data. Template IDs: divo-standard-v1, divo-executive-v1, divo-proposal-v1, divo-follow-up-v1, divo-report-v1, divo-finance-v1.
+- templateId/templateData: Divo branded HTML template selection and semantic data. Template IDs: divo-standard-v1, divo-executive-v1, divo-proposal-v1, divo-follow-up-v1, divo-report-v1, divo-finance-v1. Supported templateData slots: title, preheader, eyebrow, intro, metadata[{label,value}], sections[{heading,body,bullets}], links[{label,url}], cta{label,url}, ctaLabel+ctaUrl, signatureName, signatureTitle, footerNote. A title-only template is invalid; include bodyText or templateData.intro/sections/metadata/links/cta.
+- attachments: Optional files to attach for send/draft/reply/forward. Sources: file_asset{fileAssetId}, outbound_artifact{artifactId}, google_drive{fileId, exportMimeType?}, lark{messageId,fileKey,fileName?}, cloudinary{publicId, fileName?, resourceType?}. When a previous tool call returns csvPublicId (from Zoho/data-processor exports), use source=cloudinary with that publicId to attach the CSV. Limits: 10 files, 10 MB each, 18 MB total; executable/script/macro file extensions are blocked.
 - query: Gmail search query string for search/thread_list/list
 - labelIds/labelNames: Labels for label apply/remove flows
 - includeOriginal: For forward, include original message metadata/body unless false
@@ -278,13 +298,17 @@ export const createGoogleGmailTool = (deps: {
         case 'send': {
           const compose = requireComposedEmail(args, { requireTo: true, requireSubject: true });
           if (!compose.ok) return compose;
-          const r = await client.sendMessage(compose.value);
+          const attachments = await resolveAttachmentsForArgs(args, ctx, deps);
+          if (!attachments.ok) return attachments;
+          const r = await client.sendMessage(withAttachments(compose.value, attachments.value));
           return ok({ success: true, messageId: r.messageId, threadId: r.threadId, message: 'Email sent' });
         }
         case 'draft_create': {
           const compose = requireComposedEmail(args, { requireTo: true, requireSubject: true });
           if (!compose.ok) return compose;
-          const r = await client.createDraft(compose.value);
+          const attachments = await resolveAttachmentsForArgs(args, ctx, deps);
+          if (!attachments.ok) return attachments;
+          const r = await client.createDraft(withAttachments(compose.value, attachments.value));
           return ok({ success: true, draftId: r.draftId, messageId: r.messageId, threadId: r.threadId, message: 'Draft created' });
         }
         case 'draft_get': {
@@ -295,7 +319,9 @@ export const createGoogleGmailTool = (deps: {
           if (!args.draftId) return badArgs('draftId required for draft_update');
           const compose = requireComposedEmail(args, { requireTo: true, requireSubject: true });
           if (!compose.ok) return compose;
-          const r = await client.updateDraft(args.draftId, compose.value);
+          const attachments = await resolveAttachmentsForArgs(args, ctx, deps);
+          if (!attachments.ok) return attachments;
+          const r = await client.updateDraft(args.draftId, withAttachments(compose.value, attachments.value));
           return ok({ success: true, draftId: r.draftId, messageId: r.messageId, threadId: r.threadId, message: 'Draft updated' });
         }
         case 'draft_delete': {
@@ -318,45 +344,53 @@ export const createGoogleGmailTool = (deps: {
         }
         case 'reply': {
           const body = bodyText(args);
-          const template = buildTemplate(args, body);
+          const presentation = buildEmailPresentation(args, body);
           const recipients = validateProvidedRecipientEmails({
             ...(args.cc ? { cc: args.cc } : {}),
             ...(args.bcc ? { bcc: args.bcc } : {}),
           });
           if (!recipients.ok) return recipients;
-          if (!body && !args.bodyHtml && !template) return badArgs('bodyText/body/bodyHtml/templateId required for reply');
+          const content = validateRenderableContent(body, presentation);
+          if (!content.ok) return content;
+          const attachments = await resolveAttachmentsForArgs(args, ctx, deps);
+          if (!attachments.ok) return attachments;
           if (args.messageId) {
             const r = await client.replyToMessage(args.messageId, {
               ...(body !== undefined ? { body } : {}),
-              ...(args.bodyHtml !== undefined ? { bodyHtml: args.bodyHtml } : {}),
-              ...(template !== undefined ? { template } : {}),
+              ...(presentation.bodyHtml !== undefined ? { bodyHtml: presentation.bodyHtml } : {}),
+              ...(presentation.template !== undefined ? { template: presentation.template } : {}),
               ...(args.cc?.length ? { cc: args.cc } : {}),
               ...(args.bcc?.length ? { bcc: args.bcc } : {}),
+              ...(attachments.value?.length ? { attachments: attachments.value } : {}),
             });
             return ok({ success: true, messageId: r.messageId, threadId: r.threadId, message: 'Reply sent' });
           }
           const compose = requireComposedEmail(args, { requireTo: true, requireSubject: false, requireThread: true });
           if (!compose.ok) return compose;
-          const r = await client.sendMessage({ ...compose.value, subject: args.subject ?? 'Re:' });
+          const r = await client.sendMessage(withAttachments({ ...compose.value, subject: args.subject ?? 'Re:' }, attachments.value));
           return ok({ success: true, messageId: r.messageId, threadId: r.threadId, message: 'Reply sent' });
         }
         case 'reply_all': {
           if (!args.messageId) return badArgs('messageId required for reply_all');
           const body = bodyText(args);
-          const template = buildTemplate(args, body);
+          const presentation = buildEmailPresentation(args, body);
           const recipients = validateProvidedRecipientEmails({
             ...(args.cc ? { cc: args.cc } : {}),
             ...(args.bcc ? { bcc: args.bcc } : {}),
           });
           if (!recipients.ok) return recipients;
-          if (!body && !args.bodyHtml && !template) return badArgs('bodyText/body/bodyHtml/templateId required for reply_all');
+          const content = validateRenderableContent(body, presentation);
+          if (!content.ok) return content;
+          const attachments = await resolveAttachmentsForArgs(args, ctx, deps);
+          if (!attachments.ok) return attachments;
           const r = await client.replyToMessage(args.messageId, {
             ...(body !== undefined ? { body } : {}),
-            ...(args.bodyHtml !== undefined ? { bodyHtml: args.bodyHtml } : {}),
-            ...(template !== undefined ? { template } : {}),
+            ...(presentation.bodyHtml !== undefined ? { bodyHtml: presentation.bodyHtml } : {}),
+            ...(presentation.template !== undefined ? { template: presentation.template } : {}),
             ...(args.cc?.length ? { cc: args.cc } : {}),
             ...(args.bcc?.length ? { bcc: args.bcc } : {}),
             replyAll: true,
+            ...(attachments.value?.length ? { attachments: attachments.value } : {}),
           });
           return ok({ success: true, messageId: r.messageId, threadId: r.threadId, message: 'Reply-all sent' });
         }
@@ -370,16 +404,19 @@ export const createGoogleGmailTool = (deps: {
           });
           if (!recipients.ok) return recipients;
           const body = bodyText(args);
-          const template = buildTemplate(args, body);
+          const presentation = buildEmailPresentation(args, body);
+          const attachments = await resolveAttachmentsForArgs(args, ctx, deps);
+          if (!attachments.ok) return attachments;
           const r = await client.forwardMessage(args.messageId, {
             to: args.to,
             ...(args.cc?.length ? { cc: args.cc } : {}),
             ...(args.bcc?.length ? { bcc: args.bcc } : {}),
             ...(args.subject ? { subject: args.subject } : {}),
             ...(body !== undefined ? { body } : {}),
-            ...(args.bodyHtml !== undefined ? { bodyHtml: args.bodyHtml } : {}),
-            ...(template !== undefined ? { template } : {}),
+            ...(presentation.bodyHtml !== undefined ? { bodyHtml: presentation.bodyHtml } : {}),
+            ...(presentation.template !== undefined ? { template: presentation.template } : {}),
             ...(args.includeOriginal !== undefined ? { includeOriginal: args.includeOriginal } : {}),
+            ...(attachments.value?.length ? { attachments: attachments.value } : {}),
           });
           return ok({ success: true, messageId: r.messageId, threadId: r.threadId, message: 'Email forwarded' });
         }
@@ -420,6 +457,67 @@ export const createGoogleGmailTool = (deps: {
   },
 });
 
+async function resolveAttachmentsForArgs(
+  args: GmailArgs,
+  ctx: ToolExecutionContext,
+  deps: {
+    readonly resolveAttachments?: (
+      refs: readonly AttachmentRef[],
+      ctx: { readonly companyId: string; readonly userId: string },
+    ) => Promise<Result<ResolvedAttachment[], AttachmentPolicyViolation>>;
+  },
+): Promise<Result<ResolvedAttachment[] | undefined, ToolError>> {
+  if (!args.attachments?.length) return ok(undefined);
+  if (!deps.resolveAttachments) {
+    return badArgs('Email attachments are not enabled for this environment.');
+  }
+
+  const resolved = await deps.resolveAttachments(toAttachmentRefs(args.attachments), {
+    companyId: ctx.runContext.companyId,
+    userId: ctx.runContext.userId,
+  });
+  if (!resolved.ok) return badArgs(resolved.error.message);
+  return ok(resolved.value);
+}
+
+function toAttachmentRefs(attachments: NonNullable<GmailArgs['attachments']>): AttachmentRef[] {
+  return attachments.map(attachment => {
+    switch (attachment.source) {
+      case 'file_asset':
+        return { source: 'file_asset', fileAssetId: attachment.fileAssetId };
+      case 'outbound_artifact':
+        return { source: 'outbound_artifact', artifactId: attachment.artifactId };
+      case 'google_drive':
+        return {
+          source: 'google_drive',
+          fileId: attachment.fileId,
+          ...(attachment.exportMimeType ? { exportMimeType: attachment.exportMimeType } : {}),
+        };
+      case 'lark':
+        return {
+          source: 'lark',
+          messageId: attachment.messageId,
+          fileKey: attachment.fileKey,
+          ...(attachment.fileName ? { fileName: attachment.fileName } : {}),
+        };
+      case 'cloudinary':
+        return {
+          source: 'cloudinary',
+          publicId: attachment.publicId,
+          ...(attachment.fileName ? { fileName: attachment.fileName } : {}),
+          ...(attachment.resourceType ? { resourceType: attachment.resourceType } : {}),
+        };
+    }
+  });
+}
+
+function withAttachments<T extends object>(
+  params: T,
+  attachments: readonly ResolvedAttachment[] | undefined,
+): T & { readonly attachments?: readonly ResolvedAttachment[] } {
+  return attachments?.length ? { ...params, attachments } : params;
+}
+
 function bodyText(args: GmailArgs): string | undefined {
   return args.bodyText ?? args.body;
 }
@@ -433,11 +531,12 @@ function requireComposedEmail(
   opts: { requireTo: boolean; requireSubject: boolean; requireThread?: boolean },
 ): Result<Parameters<GmailClientPort['sendMessage']>[0], ToolError> {
   const body = bodyText(args);
-  const template = buildTemplate(args, body);
+  const presentation = buildEmailPresentation(args, body);
   if (opts.requireTo && !args.to?.length) return badArgs('to required');
   if (opts.requireSubject && !args.subject) return badArgs('subject required');
   if (opts.requireThread && !args.threadId) return badArgs('threadId required');
-  if (!body && !args.bodyHtml && !template) return badArgs('bodyText/body/bodyHtml/templateId required');
+  const content = validateRenderableContent(body, presentation);
+  if (!content.ok) return content;
   const recipients = validateProvidedRecipientEmails({
     ...(args.to ? { to: args.to } : {}),
     ...(args.cc ? { cc: args.cc } : {}),
@@ -451,22 +550,36 @@ function requireComposedEmail(
     ...(args.bcc?.length ? { bcc: args.bcc } : {}),
     subject: args.subject ?? '',
     ...(body !== undefined ? { body } : {}),
-    ...(args.bodyHtml !== undefined ? { bodyHtml: args.bodyHtml } : {}),
-    ...(template !== undefined ? { template } : {}),
+    ...(presentation.bodyHtml !== undefined ? { bodyHtml: presentation.bodyHtml } : {}),
+    ...(presentation.template !== undefined ? { template: presentation.template } : {}),
     ...(args.threadId ? { threadId: args.threadId } : {}),
     ...(args.inReplyTo ? { inReplyTo: args.inReplyTo } : {}),
     ...(args.references?.length ? { references: args.references } : {}),
   });
 }
 
+function buildEmailPresentation(args: GmailArgs, fallbackText?: string): {
+  readonly bodyHtml?: string;
+  readonly template?: DivoEmailTemplateData;
+} {
+  const explicitTemplate = buildTemplate(args, fallbackText);
+  if (explicitTemplate) return { template: explicitTemplate };
+  if (args.bodyHtml) return { bodyHtml: args.bodyHtml };
+  const defaultTemplate = buildDefaultTemplate(args, fallbackText);
+  return defaultTemplate ? { template: defaultTemplate } : {};
+}
+
 function buildTemplate(args: GmailArgs, fallbackText?: string): DivoEmailTemplateData | undefined {
   if (!args.templateId) return undefined;
   const data = args.templateData ?? {};
+  const links = readLinks(data, fallbackText);
   const title = readString(data, 'title') ?? args.subject ?? 'Divo update';
-  const intro = readString(data, 'intro') ?? fallbackText;
+  const intro = readString(data, 'intro') ?? introFromText(fallbackText, links);
   const preheader = readString(data, 'preheader');
   const eyebrow = readString(data, 'eyebrow');
   const sections = readSections(data);
+  const metadata = readMetadata(data) ?? financeMetadataFromText(fallbackText);
+  const cta = readCta(data);
   const signatureName = readString(data, 'signatureName');
   const signatureTitle = readString(data, 'signatureTitle');
   const footerNote = readString(data, 'footerNote');
@@ -476,10 +589,26 @@ function buildTemplate(args: GmailArgs, fallbackText?: string): DivoEmailTemplat
     ...(preheader ? { preheader } : {}),
     ...(eyebrow ? { eyebrow } : {}),
     ...(intro ? { intro } : {}),
+    ...(metadata?.length ? { metadata } : {}),
+    ...(links?.length ? { links } : {}),
     ...(sections?.length ? { sections } : {}),
+    ...(cta ? { cta } : {}),
     ...(signatureName ? { signatureName } : {}),
     ...(signatureTitle ? { signatureTitle } : {}),
     ...(footerNote ? { footerNote } : {}),
+  };
+}
+
+function buildDefaultTemplate(args: GmailArgs, fallbackText?: string): DivoEmailTemplateData | undefined {
+  if (!fallbackText) return undefined;
+  const links = linksFromText(fallbackText);
+  const intro = introFromText(fallbackText, links);
+  return {
+    variant: 'standard',
+    title: args.subject ?? 'Divo message',
+    ...(intro ? { intro } : {}),
+    ...(links?.length ? { links } : {}),
+    footerNote: 'Sent with Divo.',
   };
 }
 
@@ -519,6 +648,173 @@ function readSections(data: Record<string, unknown>): DivoEmailTemplateData['sec
     });
   }
   return out.length ? out : undefined;
+}
+
+function readMetadata(data: Record<string, unknown>): DivoEmailTemplateData['metadata'] | undefined {
+  const metadata = data['metadata'];
+  if (!Array.isArray(metadata)) return undefined;
+  const out: Array<NonNullable<DivoEmailTemplateData['metadata']>[number]> = [];
+  for (const item of metadata) {
+    const rec = item && typeof item === 'object' && !Array.isArray(item) ? item as Record<string, unknown> : {};
+    const label = readString(rec, 'label');
+    const value = readString(rec, 'value');
+    if (label && value) out.push({ label, value });
+  }
+  return out.length ? out : undefined;
+}
+
+function readLinks(data: Record<string, unknown>, fallbackText?: string): DivoEmailTemplateData['links'] | undefined {
+  const links = data['links'];
+  const out: Array<NonNullable<DivoEmailTemplateData['links']>[number]> = [];
+  if (Array.isArray(links)) {
+    for (const item of links) {
+      const rec = item && typeof item === 'object' && !Array.isArray(item) ? item as Record<string, unknown> : {};
+      const url = readString(rec, 'url');
+      if (!url || !isSafeCtaUrl(url)) continue;
+      const label = readString(rec, 'label') ?? readString(rec, 'title') ?? labelForUrl(url, out.length + 1);
+      out.push({ label, url });
+    }
+  }
+
+  for (const link of linksFromText(fallbackText) ?? []) {
+    if (!out.some(existing => existing.url === link.url)) out.push(link);
+  }
+
+  return out.length ? out : undefined;
+}
+
+function readCta(data: Record<string, unknown>): DivoEmailTemplateData['cta'] | undefined {
+  const nested = data['cta'];
+  const ctaData = nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : data;
+  const label = readString(ctaData, 'label') ?? readString(data, 'ctaLabel');
+  const url = readString(ctaData, 'url') ?? readString(data, 'ctaUrl');
+  if (!label || !url || !isSafeCtaUrl(url)) return undefined;
+  return { label, url };
+}
+
+function isSafeCtaUrl(value: string): boolean {
+  return /^https?:\/\/[^\s<>"']+$/i.test(value);
+}
+
+function linksFromText(value?: string): DivoEmailTemplateData['links'] | undefined {
+  if (!value) return undefined;
+  const links: Array<NonNullable<DivoEmailTemplateData['links']>[number]> = [];
+  const seen = new Set<string>();
+  const lines = value.split(/\n+/);
+  for (const line of lines) {
+    for (const url of extractUrls(line)) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      links.push({ label: linkLabelFromLine(line, url, links.length + 1), url });
+    }
+  }
+  return links.length ? links : undefined;
+}
+
+function extractUrls(value: string): string[] {
+  return [...value.matchAll(/https?:\/\/[^\s<>"']+/gi)]
+    .map(match => match[0].replace(/[),.;:!?]+$/g, ''))
+    .filter(isSafeCtaUrl);
+}
+
+function linkLabelFromLine(line: string, url: string, index: number): string {
+  const beforeUrl = line.slice(0, line.indexOf(url)).replace(/^\s*(?:[-*]|\d+[\).:-])\s*/, '').trim();
+  if (beforeUrl && beforeUrl.length <= 80) return beforeUrl;
+  return labelForUrl(url, index);
+}
+
+function labelForUrl(url: string, index: number): string {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    return host ? `${host} link` : `Link ${index}`;
+  } catch {
+    return `Link ${index}`;
+  }
+}
+
+function introFromText(value: string | undefined, links?: DivoEmailTemplateData['links']): string | undefined {
+  if (!value?.trim()) return undefined;
+  if (!links?.length) return value.trim();
+  const withoutUrlLines = value
+    .split(/\n+/)
+    .filter(line => extractUrls(line).length === 0)
+    .join('\n')
+    .trim();
+  return withoutUrlLines || value.replace(/https?:\/\/[^\s<>"']+/gi, '').replace(/\s+/g, ' ').trim();
+}
+
+function financeMetadataFromText(value?: string): DivoEmailTemplateData['metadata'] | undefined {
+  if (!value) return undefined;
+  const metadata: Array<NonNullable<DivoEmailTemplateData['metadata']>[number]> = [];
+  const amount = value.match(/₹\s?[\d,]+(?:\.\d+)?/)?.[0];
+  if (amount) metadata.push({ label: 'Amount', value: amount.replace(/\s+/g, '') });
+  const transactions = value.match(/\b[\d,]+\s+transactions?\b/i)?.[0];
+  if (transactions) metadata.push({ label: 'Transactions', value: transactions });
+  return metadata.length ? metadata : undefined;
+}
+
+function validateRenderableContent(
+  body: string | undefined,
+  presentation: { readonly bodyHtml?: string; readonly template?: DivoEmailTemplateData },
+): Result<void, ToolError> {
+  const template = presentation.template;
+  const hasContent = Boolean(
+    body?.trim() ||
+    presentation.bodyHtml?.trim() ||
+    template?.intro?.trim() ||
+    template?.sections?.length ||
+    template?.metadata?.length ||
+    template?.links?.length ||
+    template?.cta,
+  );
+  if (!hasContent) {
+    return badArgs('Email body content required. Do not send a title-only template; include bodyText or templateData.intro/sections/metadata/links/cta.');
+  }
+  return validateLinkIntegrity(body, presentation);
+}
+
+function validateLinkIntegrity(
+  body: string | undefined,
+  presentation: { readonly bodyHtml?: string; readonly template?: DivoEmailTemplateData },
+): Result<void, ToolError> {
+  const text = [
+    body,
+    presentation.bodyHtml,
+    presentation.template?.title,
+    presentation.template?.intro,
+    presentation.template?.cta?.label,
+    presentation.template?.cta?.url,
+    ...(presentation.template?.links?.flatMap(link => [link.label, link.url]) ?? []),
+    ...(presentation.template?.sections ?? []).flatMap(section => [
+      section.heading,
+      section.body,
+      ...(section.bullets ?? []),
+    ]),
+  ].filter(Boolean).join('\n');
+  const urlCount = extractUrls(text).length + (presentation.template?.cta ? 1 : 0);
+  const expectedCount = expectedLinkCount(text);
+
+  if (mentionsLink(text) && urlCount === 0) {
+    return badArgs('Email content mentions links/buttons but no URL is present. Include the exact URL(s) in bodyText, templateData.links, or templateData.cta before sending.');
+  }
+  if (expectedCount !== undefined && urlCount < expectedCount) {
+    return badArgs(`Email content says it has ${expectedCount} link(s), but only ${urlCount} URL(s) are present. Include every URL before sending.`);
+  }
+  return ok(undefined);
+}
+
+function mentionsLink(value: string): boolean {
+  return /\b(?:links?|urls?|buttons?|click|open)\b/i.test(value);
+}
+
+function expectedLinkCount(value: string): number | undefined {
+  const numeric = value.match(/\b(\d+)\s+(?:links?|urls?|buttons?)\b/i)?.[1];
+  if (numeric) return Number(numeric);
+  const words: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5 };
+  const word = value.match(/\b(one|two|three|four|five)\s+(?:links?|urls?|buttons?)\b/i)?.[1]?.toLowerCase();
+  return word ? words[word] : undefined;
 }
 
 function badArgs(message: string): Result<never, ToolError> {

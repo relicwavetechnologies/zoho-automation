@@ -72,6 +72,7 @@ const ResultSchema = z.object({
   totalFetched: z.number().optional(),
   message: z.string().optional(),
   csvLink: z.string().optional(),
+  csvPublicId: z.string().optional(),
   csvExpiresAt: z.string().optional(),
   moduleSchema: z.unknown().optional(),
 });
@@ -318,6 +319,7 @@ export const createDataProcessorTool = (deps: {
 
     // ── CSV export ─────────────────────────────────────────────────────────
     let csvLink: string | undefined;
+    let csvPublicId: string | undefined;
     let csvExpiresAt: string | undefined;
 
     if (args.exportCsv && serializedArray && serializedArray.length > 0 && deps.cloudinary.isAvailable) {
@@ -337,6 +339,7 @@ export const createDataProcessorTool = (deps: {
 
         if (exported) {
           csvLink = exported.signedUrl;
+          csvPublicId = exported.publicId;
           csvExpiresAt = exported.expiresAt;
           ctx.logger.info('data_processor.csv_exported', { companyId, fileName, rows: serializedArray.length });
         }
@@ -367,6 +370,7 @@ export const createDataProcessorTool = (deps: {
       totalFetched,
       message: parts.join(' '),
       ...(csvLink ? { csvLink } : {}),
+      ...(csvPublicId ? { csvPublicId } : {}),
       ...(csvExpiresAt ? { csvExpiresAt } : {}),
       ...(moduleSchemaHint ? { moduleSchema: moduleSchemaHint } : {}),
     });
