@@ -180,7 +180,7 @@ export class ZohoBooksPaginatedClient {
   async resolveOrganizationId(companyId: string, preferred?: string): Promise<string> {
     if (preferred) return preferred;
     const orgs = await this.listOrganizations(companyId);
-    return orgs[0]?.organizationId ?? companyId;
+    return orgs.find(org => org.isDefault === true)?.organizationId ?? orgs[0]?.organizationId ?? companyId;
   }
 
   /**
