@@ -41,9 +41,6 @@ jobs:
       GOOGLE_GENERATIVE_AI_API_KEY: test-google-key
       GEMINI_API_KEY: test-google-key
       GROQ_API_KEY: test-groq-key
-      LARK_APP_ID: cli_test
-      LARK_APP_SECRET: test-lark-secret
-      LARK_VERIFICATION_TOKEN: test-lark-token
       QDRANT_URL: http://127.0.0.1:6333
       QDRANT_API_KEY: test-qdrant-key
       ADMIN_JWT_SECRET: test-admin-jwt-secret
@@ -51,11 +48,7 @@ jobs:
       CLOUDINARY_CLOUD_NAME: test-cloud
       CLOUDINARY_API_KEY: test-cloudinary-key
       CLOUDINARY_API_SECRET: test-cloudinary-secret
-      ZOHO_CLIENT_ID: test-zoho-client
-      ZOHO_CLIENT_SECRET: test-zoho-secret
       ZOHO_TOKEN_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
-      GOOGLE_OAUTH_CLIENT_ID: test-google-client
-      GOOGLE_OAUTH_CLIENT_SECRET: test-google-secret
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -82,6 +75,9 @@ jobs:
         run: pnpm typecheck
 
       - name: Test
+        # Live integration suites auto-skip when service credentials are absent.
+        # Do not provide placeholder Lark/Google/Zoho credentials here; they make
+        # the suites attempt real API calls with invalid tokens.
         run: pnpm test
 
   admin:
@@ -132,4 +128,3 @@ jobs:
 
       - name: Validate Compose config
         run: docker compose --env-file .env.production.example config >/dev/null
-
