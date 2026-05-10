@@ -117,6 +117,8 @@ function makeRouter(prisma = makePrisma(), envOverrides: Record<string, unknown>
     prisma,
     env: {
       ZOHO_TOKEN_ENCRYPTION_KEY: ENCRYPTION_KEY,
+      GATEWAY_BASE_URL: 'https://gateway.example.com',
+      GATEWAY_ADMIN_API_KEY: 'gw-admin-key',
       GOOGLE_GENERATIVE_AI_API_KEY: 'gemini-key',
       GEMINI_API_KEY: '',
       ...envOverrides,
@@ -127,6 +129,18 @@ function makeRouter(prisma = makePrisma(), envOverrides: Record<string, unknown>
 
 describe('GET /status (ai-providers)', () => {
   it('returns provider status for company admins without exposing the Gateway API key', async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      status: 'active',
+      tier: 'pro',
+      rate_limits: {
+        primary_used_percent: 12,
+        secondary_used_percent: 8,
+        credits_balance: 50,
+        plan_type: 'Pro',
+      },
+      last_used_at: '2026-05-10T08:00:00.000Z',
+    }), { status: 200 });
+
     const { status, body } = await callRoute(makeRouter(), 'GET', '/status', {
       locals: COMPANY_ADMIN_LOCALS,
     });
@@ -137,6 +151,8 @@ describe('GET /status (ai-providers)', () => {
     assert.equal(response.data.providers.openai.connected, true);
     assert.equal(response.data.providers.google.connected, true);
     assert.equal(response.data.providers.openai.gatewayUrl, 'https://gateway.example.com');
+    assert.equal(response.data.providers.openai.status, 'active');
+    assert.equal(response.data.providers.openai.primaryWindowPct, 12);
     assert.equal(JSON.stringify(response).includes('gatewayApiKey'), false);
     assert.equal(JSON.stringify(response).includes('gw-secret'), false);
   });
@@ -151,35 +167,33 @@ describe('GET /status (ai-providers)', () => {
 });
 
 describe('POST /openai/connect (ai-providers)', () => {
-  it('stores an encrypted key and normalized Gateway URL', async () => {
-    let capturedArgs: any;
-    const prisma = makePrisma({
-      update: async (args) => {
-        capturedArgs = args;
-        return {
-          id:                        COMPANY_ID,
-          gatewayUrl:                capturedArgs.data.gatewayUrl,
-          gatewayDedicatedAccountId: capturedArgs.data.gatewayDedicatedAccountId,
-          updatedAt:                 UPDATED_AT,
-        };
-      },
-    });
+  it('initiates Gateway dedicated authorization', async () => {
+    let capturedUrl = '';
+    let capturedBody: any;
+    let capturedHeaders: HeadersInit | undefined;
+    globalThis.fetch = async (url, init) => {
+      capturedUrl = String(url);
+      capturedHeaders = init?.headers;
+      capturedBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        auth_url: 'https://auth.openai.example/login',
+        session_id: 'sess-1',
+        dedicated_account_id: 'acct-1',
+      }), { status: 200 });
+    };
 
-    const { status, body } = await callRoute(makeRouter(prisma), 'POST', '/openai/connect', {
+    const { status, body } = await callRoute(makeRouter(), 'POST', '/openai/connect', {
       locals: COMPANY_ADMIN_LOCALS,
-      body: {
-        apiKey:              'sk-gateway-test',
-        gatewayUrl:          'https://gateway.example.com///',
-        dedicatedAccountId:  ' acct-trim ',
-      },
+      body:   { tier: 'pro' },
     });
 
     assert.equal(status, 201);
-    assert.equal((body as any).data.gatewayUrl, 'https://gateway.example.com');
-    assert.equal(capturedArgs.data.gatewayUrl, 'https://gateway.example.com');
-    assert.equal(capturedArgs.data.gatewayDedicatedAccountId, 'acct-trim');
-    assert.notEqual(capturedArgs.data.gatewayApiKey, 'sk-gateway-test');
-    assert.equal(decryptToken(capturedArgs.data.gatewayApiKey, ENCRYPTION_KEY), 'sk-gateway-test');
+    assert.equal(capturedUrl, 'https://gateway.example.com/admin/dedicated/initiate');
+    const headers = new Headers(capturedHeaders);
+    assert.equal(headers.get('Authorization'), 'Bearer gw-admin-key');
+    assert.equal(capturedBody.owner_app, 'divo');
+    assert.equal((body as any).data.authUrl, 'https://auth.openai.example/login');
+    assert.equal((body as any).data.dedicatedAccountId, 'acct-1');
   });
 
   it('prevents company admins from connecting another company', async () => {
@@ -197,9 +211,57 @@ describe('POST /openai/connect (ai-providers)', () => {
   });
 });
 
+describe('POST /openai/complete (ai-providers)', () => {
+  it('stores the Gateway returned API key after OAuth completion', async () => {
+    let capturedArgs: any;
+    let capturedBody: any;
+    const prisma = makePrisma({
+      update: async (args) => {
+        capturedArgs = args;
+        return {
+          id:                        COMPANY_ID,
+          gatewayUrl:                capturedArgs.data.gatewayUrl,
+          gatewayDedicatedAccountId: capturedArgs.data.gatewayDedicatedAccountId,
+          updatedAt:                 UPDATED_AT,
+        };
+      },
+    });
+    globalThis.fetch = async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        dedicated_account_id: 'acct-1',
+        status: 'active',
+        api_key: 'divo_dk_test',
+        tier: 'pro',
+      }), { status: 200 });
+    };
+
+    const { status, body } = await callRoute(makeRouter(prisma), 'POST', '/openai/complete', {
+      locals: COMPANY_ADMIN_LOCALS,
+      body: {
+        dedicatedAccountId: 'acct-1',
+        callbackUrl: 'https://gateway.example.com/oauth/callback?code=abc',
+      },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(capturedBody.dedicated_account_id, 'acct-1');
+    assert.equal(capturedBody.callback_url, 'https://gateway.example.com/oauth/callback?code=abc');
+    assert.equal((body as any).data.connected, true);
+    assert.equal(capturedArgs.data.gatewayUrl, 'https://gateway.example.com');
+    assert.equal(capturedArgs.data.gatewayDedicatedAccountId, 'acct-1');
+    assert.equal(decryptToken(capturedArgs.data.gatewayApiKey, ENCRYPTION_KEY), 'divo_dk_test');
+  });
+});
+
 describe('DELETE /openai/disconnect (ai-providers)', () => {
   it('clears stored Gateway credentials', async () => {
     let capturedArgs: any;
+    let capturedUrl = '';
+    globalThis.fetch = async (url) => {
+      capturedUrl = String(url);
+      return new Response(JSON.stringify({ id: 'acct-1', status: 'disconnected', api_key_revoked: true }), { status: 200 });
+    };
     const prisma = makePrisma({
       update: async (args) => {
         capturedArgs = args;
@@ -212,6 +274,7 @@ describe('DELETE /openai/disconnect (ai-providers)', () => {
     });
 
     assert.equal(status, 200);
+    assert.equal(capturedUrl, 'https://gateway.example.com/admin/dedicated/disconnect/acct-1');
     assert.equal((body as any).data.connected, false);
     assert.equal(capturedArgs.data.gatewayApiKey, null);
     assert.equal(capturedArgs.data.gatewayUrl, null);
@@ -220,13 +283,13 @@ describe('DELETE /openai/disconnect (ai-providers)', () => {
 });
 
 describe('POST /openai/test (ai-providers)', () => {
-  it('calls the Gateway dedicated status endpoint with the decrypted key', async () => {
+  it('calls the Gateway dedicated test endpoint', async () => {
     let capturedUrl = '';
     let capturedHeaders: HeadersInit | undefined;
     globalThis.fetch = async (url, init) => {
       capturedUrl = String(url);
       capturedHeaders = init?.headers;
-      return new Response(JSON.stringify({ dedicated: true }), { status: 200 });
+      return new Response(JSON.stringify({ success: true, latency_ms: 42 }), { status: 200 });
     };
 
     const { status, body } = await callRoute(makeRouter(), 'POST', '/openai/test', {
@@ -235,9 +298,11 @@ describe('POST /openai/test (ai-providers)', () => {
 
     assert.equal(status, 200);
     assert.equal((body as any).data.ok, true);
-    assert.equal(capturedUrl, 'https://gateway.example.com/admin/dedicated/status/acct-1');
-    assert.equal((capturedHeaders as Record<string, string>).Authorization, 'Bearer gw-secret');
-    assert.equal((capturedHeaders as Record<string, string>)['x-api-key'], 'gw-secret');
+    assert.equal((body as any).data.latencyMs, 42);
+    assert.equal(capturedUrl, 'https://gateway.example.com/admin/dedicated/test/acct-1');
+    const headers = new Headers(capturedHeaders);
+    assert.equal(headers.get('Authorization'), 'Bearer gw-admin-key');
+    assert.equal(headers.get('x-api-key'), 'gw-admin-key');
   });
 });
 

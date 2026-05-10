@@ -50,6 +50,7 @@ const EnvSchema = z.object({
   // ── OpenAI ────────────────────────────────────────────────────────────────
   OPENAI_API_KEY:        z.string().min(1),
   GATEWAY_BASE_URL:      z.string().default(''),
+  GATEWAY_ADMIN_API_KEY: z.string().optional(),
   OPENAI_ROUTER_MODEL:   z.string().default('gpt-4o-mini'),
   OPENAI_PLANNER_MODEL:  z.string().default('gpt-4o-mini'),
   OPENAI_SYNTHESIS_MODEL: z.string().default('gpt-4o-mini'),

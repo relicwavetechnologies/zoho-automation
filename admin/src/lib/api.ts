@@ -159,9 +159,31 @@ export type AiProviderStatus = {
 };
 
 export type ConnectOpenAiInput = {
-  apiKey: string;
+  tier?: "free" | "pro";
+  label?: string;
+};
+
+export type OpenAiConnectStart = {
+  companyId: string;
+  gatewayUrl: string;
+  authUrl: string;
+  sessionId: string;
+  dedicatedAccountId: string;
+};
+
+export type CompleteOpenAiInput = {
+  dedicatedAccountId: string;
+  callbackUrl: string;
+};
+
+export type OpenAiConnectComplete = {
+  companyId: string;
+  connected: boolean;
+  status: string;
   gatewayUrl: string;
   dedicatedAccountId: string;
+  tier?: string | null;
+  updatedAt: string;
 };
 
 export type OpenAiTestResult = {
@@ -202,9 +224,15 @@ export type UpdateAiModelTargetInput = {
 export const aiProvidersApi = {
   status: (token?: string) =>
     api.get<AiProviderStatus>("/api/admin/ai-providers/status", token),
-  connectOpenAI: (body: ConnectOpenAiInput, token?: string) =>
-    api.post<AiProviderStatus["providers"]["openai"]>(
+  connectOpenAI: (body: ConnectOpenAiInput = {}, token?: string) =>
+    api.post<OpenAiConnectStart>(
       "/api/admin/ai-providers/openai/connect",
+      body,
+      token,
+    ),
+  completeOpenAI: (body: CompleteOpenAiInput, token?: string) =>
+    api.post<OpenAiConnectComplete>(
+      "/api/admin/ai-providers/openai/complete",
       body,
       token,
     ),

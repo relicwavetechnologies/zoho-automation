@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { Activity, CheckCircle2, CloudCog, KeyRound, PlugZap, RefreshCcw, Save, Sparkles, TestTube2, Unplug } from "lucide-react"
+import { Activity, CheckCircle2, CloudCog, ExternalLink, KeyRound, PlugZap, RefreshCcw, Save, Sparkles, TestTube2, Unplug } from "lucide-react"
 import { toast } from "sonner"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { MetricCard } from "@/components/admin/metric-card"
@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { aiModelsApi, aiProvidersApi, useProviderStatus, type AiModelTarget } from "@/lib/api"
+import { aiModelsApi, aiProvidersApi, useProviderStatus, type AiModelTarget, type OpenAiConnectStart } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const modelCatalog = {
@@ -87,9 +87,8 @@ export function AiProvidersPage() {
   const authToken = token ?? undefined
   const status = useProviderStatus(authToken, 30_000)
   const [connectOpen, setConnectOpen] = useState(false)
-  const [apiKey, setApiKey] = useState("")
-  const [gatewayUrl, setGatewayUrl] = useState("")
-  const [dedicatedAccountId, setDedicatedAccountId] = useState("")
+  const [connectSession, setConnectSession] = useState<OpenAiConnectStart | null>(null)
+  const [callbackUrl, setCallbackUrl] = useState("")
   const [busy, setBusy] = useState<string | null>(null)
   const [targets, setTargets] = useState<AiModelTarget[]>([])
   const [targetsLoading, setTargetsLoading] = useState(true)
@@ -132,15 +131,32 @@ export function AiProvidersPage() {
     }
   }, [modelId, provider])
 
-  async function connectOpenAI() {
+  async function startOpenAIConnection() {
     if (!authToken) return
     setBusy("connect")
     try {
-      await aiProvidersApi.connectOpenAI({ apiKey, gatewayUrl, dedicatedAccountId }, authToken)
+      const started = await aiProvidersApi.connectOpenAI({ tier: "pro" }, authToken)
+      setConnectSession(started)
+      setCallbackUrl("")
+      setConnectOpen(true)
+      toast.success("OpenAI authorization started")
+      window.open(started.authUrl, "_blank", "noopener,noreferrer")
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function completeOpenAIConnection() {
+    if (!authToken || !connectSession) return
+    setBusy("complete")
+    try {
+      await aiProvidersApi.completeOpenAI({
+        dedicatedAccountId: connectSession.dedicatedAccountId,
+        callbackUrl,
+      }, authToken)
       toast.success("OpenAI Gateway connected")
-      setApiKey("")
-      setGatewayUrl("")
-      setDedicatedAccountId("")
+      setConnectSession(null)
+      setCallbackUrl("")
       setConnectOpen(false)
       await status.refresh()
     } finally {
@@ -235,7 +251,7 @@ export function AiProvidersPage() {
                 tone="openai"
                 actions={
                   <>
-                    <Button type="button" size="sm" onClick={() => setConnectOpen(true)}>
+                    <Button type="button" size="sm" disabled={busy === "connect"} onClick={() => void startOpenAIConnection()}>
                       <KeyRound className="mr-1.5 h-3.5 w-3.5" />
                       Connect
                     </Button>
@@ -320,28 +336,40 @@ export function AiProvidersPage() {
       <Dialog open={connectOpen} onOpenChange={setConnectOpen}>
         <DialogContent className="p-4">
           <DialogHeader>
-            <DialogTitle className="text-[15px]">Connect OpenAI Gateway</DialogTitle>
-            <DialogDescription className="text-[12px]">Store the dedicated Gateway key and account reference for OpenAI routing.</DialogDescription>
+            <DialogTitle className="text-[15px]">Connect OpenAI Codex</DialogTitle>
+            <DialogDescription className="text-[12px]">Authorize a dedicated Gateway account and finish with the OpenAI callback URL.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="gateway-url">Gateway URL</Label>
-              <Input id="gateway-url" value={gatewayUrl} onChange={(event) => setGatewayUrl(event.target.value)} placeholder="https://gateway.example.com" />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="account-id">Dedicated account ID</Label>
-              <Input id="account-id" value={dedicatedAccountId} onChange={(event) => setDedicatedAccountId(event.target.value)} placeholder="acct_..." />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="api-key">Gateway API key</Label>
-              <Input id="api-key" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="divo_..." />
-            </div>
+            {connectSession ? (
+              <>
+                <div className="grid gap-2 rounded-lg bg-secondary/70 p-3 text-[12px]">
+                  <div className="flex justify-between gap-3"><span className="text-muted-foreground">Gateway</span><span className="truncate font-medium">{connectSession.gatewayUrl}</span></div>
+                  <div className="flex justify-between gap-3"><span className="text-muted-foreground">Dedicated ID</span><span className="truncate font-medium">{connectSession.dedicatedAccountId}</span></div>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={() => window.open(connectSession.authUrl, "_blank", "noopener,noreferrer")}>
+                  <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+                  Open OpenAI Login
+                </Button>
+                <div className="space-y-1.5">
+                  <Label htmlFor="callback-url">Callback URL</Label>
+                  <Input id="callback-url" value={callbackUrl} onChange={(event) => setCallbackUrl(event.target.value)} placeholder="https://..." />
+                </div>
+              </>
+            ) : (
+              <div className="rounded-lg bg-secondary/70 p-3 text-[12px] text-muted-foreground">Gateway will create a dedicated OpenAI authorization session automatically.</div>
+            )}
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setConnectOpen(false)}>Cancel</Button>
-            <Button type="button" disabled={!apiKey || !gatewayUrl || !dedicatedAccountId || busy === "connect"} onClick={() => void connectOpenAI()}>
-              Connect
-            </Button>
+            {connectSession ? (
+              <Button type="button" disabled={!callbackUrl || busy === "complete"} onClick={() => void completeOpenAIConnection()}>
+                Finish
+              </Button>
+            ) : (
+              <Button type="button" disabled={busy === "connect"} onClick={() => void startOpenAIConnection()}>
+                Start
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
