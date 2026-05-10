@@ -1,0 +1,108 @@
+name: divo
+
+services:
+  divo-backend:
+    image: ${DIVO_BACKEND_IMAGE:-divo-backend:local}
+    build:
+      context: ./advance-backend
+      dockerfile: Dockerfile
+    env_file:
+      - ${DIVO_ENV_FILE:-/dev/null}
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      REDIS_URL: redis://divo-redis-cache:6379/0
+      REDIS_QUEUE_URL: redis://divo-redis-queue:6379/0
+      REDIS_CACHE_URL: redis://divo-redis-cache:6379/0
+      REDIS_MEMORY_URL: redis://divo-redis-memory:6379/0
+    depends_on:
+      divo-redis-queue:
+        condition: service_healthy
+      divo-redis-cache:
+        condition: service_healthy
+      divo-redis-memory:
+        condition: service_healthy
+    ports:
+      - "${DIVO_BACKEND_PORT:-3001}:3001"
+    restart: unless-stopped
+    networks:
+      - divo-internal
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 5
+
+  divo-admin:
+    image: ${DIVO_ADMIN_IMAGE:-divo-admin:local}
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    depends_on:
+      divo-backend:
+        condition: service_started
+    ports:
+      - "${DIVO_ADMIN_PORT:-8081}:80"
+    restart: unless-stopped
+    networks:
+      - divo-internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  divo-redis-queue:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - divo_redis_queue_data:/data
+    restart: unless-stopped
+    networks:
+      - divo-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  divo-redis-cache:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "300", "10"]
+    volumes:
+      - divo_redis_cache_data:/data
+    restart: unless-stopped
+    networks:
+      - divo-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  divo-redis-memory:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "300", "10"]
+    volumes:
+      - divo_redis_memory_data:/data
+    restart: unless-stopped
+    networks:
+      - divo-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+networks:
+  divo-internal:
+    driver: bridge
+
+volumes:
+  divo_redis_queue_data:
+  divo_redis_cache_data:
+  divo_redis_memory_data:
