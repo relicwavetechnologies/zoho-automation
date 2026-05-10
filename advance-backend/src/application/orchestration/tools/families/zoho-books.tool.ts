@@ -16,6 +16,11 @@
  *     list_bank_transactions — paginated bank transaction list
  *     search_transactions   — global transaction search
  *     get_tax_summary       — tax summary report
+ *     send_invoice          — email an invoice
+ *     record_payment        — record a customer payment
+ *     create_expense        — create an expense
+ *     create_bill           — create a bill
+ *     void_invoice          — void an invoice
  *
  *   Reports (exhaustive pagination + token-safe output):
  *     build_overdue_report — scan ALL overdue invoices, compute aging buckets,
@@ -55,6 +60,11 @@ const Schema = z.object({
     'list_bank_transactions',
     'search_transactions',
     'get_tax_summary',
+    'send_invoice',
+    'record_payment',
+    'create_expense',
+    'create_bill',
+    'void_invoice',
     // Reports
     'build_overdue_report',
   ]),
@@ -64,6 +74,7 @@ const Schema = z.object({
   contactId:      z.string().optional(),
   accountId:      z.string().optional(),
   searchQuery:    z.string().optional(),
+  email:          z.string().email().optional(),
   fields:         z.record(z.unknown()).optional(),
   limit:          z.number().int().min(1).max(100).optional(),
   organizationId: z.string().optional(),
@@ -100,6 +111,11 @@ export interface ZohoBooksClientPort {
   listContacts(limit?: number): Promise<unknown[]>;
   getContact(contactId: string): Promise<unknown>;
   listExpenses(limit?: number): Promise<unknown[]>;
+  sendInvoice(invoiceId: string, email?: string): Promise<{ invoiceId: string }>;
+  recordPayment(fields: Record<string, unknown>): Promise<{ paymentId: string }>;
+  createExpense(fields: Record<string, unknown>): Promise<{ expenseId: string }>;
+  createBill(fields: Record<string, unknown>): Promise<{ billId: string }>;
+  voidInvoice(invoiceId: string): Promise<{ invoiceId: string }>;
 }
 
 const readOps = new Set<Args['op']>([
@@ -116,6 +132,14 @@ const readOps = new Set<Args['op']>([
   'search_transactions',
   'get_tax_summary',
   'build_overdue_report',
+]);
+
+const createOps = new Set<Args['op']>([
+  'create_invoice',
+  'send_invoice',
+  'record_payment',
+  'create_expense',
+  'create_bill',
 ]);
 
 const dateParams = (args: Args): Record<string, unknown> => ({
@@ -135,25 +159,26 @@ export const createZohoBooksTool = (deps: {
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoBooks'),
   family:       'zoho',
-  actionGroups: new Set(['read', 'create', 'update']),
+  actionGroups: new Set(['read', 'create', 'update', 'delete']),
   argsSchema:   Schema,
   resultSchema: ResultSchema,
 
   description: [
-    'Access Zoho Books: list/read invoices, contacts, expenses, bills, payments, bank transactions, accounts, and tax summaries; create invoices.',
+    'Access Zoho Books: list/read invoices, contacts, expenses, bills, payments, bank transactions, accounts, and tax summaries; create invoices, bills, expenses, payments; send or void invoices.',
     'For financial analysis use build_overdue_report which scans ALL invoices deeply,',
     'computes aging buckets and top customers, and returns a CSV link for large datasets.',
   ].join(' '),
 
   parameterDocs: [
-    'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|list_bills|list_payments|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|build_overdue_report',
+    'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|list_bills|list_payments|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
     'new read params: accountId, searchQuery, dateFrom, dateTo, taxYear',
+    'write params: invoiceId, email, fields',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
     'CRUD params: invoiceId, contactId, fields, limit (1-100)',
   ].join('\n'),
 
   permissionCheck(args, perm) {
-    const action: ToolActionGroup = readOps.has(args.op) ? 'read' : 'create';
+    const action: ToolActionGroup = readOps.has(args.op) ? 'read' : createOps.has(args.op) ? 'create' : 'delete';
     const allowed = perm.allowedActionsByTool.get(asToolId('zohoBooks'))?.has(action) ?? false;
     return allowed
       ? ok(action)
@@ -224,6 +249,36 @@ export const createZohoBooksTool = (deps: {
           if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_invoice' }));
           const r = await client.createInvoice(args.fields as Record<string, unknown>);
           return ok({ success: true, id: r.invoiceId, message: 'Invoice created successfully' });
+        }
+
+        case 'send_invoice': {
+          if (!args.invoiceId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'invoiceId required for send_invoice' }));
+          const r = await client.sendInvoice(args.invoiceId, args.email);
+          return ok({ success: true, id: r.invoiceId, message: 'Invoice sent successfully' });
+        }
+
+        case 'record_payment': {
+          if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for record_payment' }));
+          const r = await client.recordPayment(args.fields as Record<string, unknown>);
+          return ok({ success: true, id: r.paymentId, message: 'Payment recorded successfully' });
+        }
+
+        case 'create_expense': {
+          if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_expense' }));
+          const r = await client.createExpense(args.fields as Record<string, unknown>);
+          return ok({ success: true, id: r.expenseId, message: 'Expense created successfully' });
+        }
+
+        case 'create_bill': {
+          if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_bill' }));
+          const r = await client.createBill(args.fields as Record<string, unknown>);
+          return ok({ success: true, id: r.billId, message: 'Bill created successfully' });
+        }
+
+        case 'void_invoice': {
+          if (!args.invoiceId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'invoiceId required for void_invoice' }));
+          const r = await client.voidInvoice(args.invoiceId);
+          return ok({ success: true, id: r.invoiceId, message: 'Invoice voided successfully' });
         }
 
         case 'list_contacts':

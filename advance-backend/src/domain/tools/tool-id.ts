@@ -51,7 +51,7 @@ export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> 
   googleDrive:    ['read', 'create', 'update'],
   googleCalendar: ['read', 'create', 'update', 'delete'],
   zohoCrm:        ['read', 'create', 'update', 'delete'],
-  zohoBooks:      ['read', 'create', 'update'],
+  zohoBooks:      ['read', 'create', 'update', 'delete'],
   contextSearch:  ['read'],
   webSearch:      ['read'],
   documentRag:    ['read'],
