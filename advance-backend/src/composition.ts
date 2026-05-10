@@ -496,7 +496,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createGoogleDriveTool({ getClient: getDriveClient }));
   toolRegistry.register(createGoogleCalendarTool({ getClient: getCalendarClient }));
   toolRegistry.register(createZohoCrmTool({ getClient: getZohoCrmClient }));
-  toolRegistry.register(createZohoBooksTool({ getClient: getZohoBooksClient, financeOps: zohoFinanceOps }));
+  toolRegistry.register(createZohoBooksTool({
+    getClient:   getZohoBooksClient,
+    booksClient: zohoPaginatedBooksClient,
+    financeOps:  zohoFinanceOps,
+  }));
   toolRegistry.register(createContextSearchTool({ broker: contextSearchBroker }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
   toolRegistry.register(new DocumentRagTool(documentRagBroker));

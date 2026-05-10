@@ -9,6 +9,13 @@
  *     list_contacts   — paginated contact list
  *     get_contact     — single contact by ID
  *     list_expenses   — paginated expense list
+ *     list_bills      — paginated bill list
+ *     list_payments   — paginated customer payment list
+ *     get_chart_of_accounts — chart of accounts
+ *     get_account_balance   — bank account balances
+ *     list_bank_transactions — paginated bank transaction list
+ *     search_transactions   — global transaction search
+ *     get_tax_summary       — tax summary report
  *
  *   Reports (exhaustive pagination + token-safe output):
  *     build_overdue_report — scan ALL overdue invoices, compute aging buckets,
@@ -28,6 +35,7 @@ import { PermissionError, ToolError }      from '../../../../shared/errors';
 import type { ToolActionGroup }            from '../../../../domain/permissions/tool-action-group';
 import { asToolId }                        from '../../../../shared/ids';
 import type { ZohoFinanceOps }             from '../../../zoho/zoho-finance-ops';
+import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../../infrastructure/zoho/zoho-books-paginated.client';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
@@ -40,6 +48,13 @@ const Schema = z.object({
     'list_contacts',
     'get_contact',
     'list_expenses',
+    'list_bills',
+    'list_payments',
+    'get_chart_of_accounts',
+    'get_account_balance',
+    'list_bank_transactions',
+    'search_transactions',
+    'get_tax_summary',
     // Reports
     'build_overdue_report',
   ]),
@@ -47,9 +62,14 @@ const Schema = z.object({
   // CRUD params
   invoiceId:      z.string().optional(),
   contactId:      z.string().optional(),
+  accountId:      z.string().optional(),
+  searchQuery:    z.string().optional(),
   fields:         z.record(z.unknown()).optional(),
   limit:          z.number().int().min(1).max(100).optional(),
   organizationId: z.string().optional(),
+  dateFrom:       z.string().optional(),
+  dateTo:         z.string().optional(),
+  taxYear:        z.string().optional(),
 
   // Report params
   asOfDate:         z.string().optional(),   // ISO date, default = today
@@ -82,11 +102,34 @@ export interface ZohoBooksClientPort {
   listExpenses(limit?: number): Promise<unknown[]>;
 }
 
+const readOps = new Set<Args['op']>([
+  'list_invoices',
+  'get_invoice',
+  'list_contacts',
+  'get_contact',
+  'list_expenses',
+  'list_bills',
+  'list_payments',
+  'get_chart_of_accounts',
+  'get_account_balance',
+  'list_bank_transactions',
+  'search_transactions',
+  'get_tax_summary',
+  'build_overdue_report',
+]);
+
+const dateParams = (args: Args): Record<string, unknown> => ({
+  ...(args.dateFrom ? { from_date: args.dateFrom } : {}),
+  ...(args.dateTo   ? { to_date:   args.dateTo   } : {}),
+});
+
 // ─── Tool factory ─────────────────────────────────────────────────────────────
 
 export const createZohoBooksTool = (deps: {
   /** Factory for simple per-request CRUD client (token resolved per call). */
   getClient:    (companyId: string, userId: string) => Promise<ZohoBooksClientPort | null>;
+  /** Paginated client for module reads and raw Books report endpoints. */
+  booksClient:  ZohoBooksPaginatedClient;
   /** Finance ops service for deep report operations. */
   financeOps:   ZohoFinanceOps;
 }): Tool<Args, Res> => ({
@@ -97,19 +140,20 @@ export const createZohoBooksTool = (deps: {
   resultSchema: ResultSchema,
 
   description: [
-    'Access Zoho Books: list/read invoices, contacts, expenses; create invoices.',
+    'Access Zoho Books: list/read invoices, contacts, expenses, bills, payments, bank transactions, accounts, and tax summaries; create invoices.',
     'For financial analysis use build_overdue_report which scans ALL invoices deeply,',
     'computes aging buckets and top customers, and returns a CSV link for large datasets.',
   ].join(' '),
 
   parameterDocs: [
-    'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|build_overdue_report',
+    'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|list_bills|list_payments|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|build_overdue_report',
+    'new read params: accountId, searchQuery, dateFrom, dateTo, taxYear',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
     'CRUD params: invoiceId, contactId, fields, limit (1-100)',
   ].join('\n'),
 
   permissionCheck(args, perm) {
-    const action: ToolActionGroup = args.op === 'create_invoice' ? 'create' : 'read';
+    const action: ToolActionGroup = readOps.has(args.op) ? 'read' : 'create';
     const allowed = perm.allowedActionsByTool.get(asToolId('zohoBooks'))?.has(action) ?? false;
     return allowed
       ? ok(action)
@@ -156,6 +200,16 @@ export const createZohoBooksTool = (deps: {
       }));
     }
 
+    const listRecords = async (moduleName: ZohoBooksModule, filters?: Record<string, unknown>, query?: string) =>
+      deps.booksClient.listRecords({
+        companyId,
+        moduleName,
+        ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+        ...(filters ? { filters } : {}),
+        ...(query ? { query } : {}),
+        perPage: args.limit ?? 25,
+      });
+
     try {
       switch (args.op) {
         case 'list_invoices':
@@ -182,6 +236,59 @@ export const createZohoBooksTool = (deps: {
 
         case 'list_expenses':
           return ok({ success: true, data: await client.listExpenses(args.limit) });
+
+        case 'list_bills':
+          return ok({ success: true, data: await listRecords('bills', dateParams(args)) });
+
+        case 'list_payments':
+          return ok({ success: true, data: await listRecords('customerpayments', dateParams(args)) });
+
+        case 'get_chart_of_accounts': {
+          const data = await deps.booksClient.getEndpoint({
+            companyId,
+            path: '/chartofaccounts',
+            ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+          });
+          return ok({ success: true, data: data['chartofaccounts'] ?? data });
+        }
+
+        case 'get_account_balance': {
+          const data = args.accountId
+            ? await deps.booksClient.getEndpoint({
+              companyId,
+              path: `/bankaccounts/${encodeURIComponent(args.accountId)}`,
+              ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+            })
+            : await listRecords('bankaccounts');
+          return ok({ success: true, data });
+        }
+
+        case 'list_bank_transactions':
+          return ok({ success: true, data: await listRecords('banktransactions', dateParams(args)) });
+
+        case 'search_transactions': {
+          if (!args.searchQuery) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'searchQuery required for search_transactions' }));
+          const data = await deps.booksClient.getEndpoint({
+            companyId,
+            path: '/search',
+            ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+            params: { search_text: args.searchQuery, ...dateParams(args) },
+          });
+          return ok({ success: true, data });
+        }
+
+        case 'get_tax_summary': {
+          const data = await deps.booksClient.getEndpoint({
+            companyId,
+            path: '/reports/taxsummary',
+            ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+            params: {
+              ...(args.taxYear ? { tax_year: args.taxYear } : {}),
+              ...dateParams(args),
+            },
+          });
+          return ok({ success: true, data });
+        }
       }
     } catch (e) {
       return err(new ToolError({

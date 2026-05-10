@@ -184,6 +184,33 @@ export class ZohoBooksPaginatedClient {
   }
 
   /**
+   * Generic GET for Zoho Books endpoints that are not represented by module
+   * list APIs, such as /chartofaccounts, /search, and /reports/taxsummary.
+   */
+  async getEndpoint(input: {
+    companyId:       string;
+    path:            string;
+    organizationId?: string;
+    params?:         Record<string, unknown>;
+  }): Promise<Record<string, unknown>> {
+    const orgId = await this.resolveOrganizationId(input.companyId, input.organizationId);
+    const path = input.path.startsWith('/') ? input.path : `/${input.path}`;
+    const params = new URLSearchParams({ organization_id: orgId });
+
+    for (const [key, value] of Object.entries(input.params ?? {})) {
+      const primitive = toPrimitive(value);
+      if (primitive !== undefined && primitive.length > 0) {
+        params.set(key, primitive);
+      }
+    }
+
+    return this.request<Record<string, unknown>>(
+      input.companyId,
+      `${path}?${params}`,
+    );
+  }
+
+  /**
    * List records from any Zoho Books module with full automatic pagination.
    *
    * Behaviour:
