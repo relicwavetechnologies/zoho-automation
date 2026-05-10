@@ -29,6 +29,8 @@ export interface AgentRunCtx {
   }) => Promise<LanguageModel> | LanguageModel;
   /** All tools the current runtime is allowed to use (permission-filtered). */
   allTools:    ReadonlyArray<Tool<unknown, unknown>>;
+  /** Request-level lookup for allTools, reused while building dynamic capabilities. */
+  toolById?:   ReadonlyMap<string, Tool<unknown, unknown>>;
   perm:        PermissionResult;
   runContext:  RunContext;
   logger:      Logger;

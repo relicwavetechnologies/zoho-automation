@@ -77,6 +77,7 @@ import { AgentResolver } from './application/orchestration/agents/agent-resolver
 import { ChatMessageSerializer } from './application/orchestration/chat-message-serializer';
 import { SupervisorAgent } from './application/orchestration/agents/supervisor';
 import { SupervisorTodoRepository } from './infrastructure/persistence/supervisor-todo.repository';
+import { buildDynamicSupervisorGraph } from './application/orchestration/graphs/dynamic-supervisor.graph';
 
 // Document RAG
 import { FileAssetRepository } from './infrastructure/persistence/file-asset.repository';
@@ -107,6 +108,7 @@ import { createZohoCrmTool } from './application/orchestration/tools/families/zo
 import { createZohoBooksTool } from './application/orchestration/tools/families/zoho-books.tool';
 import { createContextSearchTool } from './application/orchestration/tools/families/context-search.tool';
 import { createWebSearchTool } from './application/orchestration/tools/families/web-search.tool';
+import { createDataProcessorTool } from './application/orchestration/tools/families/data-processor.tool';
 
 // AI model
 import { createOpenAI } from '@ai-sdk/openai';
@@ -123,6 +125,15 @@ type ZohoBooksOrganizationPayload = {
     is_default?: boolean;
     is_default_org?: boolean;
   }>;
+};
+
+const GATEWAY_PROVIDER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+type GatewayProviderCacheEntry = {
+  readonly apiKey: string;
+  readonly gatewayBaseUrl: string;
+  readonly chatModel: (modelId: string) => LanguageModel;
+  readonly expiresAtMs: number;
 };
 
 export interface Container {
@@ -177,6 +188,7 @@ export interface Container {
   shareResolverService: ShareResolverService;
   // Persistent memory
   mem0Service: Mem0Service | null;
+  invalidateGatewayProviderCache: (companyId: string) => void;
 }
 
 export async function buildContainer(env: TypedEnv): Promise<Container> {
@@ -252,7 +264,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       return withGeminiSignatures(google(modelId));
     }
     if (provider === 'openai') {
-      return openai(modelId);
+      return openaiModel(modelId);
     }
     throw new Error(`Unsupported AI model provider: ${provider}`);
   };
@@ -269,7 +281,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       orderBy: { updatedAt: 'desc' },
     })
     : null;
-  const gatewayBaseUrl = (gatewayCompany?.gatewayUrl ?? env.GATEWAY_BASE_URL).trim().replace(/\/+$/, '');
+  const configuredGatewayBaseUrl = env.GATEWAY_BASE_URL.trim().replace(/\/+$/, '');
+  const gatewayBaseUrl = (configuredGatewayBaseUrl || gatewayCompany?.gatewayUrl || '').trim().replace(/\/+$/, '');
   const gatewayOpenAi = (() => {
     if (!gatewayCompany?.gatewayApiKey || !gatewayBaseUrl) return null;
     try {
@@ -284,7 +297,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       throw error;
     }
   })();
-  const openai          = gatewayOpenAi ?? createOpenAI({ apiKey: env.OPENAI_API_KEY });
+  const directOpenAi    = createOpenAI({ apiKey: env.OPENAI_API_KEY });
+  const openaiModel     = (modelId: string) => gatewayOpenAi ? gatewayOpenAi.chat(modelId) : directOpenAi(modelId);
+  const gatewayProviderCache = new Map<string, GatewayProviderCacheEntry>();
+  const invalidateGatewayProviderCache = (companyId: string) => {
+    const deleted = gatewayProviderCache.delete(companyId);
+    logger.info('ai.openai.gateway.agent_model.cache_invalidated', { companyId, deleted });
+  };
   const primaryModel    = createConfiguredModel(primaryProvider, primaryModelId);
   const fallbackModel   = createConfiguredModel(fastProvider, fastModelId);
   const model = withFallback(primaryModel, fallbackModel);
@@ -321,11 +340,30 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       throw new Error(`Unsupported AI model provider: ${input.provider}`);
     }
 
+    const nowMs = Date.now();
+    const cached = gatewayProviderCache.get(input.companyId);
+    if (cached && cached.expiresAtMs > nowMs) {
+      logger.info('ai.openai.gateway.agent_model.cache_hit', {
+        companyId: input.companyId,
+        agentSlug: input.agentSlug,
+        gatewayBaseUrl: cached.gatewayBaseUrl,
+      });
+      return cached.chatModel(input.modelId);
+    }
+    if (cached) {
+      gatewayProviderCache.delete(input.companyId);
+    }
+
+    logger.info('ai.openai.gateway.agent_model.cache_miss', {
+      companyId: input.companyId,
+      agentSlug: input.agentSlug,
+    });
+
     const company = await prisma.company.findUnique({
       where:  { id: input.companyId },
       select: { id: true, gatewayApiKey: true, gatewayUrl: true },
     });
-    const companyGatewayBaseUrl = (company?.gatewayUrl ?? env.GATEWAY_BASE_URL).trim().replace(/\/+$/, '');
+    const companyGatewayBaseUrl = (configuredGatewayBaseUrl || company?.gatewayUrl || '').trim().replace(/\/+$/, '');
     if (company?.gatewayApiKey && companyGatewayBaseUrl) {
       try {
         const apiKey = decryptToken(company.gatewayApiKey, env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '');
@@ -334,9 +372,17 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
           agentSlug: input.agentSlug,
           gatewayBaseUrl: companyGatewayBaseUrl,
         });
-        return createOpenAI({ apiKey, baseURL: `${companyGatewayBaseUrl}/v1` })(input.modelId);
+        const gatewayProvider = createOpenAI({ apiKey, baseURL: `${companyGatewayBaseUrl}/v1` });
+        gatewayProviderCache.set(input.companyId, {
+          apiKey,
+          gatewayBaseUrl: companyGatewayBaseUrl,
+          chatModel: (modelId: string) => gatewayProvider.chat(modelId),
+          expiresAtMs: nowMs + GATEWAY_PROVIDER_CACHE_TTL_MS,
+        });
+        return gatewayProvider.chat(input.modelId);
       } catch (error) {
         if (error instanceof TokenCryptoError) {
+          gatewayProviderCache.delete(input.companyId);
           logger.warn('ai.openai.gateway.agent_model.decrypt_failed', {
             companyId: input.companyId,
             agentSlug: input.agentSlug,
@@ -348,7 +394,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       }
     }
 
-    return createOpenAI({ apiKey: env.OPENAI_API_KEY })(input.modelId);
+    return directOpenAi(input.modelId);
   };
 
   // ── Lark tool clients ──────────────────────────────────────────────────
@@ -438,10 +484,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   );
 
   async function resolveZohoToken(companyId: string): Promise<string | null> {
-    if (!zohoTokenService.isConfigured()) return null;
+    if (!zohoTokenService.isConfigured()) {
+      logger.warn('zoho.token.not_configured', { companyId });
+      return null;
+    }
     try {
-      return await zohoTokenService.getValidToken(companyId);
-    } catch {
+      const token = await zohoTokenService.getValidToken(companyId);
+      logger.info('zoho.token.resolved', { companyId, hasToken: !!token });
+      return token;
+    } catch (e) {
+      logger.error('zoho.token.resolve_failed', { companyId, error: e instanceof Error ? e.message : String(e) });
       return null;
     }
   }
@@ -631,6 +683,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createContextSearchTool({ broker: contextSearchBroker }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
   toolRegistry.register(new DocumentRagTool(documentRagBroker));
+  toolRegistry.register(createDataProcessorTool({
+    cloudinary:      cloudinaryAdapter,
+    booksClient:     zohoPaginatedBooksClient,
+    csvLinkTtl:      env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+  }));
 
   logger.info('tool.registry.built', { toolCount: toolRegistry.ids().length, tools: toolRegistry.ids() });
 
@@ -682,6 +739,19 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   logger.info('mem0.status', { enabled: !!mem0Service });
 
+  const dynamicSupervisorGraph = buildDynamicSupervisorGraph({
+    model,
+    defaultModel: { provider: primaryProvider, modelId: primaryModelId },
+    resolveModel,
+    agentCatalogCache,
+    todoRepo,
+    prisma,
+    logger: logger.child({ service: 'dynamic-supervisor-graph' }),
+    clock: systemClock,
+    ...(mem0Service ? { mem0: mem0Service } : {}),
+    ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
+  });
+
   const supervisor = new SupervisorAgent({
     model,
     defaultModel: { provider: primaryProvider, modelId: primaryModelId },
@@ -694,16 +764,19 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     clock:         systemClock,
     dynamicGraphEnabled: env.DYNAMIC_GRAPH_ENABLED,
     dynamicGraphShadow:  env.DYNAMIC_GRAPH_SHADOW,
+    dynamicSupervisorGraph,
     supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
     ...(mem0Service ? { mem0: mem0Service } : {}),
     ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
   });
 
   // Per-chat serializer: ensures only one engine.run() runs per chatId at a time.
-  // Timeout of 90 s — if an engine run hangs longer than this, the queue slot is
+  // Timeout of 180 s — if an engine run hangs longer than this, the queue slot is
   // released so the next queued message is not blocked indefinitely.
+  // Raised from 90s because Zoho exhaustive pagination (4000 records) + LLM
+  // processing can take 100-120s for complex finance queries.
   const chatSerializer = new ChatMessageSerializer({
-    timeoutMs: 90_000,
+    timeoutMs: 180_000,
     onTimeout: (chatId) => {
       logger.warn('chat_serializer.timeout', { chatId });
     },
@@ -815,6 +888,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     knowledgeShareService,
     shareResolverService,
     mem0Service,
+    invalidateGatewayProviderCache,
     // Message serialization
     chatSerializer,
   };

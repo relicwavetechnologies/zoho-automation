@@ -380,8 +380,11 @@ export const createZohoBooksTool = (deps: {
     }
 
     // ── CRUD operations (use simple client) ──────────────────────────────────
+    ctx.logger.info('zoho_books.tool.get_client', { companyId, userId, op: args.op });
     const client = await deps.getClient(companyId, userId);
+    ctx.logger.info('zoho_books.tool.client_resolved', { companyId, hasClient: !!client, op: args.op });
     if (!client) {
+      ctx.logger.warn('zoho_books.tool.no_client', { companyId, userId, op: args.op });
       return err(new ToolError({
         toolId:  'zohoBooks',
         reason:  'unrecoverable',

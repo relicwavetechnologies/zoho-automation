@@ -16,11 +16,12 @@ export const CANONICAL_TOOL_IDS = [
   'contextSearch',
   'webSearch',
   'documentRag',
+  'dataProcessor',
 ] as const;
 
 export type CanonicalToolId = typeof CANONICAL_TOOL_IDS[number];
 
-export type ToolFamily = 'lark' | 'google' | 'zoho' | 'context' | 'rag';
+export type ToolFamily = 'lark' | 'google' | 'zoho' | 'context' | 'rag' | 'data';
 
 export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   larkMessaging:  'lark',
@@ -37,6 +38,7 @@ export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   contextSearch:  'context',
   webSearch:      'context',
   documentRag:    'rag',
+  dataProcessor:  'data',
 };
 
 /** Action groups each tool supports. Drives permission defaults. */
@@ -55,6 +57,7 @@ export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> 
   contextSearch:  ['read'],
   webSearch:      ['read'],
   documentRag:    ['read'],
+  dataProcessor:  ['read'],
 };
 
 /** Default permission per tool per built-in company role. */
@@ -73,6 +76,7 @@ export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean
   contextSearch:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   webSearch:      { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   documentRag:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
+  dataProcessor:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
 };
 
 export const asToolId = (s: CanonicalToolId): ToolId => s as unknown as ToolId;

@@ -310,6 +310,33 @@ export class ZohoBooksPaginatedClient {
     query?:          string;
     maxPages?:       number;   // default 20
   }): Promise<{ organizationId: string; items: Array<Record<string, unknown>>; truncated: boolean }> {
+    // Zoho only accepts a single status value — split comma-separated values and merge results.
+    const rawStatus = asString(input.filters?.['status']);
+    if (rawStatus && rawStatus.includes(',')) {
+      const statuses = rawStatus.split(',').map(s => s.trim()).filter(Boolean);
+      const results  = await Promise.all(
+        statuses.map(status => this.listAllRecords({
+          ...input,
+          filters: { ...(input.filters ?? {}), status },
+        })),
+      );
+      const seen = new Set<string>();
+      const all: Array<Record<string, unknown>> = [];
+      let truncated = false;
+      let orgId = '';
+      for (const r of results) {
+        if (!orgId) orgId = r.organizationId;
+        if (r.truncated) truncated = true;
+        for (const item of r.items) {
+          const id = recordId(item);
+          if (seen.has(id)) continue;
+          seen.add(id);
+          all.push(item);
+        }
+      }
+      return { organizationId: orgId, items: all, truncated };
+    }
+
     const orgId   = await this.resolveOrganizationId(input.companyId, input.organizationId);
     const maxPg   = input.maxPages ?? 20;
     const query   = input.query?.trim();

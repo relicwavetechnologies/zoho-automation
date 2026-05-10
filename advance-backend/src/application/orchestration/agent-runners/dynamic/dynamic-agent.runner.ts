@@ -12,7 +12,7 @@ import {
 import { redModelSelection } from '../../../../shared/model-selection-log';
 import { getISTDateTime } from '../../agents/supervisor.prompt';
 
-const DYNAMIC_AGENT_TIMEOUT_MS = 60_000;
+const DYNAMIC_AGENT_TIMEOUT_MS = 150_000;
 
 export interface RunDynamicAgentInput {
   readonly task: string;
@@ -64,6 +64,7 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       ctx.perm.allowedToolIds,
       ctx.allTools,
       adapterCtx,
+      ctx.toolById,
     );
     const tools = {
       ...directTools,

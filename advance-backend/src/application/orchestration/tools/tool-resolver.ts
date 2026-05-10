@@ -12,9 +12,9 @@ export function resolveAppToolsById(
   toolIds: readonly string[],
   allTools: ReadonlyArray<AppTool<unknown, unknown>>,
   logger?: Logger,
+  toolById: ReadonlyMap<string, AppTool<unknown, unknown>> = new Map(allTools.map(t => [String(t.id), t])),
 ): ToolResolveResult {
   const requested = [...new Set(toolIds)];
-  const toolById = new Map(allTools.map(t => [String(t.id), t]));
   const appTools: AppTool<unknown, unknown>[] = [];
   const missingToolIds: string[] = [];
 
@@ -35,8 +35,9 @@ export function resolveToolsById(
   toolIds: readonly string[],
   allTools: ReadonlyArray<AppTool<unknown, unknown>>,
   adapterCtx: AdapterContext,
+  toolById?: ReadonlyMap<string, AppTool<unknown, unknown>>,
 ): ToolSet {
-  const { appTools } = resolveAppToolsById(toolIds, allTools, adapterCtx.logger);
+  const { appTools } = resolveAppToolsById(toolIds, allTools, adapterCtx.logger, toolById);
   return toAISdkTools(appTools, adapterCtx);
 }
 
@@ -45,11 +46,12 @@ export function resolveToolsByIdFiltered(
   allowedToolIds: ReadonlySet<string>,
   allTools: ReadonlyArray<AppTool<unknown, unknown>>,
   adapterCtx: AdapterContext,
+  toolById?: ReadonlyMap<string, AppTool<unknown, unknown>>,
 ): ToolSet {
   const filtered = toolIds.filter(id => allowedToolIds.has(id));
   const skipped = toolIds.filter(id => !allowedToolIds.has(id));
   for (const id of skipped) {
     adapterCtx.logger.warn('tool_resolver.disallowed_tool_id', { toolId: id });
   }
-  return resolveToolsById(filtered, allTools, adapterCtx);
+  return resolveToolsById(filtered, allTools, adapterCtx, toolById);
 }

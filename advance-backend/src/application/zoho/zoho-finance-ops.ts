@@ -17,6 +17,7 @@
 import type { ZohoBooksPaginatedClient } from '../../infrastructure/zoho/zoho-books-paginated.client';
 import type { CloudinaryAdapter }         from '../../infrastructure/cloudinary/cloudinary.adapter';
 import type { Logger }                    from '../../shared/logger';
+import { formatAmount }                   from './zoho-format.utils';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,7 @@ export interface OverdueInvoice {
   invoiceNumber?: string;
   customerId?:    string;
   customerName?:  string;
+  currencyCode:   string;
   status:         string;
   dueDate?:       string;
   invoiceDate?:   string;
@@ -212,6 +214,7 @@ export class ZohoFinanceOps {
           ...(invoiceNum   !== undefined ? { invoiceNumber: invoiceNum }   : {}),
           ...(customerId   !== undefined ? { customerId: customerId }      : {}),
           ...(customerName !== undefined ? { customerName: customerName }  : {}),
+          currencyCode:  asString(r['currency_code']) ?? asString(r['currency']) ?? 'INR',
           status:        asString(r['status']) ?? 'unknown',
           ...(dueDateStr  !== undefined ? { dueDate: dueDateStr }         : {}),
           ...(invDateStr  !== undefined ? { invoiceDate: invDateStr }     : {}),
@@ -277,7 +280,7 @@ export class ZohoFinanceOps {
       try {
         const csvHeaders = [
           'invoiceId', 'invoiceNumber', 'customerName', 'customerId',
-          'status', 'dueDate', 'invoiceDate', 'total', 'balance', 'overdueDays',
+          'currencyCode', 'status', 'dueDate', 'invoiceDate', 'total', 'balance', 'overdueDays',
         ];
         const csvBuffer  = recordsToCsv(csvHeaders, enriched as unknown as Array<Record<string, unknown>>);
         const dateStr    = asOfDate.toISOString().slice(0, 10);
@@ -311,8 +314,18 @@ export class ZohoFinanceOps {
     }
 
     // ── 5. Build summary string (goes verbatim into LLM context) ─────────────
+    // Group totals by currency so multi-currency orgs get correct display
+    const currencyTotals = new Map<string, number>();
+    for (const inv of enriched) {
+      const cur = inv.currencyCode;
+      currencyTotals.set(cur, (currencyTotals.get(cur) ?? 0) + inv.balance);
+    }
+    const formattedTotal = [...currencyTotals.entries()]
+      .map(([cur, amt]) => formatAmount(Math.round(amt * 100), cur))
+      .join(', ');
+
     let summary = invoiceCount > 0
-      ? `Found ${invoiceCount} overdue invoice(s) totalling ${totalOutstanding.toFixed(2)}.`
+      ? `Found ${invoiceCount} overdue invoice(s) totalling ${formattedTotal}.`
       : 'No overdue invoices matched the current criteria.';
 
     if (invoiceCount > this.inlineThreshold) {

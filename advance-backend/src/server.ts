@@ -303,7 +303,12 @@ export const createServer = (c: Container) => {
   app.use('/api/admin/ai-models', adminAuth, createAiModelsRoutes({ prisma: c.prisma, logger: c.logger }));
 
   // AI provider connections
-  app.use('/api/admin/ai-providers', adminAuth, createAiProvidersRoutes({ prisma: c.prisma, env: c.env, logger: c.logger }));
+  app.use('/api/admin/ai-providers', adminAuth, createAiProvidersRoutes({
+    prisma: c.prisma,
+    env: c.env,
+    logger: c.logger,
+    invalidateGatewayProviderCache: c.invalidateGatewayProviderCache,
+  }));
 
   // Runtime task list (delegates to execution query service)
   app.use('/api/admin/runtime', adminAuth, createRuntimeRoutes({ executionQueryService: c.executionQueryService, logger: c.logger }));

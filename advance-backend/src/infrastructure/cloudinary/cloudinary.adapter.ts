@@ -173,11 +173,13 @@ export class CloudinaryAdapter {
       return null;
     }
 
-    // Generate a signed URL with expiry (Cloudinary handles auth)
+    // Generate a signed URL with expiry.
+    // Files are uploaded with type='upload' (default), so the URL must also use type='upload'.
+    // Using type='authenticated' here would 404 because the asset lives in the 'upload' namespace.
     const signedUrl = cloudinary.url(uploaded.publicId, {
       resource_type: 'raw',
       sign_url:      true,
-      type:          'authenticated',
+      type:          'upload',
       expires_at:    expireAt,
     });
 
@@ -291,7 +293,7 @@ export class CloudinaryAdapter {
     return cloudinary.url(publicId, {
       resource_type: resourceType,
       sign_url:      true,
-      type:          'authenticated',
+      type:          'upload',
       expires_at:    Math.floor(Date.now() / 1000) + expiresInSeconds,
     });
   }

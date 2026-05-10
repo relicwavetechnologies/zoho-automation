@@ -23,6 +23,7 @@ export interface AiProvidersRoutesDeps {
   prisma: PrismaClient;
   env: TypedEnv;
   logger: Logger;
+  invalidateGatewayProviderCache?: (companyId: string) => void;
 }
 
 type RouteError = Error & { status: number };
@@ -95,7 +96,7 @@ function asNumber(value: unknown): number | null {
 
 export function createAiProvidersRoutes(deps: AiProvidersRoutesDeps): Router {
   const router = Router();
-  const { prisma, env, logger } = deps;
+  const { prisma, env, logger, invalidateGatewayProviderCache } = deps;
   const log = logger.child({ routes: 'ai-providers' });
 
   function isSuperAdmin(res: Response): boolean {
@@ -286,6 +287,7 @@ export function createAiProvidersRoutes(deps: AiProvidersRoutesDeps): Router {
         updatedAt:                 true,
       },
     });
+    invalidateGatewayProviderCache?.(companyId);
 
     success(res, {
       companyId:          company.id,
@@ -323,6 +325,7 @@ export function createAiProvidersRoutes(deps: AiProvidersRoutesDeps): Router {
       },
       select: { id: true, updatedAt: true },
     });
+    invalidateGatewayProviderCache?.(companyId);
 
     success(res, {
       companyId: company.id,

@@ -51,6 +51,9 @@ Divo
 | Zoho Books Finance Tools / Progress | `NZ8PddLT7oJ5DcxttetltSs9gjh` |
 | Zoho Books Finance Tools / Updates | `ZUD8ddSi5oCntrxazbuliSZ2gjh` |
 | Zoho Books Finance Tools / References | `FhW2dP34coJhkix86qMlIq47g4e` |
+| Performance Optimizations / Plan | `FnjadCDq9oYPJ6xx6bQl4AxYgch` |
+| Performance Optimizations / Progress | `FEBEd8I57okKsFxjXhIl4uVBgGd` |
+| Performance Optimizations / Updates | `GwGbdEmPsoJ5xixjRNali7n5gle` |
 
 **Wiki space ID:** `7635896570625396443` (Tech Hub)
 **Divo node token:** `XzW1wZDlJirIx1kPB0VlE2gfg7b`
@@ -128,6 +131,7 @@ Core runtime — supervisor-delegation pattern:
 | Mem0 Memory Layer | planning | `EmyKdQYBKovdv9xNUFqlDffSgKg` | `ZJffdD473ozRCNxk5VMlzs4zgag` |
 | OpenAI Codex Integration | planning | `EGYOdu14PoEFJTxgu6DlnwchgWc` | `F2grdvPBWovgtBx5N7ulC3i4gjf` |
 | Zoho Books Finance Tools | planning | `A4X2d9LCboW8Gdxn8jNlQglJgug` | `ZUD8ddSi5oCntrxazbuliSZ2gjh` |
+| Performance Optimizations | planning | `FnjadCDq9oYPJ6xx6bQl4AxYgch` | `GwGbdEmPsoJ5xixjRNali7n5gle` |
 
 **Legacy local docs** in `docs/features/` are stale — wiki is authoritative. To add a new feature,
 create a folder under `Divo — Updates` in the wiki with Plan + Updates sub-pages.
