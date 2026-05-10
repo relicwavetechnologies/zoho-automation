@@ -20,6 +20,7 @@ import { createAuditRoutes } from './http/admin/audit.routes';
 import { createControlsRoutes } from './http/admin/controls.routes';
 import { createRbacRoutes } from './http/admin/rbac.routes';
 import { createAiModelsRoutes } from './http/admin/ai-models.routes';
+import { createAiProvidersRoutes } from './http/admin/ai-providers.routes';
 import { createRuntimeRoutes } from './http/admin/runtime.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
 
@@ -277,6 +278,9 @@ export const createServer = (c: Container) => {
 
   // AI model target configs
   app.use('/api/admin/ai-models', adminAuth, createAiModelsRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  // AI provider connections
+  app.use('/api/admin/ai-providers', adminAuth, createAiProvidersRoutes({ prisma: c.prisma, env: c.env, logger: c.logger }));
 
   // Runtime task list (delegates to execution query service)
   app.use('/api/admin/runtime', adminAuth, createRuntimeRoutes({ executionQueryService: c.executionQueryService, logger: c.logger }));
