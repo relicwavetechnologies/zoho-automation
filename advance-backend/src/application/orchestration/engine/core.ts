@@ -24,6 +24,8 @@ import { resolveBranding } from '../department-branding';
 import { RunStatusAggregator } from '../run-status.aggregator';
 import type { Mem0Service } from '../../memory/mem0.service';
 
+const MEM0_SEARCH_TIMEOUT_MS = 2_500;
+
 // ─── Public I/O types ──────────────────────────────────────────────────────
 
 export interface EngineInput {
@@ -112,9 +114,14 @@ export class OrchestrationEngine {
       ...(runContext.departmentId !== undefined ? { departmentId: runContext.departmentId } : {}),
     };
 
+    const permissionStartMs = this.deps.clock.nowMs();
     const permResult = await this.deps.permissions.resolve(permQuery);
+    const permissionDurationMs = this.deps.clock.nowMs() - permissionStartMs;
     if (!permResult.ok) {
-      log.warn('engine.permission.denied', { error: permResult.error.message });
+      log.warn('engine.permission.denied', {
+        error: permResult.error.message,
+        durationMs: permissionDurationMs,
+      });
       tracer?.fail('permission_denied', permResult.error.message);
       const deniedReply: FinalReply = {
         kind: 'final',
@@ -129,6 +136,7 @@ export class OrchestrationEngine {
     log.info('engine.permission.resolved', {
       allowedToolCount: perm.allowedToolIds.size,
       hasDept: !!perm.department,
+      durationMs: permissionDurationMs,
     });
 
     const branding   = resolveBranding(perm);
@@ -147,6 +155,12 @@ export class OrchestrationEngine {
       await channelAdapter.sendFinalReply(conversation, noToolsReply);
       return ok({ finalReply: noToolsReply, toolsCalled: [] });
     }
+
+    const memoryContextPromise = this.searchMemoryContext({
+      query: incoming.text,
+      runContext,
+      log,
+    });
 
     // ── 3. Load history with poison filter ────────────────────────────────
     const historyResult = await this.deps.history.loadWindow(
@@ -191,19 +205,7 @@ export class OrchestrationEngine {
     await statusChannel.sendStatus({ kind: 'status', terminal: false, branding, timeline: { liveLabel: 'Routing…' } });
 
     // ── 4c. Load persistent memory context ────────────────────────────────
-    let memoryContext = '';
-    if (this.deps.mem0) {
-      try {
-        memoryContext = await this.deps.mem0.searchForContext({
-          query:        incoming.text,
-          userId:       String(runContext.userId),
-          companyId:    String(runContext.companyId),
-          ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
-        });
-      } catch (error) {
-        log.warn('engine.mem0.search_failed', { error: String(error) });
-      }
-    }
+    const memoryContext = await memoryContextPromise;
 
     // ── 5. Run supervisor ─────────────────────────────────────────────────
     const supervisorResult = await this.deps.supervisor.run({
@@ -311,6 +313,55 @@ export class OrchestrationEngine {
     tracer?.complete(finalReply.text.slice(0, 500));
 
     return ok({ finalReply, toolsCalled });
+  }
+
+  private async searchMemoryContext(input: {
+    readonly query: string;
+    readonly runContext: RunContext;
+    readonly log: Logger;
+  }): Promise<string> {
+    if (!this.deps.mem0) return '';
+
+    const startedAtMs = this.deps.clock.nowMs();
+    let timedOut = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+    const timeoutPromise = new Promise<string>(resolve => {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        input.log.warn('engine.mem0.search_timeout', {
+          timeoutMs: MEM0_SEARCH_TIMEOUT_MS,
+          durationMs: this.deps.clock.nowMs() - startedAtMs,
+        });
+        resolve('');
+      }, MEM0_SEARCH_TIMEOUT_MS);
+    });
+
+    try {
+      const searchPromise = this.deps.mem0.searchForContext({
+        query:     input.query,
+        userId:    String(input.runContext.userId),
+        companyId: String(input.runContext.companyId),
+        ...(input.runContext.departmentId ? { departmentId: String(input.runContext.departmentId) } : {}),
+      });
+
+      const memoryContext = await Promise.race([searchPromise, timeoutPromise]);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (!timedOut) {
+        input.log.info('engine.mem0.search_done', {
+          durationMs: this.deps.clock.nowMs() - startedAtMs,
+          hasMemoryContext: memoryContext.length > 0,
+        });
+      }
+      return memoryContext;
+    } catch (error) {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      input.log.warn('engine.mem0.search_failed', {
+        durationMs: this.deps.clock.nowMs() - startedAtMs,
+        error: String(error),
+      });
+      return '';
+    }
   }
 }
 

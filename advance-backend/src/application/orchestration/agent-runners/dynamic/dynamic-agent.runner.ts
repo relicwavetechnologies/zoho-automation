@@ -9,9 +9,10 @@ import {
   CircuitBreakerOpenError,
   GEMINI_CIRCUIT_OPTIONS,
 } from '../../../../shared/circuit-breaker';
+import { redModelSelection } from '../../../../shared/model-selection-log';
 import { getISTDateTime } from '../../agents/supervisor.prompt';
 
-const DYNAMIC_AGENT_TIMEOUT_MS = 60_000;
+const DYNAMIC_AGENT_TIMEOUT_MS = 150_000;
 
 export interface RunDynamicAgentInput {
   readonly task: string;
@@ -63,6 +64,7 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       ctx.perm.allowedToolIds,
       ctx.allTools,
       adapterCtx,
+      ctx.toolById,
     );
     const tools = {
       ...directTools,
@@ -78,6 +80,29 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
     ].filter(Boolean).join('\n\n');
 
     const task = pre.modifiedTask ?? input.task;
+    const selectedProvider = agent.provider ?? ctx.defaultModel?.provider ?? 'default';
+    const selectedModelId = agent.modelId ?? ctx.defaultModel?.modelId ?? 'default';
+    const modelSource = agent.provider && agent.modelId && ctx.resolveModel ? 'agent_override' : 'company_default';
+    log.warn('ai.model.selected', {
+      provider: selectedProvider,
+      modelId: selectedModelId,
+      source: modelSource,
+      selection: redModelSelection({
+        provider:  selectedProvider,
+        modelId:   selectedModelId,
+        source:    modelSource,
+        agentSlug: agent.slug,
+      }),
+    });
+
+    const model = agent.provider && agent.modelId && ctx.resolveModel
+      ? await ctx.resolveModel({
+        provider:  agent.provider,
+        modelId:   agent.modelId,
+        companyId: agent.companyId,
+        agentSlug: agent.slug,
+      })
+      : ctx.model;
 
     const toolNames = Object.keys(tools);
     log.info('dynamic_agent.start', {
@@ -87,15 +112,18 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       maxSteps: agent.maxSteps,
       systemPromptLength: system.length,
       hookId: agent.hookId,
+      provider: agent.provider,
+      modelId: agent.modelId,
       depth,
     });
 
+    const circuitProvider = agent.provider ?? 'gemini';
     const genResult = await runWithCircuitBreaker(
-      'gemini',
+      circuitProvider,
       `dynamic-agent:${agent.slug}`,
       GEMINI_CIRCUIT_OPTIONS,
       () => generateText({
-        model:       ctx.model,
+        model,
         system,
         prompt:      task,
         tools,

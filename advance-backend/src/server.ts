@@ -8,6 +8,7 @@ import { createAdminAuthRoutes } from './http/admin/admin-auth.routes';
 import { createAdminPermissionRoutes } from './http/admin/permission.routes';
 import { createGoogleAuthRoutes } from './http/google/google-auth.routes';
 import { createZohoAuthRoutes } from './http/zoho/zoho-auth.routes';
+import { createLarkAuthRoutes } from './http/lark/lark-auth.routes';
 import { createExecutionRoutes } from './http/executions/execution.routes';
 import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middleware';
 import { createMemberAuthMiddleware } from './http/middleware/member-auth.middleware';
@@ -20,6 +21,7 @@ import { createAuditRoutes } from './http/admin/audit.routes';
 import { createControlsRoutes } from './http/admin/controls.routes';
 import { createRbacRoutes } from './http/admin/rbac.routes';
 import { createAiModelsRoutes } from './http/admin/ai-models.routes';
+import { createAiProvidersRoutes } from './http/admin/ai-providers.routes';
 import { createRuntimeRoutes } from './http/admin/runtime.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
 
@@ -45,6 +47,22 @@ export const createServer = (c: Container) => {
     concurrency:      c.env.INGESTION_WORKER_CONCURRENCY,
   });
   ingestionWorker.start();
+
+  const runCloudinaryCleanup = () => {
+    void c.cloudinaryAdapter.cleanupExpiredExports({
+      ttlSeconds: c.env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+    }).catch((error) => {
+      c.logger.warn('cloudinary.cleanup.temp_exports.failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+  runCloudinaryCleanup();
+  const cloudinaryCleanupTimer = setInterval(
+    runCloudinaryCleanup,
+    c.env.CLOUDINARY_TEMP_EXPORT_CLEANUP_INTERVAL_SECONDS * 1000,
+  );
+  cloudinaryCleanupTimer.unref?.();
 
   app.use((req, res, next) => {
     const origin = req.headers.origin;
@@ -156,6 +174,8 @@ export const createServer = (c: Container) => {
       knowledgeShareService: c.knowledgeShareService,
       shareResolverService:  c.shareResolverService,
       ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
+      larkOAuthService:      c.larkOAuthService,
+      larkUserAuthLinkRepo:  c.larkUserAuthLinkRepo,
       serializer:            c.chatSerializer,
     }),
   );
@@ -183,6 +203,20 @@ export const createServer = (c: Container) => {
       logger:             c.logger,
       env:                c.env,
       frontendBaseUrl:    c.env.APP_BASE_URL,
+    }),
+  );
+
+  // Lark user OAuth connect + callback
+  app.use(
+    '/api/lark/auth',
+    createLarkAuthRoutes({
+      larkOAuthService:     c.larkOAuthService,
+      larkUserAuthLinkRepo: c.larkUserAuthLinkRepo,
+      cache:                c.memoryCache,   // nonces → REDIS_MEMORY_URL
+      logger:               c.logger,
+      appId:                c.env.LARK_APP_ID,
+      appSecret:            c.env.LARK_APP_SECRET,
+      apiBase:              c.env.LARK_API_BASE_URL,
     }),
   );
 
@@ -257,7 +291,14 @@ export const createServer = (c: Container) => {
   );
 
   // Company admin surface (members, directory, invites, onboarding, tool-permissions)
-  const companyRoutes = createCompanyRoutes({ prisma: c.prisma, logger: c.logger });
+  const companyRoutes = createCompanyRoutes({
+    prisma: c.prisma,
+    logger: c.logger,
+    env: c.env,
+    cache: c.memoryCache,
+    zohoTokenService: c.zohoTokenService,
+    zohoConnectionRepo: c.zohoConnectionRepo,
+  });
   app.use('/api/admin/company', adminAuth, companyRoutes);
   // Alias: GET /api/admin/members → GET /api/admin/company/members (used by OverviewPage)
   // The company router handles /members as a sub-path, so rewrite the URL before dispatching.
@@ -277,6 +318,14 @@ export const createServer = (c: Container) => {
 
   // AI model target configs
   app.use('/api/admin/ai-models', adminAuth, createAiModelsRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  // AI provider connections
+  app.use('/api/admin/ai-providers', adminAuth, createAiProvidersRoutes({
+    prisma: c.prisma,
+    env: c.env,
+    logger: c.logger,
+    invalidateGatewayProviderCache: c.invalidateGatewayProviderCache,
+  }));
 
   // Runtime task list (delegates to execution query service)
   app.use('/api/admin/runtime', adminAuth, createRuntimeRoutes({ executionQueryService: c.executionQueryService, logger: c.logger }));

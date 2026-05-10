@@ -12,6 +12,8 @@ import type { ShareResolverService } from '../../../application/knowledge-share/
 import type { KnowledgeShareService } from '../../../application/knowledge-share/knowledge-share.service';
 import type { ChatMessageSerializer } from '../../../application/orchestration/chat-message-serializer';
 import type { Mem0Service } from '../../../application/memory/mem0.service';
+import type { LarkOAuthService } from '../../lark/lark-oauth.service';
+import type { LarkUserAuthLinkRepository } from '../../persistence/lark-user-auth-link.repository';
 import { asCompanyId, asUserId, asCorrelationId, asDepartmentId } from '../../../shared/ids';
 import { asCompanyRoleSlug } from '../../../domain/permissions/company-role';
 import type { ConversationHandle } from '../../../application/channels/channel.adapter';
@@ -35,6 +37,8 @@ export const createLarkWebhookRoutes = (deps: {
   knowledgeShareService?: KnowledgeShareService;
   shareResolverService?: ShareResolverService;
   mem0?: Mem0Service;
+  larkOAuthService?:     LarkOAuthService;
+  larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
   /** Per-chat message serializer — ensures only one engine.run() per chat at a time. */
   serializer: ChatMessageSerializer;
 }): Router => {
@@ -182,7 +186,11 @@ export const createLarkWebhookRoutes = (deps: {
     // currently-running task for this chatId completes — so two simultaneous
     // prompts in the same group are processed one at a time, in arrival order.
     deps.serializer.run(String(incoming.chatId), () =>
-      processInBackground(incoming, event, deps, log, deps.approvalGate, deps.knowledgeShareService),
+      processInBackground(incoming, event, {
+        ...deps,
+        ...(deps.larkOAuthService     ? { larkOAuthService:     deps.larkOAuthService }     : {}),
+        ...(deps.larkUserAuthLinkRepo ? { larkUserAuthLinkRepo: deps.larkUserAuthLinkRepo } : {}),
+      }, log, deps.approvalGate, deps.knowledgeShareService),
     );
   };
 
@@ -219,6 +227,8 @@ async function processInBackground(
     env: TypedEnv;
     ingestionQueue?: IngestionQueue;
     mem0?: Mem0Service;
+    larkOAuthService?:     LarkOAuthService;
+    larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
   },
   log: Logger,
   approvalGate?: ApprovalGateService,
@@ -413,6 +423,8 @@ async function handleSlashCommand(args: {
     conversationRepo: ConversationRepoPort;
     logger: Logger;
     mem0?: Mem0Service;
+    larkOAuthService?:     LarkOAuthService;
+    larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
   };
   log: Logger;
   correlationId: ReturnType<typeof asCorrelationId>;
@@ -518,9 +530,89 @@ async function handleSlashCommand(args: {
     return;
   }
 
+  // ── /login — start Lark user OAuth ─────────────────────────────────────────
+  if (cmd === '/login') {
+    if (!deps.larkOAuthService?.isConfigured()) {
+      await reply('User OAuth is not configured on this server. Ask your admin to set LARK_OAUTH_REDIRECT_URI.');
+      return;
+    }
+
+    // Check if already connected
+    if (deps.larkUserAuthLinkRepo) {
+      const existing = await deps.larkUserAuthLinkRepo.findByUserId(identity.userId, identity.companyId);
+      if (existing.ok && existing.value && !isTokenExpired(existing.value.accessTokenExpiresAt)) {
+        const name = existing.value.larkName ?? existing.value.larkEmail ?? 'your account';
+        await reply(`✅ Already connected as **${name}**.\nType /logout to disconnect or /status to check details.`);
+        return;
+      }
+    }
+
+    const nonce = deps.larkOAuthService.generateNonce();
+    // Build state directly here — the /connect HTTP route is for browser-initiated flows
+    const state = Buffer.from(JSON.stringify({
+      companyId:  identity.companyId,
+      userId:     identity.userId,
+      larkOpenId: incoming.userExternalId,
+      nonce,
+    })).toString('base64url');
+    const url = deps.larkOAuthService.getAuthorizeUrl(state);
+
+    log.info('webhook.command.login.initiated', { userId: identity.userId, correlationId });
+    await reply(
+      `To connect your Lark account, open this link in your browser:\n\n${url}\n\n` +
+      `After you authorise, I'll send you a confirmation here. The link expires in 10 minutes.`,
+    );
+    return;
+  }
+
+  // ── /logout — revoke stored user token ──────────────────────────────────────
+  if (cmd === '/logout') {
+    if (!deps.larkUserAuthLinkRepo) {
+      await reply('User OAuth is not configured on this server.');
+      return;
+    }
+    const result = await deps.larkUserAuthLinkRepo.revoke(identity.userId, identity.companyId);
+    if (result.ok && result.value) {
+      log.info('webhook.command.logout.ok', { userId: identity.userId, correlationId });
+      await reply('Disconnected. Your personal Lark token has been removed — actions will now run as the Divo bot.');
+    } else {
+      await reply('No connected account found. Type /login to connect.');
+    }
+    return;
+  }
+
+  // ── /status — show connection status ────────────────────────────────────────
+  if (cmd === '/status') {
+    if (!deps.larkUserAuthLinkRepo) {
+      await reply('User OAuth is not configured on this server.');
+      return;
+    }
+    const link = await deps.larkUserAuthLinkRepo.findByUserId(identity.userId, identity.companyId);
+    if (!link.ok || !link.value) {
+      await reply('❌ Not connected. Type /login to connect your Lark account.');
+      return;
+    }
+    const rec     = link.value;
+    const expired = isTokenExpired(rec.accessTokenExpiresAt);
+    const expiry  = rec.accessTokenExpiresAt
+      ? rec.accessTokenExpiresAt.toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+      : 'unknown';
+    await reply(
+      `**Lark account status**\n` +
+      `• Name: ${rec.larkName ?? '—'}\n` +
+      `• Email: ${rec.larkEmail}\n` +
+      `• Token: ${expired ? '⚠️ Expired — type /login to refresh' : '✅ Valid'}\n` +
+      `• Expires: ${expiry}`,
+    );
+    return;
+  }
+
   if (cmd === '/help' || cmd === '/commands') {
     await reply(
       'Available commands:\n' +
+      '• `/login` — connect your Lark account (actions run as you, not the bot)\n' +
+      '• `/logout` — disconnect your Lark account\n' +
+      '• `/status` — check your Lark account connection\n' +
       '• `/clear` — clear my conversation memory for this chat\n' +
       '• `/remember <fact>` — store a durable fact for future conversations\n' +
       '• `/share` — share your most recently indexed file with your team\n' +
@@ -531,4 +623,9 @@ async function handleSlashCommand(args: {
 
   // Unknown command — let the engine handle it as a regular message
   log.info('webhook.command.unknown_routed_to_engine', { cmd, correlationId });
+}
+
+function isTokenExpired(expiresAt: Date | null | undefined): boolean {
+  if (!expiresAt) return false;
+  return expiresAt.getTime() < Date.now() + 5 * 60 * 1000; // 5 min buffer
 }

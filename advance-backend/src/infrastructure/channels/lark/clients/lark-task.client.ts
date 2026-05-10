@@ -4,11 +4,13 @@ import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 type TaskRecord = Record<string, unknown>;
 
 const normalizeTask = (r: TaskRecord) => ({
-  taskId: (r['task_id'] ?? r['guid'] ?? r['id'] ?? '') as string,
-  title: (r['summary'] ?? r['title'] ?? '') as string,
+  taskId:    (r['task_id'] ?? r['guid'] ?? r['id'] ?? '') as string,
+  title:     (r['summary'] ?? r['title'] ?? '') as string,
   completed: (r['completed'] ?? r['done'] ?? false) as boolean,
-  dueDate: r['due'] as string | undefined,
+  dueDate:   r['due'] as string | undefined,
 });
+
+const toTimestamp = (iso: string) => ({ timestamp: String(Math.floor(new Date(iso).getTime() / 1000)), is_all_day: false });
 
 export class LarkTaskClient implements LarkTaskClientPort {
   private readonly http: LarkHttpClient;
@@ -27,13 +29,12 @@ export class LarkTaskClient implements LarkTaskClientPort {
   }): Promise<{ taskId: string; title: string }> {
     const body: Record<string, unknown> = {
       summary: params.title,
-      ...(params.notes ? { description: params.notes } : {}),
-      ...(params.dueDate ? { due: { timestamp: String(Math.floor(new Date(params.dueDate).getTime() / 1000)), is_all_day: false } } : {}),
+      ...(params.notes    ? { description: params.notes } : {}),
+      ...(params.dueDate  ? { due: toTimestamp(params.dueDate) } : {}),
       ...(params.assigneeIds?.length
         ? { members: params.assigneeIds.map(id => ({ id, type: 'user', role: 'assignee' })) }
         : {}),
     };
-
     type CreateTaskResponse = { task: TaskRecord };
     const data = await this.http.request<CreateTaskResponse>('POST', '/open-apis/task/v2/tasks', { body });
     const task = data.task;
@@ -48,11 +49,13 @@ export class LarkTaskClient implements LarkTaskClientPort {
   }): Promise<void> {
     const body: Record<string, unknown> = {};
     const update_fields: string[] = [];
-
-    if (params.title !== undefined) { body['summary'] = params.title; update_fields.push('summary'); }
-    if (params.notes !== undefined) { body['description'] = params.notes; update_fields.push('description'); }
-    if (params.dueDate !== undefined) { body['due'] = { timestamp: String(Math.floor(new Date(params.dueDate).getTime() / 1000)), is_all_day: false }; update_fields.push('due'); }
-
+    if (params.title     !== undefined) { body['summary']     = params.title;                      update_fields.push('summary'); }
+    if (params.notes     !== undefined) { body['description'] = params.notes;                      update_fields.push('description'); }
+    if (params.dueDate   !== undefined) { body['due']         = toTimestamp(params.dueDate);       update_fields.push('due'); }
+    if (params.assigneeIds !== undefined) {
+      body['members'] = params.assigneeIds.map(id => ({ id, type: 'user', role: 'assignee' }));
+      update_fields.push('members');
+    }
     await this.http.request('PATCH', `/open-apis/task/v2/tasks/${encodeURIComponent(taskId)}`, {
       query: { update_fields: update_fields.join(',') },
       body,
@@ -85,10 +88,86 @@ export class LarkTaskClient implements LarkTaskClientPort {
     const due = task['due'] as Record<string, unknown> | undefined;
     const dueDateStr = due ? new Date(Number(due['timestamp']) * 1000).toISOString() : undefined;
     return {
-      taskId: (task['guid'] ?? task['task_id'] ?? taskId) as string,
-      title: (task['summary'] ?? '') as string,
+      taskId:    (task['guid'] ?? task['task_id'] ?? taskId) as string,
+      title:     (task['summary'] ?? '') as string,
       completed: (task['completed'] ?? false) as boolean,
       ...(dueDateStr !== undefined ? { dueDate: dueDateStr } : {}),
+    };
+  }
+
+  async listTasklists(): Promise<Array<{ guid: string; name: string }>> {
+    type ListResponse = { items?: Array<Record<string, unknown>> };
+    const data = await this.http.request<ListResponse>('GET', '/open-apis/task/v2/tasklists');
+    return (data.items ?? []).map(t => ({
+      guid: t['guid'] as string ?? '',
+      name: t['name'] as string ?? '',
+    }));
+  }
+
+  async createTasklist(name: string, memberIds?: string[]): Promise<{ guid: string; name: string }> {
+    type CreateResponse = { tasklist: Record<string, unknown> };
+    const data = await this.http.request<CreateResponse>('POST', '/open-apis/task/v2/tasklists', {
+      body: {
+        name,
+        ...(memberIds?.length
+          ? { members: memberIds.map(id => ({ id, type: 'user', role: 'editor' })) }
+          : {}),
+      },
+    });
+    return {
+      guid: data.tasklist['guid'] as string ?? '',
+      name: data.tasklist['name'] as string ?? name,
+    };
+  }
+
+  async addTaskToTasklist(tasklistGuid: string, taskGuid: string): Promise<void> {
+    await this.http.request(
+      'POST',
+      `/open-apis/task/v2/tasklists/${encodeURIComponent(tasklistGuid)}/tasks/add`,
+      { body: { tasks: [{ guid: taskGuid }] } },
+    );
+  }
+
+  async removeTaskFromTasklist(tasklistGuid: string, taskGuid: string): Promise<void> {
+    await this.http.request(
+      'POST',
+      `/open-apis/task/v2/tasklists/${encodeURIComponent(tasklistGuid)}/tasks/remove`,
+      { body: { tasks: [{ guid: taskGuid }] } },
+    );
+  }
+
+  async listSubtasks(taskId: string): Promise<Array<{ taskId: string; title: string; completed: boolean }>> {
+    type ListResponse = { items?: TaskRecord[] };
+    const data = await this.http.request<ListResponse>(
+      'GET',
+      `/open-apis/task/v2/tasks/${encodeURIComponent(taskId)}/subtasks`,
+    );
+    return (data.items ?? []).map(normalizeTask);
+  }
+
+  async createSubtask(parentTaskId: string, params: {
+    title: string;
+    assigneeIds?: string[];
+    dueDate?: string;
+    notes?: string;
+  }): Promise<{ taskId: string; title: string }> {
+    const body: Record<string, unknown> = {
+      summary: params.title,
+      ...(params.notes   ? { description: params.notes } : {}),
+      ...(params.dueDate ? { due: toTimestamp(params.dueDate) } : {}),
+      ...(params.assigneeIds?.length
+        ? { members: params.assigneeIds.map(id => ({ id, type: 'user', role: 'assignee' })) }
+        : {}),
+    };
+    type CreateResponse = { task: TaskRecord };
+    const data = await this.http.request<CreateResponse>(
+      'POST',
+      `/open-apis/task/v2/tasks/${encodeURIComponent(parentTaskId)}/subtasks`,
+      { body },
+    );
+    return {
+      taskId: (data.task['guid'] ?? data.task['task_id'] ?? '') as string,
+      title:  params.title,
     };
   }
 }

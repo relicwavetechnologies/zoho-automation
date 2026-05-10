@@ -3,6 +3,7 @@
 // Replace with live AgentRegistry when backend lands (vision doc §7.3).
 
 export type AgentRole = "supervisor" | "dept-head" | "specialist"
+export type AgentModelProvider = "google" | "openai"
 
 export type AgentDef = {
   id: string
@@ -12,6 +13,8 @@ export type AgentDef = {
   parentId: string | null
   departmentId?: string
   enabled: boolean
+  provider?: AgentModelProvider | null
+  modelId?: string | null
   capabilityDescription: string
   toolIds: string[]
   subAgentIds: string[]

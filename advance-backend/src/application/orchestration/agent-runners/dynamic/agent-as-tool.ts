@@ -54,6 +54,14 @@ export function buildCapabilitiesForAgent(
     return {} as ToolSet;
   }
 
+  ctx.logger.info('agent_as_tool.resolve_start', {
+    agentSlug: agent.slug,
+    agentToolIds: agent.toolIds,
+    allowedToolIds: [...ctx.perm.allowedToolIds],
+    allToolsAvailable: ctx.allTools.map(t => String(t.id)),
+    depth,
+  });
+
   const directTools = resolveToolsByIdFiltered(
     agent.toolIds,
     ctx.perm.allowedToolIds,
@@ -66,7 +74,14 @@ export function buildCapabilitiesForAgent(
       ...(ctx.approvalGate ? { approvalGate: ctx.approvalGate } : {}),
       ...(ctx.chatId !== undefined ? { chatId: ctx.chatId } : {}),
     },
+    ctx.toolById,
   );
+
+  ctx.logger.info('agent_as_tool.resolve_done', {
+    agentSlug: agent.slug,
+    resolvedToolNames: Object.keys(directTools),
+    resolvedCount: Object.keys(directTools).length,
+  });
 
   const children = allAgents.filter(candidate => candidate.parentId === agent.id);
   const childTools = Object.fromEntries(

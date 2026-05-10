@@ -1,1 +1,4 @@
 ottomator-agents/
+
+# graphify knowledge graph (local only, never commit)
+graphify-out/

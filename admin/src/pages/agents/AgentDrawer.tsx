@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState } from "react"
-import { Activity, AlertTriangle, Bot, Building2, Clock, Cog, Crown, FlaskConical, Globe, GripVertical, Power, Save, Trash2, Wrench } from "lucide-react"
+import { Activity, AlertTriangle, Bot, BrainCircuit, Building2, Clock, Cog, Crown, FlaskConical, Globe, GripVertical, Power, Save, Trash2, Wrench } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { cn } from "@/lib/utils"
-import type { UpdateAgentInput } from "@/lib/api"
-import type { AgentDef, ToolDef } from "./agent-platform-data"
+import type { AiProviderStatus, ModelCatalogEntry, UpdateAgentInput } from "@/lib/api"
+import type { AgentDef, AgentModelProvider, ToolDef } from "./agent-platform-data"
 
 type AgentDrawerProps = {
   agent: AgentDef | null
   agentById: Record<string, AgentDef>
   toolById: Record<string, ToolDef>
+  modelCatalog: ModelCatalogEntry[]
+  providerStatus: AiProviderStatus | null
   onClose: () => void
   onToggle: (id: string) => Promise<void>
   onSave: (id: string, data: UpdateAgentInput) => Promise<void>
@@ -36,8 +39,14 @@ const MIN_W = 360
 const MAX_W = 900
 const DEFAULT_W = 460
 const STORAGE_KEY = "divo_admin_agent_drawer_width"
+const DEFAULT_MODEL_VALUE = "__default"
 
-export function AgentDrawer({ agent, agentById, toolById, onClose, onToggle, onSave, onDelete }: AgentDrawerProps) {
+const providerLabel: Record<AgentModelProvider, string> = {
+  google: "Gemini",
+  openai: "Codex",
+}
+
+export function AgentDrawer({ agent, agentById, toolById, modelCatalog, providerStatus, onClose, onToggle, onSave, onDelete }: AgentDrawerProps) {
   const [width, setWidth] = useState<number>(() => {
     if (typeof window === "undefined") return DEFAULT_W
     const stored = Number(localStorage.getItem(STORAGE_KEY))
@@ -107,6 +116,8 @@ export function AgentDrawer({ agent, agentById, toolById, onClose, onToggle, onS
             agent={agent}
             agentById={agentById}
             toolById={toolById}
+            modelCatalog={modelCatalog}
+            providerStatus={providerStatus}
             onToggle={onToggle}
             onSave={onSave}
             onDelete={onDelete}
@@ -121,6 +132,8 @@ function AgentDrawerContent({
   agent,
   agentById,
   toolById,
+  modelCatalog,
+  providerStatus,
   onToggle,
   onSave,
   onDelete,
@@ -128,6 +141,8 @@ function AgentDrawerContent({
   agent: AgentDef
   agentById: Record<string, AgentDef>
   toolById: Record<string, ToolDef>
+  modelCatalog: ModelCatalogEntry[]
+  providerStatus: AiProviderStatus | null
   onToggle: (id: string) => Promise<void>
   onSave: (id: string, data: UpdateAgentInput) => Promise<void>
   onDelete: (id: string) => Promise<void>
@@ -135,22 +150,50 @@ function AgentDrawerContent({
   const [editing, setEditing] = useState(false)
   const [capDesc, setCapDesc] = useState(agent.capabilityDescription)
   const [sysPrompt, setSysPrompt] = useState(agent.systemPromptSections.role)
+  const [provider, setProvider] = useState<AgentModelProvider | typeof DEFAULT_MODEL_VALUE>(agent.provider ?? DEFAULT_MODEL_VALUE)
+  const [modelId, setModelId] = useState(agent.modelId ?? "")
   const [busy, setBusy] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   useEffect(() => {
     setCapDesc(agent.capabilityDescription)
     setSysPrompt(agent.systemPromptSections.role)
+    setProvider(agent.provider ?? DEFAULT_MODEL_VALUE)
+    setModelId(agent.modelId ?? "")
     setEditing(false)
     setConfirmDelete(false)
-  }, [agent.id, agent.capabilityDescription, agent.systemPromptSections.role])
+  }, [agent.id, agent.capabilityDescription, agent.systemPromptSections.role, agent.provider, agent.modelId])
 
   const isSupervisor = agent.role === "supervisor"
   const isDeptHead = agent.role === "dept-head"
   const RoleIcon = isSupervisor ? Crown : isDeptHead ? Building2 : Bot
   const roleLabel = isSupervisor ? "Root agent" : isDeptHead ? "Department head" : "Specialist sub-agent"
+  const agentProvider = agent.provider ?? null
+  const agentModelId = agent.modelId ?? null
+  const providerOptions = (["google", "openai"] as const).filter((p) => {
+    if (agentProvider === p) return true
+    if (p === "openai") return providerStatus?.providers.openai.connected === true
+    return providerStatus?.providers.google.connected !== false
+  })
+  const selectedProvider = provider === DEFAULT_MODEL_VALUE ? null : provider
+  const modelOptions = selectedProvider
+    ? modelCatalog.filter((entry) => entry.provider === selectedProvider)
+    : []
+  const resolvedModelId = selectedProvider ? modelId || modelOptions[0]?.modelId || "" : ""
+  const modelChanged = selectedProvider !== agentProvider || (selectedProvider ? resolvedModelId !== (agentModelId ?? "") : agentModelId !== null)
+  const modelSelectionInvalid = Boolean(selectedProvider && !resolvedModelId)
+  const handleProviderChange = (value: string) => {
+    if (value === DEFAULT_MODEL_VALUE) {
+      setProvider(DEFAULT_MODEL_VALUE)
+      setModelId("")
+      return
+    }
+    const next = value as AgentModelProvider
+    setProvider(next)
+    setModelId(modelCatalog.find((entry) => entry.provider === next)?.modelId ?? "")
+  }
 
-  const dirty = capDesc !== agent.capabilityDescription || sysPrompt !== agent.systemPromptSections.role
+  const dirty = capDesc !== agent.capabilityDescription || sysPrompt !== agent.systemPromptSections.role || modelChanged
 
   const handleSave = async () => {
     setBusy(true)
@@ -158,6 +201,10 @@ function AgentDrawerContent({
       await onSave(agent.id, {
         ...(capDesc !== agent.capabilityDescription ? { description: capDesc } : {}),
         ...(sysPrompt !== agent.systemPromptSections.role ? { systemPrompt: sysPrompt } : {}),
+        ...(modelChanged ? {
+          provider: selectedProvider,
+          modelId: selectedProvider ? resolvedModelId : null,
+        } : {}),
       })
       setEditing(false)
     } finally {
@@ -323,6 +370,61 @@ function AgentDrawerContent({
             )}
           </Section>
 
+          <Section label="Model" icon={BrainCircuit}>
+            <div className="space-y-2 rounded-md bg-card p-3 shadow-soft">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <p className="text-[11px] font-medium text-muted-foreground">Provider</p>
+                  <Select value={provider} onValueChange={handleProviderChange}>
+                    <SelectTrigger className="h-8 bg-mat text-[12px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={DEFAULT_MODEL_VALUE} className="text-[12px]">
+                        Default
+                      </SelectItem>
+                      {providerOptions.map((option) => (
+                        <SelectItem key={option} value={option} className="text-[12px]">
+                          {providerLabel[option]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-[11px] font-medium text-muted-foreground">Model</p>
+                  <Select
+                    value={selectedProvider ? resolvedModelId : DEFAULT_MODEL_VALUE}
+                    disabled={!selectedProvider || modelOptions.length === 0}
+                    onValueChange={setModelId}
+                  >
+                    <SelectTrigger className="h-8 bg-mat text-[12px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {resolvedModelId && !modelOptions.some((entry) => entry.modelId === resolvedModelId) ? (
+                        <SelectItem value={resolvedModelId} className="text-[12px]">
+                          {resolvedModelId}
+                        </SelectItem>
+                      ) : null}
+                      {modelOptions.map((entry) => (
+                        <SelectItem key={`${entry.provider}:${entry.modelId}`} value={entry.modelId} className="text-[12px]">
+                          {entry.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {selectedProvider
+                  ? `${providerLabel[selectedProvider]}${resolvedModelId ? ` · ${resolvedModelId}` : ""}`
+                  : "Uses the company default model"}
+              </p>
+            </div>
+          </Section>
+
           <Section label="Routing">
             <div className="overflow-hidden rounded-md bg-card shadow-soft">
               <KeyValue label="Direct slug" value={agent.directSlug ?? "—"} mono />
@@ -379,7 +481,7 @@ function AgentDrawerContent({
           type="button"
           size="sm"
           className="ml-auto h-8 gap-1.5 rounded-md bg-emphasis px-3 text-[12px] font-semibold text-emphasis-foreground hover:bg-emphasis/90"
-          disabled={busy || !dirty}
+          disabled={busy || !dirty || modelSelectionInvalid}
           onClick={handleSave}
         >
           <Save className="h-3.5 w-3.5" />

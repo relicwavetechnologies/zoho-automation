@@ -6,9 +6,11 @@ import { asToolId, asCompanyId, asUserId } from '../../src/shared/ids.ts';
 import type { Tool } from '../../src/application/orchestration/tools/tool.contract.ts';
 import { resolveAppToolsById } from '../../src/application/orchestration/tools/tool-resolver.ts';
 import { buildCapabilitiesForAgent } from '../../src/application/orchestration/agent-runners/dynamic/agent-as-tool.ts';
+import { runDynamicAgent } from '../../src/application/orchestration/agent-runners/dynamic/dynamic-agent.runner.ts';
 import type { DynamicAgentDescriptor } from '../../src/application/agents/dynamic-agent-descriptor.ts';
 import type { PermissionResult } from '../../src/application/permissions/permission.types.ts';
 import { AgentCatalogCache } from '../../src/application/agents/agent-catalog.cache.ts';
+import { textModel } from '../helpers/mock-model.ts';
 
 const noopLogger = {
   info:  () => {},
@@ -108,6 +110,39 @@ describe('dynamic agent platform', () => {
 
     assert.ok('contextSearch' in capabilities);
     assert.ok('agent_sales_research' in capabilities);
+  });
+
+  it('uses an agent-specific model when provider and modelId are configured', async () => {
+    const calls: Array<{ provider: string; modelId: string; companyId: string; agentSlug?: string }> = [];
+    const result = await runDynamicAgent({
+      task:  'summarize',
+      agent: makeAgent({ provider: 'openai', modelId: 'gpt-4o-mini', slug: 'finance-head' }),
+      ctx:   {
+        model:        textModel('default model'),
+        resolveModel: async (input) => {
+          calls.push(input);
+          return textModel('agent model');
+        },
+        allTools:   [],
+        perm,
+        runContext: {
+          companyId: asCompanyId('co-1'),
+          userId:    asUserId('user-1'),
+          channel:   'test',
+        },
+        logger: noopLogger,
+        clock,
+      },
+    });
+
+    assert.equal(result.status, 'success');
+    assert.equal(result.result, 'agent model');
+    assert.deepEqual(calls, [{
+      provider:  'openai',
+      modelId:   'gpt-4o-mini',
+      companyId: 'co-1',
+      agentSlug: 'finance-head',
+    }]);
   });
 
   it('agent catalog cache reloads after explicit invalidation', async () => {

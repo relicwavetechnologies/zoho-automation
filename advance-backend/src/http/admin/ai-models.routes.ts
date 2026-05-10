@@ -3,8 +3,8 @@
  *
  * Mounted at /api/admin/ai-models.
  *
- *   GET /   — list AI model target configurations (SUPER_ADMIN only)
- *   PUT /:targetKey  — update a target config (SUPER_ADMIN only)
+ *   GET /   — list AI model target configurations
+ *   PUT /:targetKey  — update a target config
  */
 
 import { Router } from 'express';
@@ -55,17 +55,16 @@ export function createAiModelsRoutes(deps: AiModelsRoutesDeps): Router {
   const router = Router();
   const { prisma } = deps;
 
-  // SUPER_ADMIN guard: model routing is global runtime configuration.
-  function assertSuperAdmin(res: Response): void {
-    if (!Boolean(res.locals['isSuperAdmin'])) {
-      const e = new Error('Super admin access required') as RouteError;
+  function assertAdminSession(res: Response): void {
+    if (!Boolean(res.locals['isSuperAdmin']) && !res.locals['companyId']) {
+      const e = new Error('Admin session company context required') as RouteError;
       e.status = 403;
       throw e;
     }
   }
 
   router.get('/', asyncRoute(async (_req, res) => {
-    assertSuperAdmin(res);
+    assertAdminSession(res);
     const rows = await prisma.aiModelTargetConfig.findMany({ orderBy: { targetKey: 'asc' } });
     const targets = rows.map(r => ({
       id:                  r.id,
@@ -86,7 +85,7 @@ export function createAiModelsRoutes(deps: AiModelsRoutesDeps): Router {
   }));
 
   router.put('/:targetKey', asyncRoute(async (req, res) => {
-    assertSuperAdmin(res);
+    assertAdminSession(res);
     const payload   = updateTargetSchema.parse(req.body);
     const { targetKey } = req.params as { targetKey: string };
     const updatedBy = (res.locals['userId'] as string | undefined) ?? 'unknown';

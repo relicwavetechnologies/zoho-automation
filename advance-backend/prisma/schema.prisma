@@ -140,50 +140,55 @@ model User {
 }
 
 model Company {
-  id                     String                 @id @default(uuid())
-  name                   String
-  createdAt              DateTime               @default(now())
-  updatedAt              DateTime               @updatedAt
-  promptProfile          CompanyPromptProfile?
-  departments            Department[]
-  skills                 Skill[]
-  zohoConnections        ZohoConnection[]
-  zohoConnectionProfiles ZohoConnectionProfile[]
-  zohoSyncJobs           ZohoSyncJob[]
-  zohoOAuthConfig        ZohoOAuthConfig?
-  larkTenantBindings     LarkTenantBinding[]
-  larkWorkspaceConfig    LarkWorkspaceConfig?
-  larkOperationalConfig  LarkOperationalConfig?
-  larkDirectorySyncRuns  LarkDirectorySyncRun[]
-  adminMemberships       AdminMembership[]
-  adminSessions          AdminSession[]
-  invites                CompanyInvite[]
-  mcpActionLogs          McpActionLog[]
-  channelIdentities      ChannelIdentity[]
-  toolPermissions        ToolPermission[]
-  toolActionPermissions  ToolActionPermission[]
-  booksModulePermissions BooksModulePermission[]
-  zohoRoleAccessPolicies ZohoRoleAccessPolicy[]
-  aiRoleDefinitions      AiRoleDefinition[]
-  vectorDocuments        VectorDocument[]
-  vectorShareRequests    VectorShareRequest[]
-  memberSessions         MemberSession[]
-  desktopHandoffs        DesktopAuthHandoff[]
-  desktopThreads         DesktopThread[]
-  larkChatContexts       LarkChatContext[]
-  scheduledWorkflows     ScheduledWorkflow[]
-  executionRuns          ExecutionRun[]
-  larkAuthLinks          LarkUserAuthLink[]
-  googleAuthLinks        GoogleUserAuthLink[]
-  googleWorkspaceAuth    CompanyGoogleAuthLink?
-  fileAssets             FileAsset[]
-  outboundArtifacts      OutboundArtifact[]
-  userMemoryItems        UserMemoryItem[]
-  userMemoryProfiles     UserMemoryProfile[]
-  taskRuns               TaskRun[]
+  id                        String                     @id @default(uuid())
+  name                      String
+  createdAt                 DateTime                   @default(now())
+  updatedAt                 DateTime                   @updatedAt
+  gatewayApiKey             String?                    @map("gateway_api_key")
+  gatewayUrl                String?                    @map("gateway_url")
+  gatewayDedicatedAccountId String?                    @map("gateway_dedicated_account_id")
+  defaultAiProvider         String                     @default("google") @map("default_ai_provider")
+  defaultAiModel            String                     @default("gemini-3.1-flash-lite-preview") @map("default_ai_model")
+  promptProfile             CompanyPromptProfile?
+  departments               Department[]
+  skills                    Skill[]
+  zohoConnections           ZohoConnection[]
+  zohoConnectionProfiles    ZohoConnectionProfile[]
+  zohoSyncJobs              ZohoSyncJob[]
+  zohoOAuthConfig           ZohoOAuthConfig?
+  larkTenantBindings        LarkTenantBinding[]
+  larkWorkspaceConfig       LarkWorkspaceConfig?
+  larkOperationalConfig     LarkOperationalConfig?
+  larkDirectorySyncRuns     LarkDirectorySyncRun[]
+  adminMemberships          AdminMembership[]
+  adminSessions             AdminSession[]
+  invites                   CompanyInvite[]
+  mcpActionLogs             McpActionLog[]
+  channelIdentities         ChannelIdentity[]
+  toolPermissions           ToolPermission[]
+  toolActionPermissions     ToolActionPermission[]
+  booksModulePermissions    BooksModulePermission[]
+  zohoRoleAccessPolicies    ZohoRoleAccessPolicy[]
+  aiRoleDefinitions         AiRoleDefinition[]
+  vectorDocuments           VectorDocument[]
+  vectorShareRequests       VectorShareRequest[]
+  memberSessions            MemberSession[]
+  desktopHandoffs           DesktopAuthHandoff[]
+  desktopThreads            DesktopThread[]
+  larkChatContexts          LarkChatContext[]
+  scheduledWorkflows        ScheduledWorkflow[]
+  executionRuns             ExecutionRun[]
+  larkAuthLinks             LarkUserAuthLink[]
+  googleAuthLinks           GoogleUserAuthLink[]
+  googleWorkspaceAuth       CompanyGoogleAuthLink?
+  fileAssets                FileAsset[]
+  outboundArtifacts         OutboundArtifact[]
+  userMemoryItems           UserMemoryItem[]
+  userMemoryProfiles        UserMemoryProfile[]
+  taskRuns                  TaskRun[]
   userDepartmentPreferences UserDepartmentPreference[]
-  agentDefinitions       AgentDefinition[]
-  channelAgentMappings   ChannelAgentMapping[]
+  agentDefinitions          AgentDefinition[]
+  channelAgentMappings      ChannelAgentMapping[]
 }
 
 model RegisteredTool {
@@ -204,28 +209,28 @@ model RegisteredTool {
 }
 
 model AgentDefinition {
-  id                    String            @id @default(cuid())
+  id                    String                @id @default(cuid())
   companyId             String
-  company               Company           @relation(fields: [companyId], references: [id])
+  company               Company               @relation(fields: [companyId], references: [id])
   name                  String
   slug                  String
   description           String?
   capabilityDescription String?
   systemPrompt          String
   hookId                String?
-  maxSteps              Int               @default(8)
-  temperature           Float             @default(0)
-  isRootAgent           Boolean           @default(false)
-  isActive              Boolean           @default(true)
+  maxSteps              Int                   @default(8)
+  temperature           Float                 @default(0)
+  isRootAgent           Boolean               @default(false)
+  isActive              Boolean               @default(true)
   toolIds               String[]
   modelId               String?
   provider              String?
   parentId              String?
-  parent                AgentDefinition?  @relation("AgentChildren", fields: [parentId], references: [id])
-  children              AgentDefinition[] @relation("AgentChildren")
-  channelMappings ChannelAgentMapping[]
-  createdAt             DateTime          @default(now())
-  updatedAt             DateTime          @updatedAt
+  parent                AgentDefinition?      @relation("AgentChildren", fields: [parentId], references: [id])
+  children              AgentDefinition[]     @relation("AgentChildren")
+  channelMappings       ChannelAgentMapping[]
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
 
   @@unique([companyId, name])
   @@unique([companyId, slug])
@@ -413,34 +418,34 @@ model ZohoConnection {
 }
 
 model ZohoConnectionProfile {
-  id                    String   @id @default(uuid())
+  id                    String    @id @default(uuid())
   companyId             String
-  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company               Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   profileName           String
-  environment           String   @default("prod")
-  connectionSource      String   @default("manual_token_set")
-  status                String   @default("CONNECTED")
-  isActive              Boolean  @default(false)
+  environment           String    @default("prod")
+  connectionSource      String    @default("manual_token_set")
+  status                String    @default("CONNECTED")
+  isActive              Boolean   @default(false)
   connectedAt           DateTime?
   scopes                String[]
   clientId              String
   clientSecretEncrypted String
   redirectUri           String
-  accountsBaseUrl       String   @default("https://accounts.zoho.com")
-  apiBaseUrl            String   @default("https://www.zohoapis.com")
+  accountsBaseUrl       String    @default("https://accounts.zoho.com")
+  apiBaseUrl            String    @default("https://www.zohoapis.com")
   accessTokenEncrypted  String?
   refreshTokenEncrypted String?
-  tokenCipherVersion    Int      @default(1)
+  tokenCipherVersion    Int       @default(1)
   accessTokenExpiresAt  DateTime?
   refreshTokenExpiresAt DateTime?
   tokenMetadata         Json?
   disabledAt            DateTime?
   createdBy             String
-  createdByUser         User     @relation("ZohoConnectionProfileCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  createdByUser         User      @relation("ZohoConnectionProfileCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
   updatedBy             String
-  updatedByUser         User     @relation("ZohoConnectionProfileUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  updatedByUser         User      @relation("ZohoConnectionProfileUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@unique([companyId, profileName])
   @@index([companyId, isActive, status])
@@ -852,37 +857,37 @@ model Skill {
 }
 
 model DepartmentAgentConfig {
-  id                String     @id @default(uuid())
-  departmentId      String     @unique
-  department        Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  systemPrompt      String
-  skillsMarkdown    String
-  zohoRateLimitJson Json?
+  id                  String     @id @default(uuid())
+  departmentId        String     @unique
+  department          Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  systemPrompt        String
+  skillsMarkdown      String
+  zohoRateLimitJson   Json?
   managerApprovalJson Json?
-  isActive          Boolean    @default(true)
-  createdBy         String
-  createdByUser     User       @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
-  updatedBy         String
-  updatedByUser     User       @relation("DepartmentAgentConfigUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
-  createdAt         DateTime   @default(now())
-  updatedAt         DateTime   @updatedAt
+  isActive            Boolean    @default(true)
+  createdBy           String
+  createdByUser       User       @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  updatedBy           String
+  updatedByUser       User       @relation("DepartmentAgentConfigUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
 
   @@index([departmentId, isActive])
 }
 
 model DepartmentRole {
-  id              String                     @id @default(uuid())
-  departmentId    String
-  department      Department                 @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  name            String
-  slug            String
-  isSystem        Boolean                    @default(false)
-  isDefault       Boolean                    @default(false)
-  zohoReadScope   String                     @default("personalized")
-  createdAt       DateTime                   @default(now())
-  updatedAt       DateTime                   @updatedAt
-  memberships     DepartmentMembership[]
-  toolPermissions DepartmentToolPermission[]
+  id                     String                     @id @default(uuid())
+  departmentId           String
+  department             Department                 @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  name                   String
+  slug                   String
+  isSystem               Boolean                    @default(false)
+  isDefault              Boolean                    @default(false)
+  zohoReadScope          String                     @default("personalized")
+  createdAt              DateTime                   @default(now())
+  updatedAt              DateTime                   @updatedAt
+  memberships            DepartmentMembership[]
+  toolPermissions        DepartmentToolPermission[]
   booksModulePermissions BooksModulePermission[]
 
   @@unique([departmentId, slug])

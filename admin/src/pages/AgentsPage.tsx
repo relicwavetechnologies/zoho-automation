@@ -67,7 +67,21 @@ function layoutTree(agents: AgentDef[], agentById: Record<string, AgentDef>): { 
 const nodeTypes = { agent: AgentNode }
 
 export function AgentsPage() {
-  const { agents, agentById, tools, toolById, loading, error, stats, toggleAgent, updateAgent, createAgent, deleteAgent } = useAgentData()
+  const {
+    agents,
+    agentById,
+    tools,
+    toolById,
+    modelCatalog,
+    providerStatus,
+    loading,
+    error,
+    stats,
+    toggleAgent,
+    updateAgent,
+    createAgent,
+    deleteAgent,
+  } = useAgentData()
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
 
@@ -172,6 +186,8 @@ export function AgentsPage() {
         agent={selectedAgent}
         agentById={agentById}
         toolById={toolById}
+        modelCatalog={modelCatalog}
+        providerStatus={providerStatus}
         onClose={() => setSelectedAgentId(null)}
         onToggle={toggleAgent}
         onSave={updateAgent}

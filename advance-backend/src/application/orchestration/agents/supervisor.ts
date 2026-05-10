@@ -52,7 +52,7 @@ import { createCancelScheduledTaskTool } from '../tools/orchestration/cancel-sch
 import { createRunScheduledNowTool } from '../tools/orchestration/run-scheduled-now.tool';
 import { createRememberFactTool } from '../tools/orchestration/remember-fact.tool';
 import { buildCapabilitiesForAgent } from '../agent-runners/dynamic/agent-as-tool';
-import { buildDynamicSupervisorGraph } from '../graphs/dynamic-supervisor.graph';
+import { buildDynamicSupervisorGraph, type DynamicSupervisorGraph } from '../graphs/dynamic-supervisor.graph';
 import type { Mem0Service } from '../../memory/mem0.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -100,6 +100,16 @@ interface DynamicGraphRunInput {
 
 export interface SupervisorDeps {
   model:             LanguageModel;
+  defaultModel?:     {
+    provider: string;
+    modelId:  string;
+  };
+  resolveModel?:     (input: {
+    provider: string;
+    modelId: string;
+    companyId: string;
+    agentSlug?: string;
+  }) => Promise<LanguageModel> | LanguageModel;
   agentResolver:     AgentResolver;
   agentCatalogCache?: AgentCatalogCache;
   todoRepo:          SupervisorTodoRepository;
@@ -109,6 +119,7 @@ export interface SupervisorDeps {
   geminiApiKey?: string;
   dynamicGraphEnabled?: boolean;
   dynamicGraphShadow?: boolean;
+  dynamicSupervisorGraph?: DynamicSupervisorGraph;
   supervisorTimeoutMs?: number;
   mem0?: Mem0Service;
 }
@@ -127,6 +138,36 @@ export class SupervisorAgent {
     const { model, agentResolver, todoRepo, prisma, logger, clock } = this.deps;
 
     const log = logger.child({ service: 'supervisor', userId: runContext.userId });
+
+    if (this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) {
+      const graphResult = await this.runDynamicGraph({
+        userMessage,
+        history,
+        perm,
+        runContext,
+        permittedTools,
+        chatId: chatId ?? String(channelId),
+        ...(approvalGate ? { approvalGate } : {}),
+        ...(memoryContext ? { memoryContext } : {}),
+        ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
+      });
+
+      if (graphResult.ok) {
+        return ok({
+          finalReply: {
+            kind: 'final',
+            text: graphResult.value.finalText,
+            format: 'markdown',
+          },
+          toolsCalled: graphResult.value.toolsCalled,
+          toolResults: [],
+        });
+      }
+
+      log.warn('supervisor.dynamic_graph.failed_falling_back', {
+        error: graphResult.error.message,
+      });
+    }
 
     // ── 1. Resolve optional AgentDefinition for custom system prompt ──────────
     let agentDef: AgentDefinitionView | null = null;
@@ -161,6 +202,7 @@ export class SupervisorAgent {
     const { geminiApiKey } = this.deps;
     const agentCtx = {
       model,
+      ...(this.deps.resolveModel ? { resolveModel: this.deps.resolveModel } : {}),
       allTools: permittedTools,
       perm,
       runContext,
@@ -170,36 +212,6 @@ export class SupervisorAgent {
       ...(geminiApiKey    ? { geminiApiKey }    : {}),
       chatId: chatId ?? String(channelId),
     };
-
-    if (this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) {
-      const graphResult = await this.runDynamicGraph({
-        userMessage,
-        history,
-        perm,
-        runContext,
-        permittedTools,
-        chatId: chatId ?? String(channelId),
-        ...(approvalGate ? { approvalGate } : {}),
-        ...(memoryContext ? { memoryContext } : {}),
-        ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
-      });
-
-      if (graphResult.ok) {
-        return ok({
-          finalReply: {
-            kind: 'final',
-            text: graphResult.value.finalText,
-            format: 'markdown',
-          },
-          toolsCalled: graphResult.value.toolsCalled,
-          toolResults: [],
-        });
-      }
-
-      log.warn('supervisor.dynamic_graph.failed_falling_back', {
-        error: graphResult.error.message,
-      });
-    }
 
     // ── 4. Wire supervisor tools ──────────────────────────────────────────────
     // Each tool() call uses an explicit Zod schema declared inline. We cast the
@@ -539,15 +551,16 @@ export class SupervisorAgent {
       }));
     }
 
-    const graph = buildDynamicSupervisorGraph({
+    const graph = this.deps.dynamicSupervisorGraph ?? buildDynamicSupervisorGraph({
       model: this.deps.model,
+      ...(this.deps.defaultModel ? { defaultModel: this.deps.defaultModel } : {}),
+      ...(this.deps.resolveModel ? { resolveModel: this.deps.resolveModel } : {}),
       agentCatalogCache: this.deps.agentCatalogCache,
       todoRepo: this.deps.todoRepo,
       prisma: this.deps.prisma,
       logger: this.deps.logger.child({ service: 'dynamic-supervisor-graph' }),
       clock: this.deps.clock,
       ...(this.deps.geminiApiKey ? { geminiApiKey: this.deps.geminiApiKey } : {}),
-      ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
       ...(input.mem0 ? { mem0: input.mem0 } : {}),
     });
 
@@ -567,6 +580,7 @@ export class SupervisorAgent {
       permittedTools: input.permittedTools,
       chatId: input.chatId ?? null,
       memoryContext,
+      ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
     } as any);
 
     if (output.status === 'error') {

@@ -18,29 +18,6 @@ interface SeedAgent {
   readonly temperature: number;
 }
 
-const WORKSPACE_PROMPT = [
-  'You are the Workspace Agent.',
-  '',
-  'Role:',
-  '- Handle workspace operations that do not belong cleanly to one SaaS system, especially document inspection and scheduled-workflow context.',
-  '',
-  'What you can do:',
-  '- Read uploaded/shared documents through document RAG.',
-  '- Search workspace context for workflow and operational details.',
-  '- Use web search only when public context is needed.',
-  '',
-  'What you cannot do:',
-  '- You cannot run developer shell commands or deploy code.',
-  '- You cannot schedule workflows directly unless a dedicated scheduling tool is available.',
-  '',
-  'Rules:',
-  '- Inspect relevant documents before summarizing them.',
-  '- Separate facts found in documents from assumptions or missing information.',
-  '',
-  'Output format:',
-  '- Provide a concise operational summary with document/source references when available.',
-].join('\n');
-
 const SEED_AGENTS: readonly SeedAgent[] = [
   {
     name: 'Divo Supervisor',
@@ -58,7 +35,7 @@ const SEED_AGENTS: readonly SeedAgent[] = [
     slug: 'lark-ops',
     capabilityDescription: 'Manages Lark tasks, messages, calendar events, meetings, approvals, documents, and Base tables. Handles task creation with assignee logic, calendar scheduling with IST defaults, and Hinglish requests.',
     systemPrompt: LARK_RUNNER_SYSTEM,
-    toolIds: ['larkTask', 'larkMessaging', 'larkCalendar', 'larkApproval', 'larkDoc', 'larkBase', 'contextSearch'],
+    toolIds: ['larkTask', 'larkMessaging', 'larkContacts', 'larkCalendar', 'larkApproval', 'larkDoc', 'larkBase', 'contextSearch'],
     hookId: null,
     maxSteps: 10,
     temperature: 0,
@@ -78,7 +55,7 @@ const SEED_AGENTS: readonly SeedAgent[] = [
     slug: 'zoho-ops',
     capabilityDescription: 'Queries and manages Zoho CRM (contacts, leads, accounts, deals) and Zoho Books (invoices, bills, payments, expenses, overdue reports). Returns full datasets with exact financial figures, supports Hinglish and IST date ranges.',
     systemPrompt: ZOHO_RUNNER_SYSTEM,
-    toolIds: ['zohoCrm', 'zohoBooks'],
+    toolIds: ['zohoCrm', 'zohoBooks', 'dataProcessor'],
     hookId: 'zoho-read',
     maxSteps: 12,
     temperature: 0,
@@ -88,18 +65,8 @@ const SEED_AGENTS: readonly SeedAgent[] = [
     slug: 'context-agent',
     capabilityDescription: 'Retrieval-only agent — searches company knowledge base, Lark contacts, CRM records, uploaded files/images, past conversations, and the live web. Returns raw content verbatim for supervisor to synthesize.',
     systemPrompt: CONTEXT_RUNNER_SYSTEM,
-    toolIds: ['contextSearch', 'documentRag', 'webSearch'],
+    toolIds: ['contextSearch', 'documentRag', 'webSearch', 'larkContacts'],
     hookId: 'outreach-read',
-    maxSteps: 8,
-    temperature: 0,
-  },
-  {
-    name: 'Workspace Agent',
-    slug: 'workspace-agent',
-    capabilityDescription: 'Inspects workspace documents and operational context for scheduled-workflow and document questions',
-    systemPrompt: WORKSPACE_PROMPT,
-    toolIds: ['documentRag', 'contextSearch', 'webSearch'],
-    hookId: null,
     maxSteps: 8,
     temperature: 0,
   },

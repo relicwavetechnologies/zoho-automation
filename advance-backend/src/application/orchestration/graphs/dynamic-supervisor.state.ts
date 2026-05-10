@@ -2,6 +2,7 @@ import { Annotation } from '@langchain/langgraph';
 import type { Tool as AppTool } from '../tools/tool.contract';
 import type { PermissionResult } from '../../permissions/permission.types';
 import type { RunContext } from '../../../domain/orchestration/run-context';
+import type { ApprovalGateService } from '../../approval/approval-gate.service';
 
 export interface SupervisorGraphMessage {
   readonly role: 'user' | 'assistant';
@@ -34,6 +35,10 @@ export const SupervisorGraphState = Annotation.Root({
   memoryContext: Annotation<string>({
     reducer: (_prev, next) => next,
     default: () => '',
+  }),
+  approvalGate: Annotation<ApprovalGateService | undefined>({
+    reducer: (_prev, next) => next,
+    default: () => undefined,
   }),
   supervisorResult: Annotation<string | null>({
     reducer: (_prev, next) => next,

@@ -240,7 +240,7 @@ export class ZohoTokenService {
       environment,
       accessToken,
       ...(payload.refresh_token ? { refreshToken: payload.refresh_token } : {}),
-      currentRefreshCipher: '', // repo will use new if provided, else keep old
+      currentRefreshCipher: conn.refreshTokenCipher ?? '',
       accessTokenExpiresAt: new Date(expiresAtMs),
       tokenMetadataPatch:   metaPatch,
     });
