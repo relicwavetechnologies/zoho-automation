@@ -234,7 +234,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // ── AI model (DB config first, env fallback) ────────────────────────────
   // Primary model follows AiModelTargetConfig(targetKey='default') when present,
   // then falls back to MODEL_PROVIDER + MODEL_ID for backward compatibility.
-  // Falls back silently to configured fast model, or gpt-4o-mini by default,
+  // Falls back silently to configured fast model, or gpt-5.4-mini by default,
   // on rate-limit / high-demand errors.
   const defaultModelTarget = await prisma.aiModelTargetConfig.findUnique({
     where: { targetKey: 'default' },
@@ -259,7 +259,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const primaryProvider = defaultModelTarget?.provider ?? env.MODEL_PROVIDER;
   const primaryModelId  = defaultModelTarget?.modelId ?? env.MODEL_ID;
   const fastProvider    = defaultModelTarget?.fastProvider ?? 'openai';
-  const fastModelId     = defaultModelTarget?.fastModelId ?? 'gpt-4o-mini';
+  const fastModelId     = defaultModelTarget?.fastModelId ?? 'gpt-5.4-mini';
   const needsOpenAi     = primaryProvider === 'openai' || fastProvider === 'openai';
   const gatewayCompany  = needsOpenAi
     ? await prisma.company.findFirst({

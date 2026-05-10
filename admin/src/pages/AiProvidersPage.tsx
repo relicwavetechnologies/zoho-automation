@@ -17,7 +17,7 @@ import { aiModelsApi, aiProvidersApi, useProviderStatus, type AiModelTarget, typ
 import { cn } from "@/lib/utils"
 
 const modelCatalog = {
-  openai: ["gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex"],
+  openai: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
   google: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.1-flash-lite-preview"],
 } as const
 
@@ -198,7 +198,7 @@ export function AiProvidersPage() {
         provider,
         modelId,
         fastProvider: defaultTarget?.fastProvider ?? "openai",
-        fastModelId: defaultTarget?.fastModelId ?? "gpt-4o-mini",
+        fastModelId: defaultTarget?.fastModelId ?? "gpt-5.4-mini",
         thinkingLevel: defaultTarget?.thinkingLevel ?? null,
         fastThinkingLevel: defaultTarget?.fastThinkingLevel ?? null,
         xtremeProvider: defaultTarget?.xtremeProvider ?? null,
@@ -229,7 +229,7 @@ export function AiProvidersPage() {
       />
 
       <section className="grid gap-3 md:grid-cols-4">
-        <MetricCard label="OpenAI" value={openai?.connected ? "Live" : "Off"} detail={openai?.gatewayUrl ?? "Gateway dedicated account"} icon={Sparkles} tone="emphasis" />
+        <MetricCard label="Codex" value={openai?.connected ? "Live" : "Off"} detail={openai?.gatewayUrl ?? "Gateway dedicated account"} icon={Sparkles} tone="emphasis" />
         <MetricCard label="Gemini" value={google?.connected ? "Live" : "Off"} detail="API key provider" icon={CloudCog} tone="accent" />
         <MetricCard label="Default" value={status.data?.settings.defaultAiProvider ?? provider} detail={status.data?.settings.defaultAiModel ?? modelId} icon={PlugZap} />
         <MetricCard label="Targets" value={targetsLoading ? "..." : String(targets.length)} detail="Model config rows" icon={Activity} />
@@ -306,8 +306,8 @@ export function AiProvidersPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="openai">OpenAI</SelectItem>
-                    <SelectItem value="google">Google</SelectItem>
+                    <SelectItem value="openai">Codex</SelectItem>
+                    <SelectItem value="google">Gemini</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

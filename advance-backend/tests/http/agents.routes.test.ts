@@ -253,6 +253,10 @@ describe('GET /agents/models/catalog', () => {
     assert.ok(Array.isArray(b.data));
     assert.equal(b.data.length, AI_MODEL_CATALOG.length);
     assert.ok(b.data.every((e: any) => ['google', 'openai'].includes(e.provider)));
+    assert.deepEqual(
+      b.data.filter((e: any) => e.provider === 'openai').map((e: any) => e.modelId),
+      ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+    );
   });
 });
 
