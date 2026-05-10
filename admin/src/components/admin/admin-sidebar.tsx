@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   LogOut,
   Settings2,
+  Sparkles,
   Users,
   Workflow,
 } from "lucide-react"
@@ -33,6 +34,7 @@ const iconMap = {
   members: Users,
   departments: Building2,
   "ai-ops": Workflow,
+  "ai-providers": Sparkles,
   memories: Brain,
   settings: Settings2,
 } as const
@@ -42,6 +44,7 @@ const fallbackItems: NavItem[] = [
   { id: "people", label: "People", path: "/people", icon: Users },
   { id: "departments", label: "Departments", path: "/departments", icon: Building2 },
   { id: "ai-ops", label: "AI Ops", path: "/ai-ops", icon: Workflow },
+  { id: "ai-providers", label: "AI Providers", path: "/ai-providers", icon: Sparkles },
   { id: "memories", label: "Memories", path: "/memories", icon: Brain },
   { id: "settings", label: "Settings", path: "/settings", icon: Settings2 },
 ]
@@ -77,7 +80,7 @@ export function AdminSidebar({ mobile, onNavigate }: AdminSidebarProps) {
       {
         label: "Operations",
         items: [
-          ...base.filter((item) => ["ai-ops", "memories", "settings"].includes(item.id)),
+          ...base.filter((item) => ["ai-ops", "ai-providers", "memories", "settings"].includes(item.id)),
           { id: "agents", label: "Agents", path: "/agents", icon: Bot },
         ],
       },

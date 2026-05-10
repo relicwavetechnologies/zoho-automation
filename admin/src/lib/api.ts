@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 const API_BASE_URL =
@@ -130,6 +131,144 @@ export const channelMappingsApi = {
   remove: (body: RemoveMappingInput, token?: string) =>
     api.delete("/api/channel-mappings", body, token),
 };
+
+export type AiProviderStatus = {
+  companyId: string;
+  providers: {
+    openai: {
+      connected: boolean;
+      status: string;
+      gatewayUrl: string | null;
+      dedicatedAccountId: string | null;
+      planType?: string | null;
+      primaryWindowPct?: number | null;
+      secondaryWindowPct?: number | null;
+      creditsBalance?: number | null;
+      lastUsedAt?: string | null;
+    };
+    google: {
+      connected: boolean;
+      status: string;
+    };
+  };
+  settings: {
+    defaultAiProvider: "openai" | "google" | string;
+    defaultAiModel: string;
+  };
+  updatedAt: string;
+};
+
+export type ConnectOpenAiInput = {
+  apiKey: string;
+  gatewayUrl: string;
+  dedicatedAccountId: string;
+};
+
+export type OpenAiTestResult = {
+  ok: boolean;
+  status: number;
+  latencyMs: number;
+  response: unknown;
+};
+
+export type AiModelTarget = {
+  id: string;
+  targetKey: string;
+  provider: "openai" | "google" | string;
+  modelId: string;
+  thinkingLevel?: string | null;
+  fastProvider?: string | null;
+  fastModelId?: string | null;
+  fastThinkingLevel?: string | null;
+  xtremeProvider?: string | null;
+  xtremeModelId?: string | null;
+  xtremeThinkingLevel?: string | null;
+  updatedBy?: string;
+  updatedAt?: string;
+};
+
+export type UpdateAiModelTargetInput = {
+  provider: "openai" | "google";
+  modelId: string;
+  thinkingLevel?: string | null;
+  fastProvider?: string | null;
+  fastModelId?: string | null;
+  fastThinkingLevel?: string | null;
+  xtremeProvider?: string | null;
+  xtremeModelId?: string | null;
+  xtremeThinkingLevel?: string | null;
+};
+
+export const aiProvidersApi = {
+  status: (token?: string) =>
+    api.get<AiProviderStatus>("/api/admin/ai-providers/status", token),
+  connectOpenAI: (body: ConnectOpenAiInput, token?: string) =>
+    api.post<AiProviderStatus["providers"]["openai"]>(
+      "/api/admin/ai-providers/openai/connect",
+      body,
+      token,
+    ),
+  disconnectOpenAI: (token?: string) =>
+    api.delete<{ connected: boolean; updatedAt: string }>(
+      "/api/admin/ai-providers/openai/disconnect",
+      {},
+      token,
+    ),
+  testOpenAI: (token?: string) =>
+    api.post<OpenAiTestResult>(
+      "/api/admin/ai-providers/openai/test",
+      {},
+      token,
+    ),
+  updateSettings: (
+    body: { defaultAiProvider: "openai" | "google"; defaultAiModel: string },
+    token?: string,
+  ) => api.put("/api/admin/ai-providers/settings", body, token),
+};
+
+export const aiModelsApi = {
+  list: (token?: string) => api.get<AiModelTarget[]>("/api/admin/ai-models", token),
+  update: (targetKey: string, body: UpdateAiModelTargetInput, token?: string) =>
+    api.put<AiModelTarget>(
+      `/api/admin/ai-models/${encodeURIComponent(targetKey)}`,
+      body,
+      token,
+    ),
+};
+
+export function useProviderStatus(token?: string, refreshMs = 0) {
+  const [data, setData] = useState<AiProviderStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+    try {
+      setError(null);
+      const next = await aiProvidersApi.status(token);
+      setData(next);
+    } catch (e) {
+      setError(e instanceof Error ? e : new Error(String(e)));
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!refreshMs || !token) return;
+    const id = window.setInterval(() => void refresh(), refreshMs);
+    return () => window.clearInterval(id);
+  }, [refresh, refreshMs, token]);
+
+  return { data, loading, error, refresh };
+}
 
 export type DepartmentSummary = {
   id: string;

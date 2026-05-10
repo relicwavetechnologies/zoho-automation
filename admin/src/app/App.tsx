@@ -4,6 +4,7 @@ import { AdminShell } from "@/components/admin/admin-shell"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { AgentsPage } from "@/pages/AgentsPage"
 import { AiOpsPage } from "@/pages/AiOpsPage"
+import { AiProvidersPage } from "@/pages/AiProvidersPage"
 import { CompanyAdminSignupPage } from "@/pages/CompanyAdminSignupPage"
 import { DepartmentsPage } from "@/pages/DepartmentsPage"
 import { LoginPage } from "@/pages/LoginPage"
@@ -72,6 +73,7 @@ export function App() {
           <Route path="members" element={<Navigate to="/people" replace />} />
           <Route path="departments" element={<DepartmentsPage />} />
           <Route path="ai-ops" element={<AiOpsPage />} />
+          <Route path="ai-providers" element={<AiProvidersPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="memories" element={<MemoriesPage />} />
           <Route path="settings" element={<SettingsPage />} />
