@@ -158,6 +158,22 @@ jobs:
           SSHPASS: ${{ secrets.VPS_PASSWORD }}
         run: |
           sshpass -e ssh -o StrictHostKeyChecking=accept-new "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "curl -fsS --max-time 15 http://127.0.0.1:3001/health >/dev/null && \
-             curl -fsS --max-time 15 http://127.0.0.1:8081/ >/dev/null && \
-             cd '${DEPLOY_DIR}' && docker compose --env-file .env.production.local ps"
+            "DEPLOY_DIR='${DEPLOY_DIR}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          cd "${DEPLOY_DIR}"
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 10 http://127.0.0.1:3001/health >/dev/null \
+              && curl -fsS --max-time 10 http://127.0.0.1:8081/ >/dev/null; then
+              docker compose --env-file .env.production.local ps
+              exit 0
+            fi
+
+            sleep 5
+          done
+
+          docker compose --env-file .env.production.local ps
+          docker compose --env-file .env.production.local logs --tail=120 divo-backend divo-admin
+          exit 1
+          REMOTE
