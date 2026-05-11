@@ -7,7 +7,7 @@
  *   3. refreshUserToken() → refresh expired access token using refresh token
  *   4. getValidUserToken()→ decrypt stored token, refresh if within buffer, return plaintext
  *
- * Token exchange uses Basic auth (base64(appId:appSecret)) per Lark OIDC spec.
+ * Token exchange uses an app access token as Bearer auth per Lark user auth APIs.
  * All tokens are returned as plaintext — callers are responsible for encryption before storage.
  *
  * Lark token lifetimes:
@@ -43,19 +43,22 @@ export interface LarkUserInfo {
   avatarUrl:   string | null;
 }
 
+interface LarkAppAccessToken {
+  token:       string;
+  expiresAtMs: number;
+}
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export class LarkOAuthService {
-  private readonly basicAuth: string;
+  private appAccessToken: LarkAppAccessToken | null = null;
 
   constructor(
     private readonly appId:       string,
     private readonly appSecret:   string,
     private readonly redirectUri: string,
     private readonly apiBase:     string = 'https://open.larksuite.com',
-  ) {
-    this.basicAuth = Buffer.from(`${appId}:${appSecret}`).toString('base64');
-  }
+  ) {}
 
   isConfigured(): boolean {
     return Boolean(this.appId && this.appSecret && this.redirectUri);
@@ -75,16 +78,16 @@ export class LarkOAuthService {
   // ── 2. Exchange authorization code ────────────────────────────────────────
 
   async exchangeCode(code: string): Promise<LarkTokenResponse> {
+    const appAccessToken = await this.getAppAccessToken();
     const res = await fetch(`${this.apiBase}/open-apis/authen/v1/oidc/access_token`, {
       method:  'POST',
       headers: {
-        'Authorization': `Basic ${this.basicAuth}`,
+        'Authorization': `Bearer ${appAccessToken}`,
         'Content-Type':  'application/json',
       },
       body: JSON.stringify({
-        grant_type:   'authorization_code',
+        grant_type: 'authorization_code',
         code,
-        redirect_uri: this.redirectUri,
       }),
     });
 
@@ -94,16 +97,17 @@ export class LarkOAuthService {
     }
 
     const data = raw['data'] as Record<string, unknown>;
-    return this.parseTokenResponse(data);
+    return this.enrichTokenResponse(data);
   }
 
   // ── 3. Refresh access token ────────────────────────────────────────────────
 
   async refreshUserToken(refreshToken: string): Promise<LarkTokenResponse> {
+    const appAccessToken = await this.getAppAccessToken();
     const res = await fetch(`${this.apiBase}/open-apis/authen/v1/oidc/refresh_access_token`, {
       method:  'POST',
       headers: {
-        'Authorization': `Basic ${this.basicAuth}`,
+        'Authorization': `Bearer ${appAccessToken}`,
         'Content-Type':  'application/json',
       },
       body: JSON.stringify({
@@ -118,7 +122,7 @@ export class LarkOAuthService {
     }
 
     const data = raw['data'] as Record<string, unknown>;
-    return this.parseTokenResponse(data);
+    return this.enrichTokenResponse(data);
   }
 
   // ── 4. Get user info with a live user token ────────────────────────────────
@@ -153,14 +157,60 @@ export class LarkOAuthService {
 
   // ── Private ───────────────────────────────────────────────────────────────
 
+  private async getAppAccessToken(): Promise<string> {
+    const now = Date.now();
+    if (this.appAccessToken && this.appAccessToken.expiresAtMs > now + 60_000) {
+      return this.appAccessToken.token;
+    }
+
+    const res = await fetch(`${this.apiBase}/open-apis/auth/v3/app_access_token/internal`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ app_id: this.appId, app_secret: this.appSecret }),
+    });
+
+    const raw = await res.json() as Record<string, unknown>;
+    if (!res.ok || raw['code'] !== 0) {
+      throw new Error(`Lark app token failed: ${raw['msg'] ?? raw['message'] ?? res.status}`);
+    }
+
+    const data = (raw['data'] ?? raw) as Record<string, unknown>;
+    const token = data['app_access_token'] as string | undefined;
+    if (!token) {
+      throw new Error('Lark app token failed: missing app_access_token');
+    }
+
+    const expiresInSeconds = Number(data['expire'] ?? data['expires_in'] ?? 7200);
+    this.appAccessToken = {
+      token,
+      expiresAtMs: now + expiresInSeconds * 1000,
+    };
+    return token;
+  }
+
+  private async enrichTokenResponse(data: Record<string, unknown>): Promise<LarkTokenResponse> {
+    const parsed = this.parseTokenResponse(data);
+    const userInfo = await this.getUserInfo(parsed.accessToken);
+
+    return {
+      ...parsed,
+      larkOpenId: userInfo.larkOpenId || parsed.larkOpenId,
+      larkUserId: userInfo.larkUserId ?? parsed.larkUserId,
+      larkName:   userInfo.larkName   ?? parsed.larkName,
+      larkEmail:  userInfo.larkEmail  ?? parsed.larkEmail,
+      larkEnName: userInfo.larkEnName ?? parsed.larkEnName,
+      tenantKey:  userInfo.tenantKey  ?? parsed.tenantKey,
+    };
+  }
+
   private parseTokenResponse(data: Record<string, unknown>): LarkTokenResponse {
     return {
       accessToken:           String(data['access_token']          ?? ''),
       refreshToken:          (data['refresh_token']  as string)   ?? null,
       tokenType:             String(data['token_type']            ?? 'Bearer'),
       expiresIn:             Number(data['expires_in']            ?? 7200),
-      refreshTokenExpiresIn: data['refresh_token_expires_in'] != null
-        ? Number(data['refresh_token_expires_in']) : null,
+      refreshTokenExpiresIn: data['refresh_token_expires_in'] != null || data['refresh_expires_in'] != null
+        ? Number(data['refresh_token_expires_in'] ?? data['refresh_expires_in']) : null,
       larkOpenId:            String(data['open_id']              ?? ''),
       larkUserId:            (data['user_id']   as string)       ?? null,
       larkName:              (data['name']      as string)       ?? null,
