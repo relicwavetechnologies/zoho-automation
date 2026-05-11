@@ -7,10 +7,17 @@ export interface ToolLabels {
 }
 
 const LABELS: Record<string, ToolLabels> = {
+  // Legacy agent dispatcher names
   contextAgent:        { verb: 'Searching context…',   called: 'Searching context',    done: 'Context'     },
   zohoAgent:           { verb: 'Reading Zoho…',         called: 'Reading Zoho',          done: 'Zoho'        },
   larkAgent:           { verb: 'Updating Lark…',        called: 'Updating Lark',         done: 'Lark'        },
   googleAgent:         { verb: 'Reading Google…',       called: 'Reading Google',         done: 'Google'      },
+  // Dynamic graph agent names
+  agent_zoho_ops:      { verb: 'Reading Zoho…',         called: 'Reading Zoho',          done: 'Zoho'        },
+  agent_lark_ops:      { verb: 'Updating Lark…',        called: 'Updating Lark',         done: 'Lark'        },
+  agent_google_ops:    { verb: 'Reading Google…',       called: 'Reading Google',         done: 'Google'      },
+  agent_context_agent: { verb: 'Searching context…',   called: 'Searching context',    done: 'Context'     },
+  // Orchestration tools
   manageTodos:         { verb: 'Updating plan…',        called: 'Updating plan',          done: 'Plan'        },
   scheduleTask:        { verb: 'Scheduling…',           called: 'Scheduling task',        done: 'Scheduled'   },
   listScheduledTasks:  { verb: 'Loading schedules…',   called: 'Loading schedules',      done: 'Schedules'   },
