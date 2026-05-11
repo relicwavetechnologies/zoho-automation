@@ -94,6 +94,7 @@ interface DynamicGraphRunInput {
   readonly memoryContext?: string;
   readonly mem0?: Mem0Service;
   readonly chatId?: string;
+  readonly tracer?: OrchestrationTracer;
 }
 
 // ─── Deps ────────────────────────────────────────────────────────────────────
@@ -150,9 +151,17 @@ export class SupervisorAgent {
         ...(approvalGate ? { approvalGate } : {}),
         ...(memoryContext ? { memoryContext } : {}),
         ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
+        ...(tracer ? { tracer } : {}),
       });
 
       if (graphResult.ok) {
+        tracer?.emit({
+          phase: 'synthesis', eventType: 'synthesis_complete',
+          actorType: 'synthesis', title: 'Response synthesized',
+          status: 'success',
+          payload: { replyLength: graphResult.value.finalText.length },
+        });
+
         return ok({
           finalReply: {
             kind: 'final',
@@ -391,12 +400,15 @@ export class SupervisorAgent {
             }
 
             if (chunk.type === 'error') {
+              const errorMsg = String(chunk.error);
               log.error('supervisor.stream.error', {
-                error: String(chunk.error),
+                error: errorMsg,
                 step: stepCount,
                 toolsSoFar: innerCalled,
                 textSoFar: innerText.length,
               });
+              const lastTool = innerCalled[innerCalled.length - 1];
+              if (lastTool) aggregator.recordFailure(lastTool, errorMsg);
             }
           }
 
@@ -533,6 +545,13 @@ export class SupervisorAgent {
     }
 
     tracer?.emit({
+      phase: 'synthesis', eventType: 'synthesis_complete',
+      actorType: 'synthesis', title: 'Response synthesized',
+      status: 'success',
+      payload: { replyLength: finalText.length },
+    });
+
+    tracer?.emit({
       phase: 'complete', eventType: 'supervisor_complete',
       actorType: 'supervisor', title: 'Supervisor complete',
       status: 'success',
@@ -562,9 +581,17 @@ export class SupervisorAgent {
       clock: this.deps.clock,
       ...(this.deps.geminiApiKey ? { geminiApiKey: this.deps.geminiApiKey } : {}),
       ...(input.mem0 ? { mem0: input.mem0 } : {}),
+      ...(input.tracer ? { tracer: input.tracer } : {}),
     });
 
     const memoryContext = input.memoryContext ?? '';
+
+    input.tracer?.emit({
+      phase: 'plan', eventType: 'supervisor_started',
+      actorType: 'supervisor', title: 'Dynamic supervisor graph started',
+      status: 'info',
+      payload: { toolCount: input.permittedTools.length },
+    });
 
     const output = await graph.invoke({
       userMessage: input.userMessage,
@@ -584,6 +611,12 @@ export class SupervisorAgent {
     } as any);
 
     if (output.status === 'error') {
+      input.tracer?.emit({
+        phase: 'error', eventType: 'run_failed',
+        actorType: 'supervisor', title: 'Dynamic supervisor graph failed',
+        status: 'error',
+        payload: { stage: 'plan', reason: output.error ?? 'unknown' },
+      });
       return err(new OrchestrationError({
         stage: 'plan',
         reason: 'llm_invalid_output',
@@ -591,8 +624,16 @@ export class SupervisorAgent {
       }));
     }
 
+    const finalText = (output.supervisorResult ?? 'Done.').trim() || 'Done.';
+    input.tracer?.emit({
+      phase: 'complete', eventType: 'supervisor_complete',
+      actorType: 'supervisor', title: 'Dynamic supervisor graph complete',
+      status: 'success',
+      payload: { toolsCalled: output.toolCallsMade, replyLength: finalText.length },
+    });
+
     return ok({
-      finalText: (output.supervisorResult ?? 'Done.').trim() || 'Done.',
+      finalText,
       toolsCalled: output.toolCallsMade,
     });
   }

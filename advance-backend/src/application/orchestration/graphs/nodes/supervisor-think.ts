@@ -15,6 +15,7 @@ import { createRunScheduledNowTool } from '../../tools/orchestration/run-schedul
 import { createRememberFactTool } from '../../tools/orchestration/remember-fact.tool';
 import type { SupervisorGraphStateValue } from '../dynamic-supervisor.state';
 import type { Mem0Service } from '../../../memory/mem0.service';
+import type { OrchestrationTracer } from '../../../observability/orchestration-tracer';
 import { redModelSelection } from '../../../../shared/model-selection-log';
 
 const SUPERVISOR_TIMEOUT_MS = 180_000;
@@ -39,6 +40,7 @@ export interface SupervisorThinkDeps {
   readonly geminiApiKey?: string;
   readonly approvalGate?: ApprovalGateService;
   readonly mem0?: Mem0Service;
+  readonly tracer?: OrchestrationTracer;
   readonly executeText?: (input: {
     readonly system: string;
     readonly messages: Array<{ role: 'user' | 'assistant'; content: string }>;
@@ -157,6 +159,7 @@ export async function supervisorThink(
         maxSteps: rootAgent.maxSteps,
         temperature: rootAgent.temperature,
         logger: deps.logger,
+        ...(deps.tracer ? { tracer: deps.tracer } : {}),
       });
 
     const agentDelegations = outcome.toolCalls
@@ -189,6 +192,7 @@ async function runSupervisorStream(input: {
   readonly maxSteps: number;
   readonly temperature: number;
   readonly logger?: Logger;
+  readonly tracer?: OrchestrationTracer;
 }): Promise<{ readonly text: string; readonly toolCalls: string[] }> {
   const result = streamText({
     model: input.model,
@@ -204,9 +208,26 @@ async function runSupervisorStream(input: {
   const toolResults: Array<{ toolName: string; output: string }> = [];
   let text = '';
   for await (const chunk of result.fullStream) {
-    if (chunk.type === 'tool-call') toolCalls.push(chunk.toolName);
+    if (chunk.type === 'tool-call') {
+      toolCalls.push(chunk.toolName);
+      input.tracer?.emit({
+        phase: 'execute', eventType: 'tool_call_started',
+        actorType: 'supervisor', actorKey: chunk.toolName,
+        title: `Calling ${chunk.toolName}`,
+        status: 'info',
+        payload: { toolName: chunk.toolName, args: chunk.input },
+      });
+    }
     if (chunk.type === 'tool-result') {
-      toolResults.push({ toolName: chunk.toolName, output: String(chunk.output) });
+      const output = String(chunk.output);
+      toolResults.push({ toolName: chunk.toolName, output });
+      input.tracer?.emit({
+        phase: 'execute', eventType: 'tool_call_finished',
+        actorType: 'supervisor', actorKey: chunk.toolName,
+        title: `${chunk.toolName} completed`,
+        status: 'success',
+        payload: { toolName: chunk.toolName, resultLength: output.length },
+      });
     }
     if (chunk.type === 'text-delta') text += chunk.text;
   }

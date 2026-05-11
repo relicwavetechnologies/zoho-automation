@@ -122,6 +122,11 @@ export class OrchestrationEngine {
         error: permResult.error.message,
         durationMs: permissionDurationMs,
       });
+      tracer?.emit({
+        phase: 'permission', eventType: 'permission_denied', actorType: 'engine',
+        title: 'Permission denied', status: 'error',
+        payload: { reason: permResult.error.message },
+      });
       tracer?.fail('permission_denied', permResult.error.message);
       const deniedReply: FinalReply = {
         kind: 'final',
@@ -137,6 +142,12 @@ export class OrchestrationEngine {
       allowedToolCount: perm.allowedToolIds.size,
       hasDept: !!perm.department,
       durationMs: permissionDurationMs,
+    });
+
+    tracer?.emit({
+      phase: 'permission', eventType: 'permission_resolved', actorType: 'engine',
+      title: 'Permissions resolved', status: 'success',
+      payload: { allowedToolCount: perm.allowedToolIds.size, hasDepartment: !!perm.department },
     });
 
     const branding   = resolveBranding(perm);
@@ -237,7 +248,12 @@ export class OrchestrationEngine {
     }
 
     const { toolsCalled, toolResults } = supervisorResult.value;
-    const finalReply: FinalReply = { ...supervisorResult.value.finalReply, branding };
+    const executionTrace = aggregator.getExecutionTrace();
+    const finalReply: FinalReply = {
+      ...supervisorResult.value.finalReply,
+      branding,
+      ...(executionTrace ? { executionTrace } : {}),
+    };
     const actionLog = buildActionLog(toolResults);
     const assistantHistoryContent = actionLog
       ? `[Actions]\n${actionLog}\n\n[Reply]\n${finalReply.text}`

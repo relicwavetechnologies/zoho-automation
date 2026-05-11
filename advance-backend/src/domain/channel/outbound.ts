@@ -28,12 +28,13 @@ export interface StatusUpdate {
 }
 
 export interface FinalReply {
-  readonly kind:        'final';
-  readonly text:        string;
-  readonly format:      'text' | 'markdown' | 'interactive_card';
-  readonly branding?:   ChannelBranding;
-  readonly actions?:    readonly InteractiveAction[];
-  readonly attachments?: readonly { url: string; label?: string }[];
+  readonly kind:            'final';
+  readonly text:            string;
+  readonly format:          'text' | 'markdown' | 'interactive_card';
+  readonly branding?:       ChannelBranding;
+  readonly actions?:        readonly InteractiveAction[];
+  readonly attachments?:    readonly { url: string; label?: string }[];
+  readonly executionTrace?: string;
 }
 
 export type OutboundEvent = StatusUpdate | FinalReply;
