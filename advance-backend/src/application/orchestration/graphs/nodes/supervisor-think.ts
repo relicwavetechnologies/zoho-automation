@@ -16,6 +16,8 @@ import { createRememberFactTool } from '../../tools/orchestration/remember-fact.
 import type { SupervisorGraphStateValue } from '../dynamic-supervisor.state';
 import type { Mem0Service } from '../../../memory/mem0.service';
 import type { OrchestrationTracer } from '../../../observability/orchestration-tracer';
+import type { StatusChannel } from '../../engine/status-channel';
+import type { RunStatusAggregator } from '../../run-status.aggregator';
 import { redModelSelection } from '../../../../shared/model-selection-log';
 
 const SUPERVISOR_TIMEOUT_MS = 180_000;
@@ -41,6 +43,8 @@ export interface SupervisorThinkDeps {
   readonly approvalGate?: ApprovalGateService;
   readonly mem0?: Mem0Service;
   readonly tracer?: OrchestrationTracer;
+  readonly statusChannel?: StatusChannel;
+  readonly aggregator?: RunStatusAggregator;
   readonly executeText?: (input: {
     readonly system: string;
     readonly messages: Array<{ role: 'user' | 'assistant'; content: string }>;
@@ -160,6 +164,8 @@ export async function supervisorThink(
         temperature: rootAgent.temperature,
         logger: deps.logger,
         ...(deps.tracer ? { tracer: deps.tracer } : {}),
+        ...(deps.statusChannel ? { statusChannel: deps.statusChannel } : {}),
+        ...(deps.aggregator ? { aggregator: deps.aggregator } : {}),
       });
 
     const agentDelegations = outcome.toolCalls
@@ -193,6 +199,8 @@ async function runSupervisorStream(input: {
   readonly temperature: number;
   readonly logger?: Logger;
   readonly tracer?: OrchestrationTracer;
+  readonly statusChannel?: StatusChannel;
+  readonly aggregator?: RunStatusAggregator;
 }): Promise<{ readonly text: string; readonly toolCalls: string[] }> {
   const result = streamText({
     model: input.model,
@@ -207,6 +215,7 @@ async function runSupervisorStream(input: {
   const toolCalls: string[] = [];
   const toolResults: Array<{ toolName: string; output: string }> = [];
   let text = '';
+  let statusHandle: Awaited<ReturnType<StatusChannel['sendStatus']>> = null;
   for await (const chunk of result.fullStream) {
     if (chunk.type === 'tool-call') {
       toolCalls.push(chunk.toolName);
@@ -217,6 +226,12 @@ async function runSupervisorStream(input: {
         status: 'info',
         payload: { toolName: chunk.toolName, args: chunk.input },
       });
+      if (input.aggregator && input.statusChannel) {
+        input.aggregator.recordCall(chunk.toolName);
+        statusHandle = await input.statusChannel.editStatus(statusHandle, {
+          kind: 'status', terminal: false, timeline: input.aggregator.snapshot(),
+        });
+      }
     }
     if (chunk.type === 'tool-result') {
       const output = String(chunk.output);
@@ -228,6 +243,12 @@ async function runSupervisorStream(input: {
         status: 'success',
         payload: { toolName: chunk.toolName, resultLength: output.length },
       });
+      if (input.aggregator && input.statusChannel) {
+        input.aggregator.recordResult(chunk.toolName, output);
+        statusHandle = await input.statusChannel.editStatus(statusHandle, {
+          kind: 'status', terminal: false, timeline: input.aggregator.snapshot(),
+        });
+      }
     }
     if (chunk.type === 'text-delta') text += chunk.text;
   }

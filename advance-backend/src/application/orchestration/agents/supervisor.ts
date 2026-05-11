@@ -95,6 +95,8 @@ interface DynamicGraphRunInput {
   readonly mem0?: Mem0Service;
   readonly chatId?: string;
   readonly tracer?: OrchestrationTracer;
+  readonly statusChannel?: StatusChannel;
+  readonly aggregator?: RunStatusAggregator;
 }
 
 // ─── Deps ────────────────────────────────────────────────────────────────────
@@ -152,6 +154,8 @@ export class SupervisorAgent {
         ...(memoryContext ? { memoryContext } : {}),
         ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
         ...(tracer ? { tracer } : {}),
+        statusChannel,
+        aggregator,
       });
 
       if (graphResult.ok) {
@@ -582,6 +586,8 @@ export class SupervisorAgent {
       ...(this.deps.geminiApiKey ? { geminiApiKey: this.deps.geminiApiKey } : {}),
       ...(input.mem0 ? { mem0: input.mem0 } : {}),
       ...(input.tracer ? { tracer: input.tracer } : {}),
+      ...(input.statusChannel ? { statusChannel: input.statusChannel } : {}),
+      ...(input.aggregator ? { aggregator: input.aggregator } : {}),
     });
 
     const memoryContext = input.memoryContext ?? '';
