@@ -22,7 +22,6 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: relicwavetechnologies/zoho-automation
   DEPLOY_DIR: /opt/divo
-  PUBLIC_BACKEND_URL: http://${{ secrets.VPS_HOST }}:3001
 
 jobs:
   build-and-push:
@@ -68,7 +67,7 @@ jobs:
       - name: Build and push admin image
         run: |
           docker build \
-            --build-arg VITE_API_BASE_URL="${PUBLIC_BACKEND_URL}" \
+            --build-arg VITE_API_BASE_URL="" \
             -t "${{ steps.meta.outputs.admin-image }}" \
             -t "${REGISTRY}/${IMAGE_NAMESPACE}/admin:latest" \
             ./admin
