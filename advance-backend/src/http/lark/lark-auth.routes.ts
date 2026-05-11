@@ -23,6 +23,7 @@ import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.serv
 import type { LarkUserAuthLinkRepository } from '../../infrastructure/persistence/lark-user-auth-link.repository';
 import type { CachePort } from '../../shared/cache';
 import type { Logger } from '../../shared/logger';
+import type { ChannelIdentityRepository } from '../../infrastructure/persistence/channel-identity.repository';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -131,6 +132,8 @@ export function createLarkAuthRoutes(deps: {
   appId:                 string;
   appSecret:             string;
   apiBase:               string;
+  /** Optional: invalidate identity cache after OAuth link is saved. */
+  channelIdentityRepo?:  ChannelIdentityRepository;
 }): Router {
   const router = Router();
   const log    = deps.logger.child({ router: 'lark-auth' });
@@ -244,6 +247,12 @@ export function createLarkAuthRoutes(deps: {
         larkOpenId: tokens.larkOpenId || state.larkOpenId,
         larkEmail:  tokens.larkEmail,
       });
+
+      // Bust identity cache so next message resolves fresh DB state.
+      const resolvedOpenId = tokens.larkOpenId || state.larkOpenId;
+      if (resolvedOpenId && deps.channelIdentityRepo) {
+        void deps.channelIdentityRepo.invalidateIdentityCache(resolvedOpenId);
+      }
 
       // Send DM confirmation (best-effort — don't fail the callback if this errors)
       const openIdForDm = tokens.larkOpenId || state.larkOpenId;

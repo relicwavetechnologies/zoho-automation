@@ -20,6 +20,7 @@ import {
   PermissionCache,
   serializePermissionResult,
   deserializePermissionResult,
+  type CachedMembershipRow,
 } from './permission.cache';
 import type { CompanyRoleRepoPort } from '../../infrastructure/persistence/company-role.repository';
 import type { ToolPermissionRepoPort } from '../../infrastructure/persistence/tool-permission.repository';
@@ -89,15 +90,25 @@ export class PermissionServiceImpl implements PermissionService {
     if (!companyResult.ok) return companyResult;
     const companyCeiling = companyResult.value;
 
-    // ── Department membership ──────────────────────────────────────────
-    const membershipResult = await this.deps.deptRepo.getMembership(userId, companyId, departmentId);
-    if (!membershipResult.ok) {
-      return err(new PermissionError({
-        reason: 'department_access_denied',
-        message: `Failed to read department membership: ${membershipResult.error.message}`,
-      }));
+    // ── Department membership (cached) ────────────────────────────────────
+    let membership: CachedMembershipRow | null = null;
+    const cachedMembership = await this.permCache.getMembership(companyId, departmentId, userId);
+    if (cachedMembership.ok && cachedMembership.value !== null) {
+      this.deps.logger.debug('perm.cache.hit.membership', { companyId, departmentId, userId });
+      membership = cachedMembership.value;
+    } else {
+      const membershipResult = await this.deps.deptRepo.getMembership(userId, companyId, departmentId);
+      if (!membershipResult.ok) {
+        return err(new PermissionError({
+          reason: 'department_access_denied',
+          message: `Failed to read department membership: ${membershipResult.error.message}`,
+        }));
+      }
+      membership = membershipResult.value as CachedMembershipRow | null;
+      if (membership) {
+        void this.permCache.setMembership(companyId, departmentId, userId, membership);
+      }
     }
-    const membership = membershipResult.value;
     if (!membership) {
       return err(new PermissionError({
         reason: 'department_access_denied',
@@ -238,11 +249,15 @@ export class PermissionServiceImpl implements PermissionService {
     await Promise.all([
       this.permCache.invalidateCompany(companyId),
       this.permCache.invalidateDeptByCompany(companyId),
+      this.permCache.invalidateMembershipByCompany(companyId),
     ]);
   }
 
   async invalidateDept(companyId: string, deptId: string): Promise<void> {
-    await this.permCache.invalidateDept(companyId, deptId);
+    await Promise.all([
+      this.permCache.invalidateDept(companyId, deptId),
+      this.permCache.invalidateMembershipByDept(companyId, deptId),
+    ]);
   }
 
   // ── Private: company-only resolution ─────────────────────────────────

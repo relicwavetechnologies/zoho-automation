@@ -4,6 +4,10 @@ import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 import type { LarkContactRecord } from '../../application/context-search/context-search.ports';
+import type { CachePort } from '../../shared/cache';
+
+const LARK_IDENTITY_TTL = 900; // 15 min — identity almost never changes; invalidated on OAuth success
+const identityCacheKey = (larkOpenId: string) => `lark:id:v1:${larkOpenId}`;
 
 export interface ChannelIdentityRow {
   id: string;
@@ -86,11 +90,22 @@ function scoreContactRow(
 }
 
 export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
-  constructor(private readonly db: PrismaClient) {}
+  constructor(
+    private readonly db: PrismaClient,
+    private readonly cache?: CachePort,
+  ) {}
 
   async resolveByLarkOpenId(
     larkOpenId: string,
   ): Promise<Result<ResolvedUserIdentity | null, InfraError>> {
+    // Cache read — only non-null identities are cached (null = user may register soon).
+    if (this.cache) {
+      const cached = await this.cache.get<ResolvedUserIdentity>(identityCacheKey(larkOpenId));
+      if (cached.ok && cached.value !== null) {
+        return ok(cached.value);
+      }
+    }
+
     try {
       const ci = await this.db.channelIdentity.findFirst({
         where: { channel: 'lark', larkOpenId },
@@ -109,16 +124,28 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
         select: { activeDepartmentId: true },
       });
 
-      return ok({
+      const resolved: ResolvedUserIdentity = {
         userId: authLink.userId,
         companyId: ci.companyId,
         aiRole: ci.aiRole,
         channel: ci.channel,
         larkOpenId,
         ...(deptPref?.activeDepartmentId ? { activeDepartmentId: deptPref.activeDepartmentId } : {}),
-      });
+      };
+      // Populate cache — fire-and-forget.
+      if (this.cache) {
+        void this.cache.set(identityCacheKey(larkOpenId), resolved, LARK_IDENTITY_TTL);
+      }
+      return ok(resolved);
     } catch (e) {
       return err(wrapInfra('prisma', 'resolveByLarkOpenId', e));
+    }
+  }
+
+  /** Invalidate cached identity for a Lark user (call after OAuth link created/updated). */
+  async invalidateIdentityCache(larkOpenId: string): Promise<void> {
+    if (this.cache) {
+      void this.cache.del(identityCacheKey(larkOpenId));
     }
   }
 
