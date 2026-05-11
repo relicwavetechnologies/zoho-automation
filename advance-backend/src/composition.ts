@@ -81,7 +81,6 @@ import { AgentResolver } from './application/orchestration/agents/agent-resolver
 import { ChatMessageSerializer } from './application/orchestration/chat-message-serializer';
 import { SupervisorAgent } from './application/orchestration/agents/supervisor';
 import { SupervisorTodoRepository } from './infrastructure/persistence/supervisor-todo.repository';
-import { buildDynamicSupervisorGraph } from './application/orchestration/graphs/dynamic-supervisor.graph';
 
 // Document RAG
 import { FileAssetRepository } from './infrastructure/persistence/file-asset.repository';
@@ -782,19 +781,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   logger.info('mem0.status', { enabled: !!mem0Service });
 
-  const dynamicSupervisorGraph = buildDynamicSupervisorGraph({
-    model,
-    defaultModel: { provider: primaryProvider, modelId: primaryModelId },
-    resolveModel,
-    agentCatalogCache,
-    todoRepo,
-    prisma,
-    logger: logger.child({ service: 'dynamic-supervisor-graph' }),
-    clock: systemClock,
-    ...(mem0Service ? { mem0: mem0Service } : {}),
-    ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
-  });
-
   const supervisor = new SupervisorAgent({
     model,
     defaultModel: { provider: primaryProvider, modelId: primaryModelId },
@@ -807,7 +793,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     clock:         systemClock,
     dynamicGraphEnabled: env.DYNAMIC_GRAPH_ENABLED,
     dynamicGraphShadow:  env.DYNAMIC_GRAPH_SHADOW,
-    dynamicSupervisorGraph,
     supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
     ...(mem0Service ? { mem0: mem0Service } : {}),
     ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
