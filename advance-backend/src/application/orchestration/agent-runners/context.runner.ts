@@ -8,6 +8,7 @@ import {
   GEMINI_CIRCUIT_OPTIONS,
 } from '../../../shared/circuit-breaker';
 import { gradeAnswer } from '../../retrieval/answer-grader';
+import { appendToolTrace } from './tool-trace';
 
 export async function runContextAgent(
   args: { task: string },
@@ -80,8 +81,9 @@ export async function runContextAgent(
       }
     }
 
-    log.info('context_runner.done', { replyLength: text.length });
-    return text;
+    const traced = appendToolTrace(text, result.steps);
+    log.info('context_runner.done', { replyLength: traced.length });
+    return traced;
   } catch (e) {
     if (e instanceof CircuitBreakerOpenError) {
       log.warn('context_runner.circuit_open', { retryAt: e.retryAt });

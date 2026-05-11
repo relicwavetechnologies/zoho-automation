@@ -25,6 +25,9 @@ import { RunStatusAggregator } from '../run-status.aggregator';
 import type { Mem0Service } from '../../memory/mem0.service';
 import type { LanguageModel } from 'ai';
 import { classifyMessage, runFastPath } from './fast-path';
+import { buildExecutionSummary } from './execution-summary';
+import type { LarkChatContextService } from '../../chat-context/lark-chat-context.service';
+import { formatGroupContextForPrompt } from '../../chat-context/group-context-formatter';
 
 const MEM0_SEARCH_TIMEOUT_MS = 500;
 
@@ -59,6 +62,8 @@ export interface OrchestrationEngineDeps {
   mem0?: Mem0Service;
   /** When provided, simple messages (greetings, chitchat) skip the full supervisor loop. */
   fastPathModel?: LanguageModel;
+  /** When provided, group chat context is loaded and injected into the supervisor prompt. */
+  chatContext?: LarkChatContextService;
 }
 
 // ─── Engine ───────────────────────────────────────────────────────────────
@@ -255,6 +260,17 @@ export class OrchestrationEngine {
     // ── 4c. Load persistent memory context ────────────────────────────────
     const memoryContext = await memoryContextPromise;
 
+    // ── 4d. Load group chat context (if applicable) ──────────────────────
+    let groupContext: string | undefined;
+    if (incoming.chatType === 'group' && this.deps.chatContext) {
+      const ctxResult = await this.deps.chatContext.loadContext(
+        String(runContext.companyId), String(incoming.chatId),
+      );
+      if (ctxResult.ok && ctxResult.value.recentMessages.length > 0) {
+        groupContext = formatGroupContextForPrompt(ctxResult.value);
+      }
+    }
+
     // ── 5. Run supervisor ─────────────────────────────────────────────────
     const supervisorResult = await this.deps.supervisor.run({
       userMessage:    incoming.text,
@@ -269,6 +285,7 @@ export class OrchestrationEngine {
       ...(tracer !== undefined ? { tracer } : {}),
       ...(approvalGate !== undefined ? { approvalGate } : {}),
       ...(memoryContext ? { memoryContext } : {}),
+      ...(groupContext ? { groupContext } : {}),
       chatId:         String(conversation.chatId),
     });
 
@@ -291,9 +308,9 @@ export class OrchestrationEngine {
       branding,
       ...(executionTrace ? { executionTrace } : {}),
     };
-    const actionLog = buildActionLog(toolResults);
-    const assistantHistoryContent = actionLog
-      ? `[Actions]\n${actionLog}\n\n[Reply]\n${finalReply.text}`
+    const executionLog = buildExecutionSummary(toolResults);
+    const assistantHistoryContent = executionLog
+      ? `${executionLog}\n\n[Reply]\n${finalReply.text}`
       : finalReply.text;
 
     // ── 6. Persist conversation turn ──────────────────────────────────────
@@ -421,23 +438,4 @@ export class OrchestrationEngine {
 export interface SupervisorToolResultLogEntry {
   readonly toolName: string;
   readonly output: string;
-}
-
-export function buildActionLog(
-  toolResults: ReadonlyArray<SupervisorToolResultLogEntry>,
-): string | null {
-  const lines = toolResults
-    .filter(result => result.toolName !== 'manageTodos')
-    .map(result => {
-      const output = truncateForActionLog(result.output);
-      return output ? `- ${result.toolName}: ${output}` : `- ${result.toolName}:`;
-    });
-
-  return lines.length > 0 ? lines.join('\n') : null;
-}
-
-function truncateForActionLog(output: string): string {
-  const normalized = output.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= 200) return normalized;
-  return `${normalized.slice(0, 197)}...`;
 }

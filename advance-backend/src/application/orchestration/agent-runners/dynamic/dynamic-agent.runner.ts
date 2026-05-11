@@ -11,6 +11,7 @@ import {
 } from '../../../../shared/circuit-breaker';
 import { redModelSelection } from '../../../../shared/model-selection-log';
 import { getISTDateTime } from '../../agents/supervisor.prompt';
+import { appendToolTrace } from '../tool-trace';
 
 const DYNAMIC_AGENT_TIMEOUT_MS = 150_000;
 
@@ -153,8 +154,9 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       ? await hook.postExecute(hookCtx, text || 'Done.')
       : text || 'Done.';
 
-    log.info('dynamic_agent.done', { replyLength: result.length, replyPreview: result.substring(0, 300) });
-    return { status: 'success', result };
+    const traced = appendToolTrace(result, steps);
+    log.info('dynamic_agent.done', { replyLength: traced.length, replyPreview: traced.substring(0, 300) });
+    return { status: 'success', result: traced };
   } catch (e) {
     if (e instanceof CircuitBreakerOpenError) {
       log.warn('dynamic_agent.circuit_open', { retryAt: e.retryAt });

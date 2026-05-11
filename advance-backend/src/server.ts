@@ -178,6 +178,7 @@ export const createServer = (c: Container) => {
       larkUserAuthLinkRepo:  c.larkUserAuthLinkRepo,
       cache:                 c.memoryCache,
       serializer:            c.chatSerializer,
+      chatContextService:    c.chatContextService,
     }),
   );
 

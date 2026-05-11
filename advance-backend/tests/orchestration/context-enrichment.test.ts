@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildActionLog } from '../../src/application/orchestration/engine/core.ts';
+import { buildExecutionSummary, parseSubAgentTrace, stripTraceMarker } from '../../src/application/orchestration/engine/execution-summary.ts';
 import { compactTurn } from '../../src/application/orchestration/engine/history.ts';
 import type { Turn } from '../../src/domain/conversation/turn.ts';
 
@@ -13,34 +13,70 @@ function makeTurn(role: Turn['role'], content: string): Turn {
   };
 }
 
-describe('buildActionLog', () => {
-  it('formats non-internal tool results and filters manageTodos noise', () => {
-    const log = buildActionLog([
+describe('buildExecutionSummary', () => {
+  it('formats tool results and filters manageTodos noise', () => {
+    const log = buildExecutionSummary([
       { toolName: 'manageTodos', output: 'Created checklist item' },
       { toolName: 'agent_lark_ops', output: 'Task "Prepare agenda" created\nid: 73cd5954' },
-      { toolName: 'agent_google_ops', output: 'Failed - insufficient Google Calendar permissions' },
+      { toolName: 'agent_google_ops', output: 'error: Failed - insufficient Google Calendar permissions' },
     ]);
 
-    assert.equal(
-      log,
-      [
-        '- agent_lark_ops: Task "Prepare agenda" created id: 73cd5954',
-        '- agent_google_ops: Failed - insufficient Google Calendar permissions',
-      ].join('\n'),
-    );
+    assert.ok(log);
+    assert.ok(log.startsWith('[Execution]'));
+    assert.ok(log.includes('agent_lark_ops'));
+    assert.ok(log.includes('agent_google_ops'));
+    assert.ok(!log.includes('manageTodos'));
+    assert.ok(log.includes('success'));
+    assert.ok(log.includes('error'));
   });
 
   it('returns null when no user-relevant actions were recorded', () => {
-    assert.equal(buildActionLog([]), null);
-    assert.equal(buildActionLog([{ toolName: 'manageTodos', output: 'updated' }]), null);
+    assert.equal(buildExecutionSummary([]), null);
+    assert.equal(buildExecutionSummary([{ toolName: 'manageTodos', output: 'updated' }]), null);
   });
 
-  it('truncates long action outputs to 200 characters', () => {
-    const log = buildActionLog([{ toolName: 'agent_lark_ops', output: 'x'.repeat(220) }]);
+  it('truncates long outputs to 800 characters', () => {
+    const log = buildExecutionSummary([{ toolName: 'agent_lark_ops', output: 'x'.repeat(1000) }]);
     assert.ok(log);
-    const output = log.split(': ')[1]!;
-    assert.equal(output.length, 200);
-    assert.ok(output.endsWith('...'));
+    assert.ok(log.length < 1000);
+  });
+
+  it('parses nested sub-agent tool traces', () => {
+    const trace = JSON.stringify([
+      { toolName: 'zohoBooks.listInvoices', status: 'success', summary: '5 records' },
+    ]);
+    const output = `Done.\n<!--TOOL_TRACE:${trace}-->`;
+    const log = buildExecutionSummary([{ toolName: 'agent_zoho_ops', output }]);
+
+    assert.ok(log);
+    assert.ok(log.includes('Sub-steps:'));
+    assert.ok(log.includes('zohoBooks.listInvoices'));
+  });
+});
+
+describe('parseSubAgentTrace', () => {
+  it('parses valid trace marker', () => {
+    const entries = [{ toolName: 'foo', status: 'success', summary: 'ok' }];
+    const output = `some text\n<!--TOOL_TRACE:${JSON.stringify(entries)}-->`;
+    const parsed = parseSubAgentTrace(output);
+    assert.ok(parsed);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0]!.toolName, 'foo');
+  });
+
+  it('returns null for output without trace marker', () => {
+    assert.equal(parseSubAgentTrace('plain text'), null);
+  });
+});
+
+describe('stripTraceMarker', () => {
+  it('strips the trace sentinel from output', () => {
+    const output = 'Hello world\n<!--TOOL_TRACE:[{"toolName":"x","status":"success","summary":"ok"}]-->';
+    assert.equal(stripTraceMarker(output), 'Hello world');
+  });
+
+  it('returns unchanged output when no marker present', () => {
+    assert.equal(stripTraceMarker('no marker here'), 'no marker here');
   });
 });
 
@@ -55,12 +91,22 @@ describe('compactTurn', () => {
     'Second reply line should be dropped in condensed history.',
   ].join('\n');
 
+  const executionContent = [
+    '[Execution]',
+    '1. agent_lark_ops → success: Task created',
+    '2. agent_zoho_ops → success: Deal updated',
+    '',
+    '[Reply]',
+    'Task created and deal updated.',
+    'Second reply line should be dropped in condensed history.',
+  ].join('\n');
+
   it('keeps full-tier turns unchanged', () => {
     const turn = makeTurn('assistant', enrichedContent);
     assert.equal(compactTurn(turn, 'full'), turn);
   });
 
-  it('condenses enriched assistant turns to actions plus first reply line', () => {
+  it('condenses [Actions] format to actions plus first reply line', () => {
     const compacted = compactTurn(makeTurn('assistant', enrichedContent), 'condensed');
     assert.equal(
       compacted.content,
@@ -75,14 +121,29 @@ describe('compactTurn', () => {
     );
   });
 
+  it('condenses [Execution] format to top-level tool lines plus first reply line', () => {
+    const compacted = compactTurn(makeTurn('assistant', executionContent), 'condensed');
+    assert.ok(compacted.content.includes('[Execution]'));
+    assert.ok(compacted.content.includes('agent_lark_ops'));
+    assert.ok(compacted.content.includes('agent_zoho_ops'));
+    assert.ok(compacted.content.includes('[Reply]'));
+    assert.ok(compacted.content.includes('Task created and deal updated.'));
+    assert.ok(!compacted.content.includes('Second reply line'));
+  });
+
   it('condenses plain turns to 150 characters', () => {
     const compacted = compactTurn(makeTurn('assistant', 'a'.repeat(180)), 'condensed');
     assert.equal(compacted.content.length, 150);
     assert.ok(compacted.content.endsWith('...'));
   });
 
-  it('minimizes enriched assistant turns to called tool names only', () => {
+  it('minimizes [Actions] format to called tool names only', () => {
     const compacted = compactTurn(makeTurn('assistant', enrichedContent), 'minimal');
+    assert.equal(compacted.content, '[Called: agent_lark_ops, agent_zoho_ops]');
+  });
+
+  it('minimizes [Execution] format to called tool names only', () => {
+    const compacted = compactTurn(makeTurn('assistant', executionContent), 'minimal');
     assert.equal(compacted.content, '[Called: agent_lark_ops, agent_zoho_ops]');
   });
 

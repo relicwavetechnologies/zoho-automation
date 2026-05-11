@@ -7,6 +7,7 @@ import {
   CircuitBreakerOpenError,
   GEMINI_CIRCUIT_OPTIONS,
 } from '../../../shared/circuit-breaker';
+import { appendToolTrace } from './tool-trace';
 
 export async function runZohoAgent(
   args: { task: string },
@@ -25,7 +26,7 @@ export async function runZohoAgent(
   }, ZOHO_TOOL_IDS);
 
   try {
-    const { text } = await runWithCircuitBreaker(
+    const { text, steps } = await runWithCircuitBreaker(
       'gemini', 'zoho-runner', GEMINI_CIRCUIT_OPTIONS,
       () => generateText({
         model:       ctx.model,
@@ -38,8 +39,9 @@ export async function runZohoAgent(
       }),
       log,
     );
-    log.info('zoho_runner.done', { replyLength: text.length });
-    return text || 'Done.';
+    const result = appendToolTrace(text || 'Done.', steps);
+    log.info('zoho_runner.done', { replyLength: result.length });
+    return result;
   } catch (e) {
     if (e instanceof CircuitBreakerOpenError) {
       log.warn('zoho_runner.circuit_open', { retryAt: e.retryAt });
