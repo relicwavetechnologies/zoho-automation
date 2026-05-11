@@ -176,6 +176,7 @@ export const createServer = (c: Container) => {
       ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
       larkOAuthService:      c.larkOAuthService,
       larkUserAuthLinkRepo:  c.larkUserAuthLinkRepo,
+      cache:                 c.memoryCache,
       serializer:            c.chatSerializer,
     }),
   );

@@ -14,6 +14,7 @@ import type { ChatMessageSerializer } from '../../../application/orchestration/c
 import type { Mem0Service } from '../../../application/memory/mem0.service';
 import type { LarkOAuthService } from '../../lark/lark-oauth.service';
 import type { LarkUserAuthLinkRepository } from '../../persistence/lark-user-auth-link.repository';
+import type { CachePort } from '../../../shared/cache';
 import { asCompanyId, asUserId, asCorrelationId, asDepartmentId } from '../../../shared/ids';
 import { asCompanyRoleSlug } from '../../../domain/permissions/company-role';
 import type { ConversationHandle } from '../../../application/channels/channel.adapter';
@@ -39,6 +40,7 @@ export const createLarkWebhookRoutes = (deps: {
   mem0?: Mem0Service;
   larkOAuthService?:     LarkOAuthService;
   larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
+  cache: CachePort;
   /** Per-chat message serializer — ensures only one engine.run() per chat at a time. */
   serializer: ChatMessageSerializer;
 }): Router => {
@@ -215,6 +217,55 @@ export const createLarkWebhookRoutes = (deps: {
   return router;
 };
 
+const LARK_OAUTH_NONCE_TTL_SECONDS = 600;
+
+function larkOAuthNonceKey(nonce: string): string {
+  return `lark:oauth:nonce:${nonce}`;
+}
+
+function encodeLarkOAuthState(input: {
+  companyId: string;
+  userId: string;
+  larkOpenId: string;
+  nonce: string;
+}): string {
+  return Buffer.from(JSON.stringify(input)).toString('base64url');
+}
+
+async function createLarkLoginUrl(input: {
+  companyId: string;
+  userId: string;
+  larkOpenId: string;
+  deps: {
+    larkOAuthService?: LarkOAuthService;
+    cache: CachePort;
+  };
+}): Promise<string | null> {
+  const oauth = input.deps.larkOAuthService;
+  if (!oauth?.isConfigured()) return null;
+
+  const nonce = oauth.generateNonce();
+  const cached = await input.deps.cache.set(
+    larkOAuthNonceKey(nonce),
+    {
+      companyId:  input.companyId,
+      userId:     input.userId,
+      larkOpenId: input.larkOpenId,
+    },
+    LARK_OAUTH_NONCE_TTL_SECONDS,
+  );
+  if (!cached.ok) {
+    throw new Error(cached.error.message);
+  }
+
+  return oauth.getAuthorizeUrl(encodeLarkOAuthState({
+    companyId:  input.companyId,
+    userId:     input.userId,
+    larkOpenId: input.larkOpenId,
+    nonce,
+  }));
+}
+
 async function processInBackground(
   incoming: IncomingMessage,
   rawEvent: Record<string, unknown>,
@@ -229,6 +280,7 @@ async function processInBackground(
     mem0?: Mem0Service;
     larkOAuthService?:     LarkOAuthService;
     larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
+    cache: CachePort;
   },
   log: Logger,
   approvalGate?: ApprovalGateService,
@@ -241,6 +293,54 @@ async function processInBackground(
   );
 
   if (!identityResult.ok || !identityResult.value) {
+    const conversation: ConversationHandle = {
+      channel:            'lark',
+      chatId:             incoming.chatId,
+      replyToMessageId:   incoming.messageId,
+      replyInThread:      incoming.chatType === 'group',
+      correlationId,
+    };
+
+    const pending = await deps.channelIdentityRepo.prepareLarkLogin(incoming.userExternalId);
+    if (pending.ok && pending.value?.status === 'ready') {
+      const loginUrl = await createLarkLoginUrl({
+        companyId:  pending.value.companyId,
+        userId:     pending.value.userId,
+        larkOpenId: pending.value.larkOpenId,
+        deps,
+      });
+
+      if (loginUrl) {
+        const name = pending.value.displayName ?? pending.value.email;
+        await deps.adapter.sendFinalReply(conversation, {
+          kind: 'final',
+          text:
+            `Hi ${name}, I know you in this workspace, but I need a one-time account connection before I can run tools for you.\n\n` +
+            `Open this link to connect Lark:\n\n${loginUrl}\n\n` +
+            `After authorising, send your request again. The link expires in 10 minutes.`,
+          format: 'text',
+        }).catch(e => log.warn('webhook.login_prompt.reply_failed', { error: String(e), correlationId }));
+        log.info('webhook.login_prompt.sent', {
+          larkOpenId: incoming.userExternalId,
+          companyId:  pending.value.companyId,
+          userId:     pending.value.userId,
+          createdUser: pending.value.createdUser,
+          correlationId,
+        });
+        return;
+      }
+    }
+
+    if (pending.ok && pending.value?.status === 'missing_email') {
+      await deps.adapter.sendFinalReply(conversation, {
+        kind: 'final',
+        text: 'I found your Lark profile, but it has no email address synced into Divo. Ask an admin to sync or invite your account, then try again.',
+        format: 'text',
+      }).catch(e => log.warn('webhook.login_prompt.reply_failed', { error: String(e), correlationId }));
+      log.warn('webhook.identity.missing_email', { larkOpenId: incoming.userExternalId, correlationId });
+      return;
+    }
+
     log.warn('webhook.identity.not_found', { larkOpenId: incoming.userExternalId });
     return;
   }
@@ -425,6 +525,7 @@ async function handleSlashCommand(args: {
     mem0?: Mem0Service;
     larkOAuthService?:     LarkOAuthService;
     larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
+    cache: CachePort;
   };
   log: Logger;
   correlationId: ReturnType<typeof asCorrelationId>;
@@ -547,15 +648,17 @@ async function handleSlashCommand(args: {
       }
     }
 
-    const nonce = deps.larkOAuthService.generateNonce();
-    // Build state directly here — the /connect HTTP route is for browser-initiated flows
-    const state = Buffer.from(JSON.stringify({
+    const url = await createLarkLoginUrl({
       companyId:  identity.companyId,
       userId:     identity.userId,
       larkOpenId: incoming.userExternalId,
-      nonce,
-    })).toString('base64url');
-    const url = deps.larkOAuthService.getAuthorizeUrl(state);
+      deps,
+    });
+
+    if (!url) {
+      await reply('User OAuth is not configured on this server. Ask your admin to set LARK_OAUTH_REDIRECT_URI.');
+      return;
+    }
 
     log.info('webhook.command.login.initiated', { userId: identity.userId, correlationId });
     await reply(
