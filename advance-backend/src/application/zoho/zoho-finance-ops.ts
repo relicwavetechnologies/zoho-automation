@@ -116,6 +116,7 @@ export interface AgingBuckets {
 export interface TopCustomer {
   customerId?:   string;
   customerName?: string;
+  currencyCode:  string;
   balance:       number;
   invoiceCount:  number;
 }
@@ -257,6 +258,7 @@ export class ZohoFinanceOps {
       const existing = customerMap.get(key) ?? {
         ...(inv.customerId   !== undefined ? { customerId:   inv.customerId }   : {}),
         ...(inv.customerName !== undefined ? { customerName: inv.customerName } : {}),
+        currencyCode: inv.currencyCode,
         balance:      0,
         invoiceCount: 0,
       } satisfies TopCustomer;
