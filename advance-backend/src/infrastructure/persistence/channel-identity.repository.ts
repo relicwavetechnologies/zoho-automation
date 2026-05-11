@@ -1,4 +1,5 @@
 import type { PrismaClient } from '../../generated/prisma';
+import { randomBytes } from 'node:crypto';
 import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
@@ -25,9 +26,30 @@ export interface ResolvedUserIdentity {
   larkOpenId?: string;
 }
 
+export type PendingLarkLoginResolution =
+  | {
+      status: 'ready';
+      userId: string;
+      companyId: string;
+      aiRole: string;
+      larkOpenId: string;
+      displayName?: string;
+      email: string;
+      createdUser: boolean;
+    }
+  | {
+      status: 'missing_email';
+      companyId: string;
+      aiRole: string;
+      larkOpenId: string;
+      displayName?: string;
+    };
+
 export interface ChannelIdentityRepoPort {
   /** Resolves a user identity by Lark openId without requiring a known companyId (multi-tenant safe). */
   resolveByLarkOpenId(larkOpenId: string): Promise<Result<ResolvedUserIdentity | null, InfraError>>;
+  /** Prepares a one-time OAuth link for a known Lark identity that has no active auth link yet. */
+  prepareLarkLogin(larkOpenId: string): Promise<Result<PendingLarkLoginResolution | null, InfraError>>;
   /** Resolves a user identity by internal userId — used when only userId is known (e.g. approval resume). */
   resolveByUserId(userId: string): Promise<Result<ResolvedUserIdentity | null, InfraError>>;
 }
@@ -97,6 +119,78 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
       });
     } catch (e) {
       return err(wrapInfra('prisma', 'resolveByLarkOpenId', e));
+    }
+  }
+
+  async prepareLarkLogin(
+    larkOpenId: string,
+  ): Promise<Result<PendingLarkLoginResolution | null, InfraError>> {
+    try {
+      const ci = await this.db.channelIdentity.findFirst({
+        where: { channel: 'lark', larkOpenId },
+        select: {
+          aiRole:      true,
+          companyId:   true,
+          displayName: true,
+          email:       true,
+          larkOpenId:  true,
+        },
+      });
+      if (!ci?.larkOpenId) return ok(null);
+
+      const displayName = ci.displayName?.trim() || undefined;
+      const email = ci.email?.trim().toLowerCase();
+      if (!email) {
+        return ok({
+          status: 'missing_email',
+          companyId: ci.companyId,
+          aiRole: ci.aiRole,
+          larkOpenId: ci.larkOpenId,
+          ...(displayName ? { displayName } : {}),
+        });
+      }
+
+      const existingUser = await this.db.user.findUnique({
+        where:  { email },
+        select: { id: true },
+      });
+
+      if (existingUser) {
+        return ok({
+          status: 'ready',
+          userId: existingUser.id,
+          companyId: ci.companyId,
+          aiRole: ci.aiRole,
+          larkOpenId: ci.larkOpenId,
+          ...(displayName ? { displayName } : {}),
+          email,
+          createdUser: false,
+        });
+      }
+
+      const user = await this.db.user.create({
+        data: {
+          email,
+          // Lark-first users authenticate through OAuth. This random password is
+          // intentionally not user-facing and cannot be guessed for password login.
+          password: `lark-oauth-pending:${randomBytes(32).toString('hex')}`,
+          ...(displayName ? { name: displayName } : {}),
+        },
+        select: { id: true },
+      });
+
+      return ok({
+        status: 'ready',
+        userId: user.id,
+        companyId: ci.companyId,
+        aiRole: ci.aiRole,
+        larkOpenId: ci.larkOpenId,
+        ...(displayName ? { displayName } : {}),
+        email,
+        createdUser: true,
+      });
+    } catch (e) {
+      return err(wrapInfra('prisma', 'prepareLarkLogin', e));
     }
   }
 
