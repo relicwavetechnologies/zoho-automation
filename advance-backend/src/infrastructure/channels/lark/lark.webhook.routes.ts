@@ -24,6 +24,7 @@ import {
   maybeDecryptLarkBody,
 } from './lark-security';
 import { parseLarkAttachments } from './lark-attachment.parser';
+import type { LarkChatContextService } from '../../../application/chat-context/lark-chat-context.service';
 
 export const createLarkWebhookRoutes = (deps: {
   adapter: LarkChannelAdapter;
@@ -43,6 +44,7 @@ export const createLarkWebhookRoutes = (deps: {
   cache: CachePort;
   /** Per-chat message serializer — ensures only one engine.run() per chat at a time. */
   serializer: ChatMessageSerializer;
+  chatContextService?: LarkChatContextService;
 }): Router => {
   const router = Router();
   const log = deps.logger.child({ route: 'lark-webhook' });
@@ -177,6 +179,11 @@ export const createLarkWebhookRoutes = (deps: {
         messageId: incoming.messageId,
       });
       res.status(200).json({ ok: true });
+      if (deps.chatContextService) {
+        void storeGroupChatMessage(incoming, deps, log).catch(e =>
+          log.warn('webhook.group_context.store_failed', { error: String(e) }),
+        );
+      }
       return;
     }
 
@@ -192,6 +199,7 @@ export const createLarkWebhookRoutes = (deps: {
         ...deps,
         ...(deps.larkOAuthService     ? { larkOAuthService:     deps.larkOAuthService }     : {}),
         ...(deps.larkUserAuthLinkRepo ? { larkUserAuthLinkRepo: deps.larkUserAuthLinkRepo } : {}),
+        ...(deps.chatContextService   ? { chatContextService:   deps.chatContextService }   : {}),
       }, log, deps.approvalGate, deps.knowledgeShareService),
     );
   };
@@ -281,6 +289,7 @@ async function processInBackground(
     larkOAuthService?:     LarkOAuthService;
     larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
     cache: CachePort;
+    chatContextService?: LarkChatContextService;
   },
   log: Logger,
   approvalGate?: ApprovalGateService,
@@ -487,6 +496,7 @@ async function processInBackground(
     await handleSlashCommand({
       text,
       incoming,
+      chatType: incoming.chatType,
       conversation,
       identity,
       deps,
@@ -498,6 +508,20 @@ async function processInBackground(
   }
 
   if (!text) return;
+
+  // ── Store in group context (if applicable) ────────────────────────────────
+  if (incoming.chatType === 'group' && deps.chatContextService) {
+    void deps.chatContextService.appendMessage({
+      companyId: identity.companyId,
+      chatId: String(incoming.chatId),
+      chatType: 'group',
+      senderOpenId: incoming.userExternalId,
+      senderName: identity.userId,
+      role: 'user',
+      content: text,
+      botMentioned: incoming.mentionsSelf,
+    }).catch(e => log.warn('webhook.group_context.store_mentioned_failed', { error: String(e) }));
+  }
 
   // ── Normal message → orchestration engine ─────────────────────────────────
   const result = await deps.engine.run({
@@ -511,11 +535,26 @@ async function processInBackground(
   if (!result.ok) {
     log.error('webhook.engine.failed', { error: result.error.message, correlationId });
   }
+
+  // Store Divo's reply in group context
+  if (incoming.chatType === 'group' && deps.chatContextService && result.ok) {
+    void deps.chatContextService.appendMessage({
+      companyId: identity.companyId,
+      chatId: String(incoming.chatId),
+      chatType: 'group',
+      senderOpenId: 'divo-bot',
+      senderName: 'Divo',
+      role: 'assistant',
+      content: result.value.finalReply.text,
+      botMentioned: false,
+    }).catch(e => log.warn('webhook.group_context.store_reply_failed', { error: String(e) }));
+  }
 }
 
 async function handleSlashCommand(args: {
   text: string;
   incoming: IncomingMessage;
+  chatType?: string;
   conversation: ConversationHandle;
   identity: { companyId: string; userId: string; aiRole: string; activeDepartmentId?: string | null };
   deps: {
@@ -526,6 +565,7 @@ async function handleSlashCommand(args: {
     larkOAuthService?:     LarkOAuthService;
     larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
     cache: CachePort;
+    chatContextService?: LarkChatContextService;
   };
   log: Logger;
   correlationId: ReturnType<typeof asCorrelationId>;
@@ -555,6 +595,9 @@ async function handleSlashCommand(args: {
       });
       await reply('Could not clear history — please try again.');
       return;
+    }
+    if (deps.chatContextService) {
+      await deps.chatContextService.clear(identity.companyId, String(incoming.chatId));
     }
     log.info('webhook.command.clear.ok', { chatId: incoming.chatId, correlationId });
     await reply('Done. Conversation history cleared — I\'ll start fresh from here.');
@@ -731,4 +774,54 @@ async function handleSlashCommand(args: {
 function isTokenExpired(expiresAt: Date | null | undefined): boolean {
   if (!expiresAt) return false;
   return expiresAt.getTime() < Date.now() + 5 * 60 * 1000; // 5 min buffer
+}
+
+async function storeGroupChatMessage(
+  incoming: IncomingMessage,
+  deps: {
+    channelIdentityRepo: ChannelIdentityRepoPort;
+    chatContextService?: LarkChatContextService;
+  },
+  log: Logger,
+): Promise<void> {
+  if (!deps.chatContextService) return;
+
+  let senderName = 'User';
+  try {
+    const ci = await deps.channelIdentityRepo.resolveByLarkOpenId(incoming.userExternalId);
+    if (ci.ok && ci.value) {
+      senderName = ci.value.userId;
+    }
+  } catch { /* use default */ }
+
+  const content = incoming.text?.trim()
+    || (incoming.attachments.length > 0
+      ? incoming.attachments.map(a => `[file: ${a.name ?? a.type}]`).join(', ')
+      : '');
+  if (!content) return;
+
+  const companyId = await resolveCompanyIdForGroupMessage(incoming, deps);
+  if (!companyId) return;
+
+  await deps.chatContextService.appendMessage({
+    companyId,
+    chatId: String(incoming.chatId),
+    chatType: 'group',
+    senderOpenId: incoming.userExternalId,
+    senderName,
+    role: 'user',
+    content,
+    botMentioned: incoming.mentionsSelf,
+    ...(incoming.attachments.length > 0
+      ? { attachedFiles: incoming.attachments.map(a => a.name ?? a.type) }
+      : {}),
+  });
+}
+
+async function resolveCompanyIdForGroupMessage(
+  incoming: IncomingMessage,
+  deps: { channelIdentityRepo: ChannelIdentityRepoPort },
+): Promise<string | null> {
+  const id = await deps.channelIdentityRepo.resolveByLarkOpenId(incoming.userExternalId);
+  return id.ok && id.value ? id.value.companyId : null;
 }

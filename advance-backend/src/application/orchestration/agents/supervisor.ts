@@ -75,6 +75,7 @@ export interface SupervisorInput {
   tracer?:        OrchestrationTracer;
   approvalGate?:  ApprovalGateService;
   memoryContext?: string;
+  groupContext?:  string;
   chatId?:        string;
 }
 
@@ -136,7 +137,7 @@ export class SupervisorAgent {
     const {
       userMessage, history, channelType, channelId,
       perm, runContext, statusChannel, aggregator, permittedTools, tracer,
-      approvalGate, memoryContext, chatId,
+      approvalGate, memoryContext, groupContext, chatId,
     } = input;
     const { model, agentResolver, todoRepo, prisma, logger, clock } = this.deps;
 
@@ -198,9 +199,13 @@ export class SupervisorAgent {
       agentDef?.systemPrompt,
       perm.department?.systemPrompt,
     );
-    const fullSystemPrompt = memoryContext
-      ? `${systemPrompt}\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user:\n${memoryContext}`
-      : systemPrompt;
+    let fullSystemPrompt = systemPrompt;
+    if (memoryContext) {
+      fullSystemPrompt += `\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user:\n${memoryContext}`;
+    }
+    if (groupContext) {
+      fullSystemPrompt += `\n\n${groupContext}`;
+    }
 
     // ── 2. Build conversation messages ────────────────────────────────────────
     const messages = [

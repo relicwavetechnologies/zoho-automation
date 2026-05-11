@@ -3,7 +3,7 @@ export const HISTORY_POLICY = {
   /** Max turns to include (user + assistant pairs) */
   MAX_TURNS: 30,
   /** Approximate max token budget for history */
-  MAX_TOKEN_BUDGET: 12_000,
+  MAX_TOKEN_BUDGET: 24_000,
   /** Most recent turns kept verbatim. */
   FULL_TIER_COUNT: 4,
   /** Turns before the full tier kept in condensed form. */

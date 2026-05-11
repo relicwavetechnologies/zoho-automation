@@ -22,6 +22,8 @@ import { DeptToolPermissionRepository } from './infrastructure/persistence/depar
 import { DeptUserOverrideRepository } from './infrastructure/persistence/department-user-override.repository';
 import { ConversationRepository } from './infrastructure/persistence/conversation.repository';
 import { ChannelIdentityRepository } from './infrastructure/persistence/channel-identity.repository';
+import { LarkChatContextRepository } from './infrastructure/persistence/lark-chat-context.repository';
+import { LarkChatContextService } from './application/chat-context/lark-chat-context.service';
 import { LarkChannelAdapter } from './infrastructure/channels/lark/lark.adapter';
 import { LarkPeopleResolver } from './infrastructure/channels/lark/lark-people.resolver';
 import { LarkTaskClient } from './infrastructure/channels/lark/clients/lark-task.client';
@@ -205,6 +207,8 @@ export interface Container {
   // Persistent memory
   mem0Service: Mem0Service | null;
   invalidateGatewayProviderCache: (companyId: string) => void;
+  // Group chat context
+  chatContextService: LarkChatContextService;
 }
 
 export async function buildContainer(env: TypedEnv): Promise<Container> {
@@ -247,6 +251,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const deptUserOverrideRepo  = new DeptUserOverrideRepository(prisma);
   const conversationRepo      = new ConversationRepository(prisma, cache);
   const channelIdentityRepo   = new ChannelIdentityRepository(prisma, cache);
+  const larkChatContextRepo   = new LarkChatContextRepository(prisma);
 
   // ── Permission service ─────────────────────────────────────────────────
   const permissions = new PermissionServiceImpl({
@@ -323,6 +328,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const primaryModel    = createConfiguredModel(primaryProvider, primaryModelId);
   const fallbackModel   = createConfiguredModel(fastProvider, fastModelId);
   const model = withFallback(primaryModel, fallbackModel);
+
+  const chatContextService = new LarkChatContextService({
+    repo: larkChatContextRepo,
+    model: fallbackModel,
+    logger: logger.child({ service: 'chat-context' }),
+  });
   logger.warn('ai.model.selected', {
     provider: primaryProvider,
     modelId: primaryModelId,
@@ -818,6 +829,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     executionRepo,
     ...(mem0Service ? { mem0: mem0Service } : {}),
     fastPathModel: model,
+    chatContext: chatContextService,
     logger: logger.child({ service: 'engine' }),
     clock:  systemClock,
   });
@@ -923,5 +935,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     invalidateGatewayProviderCache,
     // Message serialization
     chatSerializer,
+    // Group chat context
+    chatContextService,
   };
 }

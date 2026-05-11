@@ -126,6 +126,9 @@ function compactCondensed(turn: Turn): string {
 
 function compactMinimal(turn: Turn): string {
   if (turn.role === 'assistant' && hasActionMarkers(turn.content)) {
+    if (turn.content.includes('[Execution]')) {
+      return compactExecutionFormat(turn.content, 'minimal');
+    }
     const toolNames = extractActionToolNames(turn.content);
     if (toolNames.length > 0) {
       return `[Called: ${toolNames.join(', ')}]`;
@@ -135,10 +138,13 @@ function compactMinimal(turn: Turn): string {
 }
 
 function hasActionMarkers(content: string): boolean {
-  return content.includes('[Actions]');
+  return content.includes('[Actions]') || content.includes('[Execution]');
 }
 
 function compactAssistantWithActions(content: string): string {
+  if (content.includes('[Execution]')) {
+    return compactExecutionFormat(content, 'condensed');
+  }
   const actions = extractActionLines(content);
   const replyLine = extractFirstReplyLine(content);
   const sections: string[] = [];
@@ -151,6 +157,45 @@ function compactAssistantWithActions(content: string): string {
   }
 
   return sections.length > 0 ? sections.join('\n\n') : truncateText(content, 150);
+}
+
+function compactExecutionFormat(content: string, tier: 'condensed' | 'minimal'): string {
+  const toolNames = extractExecutionToolNames(content);
+  const replyLine = extractFirstReplyLine(content);
+
+  if (tier === 'minimal') {
+    return toolNames.length > 0 ? `[Called: ${toolNames.join(', ')}]` : truncateText(content, 80);
+  }
+
+  const topLines = extractExecutionTopLines(content);
+  const sections: string[] = [];
+  if (topLines.length > 0) {
+    sections.push(`[Execution]\n${topLines.join('\n')}`);
+  }
+  if (replyLine) {
+    sections.push(`[Reply]\n${replyLine}`);
+  }
+  return sections.length > 0 ? sections.join('\n\n') : truncateText(content, 150);
+}
+
+function extractExecutionTopLines(content: string): string[] {
+  const execStart = content.indexOf('[Execution]');
+  if (execStart < 0) return [];
+  const afterExec = content.slice(execStart + '[Execution]'.length);
+  const replyStart = afterExec.indexOf('[Reply]');
+  const execText = replyStart >= 0 ? afterExec.slice(0, replyStart) : afterExec;
+  return execText
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(line => /^\d+\.\s/.test(line));
+}
+
+function extractExecutionToolNames(content: string): string[] {
+  const lines = extractExecutionTopLines(content);
+  return lines.map(line => {
+    const match = line.match(/^\d+\.\s+(\S+)/);
+    return match?.[1] ?? '';
+  }).filter(Boolean);
 }
 
 function extractActionLines(content: string): string[] {
@@ -166,6 +211,8 @@ function extractActionLines(content: string): string[] {
 }
 
 function extractActionToolNames(content: string): string[] {
+  if (content.includes('[Execution]')) return extractExecutionToolNames(content);
+
   const seen = new Set<string>();
   const names: string[] = [];
 
