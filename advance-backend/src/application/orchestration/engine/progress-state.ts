@@ -25,6 +25,7 @@ export type StepStatus = 'pending' | 'running' | 'done' | 'failed';
 export interface ProgressStep {
   stepId:          string;
   label:           string;
+  doneLabel:       string;
   status:          StepStatus;
   agentSlug:       string;
   toolActivity?:   string;
@@ -58,10 +59,11 @@ export function createProgressState(): ProgressState {
 
 export function addPlanStep(state: ProgressState, toolName: string): string {
   const stepId = `step_${state.steps.length + 1}`;
-  const { called } = getToolLabels(toolName);
+  const { called, done } = getToolLabels(toolName);
   state.steps.push({
     stepId,
     label:     called,
+    doneLabel: done,
     status:    'running',
     agentSlug: toolName,
     startedAt: Date.now(),
@@ -152,12 +154,14 @@ export function renderExecutionTrace(state: ProgressState): string {
 
   for (const step of state.steps) {
     const marker = STEP_MARKERS[step.status];
-    const suffix = step.resultSummary
-      ? ` — ${step.resultSummary}`
-      : step.error
-        ? ` — ${step.error}`
-        : '';
-    lines.push(`${marker} ${step.label}${suffix}`);
+    const name = (step.status === 'done' || step.status === 'failed')
+      ? step.doneLabel
+      : step.label;
+    const durationSuffix = step.startedAt && step.completedAt
+      ? ` (${((step.completedAt - step.startedAt) / 1000).toFixed(1)}s)`
+      : '';
+    const errorSuffix = step.error ? ` — ${step.error}` : '';
+    lines.push(`${marker} ${name}${durationSuffix}${errorSuffix}`);
   }
 
   return lines.join('\n');

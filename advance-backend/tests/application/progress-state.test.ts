@@ -130,7 +130,7 @@ describe('ProgressState', () => {
       assert.equal(renderExecutionTrace(state), '');
     });
 
-    it('renders trace with step markers', () => {
+    it('renders trace with step markers, duration, and errors only', () => {
       const state = createProgressState();
       addPlanStep(state, 'zohoAgent');
       addPlanStep(state, 'larkAgent');
@@ -143,8 +143,10 @@ describe('ProgressState', () => {
       assert.ok(trace.includes('2 steps'));
       assert.ok(trace.includes('✓'));
       assert.ok(trace.includes('✗'));
-      assert.ok(trace.includes('23 invoices'));
-      assert.ok(trace.includes('timeout'));
+      assert.ok(!trace.includes('23 invoices'), 'should not include result summary text');
+      assert.ok(trace.includes('timeout'), 'should include error text');
+      assert.ok(trace.includes('Read Zoho'), 'should use past tense for completed steps');
+      assert.ok(trace.includes('Updated Lark'), 'should use past tense for failed steps');
     });
   });
 });
