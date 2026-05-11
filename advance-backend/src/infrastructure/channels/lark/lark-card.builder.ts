@@ -173,19 +173,24 @@ function buildHeader(
 // ── Final reply card ─────────────────────────────────────────────────────────
 
 export interface FinalCardInput {
-  markdown:  string;
-  branding?: ChannelBranding;
-  actions?:  readonly InteractiveAction[];
+  markdown:        string;
+  branding?:       ChannelBranding;
+  actions?:        readonly InteractiveAction[];
+  executionTrace?: string;
 }
 
 export function buildFinalCard(input: FinalCardInput): string {
-  const { markdown, branding, actions } = input;
+  const { markdown, branding, actions, executionTrace } = input;
   const { title, body } = extractTitleAndBody(markdown);
   const normalizedBody = normalizeMd(body);
 
   const elements: Record<string, unknown>[] = splitMarkdown(normalizedBody).map(
     (chunk, i) => mdElement(chunk, i > 0 ? { margin: '8px 0 0 0' } : undefined),
   );
+
+  if (executionTrace) {
+    elements.push(mdElement(executionTrace, { margin: '12px 0 0 0' }));
+  }
 
   if (actions?.length) {
     elements.push(mdElement('---', { margin: '8px 0 4px 0' }));
@@ -226,14 +231,17 @@ export function buildStatusCard(input: StatusCardInput): string {
   const lines: string[] = [];
 
   if (timeline?.plan?.length) {
-    lines.push('**Plan**');
-    for (const item of timeline.plan.slice(-3)) {
+    const maxPlanDisplay = 10;
+    const planItems = timeline.plan.length > maxPlanDisplay
+      ? timeline.plan.slice(-maxPlanDisplay)
+      : timeline.plan;
+    for (const item of planItems) {
       const marker =
-        item.status === 'done'    ? '[done]' :
-        item.status === 'running' ? '[run] ' :
-        item.status === 'failed'  ? '[fail]' :
-        item.status === 'skipped' ? '[skip]' : '[    ]';
-      lines.push(`${marker} ${item.title}`);
+        item.status === 'done'    ? '✓' :
+        item.status === 'running' ? '●' :
+        item.status === 'failed'  ? '✗' :
+        item.status === 'skipped' ? '○' : '○';
+      lines.push(`${marker}  ${item.title}`);
     }
     lines.push('');
   }
