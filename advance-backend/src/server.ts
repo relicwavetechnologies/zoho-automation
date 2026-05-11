@@ -218,6 +218,7 @@ export const createServer = (c: Container) => {
       appId:                c.env.LARK_APP_ID,
       appSecret:            c.env.LARK_APP_SECRET,
       apiBase:              c.env.LARK_API_BASE_URL,
+      channelIdentityRepo:  c.channelIdentityRepo,
     }),
   );
 

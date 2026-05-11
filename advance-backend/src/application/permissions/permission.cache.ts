@@ -11,14 +11,34 @@ import type { PermissionResult, DepartmentMeta } from './permission.types';
 import { asDepartmentId } from '../../shared/ids';
 import { asDepartmentRoleSlug } from '../../domain/permissions/department-role';
 
-const COMPANY_TTL = 300;   // 5 min
-const DEPT_TTL    = 300;   // 5 min
+const COMPANY_TTL    = 900;   // 15 min — admin routes invalidate proactively on changes
+const DEPT_TTL       = 900;   // 15 min
+const MEMBERSHIP_TTL = 900;   // 15 min
 
 const companyKey = (companyId: string, roleSlug: string) =>
   `perm:co:${companyId}:role:${roleSlug}`;
 
 const deptKey = (companyId: string, deptId: string, userId: string, companyRoleSlug: string) =>
   `perm:dep:${companyId}:${deptId}:${userId}:${companyRoleSlug}`;
+
+const membershipKey = (companyId: string, deptId: string, userId: string) =>
+  `dept:member:v1:${companyId}:${deptId}:${userId}`;
+
+// Mirrors DepartmentMembershipRow fields that are JSON-serializable.
+// Declared locally to avoid importing Prisma types into the cache layer.
+export interface CachedMembershipRow {
+  userId:               string;
+  departmentId:         string;
+  departmentName:       string;
+  departmentCompanyId:  string;
+  roleId:               string;
+  roleSlug:             string;
+  roleName:             string;
+  systemPrompt?:        string | null;
+  skillsMarkdown?:      string | null;
+  managerApprovalJson?: unknown;
+  zohoRateLimitJson?:   unknown;
+}
 
 export class PermissionCache {
   constructor(private readonly cache: CachePort) {}
@@ -73,6 +93,44 @@ export class PermissionCache {
   /** Invalidate all caches for a specific department. */
   async invalidateDept(companyId: string, deptId: string): Promise<Result<number, InfraError>> {
     return this.cache.scanDel(`perm:dep:${companyId}:${deptId}:*`);
+  }
+
+  // ─── Dept membership cache ────────────────────────────────────────────
+
+  async getMembership(
+    companyId: string,
+    deptId: string,
+    userId: string,
+  ): Promise<Result<CachedMembershipRow | null, InfraError>> {
+    return this.cache.get<CachedMembershipRow>(membershipKey(companyId, deptId, userId));
+  }
+
+  async setMembership(
+    companyId: string,
+    deptId: string,
+    userId: string,
+    row: CachedMembershipRow,
+  ): Promise<Result<void, InfraError>> {
+    return this.cache.set(membershipKey(companyId, deptId, userId), row, MEMBERSHIP_TTL);
+  }
+
+  async invalidateMembership(
+    companyId: string,
+    deptId: string,
+    userId: string,
+  ): Promise<Result<void, InfraError>> {
+    return this.cache.del(membershipKey(companyId, deptId, userId));
+  }
+
+  async invalidateMembershipByDept(
+    companyId: string,
+    deptId: string,
+  ): Promise<Result<number, InfraError>> {
+    return this.cache.scanDel(`dept:member:v1:${companyId}:${deptId}:*`);
+  }
+
+  async invalidateMembershipByCompany(companyId: string): Promise<Result<number, InfraError>> {
+    return this.cache.scanDel(`dept:member:v1:${companyId}:*`);
   }
 }
 

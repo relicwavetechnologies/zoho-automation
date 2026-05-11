@@ -245,8 +245,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const deptRepo              = new DepartmentRepository(prisma);
   const deptToolPermRepo      = new DeptToolPermissionRepository(prisma);
   const deptUserOverrideRepo  = new DeptUserOverrideRepository(prisma);
-  const conversationRepo      = new ConversationRepository(prisma);
-  const channelIdentityRepo   = new ChannelIdentityRepository(prisma);
+  const conversationRepo      = new ConversationRepository(prisma, cache);
+  const channelIdentityRepo   = new ChannelIdentityRepository(prisma, cache);
 
   // ── Permission service ─────────────────────────────────────────────────
   const permissions = new PermissionServiceImpl({
@@ -817,6 +817,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     history,
     executionRepo,
     ...(mem0Service ? { mem0: mem0Service } : {}),
+    fastPathModel: model,
     logger: logger.child({ service: 'engine' }),
     clock:  systemClock,
   });

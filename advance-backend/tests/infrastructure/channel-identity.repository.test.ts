@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { ChannelIdentityRepository } from '../../src/infrastructure/persistence/channel-identity.repository';
+import type { CachePort } from '../../src/shared/cache.ts';
+import { ok, err } from '../../src/shared/result.ts';
+import type { ResolvedUserIdentity } from '../../src/infrastructure/persistence/channel-identity.repository.ts';
 
 function makeDb(overrides: Record<string, unknown>) {
   return {
@@ -20,6 +23,167 @@ function makeDb(overrides: Record<string, unknown>) {
     ...overrides,
   };
 }
+
+// ── Cache helpers ──────────────────────────────────────────────────────────────
+
+const OPEN_ID = 'ou_cache_test';
+const CACHE_KEY = `lark:id:v1:${OPEN_ID}`;
+
+const resolvedIdentity: ResolvedUserIdentity = {
+  userId: 'user-1',
+  companyId: 'company-1',
+  aiRole: 'MEMBER',
+  channel: 'lark',
+  larkOpenId: OPEN_ID,
+};
+
+function makeIdentityDb(overrides: Record<string, unknown> = {}) {
+  return {
+    channelIdentity: {
+      findFirst: async () => ({
+        id: 'ci-1',
+        aiRole: 'MEMBER',
+        channel: 'lark',
+        companyId: 'company-1',
+      }),
+    },
+    larkUserAuthLink: {
+      findFirst: async () => ({ userId: 'user-1' }),
+    },
+    userDepartmentPreference: {
+      findUnique: async () => null,
+    },
+    user: {
+      findUnique: async () => null,
+      create: async () => ({ id: 'created-user' }),
+    },
+    ...overrides,
+  };
+}
+
+function makeCache(store = new Map<string, unknown>()): CachePort & { store: Map<string, unknown>; delCalls: string[] } {
+  const delCalls: string[] = [];
+  return {
+    store,
+    delCalls,
+    get: async (k) => ok(store.has(k) ? (store.get(k) as any) : null),
+    set: async (k, v) => { store.set(k, v); return ok(undefined); },
+    del: async (k) => { delCalls.push(k); store.delete(k); return ok(undefined); },
+    scanDel: async () => ok(0),
+  };
+}
+
+function makeFailingCache(): CachePort {
+  return {
+    get: async () => err({ kind: 'infra', source: 'redis', operation: 'get', cause: new Error('redis down') } as any),
+    set: async () => err({ kind: 'infra', source: 'redis', operation: 'set', cause: new Error('redis down') } as any),
+    del: async () => err({ kind: 'infra', source: 'redis', operation: 'del', cause: new Error('redis down') } as any),
+    scanDel: async () => err({ kind: 'infra', source: 'redis', operation: 'scanDel', cause: new Error('redis down') } as any),
+  };
+}
+
+// ── Cache tests for resolveByLarkOpenId ────────────────────────────────────────
+
+describe('ChannelIdentityRepository.resolveByLarkOpenId (cache)', () => {
+  it('cache miss: fires all 3 DB queries and populates cache', async () => {
+    let ciFindCalls = 0, authLinkCalls = 0, deptPrefCalls = 0;
+    const db = makeIdentityDb({
+      channelIdentity: { findFirst: async () => { ciFindCalls++; return { id: 'ci-1', aiRole: 'MEMBER', channel: 'lark', companyId: 'company-1' }; } },
+      larkUserAuthLink: { findFirst: async () => { authLinkCalls++; return { userId: 'user-1' }; } },
+      userDepartmentPreference: { findUnique: async () => { deptPrefCalls++; return null; } },
+    });
+    const cache = makeCache();
+    const repo = new ChannelIdentityRepository(db as any, cache);
+
+    const result = await repo.resolveByLarkOpenId(OPEN_ID);
+    await new Promise(r => setImmediate(r));
+
+    assert.ok(result.ok);
+    assert.ok(result.value !== null);
+    assert.equal(ciFindCalls, 1, 'channelIdentity.findFirst must be called once');
+    assert.equal(authLinkCalls, 1, 'larkUserAuthLink.findFirst must be called once');
+    assert.equal(deptPrefCalls, 1, 'userDepartmentPreference.findUnique must be called once');
+    assert.ok(cache.store.has(CACHE_KEY), 'resolved identity should be cached');
+  });
+
+  it('cache hit: returns cached result without querying DB', async () => {
+    let dbCalls = 0;
+    const db = makeIdentityDb({
+      channelIdentity: { findFirst: async () => { dbCalls++; return null; } },
+      larkUserAuthLink: { findFirst: async () => { dbCalls++; return null; } },
+      userDepartmentPreference: { findUnique: async () => { dbCalls++; return null; } },
+    });
+    const store = new Map<string, unknown>([[CACHE_KEY, resolvedIdentity]]);
+    const cache = makeCache(store);
+    const repo = new ChannelIdentityRepository(db as any, cache);
+
+    const result = await repo.resolveByLarkOpenId(OPEN_ID);
+
+    assert.ok(result.ok);
+    assert.deepEqual(result.value, resolvedIdentity);
+    assert.equal(dbCalls, 0, 'no DB queries should fire on cache hit');
+  });
+
+  it('null result (identity not found) is NOT cached', async () => {
+    const db = makeIdentityDb({
+      channelIdentity: { findFirst: async () => null },
+    });
+    const cache = makeCache();
+    const repo = new ChannelIdentityRepository(db as any, cache);
+
+    const result = await repo.resolveByLarkOpenId(OPEN_ID);
+    await new Promise(r => setImmediate(r));
+
+    assert.ok(result.ok);
+    assert.equal(result.value, null);
+    assert.ok(!cache.store.has(CACHE_KEY), 'null result must NOT be cached');
+  });
+
+  it('null result when authLink missing is NOT cached', async () => {
+    const db = makeIdentityDb({
+      larkUserAuthLink: { findFirst: async () => null },
+    });
+    const cache = makeCache();
+    const repo = new ChannelIdentityRepository(db as any, cache);
+
+    const result = await repo.resolveByLarkOpenId(OPEN_ID);
+    await new Promise(r => setImmediate(r));
+
+    assert.ok(result.ok);
+    assert.equal(result.value, null);
+    assert.ok(!cache.store.has(CACHE_KEY), 'null result (missing auth link) must NOT be cached');
+  });
+
+  it('cache error falls through to DB queries', async () => {
+    let dbCalls = 0;
+    const db = makeIdentityDb({
+      channelIdentity: { findFirst: async () => { dbCalls++; return { id: 'ci-1', aiRole: 'MEMBER', channel: 'lark', companyId: 'company-1' }; } },
+      larkUserAuthLink: { findFirst: async () => { dbCalls++; return { userId: 'user-1' }; } },
+      userDepartmentPreference: { findUnique: async () => { dbCalls++; return null; } },
+    });
+    const repo = new ChannelIdentityRepository(db as any, makeFailingCache());
+
+    const result = await repo.resolveByLarkOpenId(OPEN_ID);
+
+    assert.ok(result.ok);
+    assert.ok(result.value !== null);
+    assert.ok(dbCalls >= 2, 'should fall back to DB when cache errors');
+  });
+});
+
+describe('ChannelIdentityRepository.invalidateIdentityCache', () => {
+  it('calls del on the correct cache key', async () => {
+    const cache = makeCache(new Map([[CACHE_KEY, resolvedIdentity]]));
+    const repo = new ChannelIdentityRepository(makeIdentityDb() as any, cache);
+
+    await repo.invalidateIdentityCache(OPEN_ID);
+
+    assert.ok(cache.delCalls.includes(CACHE_KEY), 'should call del with identity cache key');
+    assert.ok(!cache.store.has(CACHE_KEY), 'cached entry should be removed');
+  });
+});
+
+// ── Existing prepareLarkLogin tests ────────────────────────────────────────────
 
 describe('ChannelIdentityRepository.prepareLarkLogin', () => {
   it('returns null for an unknown Lark identity', async () => {

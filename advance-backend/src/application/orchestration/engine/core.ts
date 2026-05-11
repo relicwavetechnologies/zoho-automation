@@ -23,8 +23,10 @@ import { OrchestrationTracer } from '../../observability/orchestration-tracer';
 import { resolveBranding } from '../department-branding';
 import { RunStatusAggregator } from '../run-status.aggregator';
 import type { Mem0Service } from '../../memory/mem0.service';
+import type { LanguageModel } from 'ai';
+import { classifyMessage, runFastPath } from './fast-path';
 
-const MEM0_SEARCH_TIMEOUT_MS = 2_500;
+const MEM0_SEARCH_TIMEOUT_MS = 500;
 
 // ─── Public I/O types ──────────────────────────────────────────────────────
 
@@ -55,6 +57,8 @@ export interface OrchestrationEngineDeps {
   clock:        Clock;
   executionRepo?: ExecutionRepository;
   mem0?: Mem0Service;
+  /** When provided, simple messages (greetings, chitchat) skip the full supervisor loop. */
+  fastPathModel?: LanguageModel;
 }
 
 // ─── Engine ───────────────────────────────────────────────────────────────
@@ -153,36 +157,9 @@ export class OrchestrationEngine {
     const branding   = resolveBranding(perm);
     const aggregator = new RunStatusAggregator();
 
-    // ── 2. Discover allowed tools ─────────────────────────────────────────
-    const availableTools = this.deps.toolRegistry.forRuntime(perm);
-    if (availableTools.length === 0) {
-      log.warn('engine.no_tools_available');
-      tracer?.fail('no_tools', 'No tools available for this role');
-      const noToolsReply: FinalReply = {
-        kind: 'final',
-        text: 'No tools are available for your current role. Please contact your administrator.',
-        format: 'text',
-      };
-      await channelAdapter.sendFinalReply(conversation, noToolsReply);
-      return ok({ finalReply: noToolsReply, toolsCalled: [] });
-    }
-
-    const memoryContextPromise = this.searchMemoryContext({
-      query: incoming.text,
-      runContext,
-      log,
-    });
-
-    // ── 3. Load history with poison filter ────────────────────────────────
-    const historyResult = await this.deps.history.loadWindow(
-      incoming.chatId as unknown as ChatId,
-      { filterPoison: true, perm },
-    );
-    const history = historyResult.ok
-      ? historyResult.value
-      : { turns: [], truncated: false, tokenEstimate: 0 };
-
-    // ── 4. Build status channel wrapper ───────────────────────────────────
+    // ── 2. Build status channel wrapper & send initial card immediately ───
+    // Sending before history/tool-discovery so the user sees Divo respond
+    // as soon as permissions are resolved (~300ms after message received).
     let currentStatusHandle: StatusHandle | null = null;
     const statusChannel: StatusChannel = {
       async sendStatus(update) {
@@ -202,9 +179,7 @@ export class OrchestrationEngine {
       },
     };
 
-    // ── 4b. Pre-seed status bubble for resume flows ────────────────────────
-    // When resuming after approval, the adapter already knows the statusMessageId.
-    // Calling sendStatus here will edit the existing bubble instead of creating one.
+    // Pre-seed status bubble for resume flows (approval resume path).
     if (existingStatusMessageId && 'restoreStatusCoordinator' in channelAdapter) {
       (channelAdapter as any).restoreStatusCoordinator(
         String(conversation.correlationId),
@@ -214,6 +189,68 @@ export class OrchestrationEngine {
     }
 
     await statusChannel.sendStatus({ kind: 'status', terminal: false, branding, timeline: { liveLabel: 'Routing…' } });
+
+    // ── 3. Discover allowed tools ─────────────────────────────────────────
+    const availableTools = this.deps.toolRegistry.forRuntime(perm);
+    if (availableTools.length === 0) {
+      log.warn('engine.no_tools_available');
+      tracer?.fail('no_tools', 'No tools available for this role');
+      const noToolsReply: FinalReply = {
+        kind: 'final',
+        text: 'No tools are available for your current role. Please contact your administrator.',
+        format: 'text',
+      };
+      await channelAdapter.sendFinalReply(conversation, noToolsReply);
+      return ok({ finalReply: noToolsReply, toolsCalled: [] });
+    }
+
+    const memoryContextPromise = this.searchMemoryContext({
+      query: incoming.text,
+      runContext,
+      log,
+    });
+
+    // ── 4. Load history with poison filter ────────────────────────────────
+    const historyResult = await this.deps.history.loadWindow(
+      incoming.chatId as unknown as ChatId,
+      { filterPoison: true, perm },
+    );
+    const history = historyResult.ok
+      ? historyResult.value
+      : { turns: [], truncated: false, tokenEstimate: 0 };
+
+    // ── 4b. Fast-path: skip supervisor for simple messages (greetings, chitchat) ──
+    if (this.deps.fastPathModel && classifyMessage(incoming.text) === 'SIMPLE') {
+      log.info('engine.fast_path.triggered', { messageLength: incoming.text.length });
+
+      const fastResult = await runFastPath({
+        userMessage: incoming.text,
+        history:     history.turns.map(t => ({ role: t.role as 'user' | 'assistant', content: t.content })),
+        model:       this.deps.fastPathModel,
+        log,
+      });
+
+      const fastReply: FinalReply = {
+        kind: 'final', text: fastResult.text, format: 'text', branding,
+      };
+
+      // Sequential append — sequence ordering matters (user before assistant).
+      await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
+        role: 'user', content: incoming.text, timestamp: incoming.timestamp,
+      });
+      await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
+        role: 'assistant', content: fastResult.text,
+        timestamp: this.deps.clock.now().toISOString(),
+      });
+
+      await channelAdapter.sendFinalReply(conversation, fastReply);
+
+      const fpMs = this.deps.clock.nowMs() - runStartMs;
+      log.info('engine.fast_path.complete', { durationMs: fpMs });
+      tracer?.complete(fastResult.text.slice(0, 500));
+      // memoryContextPromise runs to completion in background (no leak — it's fire-and-forget).
+      return ok({ finalReply: fastReply, toolsCalled: [] });
+    }
 
     // ── 4c. Load persistent memory context ────────────────────────────────
     const memoryContext = await memoryContextPromise;
