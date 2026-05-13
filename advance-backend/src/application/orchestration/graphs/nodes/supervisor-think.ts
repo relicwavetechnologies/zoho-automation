@@ -170,13 +170,12 @@ export async function supervisorThink(
           ...(deps.aggregator ? { aggregator: deps.aggregator } : {}),
         });
 
-    // Phase 2 — synthesis pass: runs when the supervisor went silent after
-    // delegating (wrote nothing after the last tool result came back).
+    // Phase 2 — mandatory synthesis pass after any agent delegation.
+    // The supervisor's Phase 1 text is often pre-delegation narration or
+    // internal tool-call echoes — never trust it as the user-facing reply.
     // No tools are available in this call, so the model must produce text.
-    const needsSynthesis =
-      !usingMock &&
-      outcome.toolResults.length > 0 &&
-      !outcome.textAfterLastTool.trim();
+    const hadAgentDelegation = outcome.toolCalls.some(n => n.startsWith('agent_'));
+    const needsSynthesis = !usingMock && hadAgentDelegation;
 
     let finalText = outcome.text;
     if (needsSynthesis) {
