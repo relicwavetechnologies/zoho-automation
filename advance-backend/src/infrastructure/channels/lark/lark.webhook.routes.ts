@@ -194,13 +194,14 @@ export const createLarkWebhookRoutes = (deps: {
     // serializer.run() returns immediately. The task will start after any
     // currently-running task for this chatId completes — so two simultaneous
     // prompts in the same group are processed one at a time, in arrival order.
-    deps.serializer.run(String(incoming.chatId), () =>
+    // The AbortSignal fires when the serializer timeout expires (720s).
+    deps.serializer.run(String(incoming.chatId), (signal) =>
       processInBackground(incoming, event, {
         ...deps,
         ...(deps.larkOAuthService     ? { larkOAuthService:     deps.larkOAuthService }     : {}),
         ...(deps.larkUserAuthLinkRepo ? { larkUserAuthLinkRepo: deps.larkUserAuthLinkRepo } : {}),
         ...(deps.chatContextService   ? { chatContextService:   deps.chatContextService }   : {}),
-      }, log, deps.approvalGate, deps.knowledgeShareService),
+      }, log, deps.approvalGate, deps.knowledgeShareService, signal),
     );
   };
 
@@ -294,7 +295,22 @@ async function processInBackground(
   log: Logger,
   approvalGate?: ApprovalGateService,
   knowledgeShareService?: KnowledgeShareService,
+  _signal?: AbortSignal,
 ): Promise<void> {
+  // ── Idempotency — reject duplicate webhook deliveries ──────────────────
+  // Lark retries on network hiccups. Redis SET NX with 1-hour TTL ensures
+  // each messageId is processed exactly once. Fails open (availability > dedup).
+  const idempotencyKey = `divo:ingress:msg:${String(incoming.messageId)}`;
+  try {
+    const claimed = await deps.cache.setNx(idempotencyKey, 1, 3600);
+    if (claimed.ok && !claimed.value) {
+      log.info('webhook.idempotency.duplicate', { messageId: incoming.messageId, chatId: incoming.chatId });
+      return;
+    }
+  } catch {
+    // Redis down — proceed anyway
+  }
+
   const correlationId = asCorrelationId(incoming.traceId);
 
   const identityResult = await deps.channelIdentityRepo.resolveByLarkOpenId(

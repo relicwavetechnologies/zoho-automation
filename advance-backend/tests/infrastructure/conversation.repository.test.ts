@@ -62,6 +62,7 @@ function makeCache(store = new Map<string, unknown>()): CachePort & { store: Map
     delCalls,
     get: async (k) => ok(store.has(k) ? (store.get(k) as any) : null),
     set: async (k, v) => { store.set(k, v); return ok(undefined); },
+    setNx: async (k, v) => { if (store.has(k)) return ok(false); store.set(k, v); return ok(true); },
     del: async (k) => { delCalls.push(k); store.delete(k); return ok(undefined); },
     scanDel: async () => ok(0),
   };
@@ -71,6 +72,7 @@ function makeFailingCache(): CachePort {
   return {
     get: async () => err({ kind: 'infra', source: 'redis', operation: 'get', cause: new Error('redis down') } as any),
     set: async () => err({ kind: 'infra', source: 'redis', operation: 'set', cause: new Error('redis down') } as any),
+    setNx: async () => err({ kind: 'infra', source: 'redis', operation: 'setNx', cause: new Error('redis down') } as any),
     del: async () => err({ kind: 'infra', source: 'redis', operation: 'del', cause: new Error('redis down') } as any),
     scanDel: async () => err({ kind: 'infra', source: 'redis', operation: 'scanDel', cause: new Error('redis down') } as any),
   };

@@ -12,6 +12,7 @@
 export interface ZohoBooksModuleSchema {
   readonly module:        string;
   readonly primaryAmount: string;   // use as item._amount
+  readonly balanceField:  string | null; // use as item._balance when available
   readonly primaryDate:   string;   // use as item._date
   readonly primaryId:     string;   // use as item._id
   readonly allAmountFields: readonly string[];
@@ -26,6 +27,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   expenses: {
     module:           'expenses',
     primaryAmount:    'total',
+    balanceField:     null,
     primaryDate:      'date',
     primaryId:        'expense_id',
     allAmountFields:  ['total', 'bcy_total', 'total_without_tax'],
@@ -36,6 +38,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   invoices: {
     module:           'invoices',
     primaryAmount:    'total',
+    balanceField:     'balance',
     primaryDate:      'date',
     primaryId:        'invoice_id',
     allAmountFields:  ['total', 'balance', 'bcy_total'],
@@ -46,6 +49,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   bills: {
     module:           'bills',
     primaryAmount:    'total',
+    balanceField:     'balance',
     primaryDate:      'date',
     primaryId:        'bill_id',
     allAmountFields:  ['total', 'balance', 'bcy_total'],
@@ -56,6 +60,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   customerpayments: {
     module:           'customerpayments',
     primaryAmount:    'amount',
+    balanceField:     null,
     primaryDate:      'date',
     primaryId:        'payment_id',
     allAmountFields:  ['amount', 'bcy_amount'],
@@ -66,6 +71,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   vendorpayments: {
     module:           'vendorpayments',
     primaryAmount:    'amount',
+    balanceField:     null,
     primaryDate:      'date',
     primaryId:        'payment_id',
     allAmountFields:  ['amount', 'bcy_amount'],
@@ -76,6 +82,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   contacts: {
     module:           'contacts',
     primaryAmount:    'outstanding_receivable_amount',
+    balanceField:     null,
     primaryDate:      'created_time',
     primaryId:        'contact_id',
     allAmountFields:  ['outstanding_receivable_amount', 'outstanding_payable_amount'],
@@ -86,6 +93,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   bankaccounts: {
     module:           'bankaccounts',
     primaryAmount:    'balance',
+    balanceField:     null,
     primaryDate:      'created_time',
     primaryId:        'account_id',
     allAmountFields:  ['balance', 'bcy_balance'],
@@ -96,6 +104,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   banktransactions: {
     module:           'banktransactions',
     primaryAmount:    'debit_amount',
+    balanceField:     null,
     primaryDate:      'date',
     primaryId:        'transaction_id',
     allAmountFields:  ['debit_amount', 'credit_amount', 'amount'],
@@ -106,6 +115,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   items: {
     module:           'items',
     primaryAmount:    'rate',
+    balanceField:     null,
     primaryDate:      'created_time',
     primaryId:        'item_id',
     allAmountFields:  ['rate', 'purchase_rate'],
@@ -116,6 +126,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   creditnotes: {
     module:           'creditnotes',
     primaryAmount:    'total',
+    balanceField:     'balance',
     primaryDate:      'date',
     primaryId:        'creditnote_id',
     allAmountFields:  ['total', 'balance', 'bcy_total'],
@@ -126,6 +137,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   salesorders: {
     module:           'salesorders',
     primaryAmount:    'total',
+    balanceField:     null,
     primaryDate:      'date',
     primaryId:        'salesorder_id',
     allAmountFields:  ['total', 'bcy_total'],
@@ -136,6 +148,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   purchaseorders: {
     module:           'purchaseorders',
     primaryAmount:    'total',
+    balanceField:     null,
     primaryDate:      'date',
     primaryId:        'purchaseorder_id',
     allAmountFields:  ['total', 'bcy_total'],
@@ -146,6 +159,7 @@ const REGISTRY: Record<string, ZohoBooksModuleSchema> = {
   estimates: {
     module:           'estimates',
     primaryAmount:    'total',
+    balanceField:     null,
     primaryDate:      'date',
     primaryId:        'estimate_id',
     allAmountFields:  ['total', 'bcy_total'],
@@ -162,6 +176,7 @@ export function getModuleSchema(module: string): ZohoBooksModuleSchema {
   return REGISTRY[module] ?? {
     module,
     primaryAmount:   'total',
+    balanceField:    null,
     primaryDate:     'date',
     primaryId:       'id',
     allAmountFields: ['total', 'amount'],
@@ -172,7 +187,7 @@ export function getModuleSchema(module: string): ZohoBooksModuleSchema {
 }
 
 /**
- * Inject _amount, _date, _id onto every record so LLM scripts use
+ * Inject synthetic fields onto every record so LLM scripts use
  * consistent names regardless of module.
  */
 export function injectSyntheticFields(
@@ -182,6 +197,10 @@ export function injectSyntheticFields(
   return items.map(item => ({
     ...item,
     _amount: Number(item[schema.primaryAmount] ?? 0),
+    _total:  Number(item[schema.primaryAmount] ?? 0),
+    _balance: schema.balanceField
+      ? Number(item[schema.balanceField] ?? 0)
+      : Number(item[schema.primaryAmount] ?? 0),
     _date:   String(item[schema.primaryDate]   ?? ''),
     _id:     String(item[schema.primaryId]     ?? ''),
   }));
@@ -191,16 +210,32 @@ export function injectSyntheticFields(
  * Compact schema hint included in tool results so the LLM knows
  * which fields to use when writing scripts.
  */
-export function toSchemaHint(schema: ZohoBooksModuleSchema): Record<string, unknown> {
+export function toSchemaHint(
+  schema: ZohoBooksModuleSchema,
+  sampleRecord?: Record<string, unknown>,
+): Record<string, unknown> {
   return {
     module:        schema.module,
-    primaryAmount: `${schema.primaryAmount} → use item._amount`,
-    primaryDate:   `${schema.primaryDate} → use item._date`,
-    primaryId:     `${schema.primaryId} → use item._id`,
+    primaryAmount: `${schema.primaryAmount} -> item._amount / item._total`,
+    primaryDate:   `${schema.primaryDate} -> item._date`,
+    primaryId:     `${schema.primaryId} -> item._id`,
+    balanceField:  schema.balanceField
+      ? `${schema.balanceField} -> item._balance (unpaid/outstanding)`
+      : 'none - _balance equals _amount for this module',
     allAmountFields: schema.allAmountFields,
     allDateFields:   schema.allDateFields,
     nameFields:      schema.nameFields,
     statusField:     schema.statusField,
-    note: 'Scripts should use item._amount / item._date / item._id for cross-module consistency.',
+    syntheticFields: {
+      _amount:  'full document amount (alias for _total)',
+      _total:   'full document amount (alias for _amount)',
+      _balance: schema.balanceField
+        ? 'unpaid/outstanding portion - use for outstanding, unpaid, overdue amount, or balance due'
+        : 'equals _amount (no separate balance for this module)',
+      _date: 'primary date field',
+      _id:   'primary record ID',
+    },
+    ...(sampleRecord ? { sampleFieldNames: Object.keys(sampleRecord).slice(0, 20) } : {}),
+    note: 'Use _total for full amounts and _balance for outstanding/unpaid. For overdue/outstanding queries, always use _balance.',
   };
 }

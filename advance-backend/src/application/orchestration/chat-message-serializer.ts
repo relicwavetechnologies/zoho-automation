@@ -1,52 +1,23 @@
 /**
  * ChatMessageSerializer — per-chat sequential processing with no Redis locks.
  *
- * Problem it solves
- * ─────────────────
- * When two users in a group chat (or one user sending rapidly) fire prompts at
- * the same time, both engine.run() calls start concurrently and race over the
- * same conversation history. The old backend solved this with a per-chat Redis
- * distributed lock — but lock TTL had to match worst-case job duration (120 s+),
- * so a single hung request blocked the entire chat for two minutes.
+ * Each chatId gets a Promise chain. Incoming tasks queue behind whatever is
+ * currently running — like a single-threaded queue per chat.
  *
- * How this works
- * ──────────────
- * Each chatId gets a Promise chain in a local Map. Incoming tasks are appended
- * to the tail of the chain with .then(), so they naturally queue behind whatever
- * is currently running — exactly like a single-threaded queue per chat.
- *
- *   msg-1 arrives → chain[chat] = run(msg-1)
- *   msg-2 arrives → chain[chat] = run(msg-1).then(run(msg-2))
- *   msg-3 arrives → chain[chat] = run(msg-1).then(run(msg-2)).then(run(msg-3))
- *
- * When the chain completes, the Map entry is deleted so memory doesn't grow.
- * A configurable timeout per-task prevents a hung engine.run() from blocking
- * the queue forever — on timeout the task is aborted and the next one starts.
- *
- * Properties
- * ──────────
- * • Per-chat serialization   — different chats run fully in parallel.
- * • No Redis                 — no lock TTL math, no orphaned locks on crash.
+ * Features:
+ * • Per-chat serialization   — different chats run in parallel (up to maxConcurrent).
+ * • AbortSignal on timeout   — timed-out tasks are aborted, not just abandoned.
+ * • Global backpressure      — maxConcurrent caps total parallel engine.run() calls.
  * • Graceful error isolation — if task N throws, task N+1 still runs.
  * • Self-cleaning            — map entries are deleted when the chain is idle.
- * • Timeout guard            — configurable max duration; timed-out task calls
- *                              an optional onTimeout callback before releasing.
  *
- * Limitations
- * ───────────
- * Single-process only. If you horizontally scale to multiple Node.js processes,
- * each process has its own Map and messages routed to different processes will
- * run concurrently. At that scale, replace this with a per-chatId BullMQ queue
- * group or a Redis-based FIFO per chat. For a single-process deployment this is
- * strictly superior to the distributed lock approach.
+ * Limitation: single-process only. At horizontal scale, replace with Redis FIFO.
  */
 
 export interface SerializerOptions {
   /**
    * Max milliseconds a single task may run before it is considered timed out.
-   * The task's Promise is raced against this deadline. The task itself is NOT
-   * cancelled (JS has no pre-emptive cancellation) but the queue slot is freed
-   * and `onTimeout` is called so the caller can send an error reply to the user.
+   * The task is aborted via AbortSignal and the queue slot is freed.
    *
    * Default: 120_000 ms (2 minutes).
    */
@@ -57,52 +28,79 @@ export interface SerializerOptions {
    * can send an error reply to the user.
    */
   onTimeout?: (chatId: string) => void;
+
+  /**
+   * Maximum number of engine.run() calls allowed across all chats.
+   * Additional tasks wait until a slot opens.
+   * Default: Infinity (no limit).
+   */
+  maxConcurrent?: number;
 }
 
 export class ChatMessageSerializer {
   private readonly chains = new Map<string, Promise<void>>();
   private readonly timeoutMs: number;
   private readonly onTimeout: ((chatId: string) => void) | undefined;
+  private readonly maxConcurrent: number;
+  private activeTasks = 0;
+  private readonly waitQueue: Array<() => void> = [];
 
   constructor(opts: SerializerOptions = {}) {
     this.timeoutMs = opts.timeoutMs ?? 120_000;
     this.onTimeout = opts.onTimeout;
+    this.maxConcurrent = opts.maxConcurrent ?? Infinity;
+  }
+
+  private acquireSlot(): Promise<void> {
+    if (this.activeTasks < this.maxConcurrent) {
+      this.activeTasks++;
+      return Promise.resolve();
+    }
+    return new Promise<void>(resolve => this.waitQueue.push(resolve));
+  }
+
+  private releaseSlot(): void {
+    const next = this.waitQueue.shift();
+    if (next) {
+      next();
+    } else {
+      this.activeTasks--;
+    }
   }
 
   /**
    * Enqueue `task` for the given `chatId`. Returns immediately — the task will
    * run after any currently-queued tasks for the same chat complete.
    *
-   * Tasks for different chatIds run fully in parallel.
+   * The task receives an AbortSignal that fires when the timeout expires.
+   * Tasks for different chatIds run fully in parallel (up to maxConcurrent).
    */
-  run(chatId: string, task: () => Promise<void>): void {
+  run(chatId: string, task: (signal: AbortSignal) => Promise<void>): void {
     const prev = this.chains.get(chatId) ?? Promise.resolve();
 
-    const guarded = (): Promise<void> => {
-      let timedOut = false;
+    const guarded = async (): Promise<void> => {
+      await this.acquireSlot();
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        (timer as ReturnType<typeof setTimeout>).unref?.();
 
-      const work = task().catch(() => {
-        // Swallow task errors — they are the caller's responsibility to handle
-        // internally. We must not let them break the chain for subsequent msgs.
-      });
-
-      const deadline = new Promise<void>((_, reject) =>
-        setTimeout(() => {
-          timedOut = true;
-          reject(new Error(`chat_serializer.timeout: chatId=${chatId}`));
-        }, this.timeoutMs).unref(),
-      );
-
-      return Promise.race([work, deadline]).catch(() => {
-        if (timedOut) {
-          try { this.onTimeout?.(chatId); } catch { /* non-fatal */ }
+        try {
+          await task(controller.signal);
+        } catch (e) {
+          if (controller.signal.aborted) {
+            try { this.onTimeout?.(chatId); } catch { /* non-fatal */ }
+          }
+          // Swallow — caller handles errors internally.
+        } finally {
+          clearTimeout(timer);
         }
-      });
+      } finally {
+        this.releaseSlot();
+      }
     };
 
     // Chain: wait for prev to settle (resolve OR reject) before starting next.
-    // Using .then(guarded, guarded) ensures guarded() always runs regardless of
-    // whether prev resolved or rejected.
     const next = prev.then(guarded, guarded);
 
     this.chains.set(chatId, next);
@@ -119,6 +117,11 @@ export class ChatMessageSerializer {
   /** Number of chats that currently have active or queued work. */
   get activeChats(): number {
     return this.chains.size;
+  }
+
+  /** Number of engine.run() calls currently executing across all chats. */
+  get runningTasks(): number {
+    return this.activeTasks;
   }
 
   /**

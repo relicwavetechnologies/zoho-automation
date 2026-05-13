@@ -40,6 +40,7 @@ function makeCache(): CachePort & { store: Map<string, unknown> } {
     store,
     async get<T>(key: string) { return ok(store.has(key) ? (store.get(key) as T) : null); },
     async set<T>(key: string, value: T) { store.set(key, value); return ok(undefined); },
+    async setNx(key: string, value: unknown) { if (store.has(key)) return ok(false); store.set(key, value); return ok(true); },
     async del(key: string) { store.delete(key); return ok(undefined); },
     async scanDel() { return ok(0); },
   };

@@ -245,7 +245,8 @@ describe('zohoBooks expanded execution', () => {
 
 describe('Zoho utility functions', () => {
   it('formats amounts and dates for display', () => {
-    assert.equal(formatAmount(12345, 'USD'), '$123.45');
+    assert.equal(formatAmount(123.45, 'USD'), '$123.45');
+    assert.equal(formatAmount(7670, 'INR'), '₹7,670.00');
     assert.equal(formatDate('2026-05-10'), 'May 10, 2026');
   });
 

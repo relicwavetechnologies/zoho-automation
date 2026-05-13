@@ -10,6 +10,8 @@ import type { ChannelTimeline } from '../../../domain/channel/outbound';
 import { getToolLabels } from '../agents/tool-labels';
 import { previewToolResult } from '../agents/tool-result-preview';
 
+const EXECUTION_TRACE_STEP_LIMIT = 5;
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export type ProgressPhase =
@@ -144,20 +146,20 @@ export function renderExecutionTrace(state: ProgressState): string {
 
   const totalMs = Date.now() - state.startedAt;
   const totalSec = (totalMs / 1000).toFixed(1);
+  const hiddenStepCount = Math.max(0, state.steps.length - EXECUTION_TRACE_STEP_LIMIT);
+  const visibleSteps = hiddenStepCount > 0
+    ? state.steps.slice(-EXECUTION_TRACE_STEP_LIMIT)
+    : state.steps;
+  const shownSuffix = hiddenStepCount > 0 ? `; showing last ${EXECUTION_TRACE_STEP_LIMIT}` : '';
 
   const lines: string[] = [
     '---',
-    `**Trace** (${state.steps.length} step${state.steps.length === 1 ? '' : 's'}, ${totalSec}s)`,
+    `**Trace** (${state.steps.length} step${state.steps.length === 1 ? '' : 's'}, ${totalSec}s${shownSuffix})`,
   ];
 
-  for (const step of state.steps) {
+  for (const step of visibleSteps) {
     const marker = STEP_MARKERS[step.status];
-    const suffix = step.resultSummary
-      ? ` — ${step.resultSummary}`
-      : step.error
-        ? ` — ${step.error}`
-        : '';
-    lines.push(`${marker} ${step.label}${suffix}`);
+    lines.push(`${marker} ${formatTraceLine(step)}`);
   }
 
   return lines.join('\n');
@@ -184,6 +186,66 @@ function formatStepTitle(step: ProgressStep): string {
     return `${step.label}: ${step.toolActivity}`;
   }
   return step.label;
+}
+
+function formatTraceLine(step: ProgressStep): string {
+  if (step.status === 'done') {
+    return formatCompletedTraceLine(step);
+  }
+  if (step.status === 'failed') {
+    return `${pastTenseLabel(step.agentSlug, false)}${step.error ? ` — ${step.error}` : ''}`;
+  }
+  if (step.status === 'running') {
+    return `${step.label}${step.toolActivity ? ` — ${step.toolActivity}` : ''}`;
+  }
+  return step.label;
+}
+
+function formatCompletedTraceLine(step: ProgressStep): string {
+  const summary = step.resultSummary ?? '';
+  const taskTitle = extractCreatedTaskTitle(summary);
+  if (taskTitle && isLarkTool(step.agentSlug)) {
+    return `Created Lark task — ${taskTitle}`;
+  }
+  if (taskTitle && step.agentSlug === 'manageTodos') {
+    return `Updated Divo checklist — ${taskTitle}`;
+  }
+  if (isLarkTool(step.agentSlug) && /no tasks? or tasklists? were found|no matching/i.test(summary)) {
+    return 'Checked Lark tasks — no matching tasks found';
+  }
+  if (step.agentSlug === 'manageTodos' && /^added todo:/i.test(summary)) {
+    return `Updated Divo checklist — ${cleanTodoTitle(summary)}`;
+  }
+  const label = pastTenseLabel(step.agentSlug, true);
+  return summary ? `${label} — ${summary}` : label;
+}
+
+function pastTenseLabel(toolName: string, success: boolean): string {
+  if (!success) {
+    if (isLarkTool(toolName)) return 'Could not update Lark';
+    if (toolName === 'manageTodos') return 'Could not update Divo checklist';
+    return 'Failed';
+  }
+  if (isLarkTool(toolName)) return 'Updated Lark';
+  if (toolName === 'manageTodos') return 'Updated Divo checklist';
+  return getToolLabels(toolName).done;
+}
+
+function isLarkTool(toolName: string): boolean {
+  return toolName === 'larkAgent'
+    || toolName === 'agent_lark_ops'
+    || toolName === 'larkTask';
+}
+
+function extractCreatedTaskTitle(summary: string): string | null {
+  const match = summary.match(/Task\s+"([^"]+)"\s+has been created/i)
+    ?? summary.match(/Created\s+(?:Lark\s+)?task\s+[":]\s*"?([^"\n.]+)"?/i)
+    ?? summary.match(/Added todo:\s*"([^"]+)"/i);
+  return match?.[1]?.trim() || null;
+}
+
+function cleanTodoTitle(summary: string): string {
+  return extractCreatedTaskTitle(summary) ?? summary.replace(/^Added todo:\s*/i, '').trim();
 }
 
 function phaseLabel(phase: ProgressPhase): string {

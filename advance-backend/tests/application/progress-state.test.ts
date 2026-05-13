@@ -146,5 +146,30 @@ describe('ProgressState', () => {
       assert.ok(trace.includes('23 invoices'));
       assert.ok(trace.includes('timeout'));
     });
+
+    it('uses completed outcome labels for Lark task creation', () => {
+      const state = createProgressState();
+      addPlanStep(state, 'agent_lark_ops');
+      markStepDone(state, 'agent_lark_ops', 'Task "Develop HTML skills" has been created.');
+
+      const trace = renderExecutionTrace(state);
+      assert.ok(trace.includes('✓ Created Lark task — Develop HTML skills'));
+      assert.equal(trace.includes('Updating Lark'), false);
+    });
+
+    it('caps final trace rows while preserving total step count', () => {
+      const state = createProgressState();
+      for (let i = 1; i <= 7; i++) {
+        addPlanStep(state, 'zohoAgent');
+        markStepDone(state, 'zohoAgent', `result ${i}`);
+      }
+
+      const trace = renderExecutionTrace(state);
+      assert.ok(trace.includes('7 steps'));
+      assert.ok(trace.includes('showing last 5'));
+      assert.equal(trace.split('\n').filter(line => line.startsWith('✓')).length, 5);
+      assert.equal(trace.includes('result 1'), false);
+      assert.ok(trace.includes('result 7'));
+    });
   });
 });

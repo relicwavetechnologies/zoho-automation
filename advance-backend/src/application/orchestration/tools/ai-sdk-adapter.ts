@@ -157,7 +157,7 @@ export function buildArgsSummary(toolId: string, action: string, args: unknown):
       for (const key of ['amount', 'total', 'balance']) {
         const raw = merged[key];
         const amount = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
-        if (Number.isFinite(amount)) parts.push(`${key}=${formatAmount(Math.round(amount * 100), currency)}`);
+        if (Number.isFinite(amount)) parts.push(`${key}=${formatAmount(amount, currency)}`);
       }
       for (const key of ['date', 'due_date', 'payment_date']) {
         if (typeof merged[key] === 'string') parts.push(`${key}=${formatDate(merged[key])}`);

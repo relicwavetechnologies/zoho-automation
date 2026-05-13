@@ -43,8 +43,9 @@ const zohoSourceSchema = z.object({
 const Schema = z.object({
   script: z.string().describe(
     'JavaScript code to execute. Receives `data` (array) and `args` (object). Must return the result. ' +
-    'ALWAYS use `item._amount` for monetary values when data comes from zohoSource — each record has a pre-computed `_amount` field with the correct value for that module (e.g. expenses use `total`, bills use `total`, payments use `amount`). ' +
-    'Example (vendor bill grouping): "const g = {}; for (const b of data) { const v = b.vendor_name || \'Unknown\'; if (!g[v]) g[v] = { vendor: v, count: 0, total: 0 }; g[v].count++; g[v].total += b._amount || 0; } return Object.values(g).sort((a,b) => b.total - a.total)" ' +
+    'When data comes from zohoSource, every record has synthetic fields: `_amount` / `_total` for full document amount, `_balance` for unpaid/outstanding amount, `_date`, and `_id`. ' +
+    'Use `item._balance` for outstanding, unpaid, overdue amount, or balance due queries. Use `item._amount` / `item._total` for full/original totals. ' +
+    'Example (vendor overdue bill grouping): "const g = {}; for (const b of data) { const v = b.vendor_name || \'Unknown\'; if (!g[v]) g[v] = { vendor: v, count: 0, outstanding: 0 }; g[v].count++; g[v].outstanding += b._balance || 0; } return Object.values(g).sort((a,b) => b.outstanding - a.outstanding)" ' +
     'Example (expense by month): "const m = {}; for (const e of data) { const mon = (e.date || \'\').slice(0,7); if (!mon) continue; if (!m[mon]) m[mon] = { month: mon, count: 0, total: 0 }; m[mon].count++; m[mon].total += e._amount || 0; } return Object.values(m).sort((a,b) => a.month.localeCompare(b.month))"',
   ),
   data: z.unknown().optional().describe(
@@ -76,6 +77,7 @@ const ResultSchema = z.object({
   csvPublicId: z.string().optional(),
   csvExpiresAt: z.string().optional(),
   moduleSchema: z.unknown().optional(),
+  sourceTruncated: z.boolean().optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
@@ -117,14 +119,22 @@ export const createDataProcessorTool = (deps: {
     'Two modes: (1) pass data directly for small datasets, (2) set zohoSource to fetch ALL records from a Zoho Books module internally (exhaustive pagination, up to 4000 records) then process.',
     'Use zohoSource for grouping/aggregation/analysis queries — the tool fetches the complete dataset, runs your script, and returns only the processed result.',
     'The script receives `data` (array) and `args` (object). It must return a value.',
-    'IMPORTANT: Every record fetched via zohoSource has a synthetic `_amount` field with the correct monetary value for that module — always use `item._amount` for totals instead of guessing field names like `amount` or `total`.',
+    'IMPORTANT: Every record fetched via zohoSource has synthetic fields: `_amount` / `_total` = full document amount; `_balance` = unpaid/outstanding portion for bills, invoices, and credit notes; `_date` = primary date; `_id` = primary record ID.',
+    'Use `_balance` when the user asks about outstanding, unpaid, overdue amounts, or balance due. Use `_amount` / `_total` for full/original document totals.',
     'Set exportCsv=true to get a downloadable CSV of the processed result.',
   ].join(' '),
 
   parameterDocs: [
     'script: JS code. Receives `data` (array) and `args` (object). Must `return` a value.',
-    '  ALWAYS use `item._amount` for the monetary value — Zoho uses different field names per module.',
-    '  expenses/_amount = total, bills/_amount = total, invoices/_amount = total, payments/_amount = amount',
+    '  Synthetic fields on every zohoSource record:',
+    '  - item._amount / item._total = full document amount (total bill/invoice/expense value)',
+    '  - item._balance = unpaid/outstanding portion for bills, invoices, and credit notes; equals _amount for other modules',
+    '  - item._date = primary date; item._id = primary record ID',
+    '  Use item._balance for outstanding, unpaid, overdue amount, or balance due.',
+    '  Use item._amount / item._total for total spend, total bills, or full/original document amount.',
+    '  The moduleSchema result includes sampleFieldNames for raw Zoho fields such as vendor_name, due_date, payment_made, and status.',
+    '  Example (overdue outstanding by vendor):',
+    '  "const g = {}; for (const b of data) { const v = b.vendor_name || \'Unknown\'; if (!g[v]) g[v]={vendor:v,count:0,outstanding:0,currency:b.currency_code||\'INR\'}; g[v].count++; g[v].outstanding+=b._balance||0; } return Object.values(g).sort((a,b)=>b.outstanding-a.outstanding)"',
     '  Example (expense breakdown by month):',
     '  "const m = {}; for (const e of data) { const mon = (e.date||e.expense_date||\'\').slice(0,7); if (!m[mon]) m[mon]={month:mon,count:0,total:0,currency:e.currency_code||\'INR\'}; m[mon].count++; m[mon].total+=e._amount||0; } return Object.values(m).sort((a,b)=>a.month.localeCompare(b.month))"',
     '',
@@ -154,6 +164,7 @@ export const createDataProcessorTool = (deps: {
     let inputData: unknown;
     let totalFetched: number | undefined;
     let moduleSchemaHint: Record<string, unknown> | undefined;
+    let sourceTruncated = false;
 
     if (args.zohoSource) {
       // Auto-translate old from_date/to_date → date_start/date_end
@@ -200,14 +211,17 @@ export const createDataProcessorTool = (deps: {
       // 2. Resolve field schema from static registry (zero API calls, no async)
       const schema = getModuleSchema(args.zohoSource.module);
 
-      // 3. Inject _amount / _date / _id synthetic fields so LLM scripts use consistent names
+      // 3. Inject synthetic fields so LLM scripts use consistent names
       const items = injectSyntheticFields(fetchResult.items, schema);
-      moduleSchemaHint = toSchemaHint(schema);
+      const sampleRecord = items.length > 0 ? items[0] : undefined;
+      moduleSchemaHint = toSchemaHint(schema, sampleRecord);
+      sourceTruncated = fetchResult.truncated;
 
       ctx.logger.info('data_processor.schema_injected', {
         companyId,
         module:        args.zohoSource.module,
         primaryAmount: schema.primaryAmount,
+        balanceField:  schema.balanceField,
         primaryDate:   schema.primaryDate,
       });
 
@@ -367,6 +381,9 @@ export const createDataProcessorTool = (deps: {
 
     const parts: string[] = [];
     if (totalFetched !== undefined) parts.push(`Fetched ${totalFetched} records from Zoho Books.`);
+    if (sourceTruncated) {
+      parts.push('DATA INCOMPLETE - pagination limit (4000 records) reached. Totals may be understated. Advise the user to narrow the date range.');
+    }
     if (serializedArray) {
       parts.push(`Processed into ${serializedArray.length} rows.`);
       if (serializedArray.length > INLINE_RESULT_LIMIT) parts.push(`Showing first ${INLINE_RESULT_LIMIT} inline.`);
@@ -385,6 +402,7 @@ export const createDataProcessorTool = (deps: {
       ...(csvPublicId ? { csvPublicId } : {}),
       ...(csvExpiresAt ? { csvExpiresAt } : {}),
       ...(moduleSchemaHint ? { moduleSchema: moduleSchemaHint } : {}),
+      ...(sourceTruncated ? { sourceTruncated } : {}),
     });
   },
 });

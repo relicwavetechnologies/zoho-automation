@@ -813,12 +813,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   });
 
   // Per-chat serializer: ensures only one engine.run() runs per chatId at a time.
-  // Timeout of 180 s — if an engine run hangs longer than this, the queue slot is
-  // released so the next queued message is not blocked indefinitely.
-  // Raised from 90s because Zoho exhaustive pagination (4000 records) + LLM
-  // processing can take 100-120s for complex finance queries.
+  // Timeout must exceed the worst-case supervisor run (660s for dynamic graph with
+  // agent retry). Using 720s (12 min) to add buffer. The AbortSignal is threaded
+  // to the engine so timed-out runs are actually cancelled, not just abandoned.
+  // maxConcurrent caps total parallel engine runs to prevent resource exhaustion.
   const chatSerializer = new ChatMessageSerializer({
-    timeoutMs: 180_000,
+    timeoutMs: 720_000,
+    maxConcurrent: 10,
     onTimeout: (chatId) => {
       logger.warn('chat_serializer.timeout', { chatId });
     },

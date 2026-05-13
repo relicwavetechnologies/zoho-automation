@@ -230,7 +230,7 @@ const summarizeRecords = (
   }
   const totalText = [...totals.entries()]
     .filter(([, total]) => total !== 0)
-    .map(([currency, total]) => `${formatAmount(Math.round(total * 100), currency)} (${currency})`)
+    .map(([currency, total]) => `${formatAmount(total, currency)} (${currency})`)
     .join(', ');
   return totalText
     ? `Found ${items.length} ${moduleLabel.toLowerCase()}: ${totalText}.`
@@ -262,7 +262,7 @@ function formatZohoResult(value: unknown): unknown {
 
     if (amountFields.has(key)) {
       const amount = numericAmount(fieldValue);
-      if (amount !== null) formatted[displayKey(key)] = formatAmount(Math.round(amount * 100), currency);
+      if (amount !== null) formatted[displayKey(key)] = formatAmount(amount, currency);
     }
 
     if (dateFields.has(key) && typeof fieldValue === 'string') {

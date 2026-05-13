@@ -26,6 +26,7 @@ import type { Mem0Service } from '../../memory/mem0.service';
 import type { LanguageModel } from 'ai';
 import { classifyMessage, runFastPath } from './fast-path';
 import { buildExecutionSummary } from './execution-summary';
+import { assessReplyQuality, buildPresentationContext, cleanReplyText } from './reply-quality';
 import type { LarkChatContextService } from '../../chat-context/lark-chat-context.service';
 import { formatGroupContextForPrompt } from '../../chat-context/group-context-formatter';
 import {
@@ -341,32 +342,39 @@ export class OrchestrationEngine {
 
     // ── 5b. Post-pipeline safety net — if tools ran but reply is useless,
     //    make one more LLM call to present the results properly.
-    const TRACE_RE = /\n?<!--TOOL_TRACE:[\s\S]*?-->/g;
-    const cleanReplyText = supervisorResult.value.finalReply.text.replace(TRACE_RE, '').trim();
-    const LOSSY_PHRASES = /\b(provided above|listed above|retrieved the list|started the review|will proceed|would you like me to|I have started|I will need to pull)\b/i;
-    const hasTable = cleanReplyText.includes('|') && cleanReplyText.includes('---');
-    const replyIsEmpty = !cleanReplyText || cleanReplyText === 'Done.' || cleanReplyText.length < 15;
-    const replyIsLossy = cleanReplyText.length < 400 && LOSSY_PHRASES.test(cleanReplyText) && !hasTable;
-    const replyIsUseless = toolsCalled.length > 0 && (replyIsEmpty || replyIsLossy);
+    const replyAssessment = assessReplyQuality({
+      userMessage: incoming.text,
+      replyText:   supervisorResult.value.finalReply.text,
+      toolsCalled,
+      toolResults,
+    });
 
     let presentedReply = supervisorResult.value.finalReply;
-    if (replyIsUseless) {
+    if (replyAssessment.needsSynthesis) {
       log.warn('engine.reply_useless.synthesis_needed', {
-        cleanReplyText,
+        cleanReplyText: cleanReplyText(supervisorResult.value.finalReply.text),
+        reasons: replyAssessment.reasons,
+        createdTaskTitles: replyAssessment.createdTaskTitles,
         toolsCalled,
         toolResultCount: toolResults?.length ?? 0,
       });
       try {
-        const toolContext = (toolResults ?? [])
-          .map(r => `[${r.toolName}]:\n${typeof r.output === 'string' ? r.output : JSON.stringify(r.output)}`)
-          .join('\n\n---\n\n');
+        const toolContext = buildPresentationContext({
+          userMessage: incoming.text,
+          replyText:   supervisorResult.value.finalReply.text,
+          toolsCalled,
+          toolResults,
+        });
         const synthesized = await generateText({
           model: this.deps.supervisor.getModel(),
           system: `You are presenting the results of completed actions to the user. Rules:
-- Present ALL data completely — do NOT summarize, truncate, or omit any items.
-- Format clearly: use tables, bullet points, or structured lists.
-- Include every record, every number, every detail.
-- Do not mention tools, agents, or internal processes.
+- Write the final user-facing outcome, not a process update.
+- Use completed/past-tense language for actions that already ran.
+- If Lark tasks were created, list the task titles and include owner/location when available.
+- If an internal Divo checklist was updated, do not call it a Lark Task.
+- If a previous attempt only updated an internal checklist, say that plainly before saying what was corrected.
+- Preserve important details: titles, counts, IDs, dates, amounts, links, errors, and partial failures.
+- Do not mention tool names or agent names. Mention the Divo checklist only when needed to correct a mistaken Lark-task claim.
 - Be direct — no filler phrases.
 - If no meaningful data was returned by tools, say so plainly.`,
           messages: [

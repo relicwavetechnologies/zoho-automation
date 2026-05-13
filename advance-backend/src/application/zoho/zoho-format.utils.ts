@@ -8,12 +8,11 @@ const currencySymbols: Record<string, string> = {
   SGD: 'S$',
 };
 
-export function formatAmount(cents: number, currency = 'USD'): string {
+export function formatAmount(value: number, currency = 'USD'): string {
   const normalizedCurrency = currency.trim().toUpperCase() || 'USD';
   const symbol = currencySymbols[normalizedCurrency] ?? `${normalizedCurrency} `;
-  const amount = cents / 100;
-  const sign = amount < 0 ? '-' : '';
-  const formatted = Math.abs(amount).toLocaleString('en-US', {
+  const sign = value < 0 ? '-' : '';
+  const formatted = Math.abs(value).toLocaleString('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });

@@ -326,7 +326,7 @@ export class ZohoFinanceOps {
       currencyTotals.set(cur, (currencyTotals.get(cur) ?? 0) + inv.balance);
     }
     const formattedTotal = [...currencyTotals.entries()]
-      .map(([cur, amt]) => formatAmount(Math.round(amt * 100), cur))
+      .map(([cur, amt]) => formatAmount(amt, cur))
       .join(', ');
 
     let summary = invoiceCount > 0
