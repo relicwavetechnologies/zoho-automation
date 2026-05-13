@@ -18,7 +18,7 @@ import {
   emitSpecialistStepToolResults,
 } from '../tool-trace';
 
-const DYNAMIC_AGENT_TIMEOUT_MS = 150_000;
+const DYNAMIC_AGENT_TIMEOUT_MS = 300_000;
 
 export interface RunDynamicAgentInput {
   readonly task: string;
