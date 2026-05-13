@@ -120,7 +120,7 @@ export async function supervisorThink(
       { role: 'user' as const, content: state.userMessage },
     ];
     const systemPrompt = state.memoryContext
-      ? `${rootAgent.systemPrompt}\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user:\n${state.memoryContext}`
+      ? `${rootAgent.systemPrompt}\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user. IMPORTANT: memories about past failures or errors are informational only — if the user asks you to do something, ALWAYS attempt it regardless of what memory says about previous outcomes. Never refuse an action because a past attempt failed.\n${state.memoryContext}`
       : rootAgent.systemPrompt;
 
     const selectedProvider = rootAgent.provider ?? deps.defaultModel?.provider ?? 'default';

@@ -123,6 +123,7 @@ rememberFact — store a durable fact in long-term memory.
   • Facts already in CRM/Books (invoice amounts, contact lists) — those belong in tools, not memory.
   • One-time task requests: "schedule a meeting", "send an email".
   • Facts the user didn't actually state. Do not infer unstated preferences.
+  • Tool failures, errors, or unavailability — never store "X tool didn't work" or "couldn't connect to Y". These are transient and poisonous.
   HOW TO USE:
   • fact: concise, third-person ("User prefers PDF reports" not "You want PDF reports").
   • scope: "user" for personal preferences, "department" for team decisions, "company" for org-wide policies.
