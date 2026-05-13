@@ -11,6 +11,7 @@ import type { Tool } from '../tools/tool.contract';
 import type { Logger } from '../../../shared/logger';
 import type { Clock } from '../../../shared/clock';
 import type { ApprovalGateService } from '../../approval/approval-gate.service';
+import type { OrchestrationTracer } from '../../observability/orchestration-tracer';
 
 export interface AgentRunCtx {
   /** The LLM used by all runners — same model as the supervisor. */
@@ -35,6 +36,8 @@ export interface AgentRunCtx {
   runContext:  RunContext;
   logger:      Logger;
   clock:       Clock;
+  /** Run-level structured event tracer for admin execution detail. */
+  tracer?:     OrchestrationTracer;
   /** HITL approval gate — when present, non-read tool actions are pre-approved. */
   approvalGate?: ApprovalGateService;
   /** Lark chat_id used by the approval gate for idempotency. */

@@ -38,6 +38,10 @@ function addArraySection(
   addBudgetedLine(lines, `${label}: ${values.join('; ')}`, state);
 }
 
+function asSummaryArray(values: readonly string[] | undefined): readonly string[] {
+  return Array.isArray(values) ? values : [];
+}
+
 function formatSummary(summary: GroupChatSummary, tokenBudget = GROUP_CONTEXT_POLICY.SUMMARY_CONTEXT_TOKEN_BUDGET): string {
   const lines: string[] = [];
   const state = { tokens: 0, budget: tokenBudget };
@@ -45,17 +49,17 @@ function formatSummary(summary: GroupChatSummary, tokenBudget = GROUP_CONTEXT_PO
   if (summary.summary) addBudgetedLine(lines, `Summary: ${summary.summary}`, state);
   if (summary.latestObjective) addBudgetedLine(lines, `Current objective: ${summary.latestObjective}`, state);
   if (summary.latestDirection) addBudgetedLine(lines, `Latest direction: ${summary.latestDirection}`, state);
-  addArraySection(lines, state, 'Decisions', summary.decisions);
-  addArraySection(lines, state, 'Open questions', summary.openQuestions);
-  addArraySection(lines, state, 'Owners', summary.owners);
-  addArraySection(lines, state, 'Deadlines', summary.deadlines);
-  addArraySection(lines, state, 'Key entities', summary.activeEntities);
-  addArraySection(lines, state, 'Files and links', summary.mentionedResources);
-  addArraySection(lines, state, 'Completed actions', summary.completedActions);
-  addArraySection(lines, state, 'Constraints', summary.constraints);
-  addArraySection(lines, state, 'Blockers', summary.blockers);
-  addArraySection(lines, state, 'User goals', summary.userGoals);
-  addArraySection(lines, state, 'Superseded', summary.superseded);
+  addArraySection(lines, state, 'Decisions', asSummaryArray(summary.decisions));
+  addArraySection(lines, state, 'Open questions', asSummaryArray(summary.openQuestions));
+  addArraySection(lines, state, 'Owners', asSummaryArray(summary.owners));
+  addArraySection(lines, state, 'Deadlines', asSummaryArray(summary.deadlines));
+  addArraySection(lines, state, 'Key entities', asSummaryArray(summary.activeEntities));
+  addArraySection(lines, state, 'Files and links', asSummaryArray(summary.mentionedResources));
+  addArraySection(lines, state, 'Completed actions', asSummaryArray(summary.completedActions));
+  addArraySection(lines, state, 'Constraints', asSummaryArray(summary.constraints));
+  addArraySection(lines, state, 'Blockers', asSummaryArray(summary.blockers));
+  addArraySection(lines, state, 'User goals', asSummaryArray(summary.userGoals));
+  addArraySection(lines, state, 'Superseded', asSummaryArray(summary.superseded));
 
   return lines.join('\n');
 }

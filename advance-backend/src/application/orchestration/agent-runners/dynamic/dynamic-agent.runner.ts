@@ -11,7 +11,12 @@ import {
 } from '../../../../shared/circuit-breaker';
 import { redModelSelection } from '../../../../shared/model-selection-log';
 import { getISTDateTime } from '../../agents/supervisor.prompt';
-import { appendToolTrace } from '../tool-trace';
+import {
+  appendToolTrace,
+  emitSpecialistFinished,
+  emitSpecialistStarted,
+  emitSpecialistStepToolResults,
+} from '../tool-trace';
 
 const DYNAMIC_AGENT_TIMEOUT_MS = 150_000;
 
@@ -33,6 +38,7 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
   const path = input.path ?? [];
   const { agent, ctx } = input;
   const log = ctx.logger.child({ runner: 'dynamic', agentId: agent.id, agentSlug: agent.slug });
+  const runnerStartMs = Date.now();
 
   if (depth > 3) {
     return { status: 'failed', result: 'error: dynamic agent depth limit exceeded', error: 'depth_limit' };
@@ -118,6 +124,15 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       depth,
     });
 
+    emitSpecialistStarted({
+      tracer: ctx.tracer,
+      actorKey: agent.slug,
+      toolName: agent.slug,
+      task,
+      toolCount: toolNames.length,
+      depth,
+    });
+
     const circuitProvider = agent.provider ?? 'gemini';
     const genResult = await runWithCircuitBreaker(
       circuitProvider,
@@ -136,6 +151,11 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
     );
 
     const { text, steps, finishReason } = genResult;
+    emitSpecialistStepToolResults({
+      tracer: ctx.tracer,
+      actorKey: agent.slug,
+      steps,
+    });
 
     log.info('dynamic_agent.generateText.done', {
       textLength: text?.length ?? 0,
@@ -156,10 +176,24 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
 
     const traced = appendToolTrace(result, steps);
     log.info('dynamic_agent.done', { replyLength: traced.length, replyPreview: traced.substring(0, 300) });
+    emitSpecialistFinished({
+      tracer: ctx.tracer,
+      actorKey: agent.slug,
+      toolName: agent.slug,
+      output: traced,
+      startMs: runnerStartMs,
+    });
     return { status: 'success', result: traced };
   } catch (e) {
     if (e instanceof CircuitBreakerOpenError) {
       log.warn('dynamic_agent.circuit_open', { retryAt: e.retryAt });
+      emitSpecialistFinished({
+        tracer: ctx.tracer,
+        actorKey: agent.slug,
+        toolName: agent.slug,
+        output: 'error: AI service temporarily unavailable, please try again shortly.',
+        startMs: runnerStartMs,
+      });
       return {
         status: 'failed',
         result: 'error: AI service temporarily unavailable, please try again shortly.',
@@ -168,6 +202,13 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
     }
     const msg = e instanceof Error ? e.message : String(e);
     log.error('dynamic_agent.error', { error: msg });
+    emitSpecialistFinished({
+      tracer: ctx.tracer,
+      actorKey: agent.slug,
+      toolName: agent.slug,
+      output: `error: ${msg}`,
+      startMs: runnerStartMs,
+    });
     return { status: 'failed', result: `error: ${msg}`, error: msg };
   }
 }

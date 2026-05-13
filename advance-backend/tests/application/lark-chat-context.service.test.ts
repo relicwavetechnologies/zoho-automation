@@ -30,10 +30,12 @@ describe('partitionRecentMessages', () => {
     assert.ok(retained.length >= 40, `expected at least 40, got ${retained.length}`);
   });
 
-  it('caps at max messages', () => {
+  it('caps retained messages and returns overflow for summary rollover', () => {
     const messages = Array.from({ length: 250 }, () => makeMsg('short'));
     const { compactedChunk, retained } = partitionRecentMessages(messages, 80_000, 40, 200);
-    assert.equal(compactedChunk.length + retained.length, 200);
+    assert.equal(retained.length, 200);
+    assert.equal(compactedChunk.length, 50);
+    assert.equal(compactedChunk.length + retained.length, 250);
   });
 
   it('compacts older messages when budget is exceeded beyond min', () => {

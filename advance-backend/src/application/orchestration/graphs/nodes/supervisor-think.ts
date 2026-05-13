@@ -19,6 +19,7 @@ import type { OrchestrationTracer } from '../../../observability/orchestration-t
 import type { StatusChannel } from '../../engine/status-channel';
 import type { RunStatusAggregator } from '../../run-status.aggregator';
 import { redModelSelection } from '../../../../shared/model-selection-log';
+import { buildToolFinishedPayload, isErrorOutput } from '../../agent-runners/tool-trace';
 
 const SUPERVISOR_TIMEOUT_MS = 180_000;
 
@@ -79,6 +80,7 @@ export async function supervisorThink(
       runContext: state.runContext,
       logger: deps.logger,
       clock: deps.clock,
+      ...(deps.tracer ? { tracer: deps.tracer } : {}),
       ...(state.approvalGate ? { approvalGate: state.approvalGate } : {}),
       ...(deps.geminiApiKey ? { geminiApiKey: deps.geminiApiKey } : {}),
       ...(state.chatId ? { chatId: state.chatId } : {}),
@@ -214,11 +216,13 @@ async function runSupervisorStream(input: {
 
   const toolCalls: string[] = [];
   const toolResults: Array<{ toolName: string; output: string }> = [];
+  const toolTimers = new Map<string, number>();
   let text = '';
   let statusHandle: Awaited<ReturnType<StatusChannel['sendStatus']>> = null;
   for await (const chunk of result.fullStream) {
     if (chunk.type === 'tool-call') {
       toolCalls.push(chunk.toolName);
+      toolTimers.set(chunk.toolName, Date.now());
       input.tracer?.emit({
         phase: 'execute', eventType: 'tool_call_started',
         actorType: 'supervisor', actorKey: chunk.toolName,
@@ -235,16 +239,22 @@ async function runSupervisorStream(input: {
     }
     if (chunk.type === 'tool-result') {
       const output = String(chunk.output);
+      const isError = isErrorOutput(output);
+      const startMs = toolTimers.get(chunk.toolName);
       toolResults.push({ toolName: chunk.toolName, output });
       input.tracer?.emit({
         phase: 'execute', eventType: 'tool_call_finished',
         actorType: 'supervisor', actorKey: chunk.toolName,
-        title: `${chunk.toolName} completed`,
-        status: 'success',
-        payload: { toolName: chunk.toolName, resultLength: output.length },
+        title: `${chunk.toolName} ${isError ? 'failed' : 'completed'}`,
+        status: isError ? 'error' : 'success',
+        payload: buildToolFinishedPayload(chunk.toolName, output, startMs),
       });
       if (input.aggregator && input.statusChannel) {
-        input.aggregator.recordResult(chunk.toolName, output);
+        if (isError) {
+          input.aggregator.recordFailure(chunk.toolName, output);
+        } else {
+          input.aggregator.recordResult(chunk.toolName, output);
+        }
         statusHandle = await input.statusChannel.editStatus(statusHandle, {
           kind: 'status', terminal: false, timeline: input.aggregator.snapshot(),
         });

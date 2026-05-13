@@ -54,6 +54,7 @@ import { createRememberFactTool } from '../tools/orchestration/remember-fact.too
 import { buildCapabilitiesForAgent } from '../agent-runners/dynamic/agent-as-tool';
 import { buildDynamicSupervisorGraph, type DynamicSupervisorGraph } from '../graphs/dynamic-supervisor.graph';
 import type { Mem0Service } from '../../memory/mem0.service';
+import { buildToolFinishedPayload, isErrorOutput } from '../agent-runners/tool-trace';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -164,7 +165,10 @@ export class SupervisorAgent {
           phase: 'synthesis', eventType: 'synthesis_complete',
           actorType: 'synthesis', title: 'Response synthesized',
           status: 'success',
-          payload: { replyLength: graphResult.value.finalText.length },
+          payload: {
+            replyLength: graphResult.value.finalText.length,
+            replyPreview: graphResult.value.finalText.slice(0, 500),
+          },
         });
 
         return ok({
@@ -226,6 +230,7 @@ export class SupervisorAgent {
       runContext,
       logger,
       clock,
+      ...(tracer ? { tracer } : {}),
       ...(approvalGate    ? { approvalGate }    : {}),
       ...(geminiApiKey    ? { geminiApiKey }    : {}),
       chatId: chatId ?? String(channelId),
@@ -339,6 +344,7 @@ export class SupervisorAgent {
 
           const innerCalled: string[] = [];
           const toolResults: Array<{ toolName: string; output: string }> = [];
+          const toolTimers = new Map<string, number>();
           let innerText = '';
           let stepCount = 0;
           let chunkCount = 0;
@@ -362,6 +368,7 @@ export class SupervisorAgent {
 
             if (chunk.type === 'tool-call') {
               aggregator.recordCall(chunk.toolName);
+              toolTimers.set(chunk.toolName, Date.now());
               currentStatusHandle = await statusChannel.editStatus(currentStatusHandle, {
                 kind: 'status', terminal: false, timeline: aggregator.snapshot(),
               });
@@ -383,8 +390,14 @@ export class SupervisorAgent {
 
             if (chunk.type === 'tool-result') {
               const output = String(chunk.output);
+              const isError = isErrorOutput(output);
+              const startMs = toolTimers.get(chunk.toolName);
               toolResults.push({ toolName: chunk.toolName, output });
-              aggregator.recordResult(chunk.toolName, output);
+              if (isError) {
+                aggregator.recordFailure(chunk.toolName, output);
+              } else {
+                aggregator.recordResult(chunk.toolName, output);
+              }
               currentStatusHandle = await statusChannel.editStatus(currentStatusHandle, {
                 kind: 'status', terminal: false, timeline: aggregator.snapshot(),
               });
@@ -398,9 +411,9 @@ export class SupervisorAgent {
               tracer?.emit({
                 phase: 'execute', eventType: 'tool_call_finished',
                 actorType: 'supervisor', actorKey: chunk.toolName,
-                title: `${chunk.toolName} completed`,
-                status: 'success',
-                payload: { toolName: chunk.toolName, resultLength: output.length },
+                title: `${chunk.toolName} ${isError ? 'failed' : 'completed'}`,
+                status: isError ? 'error' : 'success',
+                payload: buildToolFinishedPayload(chunk.toolName, output, startMs),
               });
             }
 
@@ -557,14 +570,22 @@ export class SupervisorAgent {
       phase: 'synthesis', eventType: 'synthesis_complete',
       actorType: 'synthesis', title: 'Response synthesized',
       status: 'success',
-      payload: { replyLength: finalText.length },
+      payload: {
+        replyLength: finalText.length,
+        replyPreview: finalText.slice(0, 500),
+      },
     });
 
     tracer?.emit({
       phase: 'complete', eventType: 'supervisor_complete',
       actorType: 'supervisor', title: 'Supervisor complete',
       status: 'success',
-      payload: { toolsCalled, replyLength: finalText.length },
+      payload: {
+        toolsCalled,
+        replyLength: finalText.length,
+        replyPreview: finalText.slice(0, 500),
+        supervisorTextEmpty: finalText === 'Done.',
+      },
     });
 
     return ok({ finalReply, toolsCalled, toolResults });
@@ -640,7 +661,12 @@ export class SupervisorAgent {
       phase: 'complete', eventType: 'supervisor_complete',
       actorType: 'supervisor', title: 'Dynamic supervisor graph complete',
       status: 'success',
-      payload: { toolsCalled: output.toolCallsMade, replyLength: finalText.length },
+      payload: {
+        toolsCalled: output.toolCallsMade,
+        replyLength: finalText.length,
+        replyPreview: finalText.slice(0, 500),
+        supervisorTextEmpty: finalText === 'Done.',
+      },
     });
 
     return ok({

@@ -8,7 +8,12 @@ import {
   GEMINI_CIRCUIT_OPTIONS,
 } from '../../../shared/circuit-breaker';
 import { gradeAnswer } from '../../retrieval/answer-grader';
-import { appendToolTrace } from './tool-trace';
+import {
+  appendToolTrace,
+  emitSpecialistFinished,
+  emitSpecialistStarted,
+  emitSpecialistStepToolResults,
+} from './tool-trace';
 
 export async function runContextAgent(
   args: { task: string },
@@ -26,6 +31,17 @@ export async function runContextAgent(
     ...(ctx.chatId !== undefined ? { chatId: ctx.chatId } : {}),
   }, CONTEXT_TOOL_IDS);
 
+  const actorKey = 'context_ops';
+  const toolNames = Object.keys(tools);
+  const startMs = Date.now();
+  emitSpecialistStarted({
+    tracer: ctx.tracer,
+    actorKey,
+    toolName: actorKey,
+    task: args.task,
+    toolCount: toolNames.length,
+  });
+
   try {
     const result = await runWithCircuitBreaker(
       'gemini', 'context-runner', GEMINI_CIRCUIT_OPTIONS,
@@ -40,6 +56,7 @@ export async function runContextAgent(
       }),
       log,
     );
+    emitSpecialistStepToolResults({ tracer: ctx.tracer, actorKey, steps: result.steps });
 
     const text = result.text || 'No results found.';
 
@@ -75,6 +92,14 @@ export async function runContextAgent(
 
           if (refinedResult?.text) {
             log.info('context_runner.refined', { originalLength: text.length, refinedLength: refinedResult.text.length });
+            emitSpecialistStepToolResults({ tracer: ctx.tracer, actorKey, steps: refinedResult.steps });
+            emitSpecialistFinished({
+              tracer: ctx.tracer,
+              actorKey,
+              toolName: actorKey,
+              output: refinedResult.text,
+              startMs,
+            });
             return refinedResult.text;
           }
         }
@@ -83,15 +108,20 @@ export async function runContextAgent(
 
     const traced = appendToolTrace(text, result.steps);
     log.info('context_runner.done', { replyLength: traced.length });
+    emitSpecialistFinished({ tracer: ctx.tracer, actorKey, toolName: actorKey, output: traced, startMs });
     return traced;
   } catch (e) {
     if (e instanceof CircuitBreakerOpenError) {
       log.warn('context_runner.circuit_open', { retryAt: e.retryAt });
-      return 'error: AI service temporarily unavailable, please try again shortly.';
+      const output = 'error: AI service temporarily unavailable, please try again shortly.';
+      emitSpecialistFinished({ tracer: ctx.tracer, actorKey, toolName: actorKey, output, startMs });
+      return output;
     }
     const msg = e instanceof Error ? e.message : String(e);
     log.error('context_runner.error', { error: msg });
-    return `error: ${msg}`;
+    const output = `error: ${msg}`;
+    emitSpecialistFinished({ tracer: ctx.tracer, actorKey, toolName: actorKey, output, startMs });
+    return output;
   }
 }
 

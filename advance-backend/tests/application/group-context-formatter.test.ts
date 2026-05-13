@@ -109,6 +109,22 @@ describe('formatGroupContextForPrompt', () => {
     assert.ok(!result.includes('[Recent raw group transcript'));
   });
 
+  it('handles partially populated legacy summary JSON safely', () => {
+    const window: GroupChatWindow = {
+      summary: {
+        summary: 'Old summary without array fields',
+        sourceMessageCount: 12,
+        updatedAt: new Date().toISOString(),
+      } as GroupChatSummary,
+      recentMessages: [],
+      totalMessageCount: 12,
+    };
+
+    const result = formatGroupContextForPrompt(window);
+
+    assert.ok(result.includes('Old summary without array fields'));
+  });
+
   it('selects newest transcript messages within budget and returns chronological order', () => {
     const messages = [
       msg('A', 'old ' + 'x'.repeat(200)),

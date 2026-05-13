@@ -7,7 +7,12 @@ import {
   CircuitBreakerOpenError,
   GEMINI_CIRCUIT_OPTIONS,
 } from '../../../shared/circuit-breaker';
-import { appendToolTrace } from './tool-trace';
+import {
+  appendToolTrace,
+  emitSpecialistFinished,
+  emitSpecialistStarted,
+  emitSpecialistStepToolResults,
+} from './tool-trace';
 
 export async function runZohoAgent(
   args: { task: string },
@@ -25,6 +30,17 @@ export async function runZohoAgent(
     ...(ctx.chatId !== undefined ? { chatId: ctx.chatId } : {}),
   }, ZOHO_TOOL_IDS);
 
+  const actorKey = 'zoho_ops';
+  const toolNames = Object.keys(tools);
+  const startMs = Date.now();
+  emitSpecialistStarted({
+    tracer: ctx.tracer,
+    actorKey,
+    toolName: actorKey,
+    task: args.task,
+    toolCount: toolNames.length,
+  });
+
   try {
     const { text, steps } = await runWithCircuitBreaker(
       'gemini', 'zoho-runner', GEMINI_CIRCUIT_OPTIONS,
@@ -39,16 +55,22 @@ export async function runZohoAgent(
       }),
       log,
     );
+    emitSpecialistStepToolResults({ tracer: ctx.tracer, actorKey, steps });
     const result = appendToolTrace(text || 'Done.', steps);
     log.info('zoho_runner.done', { replyLength: result.length });
+    emitSpecialistFinished({ tracer: ctx.tracer, actorKey, toolName: actorKey, output: result, startMs });
     return result;
   } catch (e) {
     if (e instanceof CircuitBreakerOpenError) {
       log.warn('zoho_runner.circuit_open', { retryAt: e.retryAt });
-      return 'error: AI service temporarily unavailable, please try again shortly.';
+      const output = 'error: AI service temporarily unavailable, please try again shortly.';
+      emitSpecialistFinished({ tracer: ctx.tracer, actorKey, toolName: actorKey, output, startMs });
+      return output;
     }
     const msg = e instanceof Error ? e.message : String(e);
     log.error('zoho_runner.error', { error: msg });
-    return `error: ${msg}`;
+    const output = `error: ${msg}`;
+    emitSpecialistFinished({ tracer: ctx.tracer, actorKey, toolName: actorKey, output, startMs });
+    return output;
   }
 }

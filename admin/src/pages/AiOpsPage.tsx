@@ -65,6 +65,22 @@ function formatTime(iso: string): string {
   }
 }
 
+function payloadString(payload: Record<string, unknown> | null | undefined, key: string): string | null {
+  const value = payload?.[key]
+  return typeof value === "string" && value.trim() ? value : null
+}
+
+function payloadNumber(payload: Record<string, unknown> | null | undefined, key: string): number | null {
+  const value = payload?.[key]
+  return typeof value === "number" ? value : null
+}
+
+function eventPreview(event: ExecutionEvent): string | null {
+  return payloadString(event.payload, "error")
+    ?? payloadString(event.payload, "resultPreview")
+    ?? payloadString(event.payload, "replyPreview")
+}
+
 function buildSummaryText(run: RunDetail, events: ExecutionEvent[]): string {
   const lines: string[] = []
   lines.push(`Run: ${run.id}`)
@@ -78,7 +94,11 @@ function buildSummaryText(run: RunDetail, events: ExecutionEvent[]): string {
   lines.push("")
   lines.push(`Events (${events.length}):`)
   for (const e of events) {
-    lines.push(`  [${e.sequence}] ${e.phase} | ${e.title}${e.summary ? ` — ${e.summary}` : ""}`)
+    const preview = eventPreview(e)
+    const actor = e.actorKey ? ` [${e.actorKey}]` : ""
+    const status = e.status ? ` (${e.status})` : ""
+    lines.push(`  [${e.sequence}] ${e.phase}${actor} | ${e.title}${status}${e.summary ? ` — ${e.summary}` : ""}`)
+    if (preview) lines.push(`      ${preview}`)
   }
   return lines.join("\n")
 }
@@ -375,6 +395,8 @@ function EventRow({ event }: { event: ExecutionEvent }) {
   const payload = event.payload && typeof event.payload === "object" && Object.keys(event.payload).length > 0
     ? event.payload
     : null
+  const preview = eventPreview(event)
+  const durationMs = payloadNumber(payload, "durationMs")
 
   return (
     <div
@@ -388,9 +410,22 @@ function EventRow({ event }: { event: ExecutionEvent }) {
         <span className="font-mono text-[10px] text-muted-foreground">{event.sequence}</span>
         <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", phaseColor[event.phase] ?? "bg-secondary")} />
         <span className="text-[10px] font-medium uppercase text-muted-foreground">{event.phase}</span>
+        {event.actorKey && (
+          <span className="max-w-[120px] truncate rounded-sm bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+            {event.actorKey}
+          </span>
+        )}
         <span className="flex-1 truncate text-[12px]">{event.title}</span>
+        {durationMs !== null && <span className="font-mono text-[10px] text-muted-foreground">{formatDuration(durationMs)}</span>}
         {event.status && <StatusBadge value={event.status} />}
       </div>
+      {preview && (
+        <div className="px-3 pb-2">
+          <p className="max-h-16 overflow-hidden whitespace-pre-wrap rounded-md bg-secondary/60 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-foreground/75">
+            {preview}
+          </p>
+        </div>
+      )}
       {expanded && payload && (
         <div className="border-t border-border/40 px-3 py-2">
           <pre className="max-h-60 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-foreground/70">

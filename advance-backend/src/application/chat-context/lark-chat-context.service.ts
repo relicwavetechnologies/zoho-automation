@@ -61,6 +61,9 @@ export function partitionRecentMessages(
     return { compactedChunk: [], retained: messages };
   }
 
+  const overflow = messages.length > maxMessages
+    ? messages.slice(0, messages.length - maxMessages)
+    : [];
   const capped = messages.length > maxMessages
     ? messages.slice(messages.length - maxMessages)
     : messages;
@@ -78,11 +81,11 @@ export function partitionRecentMessages(
   }
 
   if (retainFrom <= 0) {
-    return { compactedChunk: [], retained: capped };
+    return { compactedChunk: overflow, retained: capped };
   }
 
   return {
-    compactedChunk: capped.slice(0, retainFrom),
+    compactedChunk: [...overflow, ...capped.slice(0, retainFrom)],
     retained: capped.slice(retainFrom),
   };
 }
