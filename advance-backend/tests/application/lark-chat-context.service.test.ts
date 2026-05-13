@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { partitionRecentMessages } from '../../src/application/chat-context/lark-chat-context.service.ts';
 import type { GroupChatMessage } from '../../src/domain/conversation/group-context.ts';
+import { GROUP_CONTEXT_POLICY } from '../../src/domain/conversation/group-context-policy.ts';
 
 function makeMsg(content: string): GroupChatMessage {
   return {
@@ -48,5 +49,19 @@ describe('partitionRecentMessages', () => {
     const { compactedChunk, retained } = partitionRecentMessages(messages, 80_000, 40, 200);
     assert.equal(compactedChunk.length, 0);
     assert.equal(retained.length, 50);
+  });
+
+  it('uses the lean retention budget to roll older group messages into summary', () => {
+    const messages = Array.from({ length: 100 }, () => makeMsg('x'.repeat(1_000)));
+    const { compactedChunk, retained } = partitionRecentMessages(
+      messages,
+      GROUP_CONTEXT_POLICY.RETAINED_MESSAGE_TOKEN_BUDGET,
+      GROUP_CONTEXT_POLICY.MIN_MESSAGES,
+      GROUP_CONTEXT_POLICY.MAX_MESSAGES,
+    );
+
+    assert.ok(compactedChunk.length > 0);
+    assert.ok(retained.length >= GROUP_CONTEXT_POLICY.MIN_MESSAGES);
+    assert.equal(compactedChunk.length + retained.length, 100);
   });
 });

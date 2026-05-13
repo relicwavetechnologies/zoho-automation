@@ -6,7 +6,12 @@ import type { Turn } from '../../domain/conversation/turn';
 import type { CachePort } from '../../shared/cache';
 
 const HISTORY_CACHE_TTL = 300; // 5 min; invalidated on every appendTurn
-const historyCacheKey = (chatId: string) => `history:v1:${chatId}`;
+const HISTORY_CACHE_WINDOW = 60;
+const historyCacheKey = (chatId: string) => `history:v2:${chatId}`;
+
+function latestTurns(turns: readonly Turn[], limit: number): Turn[] {
+  return turns.slice(Math.max(0, turns.length - limit));
+}
 
 export interface ConversationRepoPort {
   getHistory(chatId: string, limit?: number): Promise<Result<Turn[], InfraError>>;
@@ -25,22 +30,24 @@ export class ConversationRepository implements ConversationRepoPort {
     if (this.cache) {
       const cached = await this.cache.get<Turn[]>(historyCacheKey(chatId));
       if (cached.ok && cached.value !== null) {
-        return ok(cached.value.slice(0, limit));
+        return ok(latestTurns(cached.value, limit));
       }
     }
 
     try {
+      const dbLimit = Math.max(limit, HISTORY_CACHE_WINDOW);
       const conv = await this.db.runtimeConversation.findFirst({
         where: { channelConversationKey: chatId },
         include: {
           messages: {
-            orderBy: { sequence: 'asc' },
-            take: limit,
+            orderBy: { sequence: 'desc' },
+            take: dbLimit,
           },
         },
       });
       if (!conv) return ok([]);
-      const turns: Turn[] = conv.messages.map(r => {
+      const messages = [...conv.messages].reverse();
+      const turns: Turn[] = messages.map(r => {
         const base: Turn = {
           id: r.id,
           role: r.role as Turn['role'],
@@ -60,7 +67,7 @@ export class ConversationRepository implements ConversationRepoPort {
       if (this.cache && turns.length > 0) {
         void this.cache.set(historyCacheKey(chatId), turns, HISTORY_CACHE_TTL);
       }
-      return ok(turns);
+      return ok(latestTurns(turns, limit));
     } catch (e) {
       return err(wrapInfra('prisma', 'getConversationHistory', e));
     }
