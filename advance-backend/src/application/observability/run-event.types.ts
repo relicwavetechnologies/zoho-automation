@@ -129,8 +129,7 @@ export interface RedelegatePayload {
 }
 
 export interface SynthesisCompletePayload {
-  replyLength:   number;
-  replyPreview?: string;
+  replyLength: number;
 }
 
 export interface SynthesisFailedPayload {
@@ -155,16 +154,13 @@ export interface ToolCallStartedPayload {
 }
 
 export interface ToolCallFinishedPayload {
-  toolName:      string;
-  resultLength:  number;
-  resultPreview?: string;
-  error?:        string;
+  toolName:     string;
+  resultLength: number;
 }
 
 export interface SupervisorCompletePayload {
-  toolsCalled:   string[];
-  replyLength:   number;
-  replyPreview?: string;
+  toolsCalled:  string[];
+  replyLength:  number;
 }
 
 export interface MemoryExtractedPayload {

@@ -557,14 +557,14 @@ export class SupervisorAgent {
       phase: 'synthesis', eventType: 'synthesis_complete',
       actorType: 'synthesis', title: 'Response synthesized',
       status: 'success',
-      payload: { replyLength: finalText.length, replyPreview: finalText.slice(0, 500) },
+      payload: { replyLength: finalText.length },
     });
 
     tracer?.emit({
       phase: 'complete', eventType: 'supervisor_complete',
       actorType: 'supervisor', title: 'Supervisor complete',
       status: 'success',
-      payload: { toolsCalled, replyLength: finalText.length, replyPreview: finalText.slice(0, 500) },
+      payload: { toolsCalled, replyLength: finalText.length },
     });
 
     return ok({ finalReply, toolsCalled, toolResults });
@@ -640,11 +640,7 @@ export class SupervisorAgent {
       phase: 'complete', eventType: 'supervisor_complete',
       actorType: 'supervisor', title: 'Dynamic supervisor graph complete',
       status: 'success',
-      payload: {
-        toolsCalled: output.toolCallsMade,
-        replyLength: finalText.length,
-        replyPreview: finalText.slice(0, 500),
-      },
+      payload: { toolsCalled: output.toolCallsMade, replyLength: finalText.length },
     });
 
     return ok({
