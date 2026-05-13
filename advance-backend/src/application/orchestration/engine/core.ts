@@ -214,7 +214,9 @@ export class OrchestrationEngine {
       );
     }
 
-    await statusChannel.sendStatus({ kind: 'status', terminal: false, branding, timeline: { liveLabel: 'Routing…' } });
+    const statusPromise = statusChannel.sendStatus({
+      kind: 'status', terminal: false, branding, timeline: { liveLabel: 'Routing…' },
+    });
 
     // ── 3. Discover allowed tools ─────────────────────────────────────────
     const availableTools = this.deps.toolRegistry.forRuntime(perm);
@@ -226,21 +228,27 @@ export class OrchestrationEngine {
         text: 'No tools are available for your current role. Please contact your administrator.',
         format: 'text',
       };
+      await statusPromise;
       await channelAdapter.sendFinalReply(conversation, noToolsReply);
       return ok({ finalReply: noToolsReply, toolsCalled: [] });
     }
 
-    const memoryContextPromise = this.searchMemoryContext({
-      query: incoming.text,
-      runContext,
-      log,
-    });
-
-    // ── 4. Load history with poison filter ────────────────────────────────
-    const historyResult = await this.deps.history.loadWindow(
-      incoming.chatId as unknown as ChatId,
-      { filterPoison: true, perm },
-    );
+    // ── 4. Load pre-supervisor context in parallel ────────────────────────
+    const [historyResult, memoryContext, groupContextResult] = await Promise.all([
+      this.deps.history.loadWindow(
+        incoming.chatId as unknown as ChatId,
+        { filterPoison: true, perm },
+      ),
+      this.searchMemoryContext({
+        query: incoming.text,
+        runContext,
+        log,
+      }),
+      incoming.chatType === 'group' && this.deps.chatContext
+        ? this.deps.chatContext.loadContext(String(runContext.companyId), String(incoming.chatId))
+        : Promise.resolve(null),
+      statusPromise,
+    ]);
     const history = historyResult.ok
       ? historyResult.value
       : { turns: [], truncated: false, tokenEstimate: 0 };
@@ -281,27 +289,20 @@ export class OrchestrationEngine {
       const fpMs = this.deps.clock.nowMs() - runStartMs;
       log.info('engine.fast_path.complete', { durationMs: fpMs });
       tracer?.complete(fastResult.text.slice(0, 500));
-      // memoryContextPromise runs to completion in background (no leak — it's fire-and-forget).
       return ok({ finalReply: fastReply, toolsCalled: [] });
     }
 
-    // ── 4c. Load persistent memory context ────────────────────────────────
-    const memoryContext = await memoryContextPromise;
+    // ── 4c. Loaded persistent memory context ─────────────────────────────
     debugMemoryContext(memoryContext);
 
-    // ── 4d. Load group chat context (if applicable) ──────────────────────
-    let groupContext: string | undefined;
-    if (incoming.chatType === 'group' && this.deps.chatContext) {
-      const ctxResult = await this.deps.chatContext.loadContext(
-        String(runContext.companyId), String(incoming.chatId),
-      );
-      if (ctxResult.ok && ctxResult.value.recentMessages.length > 0) {
-        groupContext = formatGroupContextForPrompt(ctxResult.value);
-      }
-    }
+    // ── 4d. Loaded group chat context (if applicable) ────────────────────
+    const groupContext = groupContextResult?.ok && groupContextResult.value.recentMessages.length > 0
+      ? formatGroupContextForPrompt(groupContextResult.value)
+      : undefined;
     debugGroupContext(groupContext);
 
     // ── 5. Run supervisor ─────────────────────────────────────────────────
+    log.info('engine.pre_supervisor.duration', { ms: this.deps.clock.nowMs() - runStartMs });
     const supervisorResult = await this.deps.supervisor.run({
       userMessage:    incoming.text,
       history,

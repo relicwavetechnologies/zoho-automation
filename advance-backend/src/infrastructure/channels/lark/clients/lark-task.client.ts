@@ -10,7 +10,18 @@ const normalizeTask = (r: TaskRecord) => ({
   dueDate:   r['due'] as string | undefined,
 });
 
-const toTimestamp = (iso: string) => ({ timestamp: String(Math.floor(new Date(iso).getTime() / 1000)), is_all_day: false });
+const toTimestamp = (iso: string): { timestamp: string; is_all_day: false } | undefined => {
+  const ms = new Date(iso).getTime();
+  if (Number.isNaN(ms)) return undefined;
+  return { timestamp: String(ms), is_all_day: false };
+};
+
+const normalizeDueDate = (due: Record<string, unknown> | undefined): string | undefined => {
+  if (!due) return undefined;
+  const ms = Number(due['timestamp']);
+  if (Number.isNaN(ms)) return undefined;
+  return new Date(ms).toISOString();
+};
 
 export class LarkTaskClient implements LarkTaskClientPort {
   private readonly http: LarkHttpClient;
@@ -27,10 +38,11 @@ export class LarkTaskClient implements LarkTaskClientPort {
     notes?: string;
     tasklist?: string;
   }): Promise<{ taskId: string; title: string }> {
+    const due = params.dueDate ? toTimestamp(params.dueDate) : undefined;
     const body: Record<string, unknown> = {
       summary: params.title,
       ...(params.notes    ? { description: params.notes } : {}),
-      ...(params.dueDate  ? { due: toTimestamp(params.dueDate) } : {}),
+      ...(due             ? { due } : {}),
       ...(params.assigneeIds?.length
         ? { members: params.assigneeIds.map(id => ({ id, type: 'user', role: 'assignee' })) }
         : {}),
@@ -51,11 +63,18 @@ export class LarkTaskClient implements LarkTaskClientPort {
     const update_fields: string[] = [];
     if (params.title     !== undefined) { body['summary']     = params.title;                      update_fields.push('summary'); }
     if (params.notes     !== undefined) { body['description'] = params.notes;                      update_fields.push('description'); }
-    if (params.dueDate   !== undefined) { body['due']         = toTimestamp(params.dueDate);       update_fields.push('due'); }
+    if (params.dueDate !== undefined) {
+      const due = toTimestamp(params.dueDate);
+      if (due) {
+        body['due'] = due;
+        update_fields.push('due');
+      }
+    }
     if (params.assigneeIds !== undefined) {
       body['members'] = params.assigneeIds.map(id => ({ id, type: 'user', role: 'assignee' }));
       update_fields.push('members');
     }
+    if (update_fields.length === 0) return;
     await this.http.request('PATCH', `/open-apis/task/v2/tasks/${encodeURIComponent(taskId)}`, {
       query: { update_fields: update_fields.join(',') },
       body,
@@ -86,7 +105,7 @@ export class LarkTaskClient implements LarkTaskClientPort {
     const data = await this.http.request<GetResponse>('GET', `/open-apis/task/v2/tasks/${encodeURIComponent(taskId)}`);
     const task = data.task;
     const due = task['due'] as Record<string, unknown> | undefined;
-    const dueDateStr = due ? new Date(Number(due['timestamp']) * 1000).toISOString() : undefined;
+    const dueDateStr = normalizeDueDate(due);
     return {
       taskId:    (task['guid'] ?? task['task_id'] ?? taskId) as string,
       title:     (task['summary'] ?? '') as string,
@@ -151,10 +170,11 @@ export class LarkTaskClient implements LarkTaskClientPort {
     dueDate?: string;
     notes?: string;
   }): Promise<{ taskId: string; title: string }> {
+    const due = params.dueDate ? toTimestamp(params.dueDate) : undefined;
     const body: Record<string, unknown> = {
       summary: params.title,
       ...(params.notes   ? { description: params.notes } : {}),
-      ...(params.dueDate ? { due: toTimestamp(params.dueDate) } : {}),
+      ...(due            ? { due } : {}),
       ...(params.assigneeIds?.length
         ? { members: params.assigneeIds.map(id => ({ id, type: 'user', role: 'assignee' })) }
         : {}),
