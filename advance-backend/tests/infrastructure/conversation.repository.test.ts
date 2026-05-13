@@ -12,7 +12,7 @@ function makeTurn(id: string, role: Turn['role'], content: string): Turn {
 }
 
 const CHAT_KEY = 'chat_001';
-const CACHE_KEY = `history:v1:${CHAT_KEY}`;
+const CACHE_KEY = `history:v2:${CHAT_KEY}`;
 
 const turn1 = makeTurn('t1', 'user', 'hello');
 const turn2 = makeTurn('t2', 'assistant', 'hi!');
@@ -121,7 +121,7 @@ describe('ConversationRepository.getHistory', () => {
     assert.equal(dbCalls, 0, 'DB should not be queried on cache hit');
   });
 
-  it('cache hit: respects the limit param (slices cached array)', async () => {
+  it('cache hit: respects the limit param by returning newest cached turns', async () => {
     const store = new Map<string, unknown>([[CACHE_KEY, [turn1, turn2]]]);
     const cache = makeCache(store);
     const repo = new ConversationRepository(makeDb() as any, cache);
@@ -130,7 +130,33 @@ describe('ConversationRepository.getHistory', () => {
 
     assert.ok(result.ok);
     assert.equal(result.value.length, 1);
-    assert.equal(result.value[0]!.id, turn1.id);
+    assert.equal(result.value[0]!.id, turn2.id);
+  });
+
+  it('DB miss: fetches newest rows and returns them in chronological order', async () => {
+    const older = makeTurn('old', 'user', 'old');
+    const middle = makeTurn('middle', 'assistant', 'middle');
+    const newest = makeTurn('newest', 'user', 'newest');
+    let query: any = null;
+    const db = makeDb({
+      runtimeConversation: {
+        findFirst: async (input: unknown) => {
+          query = input;
+          // Prisma returns desc-ordered rows for the query below.
+          return { id: 'conv-1', messages: [makeMessage(newest), makeMessage(middle), makeMessage(older)] };
+        },
+        create: async () => ({ id: 'conv-1' }),
+        update: async () => ({ lastMessageSequence: 1 }),
+      },
+    });
+    const repo = new ConversationRepository(db as any);
+
+    const result = await repo.getHistory(CHAT_KEY, 2);
+
+    assert.ok(result.ok);
+    assert.deepEqual(result.value.map(t => t.id), ['middle', 'newest']);
+    assert.equal(query.include.messages.orderBy.sequence, 'desc');
+    assert.equal(query.include.messages.take, 60);
   });
 
   it('no cache set when DB returns empty array', async () => {

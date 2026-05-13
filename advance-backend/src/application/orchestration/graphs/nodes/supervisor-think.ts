@@ -1,4 +1,4 @@
-import { streamText, stepCountIs } from 'ai';
+import { streamText, generateText, stepCountIs } from 'ai';
 import type { LanguageModel, ToolSet } from 'ai';
 import type { PrismaClient } from '../../../../generated/prisma';
 import type { Logger } from '../../../../shared/logger';
@@ -19,6 +19,7 @@ import type { OrchestrationTracer } from '../../../observability/orchestration-t
 import type { StatusChannel } from '../../engine/status-channel';
 import type { RunStatusAggregator } from '../../run-status.aggregator';
 import { redModelSelection } from '../../../../shared/model-selection-log';
+import { buildSynthesisSupervisorPrompt } from '../../agents/supervisor.prompt';
 
 const SUPERVISOR_TIMEOUT_MS = 180_000;
 
@@ -147,33 +148,52 @@ export async function supervisorThink(
       })
       : deps.model;
 
-    const outcome = deps.executeText
-      ? await deps.executeText({
-        system: systemPrompt,
-        messages,
-        tools,
-        maxSteps: rootAgent.maxSteps,
-        temperature: rootAgent.temperature,
-      })
+    const usingMock = !!deps.executeText;
+    const outcome = usingMock
+      ? { ...await deps.executeText!({
+          system: systemPrompt,
+          messages,
+          tools,
+          maxSteps: rootAgent.maxSteps,
+          temperature: rootAgent.temperature,
+        }), textAfterLastTool: '', toolResults: [] as Array<{ toolName: string; output: string }> }
       : await runSupervisorStream({
+          model: rootModel,
+          system: systemPrompt,
+          messages,
+          tools,
+          maxSteps: rootAgent.maxSteps,
+          temperature: rootAgent.temperature,
+          logger: deps.logger,
+          ...(deps.tracer ? { tracer: deps.tracer } : {}),
+          ...(deps.statusChannel ? { statusChannel: deps.statusChannel } : {}),
+          ...(deps.aggregator ? { aggregator: deps.aggregator } : {}),
+        });
+
+    // Phase 2 — synthesis pass: runs when the supervisor went silent after
+    // delegating (wrote nothing after the last tool result came back).
+    // No tools are available in this call, so the model must produce text.
+    const needsSynthesis =
+      !usingMock &&
+      outcome.toolResults.length > 0 &&
+      !outcome.textAfterLastTool.trim();
+
+    let finalText = outcome.text;
+    if (needsSynthesis) {
+      finalText = await runSynthesisPass({
         model: rootModel,
-        system: systemPrompt,
-        messages,
-        tools,
-        maxSteps: rootAgent.maxSteps,
-        temperature: rootAgent.temperature,
+        originalMessages: messages,
+        toolResults: outcome.toolResults,
         logger: deps.logger,
-        ...(deps.tracer ? { tracer: deps.tracer } : {}),
-        ...(deps.statusChannel ? { statusChannel: deps.statusChannel } : {}),
-        ...(deps.aggregator ? { aggregator: deps.aggregator } : {}),
       });
+    }
 
     const agentDelegations = outcome.toolCalls
       .filter(name => name.startsWith('agent_'))
       .map(name => ({ slug: name.slice('agent_'.length), task: '', result: '' }));
 
     return {
-      supervisorResult: outcome.text.trim() || 'Done.',
+      supervisorResult: finalText.trim() || 'Done.',
       toolCallsMade: outcome.toolCalls,
       agentDelegations,
       status: 'done',
@@ -201,7 +221,12 @@ async function runSupervisorStream(input: {
   readonly tracer?: OrchestrationTracer;
   readonly statusChannel?: StatusChannel;
   readonly aggregator?: RunStatusAggregator;
-}): Promise<{ readonly text: string; readonly toolCalls: string[] }> {
+}): Promise<{
+  readonly text: string;
+  readonly textAfterLastTool: string;
+  readonly toolCalls: string[];
+  readonly toolResults: Array<{ toolName: string; output: string }>;
+}> {
   const result = streamText({
     model: input.model,
     system: input.system,
@@ -215,7 +240,10 @@ async function runSupervisorStream(input: {
   const toolCalls: string[] = [];
   const toolResults: Array<{ toolName: string; output: string }> = [];
   let text = '';
+  let textAfterLastTool = '';
+  let lastToolResultSeen = false;
   let statusHandle: Awaited<ReturnType<StatusChannel['sendStatus']>> = null;
+
   for await (const chunk of result.fullStream) {
     if (chunk.type === 'tool-call') {
       toolCalls.push(chunk.toolName);
@@ -236,6 +264,8 @@ async function runSupervisorStream(input: {
     if (chunk.type === 'tool-result') {
       const output = String(chunk.output);
       toolResults.push({ toolName: chunk.toolName, output });
+      lastToolResultSeen = true;
+      textAfterLastTool = ''; // reset — we track text generated after THIS result
       input.tracer?.emit({
         phase: 'execute', eventType: 'tool_call_finished',
         actorType: 'supervisor', actorKey: chunk.toolName,
@@ -250,51 +280,68 @@ async function runSupervisorStream(input: {
         });
       }
     }
-    if (chunk.type === 'text-delta') text += chunk.text;
-  }
-
-  const agentResults = toolResults
-    .filter(r => r.toolName.startsWith('agent_') && r.output && !r.output.startsWith('error:'))
-    .map(r => r.output);
-
-  // Single agent delegation: use the agent's reply directly.
-  // The agent is the specialist — its output is always richer than
-  // the supervisor's summary. Supervisor only adds value when
-  // synthesizing across multiple agents.
-  if (agentResults.length === 1) {
-    const agentReply = agentResults[0]!;
-    const supervisorText = text.trim();
-
-    if (!supervisorText || agentReply.length > supervisorText.length * 1.5) {
-      input.logger?.info('supervisor.stream.using_agent_reply', {
-        agentReplyLength: agentReply.length,
-        supervisorTextLength: supervisorText.length,
-        reason: !supervisorText ? 'empty_supervisor_text' : 'agent_reply_richer',
-      });
-      return { text: agentReply, toolCalls };
+    if (chunk.type === 'text-delta') {
+      text += chunk.text;
+      if (lastToolResultSeen) textAfterLastTool += chunk.text;
     }
   }
 
-  // Multiple agents or no agents: use supervisor text if available
-  if (text.trim()) {
-    return { text, toolCalls };
-  }
-
-  // Empty supervisor text with multiple agent results: assemble them
-  if (agentResults.length > 1) {
-    const assembled = agentResults.join('\n\n');
-    input.logger?.info('supervisor.stream.assembled_multi_agent', {
-      agentResultCount: agentResults.length,
-      assembledLength: assembled.length,
-    });
-    return { text: assembled, toolCalls };
-  }
-
-  // No agent results and empty text
-  input.logger?.warn('supervisor.stream.empty_final', {
+  input.logger?.info('supervisor.stream.done', {
+    textLength: text.length,
+    textAfterLastToolLength: textAfterLastTool.length,
     toolCallCount: toolCalls.length,
     toolResultCount: toolResults.length,
   });
 
-  return { text, toolCalls };
+  return { text, textAfterLastTool, toolCalls, toolResults };
+}
+
+const SYNTHESIS_TIMEOUT_MS = 60_000;
+
+async function runSynthesisPass(input: {
+  readonly model: LanguageModel;
+  readonly originalMessages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  readonly toolResults: Array<{ toolName: string; output: string }>;
+  readonly logger?: Logger;
+}): Promise<string> {
+  const successResults = input.toolResults.filter(r => !r.output.startsWith('error:'));
+  const failedResults  = input.toolResults.filter(r =>  r.output.startsWith('error:'));
+
+  const resultBlock = [
+    ...successResults.map(r => `[${r.toolName}]:\n${r.output}`),
+    ...failedResults.map(r  => `[${r.toolName} — failed]: ${r.output}`),
+  ].join('\n\n---\n\n');
+
+  const synthesisMessages = [
+    ...input.originalMessages,
+    {
+      role: 'assistant' as const,
+      content: `I have completed all delegations. Here are the full results from my sub-agents:\n\n${resultBlock}`,
+    },
+    {
+      role: 'user' as const,
+      content: 'Write your final reply to the user based on these results.',
+    },
+  ];
+
+  input.logger?.info('supervisor.synthesis_pass.start', {
+    toolResultCount: input.toolResults.length,
+    successCount: successResults.length,
+    failedCount: failedResults.length,
+  });
+
+  const result = await generateText({
+    model: input.model,
+    system: buildSynthesisSupervisorPrompt(),
+    messages: synthesisMessages,
+    temperature: 0.3,
+    abortSignal: AbortSignal.timeout(SYNTHESIS_TIMEOUT_MS),
+  });
+
+  input.logger?.info('supervisor.synthesis_pass.done', {
+    textLength: result.text.length,
+    textPreview: result.text.slice(0, 200),
+  });
+
+  return result.text.trim();
 }

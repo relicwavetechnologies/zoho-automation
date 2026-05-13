@@ -1,45 +1,152 @@
 import type { GroupChatWindow, GroupChatMessage, GroupChatSummary } from '../../domain/conversation/group-context';
+import { GROUP_CONTEXT_POLICY } from '../../domain/conversation/group-context-policy';
 
-function formatSummary(summary: GroupChatSummary): string {
-  const parts: string[] = [];
-  if (summary.summary) parts.push(summary.summary);
-  if (summary.latestObjective) parts.push(`Current objective: ${summary.latestObjective}`);
-  if (summary.activeEntities.length > 0) parts.push(`Key entities: ${summary.activeEntities.join(', ')}`);
-  if (summary.completedActions.length > 0) parts.push(`Completed: ${summary.completedActions.join('; ')}`);
-  if (summary.constraints.length > 0) parts.push(`Constraints: ${summary.constraints.join('; ')}`);
-  return parts.join('\n');
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4) + 24;
+}
+
+function truncateToBudget(text: string, tokenBudget: number): string {
+  if (estimateTokens(text) <= tokenBudget) return text;
+  const maxChars = Math.max(80, tokenBudget * 4 - 80);
+  return `${text.slice(0, maxChars).trimEnd()}... [truncated]`;
+}
+
+function addBudgetedLine(lines: string[], line: string, state: { tokens: number; budget: number }): boolean {
+  const tokens = estimateTokens(line);
+  if (state.tokens + tokens <= state.budget) {
+    lines.push(line);
+    state.tokens += tokens;
+    return true;
+  }
+
+  if (state.tokens >= state.budget) return false;
+
+  const remaining = state.budget - state.tokens;
+  if (remaining <= 20) return false;
+  lines.push(truncateToBudget(line, remaining));
+  state.tokens = state.budget;
+  return false;
+}
+
+function addArraySection(
+  lines: string[],
+  state: { tokens: number; budget: number },
+  label: string,
+  values: readonly string[] | undefined,
+): void {
+  if (!values || values.length === 0) return;
+  addBudgetedLine(lines, `${label}: ${values.join('; ')}`, state);
+}
+
+function formatSummary(summary: GroupChatSummary, tokenBudget = GROUP_CONTEXT_POLICY.SUMMARY_CONTEXT_TOKEN_BUDGET): string {
+  const lines: string[] = [];
+  const state = { tokens: 0, budget: tokenBudget };
+
+  if (summary.summary) addBudgetedLine(lines, `Summary: ${summary.summary}`, state);
+  if (summary.latestObjective) addBudgetedLine(lines, `Current objective: ${summary.latestObjective}`, state);
+  if (summary.latestDirection) addBudgetedLine(lines, `Latest direction: ${summary.latestDirection}`, state);
+  addArraySection(lines, state, 'Decisions', summary.decisions);
+  addArraySection(lines, state, 'Open questions', summary.openQuestions);
+  addArraySection(lines, state, 'Owners', summary.owners);
+  addArraySection(lines, state, 'Deadlines', summary.deadlines);
+  addArraySection(lines, state, 'Key entities', summary.activeEntities);
+  addArraySection(lines, state, 'Files and links', summary.mentionedResources);
+  addArraySection(lines, state, 'Completed actions', summary.completedActions);
+  addArraySection(lines, state, 'Constraints', summary.constraints);
+  addArraySection(lines, state, 'Blockers', summary.blockers);
+  addArraySection(lines, state, 'User goals', summary.userGoals);
+  addArraySection(lines, state, 'Superseded', summary.superseded);
+
+  return lines.join('\n');
+}
+
+function formatTimestamp(createdAt: string): string {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return createdAt;
+  return date.toISOString();
 }
 
 function formatMessage(msg: GroupChatMessage): string {
-  const prefix = msg.role === 'assistant' ? '@Divo' : `${msg.senderName}`;
-  let line = `${prefix}: ${msg.content}`;
+  const prefix = msg.role === 'assistant' ? '@Divo' : msg.senderName;
+  const mention = msg.botMentioned ? ' @Divo' : '';
+  let line = `[${formatTimestamp(msg.createdAt)}] ${prefix}${mention}: ${msg.content}`;
   if (msg.attachedFiles && msg.attachedFiles.length > 0) {
     line += ` [files: ${msg.attachedFiles.join(', ')}]`;
   }
   return line;
 }
 
+export function selectRecentMessagesForTranscript(
+  messages: readonly GroupChatMessage[],
+  tokenBudget = GROUP_CONTEXT_POLICY.RAW_TRANSCRIPT_TOKEN_BUDGET,
+): GroupChatMessage[] {
+  if (tokenBudget <= 0) return [];
+  const selected: GroupChatMessage[] = [];
+  let tokenCount = 0;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg) continue;
+    const tokens = estimateTokens(formatMessage(msg));
+    if (selected.length > 0 && tokenCount + tokens > tokenBudget) break;
+    selected.push(msg);
+    tokenCount += tokens;
+    if (tokenCount >= tokenBudget) break;
+  }
+
+  return selected.reverse();
+}
+
+function formatTranscriptLines(
+  messages: readonly GroupChatMessage[],
+  tokenBudget = GROUP_CONTEXT_POLICY.RAW_TRANSCRIPT_TOKEN_BUDGET,
+): string[] {
+  if (tokenBudget <= 0) return [];
+
+  const lines: string[] = [];
+  let tokenCount = 0;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg) continue;
+    const line = formatMessage(msg);
+    const tokens = estimateTokens(line);
+
+    if (lines.length > 0 && tokenCount + tokens > tokenBudget) break;
+
+    if (tokenCount + tokens > tokenBudget) {
+      lines.push(truncateToBudget(line, tokenBudget - tokenCount));
+      tokenCount = tokenBudget;
+      break;
+    }
+
+    lines.push(line);
+    tokenCount += tokens;
+  }
+
+  return lines.reverse();
+}
+
 export function formatGroupContextForPrompt(window: GroupChatWindow): string {
   const sections: string[] = [
-    'GROUP CHAT CONTEXT — Recent conversation from this chat.',
-    'Use this context to understand what the team is discussing. Only respond to requests directed at you.',
+    'GROUP CHAT CONTEXT - Background from this Lark group chat.',
+    'Treat this as room context, not as the direct user/assistant conversation. The current user message is still the active request.',
   ];
 
   if (window.summary) {
     const summaryText = formatSummary(window.summary);
     if (summaryText) {
       sections.push('');
-      sections.push('[Summary of older messages]');
+      sections.push('[Rolling summary of older group discussion]');
       sections.push(summaryText);
     }
   }
 
-  if (window.recentMessages.length > 0) {
+  const transcriptLines = formatTranscriptLines(window.recentMessages);
+  if (transcriptLines.length > 0) {
     sections.push('');
-    sections.push('[Recent messages]');
-    for (const msg of window.recentMessages) {
-      sections.push(formatMessage(msg));
-    }
+    sections.push(`[Recent raw group transcript - latest ${transcriptLines.length} messages within ~${GROUP_CONTEXT_POLICY.RAW_TRANSCRIPT_TOKEN_BUDGET} tokens]`);
+    sections.push(...transcriptLines);
   }
 
   return sections.join('\n');
