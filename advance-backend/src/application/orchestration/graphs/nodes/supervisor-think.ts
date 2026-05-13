@@ -236,15 +236,25 @@ async function runSupervisorStream(input: {
     if (chunk.type === 'tool-result') {
       const output = String(chunk.output);
       toolResults.push({ toolName: chunk.toolName, output });
+      const isError = output.startsWith('error:') || output.startsWith('Error:');
       input.tracer?.emit({
         phase: 'execute', eventType: 'tool_call_finished',
         actorType: 'supervisor', actorKey: chunk.toolName,
-        title: `${chunk.toolName} completed`,
-        status: 'success',
-        payload: { toolName: chunk.toolName, resultLength: output.length },
+        title: `${chunk.toolName} ${isError ? 'failed' : 'completed'}`,
+        status: isError ? 'error' : 'success',
+        payload: {
+          toolName: chunk.toolName,
+          resultLength: output.length,
+          resultPreview: output.slice(0, 500),
+          ...(isError ? { error: output.slice(0, 300) } : {}),
+        },
       });
       if (input.aggregator && input.statusChannel) {
-        input.aggregator.recordResult(chunk.toolName, output);
+        if (isError) {
+          input.aggregator.recordFailure(chunk.toolName, output.slice(0, 200));
+        } else {
+          input.aggregator.recordResult(chunk.toolName, output);
+        }
         statusHandle = await input.statusChannel.editStatus(statusHandle, {
           kind: 'status', terminal: false, timeline: input.aggregator.snapshot(),
         });
