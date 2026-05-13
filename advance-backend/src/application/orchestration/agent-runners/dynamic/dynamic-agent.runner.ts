@@ -17,6 +17,7 @@ import {
   emitSpecialistStarted,
   emitSpecialistStepToolResults,
 } from '../tool-trace';
+import { debugAgentStart, debugAgentResult } from '../../../../shared/debug-run-log';
 
 const DYNAMIC_AGENT_TIMEOUT_MS = 300_000;
 
@@ -112,6 +113,16 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       : ctx.model;
 
     const toolNames = Object.keys(tools);
+    const agentStartMs = Date.now();
+    debugAgentStart({
+      agentSlug: agent.slug,
+      task,
+      toolCount: toolNames.length,
+      toolNames,
+      depth,
+      model: `${selectedProvider}/${selectedModelId}`,
+      systemPrompt: system,
+    });
     log.info('dynamic_agent.start', {
       task: task.slice(0, 200),
       toolCount: toolNames.length,
@@ -170,11 +181,50 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       hasText: (text?.trim().length ?? 0) > 0,
     });
 
+    // If the agent's LLM produced no text but tools returned data,
+    // run a presentation pass — a separate LLM call with NO tools that
+    // formats the full tool output for the user. This preserves all data.
+    let agentText = text || '';
+    if (!agentText.trim() && steps && steps.length > 0) {
+      const allToolOutputs = steps.flatMap(s =>
+        (s.toolResults ?? []).map(tr => `[${tr.toolName}]:\n${String(tr.output)}`)
+      );
+      if (allToolOutputs.length > 0) {
+        log.info('dynamic_agent.presentation_pass.start', { agentSlug: agent.slug, toolOutputCount: allToolOutputs.length });
+        try {
+          const presentation = await generateText({
+            model,
+            system: `You are presenting data returned by tools to the user. Rules:
+- Present ALL data completely — do NOT summarize, truncate, or omit any items.
+- Format clearly: use tables, bullet points, or structured lists for readability.
+- Include every record, every number, every detail from the tool output.
+- If there are many items, structure them but keep ALL of them.
+- Do not mention tools, agents, or internal processes.
+- Be direct — no filler phrases.`,
+            prompt: `Original request: ${task}\n\nTool results:\n\n${allToolOutputs.join('\n\n---\n\n')}`,
+            temperature: 0.2,
+            abortSignal: AbortSignal.timeout(60_000),
+          });
+          agentText = presentation.text || agentText;
+          log.info('dynamic_agent.presentation_pass.done', { agentSlug: agent.slug, textLength: agentText.length });
+        } catch (e) {
+          log.warn('dynamic_agent.presentation_pass.failed', { agentSlug: agent.slug, error: String(e) });
+        }
+      }
+    }
+
     const result = hook?.postExecute
-      ? await hook.postExecute(hookCtx, text || 'Done.')
-      : text || 'Done.';
+      ? await hook.postExecute(hookCtx, agentText || 'Done.')
+      : agentText || 'Done.';
 
     const traced = appendToolTrace(result, steps);
+    debugAgentResult({
+      agentSlug: agent.slug,
+      status: 'success',
+      result: traced,
+      durationMs: Date.now() - agentStartMs,
+      steps: steps as any,
+    });
     log.info('dynamic_agent.done', { replyLength: traced.length, replyPreview: traced.substring(0, 300) });
     emitSpecialistFinished({
       tracer: ctx.tracer,

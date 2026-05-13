@@ -276,19 +276,19 @@ function formatZohoResult(value: unknown): unknown {
 const buildDateRangeParams = (from?: string, to?: string): Record<string, string> => {
   if (from && to) {
     return {
-      from_date: parseDateFilter(from).from,
-      to_date:   parseDateFilter(to).to,
+      date_start: parseDateFilter(from).from,
+      date_end:   parseDateFilter(to).to,
     };
   }
 
   if (from) {
     const range = parseDateFilter(from);
-    return { from_date: range.from, to_date: range.to };
+    return { date_start: range.from, date_end: range.to };
   }
 
   if (to) {
     const range = parseDateFilter(to);
-    return { from_date: range.from, to_date: range.to };
+    return { date_start: range.from, date_end: range.to };
   }
 
   return {};
@@ -302,8 +302,8 @@ const dateParams = (args: Args): Record<string, unknown> => ({
 const reportDateParams = (args: Args): Record<string, string> => {
   const range = buildDateRangeParams(args.invoiceDateFrom, args.invoiceDateTo);
   return {
-    ...(range['from_date'] ? { invoiceDateFrom: range['from_date'] } : {}),
-    ...(range['to_date'] ? { invoiceDateTo: range['to_date'] } : {}),
+    ...(range['date_start'] ? { invoiceDateFrom: range['date_start'] } : {}),
+    ...(range['date_end'] ? { invoiceDateTo: range['date_end'] } : {}),
   };
 };
 

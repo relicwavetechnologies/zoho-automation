@@ -122,8 +122,8 @@ describe('zohoBooks expanded execution', () => {
 
     assert.equal(result.ok, true);
     assert.equal(captures.listInput.moduleName, 'bills');
-    assert.equal(captures.listInput.filters.from_date, '2026-01-01');
-    assert.equal(captures.listInput.filters.to_date, '2026-12-31');
+    assert.equal(captures.listInput.filters.date_start, '2026-01-01');
+    assert.equal(captures.listInput.filters.date_end, '2026-12-31');
     assert.equal(captures.listInput.filters.status, 'partially_paid');
     assert.equal(captures.listInput.perPage, 25);
 
@@ -145,8 +145,8 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(result.ok, true);
     assert.equal(captures.listInput.moduleName, 'banktransactions');
     assert.equal(captures.listInput.query, 'Acme');
-    assert.equal(captures.listInput.filters.from_date, '2026-01-01');
-    assert.equal(captures.listInput.filters.to_date, '2026-03-31');
+    assert.equal(captures.listInput.filters.date_start, '2026-01-01');
+    assert.equal(captures.listInput.filters.date_end, '2026-03-31');
   });
 
   it('returns mapped Zoho error messages from upstream failures', async () => {

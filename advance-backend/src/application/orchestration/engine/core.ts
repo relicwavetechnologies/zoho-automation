@@ -28,6 +28,11 @@ import { classifyMessage, runFastPath } from './fast-path';
 import { buildExecutionSummary } from './execution-summary';
 import type { LarkChatContextService } from '../../chat-context/lark-chat-context.service';
 import { formatGroupContextForPrompt } from '../../chat-context/group-context-formatter';
+import {
+  debugRunStart, debugPermissions, debugHistory,
+  debugMemoryContext, debugGroupContext, debugFinalReply, debugRunEnd,
+} from '../../../shared/debug-run-log';
+import { generateText } from 'ai';
 
 const MEM0_SEARCH_TIMEOUT_MS = 500;
 
@@ -83,6 +88,14 @@ export class OrchestrationEngine {
     });
 
     log.info('engine.run.start', { userMessage: incoming.text.slice(0, 100) });
+
+    debugRunStart({
+      chatId: String(incoming.chatId),
+      userId: String(runContext.userId),
+      companyId: String(runContext.companyId),
+      userMessage: incoming.text,
+      traceId: runContext.traceId ?? incoming.traceId,
+    });
 
     // ── 0. Create ExecutionRun trace record ────────────────────────────────
     let tracer: OrchestrationTracer | undefined;
@@ -151,6 +164,13 @@ export class OrchestrationEngine {
       allowedToolCount: perm.allowedToolIds.size,
       hasDept: !!perm.department,
       durationMs: permissionDurationMs,
+    });
+
+    debugPermissions({
+      allowedToolCount: perm.allowedToolIds.size,
+      allowedToolIds: [...perm.allowedToolIds],
+      hasDepartment: !!perm.department,
+      departmentName: perm.department?.name,
     });
 
     tracer?.emit({
@@ -224,6 +244,13 @@ export class OrchestrationEngine {
       ? historyResult.value
       : { turns: [], truncated: false, tokenEstimate: 0 };
 
+    debugHistory({
+      turnCount: history.turns.length,
+      truncated: history.truncated,
+      tokenEstimate: history.tokenEstimate,
+      turns: history.turns.map(t => ({ role: t.role, content: t.content })),
+    });
+
     // ── 4b. Fast-path: skip supervisor for simple messages (greetings, chitchat) ──
     if (this.deps.fastPathModel && classifyMessage(incoming.text) === 'SIMPLE') {
       log.info('engine.fast_path.triggered', { messageLength: incoming.text.length });
@@ -259,6 +286,7 @@ export class OrchestrationEngine {
 
     // ── 4c. Load persistent memory context ────────────────────────────────
     const memoryContext = await memoryContextPromise;
+    debugMemoryContext(memoryContext);
 
     // ── 4d. Load group chat context (if applicable) ──────────────────────
     let groupContext: string | undefined;
@@ -270,6 +298,7 @@ export class OrchestrationEngine {
         groupContext = formatGroupContextForPrompt(ctxResult.value);
       }
     }
+    debugGroupContext(groupContext);
 
     // ── 5. Run supervisor ─────────────────────────────────────────────────
     const supervisorResult = await this.deps.supervisor.run({
@@ -302,9 +331,64 @@ export class OrchestrationEngine {
     }
 
     const { toolsCalled, toolResults } = supervisorResult.value;
+
+    debugFinalReply({
+      finalText: supervisorResult.value.finalReply.text,
+      source: 'supervisor',
+      toolsCalled,
+      toolResultCount: toolResults?.length ?? 0,
+    });
+
+    // ── 5b. Post-pipeline safety net — if tools ran but reply is useless,
+    //    make one more LLM call to present the results properly.
+    const TRACE_RE = /\n?<!--TOOL_TRACE:[\s\S]*?-->/g;
+    const cleanReplyText = supervisorResult.value.finalReply.text.replace(TRACE_RE, '').trim();
+    const LOSSY_PHRASES = /\b(provided above|listed above|retrieved the list|started the review|will proceed|would you like me to|I have started|I will need to pull)\b/i;
+    const hasTable = cleanReplyText.includes('|') && cleanReplyText.includes('---');
+    const replyIsEmpty = !cleanReplyText || cleanReplyText === 'Done.' || cleanReplyText.length < 15;
+    const replyIsLossy = cleanReplyText.length < 400 && LOSSY_PHRASES.test(cleanReplyText) && !hasTable;
+    const replyIsUseless = toolsCalled.length > 0 && (replyIsEmpty || replyIsLossy);
+
+    let presentedReply = supervisorResult.value.finalReply;
+    if (replyIsUseless) {
+      log.warn('engine.reply_useless.synthesis_needed', {
+        cleanReplyText,
+        toolsCalled,
+        toolResultCount: toolResults?.length ?? 0,
+      });
+      try {
+        const toolContext = (toolResults ?? [])
+          .map(r => `[${r.toolName}]:\n${typeof r.output === 'string' ? r.output : JSON.stringify(r.output)}`)
+          .join('\n\n---\n\n');
+        const synthesized = await generateText({
+          model: this.deps.supervisor.getModel(),
+          system: `You are presenting the results of completed actions to the user. Rules:
+- Present ALL data completely — do NOT summarize, truncate, or omit any items.
+- Format clearly: use tables, bullet points, or structured lists.
+- Include every record, every number, every detail.
+- Do not mention tools, agents, or internal processes.
+- Be direct — no filler phrases.
+- If no meaningful data was returned by tools, say so plainly.`,
+          messages: [
+            { role: 'user' as const, content: incoming.text },
+            { role: 'assistant' as const, content: `Actions completed. Results:\n\n${toolContext || '(no data returned)'}` },
+            { role: 'user' as const, content: 'Present these results to me.' },
+          ],
+          temperature: 0.3,
+          abortSignal: AbortSignal.timeout(30_000),
+        });
+        if (synthesized.text.trim()) {
+          presentedReply = { ...supervisorResult.value.finalReply, text: synthesized.text.trim() };
+          log.info('engine.reply_useless.synthesis_done', { textLength: synthesized.text.length });
+        }
+      } catch (e) {
+        log.warn('engine.reply_useless.synthesis_failed', { error: String(e) });
+      }
+    }
+
     const executionTrace = aggregator.getExecutionTrace();
     const finalReply: FinalReply = {
-      ...supervisorResult.value.finalReply,
+      ...presentedReply,
       branding,
       ...(executionTrace ? { executionTrace } : {}),
     };
@@ -326,6 +410,11 @@ export class OrchestrationEngine {
     });
 
     // ── 7. Send final reply ───────────────────────────────────────────────
+    debugRunEnd({
+      durationMs: this.deps.clock.nowMs() - runStartMs,
+      finalReply: finalReply.text,
+      toolsCalled,
+    });
     await channelAdapter.sendFinalReply(conversation, finalReply);
 
     // ── 8. Background memory extraction ───────────────────────────────────

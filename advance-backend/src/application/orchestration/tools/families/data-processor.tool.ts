@@ -34,7 +34,8 @@ const zohoSourceSchema = z.object({
     'Zoho API filters. For "status", pass a single value OR comma-separated values (e.g. "sent,overdue") — the tool splits and merges automatically. ' +
     'Invoice status values: draft, sent, overdue, paid, void, partially_paid, viewed. ' +
     'Bill status values: open, paid, overdue, void. ' +
-    'Example: { status: "sent,overdue", from_date: "2025-04-01", to_date: "2026-03-31" }',
+    'Date filters: use date_start and date_end (NOT from_date/to_date). ' +
+    'Example: { status: "sent,overdue", date_start: "2025-04-01", date_end: "2026-03-31" }',
   ),
   query: z.string().optional().describe('Search query string'),
 }).describe('Fetch ALL records from a Zoho Books module (exhaustive pagination, up to 4000 records). The tool fetches the data internally — the LLM never sees the raw records.');
@@ -127,11 +128,11 @@ export const createDataProcessorTool = (deps: {
     '  Example (expense breakdown by month):',
     '  "const m = {}; for (const e of data) { const mon = (e.date||e.expense_date||\'\').slice(0,7); if (!m[mon]) m[mon]={month:mon,count:0,total:0,currency:e.currency_code||\'INR\'}; m[mon].count++; m[mon].total+=e._amount||0; } return Object.values(m).sort((a,b)=>a.month.localeCompare(b.month))"',
     '',
-    'zohoSource: { module: "expenses", filters: { from_date: "2025-11-01", to_date: "2026-04-30" } }',
+    'zohoSource: { module: "expenses", filters: { date_start: "2025-11-01", date_end: "2026-04-30" } }',
     '  Fetches ALL records from the specified Zoho Books module with filters.',
     '  Supported modules: invoices, bills, expenses, contacts, customerpayments, bankaccounts, banktransactions, items',
+    '  Date filters: ALWAYS use date_start/date_end (NOT from_date/to_date).',
     '  The fetched records become `data` in the script. You do NOT need to call zohoBooks separately.',
-    '  Note: For expenses, date filtering uses from_date/to_date but Zoho may return all records — filter in the script using the date field.',
     '',
     'data: pass directly for small datasets (< 100 items). Omit when using zohoSource.',
     'args: optional extra parameters for the script',
@@ -155,11 +156,22 @@ export const createDataProcessorTool = (deps: {
     let moduleSchemaHint: Record<string, unknown> | undefined;
 
     if (args.zohoSource) {
+      // Auto-translate old from_date/to_date → date_start/date_end
+      const rawFilters = (args.zohoSource.filters ?? {}) as Record<string, unknown>;
+      if (rawFilters['from_date'] && !rawFilters['date_start']) {
+        rawFilters['date_start'] = rawFilters['from_date'];
+        delete rawFilters['from_date'];
+      }
+      if (rawFilters['to_date'] && !rawFilters['date_end']) {
+        rawFilters['date_end'] = rawFilters['to_date'];
+        delete rawFilters['to_date'];
+      }
+
       // Fetch from Zoho Books internally — LLM never sees the raw records
       ctx.logger.info('data_processor.zoho_fetch.start', {
         companyId,
         module: args.zohoSource.module,
-        filters: args.zohoSource.filters,
+        filters: rawFilters,
         query: args.zohoSource.query,
       });
 
@@ -169,7 +181,7 @@ export const createDataProcessorTool = (deps: {
         fetchResult = await deps.booksClient.listAllRecords({
           companyId,
           moduleName: args.zohoSource.module as ZohoBooksModule,
-          ...(args.zohoSource.filters ? { filters: args.zohoSource.filters as Record<string, string> } : {}),
+          ...(Object.keys(rawFilters).length > 0 ? { filters: rawFilters as Record<string, string> } : {}),
           ...(args.zohoSource.query ? { query: args.zohoSource.query } : {}),
         });
       } catch (e) {

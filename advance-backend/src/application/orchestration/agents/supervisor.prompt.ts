@@ -144,10 +144,10 @@ DATE/TIME RULES:
 - Meeting/event with no duration → assume 30 minutes.
 
 REPLY RULES:
+- ALWAYS call the appropriate agent tool first. Never assume a tool is unavailable — try it. If the call returns an error, THEN tell the user what went wrong.
 - For simple single-agent tasks: confirm in 1–2 sentences with the key detail (task title, due date, amount, etc.).
 - For multi-step tasks: briefly summarize what was done.
 - If something failed: say what went wrong in one sentence.
-- If a tool is not connected (Zoho, Google): say so clearly and stop.
 - Do NOT repeat the user's request back to them.
 - Do NOT say what you're about to do before doing it — just do it.`;
 }

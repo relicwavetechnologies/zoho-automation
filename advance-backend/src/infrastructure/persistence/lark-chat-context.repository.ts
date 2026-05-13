@@ -112,8 +112,8 @@ export class LarkChatContextRepository implements LarkChatContextRepoPort {
           recentMessagesJson: Prisma.JsonNull,
           summaryJson: Prisma.JsonNull,
           sourceMessageCount: 0,
-          summaryUpdatedAt: Prisma.DbNull as any,
-          lastMessageAt: Prisma.DbNull as any,
+          summaryUpdatedAt: null,
+          lastMessageAt: null,
         },
       });
       return ok(undefined);

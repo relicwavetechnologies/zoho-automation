@@ -55,6 +55,7 @@ import { buildCapabilitiesForAgent } from '../agent-runners/dynamic/agent-as-too
 import { buildDynamicSupervisorGraph, type DynamicSupervisorGraph } from '../graphs/dynamic-supervisor.graph';
 import type { Mem0Service } from '../../memory/mem0.service';
 import { buildToolFinishedPayload, isErrorOutput } from '../agent-runners/tool-trace';
+import { debugSupervisorEntry, debugGraphInvoke, debugGraphOutput } from '../../../shared/debug-run-log';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -134,6 +135,8 @@ export interface SupervisorDeps {
 export class SupervisorAgent {
   constructor(private readonly deps: SupervisorDeps) {}
 
+  getModel(): LanguageModel { return this.deps.model; }
+
   async run(input: SupervisorInput): Promise<Result<SupervisorOutput, OrchestrationError>> {
     const {
       userMessage, history, channelType, channelId,
@@ -143,6 +146,18 @@ export class SupervisorAgent {
     const { model, agentResolver, todoRepo, prisma, logger, clock } = this.deps;
 
     const log = logger.child({ service: 'supervisor', userId: runContext.userId });
+
+    debugSupervisorEntry({
+      path: (this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) ? 'dynamic_graph' : 'legacy',
+      dynamicGraphEnabled: !!this.deps.dynamicGraphEnabled,
+      hasAgentCatalogCache: !!this.deps.agentCatalogCache,
+      hasMem0: !!this.deps.mem0,
+      hasApprovalGate: !!approvalGate,
+      hasMemoryContext: !!memoryContext,
+      hasGroupContext: !!groupContext,
+      historyTurnCount: history.turns.length,
+      permittedToolCount: permittedTools.length,
+    });
 
     if (this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) {
       const graphResult = await this.runDynamicGraph({
@@ -625,14 +640,25 @@ export class SupervisorAgent {
       payload: { toolCount: input.permittedTools.length },
     });
 
-    const output = await graph.invoke({
-      userMessage: input.userMessage,
-      conversationHistory: input.history.turns
-        .filter(turn => turn.role === 'user' || turn.role === 'assistant')
-        .map(turn => ({
+    const graphConversationHistory = input.history.turns
+      .filter(turn => turn.role === 'user' || turn.role === 'assistant')
+      .map(turn => ({
         role: turn.role as 'user' | 'assistant',
         content: turn.content,
-      })),
+      }));
+
+    debugGraphInvoke({
+      userMessage: input.userMessage,
+      conversationHistory: graphConversationHistory,
+      companyId: String(input.runContext.companyId),
+      memoryContext,
+      chatId: input.chatId ?? null,
+      permittedToolCount: input.permittedTools.length,
+    });
+
+    const output = await graph.invoke({
+      userMessage: input.userMessage,
+      conversationHistory: graphConversationHistory,
       companyId: String(input.runContext.companyId),
       perm: input.perm,
       runContext: input.runContext,
@@ -641,6 +667,13 @@ export class SupervisorAgent {
       memoryContext,
       ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
     } as any);
+
+    debugGraphOutput({
+      status: output.status,
+      supervisorResult: output.supervisorResult,
+      toolCallsMade: output.toolCallsMade ?? [],
+      error: output.error,
+    });
 
     if (output.status === 'error') {
       input.tracer?.emit({

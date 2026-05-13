@@ -268,7 +268,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // ── AI model (DB config first, env fallback) ────────────────────────────
   // Primary model follows AiModelTargetConfig(targetKey='default') when present,
   // then falls back to MODEL_PROVIDER + MODEL_ID for backward compatibility.
-  // Falls back silently to configured fast model, or gpt-5.4-mini by default,
+  // Falls back silently to configured fast model, or gpt-4o-mini (direct OpenAI) by default,
   // on rate-limit / high-demand errors.
   const defaultModelTarget = await prisma.aiModelTargetConfig.findUnique({
     where: { targetKey: 'default' },
@@ -293,7 +293,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const primaryProvider = defaultModelTarget?.provider ?? env.MODEL_PROVIDER;
   const primaryModelId  = defaultModelTarget?.modelId ?? env.MODEL_ID;
   const fastProvider    = defaultModelTarget?.fastProvider ?? 'openai';
-  const fastModelId     = defaultModelTarget?.fastModelId ?? 'gpt-5.4-mini';
+  const fastModelId     = defaultModelTarget?.fastModelId ?? 'gpt-4o-mini';
   const needsOpenAi     = primaryProvider === 'openai' || fastProvider === 'openai';
   const gatewayCompany  = needsOpenAi
     ? await prisma.company.findFirst({
@@ -320,13 +320,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   })();
   const directOpenAi    = createOpenAI({ apiKey: env.OPENAI_API_KEY });
   const openaiModel     = (modelId: string) => gatewayOpenAi ? gatewayOpenAi.chat(modelId) : directOpenAi(modelId);
+  const directOpenAiModel = (modelId: string) => directOpenAi(modelId);
   const gatewayProviderCache = new Map<string, GatewayProviderCacheEntry>();
   const invalidateGatewayProviderCache = (companyId: string) => {
     const deleted = gatewayProviderCache.delete(companyId);
     logger.info('ai.openai.gateway.agent_model.cache_invalidated', { companyId, deleted });
   };
   const primaryModel    = createConfiguredModel(primaryProvider, primaryModelId);
-  const fallbackModel   = createConfiguredModel(fastProvider, fastModelId);
+  const fallbackModel   = fastProvider === 'openai'
+    ? directOpenAiModel(fastModelId)
+    : createConfiguredModel(fastProvider, fastModelId);
   const model = withFallback(primaryModel, fallbackModel);
 
   const chatContextService = new LarkChatContextService({

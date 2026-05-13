@@ -39,7 +39,8 @@ export function withFallback(primary: LanguageModelV3, fallback: LanguageModelV3
           return await doGenerate();
         } catch (e) {
           if (!isTransientProviderError(e)) throw e;
-          // Strip the already-aborted signal so the fallback gets a clean call.
+          const msg = e instanceof Error ? e.message : String(e);
+          console.warn(`[model-fallback] PRIMARY FAILED (generate), falling back. Error: ${msg.slice(0, 200)}`);
           const { abortSignal: _dropped, ...fallbackParams } = params as typeof params & { abortSignal?: unknown };
           return await fallback.doGenerate(fallbackParams as typeof params);
         }
@@ -49,6 +50,8 @@ export function withFallback(primary: LanguageModelV3, fallback: LanguageModelV3
           return await doStream();
         } catch (e) {
           if (!isTransientProviderError(e)) throw e;
+          const msg = e instanceof Error ? e.message : String(e);
+          console.warn(`[model-fallback] PRIMARY FAILED (stream), falling back. Error: ${msg.slice(0, 200)}`);
           const { abortSignal: _dropped, ...fallbackParams } = params as typeof params & { abortSignal?: unknown };
           return await fallback.doStream(fallbackParams as typeof params);
         }
