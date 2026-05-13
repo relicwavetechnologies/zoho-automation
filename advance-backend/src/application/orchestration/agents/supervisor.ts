@@ -193,7 +193,7 @@ export class SupervisorAgent {
             format: 'markdown',
           },
           toolsCalled: graphResult.value.toolsCalled,
-          toolResults: [],
+          toolResults: graphResult.value.toolResults,
         });
       }
 
@@ -606,7 +606,7 @@ export class SupervisorAgent {
     return ok({ finalReply, toolsCalled, toolResults });
   }
 
-  private async runDynamicGraph(input: DynamicGraphRunInput): Promise<Result<{ finalText: string; toolsCalled: string[] }, OrchestrationError>> {
+  private async runDynamicGraph(input: DynamicGraphRunInput): Promise<Result<{ finalText: string; toolsCalled: string[]; toolResults: Array<{ toolName: string; output: string }> }, OrchestrationError>> {
     if (!this.deps.agentCatalogCache) {
       return err(new OrchestrationError({
         stage: 'plan',
@@ -705,6 +705,7 @@ export class SupervisorAgent {
     return ok({
       finalText,
       toolsCalled: output.toolCallsMade,
+      toolResults: output.toolResults ?? [],
     });
   }
 }

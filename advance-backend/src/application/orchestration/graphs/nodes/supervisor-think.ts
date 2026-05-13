@@ -21,7 +21,9 @@ import type { RunStatusAggregator } from '../../run-status.aggregator';
 import { redModelSelection } from '../../../../shared/model-selection-log';
 import { buildToolFinishedPayload, isErrorOutput } from '../../agent-runners/tool-trace';
 
-const SUPERVISOR_TIMEOUT_MS = 180_000;
+// Must be longer than DYNAMIC_AGENT_TIMEOUT_MS (300s) + buffer for retries.
+// A failed agent + retry can take 300s+300s; supervisor must outlast that.
+const SUPERVISOR_TIMEOUT_MS = 660_000;
 
 export interface SupervisorThinkDeps {
   readonly model: LanguageModel;
@@ -149,7 +151,7 @@ export async function supervisorThink(
       })
       : deps.model;
 
-    const outcome = deps.executeText
+    const rawOutcome = deps.executeText
       ? await deps.executeText({
         system: systemPrompt,
         messages,
@@ -157,6 +159,9 @@ export async function supervisorThink(
         maxSteps: rootAgent.maxSteps,
         temperature: rootAgent.temperature,
       })
+      : null;
+    const outcome = rawOutcome
+      ? { ...rawOutcome, toolResults: [] as Array<{ toolName: string; output: string }> }
       : await runSupervisorStream({
         model: rootModel,
         system: systemPrompt,
@@ -177,6 +182,7 @@ export async function supervisorThink(
     return {
       supervisorResult: outcome.text.trim() || 'Done.',
       toolCallsMade: outcome.toolCalls,
+      toolResults: outcome.toolResults,
       agentDelegations,
       status: 'done',
       error: null,
@@ -203,7 +209,7 @@ async function runSupervisorStream(input: {
   readonly tracer?: OrchestrationTracer;
   readonly statusChannel?: StatusChannel;
   readonly aggregator?: RunStatusAggregator;
-}): Promise<{ readonly text: string; readonly toolCalls: string[] }> {
+}): Promise<{ readonly text: string; readonly toolCalls: string[]; readonly toolResults: Array<{ toolName: string; output: string }> }> {
   const result = streamText({
     model: input.model,
     system: input.system,
@@ -211,6 +217,7 @@ async function runSupervisorStream(input: {
     tools: input.tools,
     stopWhen: [stepCountIs(input.maxSteps)],
     temperature: input.temperature,
+    maxRetries: 1,
     abortSignal: AbortSignal.timeout(SUPERVISOR_TIMEOUT_MS),
   });
 
@@ -281,13 +288,13 @@ async function runSupervisorStream(input: {
         supervisorTextLength: supervisorText.length,
         reason: !supervisorText ? 'empty_supervisor_text' : 'agent_reply_richer',
       });
-      return { text: agentReply, toolCalls };
+      return { text: agentReply, toolCalls, toolResults };
     }
   }
 
   // Multiple agents or no agents: use supervisor text if available
   if (text.trim()) {
-    return { text, toolCalls };
+    return { text, toolCalls, toolResults };
   }
 
   // Empty supervisor text with multiple agent results: assemble them
@@ -297,7 +304,7 @@ async function runSupervisorStream(input: {
       agentResultCount: agentResults.length,
       assembledLength: assembled.length,
     });
-    return { text: assembled, toolCalls };
+    return { text: assembled, toolCalls, toolResults };
   }
 
   // No agent results and empty text
@@ -306,5 +313,5 @@ async function runSupervisorStream(input: {
     toolResultCount: toolResults.length,
   });
 
-  return { text, toolCalls };
+  return { text, toolCalls, toolResults };
 }

@@ -52,6 +52,10 @@ export const SupervisorGraphState = Annotation.Root({
     default: () => [],
     reducer: (prev, next) => [...prev, ...next],
   }),
+  toolResults: Annotation<Array<{ toolName: string; output: string }>>({
+    default: () => [],
+    reducer: (_prev, next) => next,
+  }),
   status: Annotation<'thinking' | 'done' | 'error'>({
     reducer: (_prev, next) => next,
     default: () => 'thinking',

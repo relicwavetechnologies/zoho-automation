@@ -156,6 +156,7 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
         tools,
         stopWhen:    [stepCountIs(agent.maxSteps)],
         temperature: agent.temperature,
+        maxRetries:  1,
         abortSignal: AbortSignal.timeout(DYNAMIC_AGENT_TIMEOUT_MS),
       }),
       log,
@@ -203,6 +204,7 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
 - Be direct — no filler phrases.`,
             prompt: `Original request: ${task}\n\nTool results:\n\n${allToolOutputs.join('\n\n---\n\n')}`,
             temperature: 0.2,
+            maxRetries: 1,
             abortSignal: AbortSignal.timeout(60_000),
           });
           agentText = presentation.text || agentText;

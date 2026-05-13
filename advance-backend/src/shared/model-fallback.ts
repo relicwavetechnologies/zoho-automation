@@ -25,8 +25,9 @@ function isTransientProviderError(e: unknown): boolean {
 }
 
 /**
- * Wraps `primary` so any transient availability error silently falls back to
- * `fallback`. Non-transient errors (bad args, auth, malformed history, etc.)
+ * Wraps `primary` so any transient availability error falls back to
+ * `fallback` after a SINGLE attempt (no SDK retries on primary).
+ * Non-transient errors (bad args, auth, malformed history, etc.)
  * are re-thrown so callers can fix them.
  */
 export function withFallback(primary: LanguageModelV3, fallback: LanguageModelV3): LanguageModelV3 {
@@ -35,25 +36,37 @@ export function withFallback(primary: LanguageModelV3, fallback: LanguageModelV3
     middleware: {
       specificationVersion: 'v3',
       wrapGenerate: async ({ doGenerate, params }) => {
+        const startMs = Date.now();
         try {
-          return await doGenerate();
+          const result = await doGenerate();
+          console.log(`[model-fallback] PRIMARY OK (generate) in ${Date.now() - startMs}ms — model: ${primary.modelId}`);
+          return result;
         } catch (e) {
           if (!isTransientProviderError(e)) throw e;
           const msg = e instanceof Error ? e.message : String(e);
-          console.warn(`[model-fallback] PRIMARY FAILED (generate), falling back. Error: ${msg.slice(0, 200)}`);
+          console.warn(`[model-fallback] PRIMARY FAILED (generate) after ${Date.now() - startMs}ms — ${primary.modelId} → falling back to ${fallback.modelId}. Error: ${msg.slice(0, 200)}`);
+          const fallbackStartMs = Date.now();
           const { abortSignal: _dropped, ...fallbackParams } = params as typeof params & { abortSignal?: unknown };
-          return await fallback.doGenerate(fallbackParams as typeof params);
+          const result = await fallback.doGenerate(fallbackParams as typeof params);
+          console.log(`[model-fallback] FALLBACK OK (generate) in ${Date.now() - fallbackStartMs}ms — model: ${fallback.modelId}`);
+          return result;
         }
       },
       wrapStream: async ({ doStream, params }) => {
+        const startMs = Date.now();
         try {
-          return await doStream();
+          const result = await doStream();
+          console.log(`[model-fallback] PRIMARY OK (stream) in ${Date.now() - startMs}ms — model: ${primary.modelId}`);
+          return result;
         } catch (e) {
           if (!isTransientProviderError(e)) throw e;
           const msg = e instanceof Error ? e.message : String(e);
-          console.warn(`[model-fallback] PRIMARY FAILED (stream), falling back. Error: ${msg.slice(0, 200)}`);
+          console.warn(`[model-fallback] PRIMARY FAILED (stream) after ${Date.now() - startMs}ms — ${primary.modelId} → falling back to ${fallback.modelId}. Error: ${msg.slice(0, 200)}`);
+          const fallbackStartMs = Date.now();
           const { abortSignal: _dropped, ...fallbackParams } = params as typeof params & { abortSignal?: unknown };
-          return await fallback.doStream(fallbackParams as typeof params);
+          const result = await fallback.doStream(fallbackParams as typeof params);
+          console.log(`[model-fallback] FALLBACK OK (stream) in ${Date.now() - fallbackStartMs}ms — model: ${fallback.modelId}`);
+          return result;
         }
       },
     },
