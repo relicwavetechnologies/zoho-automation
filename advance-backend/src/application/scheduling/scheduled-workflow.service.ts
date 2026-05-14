@@ -228,10 +228,9 @@ export class ScheduledWorkflowService {
       });
     }
 
-    const nextRunAt = getNextScheduledRunAt(
-      configResult.data,
-      new Date(scheduledFor.getTime() + 1000),
-    );
+    // Use current time as anchor — skip past all missed slots to the next future run.
+    // Using scheduledFor would replay every missed day one by one.
+    const nextRunAt = getNextScheduledRunAt(configResult.data, new Date());
 
     const isOneTimeComplete = configResult.data.type === 'one_time' && !nextRunAt;
 
@@ -274,7 +273,7 @@ export class ScheduledWorkflowService {
     if (workflow) {
       const parsed = scheduleConfigSchema.safeParse(workflow.scheduleConfigJson);
       if (parsed.success) {
-        nextRunAt = getNextScheduledRunAt(parsed.data, new Date(scheduledFor.getTime() + 1000));
+        nextRunAt = getNextScheduledRunAt(parsed.data, new Date());
       }
     }
     const isOneTimeComplete = !nextRunAt;
