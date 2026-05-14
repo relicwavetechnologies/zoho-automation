@@ -718,7 +718,41 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Tool registry ──────────────────────────────────────────────────────
   const toolRegistry = new ToolRegistry();
-  toolRegistry.register(createLarkTaskTool({ client: larkTaskClient, peopleResolver: larkPeopleResolver }));
+  toolRegistry.register(createLarkTaskTool({
+    client: larkTaskClient,
+    peopleResolver: larkPeopleResolver,
+    userTokenResolver: {
+      async resolve(userId: string, companyId: string): Promise<string | null> {
+        const link = await larkUserAuthLinkRepo.findByUserId(userId, companyId);
+        if (!link.ok || !link.value) return null;
+        const { accessToken, refreshToken, accessTokenExpiresAt } = link.value;
+        const isExpired = accessTokenExpiresAt && new Date(accessTokenExpiresAt).getTime() < Date.now() + 60_000;
+        if (!isExpired && accessToken) return accessToken;
+        if (!refreshToken) return null;
+        try {
+          const refreshed = await larkOAuthService.refreshUserToken(refreshToken);
+          await larkUserAuthLinkRepo.upsert({
+            userId, companyId,
+            larkOpenId:    link.value.larkOpenId ?? '',
+            larkTenantKey: link.value.larkTenantKey,
+            larkEmail:     link.value.larkEmail,
+            accessToken:   refreshed.accessToken,
+            refreshToken:  refreshed.refreshToken ?? refreshToken,
+            tokenType:     refreshed.tokenType,
+            accessTokenExpiresAt:  new Date(Date.now() + refreshed.expiresIn * 1000),
+            refreshTokenExpiresAt: refreshed.refreshTokenExpiresIn
+              ? new Date(Date.now() + refreshed.refreshTokenExpiresIn * 1000)
+              : null,
+          });
+          return refreshed.accessToken;
+        } catch {
+          return null;
+        }
+      },
+    },
+    createUserClient: (userToken: string) =>
+      new LarkTaskClient({ appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET, userToken }),
+  }));
   toolRegistry.register(createLarkMessagingTool({ client: larkMsgToolClient, peopleResolver: larkPeopleResolver }));
   toolRegistry.register(createLarkContactsTool({ peopleResolver: larkPeopleResolver, contactsClient: larkContactsClient }));
   toolRegistry.register(createLarkCalendarTool({ client: larkCalendarClient, peopleResolver: larkPeopleResolver }));

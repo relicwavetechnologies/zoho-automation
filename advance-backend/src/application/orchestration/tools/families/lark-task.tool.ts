@@ -122,9 +122,15 @@ export interface LarkTaskClientPort {
 
 // ─── Factory ──────────────────────────────────────────────────────────────
 
+export interface LarkUserTokenResolver {
+  resolve(userId: string, companyId: string): Promise<string | null>;
+}
+
 export const createLarkTaskTool = (deps: {
-  client:         LarkTaskClientPort;
-  peopleResolver: PeopleResolverPort;
+  client:            LarkTaskClientPort;
+  peopleResolver:    PeopleResolverPort;
+  userTokenResolver?: LarkUserTokenResolver;
+  createUserClient?: (userToken: string) => LarkTaskClientPort;
 }): Tool<LarkTaskArgs, LarkTaskResult> => ({
   id: asToolId('larkTask'),
   family: 'lark',
@@ -161,6 +167,22 @@ export const createLarkTaskTool = (deps: {
   async execute(args: LarkTaskArgs, ctx: ToolExecutionContext): Promise<Result<LarkTaskResult, ToolError>> {
     const log = ctx.logger.child({ tool: 'larkTask', op: args.op, correlationId: ctx.correlationId });
 
+    // Prefer user token for personal task access; fall back to tenant (bot) token.
+    let client = deps.client;
+    if (deps.userTokenResolver && deps.createUserClient) {
+      try {
+        const userToken = await deps.userTokenResolver.resolve(
+          String(ctx.runContext.userId), String(ctx.runContext.companyId),
+        );
+        if (userToken) {
+          client = deps.createUserClient(userToken);
+          log.info('larkTask.using_user_token');
+        }
+      } catch (e) {
+        log.warn('larkTask.user_token_resolve.failed', { error: String(e) });
+      }
+    }
+
     const resolveAssignees = async (): Promise<string[] | undefined> => {
       if (args.assigneeIds?.length) return args.assigneeIds;
       if (args.assigneeNames?.length) {
@@ -186,7 +208,7 @@ export const createLarkTaskTool = (deps: {
           if (!assigneeIds && ctx.runContext.userExternalId) {
             assigneeIds = [ctx.runContext.userExternalId];
           }
-          const result = await deps.client.createTask({
+          const result = await client.createTask({
             title: args.title,
             ...(args.dueDate !== undefined ? { dueDate: args.dueDate } : {}),
             ...(assigneeIds !== undefined ? { assigneeIds } : {}),
@@ -201,7 +223,7 @@ export const createLarkTaskTool = (deps: {
         case 'update': {
           if (!args.taskId) return err(new ToolError({ toolId: 'larkTask', reason: 'bad_args', message: 'taskId is required for update' }));
           const assigneeIds = await resolveAssignees();
-          await deps.client.updateTask(args.taskId, {
+          await client.updateTask(args.taskId, {
             ...(args.title !== undefined ? { title: args.title } : {}),
             ...(args.dueDate !== undefined ? { dueDate: args.dueDate } : {}),
             ...(assigneeIds !== undefined ? { assigneeIds } : {}),
@@ -212,19 +234,19 @@ export const createLarkTaskTool = (deps: {
 
         case 'complete': {
           if (!args.taskId) return err(new ToolError({ toolId: 'larkTask', reason: 'bad_args', message: 'taskId is required for complete' }));
-          await deps.client.completeTask(args.taskId);
+          await client.completeTask(args.taskId);
           return ok({ success: true, taskId: args.taskId, message: 'Task marked complete' });
         }
 
         case 'delete': {
           if (!args.taskId) return err(new ToolError({ toolId: 'larkTask', reason: 'bad_args', message: 'taskId is required for delete' }));
-          await deps.client.deleteTask(args.taskId);
+          await client.deleteTask(args.taskId);
           return ok({ success: true, taskId: args.taskId, message: 'Task deleted' });
         }
 
         case 'list': {
           ctx.onProgress?.('Fetching Lark tasks…');
-          const tasks = await deps.client.listTasks({ limit: args.limit ?? 50, ...(args.tasklist !== undefined ? { tasklist: args.tasklist } : {}) });
+          const tasks = await client.listTasks({ limit: args.limit ?? 50, ...(args.tasklist !== undefined ? { tasklist: args.tasklist } : {}) });
           return ok({ success: true, data: tasks, message: `Found ${tasks.length} tasks` });
         }
 
@@ -232,7 +254,7 @@ export const createLarkTaskTool = (deps: {
           ctx.onProgress?.('Fetching your tasks…');
           const userOpenId = ctx.runContext.userExternalId;
           if (!userOpenId) return ok({ success: false, data: [], message: 'Cannot determine current user identity' });
-          const mineTasks = await deps.client.listTasks({
+          const mineTasks = await client.listTasks({
             limit: args.limit ?? 50,
             assigneeOpenId: userOpenId,
             ...(args.tasklist !== undefined ? { tasklist: args.tasklist } : {}),
@@ -244,7 +266,7 @@ export const createLarkTaskTool = (deps: {
           ctx.onProgress?.('Fetching your open tasks…');
           const userOpenId2 = ctx.runContext.userExternalId;
           if (!userOpenId2) return ok({ success: false, data: [], message: 'Cannot determine current user identity' });
-          const openTasks = await deps.client.listTasks({
+          const openTasks = await client.listTasks({
             limit: args.limit ?? 50,
             assigneeOpenId: userOpenId2,
             completed: false,
@@ -255,39 +277,39 @@ export const createLarkTaskTool = (deps: {
 
         case 'get': {
           if (!args.taskId) return err(new ToolError({ toolId: 'larkTask', reason: 'bad_args', message: 'taskId is required for get' }));
-          const task = await deps.client.getTask(args.taskId);
+          const task = await client.getTask(args.taskId);
           return ok({ success: true, taskId: task.taskId, data: task });
         }
 
         case 'list_tasklists': {
-          const lists = await deps.client.listTasklists();
+          const lists = await client.listTasklists();
           return ok({ success: true, data: lists, message: `Found ${lists.length} tasklist(s)` });
         }
 
         case 'create_tasklist': {
           if (!args.title) return err(new ToolError({ toolId: 'larkTask', reason: 'bad_args', message: 'title required for create_tasklist' }));
           const memberIds = await resolveAssignees();
-          const tl = await deps.client.createTasklist(args.title, memberIds);
+          const tl = await client.createTasklist(args.title, memberIds);
           return ok({ success: true, data: tl, message: `Tasklist "${tl.name}" created` });
         }
 
         case 'add_to_tasklist': {
           if (!args.taskId || !args.tasklistId)
             return err(new ToolError({ toolId: 'larkTask', reason: 'bad_args', message: 'taskId and tasklistId required' }));
-          await deps.client.addTaskToTasklist(args.tasklistId, args.taskId);
+          await client.addTaskToTasklist(args.tasklistId, args.taskId);
           return ok({ success: true, taskId: args.taskId, message: 'Task added to tasklist' });
         }
 
         case 'remove_from_tasklist': {
           if (!args.taskId || !args.tasklistId)
             return err(new ToolError({ toolId: 'larkTask', reason: 'bad_args', message: 'taskId and tasklistId required' }));
-          await deps.client.removeTaskFromTasklist(args.tasklistId, args.taskId);
+          await client.removeTaskFromTasklist(args.tasklistId, args.taskId);
           return ok({ success: true, taskId: args.taskId, message: 'Task removed from tasklist' });
         }
 
         case 'list_subtasks': {
           if (!args.taskId) return err(new ToolError({ toolId: 'larkTask', reason: 'bad_args', message: 'taskId required' }));
-          const subtasks = await deps.client.listSubtasks(args.taskId);
+          const subtasks = await client.listSubtasks(args.taskId);
           return ok({ success: true, data: subtasks, message: `Found ${subtasks.length} subtask(s)` });
         }
 
@@ -295,7 +317,7 @@ export const createLarkTaskTool = (deps: {
           if (!args.parentTaskId || !args.title)
             return err(new ToolError({ toolId: 'larkTask', reason: 'bad_args', message: 'parentTaskId and title required' }));
           const assigneeIds = await resolveAssignees();
-          const result = await deps.client.createSubtask(args.parentTaskId, {
+          const result = await client.createSubtask(args.parentTaskId, {
             title: args.title,
             ...(assigneeIds ? { assigneeIds } : {}),
             ...(args.dueDate ? { dueDate: args.dueDate } : {}),

@@ -3,10 +3,17 @@ import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
 type TaskRecord = Record<string, unknown>;
 
+function isTaskCompleted(r: TaskRecord): boolean {
+  const completedAt = String(r['completed_at'] ?? '0');
+  if (completedAt !== '0' && completedAt !== '' && completedAt !== 'undefined') return true;
+  if (String(r['status']).toLowerCase() === 'completed') return true;
+  return (r['completed'] ?? r['done'] ?? false) as boolean;
+}
+
 const normalizeTask = (r: TaskRecord): { taskId: string; title: string; completed: boolean } => ({
   taskId:    (r['task_id'] ?? r['guid'] ?? r['id'] ?? '') as string,
   title:     (r['summary'] ?? r['title'] ?? '') as string,
-  completed: (r['completed_at'] ? true : (r['status'] === 'completed')) || ((r['completed'] ?? r['done'] ?? false) as boolean),
+  completed: isTaskCompleted(r),
 });
 
 const toTimestamp = (iso: string): { timestamp: string; is_all_day: false } | undefined => {
@@ -105,21 +112,46 @@ export class LarkTaskClient implements LarkTaskClientPort {
     completed?: boolean;
   }): Promise<Array<{ taskId: string; title: string; completed: boolean; dueDate?: string }>> {
     type ListResponse = { items?: TaskRecord[] };
-    const pageSize = Math.min(params.limit ?? 50, 100);
-    const data = await this.http.request<ListResponse>('GET', '/open-apis/task/v2/tasks', {
-      query: {
-        page_size: pageSize,
-        ...(params.tasklist ? { tasklist_id: params.tasklist } : {}),
-      },
-    });
 
-    let tasks = (data.items ?? []);
+    // Collect tasks across all tasklists (like legacy), or from a specific one.
+    const limit = params.limit ?? 50;
+    const seen = new Map<string, TaskRecord>();
+    const collect = async (tasklistId?: string, pageSize = 100) => {
+      const data = await this.http.request<ListResponse>('GET', '/open-apis/task/v2/tasks', {
+        query: {
+          page_size: pageSize,
+          ...(tasklistId ? { tasklist_id: tasklistId } : {}),
+        },
+      });
+      for (const item of (data.items ?? [])) {
+        const key = (item['guid'] ?? item['task_id'] ?? item['id'] ?? '') as string;
+        if (key) seen.set(key, item);
+      }
+    };
+
+    if (params.tasklist) {
+      await collect(params.tasklist, limit);
+    } else {
+      // First try without tasklist filter
+      await collect(undefined, limit);
+      // If empty, iterate all tasklists to find tasks
+      if (seen.size === 0) {
+        type TLResponse = { items?: Array<Record<string, unknown>> };
+        const tlData = await this.http.request<TLResponse>('GET', '/open-apis/task/v2/tasklists', {
+          query: { page_size: 50 },
+        });
+        for (const tl of (tlData.items ?? [])) {
+          const tlId = tl['guid'] as string;
+          if (tlId) await collect(tlId);
+        }
+      }
+    }
+
+    let tasks = Array.from(seen.values());
 
     if (params.completed !== undefined) {
       tasks = tasks.filter(t => {
-        const done = (t['completed_at'] as string | undefined)
-          ? true
-          : (t['status'] as string | undefined) === 'completed';
+        const done = isTaskCompleted(t);
         return params.completed ? done : !done;
       });
     }
@@ -129,7 +161,7 @@ export class LarkTaskClient implements LarkTaskClientPort {
       tasks = tasks.filter(t => taskHasMember(t, uid));
     }
 
-    return tasks.map(t => {
+    return tasks.slice(0, limit).map(t => {
       const base = normalizeTask(t);
       const due = t['due'] as Record<string, unknown> | undefined;
       const dueDate = normalizeDueDate(due);
