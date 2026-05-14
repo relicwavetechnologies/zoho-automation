@@ -46,6 +46,8 @@ import { formatAmount, formatDate }        from '../../../zoho/zoho-format.utils
 import { normalizeStatus, parseDateFilter } from '../../../zoho/zoho-filter.utils';
 import { handleZohoList, type ZohoListCsvColumn } from '../../../zoho/zoho-list-handler';
 import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../../infrastructure/zoho/zoho-books-paginated.client';
+import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../../infrastructure/zoho/zoho-books-schema.cache';
+import { runInSandbox, arrayToCsv, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
@@ -94,6 +96,12 @@ const Schema = z.object({
   minOverdueDays:   z.number().int().min(0).optional(),
   invoiceDateFrom:  z.string().optional(),
   invoiceDateTo:    z.string().optional(),
+
+  // Script mode — auto-escalates list ops to exhaustive fetch + VM sandbox
+  script:     z.string().optional(),
+  scriptArgs: z.record(z.unknown()).optional(),
+  exportCsv:  z.boolean().optional(),
+  csvColumns: z.array(z.string()).optional(),
 });
 
 type Args = z.infer<typeof Schema>;
@@ -111,6 +119,11 @@ const ResultSchema = z.object({
   truncated:    z.boolean().optional(),
   hasMore:      z.boolean().optional(),
   suggestExport: z.boolean().optional(),
+  // Script-mode fields
+  rowCount:        z.number().optional(),
+  totalFetched:    z.number().optional(),
+  moduleSchema:    z.unknown().optional(),
+  sourceTruncated: z.boolean().optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
@@ -154,6 +167,18 @@ const createOps = new Set<Args['op']>([
   'create_expense',
   'create_bill',
 ]);
+
+const listOpToModule: Record<string, ZohoBooksModule> = {
+  list_invoices:         'invoices',
+  list_bills:            'bills',
+  list_expenses:         'expenses',
+  list_payments:         'customerpayments',
+  list_contacts:         'contacts',
+  list_bank_transactions: 'banktransactions',
+  search_transactions:   'banktransactions',
+};
+
+const INLINE_SCRIPT_LIMIT = 50;
 
 const amountFields = new Set([
   'amount',
@@ -309,6 +334,115 @@ const reportDateParams = (args: Args): Record<string, string> => {
 
 const singleDateValue = (input: string): string => parseDateFilter(input).to;
 
+// ─── Script-mode handler ──────────────────────────────────────────────────────
+
+async function executeScriptMode(
+  args: Args,
+  ctx: ToolExecutionContext,
+  scriptDeps: { booksClient: ZohoBooksPaginatedClient; cloudinary: CloudinaryAdapter; csvLinkTtl?: number | undefined },
+): Promise<Result<Res, ToolError>> {
+  const { companyId } = ctx.runContext;
+  const moduleName = listOpToModule[args.op]! as ZohoBooksModule;
+
+  const rawFilters = dateParams(args) as Record<string, string>;
+  if (args.searchQuery) rawFilters['search_text'] = args.searchQuery;
+
+  ctx.logger.info('zohoBooks.script_mode.fetch', { companyId, module: moduleName, filters: rawFilters });
+
+  let fetchResult: Awaited<ReturnType<typeof scriptDeps.booksClient.listAllRecords>>;
+  try {
+    fetchResult = await scriptDeps.booksClient.listAllRecords({
+      companyId,
+      moduleName,
+      ...(Object.keys(rawFilters).length > 0 ? { filters: rawFilters } : {}),
+    });
+  } catch (e) {
+    return err(new ToolError({
+      toolId: 'zohoBooks', reason: 'upstream_failure',
+      message: `Failed to fetch ${moduleName}: ${e instanceof Error ? e.message : String(e)}`,
+    }));
+  }
+
+  const schema = getModuleSchema(moduleName);
+  const items = injectSyntheticFields(fetchResult.items, schema);
+  const schemaHint = toSchemaHint(schema, items[0]);
+
+  ctx.logger.info('zohoBooks.script_mode.run', {
+    companyId, module: moduleName,
+    recordsFetched: items.length, truncated: fetchResult.truncated,
+  });
+
+  let sandboxResult;
+  try {
+    sandboxResult = runInSandbox({
+      script: args.script!,
+      data: items,
+      args: args.scriptArgs,
+      schema: schemaHint,
+    });
+  } catch (e) {
+    if (e instanceof SandboxTimeoutError || e instanceof SandboxScriptError ||
+        e instanceof SandboxInputTooLargeError || e instanceof SandboxSerializationError) {
+      return err(new ToolError({ toolId: 'zohoBooks', reason: 'upstream_failure', message: e.message }));
+    }
+    throw e;
+  }
+
+  const resultArray = sandboxResult.isArray ? sandboxResult.result as unknown[] : null;
+
+  let csvLink: string | undefined;
+  let csvPublicId: string | undefined;
+  let csvExpiresAt: string | undefined;
+
+  if (args.exportCsv && resultArray && resultArray.length > 0 && scriptDeps.cloudinary.isAvailable) {
+    try {
+      const firstRow = resultArray[0] as Record<string, unknown>;
+      const columns = args.csvColumns ?? Object.keys(firstRow);
+      const csvBuffer = arrayToCsv(columns, resultArray);
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const exported = await scriptDeps.cloudinary.uploadCsvBuffer({
+        buffer: csvBuffer,
+        fileName: `divo-export-${dateStr}-${companyId.slice(0, 8)}.csv`,
+        companyId,
+        ttlSeconds: scriptDeps.csvLinkTtl ?? 86_400,
+      });
+      if (exported) {
+        csvLink = exported.signedUrl;
+        csvPublicId = exported.publicId;
+        csvExpiresAt = exported.expiresAt;
+      }
+    } catch (e) {
+      ctx.logger.warn('zohoBooks.script_mode.csv_failed', { error: String(e) });
+    }
+  }
+
+  const inlineData = resultArray && resultArray.length > INLINE_SCRIPT_LIMIT
+    ? resultArray.slice(0, INLINE_SCRIPT_LIMIT) : sandboxResult.result;
+
+  const parts: string[] = [`Fetched ${items.length} records from Zoho Books.`];
+  if (fetchResult.truncated) {
+    parts.push('DATA INCOMPLETE - pagination limit (4000 records) reached. Totals may be understated.');
+  }
+  if (resultArray) {
+    parts.push(`Processed into ${resultArray.length} rows.`);
+    if (resultArray.length > INLINE_SCRIPT_LIMIT) parts.push(`Showing first ${INLINE_SCRIPT_LIMIT} inline.`);
+  }
+  if (csvLink) parts.push('Full CSV available via download link.');
+
+  return ok({
+    success: true,
+    data: inlineData,
+    message: parts.join(' '),
+    rowCount: sandboxResult.rowCount,
+    totalFetched: items.length,
+    moduleSchema: schemaHint,
+    sourceTruncated: fetchResult.truncated,
+    ...(csvLink ? { csvLink } : {}),
+    ...(csvPublicId ? { csvPublicId } : {}),
+    ...(csvExpiresAt ? { csvExpiresAt } : {}),
+  });
+}
+
 // ─── Tool factory ─────────────────────────────────────────────────────────────
 
 export const createZohoBooksTool = (deps: {
@@ -330,17 +464,28 @@ export const createZohoBooksTool = (deps: {
   resultSchema: ResultSchema,
 
   description: [
-    'Access Zoho Books with 19 operations: list_invoices, get_invoice, create_invoice, list_contacts, get_contact, list_expenses, list_bills, list_payments, get_chart_of_accounts, get_account_balance, list_bank_transactions, search_transactions, get_tax_summary, send_invoice, record_payment, create_expense, create_bill, void_invoice, and build_overdue_report.',
-    'For financial analysis use build_overdue_report which scans ALL invoices deeply,',
-    'computes aging buckets and top customers, and returns a CSV link for large datasets.',
+    'Access Zoho Books: 19 operations for invoices, bills, expenses, payments, contacts, bank transactions, and reports.',
+    'For data analysis (grouping, aggregation, ranking), add a `script` parameter to any list operation.',
+    'The tool fetches ALL records (up to 4000) and runs your script in a sandbox.',
+    'Records include synthetic fields: _amount/_total (full amount), _balance (unpaid/outstanding), _date, _id.',
+    'Set exportCsv=true to get a downloadable CSV of the processed result.',
   ].join(' '),
 
   parameterDocs: [
     'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|list_bills|list_payments|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
-    'new read params: accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll',
+    'read params: accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll, limit (1-100)',
     'write params: invoiceId, email, fields',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
-    'CRUD params: invoiceId, contactId, fields, limit (1-100)',
+    '',
+    'SCRIPT MODE (list ops only — for analysis/grouping/aggregation):',
+    'script: JS code. Receives `data` (array) and `args` (object). Must return a value.',
+    '  _amount/_total = full document amount. _balance = unpaid/outstanding portion.',
+    '  Use _balance for outstanding/overdue queries. Use _amount for total spend queries.',
+    '  formatAmount(value, currency) and formatDate(iso) are available in the sandbox.',
+    '  Example: "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,outstanding:0}; g[v].count++; g[v].outstanding+=b._balance||0;}); return Object.values(g).sort((a,b)=>b.outstanding-a.outstanding)"',
+    'scriptArgs: extra parameters available as `args` in the script',
+    'exportCsv: true to upload script result as CSV with download link',
+    'csvColumns: column order for CSV (auto-detected if omitted)',
   ].join('\n'),
 
   permissionCheck(args, perm) {
@@ -378,6 +523,22 @@ export const createZohoBooksTool = (deps: {
           message: `Overdue report failed: ${mapZohoError(e)}`,
         }));
       }
+    }
+
+    // ── Script mode (auto-escalate list ops to exhaustive fetch + sandbox) ──
+    if (args.script) {
+      const moduleName = listOpToModule[args.op];
+      if (moduleName) {
+        return executeScriptMode(args, ctx, {
+          booksClient: deps.booksClient,
+          cloudinary:  deps.cloudinary,
+          csvLinkTtl:  deps.csvLinkTtl,
+        });
+      }
+      return err(new ToolError({
+        toolId: 'zohoBooks', reason: 'bad_args',
+        message: `script is only supported on list operations (${Object.keys(listOpToModule).join(', ')}), not ${args.op}`,
+      }));
     }
 
     // ── CRUD operations (use simple client) ──────────────────────────────────

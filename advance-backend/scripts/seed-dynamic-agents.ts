@@ -55,7 +55,7 @@ const SEED_AGENTS: readonly SeedAgent[] = [
     slug: 'zoho-ops',
     capabilityDescription: 'Queries and manages Zoho CRM (contacts, leads, accounts, deals) and Zoho Books (invoices, bills, payments, expenses, overdue reports). Returns full datasets with exact financial figures, supports Hinglish and IST date ranges.',
     systemPrompt: ZOHO_RUNNER_SYSTEM,
-    toolIds: ['zohoCrm', 'zohoBooks', 'dataProcessor'],
+    toolIds: ['zohoCrm', 'zohoBooks'],
     hookId: 'zoho-read',
     maxSteps: 12,
     temperature: 0,
