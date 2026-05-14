@@ -3,11 +3,10 @@ import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
 type TaskRecord = Record<string, unknown>;
 
-const normalizeTask = (r: TaskRecord) => ({
+const normalizeTask = (r: TaskRecord): { taskId: string; title: string; completed: boolean } => ({
   taskId:    (r['task_id'] ?? r['guid'] ?? r['id'] ?? '') as string,
   title:     (r['summary'] ?? r['title'] ?? '') as string,
-  completed: (r['completed'] ?? r['done'] ?? false) as boolean,
-  dueDate:   r['due'] as string | undefined,
+  completed: (r['completed_at'] ? true : (r['status'] === 'completed')) || ((r['completed'] ?? r['done'] ?? false) as boolean),
 });
 
 const toTimestamp = (iso: string): { timestamp: string; is_all_day: false } | undefined => {
@@ -22,6 +21,16 @@ const normalizeDueDate = (due: Record<string, unknown> | undefined): string | un
   if (Number.isNaN(ms)) return undefined;
   return new Date(ms).toISOString();
 };
+
+function taskHasMember(task: TaskRecord, openIdLower: string): boolean {
+  const members = (task['members'] as Array<Record<string, unknown>> | undefined) ?? [];
+  for (const m of members) {
+    const id = ((m['id'] as string) ?? '').toLowerCase();
+    if (id === openIdLower) return true;
+  }
+  const creator = ((task['creator'] as Record<string, unknown>)?.['id'] as string ?? '').toLowerCase();
+  return creator === openIdLower;
+}
 
 export class LarkTaskClient implements LarkTaskClientPort {
   private readonly http: LarkHttpClient;
@@ -89,15 +98,43 @@ export class LarkTaskClient implements LarkTaskClientPort {
     await this.http.request('DELETE', `/open-apis/task/v2/tasks/${encodeURIComponent(taskId)}`);
   }
 
-  async listTasks(params: { limit?: number; tasklist?: string }): Promise<Array<{ taskId: string; title: string; completed: boolean }>> {
+  async listTasks(params: {
+    limit?: number;
+    tasklist?: string;
+    assigneeOpenId?: string;
+    completed?: boolean;
+  }): Promise<Array<{ taskId: string; title: string; completed: boolean; dueDate?: string }>> {
     type ListResponse = { items?: TaskRecord[] };
+    const pageSize = Math.min(params.limit ?? 50, 100);
     const data = await this.http.request<ListResponse>('GET', '/open-apis/task/v2/tasks', {
       query: {
-        page_size: params.limit ?? 20,
+        page_size: pageSize,
         ...(params.tasklist ? { tasklist_id: params.tasklist } : {}),
       },
     });
-    return (data.items ?? []).map(normalizeTask);
+
+    let tasks = (data.items ?? []);
+
+    if (params.completed !== undefined) {
+      tasks = tasks.filter(t => {
+        const done = (t['completed_at'] as string | undefined)
+          ? true
+          : (t['status'] as string | undefined) === 'completed';
+        return params.completed ? done : !done;
+      });
+    }
+
+    if (params.assigneeOpenId) {
+      const uid = params.assigneeOpenId.toLowerCase();
+      tasks = tasks.filter(t => taskHasMember(t, uid));
+    }
+
+    return tasks.map(t => {
+      const base = normalizeTask(t);
+      const due = t['due'] as Record<string, unknown> | undefined;
+      const dueDate = normalizeDueDate(due);
+      return dueDate ? { ...base, dueDate } : base;
+    });
   }
 
   async getTask(taskId: string): Promise<{ taskId: string; title: string; completed: boolean; dueDate?: string }> {

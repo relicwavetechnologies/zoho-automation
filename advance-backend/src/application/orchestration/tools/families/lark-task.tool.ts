@@ -31,7 +31,7 @@ export interface PeopleResolverPort {
 
 const LarkTaskArgsSchema = z.object({
   op: z.enum([
-    'create', 'update', 'complete', 'delete', 'list', 'get',
+    'create', 'update', 'complete', 'delete', 'list', 'listMine', 'listOpenMine', 'get',
     'list_tasklists', 'create_tasklist', 'add_to_tasklist', 'remove_from_tasklist',
     'list_subtasks', 'create_subtask',
   ]),
@@ -64,7 +64,7 @@ type LarkTaskResult = z.infer<typeof LarkTaskResultSchema>;
 // ─── Action group inference ────────────────────────────────────────────────
 
 const inferAction = (op: LarkTaskArgs['op']): ToolActionGroup => {
-  if (op === 'list' || op === 'get' || op === 'list_tasklists' || op === 'list_subtasks') return 'read';
+  if (op === 'list' || op === 'listMine' || op === 'listOpenMine' || op === 'get' || op === 'list_tasklists' || op === 'list_subtasks') return 'read';
   if (op === 'create' || op === 'create_tasklist' || op === 'create_subtask') return 'create';
   if (op === 'update' || op === 'complete' || op === 'add_to_tasklist' || op === 'remove_from_tasklist') return 'update';
   return 'delete';
@@ -93,7 +93,12 @@ export interface LarkTaskClientPort {
 
   deleteTask(taskId: string): Promise<void>;
 
-  listTasks(params: { limit?: number; tasklist?: string }): Promise<Array<{ taskId: string; title: string; completed: boolean }>>;
+  listTasks(params: {
+    limit?: number;
+    tasklist?: string;
+    assigneeOpenId?: string;
+    completed?: boolean;
+  }): Promise<Array<{ taskId: string; title: string; completed: boolean; dueDate?: string }>>;
 
   getTask(taskId: string): Promise<{ taskId: string; title: string; completed: boolean; dueDate?: string }>;
 
@@ -126,9 +131,12 @@ export const createLarkTaskTool = (deps: {
   actionGroups: new Set(['read', 'create', 'update', 'delete']),
   argsSchema: LarkTaskArgsSchema,
   resultSchema: LarkTaskResultSchema,
-  description: 'Create, read, update, complete, delete Lark tasks; manage tasklists and subtasks.',
+  description: 'Lark Tasks: personal task lookup, tasklist reads, single-task lookup, and task mutations. Use listMine for "my tasks", listOpenMine for "my open tasks", list for broader reads.',
   parameterDocs: `
-- op: create|update|complete|delete|list|get|list_tasklists|create_tasklist|add_to_tasklist|remove_from_tasklist|list_subtasks|create_subtask
+- op: create|update|complete|delete|list|listMine|listOpenMine|get|list_tasklists|create_tasklist|add_to_tasklist|remove_from_tasklist|list_subtasks|create_subtask
+  • list — all visible tasks (optionally filtered by tasklist)
+  • listMine — tasks assigned to the current user
+  • listOpenMine — open/incomplete tasks assigned to the current user (most common for "my tasks", "pending tasks", "what do I need to do")
 - title: Task title (required for create, create_subtask, create_tasklist).
 - taskId: Task ID (required for update, complete, delete, get, add_to_tasklist, remove_from_tasklist, list_subtasks).
 - parentTaskId: Parent task ID (required for create_subtask).
@@ -137,7 +145,7 @@ export const createLarkTaskTool = (deps: {
 - assigneeIds: Array of Lark open_ids (optional). Takes priority over assigneeNames.
 - assigneeNames: Array of human-readable names, e.g. ["Anish", "Shivam sir"]. Resolved automatically.
 - notes: Task description/notes (optional).
-- limit: Max tasks to return for list (default 20).
+- limit: Max tasks to return for list/listMine/listOpenMine (default 50).
   `.trim(),
 
   permissionCheck(args: LarkTaskArgs, perm: PermissionResult): Result<ToolActionGroup, PermissionError> {
@@ -216,8 +224,33 @@ export const createLarkTaskTool = (deps: {
 
         case 'list': {
           ctx.onProgress?.('Fetching Lark tasks…');
-          const tasks = await deps.client.listTasks({ limit: args.limit ?? 20, ...(args.tasklist !== undefined ? { tasklist: args.tasklist } : {}) });
+          const tasks = await deps.client.listTasks({ limit: args.limit ?? 50, ...(args.tasklist !== undefined ? { tasklist: args.tasklist } : {}) });
           return ok({ success: true, data: tasks, message: `Found ${tasks.length} tasks` });
+        }
+
+        case 'listMine': {
+          ctx.onProgress?.('Fetching your tasks…');
+          const userOpenId = ctx.runContext.userExternalId;
+          if (!userOpenId) return ok({ success: false, data: [], message: 'Cannot determine current user identity' });
+          const mineTasks = await deps.client.listTasks({
+            limit: args.limit ?? 50,
+            assigneeOpenId: userOpenId,
+            ...(args.tasklist !== undefined ? { tasklist: args.tasklist } : {}),
+          });
+          return ok({ success: true, data: mineTasks, message: `Found ${mineTasks.length} tasks assigned to you` });
+        }
+
+        case 'listOpenMine': {
+          ctx.onProgress?.('Fetching your open tasks…');
+          const userOpenId2 = ctx.runContext.userExternalId;
+          if (!userOpenId2) return ok({ success: false, data: [], message: 'Cannot determine current user identity' });
+          const openTasks = await deps.client.listTasks({
+            limit: args.limit ?? 50,
+            assigneeOpenId: userOpenId2,
+            completed: false,
+            ...(args.tasklist !== undefined ? { tasklist: args.tasklist } : {}),
+          });
+          return ok({ success: true, data: openTasks, message: `Found ${openTasks.length} open tasks assigned to you` });
         }
 
         case 'get': {
