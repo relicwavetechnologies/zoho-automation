@@ -25,6 +25,7 @@ import {
 } from './lark-security';
 import { parseLarkAttachments } from './lark-attachment.parser';
 import type { LarkChatContextService } from '../../../application/chat-context/lark-chat-context.service';
+import type { PrismaClient } from '../../../generated/prisma';
 
 export const createLarkWebhookRoutes = (deps: {
   adapter: LarkChannelAdapter;
@@ -45,6 +46,7 @@ export const createLarkWebhookRoutes = (deps: {
   /** Per-chat message serializer — ensures only one engine.run() per chat at a time. */
   serializer: ChatMessageSerializer;
   chatContextService?: LarkChatContextService;
+  prisma?: PrismaClient;
 }): Router => {
   const router = Router();
   const log = deps.logger.child({ route: 'lark-webhook' });
@@ -582,6 +584,7 @@ async function handleSlashCommand(args: {
     larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
     cache: CachePort;
     chatContextService?: LarkChatContextService;
+    prisma?: PrismaClient;
   };
   log: Logger;
   correlationId: ReturnType<typeof asCorrelationId>;
@@ -769,6 +772,89 @@ async function handleSlashCommand(args: {
     return;
   }
 
+  // ── /schedules — list active scheduled workflows ────────────────────────────
+  if (cmd === '/schedules') {
+    if (!deps.prisma) { await reply('Scheduling is not available.'); return; }
+    const workflows = await deps.prisma.scheduledWorkflow.findMany({
+      where: { companyId: identity.companyId, createdByUserId: identity.userId, status: { in: ['scheduled_active', 'paused'] } },
+      orderBy: { nextRunAt: 'asc' },
+      take: 10,
+      select: { id: true, name: true, scheduleType: true, status: true, nextRunAt: true, lastRunAt: true },
+    });
+    if (workflows.length === 0) { await reply('No active schedules. Tell Divo to schedule something, e.g. "check my emails every morning at 9am".'); return; }
+    const lines = workflows.map((w, i) => {
+      const status = w.status === 'paused' ? '⏸' : '✅';
+      const next = w.nextRunAt ? w.nextRunAt.toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : '—';
+      return `${i + 1}. ${status} **${w.name}** (${w.scheduleType})\n   Next: ${next} | ID: \`${w.id.slice(0, 8)}\``;
+    });
+    await reply(`**Your Scheduled Workflows**\n\n${lines.join('\n\n')}`);
+    return;
+  }
+
+  // ── /pause <id> — pause a schedule ─────────────────────────────────────────
+  if (cmd === '/pause') {
+    if (!deps.prisma) { await reply('Scheduling is not available.'); return; }
+    const idPrefix = text.slice(cmd.length).trim();
+    if (!idPrefix) { await reply('Usage: `/pause <schedule-id>`\nGet IDs from `/schedules`.'); return; }
+    const match = await deps.prisma.scheduledWorkflow.findFirst({
+      where: { companyId: identity.companyId, createdByUserId: identity.userId, id: { startsWith: idPrefix }, status: 'scheduled_active' },
+    });
+    if (!match) { await reply(`No active schedule found starting with \`${idPrefix}\`.`); return; }
+    await deps.prisma.scheduledWorkflow.update({
+      where: { id: match.id },
+      data: { status: 'paused', scheduleEnabled: false, pausedAt: new Date() },
+    });
+    log.info('webhook.command.pause.ok', { workflowId: match.id, correlationId });
+    await reply(`Paused **${match.name}**. Use \`/resume ${idPrefix}\` to restart.`);
+    return;
+  }
+
+  // ── /resume <id> — resume a paused schedule ────────────────────────────────
+  if (cmd === '/resume') {
+    if (!deps.prisma) { await reply('Scheduling is not available.'); return; }
+    const idPrefix = text.slice(cmd.length).trim();
+    if (!idPrefix) { await reply('Usage: `/resume <schedule-id>`\nGet IDs from `/schedules`.'); return; }
+    const match = await deps.prisma.scheduledWorkflow.findFirst({
+      where: { companyId: identity.companyId, createdByUserId: identity.userId, id: { startsWith: idPrefix }, status: 'paused' },
+    });
+    if (!match) { await reply(`No paused schedule found starting with \`${idPrefix}\`.`); return; }
+
+    let nextRunAt: Date | null = null;
+    try {
+      const { scheduleConfigSchema } = await import('../../../application/scheduling/schedule-config');
+      const { getNextScheduledRunAt } = await import('../../../application/scheduling/schedule-calculator');
+      const parsed = scheduleConfigSchema.safeParse(match.scheduleConfigJson);
+      if (parsed.success) nextRunAt = getNextScheduledRunAt(parsed.data, new Date());
+    } catch { /* use null */ }
+
+    await deps.prisma.scheduledWorkflow.update({
+      where: { id: match.id },
+      data: { status: 'scheduled_active', scheduleEnabled: true, pausedAt: null, nextRunAt },
+    });
+    const nextStr = nextRunAt ? nextRunAt.toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'pending';
+    log.info('webhook.command.resume.ok', { workflowId: match.id, correlationId });
+    await reply(`Resumed **${match.name}**. Next run: ${nextStr}.`);
+    return;
+  }
+
+  // ── /cancel <id> — permanently archive a schedule ──────────────────────────
+  if (cmd === '/cancel') {
+    if (!deps.prisma) { await reply('Scheduling is not available.'); return; }
+    const idPrefix = text.slice(cmd.length).trim();
+    if (!idPrefix) { await reply('Usage: `/cancel <schedule-id>`\nGet IDs from `/schedules`.'); return; }
+    const match = await deps.prisma.scheduledWorkflow.findFirst({
+      where: { companyId: identity.companyId, createdByUserId: identity.userId, id: { startsWith: idPrefix }, status: { in: ['scheduled_active', 'paused'] } },
+    });
+    if (!match) { await reply(`No schedule found starting with \`${idPrefix}\`.`); return; }
+    await deps.prisma.scheduledWorkflow.update({
+      where: { id: match.id },
+      data: { status: 'archived', scheduleEnabled: false, archivedAt: new Date(), nextRunAt: null },
+    });
+    log.info('webhook.command.cancel.ok', { workflowId: match.id, correlationId });
+    await reply(`Cancelled **${match.name}**. This schedule has been permanently archived.`);
+    return;
+  }
+
   if (cmd === '/' || cmd === '/help' || cmd === '/commands') {
     await reply(
       '**Divo Commands**\n\n' +
@@ -780,12 +866,16 @@ async function handleSlashCommand(args: {
       '`/login` — Connect your Lark account so actions run as you, not the bot.\n' +
       '`/logout` — Disconnect your Lark account.\n' +
       '`/status` — Check your Lark account connection and token status.\n\n' +
+      '**Schedules**\n' +
+      '`/schedules` — List your active and paused scheduled workflows.\n' +
+      '`/pause <id>` — Pause a running schedule (use first 8 chars of ID).\n' +
+      '`/resume <id>` — Resume a paused schedule.\n' +
+      '`/cancel <id>` — Permanently archive a schedule.\n' +
+      '  _Create schedules by telling Divo, e.g. "check my emails every morning at 9am"_\n\n' +
       '**Collaboration**\n' +
       '`/share` — Share your most recently indexed file with your team.\n\n' +
       '**Tips**\n' +
       '• In group chats, @mention Divo to talk to it.\n' +
-      '• Say "schedule" to create recurring tasks (e.g., "check invoices every Monday at 9am").\n' +
-      '• Say "list my schedules" to see active scheduled workflows.\n' +
       '• Upload a file and ask Divo to analyze it — PDFs, CSVs, and docs are all supported.',
     );
     return;
