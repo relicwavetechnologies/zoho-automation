@@ -51,5 +51,7 @@ export interface CachedPermissionResult {
     roleSlug: string;
     systemPrompt?: string;
     skillsMarkdown?: string;
+    managerApprovalJson?: unknown;
+    zohoRateLimitJson?: unknown;
   };
 }

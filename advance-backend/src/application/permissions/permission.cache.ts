@@ -154,6 +154,8 @@ export const serializePermissionResult = (r: PermissionResult): CachedPermission
       roleSlug: r.department.roleSlug,
       ...(r.department.systemPrompt !== undefined ? { systemPrompt: r.department.systemPrompt } : {}),
       ...(r.department.skillsMarkdown !== undefined ? { skillsMarkdown: r.department.skillsMarkdown } : {}),
+      ...(r.department.managerApprovalJson !== undefined ? { managerApprovalJson: r.department.managerApprovalJson } : {}),
+      ...(r.department.zohoRateLimitJson !== undefined ? { zohoRateLimitJson: r.department.zohoRateLimitJson } : {}),
     },
   } : {}),
 });
@@ -173,6 +175,8 @@ export const deserializePermissionResult = (c: CachedPermissionResult): Permissi
         roleSlug: asDepartmentRoleSlug(c.department.roleSlug),
         ...(c.department.systemPrompt !== undefined ? { systemPrompt: c.department.systemPrompt } : {}),
         ...(c.department.skillsMarkdown !== undefined ? { skillsMarkdown: c.department.skillsMarkdown } : {}),
+        ...(c.department.managerApprovalJson !== undefined ? { managerApprovalJson: c.department.managerApprovalJson } : {}),
+        ...(c.department.zohoRateLimitJson !== undefined ? { zohoRateLimitJson: c.department.zohoRateLimitJson } : {}),
       }
     : undefined;
   return {
