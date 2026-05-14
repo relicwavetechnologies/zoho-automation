@@ -670,7 +670,7 @@ export class SupervisorAgent {
       permittedTools: input.permittedTools,
       chatId: input.chatId ?? null,
       memoryContext,
-      groupContext,
+      ...(input.groupContext ? { groupContext: input.groupContext } : {}),
       ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
     } as any);
 

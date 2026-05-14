@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Group Chat Context — Current vs Proposed</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; line-height: 1.6; padding: 40px; max-width: 1400px; margin: 0 auto; }
+  h1 { color: #58a6ff; font-size: 26px; margin-bottom: 8px; }
+  h2 { color: #79c0ff; font-size: 20px; margin: 36px 0 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+  h3 { color: #d2a8ff; font-size: 16px; margin: 20px 0 8px; }
+  p { font-size: 14px; margin-bottom: 10px; }
+  .subtitle { color: #8b949e; font-size: 14px; margin-bottom: 28px; }
+  code { background: #161b22; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #f0883e; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 20px 0; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; }
+  .card-bad { border-color: #f85149; }
+  .card-good { border-color: #56d364; }
+  .card-title { font-size: 15px; font-weight: 700; margin-bottom: 12px; }
+  .card-bad .card-title { color: #f85149; }
+  .card-good .card-title { color: #56d364; }
+  .prompt-box { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 16px; font-family: 'SF Mono', Monaco, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-x: auto; margin: 12px 0; color: #8b949e; }
+  .highlight { color: #f0883e; font-weight: 600; }
+  .highlight-green { color: #56d364; font-weight: 600; }
+  .highlight-blue { color: #79c0ff; }
+  .highlight-red { color: #f85149; }
+  .highlight-purple { color: #d2a8ff; }
+  .chat-bubble { margin: 6px 0; padding: 8px 14px; border-radius: 10px; font-size: 13px; max-width: 80%; }
+  .chat-user { background: #1f3a5f; border: 1px solid #58a6ff; margin-left: auto; text-align: right; }
+  .chat-other { background: #21262d; border: 1px solid #30363d; }
+  .chat-divo { background: #0d2818; border: 1px solid #56d364; }
+  .chat-name { font-size: 11px; color: #8b949e; margin-bottom: 2px; }
+  .chat-container { display: flex; flex-direction: column; gap: 4px; }
+  .arrow-down { text-align: center; color: #484f58; font-size: 24px; margin: 8px 0; }
+  .problem { background: #3d1f00; border: 1px solid #f0883e; border-radius: 8px; padding: 14px; margin: 12px 0; font-size: 13px; }
+  .problem-title { color: #f0883e; font-weight: 700; margin-bottom: 4px; }
+  .fix { background: #0d2818; border: 1px solid #56d364; border-radius: 8px; padding: 14px; margin: 12px 0; font-size: 13px; }
+  .fix-title { color: #56d364; font-weight: 700; margin-bottom: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
+  th, td { border: 1px solid #30363d; padding: 8px 12px; text-align: left; }
+  th { background: #161b22; color: #79c0ff; }
+  .step { display: flex; gap: 10px; margin: 10px 0; align-items: flex-start; }
+  .step-num { width: 26px; height: 26px; background: #58a6ff; color: #0d1117; border-radius: 50%; text-align: center; line-height: 26px; font-weight: 700; font-size: 12px; flex-shrink: 0; }
+  .step-text { flex: 1; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>Group Chat Context — What's Broken & How to Fix It</h1>
+<p class="subtitle">Why Divo picked up "Review pending invoices" instead of "duplication of text pr work krna h"</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>The Problem (Screenshot)</h2>
+
+<div class="card card-bad">
+  <div class="chat-container">
+    <div class="chat-bubble chat-user">
+      <div class="chat-name">Abhishek Verma</div>
+      duplication of text pr work krna h, history refreshing par wokr krna h
+    </div>
+    <div class="chat-bubble chat-user">
+      <div class="chat-name">Abhishek Verma</div>
+      <span class="highlight-blue">@Divo</span> make todos of the above message
+    </div>
+    <div class="chat-bubble chat-divo">
+      <div class="chat-name">Divo AI</div>
+      <span class="highlight-red">I have added a todo for you to review the pending invoices list sent to your email.</span>
+    </div>
+  </div>
+  <div class="problem" style="margin-top: 16px;">
+    <div class="problem-title">What went wrong</div>
+    Divo ignored the message right above ("duplication of text pr work krna h") and instead acted on something from much earlier in the conversation. The "above message" reference resolved to stale context.
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>Current Architecture (What Divo Sees)</h2>
+
+<div class="two-col">
+  <div class="card card-bad">
+    <div class="card-title">What gets injected into the LLM prompt</div>
+    <div class="prompt-box"><span class="highlight-purple">SYSTEM PROMPT:</span>
+You are Divo's supervisor agent...
+
+<span class="highlight-purple">MEMORY CONTEXT:</span>
+facts from mem0...
+
+<span class="highlight-purple">GROUP CHAT CONTEXT:</span>
+[Rolling summary of older group discussion]
+Summary: Team discussed invoice processing...
+Decisions: Use Zoho for billing...
+Open questions: ...
+
+[Recent raw group transcript - latest 47 messages]
+<span class="highlight-red">[2026-05-13T10:00:00Z] f6312e2b-d0d3: some old message</span>
+<span class="highlight-red">[2026-05-13T10:01:00Z] f6312e2b-d0d3: another old message</span>
+... 45 more messages ...
+
+<span class="highlight-purple">CONVERSATION HISTORY (separate, from DB):</span>
+user: previous @Divo message
+assistant: Divo's previous reply
+user: another @Divo message
+assistant: another reply
+
+<span class="highlight-purple">CURRENT USER MESSAGE:</span>
+<span class="highlight">make todos of the above message</span></div>
+  </div>
+
+  <div class="card card-bad">
+    <div class="card-title">3 Problems</div>
+
+    <div class="problem">
+      <div class="problem-title">1. "Above message" is ambiguous</div>
+      The LLM sees THREE contexts: group transcript, conversation history, and current message. When user says "above message", which "above"? The LLM picks from whichever context it attended to — often the conversation history (old @Divo exchanges), not the raw group transcript.
+    </div>
+
+    <div class="problem">
+      <div class="problem-title">2. Sender names are UUIDs</div>
+      The transcript shows <code>f6312e2b-d0d3</code> instead of <code>Abhishek Verma</code>. The LLM can't tell who said what. The <code>storeGroupChatMessage</code> function resolves userId but stores the internal UUID, not the display name.
+    </div>
+
+    <div class="problem">
+      <div class="problem-title">3. No clear boundary between "room chat" and "Divo conversation"</div>
+      The group context and conversation history are two separate blobs appended to the prompt. There's no clear signal telling the LLM: "THIS is the latest group message right before the @Divo mention."
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>Proposed Fix — Clear, Simple, Unambiguous</h2>
+
+<div class="card card-good">
+  <div class="card-title">What the LLM should see instead</div>
+  <div class="prompt-box"><span class="highlight-purple">SYSTEM PROMPT:</span>
+You are Divo's supervisor agent...
+
+<span class="highlight-purple">MEMORY CONTEXT:</span>
+facts from mem0...
+
+<span class="highlight-purple">GROUP CHAT CONTEXT</span>
+This is a group chat. Below is the recent conversation in this group.
+When the user refers to "above", "previous message", or "that", they mean
+the messages in this transcript — read from top (oldest) to bottom (newest).
+
+<span class="highlight-green">── ROLLING SUMMARY (older discussion, ~15k tokens) ──</span>
+The team has been discussing Q4 invoice reconciliation, vendor payment
+schedules, and Zoho Books data accuracy improvements...
+
+<span class="highlight-green">── RECENT MESSAGES (raw transcript, ~15k tokens) ──</span>
+<span class="highlight-blue">[12:00 PM] Abhishek Verma:</span> checked the zoho bills looks good now
+<span class="highlight-blue">[12:01 PM] Anish:</span> great, what about the CRM sync?
+<span class="highlight-blue">[12:02 PM] Abhishek Verma:</span> will check tomorrow
+<span class="highlight-blue">[12:05 PM] Abhishek Verma:</span> duplication of text pr work krna h, history refreshing par wokr krna h
+<span class="highlight">▶ [12:06 PM] Abhishek Verma → @Divo:</span> make todos of the above message
+
+<span class="highlight-purple">── CURRENT REQUEST ──</span>
+<span class="highlight">The user's latest message is the LAST line above (marked with ▶).</span>
+<span class="highlight">"The above message" refers to the message directly before it in the transcript.</span></div>
+</div>
+
+<h3>Key Differences</h3>
+
+<table>
+  <tr><th>Aspect</th><th>Today</th><th>After Fix</th></tr>
+  <tr>
+    <td>Sender names</td>
+    <td class="highlight-red">UUIDs: <code>f6312e2b-d0d3</code></td>
+    <td class="highlight-green">Real names: <code>Abhishek Verma</code></td>
+  </tr>
+  <tr>
+    <td>Current message location</td>
+    <td class="highlight-red">Separate "user message" field, disconnected from transcript</td>
+    <td class="highlight-green">LAST line of transcript, marked with ▶</td>
+  </tr>
+  <tr>
+    <td>"Above message" resolution</td>
+    <td class="highlight-red">Ambiguous — LLM picks from any context blob</td>
+    <td class="highlight-green">Unambiguous — the line right before ▶ in the transcript</td>
+  </tr>
+  <tr>
+    <td>Conversation history</td>
+    <td class="highlight-red">Separate blob with old @Divo turns that confuse "above"</td>
+    <td class="highlight-green">Merged into the transcript at the correct chronological position</td>
+  </tr>
+  <tr>
+    <td>Summary</td>
+    <td class="highlight-red">Complex structured JSON (decisions, blockers, owners...)</td>
+    <td class="highlight-green">Simple prose paragraph — what the group has been discussing</td>
+  </tr>
+  <tr>
+    <td>Raw transcript</td>
+    <td>15k tokens, but without the current @Divo message</td>
+    <td class="highlight-green">15-20k tokens, WITH the current message as last line</td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>Implementation Steps</h2>
+
+<div class="step"><span class="step-num">1</span><div class="step-text"><strong>Fix sender name resolution</strong><br>In <code>storeGroupChatMessage()</code> — resolve Lark open_id to display name (not userId UUID). Use the existing <code>LarkPeopleResolver</code> or channel identity repo's display name field.</div></div>
+
+<div class="step"><span class="step-num">2</span><div class="step-text"><strong>Merge the current @Divo message into the transcript</strong><br>In <code>engine/core.ts</code> — append the current user message as the LAST line of the group context transcript (marked with ▶), instead of passing it separately. The LLM sees one continuous conversation, not two disconnected blobs.</div></div>
+
+<div class="step"><span class="step-num">3</span><div class="step-text"><strong>Merge Divo's past replies into the transcript</strong><br>Old @Divo turns from conversation history should appear IN the transcript at their chronological position, not as a separate "conversation history" section. This way "above" always means "the line before this one in the transcript."</div></div>
+
+<div class="step"><span class="step-num">4</span><div class="step-text"><strong>Simplify the summary format</strong><br>Replace the structured JSON summary (decisions, blockers, owners arrays) with a simple prose paragraph: "The group has been discussing X, Y, Z. Key decisions: A, B." The LLM reads prose better than labeled arrays.</div></div>
+
+<div class="step"><span class="step-num">5</span><div class="step-text"><strong>Add clear prompt framing</strong><br>The group context section should start with: "When the user refers to 'above', 'previous message', or 'that', they mean the messages in this transcript." This eliminates the ambiguity.</div></div>
+
+<div class="step"><span class="step-num">6</span><div class="step-text"><strong>Increase raw transcript budget</strong><br>Bump from 15k to 20k tokens. In a busy group, 15k is ~50-80 messages — barely a few hours. 20k gives better coverage.</div></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>What the Fix Looks Like in Practice</h2>
+
+<div class="card card-good">
+  <div class="chat-container">
+    <div class="chat-bubble chat-other">
+      <div class="chat-name">Anish</div>
+      great, the zoho bills are matching now
+    </div>
+    <div class="chat-bubble chat-user">
+      <div class="chat-name">Abhishek Verma</div>
+      duplication of text pr work krna h, history refreshing par wokr krna h
+    </div>
+    <div class="chat-bubble chat-user">
+      <div class="chat-name">Abhishek Verma</div>
+      <span class="highlight-blue">@Divo</span> make todos of the above message
+    </div>
+    <div class="chat-bubble chat-divo">
+      <div class="chat-name">Divo AI</div>
+      <span class="highlight-green">Created 2 tasks:<br>1. Fix text duplication issue on PR<br>2. Fix history refreshing</span>
+    </div>
+  </div>
+  <div class="fix" style="margin-top: 16px;">
+    <div class="fix-title">Why this works now</div>
+    The transcript shows the exact sequence. "Above message" = the line before ▶ = "duplication of text pr work krna h, history refreshing par wokr krna h". No ambiguity.
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>Files to Change</h2>
+
+<table>
+  <tr><th>File</th><th>Change</th></tr>
+  <tr><td><code>lark.webhook.routes.ts</code></td><td>Resolve display name in storeGroupChatMessage</td></tr>
+  <tr><td><code>group-context-formatter.ts</code></td><td>New format: prose summary + unified transcript with ▶ marker</td></tr>
+  <tr><td><code>engine/core.ts</code></td><td>Merge current message into transcript, pass as unified context</td></tr>
+  <tr><td><code>group-context-policy.ts</code></td><td>Bump RAW_TRANSCRIPT_TOKEN_BUDGET to 20k</td></tr>
+  <tr><td><code>lark-chat-context.service.ts</code></td><td>Simplify summary generation (prose not structured JSON)</td></tr>
+  <tr><td><code>supervisor.ts</code> / <code>supervisor-think.ts</code></td><td>Inject unified context with clear framing prompt</td></tr>
+</table>
+
+</body>
+</html>
