@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { Loader2 } from "lucide-react"
 import { AuthCard } from "@/components/admin/auth-card"
@@ -22,15 +22,17 @@ export function OAuthCallbackPage({ provider }: OAuthCallbackPageProps) {
   const { token } = useAdminAuth()
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const calledRef = useRef(false)
 
   useEffect(() => {
-    if (!token) return
+    if (!token || calledRef.current) return
     const code = params.get("code")
     const state = params.get("state")
     if (!code) {
       setError("OAuth callback is missing a code.")
       return
     }
+    calledRef.current = true
     api
       .post(endpointByProvider[provider], { code, state: state ?? undefined }, token)
       .then(() => setDone(true))

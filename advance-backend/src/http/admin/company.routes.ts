@@ -80,9 +80,13 @@ const createInviteSchema = z.object({
   companyId: z.string().uuid().optional(),
 });
 
+const ZOHO_SCOPE_LEVELS = ['read_only', 'read_write', 'full'] as const;
+type ZohoScopeLevel = typeof ZOHO_SCOPE_LEVELS[number];
+
 const zohoStartSchema = z.object({
-  companyId: z.string().uuid().optional(),
-  returnTo:  z.string().url().optional(),
+  companyId:  z.string().uuid().optional(),
+  returnTo:   z.string().url().optional(),
+  scopeLevel: z.enum(ZOHO_SCOPE_LEVELS).optional(),
 });
 
 const zohoConnectSchema = z.object({
@@ -98,6 +102,25 @@ interface ZohoOAuthState {
 }
 
 const ZOHO_NONCE_TTL_SECONDS = 600;
+
+const ZOHO_SCOPES_BY_LEVEL: Record<ZohoScopeLevel, readonly string[]> = {
+  read_only: [
+    'ZohoCRM.modules.READ',
+    'ZohoCRM.settings.READ',
+    'ZohoBooks.fullaccess.READ',
+  ],
+  read_write: [
+    'ZohoCRM.modules.ALL',
+    'ZohoCRM.settings.READ',
+    'ZohoBooks.fullaccess.all',
+  ],
+  full: [
+    'ZohoCRM.modules.ALL',
+    'ZohoCRM.settings.ALL',
+    'ZohoBooks.fullaccess.all',
+  ],
+};
+
 const DEFAULT_ZOHO_SCOPES = [
   'ZohoCRM.modules.ALL',
   'ZohoCRM.settings.ALL',
@@ -294,7 +317,7 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     const [zohoConn, larkBinding, googleLink] = await Promise.all([
       prisma.zohoConnection.findFirst({
         where:   { companyId },
-        select:  { status: true, environment: true, connectedAt: true },
+        select:  { status: true, environment: true, connectedAt: true, scopes: true, tokenFailureCode: true, updatedAt: true },
         orderBy: { updatedAt: 'desc' },
       }),
       prisma.larkTenantBinding.findFirst({
@@ -308,12 +331,22 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       }),
     ]);
 
+    const zohoScopeLevel: ZohoScopeLevel | null = zohoConn?.scopes
+      ? (zohoConn.scopes.some((s: string) => s.includes('fullaccess') && !s.includes('READ')) ? 'full'
+        : zohoConn.scopes.some((s: string) => s.includes('.ALL')) ? 'read_write'
+        : 'read_only')
+      : null;
+
     const providers = [
       {
         provider:    'zoho',
         connected:   zohoConn?.status === 'CONNECTED',
-        status:      zohoConn?.status ?? 'disconnected',
+        status:      zohoConn?.tokenFailureCode ? 'error' : (zohoConn?.status?.toLowerCase() ?? 'disconnected'),
         connectedAt: zohoConn?.connectedAt?.toISOString() ?? null,
+        updatedAt:   zohoConn?.updatedAt?.toISOString() ?? null,
+        scopeLevel:  zohoScopeLevel,
+        scopes:      zohoConn?.scopes ?? [],
+        error:       zohoConn?.tokenFailureCode ?? null,
         details:     zohoConn ? { environment: zohoConn.environment } : null,
       },
       {
@@ -357,19 +390,23 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       nonce,
       returnTo: body.returnTo ?? `${deps.env.APP_BASE_URL}/settings?tab=integrations`,
     };
+    const scopeLevel = body.scopeLevel ?? 'full';
+    const scopes = ZOHO_SCOPES_BY_LEVEL[scopeLevel] ?? DEFAULT_ZOHO_SCOPES;
+
     const authUrl = buildZohoAuthorizeUrl({
       clientId,
       redirectUri,
-      scopes: DEFAULT_ZOHO_SCOPES,
+      scopes: [...scopes],
       state: encodeZohoState(state),
       accountsBaseUrl,
     });
 
-    deps.logger.info('zoho.admin_oauth.start', { companyId, userId });
+    deps.logger.info('zoho.admin_oauth.start', { companyId, userId, scopeLevel });
     success(res, {
       authUrl,
       provider: 'zoho',
-      message: 'Zoho OAuth is handled by backend env for now.',
+      scopeLevel,
+      message: `Zoho OAuth started with ${scopeLevel} access.`,
     }, 'Zoho OAuth URL created');
   }));
 
@@ -403,13 +440,72 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     });
     if (!upsertResult.ok) throw routeError(500, upsertResult.error.message);
 
-    deps.logger.info('zoho.admin_oauth.connected', { companyId, environment: state.environment, scopes: tokens.scopes });
+    // Test the connection by hitting the organizations endpoint
+    let connectionTest: { success: boolean; organizationName?: string; error?: string } = { success: false };
+    try {
+      const apiBase = deps.env.ZOHO_API_BASE_URL?.replace(/\/$/, '') ?? 'https://www.zohoapis.com';
+      const testRes = await fetch(`${apiBase}/books/v3/organizations`, {
+        headers: { Authorization: `Zoho-oauthtoken ${tokens.accessToken}` },
+      });
+      const testData = await testRes.json() as { organizations?: Array<{ name?: string }> };
+      if (testRes.ok && testData.organizations?.length) {
+        connectionTest = { success: true, organizationName: testData.organizations[0]?.name ?? 'Unknown' };
+      } else {
+        connectionTest = { success: false, error: `API returned ${testRes.status}` };
+      }
+    } catch (e) {
+      connectionTest = { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+
+    deps.logger.info('zoho.admin_oauth.connected', {
+      companyId, environment: state.environment, scopes: tokens.scopes,
+      connectionTest: connectionTest.success,
+      organizationName: connectionTest.organizationName,
+    });
     success(res, {
       provider: 'zoho',
       connected: true,
+      connectionTest,
       returnTo: state.returnTo ?? `${deps.env.APP_BASE_URL}/settings?tab=integrations`,
       scopes: tokens.scopes,
-    }, 'Zoho connected');
+    }, connectionTest.success
+      ? `Zoho connected — verified with org "${connectionTest.organizationName}"`
+      : 'Zoho connected but verification failed');
+  }));
+
+  // ── Disconnect integration ────────────────────────────────────────────────
+  router.post('/onboarding/disconnect', asyncRoute(async (req, res) => {
+    const body = z.object({ provider: z.enum(['zoho', 'lark', 'google']) }).parse(req.body ?? {});
+    const companyId = resolveCompanyId(res);
+    const userId = res.locals['userId'] as string | undefined;
+
+    switch (body.provider) {
+      case 'zoho':
+        await prisma.zohoConnection.updateMany({
+          where: { companyId },
+          data: { status: 'DISCONNECTED', tokenFailureCode: 'admin_disconnected' },
+        });
+        break;
+      case 'lark':
+        if (userId) {
+          await prisma.larkUserAuthLink.updateMany({
+            where: { userId, companyId },
+            data: { revokedAt: new Date() },
+          });
+        }
+        break;
+      case 'google':
+        if (userId) {
+          await prisma.companyGoogleAuthLink.updateMany({
+            where: { companyId, revokedAt: null },
+            data: { revokedAt: new Date() },
+          });
+        }
+        break;
+    }
+
+    deps.logger.info('admin.integration.disconnected', { companyId, provider: body.provider, userId });
+    success(res, { disconnected: true, provider: body.provider }, `${body.provider} disconnected`);
   }));
 
   // ── Tool permissions ──────────────────────────────────────────────────────

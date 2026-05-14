@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { ArrowUpRight, ClipboardList, PlugZap, Shield, SlidersHorizontal, Sparkles, Wrench } from "lucide-react"
+import { ArrowUpRight, CheckCircle2, AlertTriangle, XCircle, ClipboardList, PlugZap, RefreshCw, Shield, SlidersHorizontal, Sparkles, Wrench } from "lucide-react"
 import { Link, useSearchParams } from "react-router-dom"
 import { DataTable } from "@/components/admin/data-table"
 import { MetricCard } from "@/components/admin/metric-card"
@@ -8,16 +8,80 @@ import { SectionCard } from "@/components/admin/section-card"
 import { StatusBadge } from "@/components/admin/status-badge"
 import { useApiList } from "@/components/admin/use-api-list"
 import { Button } from "@/components/ui/button"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { companyIntegrationsApi } from "@/lib/api"
+import type { ZohoScopeLevel } from "@/lib/api"
 import type { JsonRecord } from "@/components/admin/types"
+
+const SCOPE_LABELS: Record<string, string> = {
+  read_only: "Read only",
+  read_write: "Read + Write",
+  full: "Full access",
+}
+
+function formatRelativeTime(iso: string | null): string {
+  if (!iso) return "—"
+  const diff = Date.now() - new Date(iso).getTime()
+  if (diff < 60_000) return "just now"
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+  return `${Math.floor(diff / 86_400_000)}d ago`
+}
+
+function IntegrationCard({ provider, data, actions }: {
+  provider: string
+  data: JsonRecord | undefined
+  actions?: React.ReactNode
+}) {
+  const connected = data?.connected === true
+  const status = String(data?.status ?? "disconnected")
+  const isError = status === "error"
+  const connectedAt = data?.connectedAt as string | null ?? null
+  const scopeLevel = data?.scopeLevel as string | null ?? null
+  const error = data?.error as string | null ?? null
+  const details = data?.details as Record<string, unknown> | null ?? null
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 shadow-soft">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${connected && !isError ? "bg-green-500/10 text-green-600" : isError ? "bg-red-500/10 text-red-500" : "bg-muted text-muted-foreground"}`}>
+            {connected && !isError ? <CheckCircle2 className="h-4 w-4" /> : isError ? <AlertTriangle className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+          </div>
+          <div>
+            <p className="text-[13px] font-semibold capitalize">{provider}</p>
+            <p className="text-[11px] text-muted-foreground">
+              {connected && !isError ? `Connected ${formatRelativeTime(connectedAt)}` : isError ? "Token error — reconnect required" : "Not connected"}
+            </p>
+          </div>
+        </div>
+        <div className={`rounded-full px-2.5 py-0.5 text-[10px] font-medium ${connected && !isError ? "bg-green-500/10 text-green-700" : isError ? "bg-red-500/10 text-red-600" : "bg-muted text-muted-foreground"}`}>
+          {connected && !isError ? "Connected" : isError ? "Error" : "Disconnected"}
+        </div>
+      </div>
+
+      {(scopeLevel || details || error) && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 border-t pt-2 text-[11px] text-muted-foreground">
+          {scopeLevel ? <span>{"Access: "}<strong className="text-foreground">{SCOPE_LABELS[scopeLevel] ?? scopeLevel}</strong></span> : null}
+          {details?.email ? <span>{"Account: "}<strong className="text-foreground">{`${details.email}`}</strong></span> : null}
+          {details?.tenantKey ? <span>{"Tenant: "}<strong className="text-foreground">{`${details.tenantKey}`.slice(0, 12)}…</strong></span> : null}
+          {details?.environment ? <span>{"Env: "}<strong className="text-foreground">{`${details.environment}`}</strong></span> : null}
+          {error ? <span className="text-red-500">{`Error: ${error}`}</span> : null}
+        </div>
+      )}
+
+      {actions && <div className="flex items-end gap-2 border-t pt-3">{actions}</div>}
+    </div>
+  )
+}
 
 const validTabs = new Set(["integrations", "governance", "audit", "controls", "permissions"])
 
 export function SettingsPage() {
   const { token } = useAdminAuth()
-  const [zohoBusy, setZohoBusy] = useState(false)
+  const [zohoScope, setZohoScope] = useState<ZohoScopeLevel>("read_only")
   const [params, setParams] = useSearchParams()
   const activeTab = validTabs.has(params.get("tab") ?? "") ? params.get("tab") ?? "integrations" : "integrations"
   const integrations = useApiList<JsonRecord>("/api/admin/company/onboarding/status", token, ["items", "providers"])
@@ -26,14 +90,49 @@ export function SettingsPage() {
   const controls = useApiList<JsonRecord>("/api/admin/controls", token, ["items", "controls"])
   const tools = useApiList<JsonRecord>("/api/admin/company/tool-permissions", token, ["items", "permissions", "tools"])
 
+  const [busy, setBusy] = useState<string | null>(null)
+
   const startZohoConnect = async () => {
     if (!token) return
-    setZohoBusy(true)
+    setBusy("zoho")
     try {
-      const result = await companyIntegrationsApi.startZoho(token)
-      window.location.href = result.authUrl
+      const result = await companyIntegrationsApi.startZoho(zohoScope, token)
+      window.open(result.authUrl, "_blank", "noopener,noreferrer")
     } finally {
-      setZohoBusy(false)
+      setBusy(null)
+    }
+  }
+
+  const startLarkConnect = async () => {
+    if (!token) return
+    setBusy("lark")
+    try {
+      const result = await companyIntegrationsApi.startLark(token)
+      window.open(result.url, "_blank", "noopener,noreferrer")
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const startGoogleConnect = async () => {
+    if (!token) return
+    setBusy("google")
+    try {
+      const result = await companyIntegrationsApi.startGoogle("company", token)
+      window.open(result.url, "_blank", "noopener,noreferrer")
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const disconnectProvider = async (provider: string) => {
+    if (!token) return
+    setBusy(provider + "-disconnect")
+    try {
+      await companyIntegrationsApi.disconnect(provider, token)
+      integrations.refresh?.()
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -92,30 +191,96 @@ export function SettingsPage() {
               </Button>
             </div>
           </SectionCard>
-          <SectionCard title="Integration status" description="Zoho, Lark, Google, and onboarding connection state.">
-            <div className="mb-3 flex flex-col gap-3 rounded-lg bg-card p-3 shadow-soft md:flex-row md:items-center md:justify-between">
-              <div className="min-w-0">
-                <p className="text-[13px] font-semibold">Zoho connection</p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  Handled from backend env for now. The admin action starts the backend OAuth flow and stores the company token in DB.
-                </p>
-              </div>
-              <Button type="button" size="sm" variant="outline" disabled={!token || zohoBusy} onClick={() => void startZohoConnect()}>
-                Connect Zoho
-                <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
-              </Button>
+          <SectionCard title="Connected integrations" description="Manage your Zoho, Lark, and Google connections.">
+            <div className="grid gap-3">
+              {integrations.loading ? (
+                <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground">Loading integrations…</div>
+              ) : (
+                <>
+                  <IntegrationCard
+                    provider="zoho"
+                    data={integrations.data.find((r) => r.provider === "zoho")}
+                    actions={
+                      <>
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-[11px] font-medium text-muted-foreground">Access level</label>
+                          <Select value={zohoScope} onValueChange={(v) => setZohoScope(v as ZohoScopeLevel)}>
+                            <SelectTrigger className="w-[180px]">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="read_only">Read only</SelectItem>
+                              <SelectItem value="read_write">Read + Write</SelectItem>
+                              <SelectItem value="full">Full access</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {integrations.data.find((r) => r.provider === "zoho")?.connected ? (
+                          <>
+                            <Button type="button" size="sm" variant="outline" disabled={busy !== null} onClick={() => void startZohoConnect()}>
+                              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                              {busy === "zoho" ? "Reconnecting…" : "Reconnect"}
+                            </Button>
+                            <Button type="button" size="sm" variant="ghost" className="text-red-500 hover:text-red-600" disabled={busy !== null} onClick={() => void disconnectProvider("zoho")}>
+                              {busy === "zoho-disconnect" ? "Disconnecting…" : "Disconnect"}
+                            </Button>
+                          </>
+                        ) : (
+                          <Button type="button" size="sm" disabled={busy !== null} onClick={() => void startZohoConnect()}>
+                            {busy === "zoho" ? "Connecting…" : "Connect"}
+                            <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </>
+                    }
+                  />
+                  <IntegrationCard
+                    provider="lark"
+                    data={integrations.data.find((r) => r.provider === "lark")}
+                    actions={
+                      integrations.data.find((r) => r.provider === "lark")?.connected ? (
+                        <>
+                          <Button type="button" size="sm" variant="outline" disabled={busy !== null} onClick={() => void startLarkConnect()}>
+                            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                            {busy === "lark" ? "Reconnecting…" : "Reconnect"}
+                          </Button>
+                          <Button type="button" size="sm" variant="ghost" className="text-red-500 hover:text-red-600" disabled={busy !== null} onClick={() => void disconnectProvider("lark")}>
+                            {busy === "lark-disconnect" ? "Disconnecting…" : "Disconnect"}
+                          </Button>
+                        </>
+                      ) : (
+                        <Button type="button" size="sm" disabled={busy !== null} onClick={() => void startLarkConnect()}>
+                          {busy === "lark" ? "Connecting…" : "Connect"}
+                          <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
+                        </Button>
+                      )
+                    }
+                  />
+                  <IntegrationCard
+                    provider="google"
+                    data={integrations.data.find((r) => r.provider === "google")}
+                    actions={
+                      integrations.data.find((r) => r.provider === "google")?.connected ? (
+                        <>
+                          <Button type="button" size="sm" variant="outline" disabled={busy !== null} onClick={() => void startGoogleConnect()}>
+                            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                            {busy === "google" ? "Reconnecting…" : "Reconnect"}
+                          </Button>
+                          <Button type="button" size="sm" variant="ghost" className="text-red-500 hover:text-red-600" disabled={busy !== null} onClick={() => void disconnectProvider("google")}>
+                            {busy === "google-disconnect" ? "Disconnecting…" : "Disconnect"}
+                          </Button>
+                        </>
+                      ) : (
+                        <Button type="button" size="sm" disabled={busy !== null} onClick={() => void startGoogleConnect()}>
+                          {busy === "google" ? "Connecting…" : "Connect"}
+                          <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
+                        </Button>
+                      )
+                    }
+                  />
+                </>
+              )}
             </div>
-            <DataTable
-              rows={integrations.data}
-              loading={integrations.loading}
-              emptyTitle="No integration status"
-              emptyDescription="Provider connection data will appear after onboarding APIs respond."
-              columns={[
-                { key: "provider", header: "Provider" },
-                { key: "status", header: "Status", render: (row) => <StatusBadge value={String(row.status ?? "")} /> },
-                { key: "updatedAt", header: "Updated" },
-              ]}
-            />
           </SectionCard>
         </TabsContent>
         <TabsContent value="governance">
