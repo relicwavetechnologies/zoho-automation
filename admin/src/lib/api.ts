@@ -134,15 +134,24 @@ export const channelMappingsApi = {
     api.delete("/api/channel-mappings", body, token),
 };
 
+export type ZohoScopeLevel = "read_only" | "read_write" | "full";
+
 export type ZohoConnectStart = {
   authUrl: string;
   provider: "zoho";
+  scopeLevel: ZohoScopeLevel;
   message: string;
 };
 
 export const companyIntegrationsApi = {
-  startZoho: (token?: string) =>
-    api.post<ZohoConnectStart>("/api/admin/company/onboarding/zoho-start", {}, token),
+  startZoho: (scopeLevel: ZohoScopeLevel, token?: string) =>
+    api.post<ZohoConnectStart>("/api/admin/company/onboarding/zoho-start", { scopeLevel }, token),
+  startLark: (token?: string) =>
+    api.get<{ url: string }>("/api/lark/auth/connect", token),
+  startGoogle: (linkType: "user" | "company", token?: string) =>
+    api.get<{ url: string }>(`/api/google/auth/connect?linkType=${linkType}&returnTo=${encodeURIComponent(window.location.origin + "/settings?tab=integrations")}`, token),
+  disconnect: (provider: string, token?: string) =>
+    api.post<{ disconnected: boolean }>(`/api/admin/company/onboarding/disconnect`, { provider }, token),
 };
 
 export type AiProviderStatus = {

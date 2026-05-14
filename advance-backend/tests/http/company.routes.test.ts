@@ -415,7 +415,7 @@ describe('POST /onboarding/zoho-start', () => {
     assert.equal(url.searchParams.get('redirect_uri'), 'http://localhost:5173/zoho/callback');
     assert.equal(url.searchParams.get('access_type'), 'offline');
     assert.equal(url.searchParams.get('prompt'), 'consent');
-    assert.equal(data.message, 'Zoho OAuth is handled by backend env for now.');
+    assert.equal(data.message, 'Zoho OAuth started with full access.');
     assert.ok(cachedKey.startsWith('zoho:oauth:nonce:'));
     assert.deepEqual(cachedValue, { companyId: 'co-1', userId: 'u-1' });
   });
