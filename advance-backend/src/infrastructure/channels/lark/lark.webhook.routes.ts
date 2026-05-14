@@ -532,7 +532,7 @@ async function processInBackground(
       chatId: String(incoming.chatId),
       chatType: 'group',
       senderOpenId: incoming.userExternalId,
-      senderName: identity.userId,
+      senderName: identity.displayName || identity.email || identity.userId,
       role: 'user',
       content: text,
       botMentioned: incoming.mentionsSelf,
@@ -806,7 +806,7 @@ async function storeGroupChatMessage(
   try {
     const ci = await deps.channelIdentityRepo.resolveByLarkOpenId(incoming.userExternalId);
     if (ci.ok && ci.value) {
-      senderName = ci.value.userId;
+      senderName = ci.value.displayName || ci.value.email || ci.value.userId;
     }
   } catch { /* use default */ }
 

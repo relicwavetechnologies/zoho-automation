@@ -11,57 +11,25 @@ function truncateToBudget(text: string, tokenBudget: number): string {
   return `${text.slice(0, maxChars).trimEnd()}... [truncated]`;
 }
 
-function addBudgetedLine(lines: string[], line: string, state: { tokens: number; budget: number }): boolean {
-  const tokens = estimateTokens(line);
-  if (state.tokens + tokens <= state.budget) {
-    lines.push(line);
-    state.tokens += tokens;
-    return true;
-  }
-
-  if (state.tokens >= state.budget) return false;
-
-  const remaining = state.budget - state.tokens;
-  if (remaining <= 20) return false;
-  lines.push(truncateToBudget(line, remaining));
-  state.tokens = state.budget;
-  return false;
-}
-
-function addArraySection(
-  lines: string[],
-  state: { tokens: number; budget: number },
-  label: string,
-  values: readonly string[] | undefined,
-): void {
-  if (!values || values.length === 0) return;
-  addBudgetedLine(lines, `${label}: ${values.join('; ')}`, state);
-}
-
 function asSummaryArray(values: readonly string[] | undefined): readonly string[] {
   return Array.isArray(values) ? values : [];
 }
 
 function formatSummary(summary: GroupChatSummary, tokenBudget = GROUP_CONTEXT_POLICY.SUMMARY_CONTEXT_TOKEN_BUDGET): string {
-  const lines: string[] = [];
-  const state = { tokens: 0, budget: tokenBudget };
+  const parts: string[] = [];
+  if (summary.summary) parts.push(summary.summary);
+  if (summary.latestObjective) parts.push(`Current focus: ${summary.latestObjective}`);
+  if (summary.latestDirection) parts.push(`Direction: ${summary.latestDirection}`);
 
-  if (summary.summary) addBudgetedLine(lines, `Summary: ${summary.summary}`, state);
-  if (summary.latestObjective) addBudgetedLine(lines, `Current objective: ${summary.latestObjective}`, state);
-  if (summary.latestDirection) addBudgetedLine(lines, `Latest direction: ${summary.latestDirection}`, state);
-  addArraySection(lines, state, 'Decisions', asSummaryArray(summary.decisions));
-  addArraySection(lines, state, 'Open questions', asSummaryArray(summary.openQuestions));
-  addArraySection(lines, state, 'Owners', asSummaryArray(summary.owners));
-  addArraySection(lines, state, 'Deadlines', asSummaryArray(summary.deadlines));
-  addArraySection(lines, state, 'Key entities', asSummaryArray(summary.activeEntities));
-  addArraySection(lines, state, 'Files and links', asSummaryArray(summary.mentionedResources));
-  addArraySection(lines, state, 'Completed actions', asSummaryArray(summary.completedActions));
-  addArraySection(lines, state, 'Constraints', asSummaryArray(summary.constraints));
-  addArraySection(lines, state, 'Blockers', asSummaryArray(summary.blockers));
-  addArraySection(lines, state, 'User goals', asSummaryArray(summary.userGoals));
-  addArraySection(lines, state, 'Superseded', asSummaryArray(summary.superseded));
+  const items: string[] = [];
+  for (const d of asSummaryArray(summary.decisions)) items.push(`decided: ${d}`);
+  for (const q of asSummaryArray(summary.openQuestions)) items.push(`open question: ${q}`);
+  for (const b of asSummaryArray(summary.blockers)) items.push(`blocker: ${b}`);
+  for (const dl of asSummaryArray(summary.deadlines)) items.push(`deadline: ${dl}`);
+  if (items.length > 0) parts.push(items.join('. '));
 
-  return lines.join('\n');
+  const text = parts.join(' ');
+  return truncateToBudget(text, tokenBudget);
 }
 
 function formatTimestamp(createdAt: string): string {
@@ -131,26 +99,34 @@ function formatTranscriptLines(
   return lines.reverse();
 }
 
-export function formatGroupContextForPrompt(window: GroupChatWindow): string {
+export function formatGroupContextForPrompt(
+  window: GroupChatWindow,
+  currentMessage?: { senderName: string; content: string },
+): string {
   const sections: string[] = [
-    'GROUP CHAT CONTEXT - Background from this Lark group chat.',
-    'Treat this as room context, not as the direct user/assistant conversation. The current user message is still the active request.',
+    'GROUP CHAT CONTEXT — recent conversation in this group chat.',
+    'When the user refers to "above", "previous message", or "that", they mean the messages in this transcript.',
+    'The user\'s current request is the LAST line (marked with ▶).',
   ];
 
   if (window.summary) {
     const summaryText = formatSummary(window.summary);
     if (summaryText) {
       sections.push('');
-      sections.push('[Rolling summary of older group discussion]');
+      sections.push('── ROLLING SUMMARY (older discussion) ──');
       sections.push(summaryText);
     }
   }
 
   const transcriptLines = formatTranscriptLines(window.recentMessages);
-  if (transcriptLines.length > 0) {
+  if (transcriptLines.length > 0 || currentMessage) {
     sections.push('');
-    sections.push(`[Recent raw group transcript - latest ${transcriptLines.length} messages within ~${GROUP_CONTEXT_POLICY.RAW_TRANSCRIPT_TOKEN_BUDGET} tokens]`);
+    sections.push('── RECENT MESSAGES ──');
     sections.push(...transcriptLines);
+  }
+
+  if (currentMessage) {
+    sections.push(`▶ [now] ${currentMessage.senderName} → @Divo: ${currentMessage.content}`);
   }
 
   return sections.join('\n');

@@ -32,12 +32,12 @@ describe('formatGroupContextForPrompt', () => {
 
     const result = formatGroupContextForPrompt(window);
     assert.ok(result.includes('GROUP CHAT CONTEXT'));
-    assert.ok(result.includes('[Recent raw group transcript'));
+    assert.ok(result.includes('── RECENT MESSAGES ──'));
     assert.ok(result.includes('[2026-05-13T06:30:00.000Z] Alice: Can you check the invoice?'));
     assert.ok(result.includes('[2026-05-13T06:30:00.000Z] Bob: I updated the spreadsheet'));
   });
 
-  it('includes structured rolling summary when present', () => {
+  it('includes prose rolling summary when present', () => {
     const summary: GroupChatSummary = {
       summary: 'Team discussed Q3 budget',
       latestDirection: 'Close budget reconciliation today',
@@ -62,13 +62,11 @@ describe('formatGroupContextForPrompt', () => {
     };
 
     const result = formatGroupContextForPrompt(window);
-    assert.ok(result.includes('[Rolling summary of older group discussion]'));
-    assert.ok(result.includes('Summary: Team discussed Q3 budget'));
-    assert.ok(result.includes('Latest direction: Close budget reconciliation today'));
-    assert.ok(result.includes('Decisions: Use the revised spreadsheet'));
-    assert.ok(result.includes('Key entities: Acme Corp; INV-2345'));
-    assert.ok(result.includes('Files and links: Q3-report.xlsx'));
-    assert.ok(result.includes('Blockers: Zoho export is delayed'));
+    assert.ok(result.includes('── ROLLING SUMMARY (older discussion) ──'));
+    assert.ok(result.includes('Team discussed Q3 budget'));
+    assert.ok(result.includes('Direction: Close budget reconciliation today'));
+    assert.ok(result.includes('decided: Use the revised spreadsheet'));
+    assert.ok(result.includes('blocker: Zoho export is delayed'));
   });
 
   it('formats assistant messages with @Divo prefix', () => {
@@ -106,7 +104,28 @@ describe('formatGroupContextForPrompt', () => {
 
     const result = formatGroupContextForPrompt(window);
     assert.ok(result.includes('GROUP CHAT CONTEXT'));
-    assert.ok(!result.includes('[Recent raw group transcript'));
+    assert.ok(!result.includes('── RECENT MESSAGES ──'));
+  });
+
+  it('appends current message with ▶ marker when provided', () => {
+    const window: GroupChatWindow = {
+      summary: null,
+      recentMessages: [
+        msg('Alice', 'Here are the Q3 numbers'),
+      ],
+      totalMessageCount: 1,
+    };
+
+    const result = formatGroupContextForPrompt(window, {
+      senderName: 'Bob',
+      content: 'make todos of the above message',
+    });
+    assert.ok(result.includes('── RECENT MESSAGES ──'));
+    assert.ok(result.includes('Alice: Here are the Q3 numbers'));
+    assert.ok(result.includes('▶ [now] Bob → @Divo: make todos of the above message'));
+    // The ▶ line should be the last line
+    const lines = result.split('\n');
+    assert.ok(lines[lines.length - 1]!.startsWith('▶'));
   });
 
   it('handles partially populated legacy summary JSON safely', () => {
@@ -123,6 +142,7 @@ describe('formatGroupContextForPrompt', () => {
     const result = formatGroupContextForPrompt(window);
 
     assert.ok(result.includes('Old summary without array fields'));
+    assert.ok(result.includes('── ROLLING SUMMARY (older discussion) ──'));
   });
 
   it('selects newest transcript messages within budget and returns chronological order', () => {
@@ -147,6 +167,6 @@ describe('formatGroupContextForPrompt', () => {
     const result = formatGroupContextForPrompt(window);
 
     assert.ok(result.includes('[truncated]'));
-    assert.ok(result.length < 70_000);
+    assert.ok(result.length < 90_000);
   });
 });

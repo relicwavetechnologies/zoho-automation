@@ -28,6 +28,10 @@ export interface ResolvedUserIdentity {
   activeDepartmentId?: string;
   /** Lark open_id (when resolved via Lark channel). */
   larkOpenId?: string;
+  /** Human-readable display name from the channel identity record. */
+  displayName?: string;
+  /** Email address from the channel identity record. */
+  email?: string;
 }
 
 export type PendingLarkLoginResolution =
@@ -109,7 +113,7 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
     try {
       const ci = await this.db.channelIdentity.findFirst({
         where: { channel: 'lark', larkOpenId },
-        select: { id: true, aiRole: true, channel: true, companyId: true },
+        select: { id: true, aiRole: true, channel: true, companyId: true, displayName: true, email: true },
       });
       if (!ci) return ok(null);
 
@@ -130,6 +134,8 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
         aiRole: ci.aiRole,
         channel: ci.channel,
         larkOpenId,
+        ...(ci.displayName ? { displayName: ci.displayName } : {}),
+        ...(ci.email ? { email: ci.email } : {}),
         ...(deptPref?.activeDepartmentId ? { activeDepartmentId: deptPref.activeDepartmentId } : {}),
       };
       // Populate cache — fire-and-forget.
