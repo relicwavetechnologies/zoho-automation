@@ -74,6 +74,7 @@ export const createLarkContactsTool = (deps: {
           if (nameList.length === 0) {
             return err(new ToolError({ toolId: 'larkContacts', reason: 'bad_args', message: 'query or queries is required for lookup' }));
           }
+          ctx.onProgress?.('Looking up contacts…');
           const companyId       = String(ctx.runContext.companyId);
           const requesterOpenId = ctx.runContext.userExternalId ?? '';
           const resolved = await deps.peopleResolver.resolve(companyId, nameList, requesterOpenId);
@@ -98,6 +99,7 @@ export const createLarkContactsTool = (deps: {
           if (!args.department) {
             return err(new ToolError({ toolId: 'larkContacts', reason: 'bad_args', message: 'department is required for list_department' }));
           }
+          ctx.onProgress?.('Listing department members…');
           const depts = await deps.contactsClient.searchDepartments(args.department);
           if (depts.length === 0) {
             return ok({ success: true, data: [], message: `No department found matching "${args.department}"` });

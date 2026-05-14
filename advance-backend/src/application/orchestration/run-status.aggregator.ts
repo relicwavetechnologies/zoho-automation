@@ -59,6 +59,12 @@ export class RunStatusAggregator {
     markStepFailed(this.progress, toolName, error);
   }
 
+  updateActivity(message: string): void {
+    this.liveLabel = message;
+    const running = this.progress.steps.find(s => s.status === 'running');
+    if (running) running.toolActivity = message;
+  }
+
   setSynthesizing(): void {
     setPhase(this.progress, 'synthesizing');
   }

@@ -114,6 +114,7 @@ limit: (optional) max chunks for search, default 6.
 
     try {
       if (args.operation === 'listFiles') {
+        ctx.onProgress?.('Listing documents…');
         const files = await this.broker.listFiles({
           companyId, requesterUserId, requesterAiRole, isAdmin: requesterAiRole === 'COMPANY_ADMIN' || requesterAiRole === 'SUPER_ADMIN',
         });
@@ -132,6 +133,7 @@ limit: (optional) max chunks for search, default 6.
         if (!args.fileAssetId) {
           return err(new ToolError({ toolId: 'documentRag', reason: 'bad_args', message: 'fileAssetId is required for readFull' }));
         }
+        ctx.onProgress?.('Reading document…');
         const doc = await this.broker.readFull({ fileAssetId: args.fileAssetId, companyId, requesterUserId });
         if (!doc) {
           return ok({ success: false, operation: 'readFull', results: [], message: 'Document not found or not indexed.' });
@@ -153,6 +155,7 @@ limit: (optional) max chunks for search, default 6.
       if (!args.query) {
         return err(new ToolError({ toolId: 'documentRag', reason: 'bad_args', message: 'query is required for search/readSection' }));
       }
+      ctx.onProgress?.('Searching documents…');
       const results = await this.broker.search({
         query: args.query, companyId, requesterUserId, requesterAiRole,
         limit: args.limit ?? 6,

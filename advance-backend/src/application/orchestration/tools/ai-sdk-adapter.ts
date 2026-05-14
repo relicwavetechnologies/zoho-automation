@@ -31,6 +31,8 @@ export interface AdapterContext {
   approvalGate?: ApprovalGateService;
   /** Lark chat_id — required for the approval gate idempotency key. */
   chatId?:       string;
+  /** Live progress callback — tool updates flow to the user's status bubble. */
+  onProgress?:   ((message: string) => void) | undefined;
 }
 
 export function toAISdkTool(
@@ -43,6 +45,7 @@ export function toAISdkTool(
     correlationId: t.id,
     logger:        adapterCtx.logger.child({ toolId: t.id }),
     clock:         adapterCtx.clock,
+    ...(adapterCtx.onProgress ? { onProgress: adapterCtx.onProgress } : {}),
   };
 
   const description = t.parameterDocs

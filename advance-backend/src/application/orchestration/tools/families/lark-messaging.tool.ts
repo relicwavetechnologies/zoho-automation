@@ -79,16 +79,19 @@ export const createLarkMessagingTool = (deps: {
       switch (args.op) {
         case 'send': {
           if (!args.chatId || !args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for send' }));
+          ctx.onProgress?.('Sending message…');
           const r = await deps.client.sendMessage(args.chatId, args.text);
           return ok({ success: true, messageId: r.messageId, message: 'Message sent' });
         }
         case 'reply': {
           if (!args.messageId || !args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'messageId and text required for reply' }));
+          ctx.onProgress?.('Sending reply…');
           const r = await deps.client.replyMessage(args.messageId, args.text);
           return ok({ success: true, messageId: r.messageId, message: 'Reply sent' });
         }
         case 'list': {
           if (!args.chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId required for list' }));
+          ctx.onProgress?.('Fetching messages…');
           const msgs = await deps.client.listMessages(args.chatId, args.limit ?? 20);
           return ok({ success: true, data: msgs, message: `Found ${msgs.length} messages` });
         }
@@ -99,6 +102,7 @@ export const createLarkMessagingTool = (deps: {
         }
         case 'send_dm': {
           if (!args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'text required for send_dm' }));
+          ctx.onProgress?.('Sending direct message…');
           let openId: string;
           if (args.chatId) {
             // chatId used as a pre-resolved open_id fallback
@@ -130,12 +134,14 @@ export const createLarkMessagingTool = (deps: {
         case 'search': {
           if (!args.chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId required for search' }));
           if (!args.query) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'query required for search' }));
+          ctx.onProgress?.('Searching messages…');
           const msgs = await deps.client.searchMessages(args.chatId, args.query, args.limit);
           return ok({ success: true, data: msgs, message: `Found ${msgs.length} messages` });
         }
         case 'mention': {
           if (!args.chatId || !args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for mention' }));
           if (!args.mentionNames?.length) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'mentionNames required for mention' }));
+          ctx.onProgress?.('Sending mention…');
           const companyId = String(ctx.runContext.companyId);
           const requesterOpenId = ctx.runContext.userExternalId ?? '';
           const resolved = await deps.peopleResolver.resolve(companyId, args.mentionNames, requesterOpenId);

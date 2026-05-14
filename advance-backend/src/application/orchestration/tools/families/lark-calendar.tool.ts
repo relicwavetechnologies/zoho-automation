@@ -122,16 +122,19 @@ export const createLarkCalendarTool = (deps: {
     try {
       switch (args.op) {
         case 'list':
+          ctx.onProgress?.('Checking calendar…');
           return ok({ success: true, data: await deps.client.listEvents(calId, args.limit) });
 
         case 'get': {
           if (!args.eventId) return err(new ToolError({ toolId: 'larkCalendar', reason: 'bad_args', message: 'eventId required' }));
+          ctx.onProgress?.('Fetching event…');
           return ok({ success: true, data: await deps.client.getEvent(calId, args.eventId) });
         }
 
         case 'create': {
           if (!args.title || !args.startTime || !args.endTime)
             return err(new ToolError({ toolId: 'larkCalendar', reason: 'bad_args', message: 'title, startTime, endTime required' }));
+          ctx.onProgress?.('Creating event…');
           const attendees = [...(args.attendeeIds ?? [])];
           if (args.attendeeNames?.length && !args.attendeeIds?.length) {
             const r = await resolveNames(args.attendeeNames);
@@ -149,6 +152,7 @@ export const createLarkCalendarTool = (deps: {
         case 'create_recurring': {
           if (!args.title || !args.startTime || !args.endTime || !args.recurrence)
             return err(new ToolError({ toolId: 'larkCalendar', reason: 'bad_args', message: 'title, startTime, endTime, recurrence required' }));
+          ctx.onProgress?.('Creating recurring event…');
           const attendees = [...(args.attendeeIds ?? [])];
           if (args.attendeeNames?.length && !args.attendeeIds?.length) {
             const r = await resolveNames(args.attendeeNames);
@@ -183,6 +187,7 @@ export const createLarkCalendarTool = (deps: {
         case 'free_busy': {
           if (!args.names?.length || !args.dateFrom || !args.dateTo)
             return err(new ToolError({ toolId: 'larkCalendar', reason: 'bad_args', message: 'names, dateFrom, dateTo required' }));
+          ctx.onProgress?.('Checking availability…');
           const r = await resolveNames(args.names);
           if (r.notFound.length > 0)
             return err(new ToolError({ toolId: 'larkCalendar', reason: 'bad_args', message: `Users not found: ${r.notFound.join(', ')}` }));

@@ -71,21 +71,24 @@ export const createLarkDocTool = (deps: { client: LarkDocClientPort }): Tool<Arg
     return allowed ? ok(action) : err(new PermissionError({ toolId: 'larkDoc', action, reason: 'not_allowed' }));
   },
 
-  async execute(args: Args, _ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
+  async execute(args: Args, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     try {
       switch (args.op) {
         case 'get': {
           if (!args.docToken) return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken required' }));
+          ctx.onProgress?.('Reading document…');
           return ok({ success: true, data: await deps.client.getDoc(args.docToken) });
         }
         case 'create': {
           if (!args.title) return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'title required' }));
+          ctx.onProgress?.('Creating document…');
           const r = await deps.client.createDoc(args.title);
           return ok({ success: true, docToken: r.docToken, message: 'Doc created' });
         }
         case 'append_block': {
           if (!args.docToken || !args.content)
             return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken and content required' }));
+          ctx.onProgress?.('Updating document…');
           await deps.client.appendBlock(args.docToken, args.content, args.blockType);
           return ok({ success: true, message: 'Block appended' });
         }

@@ -33,8 +33,9 @@ export const createWebSearchTool = (deps: { client: WebSearchClientPort }): Tool
     const allowed = perm.allowedActionsByTool.get(asToolId('webSearch'))?.has('read') ?? false;
     return allowed ? ok('read') : err(new PermissionError({ toolId: 'webSearch', action: 'read', reason: 'not_allowed' }));
   },
-  async execute(args, _ctx): Promise<Result<Res, ToolError>> {
+  async execute(args, ctx): Promise<Result<Res, ToolError>> {
     try {
+      ctx.onProgress?.('Searching the web…');
       const results = await deps.client.search(args.query, args.limit ?? 5);
       return ok({ success: true, results, message: `Found ${results.length} results` });
     } catch (e) {

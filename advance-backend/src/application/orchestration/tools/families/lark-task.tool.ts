@@ -173,6 +173,7 @@ export const createLarkTaskTool = (deps: {
       switch (args.op) {
         case 'create': {
           if (!args.title) return err(new ToolError({ toolId: 'larkTask', reason: 'bad_args', message: 'title is required for create' }));
+          ctx.onProgress?.(`Creating task "${args.title.slice(0, 40)}"…`);
           let assigneeIds = await resolveAssignees();
           if (!assigneeIds && ctx.runContext.userExternalId) {
             assigneeIds = [ctx.runContext.userExternalId];
@@ -214,6 +215,7 @@ export const createLarkTaskTool = (deps: {
         }
 
         case 'list': {
+          ctx.onProgress?.('Fetching Lark tasks…');
           const tasks = await deps.client.listTasks({ limit: args.limit ?? 20, ...(args.tasklist !== undefined ? { tasklist: args.tasklist } : {}) });
           return ok({ success: true, data: tasks, message: `Found ${tasks.length} tasks` });
         }

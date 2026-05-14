@@ -282,6 +282,7 @@ export const createGoogleGmailTool = (deps: {
     try {
       switch (args.op) {
         case 'list': {
+          ctx.onProgress?.('Fetching emails…');
           const msgs = await client.listMessages(args.limit ?? 10, args.query);
           return ok({ success: true, data: msgs, message: `Found ${msgs.length} emails` });
         }
@@ -292,10 +293,12 @@ export const createGoogleGmailTool = (deps: {
         }
         case 'search': {
           if (!args.query) return badArgs('query required for search');
+          ctx.onProgress?.('Searching emails…');
           const msgs = await client.searchMessages(args.query, args.limit ?? 10);
           return ok({ success: true, data: msgs, message: `Found ${msgs.length} emails` });
         }
         case 'send': {
+          ctx.onProgress?.('Sending email…');
           const compose = requireComposedEmail(args, { requireTo: true, requireSubject: true });
           if (!compose.ok) return compose;
           const attachments = await resolveAttachmentsForArgs(args, ctx, deps);
@@ -343,6 +346,7 @@ export const createGoogleGmailTool = (deps: {
           return ok({ success: true, data: await client.getThread(args.threadId) });
         }
         case 'reply': {
+          ctx.onProgress?.('Sending reply…');
           const body = bodyText(args);
           const presentation = buildEmailPresentation(args, body);
           const recipients = validateProvidedRecipientEmails({
@@ -395,6 +399,7 @@ export const createGoogleGmailTool = (deps: {
           return ok({ success: true, messageId: r.messageId, threadId: r.threadId, message: 'Reply-all sent' });
         }
         case 'forward': {
+          ctx.onProgress?.('Forwarding email…');
           if (!args.messageId) return badArgs('messageId required for forward');
           if (!args.to?.length) return badArgs('to required for forward');
           const recipients = validateProvidedRecipientEmails({

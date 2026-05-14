@@ -43,12 +43,18 @@ export const createGoogleDriveTool = (deps: { getClient: (companyId: string, use
     if (!client) return err(new ToolError({ toolId: 'googleDrive', reason: 'unrecoverable', message: 'Google Drive not connected' }));
     try {
       switch (args.op) {
-        case 'list': return ok({ success: true, data: await client.listFiles(args.limit) });
+        case 'list': {
+          ctx.onProgress?.('Listing Drive files…');
+          return ok({ success: true, data: await client.listFiles(args.limit) });
+        }
         case 'get': {
           if (!args.fileId) return err(new ToolError({ toolId: 'googleDrive', reason: 'bad_args', message: 'fileId required' }));
           return ok({ success: true, data: await client.getFile(args.fileId) });
         }
-        case 'search': return ok({ success: true, data: await client.searchFiles(args.query ?? '', args.limit) });
+        case 'search': {
+          ctx.onProgress?.('Searching Google Drive…');
+          return ok({ success: true, data: await client.searchFiles(args.query ?? '', args.limit) });
+        }
         case 'create_folder': {
           if (!args.name) return err(new ToolError({ toolId: 'googleDrive', reason: 'bad_args', message: 'name required' }));
           const r = await client.createFolder(args.name);

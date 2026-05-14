@@ -121,6 +121,7 @@ export const createContextSearchTool = (deps: {
 
   async execute(args: ContextSearchArgs, ctx: ToolExecutionContext): Promise<Result<ContextSearchResult, ToolError>> {
     try {
+      ctx.onProgress?.('Searching knowledge base…');
       const rc = ctx.runContext;
       const output = await deps.broker.search({
         companyId: rc.companyId,

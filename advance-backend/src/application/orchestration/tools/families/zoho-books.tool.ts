@@ -347,7 +347,7 @@ async function executeScriptMode(
   const rawFilters = dateParams(args) as Record<string, string>;
   if (args.searchQuery) rawFilters['search_text'] = args.searchQuery;
 
-  ctx.logger.info('zohoBooks.script_mode.fetch', { companyId, module: moduleName, filters: rawFilters });
+  ctx.onProgress?.(`Fetching ${moduleName} from Zoho Books…`);
 
   let fetchResult: Awaited<ReturnType<typeof scriptDeps.booksClient.listAllRecords>>;
   try {
@@ -366,6 +366,8 @@ async function executeScriptMode(
   const schema = getModuleSchema(moduleName);
   const items = injectSyntheticFields(fetchResult.items, schema);
   const schemaHint = toSchemaHint(schema, items[0]);
+
+  ctx.onProgress?.(`Processing ${items.length} ${moduleName}…`);
 
   ctx.logger.info('zohoBooks.script_mode.run', {
     companyId, module: moduleName,
@@ -389,6 +391,8 @@ async function executeScriptMode(
   }
 
   const resultArray = sandboxResult.isArray ? sandboxResult.result as unknown[] : null;
+
+  ctx.onProgress?.(`Analysis complete — ${sandboxResult.rowCount ?? 1} results from ${items.length} records`);
 
   let csvLink: string | undefined;
   let csvPublicId: string | undefined;
@@ -501,6 +505,7 @@ export const createZohoBooksTool = (deps: {
 
     // ── Report operations (use financeOps — deep pagination + CSV) ──────────
     if (args.op === 'build_overdue_report') {
+      ctx.onProgress?.('Building overdue invoice report…');
       try {
         const report = await deps.financeOps.buildOverdueReport({
           companyId,

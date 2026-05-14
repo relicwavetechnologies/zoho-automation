@@ -72,6 +72,16 @@ export async function supervisorThink(
       };
     }
 
+    let statusHandle: Awaited<ReturnType<NonNullable<typeof deps.statusChannel>['sendStatus']>> = null;
+    const onProgress = deps.aggregator && deps.statusChannel
+      ? (message: string) => {
+          deps.aggregator!.updateActivity(message);
+          void deps.statusChannel!.editStatus(statusHandle, {
+            kind: 'status', terminal: false, timeline: deps.aggregator!.snapshot(),
+          }).then(h => { statusHandle = h; });
+        }
+      : undefined;
+
     const agentCtx = {
       model: deps.model,
       ...(deps.defaultModel ? { defaultModel: deps.defaultModel } : {}),
@@ -86,6 +96,7 @@ export async function supervisorThink(
       ...(state.approvalGate ? { approvalGate: state.approvalGate } : {}),
       ...(deps.geminiApiKey ? { geminiApiKey: deps.geminiApiKey } : {}),
       ...(state.chatId ? { chatId: state.chatId } : {}),
+      ...(onProgress ? { onProgress } : {}),
     };
 
     deps.logger.info('dynamic_graph.think.context', {

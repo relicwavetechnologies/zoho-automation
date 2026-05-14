@@ -73,6 +73,7 @@ export function buildCapabilitiesForAgent(
       clock:      ctx.clock,
       ...(ctx.approvalGate ? { approvalGate: ctx.approvalGate } : {}),
       ...(ctx.chatId !== undefined ? { chatId: ctx.chatId } : {}),
+      ...(ctx.onProgress ? { onProgress: ctx.onProgress } : {}),
     },
     ctx.toolById,
   );

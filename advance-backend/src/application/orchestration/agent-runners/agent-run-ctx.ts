@@ -44,4 +44,6 @@ export interface AgentRunCtx {
   chatId?:       string;
   /** Gemini API key for faithfulness grading after documentRag calls. */
   geminiApiKey?: string;
+  /** Live progress callback — tool updates flow to the user's status bubble. */
+  onProgress?: ((message: string) => void) | undefined;
 }

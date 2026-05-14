@@ -147,6 +147,7 @@ export const createDataProcessorTool = (deps: {
     let sourceTruncated = false;
 
     if (args.zohoSource) {
+      ctx.onProgress?.('Fetching data from Zoho Books…');
       // Auto-translate old from_date/to_date → date_start/date_end
       const rawFilters = (args.zohoSource.filters ?? {}) as Record<string, unknown>;
       if (rawFilters['from_date'] && !rawFilters['date_start']) {
@@ -234,6 +235,8 @@ export const createDataProcessorTool = (deps: {
     });
 
     // ── Execute script in shared sandbox ──────────────────────────────────
+    const recordCount = Array.isArray(inputData) ? inputData.length : 0;
+    ctx.onProgress?.(`Processing ${recordCount} records…`);
     let sandboxResult;
     try {
       sandboxResult = runInSandbox({
@@ -251,6 +254,7 @@ export const createDataProcessorTool = (deps: {
       throw e;
     }
 
+    ctx.onProgress?.('Analysis complete');
     const serialized = sandboxResult.result;
     const serializedArray = sandboxResult.isArray ? serialized as unknown[] : null;
     const rowCount = sandboxResult.rowCount;
