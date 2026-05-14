@@ -3,14 +3,121 @@ import type { LanguageModel } from 'ai';
 import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
 import type { InfraError } from '../../shared/errors';
-import { InfraError as InfraErrorClass } from '../../shared/errors';
 import type { Logger } from '../../shared/logger';
 import type { LarkChatContextRepoPort } from '../../infrastructure/persistence/lark-chat-context.repository';
-import type { GroupChatMessage, GroupChatSummary, GroupChatWindow } from '../../domain/conversation/group-context';
+import type {
+  GroupChatAttachmentContext,
+  GroupChatMessage,
+  GroupChatSummary,
+  GroupChatWindow,
+} from '../../domain/conversation/group-context';
 import { GROUP_CONTEXT_POLICY } from '../../domain/conversation/group-context-policy';
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4) + 24;
+}
+
+function attachmentKey(att: GroupChatAttachmentContext): string {
+  return att.larkFileKey
+    ?? att.fileAssetId
+    ?? `${att.kind}:${att.fileName}:${att.mimeType}`;
+}
+
+function mergeAttachmentContext(
+  existing: GroupChatAttachmentContext | undefined,
+  incoming: GroupChatAttachmentContext,
+): GroupChatAttachmentContext {
+  if (!existing) return incoming;
+
+  const merged: GroupChatAttachmentContext = {
+    kind: incoming.kind,
+    fileName: incoming.fileName || existing.fileName,
+    mimeType: incoming.mimeType || existing.mimeType,
+    ...(existing.larkFileKey || incoming.larkFileKey
+      ? { larkFileKey: incoming.larkFileKey ?? existing.larkFileKey }
+      : {}),
+    ...(existing.larkMessageId || incoming.larkMessageId
+      ? { larkMessageId: incoming.larkMessageId ?? existing.larkMessageId }
+      : {}),
+    ...(existing.fileAssetId || incoming.fileAssetId
+      ? { fileAssetId: incoming.fileAssetId ?? existing.fileAssetId }
+      : {}),
+    ...(existing.cloudinaryUrl || incoming.cloudinaryUrl
+      ? { cloudinaryUrl: incoming.cloudinaryUrl ?? existing.cloudinaryUrl }
+      : {}),
+    ...(existing.ingestionStatus || incoming.ingestionStatus
+      ? { ingestionStatus: incoming.ingestionStatus ?? existing.ingestionStatus }
+      : {}),
+    ...(existing.inlineContext || incoming.inlineContext
+      ? { inlineContext: incoming.inlineContext ?? existing.inlineContext }
+      : {}),
+    ...(existing.isInlineComplete !== undefined || incoming.isInlineComplete !== undefined
+      ? { isInlineComplete: incoming.isInlineComplete ?? existing.isInlineComplete }
+      : {}),
+    ...(existing.rawTextPreview || incoming.rawTextPreview
+      ? { rawTextPreview: incoming.rawTextPreview ?? existing.rawTextPreview }
+      : {}),
+    ...(existing.retrievalHint || incoming.retrievalHint
+      ? { retrievalHint: incoming.retrievalHint ?? existing.retrievalHint }
+      : {}),
+    ...(existing.indexedChunkCount !== undefined || incoming.indexedChunkCount !== undefined
+      ? { indexedChunkCount: incoming.indexedChunkCount ?? existing.indexedChunkCount }
+      : {}),
+    ...(existing.documentClass || incoming.documentClass
+      ? { documentClass: incoming.documentClass ?? existing.documentClass }
+      : {}),
+    ...(existing.error || incoming.error
+      ? { error: incoming.error ?? existing.error }
+      : {}),
+  };
+
+  return merged;
+}
+
+function mergeAttachments(
+  existing: readonly GroupChatAttachmentContext[] | undefined,
+  incoming: readonly GroupChatAttachmentContext[] | undefined,
+): GroupChatAttachmentContext[] {
+  const merged = new Map<string, GroupChatAttachmentContext>();
+
+  for (const att of existing ?? []) {
+    merged.set(attachmentKey(att), att);
+  }
+
+  for (const att of incoming ?? []) {
+    const key = attachmentKey(att);
+    merged.set(key, mergeAttachmentContext(merged.get(key), att));
+  }
+
+  return [...merged.values()];
+}
+
+function mergeAttachedFiles(
+  existing: readonly string[] | undefined,
+  attachedFiles: readonly string[] | undefined,
+  attachments: readonly GroupChatAttachmentContext[] | undefined,
+): string[] | undefined {
+  const names = [
+    ...(existing ?? []),
+    ...(attachedFiles ?? []),
+    ...(attachments ?? []).map(att => att.fileName),
+  ];
+
+  const merged = mergeRecentItems([], names, 50);
+  return merged.length > 0 ? merged : undefined;
+}
+
+function estimateMessageTokens(msg: GroupChatMessage): number {
+  const attachmentText = (msg.attachments ?? []).map(att => [
+    att.fileName,
+    att.mimeType,
+    att.ingestionStatus,
+    att.fileAssetId,
+    att.inlineContext,
+    att.retrievalHint,
+  ].filter(Boolean).join('\n')).join('\n');
+
+  return estimateTokens([msg.content, attachmentText].filter(Boolean).join('\n'));
 }
 
 function mergeRecentItems(
@@ -33,10 +140,20 @@ function mergeRecentItems(
   return merged.slice(-limit);
 }
 
-function extractUrlsAndFiles(content: string, attachedFiles?: readonly string[]): string[] {
+function extractUrlsAndFiles(
+  content: string,
+  attachedFiles?: readonly string[],
+  attachments?: readonly GroupChatAttachmentContext[],
+): string[] {
   const urls = content.match(/https?:\/\/\S+/gi) ?? [];
   const fileLikes = content.match(/\b[\w.-]+\.(?:pdf|docx?|xlsx?|csv|pptx?|txt|png|jpe?g)\b/gi) ?? [];
-  return [...urls, ...fileLikes, ...(attachedFiles ?? [])].map(item => item.slice(0, 180));
+  const structured = (attachments ?? []).flatMap(att => [
+    att.fileName,
+    ...(att.fileAssetId ? [`fileAssetId:${att.fileAssetId}`] : []),
+    ...(att.cloudinaryUrl ? [att.cloudinaryUrl] : []),
+    ...(att.retrievalHint ? [att.retrievalHint] : []),
+  ]);
+  return [...urls, ...fileLikes, ...(attachedFiles ?? []), ...structured].map(item => item.slice(0, 220));
 }
 
 function looksLikeDecision(content: string): boolean {
@@ -72,7 +189,7 @@ export function partitionRecentMessages(
   let retainFrom = 0;
 
   for (let i = capped.length - 1; i >= 0; i--) {
-    const msgTokens = estimateTokens(capped[i]!.content);
+    const msgTokens = estimateMessageTokens(capped[i]!);
     if (tokenCount + msgTokens > tokenBudget && capped.length - i > minMessages) {
       retainFrom = i + 1;
       break;
@@ -122,7 +239,7 @@ function buildDeterministicSummary(
     if (looksLikeBlocker(msg.content)) {
       blockers.push(`${msg.senderName}: ${msg.content.slice(0, 220)}`);
     }
-    mentionedResources.push(...extractUrlsAndFiles(msg.content, msg.attachedFiles));
+    mentionedResources.push(...extractUrlsAndFiles(msg.content, msg.attachedFiles, msg.attachments));
   }
 
   const result: GroupChatSummary = {
@@ -188,6 +305,19 @@ function readStringArray(value: unknown, fallback: readonly string[] | undefined
   return mergeRecentItems([], value.map(String), maxItems);
 }
 
+function summarizeMessageForMemory(msg: GroupChatMessage): string {
+  const attachmentNotes = (msg.attachments ?? []).map(att => {
+    const parts = [`${att.kind}: ${att.fileName}`];
+    if (att.ingestionStatus) parts.push(`status=${att.ingestionStatus}`);
+    if (att.fileAssetId) parts.push(`fileAssetId=${att.fileAssetId}`);
+    if (att.inlineContext) parts.push(`inlineContext=${att.inlineContext.slice(0, 900)}`);
+    if (att.retrievalHint) parts.push(`retrievalHint=${att.retrievalHint}`);
+    return parts.join(' | ');
+  });
+
+  return [msg.content, ...attachmentNotes].filter(Boolean).join('\n');
+}
+
 async function refreshSummaryWithLLM(
   compacted: readonly GroupChatMessage[],
   existingSummary: GroupChatSummary | null,
@@ -197,7 +327,7 @@ async function refreshSummaryWithLLM(
   const deterministicBase = buildDeterministicSummary(compacted, existingSummary);
 
   const messageLines = compacted.map(m =>
-    `${m.senderName} (${m.role}, ${m.createdAt}${m.botMentioned ? ', mentioned Divo' : ''}): ${m.content.slice(0, 700)}`,
+    `${m.senderName} (${m.role}, ${m.createdAt}${m.botMentioned ? ', mentioned Divo' : ''}): ${summarizeMessageForMemory(m).slice(0, 1400)}`,
   ).join('\n');
 
   try {
@@ -253,15 +383,22 @@ export class LarkChatContextService {
     companyId: string;
     chatId: string;
     chatType?: string;
+    messageId?: string;
     senderOpenId: string;
     senderName: string;
     role: 'user' | 'assistant';
     content: string;
+    createdAt?: string;
     botMentioned: boolean;
-    attachedFiles?: string[];
-  }): Promise<Result<void, InfraError>> {
-    if (!input.content.trim() && (!input.attachedFiles || input.attachedFiles.length === 0)) {
-      return ok(undefined);
+    attachedFiles?: readonly string[];
+    attachments?: readonly GroupChatAttachmentContext[];
+  }): Promise<Result<GroupChatMessage | null, InfraError>> {
+    if (
+      !input.content.trim()
+      && (!input.attachedFiles || input.attachedFiles.length === 0)
+      && (!input.attachments || input.attachments.length === 0)
+    ) {
+      return ok(null);
     }
 
     const log = this.deps.logger.child({ chatId: input.chatId });
@@ -278,21 +415,34 @@ export class LarkChatContextService {
       ? (ctx.recentMessagesJson as GroupChatMessage[])
       : [];
 
-    const newMessage: GroupChatMessage = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    const messageId = input.messageId ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    const existingIndex = existingMessages.findIndex(msg => msg.id === messageId);
+    const existing = existingIndex >= 0 ? existingMessages[existingIndex] : undefined;
+    const mergedAttachments = mergeAttachments(existing?.attachments, input.attachments);
+    const mergedAttachedFiles = mergeAttachedFiles(existing?.attachedFiles, input.attachedFiles, mergedAttachments);
+
+    const nextMessage: GroupChatMessage = {
       senderOpenId: input.senderOpenId,
       senderName: input.senderName,
       role: input.role,
-      content: input.content,
-      createdAt: new Date().toISOString(),
+      id: messageId,
+      content: input.content.trim() || existing?.content || '',
+      createdAt: existing?.createdAt ?? createdAt,
       botMentioned: input.botMentioned,
-      ...(input.attachedFiles && input.attachedFiles.length > 0
-        ? { attachedFiles: input.attachedFiles }
+      ...(mergedAttachments.length > 0
+        ? { attachments: mergedAttachments }
+        : {}),
+      ...(mergedAttachedFiles && mergedAttachedFiles.length > 0
+        ? { attachedFiles: mergedAttachedFiles }
         : {}),
     };
 
-    const allMessages = [...existingMessages, newMessage];
-    const newCount = ctx.sourceMessageCount + 1;
+    const allMessages = (existingIndex >= 0
+      ? existingMessages.map((msg, index) => index === existingIndex ? nextMessage : msg)
+      : [...existingMessages, nextMessage]
+    ).sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    const newCount = existingIndex >= 0 ? ctx.sourceMessageCount : ctx.sourceMessageCount + 1;
 
     const { compactedChunk, retained } = partitionRecentMessages(
       allMessages,
@@ -320,12 +470,69 @@ export class LarkChatContextService {
       }
     }
 
-    return this.deps.repo.update(ctx.id, {
+    const updateResult = await this.deps.repo.update(ctx.id, {
       recentMessagesJson: retained,
       summaryJson,
       sourceMessageCount: newCount,
       lastMessageAt: new Date(),
     });
+
+    if (!updateResult.ok) return err(updateResult.error);
+    return ok(nextMessage);
+  }
+
+  async updateMessageAttachments(input: {
+    companyId: string;
+    chatId: string;
+    messageId: string;
+    attachments: readonly GroupChatAttachmentContext[];
+  }): Promise<Result<GroupChatMessage | null, InfraError>> {
+    if (input.attachments.length === 0) return ok(null);
+
+    const ctxResult = await this.deps.repo.getOrCreate({
+      companyId: input.companyId,
+      chatId: input.chatId,
+      chatType: 'group',
+    });
+    if (!ctxResult.ok) return err(ctxResult.error);
+    const ctx = ctxResult.value;
+
+    const existingMessages = Array.isArray(ctx.recentMessagesJson)
+      ? (ctx.recentMessagesJson as GroupChatMessage[])
+      : [];
+    const existingIndex = existingMessages.findIndex(msg => msg.id === input.messageId);
+
+    if (existingIndex < 0) {
+      this.deps.logger.warn('chat_context.attachment_update.message_missing', {
+        chatId: input.chatId,
+        messageId: input.messageId,
+      });
+      return ok(null);
+    }
+
+    const current = existingMessages[existingIndex]!;
+    const mergedAttachments = mergeAttachments(current.attachments, input.attachments);
+    const mergedAttachedFiles = mergeAttachedFiles(current.attachedFiles, undefined, mergedAttachments);
+    const updatedMessage: GroupChatMessage = {
+      ...current,
+      attachments: mergedAttachments,
+      ...(mergedAttachedFiles && mergedAttachedFiles.length > 0
+        ? { attachedFiles: mergedAttachedFiles }
+        : {}),
+    };
+
+    const recentMessages = existingMessages.map((msg, index) =>
+      index === existingIndex ? updatedMessage : msg,
+    );
+
+    const updateResult = await this.deps.repo.update(ctx.id, {
+      recentMessagesJson: recentMessages,
+      sourceMessageCount: ctx.sourceMessageCount,
+      lastMessageAt: new Date(),
+    });
+
+    if (!updateResult.ok) return err(updateResult.error);
+    return ok(updatedMessage);
   }
 
   async loadContext(

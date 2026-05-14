@@ -44,6 +44,7 @@ export const createServer = (c: Container) => {
     larkAdapter:      c.larkAdapter,
     env:              c.env,
     logger:           c.logger,
+    chatContext:      c.chatContextService,
     concurrency:      c.env.INGESTION_WORKER_CONCURRENCY,
   });
   ingestionWorker.start();

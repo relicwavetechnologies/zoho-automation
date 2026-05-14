@@ -95,6 +95,36 @@ describe('formatGroupContextForPrompt', () => {
     assert.ok(result.includes('[files: Q3-report.xlsx]'));
   });
 
+  it('renders structured attachment context inside the original message', () => {
+    const window: GroupChatWindow = {
+      summary: null,
+      recentMessages: [
+        msg('Bob', 'Please check this image', {
+          id: 'om_123',
+          attachments: [{
+            kind: 'image',
+            fileName: 'receipt.png',
+            mimeType: 'image/png',
+            inlineContext: '[Image: "receipt.png"\nOCR text:\nTotal $42]',
+            isInlineComplete: true,
+            ingestionStatus: 'indexed',
+            fileAssetId: 'file_123',
+            retrievalHint: 'Use contextSearch or documentRag with fileAssetId="file_123".',
+          }],
+        }),
+      ],
+      totalMessageCount: 1,
+    };
+
+    const result = formatGroupContextForPrompt(window);
+
+    assert.ok(result.includes('Bob: Please check this image'));
+    assert.ok(result.includes('[internal attachment context: image "receipt.png"; image/png; status=indexed; fileAssetId=file_123]'));
+    assert.ok(result.includes('OCR text:'));
+    assert.ok(result.includes('Total $42'));
+    assert.ok(result.includes('Use contextSearch or documentRag with fileAssetId="file_123"'));
+  });
+
   it('handles empty recent messages gracefully', () => {
     const window: GroupChatWindow = {
       summary: null,

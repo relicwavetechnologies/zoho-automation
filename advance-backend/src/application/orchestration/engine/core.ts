@@ -43,6 +43,9 @@ function withoutCurrentIncomingMessage(window: GroupChatWindow, incomingText: st
   if (!last || last.role !== 'user' || last.content.trim() !== incomingText.trim()) {
     return window;
   }
+  if ((last.attachments?.length ?? 0) > 0 || (last.attachedFiles?.length ?? 0) > 0) {
+    return window;
+  }
 
   return {
     ...window,
