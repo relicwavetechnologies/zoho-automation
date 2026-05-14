@@ -769,16 +769,24 @@ async function handleSlashCommand(args: {
     return;
   }
 
-  if (cmd === '/help' || cmd === '/commands') {
+  if (cmd === '/' || cmd === '/help' || cmd === '/commands') {
     await reply(
-      'Available commands:\n' +
-      '• `/login` — connect your Lark account (actions run as you, not the bot)\n' +
-      '• `/logout` — disconnect your Lark account\n' +
-      '• `/status` — check your Lark account connection\n' +
-      '• `/clear` — clear my conversation memory for this chat\n' +
-      '• `/remember <fact>` — store a durable fact for future conversations\n' +
-      '• `/share` — share your most recently indexed file with your team\n' +
-      '• `/help` — show this message',
+      '**Divo Commands**\n\n' +
+      '**Conversation**\n' +
+      '`/clear` — Wipe conversation memory for this chat. Divo starts fresh.\n' +
+      '`/remember <fact>` — Save a fact Divo will recall in future chats.\n' +
+      '  _Example:_ `/remember Acme Corp uses net-30 payment terms`\n\n' +
+      '**Account**\n' +
+      '`/login` — Connect your Lark account so actions run as you, not the bot.\n' +
+      '`/logout` — Disconnect your Lark account.\n' +
+      '`/status` — Check your Lark account connection and token status.\n\n' +
+      '**Collaboration**\n' +
+      '`/share` — Share your most recently indexed file with your team.\n\n' +
+      '**Tips**\n' +
+      '• In group chats, @mention Divo to talk to it.\n' +
+      '• Say "schedule" to create recurring tasks (e.g., "check invoices every Monday at 9am").\n' +
+      '• Say "list my schedules" to see active scheduled workflows.\n' +
+      '• Upload a file and ask Divo to analyze it — PDFs, CSVs, and docs are all supported.',
     );
     return;
   }
