@@ -1,11 +1,12 @@
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 
-// Disable the web worker — in Node.js the legacy build runs synchronously on the main thread.
-(pdfjsLib as any).GlobalWorkerOptions.workerSrc = '';
+// pdfjs-dist v5 uses dynamic import(workerSrc) in Node.js.
+// Point it to the real worker module so the "fake worker" setup succeeds.
+(pdfjsLib as any).GlobalWorkerOptions.workerSrc = 'pdfjs-dist/legacy/build/pdf.worker.mjs';
 
 export async function extractPdfText(buf: Buffer): Promise<string> {
   const uint8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-  const doc = await (pdfjsLib as any).getDocument({ data: uint8 }).promise;
+  const doc = await (pdfjsLib as any).getDocument({ data: uint8, useWorkerFetch: false, isEvalSupported: false, useSystemFonts: true }).promise;
   const pageTexts: string[] = [];
 
   for (let i = 1; i <= doc.numPages; i++) {
