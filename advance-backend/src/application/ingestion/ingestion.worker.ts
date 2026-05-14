@@ -1,4 +1,5 @@
 import { Worker, type Job } from 'bullmq';
+import type { LanguageModel } from 'ai';
 import type { IngestionJobPayload } from './ingestion.queue';
 import { INGESTION_QUEUE_NAME } from './ingestion.queue';
 import type { IngestionService } from './ingestion.service';
@@ -16,6 +17,7 @@ export interface IngestionWorkerDeps {
   logger:           Logger;
   chatContext?:     LarkChatContextService;
   concurrency?:     number;
+  summaryModel?:    LanguageModel;
 }
 
 export class IngestionWorker {
@@ -91,11 +93,20 @@ export class IngestionWorker {
         retrievalHint: `For more detail beyond the inline excerpt, use contextSearch or documentRag with fileAssetId="${result.fileAssetId}" or filename "${payload.fileName}".`,
       });
 
-      // Quote-reply to the original file message with success notification
+      // Quote-reply to the original file message with summary
       if (payload.chatId && payload.replyToMessageId) {
+        let summaryCard: string;
+        if (this.deps.summaryModel && result.textPreview) {
+          const summary = await this.generateFileSummary(
+            payload.fileName, result.textPreview, result.chunkCount,
+          );
+          summaryCard = buildSummaryCard(payload.fileName, result.chunkCount, summary);
+        } else {
+          summaryCard = buildIndexedCard(payload.fileName, result.chunkCount);
+        }
         await this.deps.larkAdapter.sendToChatId(
           payload.chatId,
-          buildIndexedCard(payload.fileName, result.chunkCount),
+          summaryCard,
           payload.replyToMessageId,
         ).catch(() => { /* non-fatal */ });
       }
@@ -134,6 +145,31 @@ export class IngestionWorker {
     return client.downloadFile(payload.larkMessageId, payload.larkFileKey);
   }
 
+  private async generateFileSummary(
+    fileName: string,
+    textPreview: string,
+    chunkCount: number,
+  ): Promise<string> {
+    if (!this.deps.summaryModel) return '';
+    try {
+      const { generateText } = await import('ai');
+      const result = await generateText({
+        model: this.deps.summaryModel,
+        system: 'You summarize documents in exactly 6 concise bullet points. No preamble, no trailing text — just 6 lines starting with •.',
+        messages: [{
+          role: 'user',
+          content: `Summarize this document "${fileName}" (${chunkCount} sections) in exactly 6 bullet points:\n\n${textPreview.slice(0, 8000)}`,
+        }],
+        maxRetries: 1,
+        abortSignal: AbortSignal.timeout(15_000),
+      });
+      return result.text.trim();
+    } catch (e) {
+      this.log.warn('ingestion.worker.summary.failed', { fileName, error: String(e) });
+      return '';
+    }
+  }
+
   private async updateGroupAttachment(
     payload: IngestionJobPayload,
     attachment: GroupChatAttachmentContext,
@@ -168,6 +204,35 @@ function buildIndexedCard(fileName: string, chunkCount: number): string {
           content: `✅ **Indexed** ${fileName} — ${chunkCount} section${chunkCount !== 1 ? 's' : ''}. Ask me anything about it.`,
         },
       }],
+    }),
+  });
+}
+
+function buildSummaryCard(fileName: string, chunkCount: number, summary: string): string {
+  const summaryBlock = summary || 'Summary not available — ask me anything about this file.';
+  return JSON.stringify({
+    msg_type: 'interactive',
+    card: JSON.stringify({
+      header: {
+        template: 'green',
+        title: { tag: 'plain_text', content: `📄 Read: ${fileName}` },
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            tag: 'lark_md',
+            content: summaryBlock,
+          },
+        },
+        {
+          tag: 'note',
+          elements: [{
+            tag: 'plain_text',
+            content: `${chunkCount} section${chunkCount !== 1 ? 's' : ''} indexed — ask me anything about this file.`,
+          }],
+        },
+      ],
     }),
   });
 }

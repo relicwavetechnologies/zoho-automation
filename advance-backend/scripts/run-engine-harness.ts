@@ -4,15 +4,17 @@
  *
  * This bypasses the webhook so we can iterate fast, but every other layer
  * (engine, supervisor, lark runner, lark API, status card) is the real one.
- * The bot will deliver the reply to the configured P2P chat in Lark, exactly
+ * The bot will deliver the reply to the configured chat in Lark, exactly
  * like a real user message would.
  *
  * Usage:
- *   pnpm tsx scripts/run-engine-harness.ts                     # default prompt
+ *   pnpm tsx scripts/run-engine-harness.ts                     # default prompt (P2P)
  *   pnpm tsx scripts/run-engine-harness.ts "your prompt here"
+ *   pnpm tsx scripts/run-engine-harness.ts --group "your prompt here"
  *   pnpm tsx scripts/run-engine-harness.ts --debug-sigs        # dump every transformParams call
  *
- * Run: pnpm tsx scripts/run-engine-harness.ts "make a task 'hrm8 deployment' and assign it to anish"
+ * Group mode sends to the test group chat instead of P2P, including group
+ * context (conversation array) in the engine run — mirrors real group behavior.
  */
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
@@ -27,9 +29,11 @@ import type { ConversationHandle } from '../src/application/channels/channel.ada
 const DEFAULT_PROMPT = "make a task 'hrm8 deployment' and assign it to anish";
 const ABHISHEK_OPEN_ID = 'ou_48b958c283635491b756c0ef23f47159';
 const P2P_CHAT_ID      = 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50';
+const GROUP_CHAT_ID    = 'oc_b9169aab0765f46b2fe9147068e3c79f';
 
 const args = process.argv.slice(2);
 const debugSigs = args.includes('--debug-sigs');
+const groupMode = args.includes('--group');
 const prompt    = args.filter(a => !a.startsWith('--'))[0] ?? DEFAULT_PROMPT;
 
 // Optional: install global hook so we can trace what hits Gemini.
@@ -58,7 +62,12 @@ if (debugSigs) {
 }
 
 async function main() {
+  const chatId = groupMode ? GROUP_CHAT_ID : P2P_CHAT_ID;
+  const chatType = groupMode ? 'group' : 'p2p';
+
   console.log('\n=== run-engine-harness ===');
+  console.log(`mode:   ${chatType}`);
+  console.log(`chatId: ${chatId}`);
   console.log(`prompt: ${JSON.stringify(prompt)}`);
   console.log(`debug-sigs: ${debugSigs}\n`);
 
@@ -83,8 +92,8 @@ async function main() {
   const incoming: IncomingMessage = {
     channel:        'lark',
     messageId:      asMessageId(messageId),
-    chatId:         asChatId(P2P_CHAT_ID),
-    chatType:       'p2p',
+    chatId:         asChatId(chatId),
+    chatType,
     userExternalId: ABHISHEK_OPEN_ID,
     text:           prompt,
     attachments:    [],
@@ -103,7 +112,7 @@ async function main() {
     traceId:        String(traceId),
     requestId:      messageId,
     userExternalId: ABHISHEK_OPEN_ID,
-    chatId:         P2P_CHAT_ID,
+    chatId,
     ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
   };
 
@@ -111,11 +120,51 @@ async function main() {
     channel:          'lark',
     chatId:           incoming.chatId,
     replyToMessageId: incoming.messageId,
-    replyInThread:    false,
+    replyInThread:    groupMode,
     correlationId:    traceId,
   };
 
-  // ── 3. Run the engine — this delivers a real card to Lark ─────────────────
+  // ── 2b. Pre-flight: dump group context if group mode ──────────────────────
+  if (groupMode && container.chatContextService) {
+    const ctxResult = await container.chatContextService.loadContext(
+      identity.companyId, chatId,
+    );
+    if (ctxResult?.ok && ctxResult.value) {
+      const win = ctxResult.value;
+      console.log(`── GROUP CONTEXT PRE-FLIGHT ──`);
+      console.log(`  Total messages:  ${win.totalMessageCount}`);
+      console.log(`  Recent messages: ${win.recentMessages.length}`);
+      console.log(`  Has summary:     ${!!win.summary}`);
+      for (const msg of win.recentMessages) {
+        const attInfo = msg.attachments
+          ? ` [${msg.attachments.length} att: ${msg.attachments.map(a => `${a.kind}/${a.fileName}${a.cloudinaryUrl ? ' ✓url' : ' ✗url'}${a.inlineContext ? ' ✓ocr' : ' ✗ocr'}`).join(', ')}]`
+          : '';
+        console.log(`  [${msg.createdAt}] ${msg.senderName} (${msg.role}): ${msg.content.slice(0, 80)}${attInfo}`);
+      }
+      console.log('');
+    } else {
+      console.log('── GROUP CONTEXT: empty or error ──\n');
+    }
+  }
+
+  // ── 3. Store this message in group context (mirrors webhook snapshot) ─────
+  if (groupMode && container.chatContextService) {
+    await container.chatContextService.appendMessage({
+      companyId: identity.companyId,
+      chatId,
+      chatType: 'group',
+      messageId,
+      senderOpenId: ABHISHEK_OPEN_ID,
+      senderName: identity.displayName || identity.email || identity.userId,
+      role: 'user',
+      content: prompt,
+      createdAt: now.toISOString(),
+      botMentioned: true,
+    });
+    console.log('Stored harness message in group context.\n');
+  }
+
+  // ── 4. Run the engine — this delivers a real card to Lark ─────────────────
   console.log('engine.run starting…\n');
   const start = Date.now();
   const result = await engine.run({

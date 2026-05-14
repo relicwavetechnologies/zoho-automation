@@ -29,6 +29,7 @@ export interface IngestResult {
   chunkCount:    number;
   documentClass: string;
   cloudinaryUrl: string;
+  textPreview?:  string;
 }
 
 export class IngestionService {
@@ -210,6 +211,7 @@ export class IngestionService {
         chunkCount: chunks.length,
         documentClass: plan.documentClass,
         cloudinaryUrl: cloudResult.secureUrl,
+        textPreview: extracted.text.slice(0, 10_000),
       };
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);

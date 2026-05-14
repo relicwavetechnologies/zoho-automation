@@ -41,8 +41,9 @@ export class IngestionQueue {
   }
 
   async enqueue(payload: IngestionJobPayload): Promise<string> {
+    const rawId = `${payload.companyId}:${payload.uploaderUserId}:${Date.now()}:${payload.larkFileKey ?? payload.fileName}`;
     const job = await this.queue.add('ingest', payload as any, {
-      jobId: `${payload.companyId}:${payload.uploaderUserId}:${Date.now()}:${payload.larkFileKey ?? payload.fileName}`,
+      jobId: rawId.replaceAll(':', '_'),
     });
     return job.id ?? '';
   }

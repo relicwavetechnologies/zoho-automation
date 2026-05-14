@@ -166,6 +166,8 @@ export interface Container {
   memoryCache: CachePort;
   /** Resolved Redis URL for the BullMQ queue — exposed so workers can share the same URL. */
   queueRedisUrl: string;
+  /** LLM model for lightweight tasks (summaries, classification). */
+  model: import('ai').LanguageModel;
   /** Per-chat message serializer — one engine.run() at a time per chatId. */
   chatSerializer: ChatMessageSerializer;
   /** Scheduled workflow executor — polls for due tasks every N ms. */
@@ -943,6 +945,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     chatSerializer,
     // Group chat context
     chatContextService,
+    // LLM model
+    model,
     // Scheduled workflow executor
     scheduledWorkflowService: new (await import('./application/scheduling/scheduled-workflow.service')).ScheduledWorkflowService({
       prisma,

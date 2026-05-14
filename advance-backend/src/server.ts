@@ -46,6 +46,7 @@ export const createServer = (c: Container) => {
     logger:           c.logger,
     chatContext:      c.chatContextService,
     concurrency:      c.env.INGESTION_WORKER_CONCURRENCY,
+    summaryModel:     c.model,
   });
   ingestionWorker.start();
 

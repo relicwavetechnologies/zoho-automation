@@ -416,6 +416,24 @@ async function processInBackground(
       attachmentContexts: preparedAttachments.map(item => item.context),
       log,
     });
+
+    // ── File upload acknowledgment in group chat ────────────────────────────
+    // When someone shares a file/image in a group chat (without @Divo),
+    // send a friendly ack so the user knows Divo noticed it.
+    if (preparedAttachments.length > 0) {
+      const fileNames = preparedAttachments.map(p => p.attachment.fileName);
+      const hasUseful = preparedAttachments.some(hasUsefulInlineAttachmentContext);
+      const ackText = preparedAttachments.length === 1
+        ? `📎 Got it — I've received **${fileNames[0]}** and ${hasUseful ? "I'm reading through it now" : "it's being processed"}. Tag me when you'd like to discuss it!`
+        : `📎 Got it — I've received ${preparedAttachments.length} files (${fileNames.join(', ')}) and ${hasUseful ? "I'm reading through them now" : "they're being processed"}. Tag me when you'd like to discuss them!`;
+
+      await deps.adapter.sendFinalReply(conversation, {
+        kind: 'final',
+        text: ackText,
+        format: 'markdown',
+      }).catch(e => log.warn('webhook.group_upload_ack.failed', { error: String(e) }));
+    }
+
     return;
   }
 
@@ -495,10 +513,16 @@ async function processInBackground(
     return;
   }
 
-  if (!text) return;
+  // Bare @Divo mention with no text — synthesize a contextual prompt so
+  // the engine can respond to whatever was said above in the group chat.
+  const effectiveIncoming = (!text && incoming.mentionsSelf && incoming.chatType === 'group')
+    ? { ...incoming, text: 'Respond to the latest messages above in this group chat.' }
+    : incoming;
+
+  if (!effectiveIncoming.text?.trim()) return;
 
   await storeGroupIncomingSnapshot({
-    incoming,
+    incoming: effectiveIncoming,
     identity,
     deps,
     attachmentContexts: [],
@@ -507,7 +531,7 @@ async function processInBackground(
 
   // ── Normal message → orchestration engine ─────────────────────────────────
   const result = await deps.engine.run({
-    incoming,
+    incoming: effectiveIncoming,
     runContext,
     conversation,
     channelAdapter: deps.adapter,
