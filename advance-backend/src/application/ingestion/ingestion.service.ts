@@ -51,15 +51,23 @@ export class IngestionService {
   async ingestBuffer(input: IngestBufferInput): Promise<IngestResult> {
     const { companyId, uploaderUserId, uploaderChannel, fileName, mimeType, buffer } = input;
 
-    // 1. Upload to Cloudinary
-    const cloudResult = await this.cloudinary.uploadBuffer({
-      buffer,
-      mimeType,
-      fileName,
-      folder:    `company/${companyId}/documents`,
-      companyId,
-      assetId:   `${companyId}_${createHash('sha256').update(buffer).digest('hex').slice(0, 12)}`,
-    });
+    // 1. Upload to Cloudinary (non-fatal — large files may exceed plan limits)
+    let cloudResult: { publicId: string; secureUrl: string } | null = null;
+    try {
+      cloudResult = await this.cloudinary.uploadBuffer({
+        buffer,
+        mimeType,
+        fileName,
+        folder:    `company/${companyId}/documents`,
+        companyId,
+        assetId:   `${companyId}_${createHash('sha256').update(buffer).digest('hex').slice(0, 12)}`,
+      });
+    } catch (e) {
+      this.log.warn('ingestion.cloudinary_upload.failed', {
+        fileName, companyId, sizeBytes: buffer.length,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
 
     // 2. Create FileAsset record (status: pending)
     const createResult = await this.fileAssetRepo.create({
@@ -69,9 +77,9 @@ export class IngestionService {
       fileName,
       mimeType,
       sizeBytes:              buffer.length,
-      cloudinaryPublicId:     cloudResult.publicId,
-      cloudinaryUrl:          cloudResult.secureUrl,
-      cloudinaryResourceType: mimeType.startsWith('image/') ? 'image' : 'raw',
+      cloudinaryPublicId:     cloudResult?.publicId ?? '',
+      cloudinaryUrl:          cloudResult?.secureUrl ?? '',
+      cloudinaryResourceType: cloudResult ? (mimeType.startsWith('image/') ? 'image' : 'raw') : '',
     });
     if (!createResult.ok) {
       throw new Error(`FileAsset.create failed: ${createResult.error.message}`);
@@ -100,7 +108,7 @@ export class IngestionService {
         fileAssetId:    fileAsset.id,
         fileName,
         mimeType,
-        sourceUrl:      cloudResult.secureUrl,
+        sourceUrl:      cloudResult?.secureUrl ?? '',
         uploaderUserId,
         visibility:     input.visibility ?? 'personal',
         allowedRoles:   input.allowedRoles ?? [],
@@ -114,7 +122,7 @@ export class IngestionService {
           fileAssetId: fileAsset.id,
           chunkCount: 0,
           documentClass: plan.documentClass,
-          cloudinaryUrl: cloudResult.secureUrl,
+          cloudinaryUrl: cloudResult?.secureUrl ?? '',
         };
       }
 
@@ -134,7 +142,7 @@ export class IngestionService {
             mimeType:      extracted.imageMime ?? mimeType,
             fileName,
             buffer:        extracted.imageBuffer,
-            cloudinaryUrl: cloudResult.secureUrl,
+            cloudinaryUrl: cloudResult?.secureUrl ?? '',
           });
           multimodalEmbedding = mmResult.embedding;
         } catch (e) {
@@ -210,7 +218,7 @@ export class IngestionService {
         fileAssetId: fileAsset.id,
         chunkCount: chunks.length,
         documentClass: plan.documentClass,
-        cloudinaryUrl: cloudResult.secureUrl,
+        cloudinaryUrl: cloudResult?.secureUrl ?? '',
         textPreview: extracted.text.slice(0, 10_000),
       };
     } catch (e) {
