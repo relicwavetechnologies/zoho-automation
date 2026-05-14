@@ -99,10 +99,15 @@ export class ScheduledWorkflowService {
         try {
           await this.executeWorkflow(candidate.id, candidate.nextRunAt ?? now);
         } catch (e) {
-          this.log.error('scheduler.execute.failed', {
+          this.log.error('scheduler.execute.crashed', {
             workflowId: candidate.id,
             error: e instanceof Error ? e.message : String(e),
           });
+          await this.markFailed(
+            candidate.id,
+            candidate.nextRunAt ?? now,
+            `Unhandled: ${e instanceof Error ? e.message : String(e)}`,
+          ).catch(() => { /* best effort */ });
         }
       }
     } finally {
@@ -259,11 +264,32 @@ export class ScheduledWorkflowService {
       create: { workflowId, scheduledFor, status: 'failed', errorSummary: reason, finishedAt: new Date() },
       update: { status: 'failed', errorSummary: reason, finishedAt: new Date() },
     });
+
+    // Advance nextRunAt so this workflow isn't re-triggered on the next poll.
+    const workflow = await this.deps.prisma.scheduledWorkflow.findUnique({
+      where: { id: workflowId },
+      select: { scheduleConfigJson: true },
+    });
+    let nextRunAt: Date | null = null;
+    if (workflow) {
+      const parsed = scheduleConfigSchema.safeParse(workflow.scheduleConfigJson);
+      if (parsed.success) {
+        nextRunAt = getNextScheduledRunAt(parsed.data, new Date(scheduledFor.getTime() + 1000));
+      }
+    }
+    const isOneTimeComplete = !nextRunAt;
+
     await this.deps.prisma.scheduledWorkflow.update({
       where: { id: workflowId },
-      data: { claimToken: null, claimedAt: null },
+      data: {
+        claimToken: null,
+        claimedAt: null,
+        lastRunAt: new Date(),
+        nextRunAt,
+        ...(isOneTimeComplete ? { status: 'archived', scheduleEnabled: false, archivedAt: new Date() } : {}),
+      },
     });
-    this.log.error('scheduler.execute.failed', { workflowId, reason });
+    this.log.error('scheduler.execute.failed', { workflowId, reason, nextRunAt: nextRunAt?.toISOString() ?? null });
   }
 
   private handleFailure(error: unknown): void {
