@@ -48,6 +48,8 @@ export const createServer = (c: Container) => {
   });
   ingestionWorker.start();
 
+  c.scheduledWorkflowService.start();
+
   const runCloudinaryCleanup = () => {
     void c.cloudinaryAdapter.cleanupExpiredExports({
       ttlSeconds: c.env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,

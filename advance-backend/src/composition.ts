@@ -168,6 +168,8 @@ export interface Container {
   queueRedisUrl: string;
   /** Per-chat message serializer — one engine.run() at a time per chatId. */
   chatSerializer: ChatMessageSerializer;
+  /** Scheduled workflow executor — polls for due tasks every N ms. */
+  scheduledWorkflowService: import('./application/scheduling/scheduled-workflow.service').ScheduledWorkflowService;
   // Admin surface
   permissions: PermissionService;
   toolPermRepo: ToolPermissionRepository;
@@ -941,5 +943,15 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     chatSerializer,
     // Group chat context
     chatContextService,
+    // Scheduled workflow executor
+    scheduledWorkflowService: new (await import('./application/scheduling/scheduled-workflow.service')).ScheduledWorkflowService({
+      prisma,
+      engine,
+      channelAdapter: larkAdapter,
+      channelIdentityRepo,
+      logger: logger.child({ service: 'scheduled-workflow' }),
+      clock:  systemClock,
+      pollIntervalMs: env.SCHEDULED_WORKFLOW_POLL_INTERVAL_MS,
+    }),
   };
 }

@@ -175,6 +175,9 @@ const EnvSchema = z.object({
   // Set to 0 to disable supervisor timeout (useful for local dev with slow models)
   SUPERVISOR_TIMEOUT_MS: z.coerce.number().int().min(0).default(300_000),
 
+  // ── Scheduled workflow executor ──────────────────────────────────────────
+  SCHEDULED_WORKFLOW_POLL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(120_000),
+
   // ── Mem0 persistent memory layer ─────────────────────────────────────────
   MEM0_ENABLED:           booleanStr.default('false'),
   MEM0_EXTRACTION_MODEL:  z.string().default('gpt-4o-mini'),
