@@ -95,6 +95,7 @@ interface DynamicGraphRunInput {
   readonly permittedTools: ReadonlyArray<AppTool<unknown, unknown>>;
   readonly approvalGate?: ApprovalGateService;
   readonly memoryContext?: string;
+  readonly groupContext?: string;
   readonly mem0?: Mem0Service;
   readonly chatId?: string;
   readonly tracer?: OrchestrationTracer;
@@ -169,6 +170,7 @@ export class SupervisorAgent {
         chatId: chatId ?? String(channelId),
         ...(approvalGate ? { approvalGate } : {}),
         ...(memoryContext ? { memoryContext } : {}),
+        ...(groupContext ? { groupContext } : {}),
         ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
         ...(tracer ? { tracer } : {}),
         statusChannel,
@@ -248,6 +250,7 @@ export class SupervisorAgent {
       ...(tracer ? { tracer } : {}),
       ...(approvalGate    ? { approvalGate }    : {}),
       ...(geminiApiKey    ? { geminiApiKey }    : {}),
+      ...(groupContext    ? { groupContext }    : {}),
       chatId: chatId ?? String(channelId),
     };
 
@@ -632,6 +635,7 @@ export class SupervisorAgent {
     });
 
     const memoryContext = input.memoryContext ?? '';
+    const groupContext = input.groupContext ?? '';
 
     input.tracer?.emit({
       phase: 'plan', eventType: 'supervisor_started',
@@ -652,6 +656,7 @@ export class SupervisorAgent {
       conversationHistory: graphConversationHistory,
       companyId: String(input.runContext.companyId),
       memoryContext,
+      groupContext,
       chatId: input.chatId ?? null,
       permittedToolCount: input.permittedTools.length,
     });
@@ -665,6 +670,7 @@ export class SupervisorAgent {
       permittedTools: input.permittedTools,
       chatId: input.chatId ?? null,
       memoryContext,
+      groupContext,
       ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
     } as any);
 

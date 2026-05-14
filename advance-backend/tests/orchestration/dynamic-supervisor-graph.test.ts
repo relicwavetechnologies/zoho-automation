@@ -188,6 +188,45 @@ describe('dynamic supervisor graph', () => {
     assert.match(systemPrompt, /User prefers tables/);
   });
 
+  it('injects group chat context into the dynamic supervisor system prompt', async () => {
+    const root = makeAgent({
+      id: 'root',
+      slug: 'divo-supervisor',
+      isRootAgent: true,
+    });
+
+    let systemPrompt = '';
+    const graph = buildDynamicSupervisorGraph({
+      model: {} as any,
+      agentCatalogCache: {
+        getForCompany: async () => [root],
+      } as any,
+      todoRepo: {} as any,
+      prisma: {} as any,
+      logger: noopLogger,
+      clock,
+      executeText: async ({ system }) => {
+        systemPrompt = system;
+        return { text: 'graph done', toolCalls: [] };
+      },
+    });
+
+    await graph.invoke({
+      userMessage: 'make lark tasks of all this tasks',
+      conversationHistory: [],
+      companyId: 'co-1',
+      perm,
+      runContext,
+      permittedTools: [],
+      chatId: 'chat-1',
+      groupContext: 'GROUP CHAT CONTEXT\n[earlier] User: duplication of text pr work krna h, history refreshing par work krna h',
+    });
+
+    assert.match(systemPrompt, /GROUP CHAT CONTEXT/);
+    assert.match(systemPrompt, /duplication of text/);
+    assert.match(systemPrompt, /history refreshing/);
+  });
+
   it('registers rememberFact when Mem0 is available', async () => {
     const root = makeAgent({
       id: 'root',
