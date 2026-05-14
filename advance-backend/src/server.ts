@@ -183,6 +183,7 @@ export const createServer = (c: Container) => {
       serializer:            c.chatSerializer,
       chatContextService:    c.chatContextService,
       prisma:                c.prisma,
+      cloudinaryAdapter:     c.cloudinaryAdapter,
     }),
   );
 

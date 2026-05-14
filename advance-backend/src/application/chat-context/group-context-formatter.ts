@@ -3,6 +3,8 @@ import type {
   GroupChatWindow,
   GroupChatMessage,
   GroupChatSummary,
+  GroupContextContentPart,
+  GroupContextForLLM,
 } from '../../domain/conversation/group-context';
 import { GROUP_CONTEXT_POLICY } from '../../domain/conversation/group-context-policy';
 
@@ -100,7 +102,7 @@ export function formatMessage(msg: GroupChatMessage): string {
 
 export function selectRecentMessagesForTranscript(
   messages: readonly GroupChatMessage[],
-  tokenBudget = GROUP_CONTEXT_POLICY.RAW_TRANSCRIPT_TOKEN_BUDGET,
+  tokenBudget: number = GROUP_CONTEXT_POLICY.RAW_TRANSCRIPT_TOKEN_BUDGET,
 ): GroupChatMessage[] {
   if (tokenBudget <= 0) return [];
   const selected: GroupChatMessage[] = [];
@@ -183,4 +185,136 @@ export function formatGroupContextForPrompt(
   }
 
   return sections.join('\n');
+}
+
+// ─── Multimodal formatter ────────────────────────────────────────────────────
+
+const SYSTEM_HEADER_LINES = [
+  'GROUP CHAT CONTEXT — recent conversation in this group chat.',
+  'Images and files are embedded at their exact position in the conversation.',
+  'When the user refers to "this image", "this file", or "the attached image/file", it means the nearest preceding attachment.',
+  'Inline images are visible to you — describe what you see. OCR supplements follow each image as searchable text.',
+  'For large documents, a smart excerpt is inline; use contextSearch or documentRag only if you need sections beyond the excerpt.',
+  'The user\'s current request is the LAST line (marked with ▶).',
+];
+
+function collectImageUrls(messages: readonly GroupChatMessage[]): string[] {
+  const urls: string[] = [];
+  for (const msg of messages) {
+    if (!msg.attachments) continue;
+    for (const att of msg.attachments) {
+      if (att.kind === 'image' && att.cloudinaryUrl) {
+        urls.push(att.cloudinaryUrl);
+      }
+    }
+  }
+  return urls;
+}
+
+function formatAttachmentOcrSupplement(att: GroupChatAttachmentContext): string | null {
+  if (!att.inlineContext) return null;
+  return `[OCR supplement for ${att.fileName}: ${att.inlineContext.replace(/^\[Image:.*?\n/, '').replace(/\]$/, '').trim()}]`;
+}
+
+function formatAttachmentInlineText(att: GroupChatAttachmentContext): string {
+  const lines: string[] = [];
+  if (att.inlineContext) {
+    lines.push(att.inlineContext);
+  } else if (att.error) {
+    lines.push(`Extraction/indexing error: ${att.error}`);
+  } else if (att.ingestionStatus === 'processing' || att.ingestionStatus === 'pending') {
+    lines.push('Attachment extraction/indexing is still running in the background.');
+  }
+  const hint = defaultRetrievalHint(att);
+  if (hint) lines.push(`Retrieval hint: ${hint}`);
+  return lines.join('\n');
+}
+
+export function formatGroupContextMultimodal(
+  window: GroupChatWindow,
+  currentMessage?: { senderName: string; content: string },
+): GroupContextForLLM {
+  const {
+    IMAGE_TOKEN_COST, MAX_INLINE_IMAGES,
+    RAW_TRANSCRIPT_TOKEN_BUDGET, SUMMARY_CONTEXT_TOKEN_BUDGET,
+  } = GROUP_CONTEXT_POLICY;
+
+  const systemHeader = SYSTEM_HEADER_LINES.join('\n');
+  const parts: GroupContextContentPart[] = [];
+  let hasImages = false;
+
+  // ── Rolling summary ────────────────────────────────────────────────────────
+  if (window.summary) {
+    const summaryText = formatSummary(window.summary, SUMMARY_CONTEXT_TOKEN_BUDGET);
+    if (summaryText) {
+      parts.push({ type: 'text', text: `── ROLLING SUMMARY (older discussion) ──\n${summaryText}` });
+    }
+  }
+
+  parts.push({ type: 'text', text: '── RECENT MESSAGES ──' });
+
+  // ── Select messages within budget (text portion) ───────────────────────────
+  const allImageUrls = collectImageUrls(window.recentMessages);
+  const imageTokenReserve = Math.min(allImageUrls.length, MAX_INLINE_IMAGES) * IMAGE_TOKEN_COST;
+  const textBudget = Math.max(4_000, RAW_TRANSCRIPT_TOKEN_BUDGET - imageTokenReserve);
+
+  const selectedMessages = selectRecentMessagesForTranscript(window.recentMessages, textBudget);
+
+  // Determine which images get multimodal treatment (newest first, up to MAX).
+  // Build a Set of cloudinaryUrls that should be embedded as image parts.
+  const eligibleImageUrls: string[] = [];
+  for (let i = selectedMessages.length - 1; i >= 0; i--) {
+    const msg = selectedMessages[i];
+    if (!msg?.attachments) continue;
+    for (const att of msg.attachments) {
+      if (att.kind === 'image' && att.cloudinaryUrl) {
+        eligibleImageUrls.push(att.cloudinaryUrl);
+      }
+    }
+  }
+  const inlineImageSet = new Set(eligibleImageUrls.slice(0, MAX_INLINE_IMAGES));
+  hasImages = inlineImageSet.size > 0;
+
+  // ── Build interleaved content parts ────────────────────────────────────────
+  for (const msg of selectedMessages) {
+    const prefix = msg.role === 'assistant' ? '@Divo' : msg.senderName;
+    const mention = msg.botMentioned ? ' @Divo' : '';
+    const ts = formatTimestamp(msg.createdAt);
+    let textLine = `[${ts}] ${prefix}${mention}: ${msg.content}`;
+
+    if (msg.attachedFiles && msg.attachedFiles.length > 0 && (!msg.attachments || msg.attachments.length === 0)) {
+      textLine += ` [files: ${msg.attachedFiles.join(', ')}]`;
+    }
+
+    parts.push({ type: 'text', text: textLine });
+
+    if (msg.attachments) {
+      for (const att of msg.attachments) {
+        if (att.kind === 'image' && att.cloudinaryUrl && inlineImageSet.has(att.cloudinaryUrl)) {
+          // Multimodal image part at exact message position
+          parts.push({ type: 'text', text: `[${att.fileName} — image attached to this message]` });
+          parts.push({ type: 'image', url: att.cloudinaryUrl });
+
+          // OCR supplement as searchable text
+          const ocr = formatAttachmentOcrSupplement(att);
+          if (ocr) parts.push({ type: 'text', text: ocr });
+        } else {
+          // Text-only fallback (no cloudinary URL, or over image budget)
+          const fallbackText = formatAttachmentInlineText(att);
+          const meta = [att.mimeType, att.ingestionStatus ? `status=${att.ingestionStatus}` : ''].filter(Boolean).join('; ');
+          parts.push({
+            type: 'text',
+            text: `[${att.kind}: "${att.fileName}"; ${meta}]\n${fallbackText}`,
+          });
+        }
+      }
+    }
+  }
+
+  // ── Current request marker ─────────────────────────────────────────────────
+  if (currentMessage) {
+    parts.push({ type: 'text', text: `▶ [now] ${currentMessage.senderName} → @Divo: ${currentMessage.content}` });
+  }
+
+  return { systemHeader, parts, hasImages };
 }

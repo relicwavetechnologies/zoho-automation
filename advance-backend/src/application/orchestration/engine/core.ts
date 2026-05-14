@@ -28,7 +28,7 @@ import { classifyMessage, runFastPath } from './fast-path';
 import { buildExecutionSummary } from './execution-summary';
 import { assessReplyQuality, buildPresentationContext, cleanReplyText } from './reply-quality';
 import type { LarkChatContextService } from '../../chat-context/lark-chat-context.service';
-import { formatGroupContextForPrompt } from '../../chat-context/group-context-formatter';
+import { formatGroupContextForPrompt, formatGroupContextMultimodal } from '../../chat-context/group-context-formatter';
 import type { GroupChatWindow } from '../../../domain/conversation/group-context';
 import {
   debugRunStart, debugPermissions, debugHistory,
@@ -316,12 +316,19 @@ export class OrchestrationEngine {
       && groupContextResult?.ok
       && groupContextResult.value.recentMessages.length > 0;
 
-    const groupContext = isGroupWithContext
-      ? formatGroupContextForPrompt(withoutCurrentIncomingMessage(groupContextResult!.value, incoming.text), {
-          senderName: 'User',
-          content: incoming.text,
-        })
+    const groupContextWindow = isGroupWithContext
+      ? withoutCurrentIncomingMessage(groupContextResult!.value, incoming.text)
       : undefined;
+    const currentMsg = { senderName: 'User', content: incoming.text };
+
+    const groupContext = groupContextWindow
+      ? formatGroupContextForPrompt(groupContextWindow, currentMsg)
+      : undefined;
+
+    const multimodalCtx = groupContextWindow
+      ? formatGroupContextMultimodal(groupContextWindow, currentMsg)
+      : undefined;
+
     debugGroupContext(groupContext);
 
     // For group chats, limit conversation history to avoid "above" ambiguity.
@@ -347,6 +354,7 @@ export class OrchestrationEngine {
       ...(approvalGate !== undefined ? { approvalGate } : {}),
       ...(memoryContext ? { memoryContext } : {}),
       ...(groupContext ? { groupContext } : {}),
+      ...(multimodalCtx?.hasImages ? { groupContextParts: multimodalCtx.parts, groupContextSystemHeader: multimodalCtx.systemHeader } : {}),
       chatId:         String(conversation.chatId),
     });
 

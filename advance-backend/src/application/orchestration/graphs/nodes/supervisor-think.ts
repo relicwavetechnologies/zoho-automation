@@ -1,5 +1,5 @@
 import { streamText, stepCountIs } from 'ai';
-import type { LanguageModel, ToolSet } from 'ai';
+import type { LanguageModel, ToolSet, UserContent, ModelMessage } from 'ai';
 import type { PrismaClient } from '../../../../generated/prisma';
 import type { Logger } from '../../../../shared/logger';
 import type { Clock } from '../../../../shared/clock';
@@ -50,7 +50,7 @@ export interface SupervisorThinkDeps {
   readonly aggregator?: RunStatusAggregator;
   readonly executeText?: (input: {
     readonly system: string;
-    readonly messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+    readonly messages: readonly ModelMessage[];
     readonly tools: ToolSet;
     readonly maxSteps: number;
     readonly temperature: number;
@@ -132,12 +132,32 @@ export async function supervisorThink(
       ...orchestrationTools,
     } as unknown as ToolSet;
 
-    const messages = [
-      ...state.conversationHistory,
-      { role: 'user' as const, content: state.userMessage },
-    ];
+    // ── Build messages with optional multimodal group context ──────────────
+    const hasMultimodalContext = state.groupContextParts.length > 0
+      && state.groupContextParts.some(p => p.type === 'image');
+
+    const messages: ModelMessage[] = state.conversationHistory.map(m => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    if (hasMultimodalContext) {
+      const contentParts: UserContent = state.groupContextParts.map(p =>
+        p.type === 'text'
+          ? { type: 'text' as const, text: p.text }
+          : { type: 'image' as const, image: new URL(p.url) },
+      );
+      messages.push({ role: 'user' as const, content: contentParts });
+    }
+
+    messages.push({ role: 'user' as const, content: state.userMessage });
+
     let systemPrompt = rootAgent.systemPrompt;
-    if (state.groupContext) {
+    if (hasMultimodalContext) {
+      // Compact instruction header — the transcript is in the user message
+      systemPrompt += '\n\nGROUP CHAT CONTEXT is provided in the preceding user message with interleaved images. Resolve "this image/file" to the nearest preceding attachment in that transcript.';
+    } else if (state.groupContext) {
+      // Text-only fallback: append full transcript to system prompt (existing behavior)
       systemPrompt += `\n\n${state.groupContext}`;
     }
     if (state.memoryContext) {
@@ -218,7 +238,7 @@ export async function supervisorThink(
 async function runSupervisorStream(input: {
   readonly model: LanguageModel;
   readonly system: string;
-  readonly messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  readonly messages: readonly ModelMessage[];
   readonly tools: ToolSet;
   readonly maxSteps: number;
   readonly temperature: number;
@@ -230,7 +250,7 @@ async function runSupervisorStream(input: {
   const result = streamText({
     model: input.model,
     system: input.system,
-    messages: input.messages,
+    messages: [...input.messages],
     tools: input.tools,
     stopWhen: [stepCountIs(input.maxSteps)],
     temperature: input.temperature,

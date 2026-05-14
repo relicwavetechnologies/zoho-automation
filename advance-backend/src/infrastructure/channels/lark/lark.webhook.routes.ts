@@ -28,6 +28,7 @@ import type { InlineContextResult } from './lark-inline-context';
 import type { LarkChatContextService } from '../../../application/chat-context/lark-chat-context.service';
 import type { PrismaClient } from '../../../generated/prisma';
 import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
+import type { CloudinaryAdapter } from '../../cloudinary/cloudinary.adapter';
 
 export const createLarkWebhookRoutes = (deps: {
   adapter: LarkChannelAdapter;
@@ -49,6 +50,7 @@ export const createLarkWebhookRoutes = (deps: {
   serializer: ChatMessageSerializer;
   chatContextService?: LarkChatContextService;
   prisma?: PrismaClient;
+  cloudinaryAdapter?: CloudinaryAdapter;
 }): Router => {
   const router = Router();
   const log = deps.logger.child({ route: 'lark-webhook' });
@@ -888,6 +890,7 @@ async function prepareLarkAttachmentContexts(input: {
     env: TypedEnv;
     logger: Logger;
     ingestionQueue?: IngestionQueue;
+    cloudinaryAdapter?: CloudinaryAdapter;
   };
   log: Logger;
   shouldReact: boolean;
@@ -922,6 +925,31 @@ async function prepareLarkAttachmentContexts(input: {
 
     if (buffer) {
       inlineContext = await extractAttachmentInlineContext(att, buffer, deps.env, deps.logger);
+    }
+
+    // Upload to Cloudinary for multimodal LLM access (non-blocking on failure)
+    let cloudinaryUrl: string | undefined;
+    if (buffer && deps.cloudinaryAdapter?.isAvailable) {
+      try {
+        const uploadResult = await deps.cloudinaryAdapter.uploadBuffer({
+          buffer,
+          mimeType:  att.mimeType,
+          fileName:  att.fileName,
+          folder:    'group_context',
+          companyId: identity.companyId,
+          assetId:   att.key,
+          tags:      ['group_context', `chat:${String(incoming.chatId)}`],
+        });
+        cloudinaryUrl = uploadResult.secureUrl;
+        log.info('webhook.attachment.cloudinary.uploaded', {
+          fileName: att.fileName, publicId: uploadResult.publicId,
+        });
+      } catch (e) {
+        log.warn('webhook.attachment.cloudinary.failed', {
+          fileName: att.fileName,
+          error: e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200),
+        });
+      }
     }
 
     let queued = false;
@@ -977,6 +1005,7 @@ async function prepareLarkAttachmentContexts(input: {
       larkFileKey: att.key,
       larkMessageId: att.messageId,
       ingestionStatus: queued ? 'processing' : enqueueError ? 'failed' : 'inline_only',
+      ...(cloudinaryUrl ? { cloudinaryUrl } : {}),
       ...(inlineContext?.context ? { inlineContext: inlineContext.context } : {}),
       ...(inlineContext ? { isInlineComplete: inlineContext.isComplete } : {}),
       ...(inlineContext?.rawText ? { rawTextPreview: inlineContext.rawText.slice(0, 2000) } : {}),

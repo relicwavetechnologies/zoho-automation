@@ -66,3 +66,23 @@ export interface GroupChatWindow {
   readonly recentMessages: readonly GroupChatMessage[];
   readonly totalMessageCount: number;
 }
+
+// ─── Multimodal content parts (AI-SDK-agnostic) ─────────────────────────────
+
+export interface GroupContextTextPart {
+  readonly type: 'text';
+  readonly text: string;
+}
+
+export interface GroupContextImagePart {
+  readonly type: 'image';
+  readonly url: string;
+}
+
+export type GroupContextContentPart = GroupContextTextPart | GroupContextImagePart;
+
+export interface GroupContextForLLM {
+  readonly systemHeader: string;
+  readonly parts: readonly GroupContextContentPart[];
+  readonly hasImages: boolean;
+}

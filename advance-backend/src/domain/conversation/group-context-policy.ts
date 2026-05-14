@@ -18,4 +18,12 @@ export const GROUP_CONTEXT_POLICY = {
   MAX_MESSAGES: 200,
   SUMMARY_REFRESH_DELTA: 6,
   MIN_MESSAGES_FOR_LLM_SUMMARY: 16,
+
+  // ─── Multimodal image budget ───────────────────────────────────────────────
+  /** Approximate token cost per image in low-res mode (vision models). */
+  IMAGE_TOKEN_COST: 850,
+  /** Max images to include as multimodal parts within the transcript budget. */
+  MAX_INLINE_IMAGES: 8,
+  /** Token budget for a single large document excerpt (smart extraction). */
+  DOC_EXCERPT_TOKEN_BUDGET: 5_000,
 } as const;

@@ -56,6 +56,7 @@ import { buildDynamicSupervisorGraph, type DynamicSupervisorGraph } from '../gra
 import type { Mem0Service } from '../../memory/mem0.service';
 import { buildToolFinishedPayload, isErrorOutput } from '../agent-runners/tool-trace';
 import { debugSupervisorEntry, debugGraphInvoke, debugGraphOutput } from '../../../shared/debug-run-log';
+import type { GroupContextContentPart } from '../../../domain/conversation/group-context';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,8 @@ export interface SupervisorInput {
   approvalGate?:  ApprovalGateService;
   memoryContext?: string;
   groupContext?:  string;
+  groupContextParts?: readonly GroupContextContentPart[];
+  groupContextSystemHeader?: string;
   chatId?:        string;
 }
 
@@ -96,6 +99,8 @@ interface DynamicGraphRunInput {
   readonly approvalGate?: ApprovalGateService;
   readonly memoryContext?: string;
   readonly groupContext?: string;
+  readonly groupContextParts?: readonly GroupContextContentPart[];
+  readonly groupContextSystemHeader?: string;
   readonly mem0?: Mem0Service;
   readonly chatId?: string;
   readonly tracer?: OrchestrationTracer;
@@ -142,7 +147,7 @@ export class SupervisorAgent {
     const {
       userMessage, history, channelType, channelId,
       perm, runContext, statusChannel, aggregator, permittedTools, tracer,
-      approvalGate, memoryContext, groupContext, chatId,
+      approvalGate, memoryContext, groupContext, groupContextParts, groupContextSystemHeader, chatId,
     } = input;
     const { model, agentResolver, todoRepo, prisma, logger, clock } = this.deps;
 
@@ -171,6 +176,8 @@ export class SupervisorAgent {
         ...(approvalGate ? { approvalGate } : {}),
         ...(memoryContext ? { memoryContext } : {}),
         ...(groupContext ? { groupContext } : {}),
+        ...(groupContextParts ? { groupContextParts } : {}),
+        ...(groupContextSystemHeader ? { groupContextSystemHeader } : {}),
         ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
         ...(tracer ? { tracer } : {}),
         statusChannel,
@@ -671,6 +678,7 @@ export class SupervisorAgent {
       chatId: input.chatId ?? null,
       memoryContext,
       ...(input.groupContext ? { groupContext: input.groupContext } : {}),
+      ...(input.groupContextParts?.length ? { groupContextParts: input.groupContextParts } : {}),
       ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
     } as any);
 
