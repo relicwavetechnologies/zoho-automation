@@ -36,6 +36,10 @@ export const SupervisorGraphState = Annotation.Root({
     reducer: (_prev, next) => next,
     default: () => '',
   }),
+  groupContext: Annotation<string>({
+    reducer: (_prev, next) => next,
+    default: () => '',
+  }),
   approvalGate: Annotation<ApprovalGateService | undefined>({
     reducer: (_prev, next) => next,
     default: () => undefined,

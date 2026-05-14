@@ -29,6 +29,7 @@ import { buildExecutionSummary } from './execution-summary';
 import { assessReplyQuality, buildPresentationContext, cleanReplyText } from './reply-quality';
 import type { LarkChatContextService } from '../../chat-context/lark-chat-context.service';
 import { formatGroupContextForPrompt } from '../../chat-context/group-context-formatter';
+import type { GroupChatWindow } from '../../../domain/conversation/group-context';
 import {
   debugRunStart, debugPermissions, debugHistory,
   debugMemoryContext, debugGroupContext, debugFinalReply, debugRunEnd,
@@ -36,6 +37,18 @@ import {
 import { generateText } from 'ai';
 
 const MEM0_SEARCH_TIMEOUT_MS = 500;
+
+function withoutCurrentIncomingMessage(window: GroupChatWindow, incomingText: string): GroupChatWindow {
+  const last = window.recentMessages.at(-1);
+  if (!last || last.role !== 'user' || last.content.trim() !== incomingText.trim()) {
+    return window;
+  }
+
+  return {
+    ...window,
+    recentMessages: window.recentMessages.slice(0, -1),
+  };
+}
 
 // ─── Public I/O types ──────────────────────────────────────────────────────
 
@@ -301,7 +314,7 @@ export class OrchestrationEngine {
       && groupContextResult.value.recentMessages.length > 0;
 
     const groupContext = isGroupWithContext
-      ? formatGroupContextForPrompt(groupContextResult!.value, {
+      ? formatGroupContextForPrompt(withoutCurrentIncomingMessage(groupContextResult!.value, incoming.text), {
           senderName: 'User',
           content: incoming.text,
         })

@@ -385,6 +385,7 @@ export function debugGraphInvoke(data: {
   conversationHistory: Array<{ role: string; content: string }>;
   companyId: string;
   memoryContext: string;
+  groupContext: string;
   chatId: string | null;
   permittedToolCount: number;
 }): void {
@@ -394,6 +395,7 @@ export function debugGraphInvoke(data: {
     `Company ID:       ${data.companyId}`,
     `Chat ID:          ${data.chatId ?? 'null'}`,
     `Memory context:   ${data.memoryContext ? data.memoryContext.length + ' chars' : '(empty)'}`,
+    `Group context:    ${data.groupContext ? data.groupContext.length + ' chars' : '(empty)'}`,
     `History turns:    ${data.conversationHistory.length}`,
     `Permitted tools:  ${data.permittedToolCount}`,
     '',

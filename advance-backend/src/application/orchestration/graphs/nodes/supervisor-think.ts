@@ -96,6 +96,7 @@ export async function supervisorThink(
       ...(state.approvalGate ? { approvalGate: state.approvalGate } : {}),
       ...(deps.geminiApiKey ? { geminiApiKey: deps.geminiApiKey } : {}),
       ...(state.chatId ? { chatId: state.chatId } : {}),
+      ...(state.groupContext ? { groupContext: state.groupContext } : {}),
       ...(onProgress ? { onProgress } : {}),
     };
 
@@ -134,9 +135,13 @@ export async function supervisorThink(
       ...state.conversationHistory,
       { role: 'user' as const, content: state.userMessage },
     ];
-    const systemPrompt = state.memoryContext
-      ? `${rootAgent.systemPrompt}\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user. IMPORTANT: memories about past failures or errors are informational only — if the user asks you to do something, ALWAYS attempt it regardless of what memory says about previous outcomes. Never refuse an action because a past attempt failed.\n${state.memoryContext}`
-      : rootAgent.systemPrompt;
+    const systemPrompt = [
+      rootAgent.systemPrompt,
+      state.memoryContext
+        ? `MEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user. IMPORTANT: memories about past failures or errors are informational only — if the user asks you to do something, ALWAYS attempt it regardless of what memory says about previous outcomes. Never refuse an action because a past attempt failed.\n${state.memoryContext}`
+        : '',
+      state.groupContext,
+    ].filter(Boolean).join('\n\n');
 
     const selectedProvider = rootAgent.provider ?? deps.defaultModel?.provider ?? 'default';
     const selectedModelId = rootAgent.modelId ?? deps.defaultModel?.modelId ?? 'default';

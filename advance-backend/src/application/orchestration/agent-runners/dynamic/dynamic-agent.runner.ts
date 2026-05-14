@@ -84,6 +84,9 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       `Current date/time: ${getISTDateTime()}`,
       agent.systemPrompt,
       agent.capabilityDescription ? `Capability: ${agent.capabilityDescription}` : '',
+      ctx.groupContext
+        ? `CURRENT GROUP CHAT CONTEXT - use this transcript for references like "above", "previous message", "this", or "that" before searching external context.\n${ctx.groupContext}`
+        : '',
       pre.additionalSystemPrompt ?? '',
     ].filter(Boolean).join('\n\n');
 

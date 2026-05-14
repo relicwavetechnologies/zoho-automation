@@ -529,7 +529,7 @@ async function processInBackground(
 
   // ── Store in group context (if applicable) ────────────────────────────────
   if (incoming.chatType === 'group' && deps.chatContextService) {
-    void deps.chatContextService.appendMessage({
+    await deps.chatContextService.appendMessage({
       companyId: identity.companyId,
       chatId: String(incoming.chatId),
       chatType: 'group',
@@ -556,7 +556,7 @@ async function processInBackground(
 
   // Store Divo's reply in group context
   if (incoming.chatType === 'group' && deps.chatContextService && result.ok) {
-    void deps.chatContextService.appendMessage({
+    await deps.chatContextService.appendMessage({
       companyId: identity.companyId,
       chatId: String(incoming.chatId),
       chatType: 'group',
