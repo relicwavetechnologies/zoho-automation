@@ -1,4 +1,9 @@
-import type { GroupChatWindow, GroupChatMessage, GroupChatSummary } from '../../domain/conversation/group-context';
+import type {
+  GroupChatAttachmentContext,
+  GroupChatWindow,
+  GroupChatMessage,
+  GroupChatSummary,
+} from '../../domain/conversation/group-context';
 import { GROUP_CONTEXT_POLICY } from '../../domain/conversation/group-context-policy';
 
 function estimateTokens(text: string): number {
@@ -38,12 +43,56 @@ function formatTimestamp(createdAt: string): string {
   return date.toISOString();
 }
 
-function formatMessage(msg: GroupChatMessage): string {
+function indentBlock(text: string, prefix = '  '): string {
+  return text.split('\n').map(line => `${prefix}${line}`).join('\n');
+}
+
+function defaultRetrievalHint(att: GroupChatAttachmentContext): string | null {
+  if (att.retrievalHint) return att.retrievalHint;
+  if (att.fileAssetId) {
+    return `Full attachment is indexed. Use contextSearch or documentRag with fileAssetId="${att.fileAssetId}" or filename "${att.fileName}" for more detail.`;
+  }
+  if (att.ingestionStatus === 'processing' || att.ingestionStatus === 'pending' || att.isInlineComplete === false) {
+    return `If more detail is needed after indexing, use contextSearch or documentRag with filename "${att.fileName}".`;
+  }
+  return null;
+}
+
+function formatAttachmentContext(att: GroupChatAttachmentContext): string {
+  const meta = [
+    att.mimeType,
+    att.ingestionStatus ? `status=${att.ingestionStatus}` : '',
+    att.fileAssetId ? `fileAssetId=${att.fileAssetId}` : '',
+    att.indexedChunkCount !== undefined ? `chunks=${att.indexedChunkCount}` : '',
+    att.documentClass ? `class=${att.documentClass}` : '',
+  ].filter(Boolean).join('; ');
+  const lines = [
+    `  [internal attachment context: ${att.kind} "${att.fileName}"${meta ? `; ${meta}` : ''}]`,
+  ];
+
+  if (att.inlineContext) {
+    lines.push(indentBlock(att.inlineContext));
+  } else if (att.error) {
+    lines.push(`  Extraction/indexing error: ${att.error}`);
+  } else if (att.ingestionStatus === 'processing' || att.ingestionStatus === 'pending') {
+    lines.push('  Attachment extraction/indexing is still running in the background.');
+  }
+
+  const hint = defaultRetrievalHint(att);
+  if (hint) lines.push(`  Retrieval hint: ${hint}`);
+
+  return lines.join('\n');
+}
+
+export function formatMessage(msg: GroupChatMessage): string {
   const prefix = msg.role === 'assistant' ? '@Divo' : msg.senderName;
   const mention = msg.botMentioned ? ' @Divo' : '';
   let line = `[${formatTimestamp(msg.createdAt)}] ${prefix}${mention}: ${msg.content}`;
   if (msg.attachedFiles && msg.attachedFiles.length > 0) {
     line += ` [files: ${msg.attachedFiles.join(', ')}]`;
+  }
+  if (msg.attachments && msg.attachments.length > 0) {
+    line += `\n${msg.attachments.map(formatAttachmentContext).join('\n')}`;
   }
   return line;
 }
@@ -106,6 +155,7 @@ export function formatGroupContextForPrompt(
   const sections: string[] = [
     'GROUP CHAT CONTEXT — recent conversation in this group chat.',
     'When the user refers to "above", "previous message", or "that", they mean the messages in this transcript.',
+    'Attachment OCR/file excerpts below are internal context attached to the exact message where the upload happened; do not claim they were sent as visible Lark text.',
     'The user\'s current request is the LAST line (marked with ▶).',
   ];
 

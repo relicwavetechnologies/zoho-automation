@@ -1,3 +1,34 @@
+export type GroupChatAttachmentKind = 'image' | 'file';
+
+export type GroupChatAttachmentStatus =
+  | 'pending'
+  | 'processing'
+  | 'indexed'
+  | 'failed'
+  | 'inline_only';
+
+export interface GroupChatAttachmentContext {
+  readonly kind: GroupChatAttachmentKind;
+  readonly fileName: string;
+  readonly mimeType: string;
+  readonly larkFileKey?: string;
+  readonly larkMessageId?: string;
+  readonly fileAssetId?: string;
+  readonly cloudinaryUrl?: string;
+  readonly ingestionStatus?: GroupChatAttachmentStatus;
+  /**
+   * Internal prompt-only OCR / extracted file context. This is persisted in the
+   * group context snapshot and must not be posted back into Lark.
+   */
+  readonly inlineContext?: string;
+  readonly isInlineComplete?: boolean;
+  readonly rawTextPreview?: string;
+  readonly retrievalHint?: string;
+  readonly indexedChunkCount?: number;
+  readonly documentClass?: string;
+  readonly error?: string;
+}
+
 export interface GroupChatMessage {
   readonly id: string;
   readonly senderOpenId: string;
@@ -6,6 +37,8 @@ export interface GroupChatMessage {
   readonly content: string;
   readonly createdAt: string;
   readonly botMentioned: boolean;
+  readonly attachments?: readonly GroupChatAttachmentContext[];
+  /** Legacy lightweight filename list retained for old snapshots and summaries. */
   readonly attachedFiles?: readonly string[];
 }
 

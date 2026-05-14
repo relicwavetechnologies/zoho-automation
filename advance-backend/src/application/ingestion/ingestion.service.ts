@@ -28,6 +28,7 @@ export interface IngestResult {
   fileAssetId:   string;
   chunkCount:    number;
   documentClass: string;
+  cloudinaryUrl: string;
 }
 
 export class IngestionService {
@@ -108,7 +109,12 @@ export class IngestionService {
 
       if (chunks.length === 0) {
         await this.fileAssetRepo.setStatus(fileAsset.id, 'done', 'No text extracted — file may be empty or unsupported.');
-        return { fileAssetId: fileAsset.id, chunkCount: 0, documentClass: plan.documentClass };
+        return {
+          fileAssetId: fileAsset.id,
+          chunkCount: 0,
+          documentClass: plan.documentClass,
+          cloudinaryUrl: cloudResult.secureUrl,
+        };
       }
 
       // 6. Embed chunks in batches of 16
@@ -199,7 +205,12 @@ export class IngestionService {
         strategy:      plan.strategy,
       });
 
-      return { fileAssetId: fileAsset.id, chunkCount: chunks.length, documentClass: plan.documentClass };
+      return {
+        fileAssetId: fileAsset.id,
+        chunkCount: chunks.length,
+        documentClass: plan.documentClass,
+        cloudinaryUrl: cloudResult.secureUrl,
+      };
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       this.log.error('ingestion.failed', { fileAssetId: fileAsset.id, fileName, error: errMsg });

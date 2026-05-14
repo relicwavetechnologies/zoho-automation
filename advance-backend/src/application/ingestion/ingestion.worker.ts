@@ -5,6 +5,8 @@ import type { IngestionService } from './ingestion.service';
 import type { LarkChannelAdapter } from '../../infrastructure/channels/lark/lark.adapter';
 import type { Logger } from '../../shared/logger';
 import type { TypedEnv } from '../../config/env';
+import type { LarkChatContextService } from '../chat-context/lark-chat-context.service';
+import type { GroupChatAttachmentContext } from '../../domain/conversation/group-context';
 
 export interface IngestionWorkerDeps {
   redisUrl:         string;
@@ -12,6 +14,7 @@ export interface IngestionWorkerDeps {
   larkAdapter:      LarkChannelAdapter;
   env:              TypedEnv;
   logger:           Logger;
+  chatContext?:     LarkChatContextService;
   concurrency?:     number;
 }
 
@@ -74,6 +77,20 @@ export class IngestionWorker {
         ...(payload.allowedRoles ? { allowedRoles: payload.allowedRoles } : {}),
       });
 
+      await this.updateGroupAttachment(payload, {
+        kind: payload.jobType === 'lark_image' || payload.mimeType.startsWith('image/') ? 'image' : 'file',
+        fileName: payload.fileName,
+        mimeType: payload.mimeType,
+        ...(payload.larkFileKey ? { larkFileKey: payload.larkFileKey } : {}),
+        ...(payload.larkMessageId ? { larkMessageId: payload.larkMessageId } : {}),
+        fileAssetId: result.fileAssetId,
+        cloudinaryUrl: result.cloudinaryUrl,
+        ingestionStatus: 'indexed',
+        indexedChunkCount: result.chunkCount,
+        documentClass: result.documentClass,
+        retrievalHint: `Full attachment is indexed. Use contextSearch or documentRag with fileAssetId="${result.fileAssetId}" or filename "${payload.fileName}" for more detail.`,
+      });
+
       // Quote-reply to the original file message with success notification
       if (payload.chatId && payload.replyToMessageId) {
         await this.deps.larkAdapter.sendToChatId(
@@ -87,6 +104,15 @@ export class IngestionWorker {
       const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
       if (isLastAttempt && payload.chatId && payload.replyToMessageId) {
         const errMsg = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+        await this.updateGroupAttachment(payload, {
+          kind: payload.jobType === 'lark_image' || payload.mimeType.startsWith('image/') ? 'image' : 'file',
+          fileName: payload.fileName,
+          mimeType: payload.mimeType,
+          ...(payload.larkFileKey ? { larkFileKey: payload.larkFileKey } : {}),
+          ...(payload.larkMessageId ? { larkMessageId: payload.larkMessageId } : {}),
+          ingestionStatus: 'failed',
+          error: errMsg,
+        });
         await this.deps.larkAdapter.sendToChatId(
           payload.chatId,
           buildFailedCard(payload.fileName, errMsg),
@@ -106,6 +132,28 @@ export class IngestionWorker {
       return client.downloadImage(payload.larkMessageId, payload.larkFileKey);
     }
     return client.downloadFile(payload.larkMessageId, payload.larkFileKey);
+  }
+
+  private async updateGroupAttachment(
+    payload: IngestionJobPayload,
+    attachment: GroupChatAttachmentContext,
+  ): Promise<void> {
+    if (!this.deps.chatContext || !payload.chatId || !payload.groupContextMessageId) return;
+
+    const result = await this.deps.chatContext.updateMessageAttachments({
+      companyId: payload.companyId,
+      chatId: payload.chatId,
+      messageId: payload.groupContextMessageId,
+      attachments: [attachment],
+    });
+
+    if (!result.ok) {
+      this.log.warn('ingestion.worker.group_context_update_failed', {
+        fileName: payload.fileName,
+        messageId: payload.groupContextMessageId,
+        error: result.error.message,
+      });
+    }
   }
 }
 

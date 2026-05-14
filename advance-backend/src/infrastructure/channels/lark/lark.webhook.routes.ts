@@ -23,9 +23,11 @@ import {
   verifyLarkWebhookRequest,
   maybeDecryptLarkBody,
 } from './lark-security';
-import { parseLarkAttachments } from './lark-attachment.parser';
+import { parseLarkAttachments, type LarkAttachment } from './lark-attachment.parser';
+import type { InlineContextResult } from './lark-inline-context';
 import type { LarkChatContextService } from '../../../application/chat-context/lark-chat-context.service';
 import type { PrismaClient } from '../../../generated/prisma';
+import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
 
 export const createLarkWebhookRoutes = (deps: {
   adapter: LarkChannelAdapter;
@@ -173,22 +175,6 @@ export const createLarkWebhookRoutes = (deps: {
       return;
     }
 
-    // In group chats, only respond when @Divo is mentioned.
-    // P2P (DMs) always proceed — there's no way to @mention in a 1-on-1.
-    if (incoming.chatType === 'group' && !incoming.mentionsSelf) {
-      log.debug('webhook.group_message.not_mentioned', {
-        chatId:    incoming.chatId,
-        messageId: incoming.messageId,
-      });
-      res.status(200).json({ ok: true });
-      if (deps.chatContextService) {
-        void storeGroupChatMessage(incoming, deps, log).catch(e =>
-          log.warn('webhook.group_context.store_failed', { error: String(e) }),
-        );
-      }
-      return;
-    }
-
     // ── Step 5: Respond immediately to Lark (5s timeout requirement) ─────────
     res.status(200).json({ ok: true });
 
@@ -320,6 +306,15 @@ async function processInBackground(
   );
 
   if (!identityResult.ok || !identityResult.value) {
+    if (incoming.chatType === 'group' && !incoming.mentionsSelf) {
+      log.debug('webhook.group_message.not_mentioned.identity_missing', {
+        chatId: incoming.chatId,
+        messageId: incoming.messageId,
+        larkOpenId: incoming.userExternalId,
+      });
+      return;
+    }
+
     const conversation: ConversationHandle = {
       channel:            'lark',
       chatId:             incoming.chatId,
@@ -393,83 +388,53 @@ async function processInBackground(
     correlationId,
   };
 
-  // ── File/image attachment handling ────────────────────────────────────────
-  // Flow:
-  //   1. Download buffer + extract inline context (fast, sync with timeout).
-  //   2. Enqueue for full background indexing (always).
-  //   3. If text could be extracted → inject into message and run the engine
-  //      so the AI can immediately reason about the file contents.
-  //      If nothing was extractable → send a plain ack and return.
   const attachments = parseLarkAttachments(rawEvent);
+  const shouldRespond = incoming.chatType !== 'group' || incoming.mentionsSelf;
+  const preparedAttachments = attachments.length > 0
+    ? await prepareLarkAttachmentContexts({
+        incoming,
+        attachments,
+        identity,
+        deps,
+        log,
+        shouldReact: shouldRespond,
+      })
+    : [];
+
+  if (incoming.chatType === 'group' && !incoming.mentionsSelf) {
+    log.debug('webhook.group_message.not_mentioned', {
+      chatId: incoming.chatId,
+      messageId: incoming.messageId,
+      attachmentCount: preparedAttachments.length,
+    });
+    await storeGroupIncomingSnapshot({
+      incoming,
+      identity,
+      deps,
+      attachmentContexts: preparedAttachments.map(item => item.context),
+      log,
+    });
+    return;
+  }
 
   if (attachments.length > 0) {
-    const { LarkFileClient } = await import('./clients/lark-file.client');
-    const { extractAttachmentInlineContext } = await import('./lark-inline-context');
-    const fileClient = new LarkFileClient(deps.env, deps.logger);
-
-    try {
-      await deps.adapter.reactToIncoming(incoming.messageId, '📥');
-    } catch { /* non-fatal */ }
-
-    const contextParts: string[] = [];
-
-    for (const att of attachments) {
-      let buf: Buffer | undefined;
-      try {
-        buf = att.type === 'image'
-          ? await fileClient.downloadImage(att.messageId, att.key)
-          : await fileClient.downloadFile(att.messageId, att.key);
-      } catch (e) {
-        log.warn('webhook.attachment.download.failed', { fileName: att.fileName, error: String(e) });
-      }
-
-      // Extract inline context (with timeout fallback)
-      if (buf) {
-        const { context } = await extractAttachmentInlineContext(att, buf, deps.env, deps.logger);
-        if (context) contextParts.push(context);
-      } else {
-        contextParts.push(`[File: "${att.fileName}" — could not download]`);
-      }
-
-      // Enqueue for full background indexing
-      if (deps.ingestionQueue) {
-        try {
-          await deps.ingestionQueue.enqueue(buf ? {
-            jobType:          'buffer',
-            companyId:        identity.companyId,
-            uploaderUserId:   identity.userId,
-            uploaderChannel:  'lark',
-            fileName:         att.fileName,
-            mimeType:         att.mimeType,
-            bufferBase64:     buf.toString('base64'),
-            chatId:           String(incoming.chatId),
-            replyToMessageId: String(incoming.messageId),
-            visibility:       'personal',
-          } : {
-            jobType:          att.type === 'image' ? 'lark_image' : 'lark_file',
-            companyId:        identity.companyId,
-            uploaderUserId:   identity.userId,
-            uploaderChannel:  'lark',
-            fileName:         att.fileName,
-            mimeType:         att.mimeType,
-            larkFileKey:      att.key,
-            larkMessageId:    att.messageId,
-            chatId:           String(incoming.chatId),
-            replyToMessageId: String(incoming.messageId),
-            visibility:       'personal',
-          });
-          log.info('webhook.attachment.enqueued', { fileName: att.fileName, type: att.type, companyId: identity.companyId });
-        } catch (e) {
-          log.error('webhook.attachment.enqueue.failed', { fileName: att.fileName, error: String(e) });
-        }
-      }
-    }
+    await storeGroupIncomingSnapshot({
+      incoming,
+      identity,
+      deps,
+      attachmentContexts: preparedAttachments.map(item => item.context),
+      log,
+    });
 
     // Build a synthetic message that includes the file content so the engine
-    // can immediately reason about it.  Append any text the user typed alongside.
+    // can immediately reason about it in DMs. Group chats read the same context
+    // from the group snapshot so the upload stays in its original timeline slot.
     const userText        = incoming.text?.trim() ?? '';
-    const contextBlock    = contextParts.join('\n\n');
-    const hasContext      = contextBlock.length > 0 && !contextBlock.startsWith('[File:') && !contextBlock.includes('could not download');
+    const contextBlock    = preparedAttachments
+      .map(item => item.inlineContext?.context)
+      .filter((part): part is string => !!part)
+      .join('\n\n');
+    const hasContext      = preparedAttachments.some(hasUsefulInlineAttachmentContext);
 
     if (!hasContext) {
       // Nothing useful extracted — plain ack, no engine run
@@ -491,7 +456,9 @@ async function processInBackground(
 
     const enrichedIncoming: typeof incoming = {
       ...incoming,
-      text: syntheticText,
+      text: incoming.chatType === 'group'
+        ? (userText || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`)
+        : syntheticText,
     };
 
     const result = await deps.engine.run({
@@ -505,6 +472,7 @@ async function processInBackground(
     if (!result.ok) {
       log.error('webhook.engine.failed', { error: result.error.message, correlationId });
     }
+    await storeGroupAssistantSnapshot({ incoming, identity, deps, result, log });
     return;
   }
 
@@ -527,19 +495,13 @@ async function processInBackground(
 
   if (!text) return;
 
-  // ── Store in group context (if applicable) ────────────────────────────────
-  if (incoming.chatType === 'group' && deps.chatContextService) {
-    await deps.chatContextService.appendMessage({
-      companyId: identity.companyId,
-      chatId: String(incoming.chatId),
-      chatType: 'group',
-      senderOpenId: incoming.userExternalId,
-      senderName: identity.displayName || identity.email || identity.userId,
-      role: 'user',
-      content: text,
-      botMentioned: incoming.mentionsSelf,
-    }).catch(e => log.warn('webhook.group_context.store_mentioned_failed', { error: String(e) }));
-  }
+  await storeGroupIncomingSnapshot({
+    incoming,
+    identity,
+    deps,
+    attachmentContexts: [],
+    log,
+  });
 
   // ── Normal message → orchestration engine ─────────────────────────────────
   const result = await deps.engine.run({
@@ -554,19 +516,7 @@ async function processInBackground(
     log.error('webhook.engine.failed', { error: result.error.message, correlationId });
   }
 
-  // Store Divo's reply in group context
-  if (incoming.chatType === 'group' && deps.chatContextService && result.ok) {
-    await deps.chatContextService.appendMessage({
-      companyId: identity.companyId,
-      chatId: String(incoming.chatId),
-      chatType: 'group',
-      senderOpenId: 'divo-bot',
-      senderName: 'Divo',
-      role: 'assistant',
-      content: result.value.finalReply.text,
-      botMentioned: false,
-    }).catch(e => log.warn('webhook.group_context.store_reply_failed', { error: String(e) }));
-  }
+  await storeGroupAssistantSnapshot({ incoming, identity, deps, result, log });
 }
 
 async function handleSlashCommand(args: {
@@ -890,52 +840,212 @@ function isTokenExpired(expiresAt: Date | null | undefined): boolean {
   return expiresAt.getTime() < Date.now() + 5 * 60 * 1000; // 5 min buffer
 }
 
-async function storeGroupChatMessage(
-  incoming: IncomingMessage,
-  deps: {
-    channelIdentityRepo: ChannelIdentityRepoPort;
-    chatContextService?: LarkChatContextService;
-  },
-  log: Logger,
-): Promise<void> {
-  if (!deps.chatContextService) return;
+type LarkResolvedIdentity = {
+  companyId: string;
+  userId: string;
+  displayName?: string | null;
+  email?: string | null;
+};
 
-  let senderName = 'User';
-  try {
-    const ci = await deps.channelIdentityRepo.resolveByLarkOpenId(incoming.userExternalId);
-    if (ci.ok && ci.value) {
-      senderName = ci.value.displayName || ci.value.email || ci.value.userId;
-    }
-  } catch { /* use default */ }
+type PreparedAttachmentContext = {
+  attachment: LarkAttachment;
+  context: GroupChatAttachmentContext;
+  inlineContext?: InlineContextResult;
+};
 
-  const content = incoming.text?.trim()
-    || (incoming.attachments.length > 0
-      ? incoming.attachments.map(a => `[file: ${a.name ?? a.type}]`).join(', ')
-      : '');
-  if (!content) return;
-
-  const companyId = await resolveCompanyIdForGroupMessage(incoming, deps);
-  if (!companyId) return;
-
-  await deps.chatContextService.appendMessage({
-    companyId,
-    chatId: String(incoming.chatId),
-    chatType: 'group',
-    senderOpenId: incoming.userExternalId,
-    senderName,
-    role: 'user',
-    content,
-    botMentioned: incoming.mentionsSelf,
-    ...(incoming.attachments.length > 0
-      ? { attachedFiles: incoming.attachments.map(a => a.name ?? a.type) }
-      : {}),
-  });
+function groupAttachmentRetrievalHint(input: {
+  fileName: string;
+  fileAssetId?: string;
+  isInlineComplete?: boolean;
+  queued: boolean;
+}): string | undefined {
+  if (input.fileAssetId) {
+    return `Full attachment is indexed. Use contextSearch or documentRag with fileAssetId="${input.fileAssetId}" or filename "${input.fileName}" for more detail.`;
+  }
+  if (input.queued || input.isInlineComplete === false) {
+    return `If more detail is needed after indexing, use contextSearch or documentRag with filename "${input.fileName}".`;
+  }
+  return undefined;
 }
 
-async function resolveCompanyIdForGroupMessage(
-  incoming: IncomingMessage,
-  deps: { channelIdentityRepo: ChannelIdentityRepoPort },
-): Promise<string | null> {
-  const id = await deps.channelIdentityRepo.resolveByLarkOpenId(incoming.userExternalId);
-  return id.ok && id.value ? id.value.companyId : null;
+function hasUsefulInlineAttachmentContext(item: PreparedAttachmentContext): boolean {
+  const rawText = item.inlineContext?.rawText.trim() ?? '';
+  if (rawText) return true;
+
+  const context = item.inlineContext?.context.trim() ?? '';
+  if (!context) return false;
+  if (context.includes('could not download')) return false;
+  if (context.includes('no text content extracted')) return false;
+  return !/^\[(?:File|Image):\s*"?[^"\]]+"?\]$/i.test(context);
+}
+
+async function prepareLarkAttachmentContexts(input: {
+  incoming: IncomingMessage;
+  attachments: readonly LarkAttachment[];
+  identity: LarkResolvedIdentity;
+  deps: {
+    adapter: LarkChannelAdapter;
+    env: TypedEnv;
+    logger: Logger;
+    ingestionQueue?: IngestionQueue;
+  };
+  log: Logger;
+  shouldReact: boolean;
+}): Promise<PreparedAttachmentContext[]> {
+  const { incoming, attachments, identity, deps, log } = input;
+  if (attachments.length === 0) return [];
+
+  if (input.shouldReact) {
+    try {
+      await deps.adapter.reactToIncoming(incoming.messageId, '📥');
+    } catch { /* non-fatal */ }
+  }
+
+  const { LarkFileClient } = await import('./clients/lark-file.client');
+  const { extractAttachmentInlineContext } = await import('./lark-inline-context');
+  const fileClient = new LarkFileClient(deps.env, deps.logger);
+  const prepared: PreparedAttachmentContext[] = [];
+
+  for (const att of attachments) {
+    let buffer: Buffer | undefined;
+    let inlineContext: InlineContextResult | undefined;
+    let error: string | undefined;
+
+    try {
+      buffer = att.type === 'image'
+        ? await fileClient.downloadImage(att.messageId, att.key)
+        : await fileClient.downloadFile(att.messageId, att.key);
+    } catch (e) {
+      error = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+      log.warn('webhook.attachment.download.failed', { fileName: att.fileName, error });
+    }
+
+    if (buffer) {
+      inlineContext = await extractAttachmentInlineContext(att, buffer, deps.env, deps.logger);
+    }
+
+    let queued = false;
+    let enqueueError: string | undefined;
+
+    if (deps.ingestionQueue) {
+      try {
+        const basePayload = {
+          companyId:        identity.companyId,
+          uploaderUserId:   identity.userId,
+          uploaderChannel:  'lark',
+          fileName:         att.fileName,
+          mimeType:         att.mimeType,
+          larkFileKey:      att.key,
+          larkMessageId:    att.messageId,
+          chatId:           String(incoming.chatId),
+          replyToMessageId: String(incoming.messageId),
+          ...(incoming.chatType === 'group' ? { groupContextMessageId: String(incoming.messageId) } : {}),
+          visibility:       incoming.chatType === 'group' ? 'shared' as const : 'personal' as const,
+        };
+
+        await deps.ingestionQueue.enqueue(buffer ? {
+          ...basePayload,
+          jobType:      'buffer',
+          bufferBase64: buffer.toString('base64'),
+        } : {
+          ...basePayload,
+          jobType: att.type === 'image' ? 'lark_image' : 'lark_file',
+        });
+        queued = true;
+        log.info('webhook.attachment.enqueued', {
+          fileName: att.fileName,
+          type: att.type,
+          companyId: identity.companyId,
+          visibility: incoming.chatType === 'group' ? 'shared' : 'personal',
+        });
+      } catch (e) {
+        enqueueError = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+        log.error('webhook.attachment.enqueue.failed', { fileName: att.fileName, error: enqueueError });
+      }
+    }
+
+    const retrievalHint = groupAttachmentRetrievalHint({
+      fileName: att.fileName,
+      queued,
+      ...(inlineContext ? { isInlineComplete: inlineContext.isComplete } : {}),
+    });
+    const contextError = enqueueError ?? error;
+    const context: GroupChatAttachmentContext = {
+      kind: att.type,
+      fileName: att.fileName,
+      mimeType: att.mimeType,
+      larkFileKey: att.key,
+      larkMessageId: att.messageId,
+      ingestionStatus: queued ? 'processing' : enqueueError ? 'failed' : 'inline_only',
+      ...(inlineContext?.context ? { inlineContext: inlineContext.context } : {}),
+      ...(inlineContext ? { isInlineComplete: inlineContext.isComplete } : {}),
+      ...(inlineContext?.rawText ? { rawTextPreview: inlineContext.rawText.slice(0, 2000) } : {}),
+      ...(retrievalHint ? { retrievalHint } : {}),
+      ...(contextError ? { error: contextError } : {}),
+    };
+
+    prepared.push({
+      attachment: att,
+      context,
+      ...(inlineContext ? { inlineContext } : {}),
+    });
+  }
+
+  return prepared;
+}
+
+async function storeGroupIncomingSnapshot(input: {
+  incoming: IncomingMessage;
+  identity: LarkResolvedIdentity;
+  deps: { chatContextService?: LarkChatContextService };
+  attachmentContexts: readonly GroupChatAttachmentContext[];
+  log: Logger;
+}): Promise<void> {
+  const { incoming, identity, deps, attachmentContexts, log } = input;
+  if (incoming.chatType !== 'group' || !deps.chatContextService) return;
+
+  const content = incoming.text?.trim()
+    || attachmentContexts.map(att => `[${att.kind}: ${att.fileName}]`).join(' ');
+  if (!content && attachmentContexts.length === 0) return;
+
+  await deps.chatContextService.appendMessage({
+    companyId: identity.companyId,
+    chatId: String(incoming.chatId),
+    chatType: 'group',
+    messageId: String(incoming.messageId),
+    senderOpenId: incoming.userExternalId,
+    senderName: identity.displayName || identity.email || identity.userId,
+    role: 'user',
+    content,
+    createdAt: incoming.timestamp,
+    botMentioned: incoming.mentionsSelf,
+    ...(attachmentContexts.length > 0
+      ? {
+          attachments: attachmentContexts,
+          attachedFiles: attachmentContexts.map(att => att.fileName),
+        }
+      : {}),
+  }).catch(e => log.warn('webhook.group_context.store_failed', { error: String(e) }));
+}
+
+async function storeGroupAssistantSnapshot(input: {
+  incoming: IncomingMessage;
+  identity: LarkResolvedIdentity;
+  deps: { chatContextService?: LarkChatContextService };
+  result: Awaited<ReturnType<OrchestrationEngine['run']>>;
+  log: Logger;
+}): Promise<void> {
+  const { incoming, identity, deps, result, log } = input;
+  if (incoming.chatType !== 'group' || !deps.chatContextService || !result.ok) return;
+
+  await deps.chatContextService.appendMessage({
+    companyId: identity.companyId,
+    chatId: String(incoming.chatId),
+    chatType: 'group',
+    senderOpenId: 'divo-bot',
+    senderName: 'Divo',
+    role: 'assistant',
+    content: result.value.finalReply.text,
+    botMentioned: false,
+  }).catch(e => log.warn('webhook.group_context.store_reply_failed', { error: String(e) }));
 }
