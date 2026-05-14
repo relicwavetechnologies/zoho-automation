@@ -939,9 +939,14 @@ async function prepareLarkAttachmentContexts(input: {
     let error: string | undefined;
 
     try {
-      buffer = att.type === 'image'
+      const downloaded = att.type === 'image'
         ? await fileClient.downloadImage(att.messageId, att.key)
         : await fileClient.downloadFile(att.messageId, att.key);
+      if (downloaded && downloaded.length > 0) {
+        buffer = downloaded;
+      } else {
+        log.warn('webhook.attachment.download.empty', { fileName: att.fileName });
+      }
     } catch (e) {
       error = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
       log.warn('webhook.attachment.download.failed', { fileName: att.fileName, error });
@@ -995,7 +1000,7 @@ async function prepareLarkAttachmentContexts(input: {
           visibility:       incoming.chatType === 'group' ? 'shared' as const : 'personal' as const,
         };
 
-        await deps.ingestionQueue.enqueue(buffer ? {
+        await deps.ingestionQueue.enqueue(buffer && buffer.length > 0 ? {
           ...basePayload,
           jobType:      'buffer',
           bufferBase64: buffer.toString('base64'),
