@@ -188,7 +188,7 @@ describe('dynamic supervisor graph', () => {
     assert.match(systemPrompt, /User prefers tables/);
   });
 
-  it('injects group chat context into the dynamic supervisor system prompt', async () => {
+  it('injects group context into the dynamic supervisor system prompt', async () => {
     const root = makeAgent({
       id: 'root',
       slug: 'divo-supervisor',
@@ -212,19 +212,61 @@ describe('dynamic supervisor graph', () => {
     });
 
     await graph.invoke({
-      userMessage: 'make lark tasks of all this tasks',
+      userMessage: 'what were we discussing?',
       conversationHistory: [],
       companyId: 'co-1',
       perm,
       runContext,
       permittedTools: [],
       chatId: 'chat-1',
-      groupContext: 'GROUP CHAT CONTEXT\n[earlier] User: duplication of text pr work krna h, history refreshing par work krna h',
+      groupContext: '── RECENT MESSAGES ──\nAlice: we need to fix the billing\nBob: agreed, invoices are wrong',
     });
 
-    assert.match(systemPrompt, /GROUP CHAT CONTEXT/);
-    assert.match(systemPrompt, /duplication of text/);
-    assert.match(systemPrompt, /history refreshing/);
+    assert.match(systemPrompt, /RECENT MESSAGES/);
+    assert.match(systemPrompt, /fix the billing/);
+    assert.match(systemPrompt, /invoices are wrong/);
+  });
+
+  it('injects both group context and memory context in correct order', async () => {
+    const root = makeAgent({
+      id: 'root',
+      slug: 'divo-supervisor',
+      isRootAgent: true,
+    });
+
+    let systemPrompt = '';
+    const graph = buildDynamicSupervisorGraph({
+      model: {} as any,
+      agentCatalogCache: {
+        getForCompany: async () => [root],
+      } as any,
+      todoRepo: {} as any,
+      prisma: {} as any,
+      logger: noopLogger,
+      clock,
+      executeText: async ({ system }) => {
+        systemPrompt = system;
+        return { text: 'graph done', toolCalls: [] };
+      },
+    });
+
+    await graph.invoke({
+      userMessage: 'check the thing',
+      conversationHistory: [],
+      companyId: 'co-1',
+      perm,
+      runContext,
+      permittedTools: [],
+      chatId: 'chat-1',
+      groupContext: '── GROUP TRANSCRIPT ──\nAlice: deploy the hotfix',
+      memoryContext: 'User memory:\n- User is a senior engineer.',
+    });
+
+    assert.match(systemPrompt, /GROUP TRANSCRIPT/);
+    assert.match(systemPrompt, /MEMORY CONTEXT/);
+    const groupIdx = systemPrompt.indexOf('GROUP TRANSCRIPT');
+    const memoryIdx = systemPrompt.indexOf('MEMORY CONTEXT');
+    assert.ok(groupIdx < memoryIdx, 'group context should appear before memory context');
   });
 
   it('registers rememberFact when Mem0 is available', async () => {

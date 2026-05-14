@@ -42,7 +42,7 @@ export interface AgentRunCtx {
   approvalGate?: ApprovalGateService;
   /** Lark chat_id used by the approval gate for idempotency. */
   chatId?:       string;
-  /** Group-chat rolling summary and recent transcript for references like "above". */
+  /** Group-chat rolling summary and recent transcript. */
   groupContext?: string;
   /** Gemini API key for faithfulness grading after documentRag calls. */
   geminiApiKey?: string;
