@@ -50,10 +50,10 @@ function indentBlock(text: string, prefix = '  '): string {
 function defaultRetrievalHint(att: GroupChatAttachmentContext): string | null {
   if (att.retrievalHint) return att.retrievalHint;
   if (att.fileAssetId) {
-    return `Full attachment is indexed. Use contextSearch or documentRag with fileAssetId="${att.fileAssetId}" or filename "${att.fileName}" for more detail.`;
+    return `For more detail beyond the inline excerpt, use contextSearch or documentRag with fileAssetId="${att.fileAssetId}" or filename "${att.fileName}".`;
   }
   if (att.ingestionStatus === 'processing' || att.ingestionStatus === 'pending' || att.isInlineComplete === false) {
-    return `If more detail is needed after indexing, use contextSearch or documentRag with filename "${att.fileName}".`;
+    return `If the inline context is incomplete and more detail is needed after indexing, use contextSearch or documentRag with filename "${att.fileName}".`;
   }
   return null;
 }
@@ -68,6 +68,7 @@ function formatAttachmentContext(att: GroupChatAttachmentContext): string {
   ].filter(Boolean).join('; ');
   const lines = [
     `  [internal attachment context: ${att.kind} "${att.fileName}"${meta ? `; ${meta}` : ''}]`,
+    `  Attachment placement: this upload belongs to this exact transcript message; nearby "this ${att.kind}" references usually point here.`,
   ];
 
   if (att.inlineContext) {
@@ -155,6 +156,8 @@ export function formatGroupContextForPrompt(
   const sections: string[] = [
     'GROUP CHAT CONTEXT — recent conversation in this group chat.',
     'When the user refers to "above", "previous message", or "that", they mean the messages in this transcript.',
+    'When the current request says "this image", "this file", "the attached image/file", or similar, resolve it to the nearest preceding message with [internal attachment context] in this transcript.',
+    'Inline attachment context is already in hand. Answer from it first; use contextSearch or documentRag only if the transcript lacks the attachment context, it is marked incomplete/pending, or the user asks for more detail than the inline excerpt contains.',
     'Attachment OCR/file excerpts below are internal context attached to the exact message where the upload happened; do not claim they were sent as visible Lark text.',
     'The user\'s current request is the LAST line (marked with ▶).',
   ];

@@ -120,9 +120,41 @@ describe('formatGroupContextForPrompt', () => {
 
     assert.ok(result.includes('Bob: Please check this image'));
     assert.ok(result.includes('[internal attachment context: image "receipt.png"; image/png; status=indexed; fileAssetId=file_123]'));
+    assert.ok(result.includes('Attachment placement: this upload belongs to this exact transcript message'));
     assert.ok(result.includes('OCR text:'));
     assert.ok(result.includes('Total $42'));
     assert.ok(result.includes('Use contextSearch or documentRag with fileAssetId="file_123"'));
+  });
+
+  it('instructs the model to bind this-image references to nearest inline attachment', () => {
+    const window: GroupChatWindow = {
+      summary: null,
+      recentMessages: [
+        msg('Bob', '[image: screenshot.jpg]', {
+          id: 'om_image',
+          attachments: [{
+            kind: 'image',
+            fileName: 'screenshot.jpg',
+            mimeType: 'image/jpeg',
+            inlineContext: '[Image: "screenshot.jpg"\nDescription: A settings permission screen]',
+            isInlineComplete: true,
+            ingestionStatus: 'inline_only',
+          }],
+        }),
+      ],
+      totalMessageCount: 1,
+    };
+
+    const result = formatGroupContextForPrompt(window, {
+      senderName: 'Bob',
+      content: 'summarize this image',
+    });
+
+    assert.ok(result.includes('nearest preceding message with [internal attachment context]'));
+    assert.ok(result.includes('Inline attachment context is already in hand. Answer from it first'));
+    assert.ok(result.includes('Attachment placement: this upload belongs to this exact transcript message; nearby "this image" references usually point here.'));
+    assert.ok(result.includes('Description: A settings permission screen'));
+    assert.ok(result.includes('▶ [now] Bob → @Divo: summarize this image'));
   });
 
   it('handles empty recent messages gracefully', () => {
