@@ -860,10 +860,10 @@ function groupAttachmentRetrievalHint(input: {
   queued: boolean;
 }): string | undefined {
   if (input.fileAssetId) {
-    return `Full attachment is indexed. Use contextSearch or documentRag with fileAssetId="${input.fileAssetId}" or filename "${input.fileName}" for more detail.`;
+    return `For more detail beyond the inline excerpt, use contextSearch or documentRag with fileAssetId="${input.fileAssetId}" or filename "${input.fileName}".`;
   }
   if (input.queued || input.isInlineComplete === false) {
-    return `If more detail is needed after indexing, use contextSearch or documentRag with filename "${input.fileName}".`;
+    return `If the inline context is incomplete and more detail is needed after indexing, use contextSearch or documentRag with filename "${input.fileName}".`;
   }
   return undefined;
 }

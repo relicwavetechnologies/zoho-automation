@@ -88,7 +88,7 @@ export class IngestionWorker {
         ingestionStatus: 'indexed',
         indexedChunkCount: result.chunkCount,
         documentClass: result.documentClass,
-        retrievalHint: `Full attachment is indexed. Use contextSearch or documentRag with fileAssetId="${result.fileAssetId}" or filename "${payload.fileName}" for more detail.`,
+        retrievalHint: `For more detail beyond the inline excerpt, use contextSearch or documentRag with fileAssetId="${result.fileAssetId}" or filename "${payload.fileName}".`,
       });
 
       // Quote-reply to the original file message with success notification
