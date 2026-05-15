@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { api } from "@/lib/api"
+import { useLarkSync } from "@/lib/use-lark-sync"
 import type { JsonRecord } from "@/components/admin/types"
 
 type InviteRole = "MEMBER" | "COMPANY_ADMIN"
@@ -38,25 +39,11 @@ export function MembersPage() {
   const directory = useApiList<JsonRecord>(directoryPath, token, ["items", "members"])
   const invites = useApiList<JsonRecord>(invitesPath, token, ["items", "invites"])
 
-  const [syncing, setSyncing] = useState(false)
-
   const refreshAll = async () => {
     await Promise.all([directory.refresh(), invites.refresh()])
   }
 
-  const syncFromLark = async () => {
-    if (!token) return
-    setSyncing(true)
-    try {
-      const result = await api.post<{ synced: number }>("/api/admin/company/sync-directory", {}, token)
-      toast.success(`Synced ${result.synced} users from Lark`)
-      await refreshAll()
-    } catch {
-      toast.error("Sync failed")
-    } finally {
-      setSyncing(false)
-    }
-  }
+  const larkSync = useLarkSync(() => void refreshAll())
 
   const createInvite = async (event: FormEvent) => {
     event.preventDefault()
@@ -82,9 +69,9 @@ export function MembersPage() {
         description="Review workspace identities and send onboarding invites from the live company admin API."
         actions={
           <>
-            <Button type="button" variant="outline" className="rounded-full" onClick={() => void syncFromLark()} disabled={syncing}>
-              <RefreshCw className={syncing ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-              {syncing ? "Syncing…" : "Sync from Lark"}
+            <Button type="button" variant="outline" className="rounded-full" onClick={() => void larkSync.sync()} disabled={larkSync.active}>
+              <RefreshCw className={larkSync.active ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+              {larkSync.active ? larkSync.message : "Sync from Lark"}
             </Button>
             <Button type="button" variant="outline" className="rounded-full" onClick={() => void refreshAll()} disabled={directory.refreshing || invites.refreshing}>
               <RefreshCw className={directory.refreshing || invites.refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
@@ -131,6 +118,26 @@ export function MembersPage() {
           </>
         }
       />
+      {larkSync.active ? (
+        <div className="rounded-lg bg-card p-3 shadow-soft">
+          <div className="flex items-center justify-between text-[12px]">
+            <span className="font-medium">{larkSync.message}</span>
+            {larkSync.total > 0 ? <span className="text-muted-foreground">{larkSync.synced}/{larkSync.total}</span> : null}
+          </div>
+          {larkSync.total > 0 ? (
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+              <div
+                className="h-full rounded-full bg-accent transition-all duration-300"
+                style={{ width: `${larkSync.pct}%` }}
+              />
+            </div>
+          ) : (
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+              <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
+            </div>
+          )}
+        </div>
+      ) : null}
       <section className="grid gap-3 xl:grid-cols-[1.15fr_0.85fr]">
         <SectionCard title="Directory" description="Active known workspace identities.">
           <DataTable

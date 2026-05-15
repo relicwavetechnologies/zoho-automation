@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { RefreshCw, Search, UserPlus, X } from "lucide-react"
-import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -9,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { api } from "@/lib/api"
 import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
+import { useLarkSync } from "@/lib/use-lark-sync"
 import { cn } from "@/lib/utils"
 import type { DepartmentCandidate, DepartmentMembership, DepartmentRole } from "@/lib/api"
 
@@ -71,24 +71,13 @@ export function MembersTab({ departmentId, memberships, roles, onSearchCandidate
 
   const [didAutoSync, setDidAutoSync] = useState(false)
   const [autoSyncing, setAutoSyncing] = useState(false)
-  const [manualSyncing, setManualSyncing] = useState(false)
 
-  const syncFromLark = async () => {
-    if (!token) return
-    setManualSyncing(true)
-    try {
-      const result = await api.post<{ synced: number }>("/api/admin/company/sync-directory", {}, token)
-      toast.success(`Synced ${result.synced} users from Lark`)
-      if (candidateQuery.trim().length >= 2) {
-        const retryResult = await onSearchCandidates(departmentId, candidateQuery.trim())
-        setCandidates(retryResult)
-      }
-    } catch {
-      toast.error("Lark sync failed")
-    } finally {
-      setManualSyncing(false)
+  const larkSync = useLarkSync(async () => {
+    if (candidateQuery.trim().length >= 2) {
+      const retryResult = await onSearchCandidates(departmentId, candidateQuery.trim())
+      setCandidates(retryResult)
     }
-  }
+  })
 
   useEffect(() => {
     setDidAutoSync(false)
@@ -169,13 +158,31 @@ export function MembersTab({ departmentId, memberships, roles, onSearchCandidate
             type="button"
             variant="outline"
             className="h-9 gap-1.5 text-[12px]"
-            disabled={manualSyncing}
-            onClick={() => void syncFromLark()}
+            disabled={larkSync.active}
+            onClick={() => void larkSync.sync()}
           >
-            <RefreshCw className={manualSyncing ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
-            {manualSyncing ? "Syncing…" : "Sync Lark"}
+            <RefreshCw className={larkSync.active ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+            {larkSync.active ? larkSync.message : "Sync Lark"}
           </Button>
         </div>
+
+        {larkSync.active ? (
+          <div className="mt-3 rounded-md border border-accent/20 bg-accent/5 p-2.5">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="font-medium text-accent">{larkSync.message}</span>
+              {larkSync.total > 0 ? <span className="text-muted-foreground">{larkSync.pct}%</span> : null}
+            </div>
+            {larkSync.total > 0 ? (
+              <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-secondary">
+                <div className="h-full rounded-full bg-accent transition-all duration-300" style={{ width: `${larkSync.pct}%` }} />
+              </div>
+            ) : (
+              <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-secondary">
+                <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
+              </div>
+            )}
+          </div>
+        ) : null}
 
         <div className="mt-3 space-y-2">
           {searching || autoSyncing ? (
