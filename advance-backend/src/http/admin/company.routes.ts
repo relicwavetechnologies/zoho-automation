@@ -31,6 +31,7 @@ export interface CompanyRoutesDeps {
   cache: CachePort;
   zohoTokenService: ZohoTokenService;
   zohoConnectionRepo: ZohoConnectionRepository;
+  larkContactsClient?: { listDepartmentMembers(departmentId: string, limit?: number): Promise<Array<{ openId: string; displayName: string; email?: string }>> };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -527,6 +528,77 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       permissions:       toolPerms.map(p => ({ id: p.id, toolId: p.toolId, role: p.role, enabled: p.enabled })),
       actionPermissions: actionPerms.map(p => ({ id: p.id, toolId: p.toolId, role: p.role, actionGroup: p.actionGroup, enabled: p.enabled })),
     }, 'Tool permissions loaded');
+  }));
+
+  // ── Sync Lark directory ─────────────────────────────────────────────────────
+  router.post('/sync-directory', asyncRoute(async (req, res) => {
+    const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+    if (!deps.larkContactsClient) throw routeError(503, 'Lark contacts client not configured');
+
+    const binding = await prisma.larkTenantBinding.findFirst({
+      where: { companyId, isActive: true },
+      select: { larkTenantKey: true },
+    });
+    if (!binding) throw routeError(400, 'No active Lark tenant binding for this company');
+
+    const syncRun = await prisma.larkDirectorySyncRun.create({
+      data: { companyId, trigger: 'manual', status: 'running', startedAt: new Date() },
+    });
+
+    try {
+      const users = await deps.larkContactsClient.listDepartmentMembers('0', 200);
+
+      let synced = 0;
+      for (const user of users) {
+        if (!user.openId) continue;
+        await prisma.channelIdentity.upsert({
+          where: {
+            channel_externalUserId_companyId: {
+              channel: 'lark',
+              externalUserId: user.openId,
+              companyId,
+            },
+          },
+          create: {
+            companyId,
+            channel: 'lark',
+            externalUserId: user.openId,
+            externalTenantId: binding.larkTenantKey,
+            displayName: user.displayName,
+            email: user.email ?? null,
+            larkOpenId: user.openId,
+            aiRole: 'MEMBER',
+            aiRoleSource: 'sync',
+            syncedAiRole: 'MEMBER',
+            sourceRoles: [],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          update: {
+            displayName: user.displayName,
+            ...(user.email ? { email: user.email } : {}),
+            updatedAt: new Date(),
+          },
+        });
+        synced++;
+      }
+
+      await prisma.larkDirectorySyncRun.update({
+        where: { id: syncRun.id },
+        data: { status: 'succeeded', syncedCount: synced, memberCount: synced, finishedAt: new Date() },
+      });
+
+      deps.logger.info('directory_sync.completed', { companyId, synced });
+      success(res, { synced, runId: syncRun.id }, `Synced ${synced} users from Lark`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await prisma.larkDirectorySyncRun.update({
+        where: { id: syncRun.id },
+        data: { status: 'failed', errorMessage: msg, finishedAt: new Date() },
+      }).catch(() => {});
+      deps.logger.error('directory_sync.failed', { companyId, error: msg });
+      throw routeError(500, `Directory sync failed: ${msg}`);
+    }
   }));
 
   return router;

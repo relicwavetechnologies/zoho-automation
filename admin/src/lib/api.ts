@@ -619,4 +619,28 @@ export const departmentsApi = {
       { allowed },
       token,
     ),
+  getBookModulePermissions: (id: string, token?: string) =>
+    api.get<BooksModulePermission[]>(
+      `/api/admin/departments/${id}/books-modules`,
+      token,
+    ),
+  setBookModulePermission: (
+    id: string,
+    roleId: string,
+    module: string,
+    allowed: boolean,
+    token?: string,
+  ) =>
+    api.put<{ roleId: string; module: string; enabled: boolean }>(
+      `/api/admin/departments/${id}/books-modules/${roleId}/${module}`,
+      { allowed },
+      token,
+    ),
+};
+
+export type BooksModulePermission = {
+  id: string;
+  roleId: string;
+  module: string;
+  enabled: boolean;
 };

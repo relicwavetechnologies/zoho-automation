@@ -212,16 +212,10 @@ describe('googleGmail tool', () => {
         cc: ['c@d.com'],
         subject: 'Greet',
         body: 'Hello',
-        template: {
-          variant: 'standard',
-          title: 'Greet',
-          intro: 'Hello',
-          footerNote: 'Sent with Divo.',
-        },
       });
     });
 
-    it('send: defaults plain composed emails into Divo standard HTML template', async () => {
+    it('send: plain bodyText passed through without template wrapping', async () => {
       let sentArgs: any;
       const tool = createGoogleGmailTool({
         getClient: async () => ({
@@ -232,16 +226,16 @@ describe('googleGmail tool', () => {
           },
         }),
       });
+      const bodyText = 'Hi Anish,\n\nThe latest stock price is ₹107.60.\n\nBest regards,\nDivo';
       const r = await tool.execute({
         op: 'send',
         to: ['client@acme.co'],
         subject: 'Stock price',
-        bodyText: 'Hi Anish,\n\nThe latest stock price is ₹107.60.\n\nBest regards,\nDivo',
+        bodyText,
       }, ctx);
       assert.equal(r.ok, true);
-      assert.equal(sentArgs.template.variant, 'standard');
-      assert.equal(sentArgs.template.title, 'Stock price');
-      assert.match(sentArgs.template.intro, /latest stock price/);
+      assert.equal(sentArgs.template, undefined);
+      assert.equal(sentArgs.body, bodyText);
     });
 
     it('send: rejects title-only templates with no rendered body content', async () => {
@@ -268,7 +262,7 @@ describe('googleGmail tool', () => {
       assert.match((r as any).error.message, /Email body content required/);
     });
 
-    it('send: renders finance body text into visible finance metadata', async () => {
+    it('send: finance body text sent as plain text (template disabled)', async () => {
       let sentArgs: any;
       const tool = createGoogleGmailTool({
         getClient: async () => ({
@@ -290,16 +284,10 @@ describe('googleGmail tool', () => {
       }, ctx);
       assert.equal(r.ok, true);
       assert.equal(sentArgs.body, bodyText);
-      assert.equal(sentArgs.template.variant, 'invoice_or_finance');
-      assert.equal(sentArgs.template.title, 'Total Payment Received');
-      assert.equal(sentArgs.template.intro, bodyText);
-      assert.deepEqual(sentArgs.template.metadata, [
-        { label: 'Amount', value: '₹62,71,81,387.60' },
-        { label: 'Transactions', value: '4,000 transactions' },
-      ]);
+      assert.equal(sentArgs.template, undefined);
     });
 
-    it('send: passes configurable CTA buttons through Divo template data', async () => {
+    it('send: templateId/templateData ignored, plain text sent (template disabled)', async () => {
       let sentArgs: any;
       const tool = createGoogleGmailTool({
         getClient: async () => ({
@@ -314,7 +302,7 @@ describe('googleGmail tool', () => {
         op: 'send',
         to: ['client@acme.co'],
         subject: 'Set up your Divo account',
-        bodyText: 'Your workspace account is ready. Use the button below to finish setup.',
+        bodyText: 'Your workspace account is ready. Use the link below to finish setup.\n\nhttps://app.divo.example/setup?token=abc123',
         templateId: 'divo-executive-v1',
         templateData: {
           title: 'Set up your Divo account',
@@ -325,13 +313,11 @@ describe('googleGmail tool', () => {
         },
       }, ctx);
       assert.equal(r.ok, true);
-      assert.deepEqual(sentArgs.template.cta, {
-        label: 'Set Up My Account',
-        url: 'https://app.divo.example/setup?token=abc123',
-      });
+      assert.equal(sentArgs.template, undefined);
+      assert.match(sentArgs.body, /https:\/\/app\.divo\.example\/setup/);
     });
 
-    it('send: extracts multiple bodyText URLs into fixed-design link cards', async () => {
+    it('send: URLs in bodyText are sent as plain text (no template extraction)', async () => {
       let sentArgs: any;
       const tool = createGoogleGmailTool({
         getClient: async () => ({
@@ -354,11 +340,8 @@ describe('googleGmail tool', () => {
         bodyText,
       }, ctx);
       assert.equal(r.ok, true);
-      assert.equal(sentArgs.template.intro, 'Hi Anish, here are two links for the best bikes of 2026:');
-      assert.deepEqual(sentArgs.template.links, [
-        { label: 'bicycling.com link', url: 'https://www.bicycling.com/bikes-gear/a123/best-bikes-2026' },
-        { label: 'cyclingweekly.com link', url: 'https://www.cyclingweekly.com/group-tests/best-road-bikes' },
-      ]);
+      assert.equal(sentArgs.template, undefined);
+      assert.equal(sentArgs.body, bodyText);
     });
 
     it('send: rejects link promises when URLs are missing', async () => {
@@ -398,9 +381,8 @@ describe('googleGmail tool', () => {
       const r = await tool.execute({ op: 'draft_create', to: ['b@c.com'], subject: 'Draft', bodyText: 'Hello' }, ctx);
       assert.equal(r.ok, true);
       assert.equal((r as any).value.draftId, 'd1');
-      assert.equal(draftArgs.template.variant, 'standard');
-      assert.equal(draftArgs.template.title, 'Draft');
-      assert.equal(draftArgs.template.intro, 'Hello');
+      assert.equal(draftArgs.template, undefined);
+      assert.equal(draftArgs.body, 'Hello');
     });
 
     it('draft_create: passes attachments through after resolution', async () => {
@@ -433,7 +415,7 @@ describe('googleGmail tool', () => {
       assert.equal(draftArgs.attachments, resolved);
     });
 
-    it('send: passes bcc, html, and Divo template data to client', async () => {
+    it('send: passes bcc, plain text only (HTML template disabled)', async () => {
       let sentArgs: any;
       const tool = createGoogleGmailTool({
         getClient: async () => ({
@@ -456,7 +438,8 @@ describe('googleGmail tool', () => {
       assert.equal(r.ok, true);
       assert.deepEqual(sentArgs.bcc, ['secret@acme.co']);
       assert.equal(sentArgs.bodyHtml, undefined);
-      assert.equal(sentArgs.template.variant, 'standard');
+      assert.equal(sentArgs.template, undefined);
+      assert.equal(sentArgs.body, 'Hello');
     });
 
     it('send: blocks placeholder recipient domains before Gmail API call', async () => {
@@ -522,8 +505,8 @@ describe('googleGmail tool', () => {
       assert.equal((reply as any).value.messageId, 'm-reply');
       assert.equal(forward.ok, true);
       assert.equal((forward as any).value.messageId, 'm-forward');
-      assert.equal(calls[0].args.template.variant, 'standard');
-      assert.equal(calls[0].args.template.intro, 'ok');
+      assert.equal(calls[0].args.template, undefined);
+      assert.equal(calls[0].args.body, 'ok');
       assert.equal(calls[1].args.template, undefined);
     });
 

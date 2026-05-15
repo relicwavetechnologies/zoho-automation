@@ -329,5 +329,24 @@ export function createDepartmentRoutes(deps: DepartmentRoutesDeps): Router {
     success(res, result.value, 'Department user override updated');
   }));
 
+  // ── Books module permissions ───────────────────────────────────────────────
+  router.get('/:id/books-modules', asyncRoute(async (req, res) => {
+    const { id } = req.params as { id: string };
+    const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+    const result    = await svc.getBookModulePermissions(id, companyId);
+    if (!result.ok) { resolveServiceError(res, result.error); return; }
+    success(res, result.value, 'Books module permissions loaded');
+  }));
+
+  router.put('/:id/books-modules/:roleId/:module', asyncRoute(async (req, res) => {
+    const { id, roleId, module: mod } = req.params as { id: string; roleId: string; module: string };
+    const { allowed } = allowedSchema.parse(req.body);
+    const companyId   = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+    const userId      = resolveUserId(res);
+    const result      = await svc.updateBookModulePermission(id, companyId, roleId, mod, allowed, userId);
+    if (!result.ok) { resolveServiceError(res, result.error); return; }
+    success(res, result.value, 'Books module permission updated');
+  }));
+
   return router;
 }

@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { useAdminAuth } from "@/auth/AdminAuthProvider"
+import { departmentsApi, type BooksModulePermission } from "@/lib/api"
+import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
 import type { DepartmentAvailableTool, DepartmentMembership, DepartmentRole, DepartmentToolPermission, DepartmentUserOverride } from "@/lib/api"
 import type { DepartmentToolCatalogEntry } from "../use-department-data"
 
@@ -36,8 +40,23 @@ export function PermissionsTab({
   onSetRolePermission,
   onSetUserOverride,
 }: Props) {
+  const { token } = useAdminAuth()
+  const scope = getAdminQueryScope(token)
+  const queryClient = useQueryClient()
   const [selectedUserId, setSelectedUserId] = useState("")
   const [busyKey, setBusyKey] = useState<string | null>(null)
+
+  const booksModulesKey = adminQueryKeys.apiList(scope, `/api/admin/departments/${departmentId}/books-modules`, "books")
+  const booksModulesQuery = useQuery({
+    queryKey: booksModulesKey,
+    enabled: Boolean(token && departmentId),
+    queryFn: () => departmentsApi.getBookModulePermissions(departmentId, token!),
+  })
+  const booksModuleMap = useMemo(() => {
+    const m = new Map<string, boolean>()
+    for (const p of booksModulesQuery.data ?? []) m.set(`${p.roleId}:${p.module}`, p.enabled)
+    return m
+  }, [booksModulesQuery.data])
 
   useEffect(() => {
     if (!memberships.find((membership) => membership.userId === selectedUserId)) {
@@ -218,6 +237,71 @@ export function PermissionsTab({
             Add a department member before configuring user-specific overrides.
           </div>
         )}
+      </div>
+
+      {/* ── Books module access ──────────────────────────────────────────── */}
+      <div className="space-y-2">
+        <div>
+          <p className="text-[13px] font-semibold">Zoho Books module access</p>
+          <p className="text-[11px] text-muted-foreground">
+            Control which Books modules each role can query. Disabled modules return access denied even if the tool is allowed above.
+          </p>
+        </div>
+
+        <div className="rounded-lg bg-card p-3 shadow-soft">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <p className="text-[13px] font-semibold">Books Modules</p>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${familyClass.zoho}`}>zoho</span>
+          </div>
+
+          {(() => {
+            const modules = ["invoices", "contacts", "bills", "payments", "estimates", "expenses", "purchase_orders", "credit_notes"]
+            return (
+              <div className="overflow-x-auto">
+                <div
+                  className="grid min-w-[520px] gap-2"
+                  style={{ gridTemplateColumns: `minmax(140px, 1.2fr) repeat(${modules.length}, minmax(68px, 1fr))` }}
+                >
+                  <div className="px-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Role</div>
+                  {modules.map((mod) => (
+                    <div key={mod} className="px-2 text-center text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {mod.replace("_", " ")}
+                    </div>
+                  ))}
+
+                  {roles.map((role) => (
+                    <div key={role.id} className="contents">
+                      <div className="rounded-md bg-secondary/50 px-2 py-2 text-[12px] font-medium text-foreground/85">
+                        {role.name}
+                      </div>
+                      {modules.map((mod) => {
+                        const key = `bm:${role.id}:${mod}`
+                        const checked = booksModuleMap.get(`${role.id}:${mod}`) ?? true
+                        return (
+                          <label key={key} className="flex items-center justify-center rounded-md border border-border/40 bg-card px-2 py-2">
+                            <Checkbox
+                              checked={checked}
+                              disabled={busyKey === key}
+                              onCheckedChange={async (value) => {
+                                setBusyKey(key)
+                                try {
+                                  await departmentsApi.setBookModulePermission(departmentId, role.id, mod, value === true, token!)
+                                  void queryClient.invalidateQueries({ queryKey: booksModulesKey })
+                                } finally {
+                                  setBusyKey(null)
+                                }
+                              }}
+                            />
+                          </label>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
+        </div>
       </div>
     </div>
   )

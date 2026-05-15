@@ -38,8 +38,24 @@ export function MembersPage() {
   const directory = useApiList<JsonRecord>(directoryPath, token, ["items", "members"])
   const invites = useApiList<JsonRecord>(invitesPath, token, ["items", "invites"])
 
+  const [syncing, setSyncing] = useState(false)
+
   const refreshAll = async () => {
     await Promise.all([directory.refresh(), invites.refresh()])
+  }
+
+  const syncFromLark = async () => {
+    if (!token) return
+    setSyncing(true)
+    try {
+      const result = await api.post<{ synced: number }>("/api/admin/company/sync-directory", {}, token)
+      toast.success(`Synced ${result.synced} users from Lark`)
+      await refreshAll()
+    } catch {
+      toast.error("Sync failed")
+    } finally {
+      setSyncing(false)
+    }
   }
 
   const createInvite = async (event: FormEvent) => {
@@ -66,6 +82,10 @@ export function MembersPage() {
         description="Review workspace identities and send onboarding invites from the live company admin API."
         actions={
           <>
+            <Button type="button" variant="outline" className="rounded-full" onClick={() => void syncFromLark()} disabled={syncing}>
+              <RefreshCw className={syncing ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+              {syncing ? "Syncing…" : "Sync from Lark"}
+            </Button>
             <Button type="button" variant="outline" className="rounded-full" onClick={() => void refreshAll()} disabled={directory.refreshing || invites.refreshing}>
               <RefreshCw className={directory.refreshing || invites.refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
               Refresh

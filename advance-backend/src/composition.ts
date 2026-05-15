@@ -213,6 +213,8 @@ export interface Container {
   invalidateGatewayProviderCache: (companyId: string) => void;
   // Group chat context
   chatContextService: LarkChatContextService;
+  // Lark contacts (for directory sync)
+  larkContactsClient: LarkContactsClient;
 }
 
 export async function buildContainer(env: TypedEnv): Promise<Container> {
@@ -979,6 +981,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     chatSerializer,
     // Group chat context
     chatContextService,
+    // Lark contacts (for directory sync)
+    larkContactsClient,
     // LLM model
     model,
     // Scheduled workflow executor

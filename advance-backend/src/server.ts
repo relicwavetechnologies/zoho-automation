@@ -23,6 +23,8 @@ import { createRbacRoutes } from './http/admin/rbac.routes';
 import { createAiModelsRoutes } from './http/admin/ai-models.routes';
 import { createAiProvidersRoutes } from './http/admin/ai-providers.routes';
 import { createRuntimeRoutes } from './http/admin/runtime.routes';
+import { createAnalyticsRoutes } from './http/admin/analytics.routes';
+import { createTokenUsageRoutes } from './http/admin/token-usage.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
 
 export const createServer = (c: Container) => {
@@ -307,6 +309,7 @@ export const createServer = (c: Container) => {
     cache: c.memoryCache,
     zohoTokenService: c.zohoTokenService,
     zohoConnectionRepo: c.zohoConnectionRepo,
+    larkContactsClient: c.larkContactsClient,
   });
   app.use('/api/admin/company', adminAuth, companyRoutes);
   // Alias: GET /api/admin/members → GET /api/admin/company/members (used by OverviewPage)
@@ -338,6 +341,12 @@ export const createServer = (c: Container) => {
 
   // Runtime task list (delegates to execution query service)
   app.use('/api/admin/runtime', adminAuth, createRuntimeRoutes({ executionQueryService: c.executionQueryService, logger: c.logger }));
+
+  // Analytics overview (dashboard aggregations)
+  app.use('/api/admin/analytics', adminAuth, createAnalyticsRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  // Token usage (per-member consumption + limits)
+  app.use('/api/admin/token-usage', adminAuth, createTokenUsageRoutes({ prisma: c.prisma, logger: c.logger }));
 
   // 404
   app.use((_req, res) => {

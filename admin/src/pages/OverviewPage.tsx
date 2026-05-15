@@ -1,11 +1,13 @@
-import { ArrowUp, ArrowUpRight, ChevronRight, Filter, ListFilter, Plus, Sparkles } from "lucide-react"
+import { ArrowUp, ArrowUpRight, ChevronRight, Filter, ListFilter, Sparkles } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
-import { useApiList } from "@/components/admin/use-api-list"
+import { Skeleton } from "@/components/ui/skeleton"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
+import { useQuery } from "@tanstack/react-query"
+import { api } from "@/lib/api"
+import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
 import { cn } from "@/lib/utils"
-import type { JsonRecord } from "@/components/admin/types"
 
 type AvatarTone = "primary" | "blue" | "purple" | "green" | "amber" | "neutral"
 
@@ -16,6 +18,43 @@ const toneClasses: Record<AvatarTone, string> = {
   green: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
   amber: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300",
   neutral: "bg-secondary text-foreground",
+}
+
+const TONES: AvatarTone[] = ["amber", "blue", "purple", "green", "primary"]
+
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/)
+  if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase()
+  return name.slice(0, 2).toUpperCase()
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`
+  return String(n)
+}
+
+type AnalyticsOverview = {
+  period: { days: number }
+  executions: { total: number; previousTotal: number; growthPct: number | null; delta: number }
+  successRate: number
+  activeMembers: number
+  departmentCount: number
+  tokens: { totalInput: number; totalOutput: number; total: number; callCount: number; estimatedCostUsd: number }
+  channelBreakdown: Array<{ channel: string; count: number; pct: number }>
+  userActivity: Array<{ userId: string; name: string; email: string | null; count: number; pct: number }>
+  weeklyTrend: Array<{ week: string; count: number }>
+  integrations: Array<{ provider: string; connected: boolean }>
+  modelBreakdown: Array<{ modelId: string; provider: string; calls: number; inputTokens: number; outputTokens: number }>
+}
+
+type MemberUsage = {
+  period: { days: number }
+  members: Array<{
+    userId: string; name: string | null; email: string | null
+    inputTokens: number; outputTokens: number; totalTokens: number
+    calls: number; monthlyLimit: number; usagePct: number
+  }>
 }
 
 function PersonChip({ initials, name, tone = "neutral" }: { initials: string; name: string; tone?: AvatarTone }) {
@@ -66,110 +105,154 @@ function StatTile({
   )
 }
 
-const channelRows = [
-  { name: "Zoho", value: "$227,459", pct: "43%", color: "bg-orange-500" },
-  { name: "Lark", value: "$142,823", pct: "27%", color: "bg-blue-500" },
-  { name: "Google", value: "$89,935", pct: "11%", color: "bg-emerald-500" },
-  { name: "Search", value: "$37,028", pct: "7%", color: "bg-violet-500" },
-]
+const channelColors: Record<string, string> = {
+  lark: "bg-blue-500",
+  desktop: "bg-emerald-500",
+  web: "bg-violet-500",
+}
 
-const platformBars = [
-  { label: "Zoho", height: 70, color: "bg-orange-500" },
-  { label: "Lark", height: 100, color: "bg-blue-500" },
-  { label: "Google", height: 85, color: "bg-emerald-500" },
-  { label: "Search", height: 60, color: "bg-violet-500" },
-  { label: "Other", height: 40, hatched: true },
-]
-
-const operatorRows: Array<{ initials: string; name: string; runs: string; tools: string; kpi: string; tone: AvatarTone }> = [
-  { initials: "AR", name: "Aria R.", runs: "417", tools: "12", kpi: "0.84", tone: "amber" },
-  { initials: "SK", name: "Sam K.", runs: "284", tools: "9", kpi: "0.89", tone: "blue" },
-  { initials: "MP", name: "Mira P.", runs: "203", tools: "7", kpi: "0.79", tone: "purple" },
-]
-
-const integrationCards = [
-  { name: "Zoho", pct: "45.3%", value: "$71,048", color: "bg-orange-500" },
-  { name: "Lark", pct: "28.1%", value: "$44,072", color: "bg-blue-500" },
-  { name: "Google", pct: "14.1%", value: "$22,114", color: "bg-emerald-500" },
-  { name: "Other", pct: "7.1%", value: "$11,135", color: "bg-violet-500" },
-]
+const integrationColors: Record<string, string> = {
+  zoho: "bg-orange-500",
+  lark: "bg-blue-500",
+  google: "bg-emerald-500",
+}
 
 export function OverviewPage() {
-  const { token, session } = useAdminAuth()
-  const executions = useApiList<JsonRecord>("/api/admin/executions?limit=20", token, ["items", "runs"])
-  const members = useApiList<JsonRecord>("/api/admin/members?limit=50", token, ["items", "members"])
-  const departments = useApiList<JsonRecord>("/api/admin/departments?limit=20", token, ["items", "departments"])
+  const { token } = useAdminAuth()
+  const scope = getAdminQueryScope(token)
 
-  const totalRuns = executions.data.length || 1247
-  const memberCount = members.data.length || 12
-  const deptCount = departments.data.length || 3
-  const greeting = session?.companyId ? "Operations" : "Platform"
+  const analytics = useQuery({
+    queryKey: adminQueryKeys.apiList(scope, "/api/admin/analytics/overview", "analytics"),
+    enabled: Boolean(token),
+    queryFn: () => api.get<AnalyticsOverview>("/api/admin/analytics/overview", token!),
+    refetchInterval: 60_000,
+  })
+
+  const memberUsage = useQuery({
+    queryKey: adminQueryKeys.apiList(scope, "/api/admin/token-usage/members", "members"),
+    enabled: Boolean(token),
+    queryFn: () => api.get<MemberUsage>("/api/admin/token-usage/members", token!),
+    refetchInterval: 60_000,
+  })
+
+  const data = analytics.data
+  const members = memberUsage.data?.members ?? []
+  const loading = analytics.isPending
+
+  const totalRuns = data?.executions.total ?? 0
+  const memberCount = data?.activeMembers ?? 0
+  const deptCount = data?.departmentCount ?? 0
+  const successRate = data?.successRate ?? 0
+  const growthPct = data?.executions.growthPct
+  const delta = data?.executions.delta ?? 0
+  const prevRuns = data?.executions.previousTotal ?? 0
+  const costUsd = data?.tokens.estimatedCostUsd ?? 0
+  const totalTokens = data?.tokens.total ?? 0
+
+  const topAgent = data?.modelBreakdown[0]
+  const users = data?.userActivity ?? []
+  const channels = data?.channelBreakdown ?? []
+  const weekly = data?.weeklyTrend ?? []
+  const integrations = data?.integrations ?? []
+  const maxWeekly = Math.max(...weekly.map(w => w.count), 1)
+
+  if (loading) {
+    return (
+      <div className="space-y-5">
+        <Skeleton className="h-8 w-64 rounded-full" />
+        <Skeleton className="h-10 w-96" />
+        <div className="flex gap-3">
+          {[1, 2, 3, 4, 5].map(i => <Skeleton key={i} className="h-24 w-[136px] rounded-lg" />)}
+        </div>
+        <div className="grid gap-3 xl:grid-cols-3">
+          <Skeleton className="h-52 rounded-lg" />
+          <Skeleton className="h-52 rounded-lg" />
+          <Skeleton className="h-52 rounded-lg" />
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-5">
+      {/* ── Person chips ── */}
       <div className="flex flex-wrap items-center gap-1.5">
-        <Button type="button" variant="outline" size="icon" className="h-7 w-7 rounded-full border-border/50 bg-card shadow-soft">
-          <Plus className="h-3.5 w-3.5" />
-        </Button>
-        <PersonChip initials="AR" name="Aria R." tone="amber" />
-        <PersonChip initials="SK" name="Sam K." tone="blue" />
-        <PersonChip initials="MP" name="Mira P." tone="purple" />
-        <div className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-emphasis text-[11px] font-semibold text-emphasis-foreground shadow-soft">
-          D
-        </div>
+        {users.slice(0, 4).map((user, i) => (
+          <PersonChip key={user.userId} initials={getInitials(user.name)} name={user.name} tone={TONES[i % TONES.length]!} />
+        ))}
+        {deptCount > 0 ? (
+          <div className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-emphasis text-[11px] font-semibold text-emphasis-foreground shadow-soft">
+            {deptCount}
+          </div>
+        ) : null}
       </div>
 
-      <p className="text-3xl font-semibold tracking-tight text-foreground/15">{greeting} dashboard</p>
+      <p className="text-3xl font-semibold tracking-tight text-foreground/15">Operations dashboard</p>
 
+      {/* ── Executions hero + stat tiles ── */}
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div className="space-y-2">
           <p className="text-[12px] font-medium text-foreground/70">Total executions</p>
           <div className="flex flex-wrap items-baseline gap-2">
-            <span className="text-4xl font-semibold tracking-tight">
-              {totalRuns.toLocaleString()}
-              <span className="text-foreground/30">.42</span>
-            </span>
-            <span className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-[11px] font-semibold text-accent-foreground">
-              <ArrowUp className="h-3 w-3" />
-              12.4%
-            </span>
-            <span className="inline-flex items-center rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent">
-              +342 runs
-            </span>
+            <span className="text-4xl font-semibold tracking-tight">{totalRuns.toLocaleString()}</span>
+            {growthPct != null ? (
+              <span className={cn(
+                "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                growthPct >= 0 ? "bg-accent text-accent-foreground" : "bg-secondary text-muted-foreground",
+              )}>
+                {growthPct >= 0 ? <ArrowUp className="h-3 w-3" /> : null}
+                {growthPct >= 0 ? "+" : ""}{growthPct}%
+              </span>
+            ) : null}
+            {delta !== 0 ? (
+              <span className="inline-flex items-center rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent">
+                {delta >= 0 ? "+" : ""}{delta} runs
+              </span>
+            ) : null}
           </div>
-          <p className="text-[11px] text-muted-foreground">vs prev. 905 runs · last 30 days</p>
+          <p className="text-[11px] text-muted-foreground">vs prev. {prevRuns} runs · last {data?.period.days ?? 30} days</p>
         </div>
 
         <div className="flex gap-2 overflow-x-auto pb-1">
-          <StatTile label="Top agent" value="47" detail="zoho-read" />
-          <StatTile label="Best run" value="$0.04" detail="finance/payroll" tone="emphasis" />
-          <StatTile label="Members" value={String(memberCount)} detail="↓ 5 vs last week" />
-          <StatTile label="Cost" value="528k" tone="outlined" detailNode={<p className="text-[11px] font-semibold text-accent">↑ 7.9%</p>} />
-          <StatTile label="Success" value="98.4%" detail="↑ 1.2%" />
+          <StatTile label="Tokens" value={formatTokens(totalTokens)} detail={`${data?.tokens.callCount ?? 0} LLM calls`} />
+          <StatTile label="Cost" value={`$${costUsd.toFixed(2)}`} detail="estimated" tone="emphasis" />
+          <StatTile label="Members" value={String(memberCount)} detail={`${deptCount} dept${deptCount !== 1 ? "s" : ""}`} />
+          <StatTile
+            label="Success"
+            value={`${successRate}%`}
+            tone="outlined"
+            detailNode={<p className="text-[11px] font-semibold text-accent">{totalRuns > 0 ? "from runs" : "—"}</p>}
+          />
+          {topAgent ? (
+            <StatTile label="Top model" value={String(topAgent.calls)} detail={topAgent.modelId} />
+          ) : null}
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        {[
-          { initials: "AR", name: "Aria R.", value: "$209,633", pct: "39.63%", tone: "amber" as AvatarTone },
-          { initials: "SK", name: "Sam K.", value: "$156,841", pct: "29.65%", tone: "blue" as AvatarTone },
-          { initials: "MP", name: "Mira P.", value: "$117,115", pct: "22.14%", tone: "purple" as AvatarTone },
-        ].map((row) => (
-          <div key={row.initials} className="flex min-w-[240px] flex-1 items-center gap-2 rounded-full bg-card px-1 py-1 shadow-soft">
-            <Avatar className="h-7 w-7">
-              <AvatarFallback className={cn("text-[10px] font-semibold", toneClasses[row.tone])}>{row.initials}</AvatarFallback>
-            </Avatar>
-            <span className="text-[12px] font-medium">{row.name}</span>
-            <span className="ml-auto pr-1.5 text-[12px] font-semibold">{row.value}</span>
-            <span className="pr-2 text-[11px] text-muted-foreground">{row.pct}</span>
-          </div>
-        ))}
-        <Button type="button" className="h-9 rounded-full bg-emphasis px-4 text-[12px] font-semibold text-emphasis-foreground hover:bg-emphasis/90">
-          Details
-        </Button>
-      </div>
+      {/* ── User activity bars ── */}
+      {users.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {users.slice(0, 4).map((user, i) => (
+            <div key={user.userId} className="flex min-w-[240px] flex-1 items-center gap-2 rounded-full bg-card px-1 py-1 shadow-soft">
+              <Avatar className="h-7 w-7">
+                <AvatarFallback className={cn("text-[10px] font-semibold", toneClasses[TONES[i % TONES.length]!])}>
+                  {getInitials(user.name)}
+                </AvatarFallback>
+              </Avatar>
+              <span className="text-[12px] font-medium">{user.name}</span>
+              <span className="ml-auto pr-1.5 text-[12px] font-semibold">{user.count} runs</span>
+              <span className="pr-2 text-[11px] text-muted-foreground">{user.pct}%</span>
+            </div>
+          ))}
+          <Button type="button" className="h-9 rounded-full bg-emphasis px-4 text-[12px] font-semibold text-emphasis-foreground hover:bg-emphasis/90">
+            Details
+          </Button>
+        </div>
+      ) : null}
 
+      {/* ── 3-column grid ── */}
       <div className="grid gap-3 xl:grid-cols-[1fr_1fr_360px]">
+        {/* Channel breakdown */}
         <Card className="border-transparent bg-mat shadow-none">
           <CardContent className="space-y-2 p-3">
             <div className="flex items-center justify-between">
@@ -182,20 +265,24 @@ export function OverviewPage() {
               </Button>
             </div>
             <div className="space-y-1.5">
-              {channelRows.map((row) => (
-                <div key={row.name} className="flex h-9 items-center gap-2 rounded-md bg-card px-2.5 shadow-soft">
-                  <div className={cn("flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold text-white", row.color)}>
-                    {row.name.slice(0, 1)}
+              {channels.map((ch) => (
+                <div key={ch.channel} className="flex h-9 items-center gap-2 rounded-md bg-card px-2.5 shadow-soft">
+                  <div className={cn("flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold text-white", channelColors[ch.channel] ?? "bg-secondary")}>
+                    {ch.channel.slice(0, 1).toUpperCase()}
                   </div>
-                  <span className="text-[12px] font-medium">{row.name}</span>
-                  <span className="ml-auto text-[12px] font-semibold">{row.value}</span>
-                  <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">{row.pct}</span>
+                  <span className="text-[12px] font-medium capitalize">{ch.channel}</span>
+                  <span className="ml-auto text-[12px] font-semibold">{ch.count} runs</span>
+                  <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">{ch.pct}%</span>
                 </div>
               ))}
+              {channels.length === 0 ? (
+                <p className="py-4 text-center text-[11px] text-muted-foreground">No execution data yet</p>
+              ) : null}
             </div>
           </CardContent>
         </Card>
 
+        {/* Model breakdown bars */}
         <Card className="border-transparent bg-mat shadow-none">
           <CardContent className="flex h-full flex-col gap-3 p-3">
             <div className="flex items-center justify-between">
@@ -208,75 +295,94 @@ export function OverviewPage() {
               </Button>
             </div>
             <div className="flex flex-1 items-end gap-2 px-1 py-2">
-              {platformBars.map((bar) => (
-                <div key={bar.label} className="flex flex-1 flex-col items-center gap-1.5">
-                  <div
-                    className={cn(
-                      "w-full rounded-md",
-                      bar.hatched
-                        ? "border-2 border-dashed border-border/60 bg-secondary/40"
-                        : cn(bar.color, "shadow-soft"),
-                    )}
-                    style={{ height: `${bar.height}%` }}
-                  />
-                </div>
-              ))}
+              {(data?.modelBreakdown ?? []).slice(0, 5).map((model, i) => {
+                const maxCalls = Math.max(...(data?.modelBreakdown ?? []).map(m => m.calls), 1)
+                const heightPct = Math.max((model.calls / maxCalls) * 100, 8)
+                const colors = ["bg-orange-500", "bg-blue-500", "bg-emerald-500", "bg-violet-500"]
+                return (
+                  <div key={model.modelId} className="flex flex-1 flex-col items-center gap-1.5">
+                    <div
+                      className={cn("w-full rounded-md shadow-soft", colors[i % colors.length])}
+                      style={{ height: `${heightPct}%` }}
+                    />
+                  </div>
+                )
+              })}
+              {(data?.modelBreakdown ?? []).length === 0 ? (
+                <p className="flex-1 py-8 text-center text-[11px] text-muted-foreground">No model data</p>
+              ) : null}
             </div>
             <div>
-              <p className="text-[10px] text-muted-foreground">Executions</p>
-              <p className="text-[12px] font-semibold">by integration</p>
+              <p className="text-[10px] text-muted-foreground">LLM calls</p>
+              <p className="text-[12px] font-semibold">by model</p>
             </div>
           </CardContent>
         </Card>
 
+        {/* Right sidebar: token usage by member + integrations */}
         <Card className="border-transparent bg-gradient-to-br from-accent/15 via-card to-card shadow-soft">
           <CardContent className="space-y-3 p-4">
             <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-3 text-[10px] text-muted-foreground">
-              <span>Operator</span>
-              <span>Runs</span>
-              <span>Tools</span>
-              <span>KPI</span>
+              <span>Member</span>
+              <span>Tokens</span>
+              <span>Limit</span>
+              <span>%</span>
             </div>
-            {operatorRows.map((row) => (
-              <div key={row.initials} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-3 text-[12px]">
+            {members.slice(0, 4).map((m, i) => (
+              <div key={m.userId} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-3 text-[12px]">
                 <div className="flex items-center gap-1.5">
                   <Avatar className="h-5 w-5">
-                    <AvatarFallback className={cn("text-[9px] font-semibold", toneClasses[row.tone])}>{row.initials}</AvatarFallback>
+                    <AvatarFallback className={cn("text-[9px] font-semibold", toneClasses[TONES[i % TONES.length]!])}>
+                      {getInitials(m.name ?? m.email ?? "?")}
+                    </AvatarFallback>
                   </Avatar>
-                  <span className="font-medium">{row.name}</span>
+                  <span className="font-medium">{m.name ?? m.email ?? "Unknown"}</span>
                 </div>
-                <span className="rounded-full bg-emphasis px-1.5 py-0.5 text-[10px] font-semibold text-emphasis-foreground">{row.runs}</span>
-                <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">{row.tools}</span>
-                <span className="text-[11px] font-medium">{row.kpi}</span>
+                <span className="rounded-full bg-emphasis px-1.5 py-0.5 text-[10px] font-semibold text-emphasis-foreground">
+                  {formatTokens(m.totalTokens)}
+                </span>
+                <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  {formatTokens(m.monthlyLimit)}
+                </span>
+                <span className={cn("text-[11px] font-medium", m.usagePct > 90 ? "text-destructive" : "text-emerald-500")}>
+                  {m.usagePct}%
+                </span>
               </div>
             ))}
+            {members.length === 0 ? (
+              <p className="py-2 text-center text-[11px] text-muted-foreground">No token usage data</p>
+            ) : null}
+
             <div className="flex flex-wrap gap-1.5 pt-0.5">
-              <span className="rounded-full bg-card px-2 py-1 text-[10px] font-medium shadow-soft">Top agent 💪</span>
-              <span className="rounded-full bg-card px-2 py-1 text-[10px] font-medium shadow-soft">Streak 🔥</span>
-              <span className="rounded-full bg-card px-2 py-1 text-[10px] font-medium shadow-soft">Reviewed 👍</span>
+              <span className="rounded-full bg-card px-2 py-1 text-[10px] font-medium shadow-soft">
+                {data?.tokens.callCount ?? 0} LLM calls
+              </span>
+              <span className="rounded-full bg-card px-2 py-1 text-[10px] font-medium shadow-soft">
+                {formatTokens(totalTokens)} total
+              </span>
             </div>
-            <div>
-              <p className="text-[12px] font-semibold">Active integrations</p>
-              <div className="mt-2 grid grid-cols-2 gap-1.5">
-                {integrationCards.map((item) => (
-                  <div key={item.name} className="flex items-center gap-1.5 rounded-md bg-card p-2 shadow-soft">
-                    <div className={cn("flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold text-white", item.color)}>
-                      {item.name.slice(0, 1)}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-[10px] font-semibold">{item.name}</p>
-                      <p className="text-[9px] text-muted-foreground">
-                        {item.pct} · {item.value}
-                      </p>
-                    </div>
+
+            <p className="text-[12px] font-semibold">Integration health</p>
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              {integrations.map((item) => (
+                <div key={item.provider} className="flex items-center gap-1.5 rounded-md bg-card p-2 shadow-soft">
+                  <div className={cn("flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold text-white", integrationColors[item.provider] ?? "bg-secondary")}>
+                    {item.provider.slice(0, 1).toUpperCase()}
                   </div>
-                ))}
-              </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[10px] font-semibold capitalize">{item.provider}</p>
+                    <p className="text-[9px] text-muted-foreground">
+                      {item.connected ? "Connected" : "Disconnected"}
+                    </p>
+                  </div>
+                </div>
+              ))}
             </div>
+
             <div className="flex items-center justify-between rounded-md bg-card p-3 shadow-soft">
               <div>
-                <p className="text-[10px] text-muted-foreground">Cost dynamic</p>
-                <p className="text-lg font-semibold tracking-tight">${(totalRuns * 0.04).toFixed(0)}</p>
+                <p className="text-[10px] text-muted-foreground">Token cost ({data?.period.days ?? 30}d)</p>
+                <p className="text-lg font-semibold tracking-tight">${costUsd.toFixed(2)}</p>
               </div>
               <ArrowUpRight className="h-4 w-4 text-accent" />
             </div>
@@ -284,49 +390,40 @@ export function OverviewPage() {
         </Card>
       </div>
 
+      {/* ── Bottom: avg stats + weekly chart ── */}
       <Card className="border-transparent bg-mat shadow-none">
         <CardContent className="grid gap-0 p-2 md:grid-cols-[220px_1fr]">
           <div className="rounded-md bg-accent p-4 text-accent-foreground">
-            <p className="text-[10px] opacity-70">Avg. monthly</p>
+            <p className="text-[10px] opacity-70">Period ({data?.period.days ?? 30}d)</p>
             <p className="mt-1.5 text-[10px] opacity-80">Executions</p>
             <p className="text-2xl font-semibold tracking-tight">{totalRuns.toLocaleString()}</p>
             <p className="mt-3 text-[10px] opacity-80">Active members</p>
             <p className="text-lg font-semibold">
               {memberCount}
-              <span className="ml-1.5 text-[11px] opacity-80">/ {deptCount} depts</span>
+              <span className="ml-1.5 text-[11px] opacity-80">/ {deptCount} dept{deptCount !== 1 ? "s" : ""}</span>
             </p>
             <p className="mt-3 text-[10px] opacity-80">Success rate</p>
             <p className="text-lg font-semibold">
-              98.4%<span className="ml-1 text-[11px] opacity-80"> · 7 / 13</span>
+              {successRate}%
             </p>
           </div>
           <div className="flex flex-col gap-3 p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-[10px] text-muted-foreground">Monthly value by integration</p>
-                <p className="text-[12px] font-semibold">All integrations</p>
-              </div>
-              <div className="inline-flex rounded-full bg-card p-0.5 shadow-soft">
-                <Button type="button" size="sm" className="h-6 rounded-full bg-emphasis px-3 text-[10px] font-semibold text-emphasis-foreground hover:bg-emphasis/90">
-                  Runs
-                </Button>
-                <Button type="button" variant="ghost" size="sm" className="h-6 rounded-full px-3 text-[10px] font-semibold">
-                  Cost
-                </Button>
-                <Button type="button" variant="ghost" size="sm" className="h-6 rounded-full px-3 text-[10px] font-semibold">
-                  W/L
-                </Button>
+                <p className="text-[10px] text-muted-foreground">Weekly execution trend</p>
+                <p className="text-[12px] font-semibold">Last {weekly.length} weeks</p>
               </div>
             </div>
             <div className="flex flex-1 items-end gap-2 pt-2">
-              {[55, 68, 90, 75, 100, 80, 88].map((h, i) => {
-                const labels = ["W1", "W2", "W3", "W4", "W5", "W6", "W7"]
-                const isPeak = h >= 90
+              {weekly.map((w, i) => {
+                const heightPx = Math.max((w.count / maxWeekly) * 110, 8)
+                const isPeak = w.count === maxWeekly && w.count > 0
+                const weekLabel = `W${i + 1}`
                 return (
-                  <div key={labels[i]} className="flex flex-1 flex-col items-center gap-1.5">
+                  <div key={w.week} className="flex flex-1 flex-col items-center gap-1.5">
                     {isPeak ? (
                       <span className="rounded-full bg-accent px-1.5 py-0.5 text-[9px] font-semibold text-accent-foreground">
-                        ${Math.round((totalRuns * h) / 100)}
+                        {w.count}
                       </span>
                     ) : null}
                     <div
@@ -334,12 +431,15 @@ export function OverviewPage() {
                         "w-full rounded-md",
                         i % 2 === 0 ? "border-2 border-dashed border-border/60 bg-secondary/30" : "bg-secondary",
                       )}
-                      style={{ height: `${h * 1.1}px` }}
+                      style={{ height: `${heightPx}px` }}
                     />
-                    <span className="text-[9px] text-muted-foreground">{labels[i]}</span>
+                    <span className="text-[9px] text-muted-foreground">{weekLabel}</span>
                   </div>
                 )
               })}
+              {weekly.length === 0 ? (
+                <p className="flex-1 py-8 text-center text-[11px] text-muted-foreground">No weekly data yet</p>
+              ) : null}
             </div>
           </div>
         </CardContent>
