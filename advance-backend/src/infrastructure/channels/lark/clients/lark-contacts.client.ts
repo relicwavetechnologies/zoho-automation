@@ -25,22 +25,41 @@ export class LarkContactsClient implements LarkContactsClientPort {
     departmentId: string,
     limit?: number,
   ): Promise<Array<{ openId: string; displayName: string; email?: string }>> {
-    type ListResponse = { items?: Array<Record<string, unknown>> };
-    const data = await this.http.request<ListResponse>(
-      'GET',
-      '/open-apis/contact/v3/users',
-      {
-        query: {
-          department_id:      departmentId,
-          department_id_type: 'open_department_id',
-          page_size:          limit ?? 50,
+    type ListResponse = {
+      items?: Array<Record<string, unknown>>;
+      page_token?: string;
+      has_more?: boolean;
+    };
+
+    const all: Array<{ openId: string; displayName: string; email?: string }> = [];
+    const pageSize = Math.min(limit ?? 50, 50);
+    let pageToken: string | undefined;
+
+    do {
+      const data = await this.http.request<ListResponse>(
+        'GET',
+        '/open-apis/contact/v3/users',
+        {
+          query: {
+            department_id:      departmentId,
+            department_id_type: 'open_department_id',
+            page_size:          pageSize,
+            ...(pageToken ? { page_token: pageToken } : {}),
+          },
         },
-      },
-    );
-    return (data.items ?? []).map(user => ({
-      openId:      user['open_id'] as string ?? '',
-      displayName: user['name'] as string ?? '',
-      ...(user['email'] ? { email: user['email'] as string } : {}),
-    }));
+      );
+
+      for (const user of data.items ?? []) {
+        all.push({
+          openId:      user['open_id'] as string ?? '',
+          displayName: user['name'] as string ?? '',
+          ...(user['email'] ? { email: user['email'] as string } : {}),
+        });
+      }
+
+      pageToken = data.has_more ? data.page_token : undefined;
+    } while (pageToken);
+
+    return all;
   }
 }
