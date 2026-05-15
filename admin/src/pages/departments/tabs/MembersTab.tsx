@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { RefreshCw, Search, UserPlus, X } from "lucide-react"
+import { Loader2, RefreshCw, Search, UserPlus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -157,11 +157,15 @@ export function MembersTab({ departmentId, memberships, roles, onSearchCandidate
           <Button
             type="button"
             variant="outline"
-            className="h-9 gap-1.5 text-[12px]"
+            className={`h-9 gap-1.5 text-[12px] ${larkSync.active ? "cursor-wait" : "cursor-pointer"}`}
             disabled={larkSync.active}
             onClick={() => void larkSync.sync()}
           >
-            <RefreshCw className={larkSync.active ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+            {larkSync.active ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
             {larkSync.active ? larkSync.message : "Sync Lark"}
           </Button>
         </div>

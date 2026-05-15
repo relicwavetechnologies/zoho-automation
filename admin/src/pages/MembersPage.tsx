@@ -69,8 +69,8 @@ export function MembersPage() {
         description="Review workspace identities and send onboarding invites from the live company admin API."
         actions={
           <>
-            <Button type="button" variant="outline" className="rounded-full" onClick={() => void larkSync.sync()} disabled={larkSync.active}>
-              <RefreshCw className={larkSync.active ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+            <Button type="button" variant="outline" className={`rounded-full ${larkSync.active ? "cursor-wait" : ""}`} onClick={() => void larkSync.sync()} disabled={larkSync.active}>
+              {larkSync.active ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               {larkSync.active ? larkSync.message : "Sync from Lark"}
             </Button>
             <Button type="button" variant="outline" className="rounded-full" onClick={() => void refreshAll()} disabled={directory.refreshing || invites.refreshing}>
