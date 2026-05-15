@@ -546,7 +546,7 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     });
 
     try {
-      const users = await deps.larkContactsClient.listDepartmentMembers('0', 200);
+      const users = await deps.larkContactsClient.listDepartmentMembers('0', 50);
 
       let synced = 0;
       for (const user of users) {
