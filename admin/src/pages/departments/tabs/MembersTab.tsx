@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Search, UserPlus, X } from "lucide-react"
+import { RefreshCw, Search, UserPlus, X } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -70,6 +71,24 @@ export function MembersTab({ departmentId, memberships, roles, onSearchCandidate
 
   const [didAutoSync, setDidAutoSync] = useState(false)
   const [autoSyncing, setAutoSyncing] = useState(false)
+  const [manualSyncing, setManualSyncing] = useState(false)
+
+  const syncFromLark = async () => {
+    if (!token) return
+    setManualSyncing(true)
+    try {
+      const result = await api.post<{ synced: number }>("/api/admin/company/sync-directory", {}, token)
+      toast.success(`Synced ${result.synced} users from Lark`)
+      if (candidateQuery.trim().length >= 2) {
+        const retryResult = await onSearchCandidates(departmentId, candidateQuery.trim())
+        setCandidates(retryResult)
+      }
+    } catch {
+      toast.error("Lark sync failed")
+    } finally {
+      setManualSyncing(false)
+    }
+  }
 
   useEffect(() => {
     setDidAutoSync(false)
@@ -118,7 +137,7 @@ export function MembersTab({ departmentId, memberships, roles, onSearchCandidate
   return (
     <div className="space-y-4">
       <div className="rounded-lg bg-card p-3 shadow-soft">
-        <div className="grid gap-3 md:grid-cols-[1.4fr_220px]">
+        <div className="grid gap-3 md:grid-cols-[1.4fr_220px_auto] md:items-end">
           <div className="space-y-1.5">
             <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Search members</Label>
             <div className="relative">
@@ -146,6 +165,16 @@ export function MembersTab({ departmentId, memberships, roles, onSearchCandidate
               </SelectContent>
             </Select>
           </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-9 gap-1.5 text-[12px]"
+            disabled={manualSyncing}
+            onClick={() => void syncFromLark()}
+          >
+            <RefreshCw className={manualSyncing ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+            {manualSyncing ? "Syncing…" : "Sync Lark"}
+          </Button>
         </div>
 
         <div className="mt-3 space-y-2">
