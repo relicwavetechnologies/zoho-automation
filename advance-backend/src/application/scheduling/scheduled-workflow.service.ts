@@ -15,6 +15,31 @@ import { getNextScheduledRunAt } from './schedule-calculator';
 
 const STALE_CLAIM_MS = 10 * 60 * 1000;
 const MAX_DUE_PER_POLL = 5;
+const CURRENT_CHAT_DELIVERY_LINE = /^\s*Deliver to:\s+.*lark_current_chat\s*$/m;
+
+export function usesLockedCurrentChatDelivery(compiledPrompt: string): boolean {
+  return CURRENT_CHAT_DELIVERY_LINE.test(compiledPrompt);
+}
+
+export function buildScheduledExecutionPrompt(compiledPrompt: string, lockedChatId: string): string {
+  if (!usesLockedCurrentChatDelivery(compiledPrompt)) {
+    return compiledPrompt;
+  }
+
+  const rewritten = compiledPrompt.replace(
+    CURRENT_CHAT_DELIVERY_LINE,
+    '   Deliver to: runtime_locked_current_chat (system-delivered; do not send manually)',
+  );
+
+  return [
+    rewritten,
+    '',
+    'RUNTIME DELIVERY OVERRIDE:',
+    `- The destination for lark_current_chat is already locked by the runtime to this exact current Lark conversation (${lockedChatId}).`,
+    '- Do NOT call larkMessaging, do NOT list or search chats, and do NOT send or repost the result to any other chat, group, or DM.',
+    '- Produce the completed delivery content as your final reply only. The runtime will deliver that reply to the locked current chat.',
+  ].join('\n');
+}
 
 export interface ScheduledWorkflowServiceDeps {
   readonly prisma:              PrismaClient;
@@ -154,6 +179,9 @@ export class ScheduledWorkflowService {
       return;
     }
 
+    const currentChatDeliveryLocked = usesLockedCurrentChatDelivery(workflow.compiledPrompt);
+    const executionPrompt = buildScheduledExecutionPrompt(workflow.compiledPrompt, targetChatId);
+
     const run = await this.deps.prisma.scheduledWorkflowRun.upsert({
       where: { workflowId_scheduledFor: { workflowId, scheduledFor } },
       create: { workflowId, scheduledFor, status: 'running', startedAt: new Date() },
@@ -169,7 +197,7 @@ export class ScheduledWorkflowService {
       chatId: syntheticChatId,
       chatType: 'p2p',
       userExternalId: identity.larkOpenId ?? workflow.createdByUserId,
-      text: workflow.compiledPrompt,
+      text: executionPrompt,
       attachments: [],
       timestamp: new Date().toISOString(),
       traceId: syntheticCorrelationId,
@@ -187,6 +215,7 @@ export class ScheduledWorkflowService {
       requestId:      `sched-${run.id}`,
       userExternalId: identity.larkOpenId ?? workflow.createdByUserId,
       chatId:         targetChatId,
+      ...(currentChatDeliveryLocked ? { deliveryMode: 'current_chat_only' as const } : {}),
       ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
     };
 

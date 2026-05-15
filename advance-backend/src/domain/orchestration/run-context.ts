@@ -53,4 +53,10 @@ export interface RunContext {
    * Used by the approval gate for idempotency keying and card delivery.
    */
   readonly chatId?: string;
+  /**
+   * When set, outbound delivery must stay locked to the current conversation.
+   * Used by scheduled workflows so "deliver to current chat" cannot be rerouted
+   * by an LLM to another chat or group.
+   */
+  readonly deliveryMode?: 'current_chat_only';
 }

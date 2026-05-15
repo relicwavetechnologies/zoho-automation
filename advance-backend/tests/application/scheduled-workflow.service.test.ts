@@ -1,0 +1,122 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { ScheduledWorkflowService, buildScheduledExecutionPrompt, usesLockedCurrentChatDelivery } from '../../src/application/scheduling/scheduled-workflow.service.ts';
+import { ok } from '../../src/shared/result.ts';
+import type { Logger } from '../../src/shared/logger.ts';
+
+const noopLogger: Logger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {},
+  child: () => noopLogger,
+};
+
+const fixedNow = new Date('2026-05-15T16:45:30.000Z');
+const fakeClock = {
+  now: () => fixedNow,
+  nowMs: () => fixedNow.getTime(),
+};
+
+describe('scheduled workflow current-chat delivery helpers', () => {
+  it('detects workflows that rely on lark_current_chat delivery', () => {
+    const prompt = [
+      'Workflow: Daily email summary',
+      '2. [deliver] Deliver result',
+      '   Deliver to: dest_1:lark_current_chat',
+    ].join('\n');
+
+    assert.equal(usesLockedCurrentChatDelivery(prompt), true);
+    assert.equal(usesLockedCurrentChatDelivery('Workflow: plain summary only'), false);
+  });
+
+  it('rewrites lark_current_chat delivery prompts for runtime-locked delivery', () => {
+    const prompt = [
+      'Workflow: Daily email summary',
+      '2. [deliver] Deliver result',
+      '   Deliver to: dest_1:lark_current_chat',
+    ].join('\n');
+
+    const rewritten = buildScheduledExecutionPrompt(prompt, 'oc_dm_chat');
+    assert.match(rewritten, /runtime_locked_current_chat/);
+    assert.match(rewritten, /RUNTIME DELIVERY OVERRIDE/);
+    assert.match(rewritten, /oc_dm_chat/);
+    assert.doesNotMatch(rewritten, /Deliver to:\s+dest_1:lark_current_chat/);
+  });
+});
+
+describe('ScheduledWorkflowService.executeWorkflow', () => {
+  it('locks the run context to the originating chat for scheduled current-chat delivery', async () => {
+    const compiledPrompt = [
+      'Workflow: Daily email summary',
+      'Original intent: check my mails every day in the morning and give me a summary of latest 5 mails',
+      '2. [deliver] Deliver result',
+      '   Deliver to: dest_1:lark_current_chat',
+    ].join('\n');
+
+    const workflow = {
+      id: 'wf-1',
+      name: 'Daily email summary',
+      companyId: 'co-1',
+      createdByUserId: 'user-1',
+      originChatId: 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50',
+      compiledPrompt,
+      scheduleConfigJson: {
+        type: 'daily',
+        timezone: 'Asia/Kolkata',
+        time: { hour: 9, minute: 0 },
+      },
+    };
+
+    let capturedInput: any = null;
+    const prisma = {
+      scheduledWorkflow: {
+        findUnique: async () => workflow,
+        update: async () => ({}),
+      },
+      scheduledWorkflowRun: {
+        upsert: async () => ({ id: 'run-1' }),
+        update: async () => ({}),
+      },
+    } as any;
+
+    const engine = {
+      run: async (input: any) => {
+        capturedInput = input;
+        return ok({
+          finalReply: { kind: 'final', text: 'Here are your latest emails.', format: 'text' },
+          toolsCalled: [],
+        });
+      },
+    } as any;
+
+    const channelIdentityRepo = {
+      resolveByUserId: async () => ok({
+        userId: 'user-1',
+        companyId: 'co-1',
+        aiRole: 'MEMBER',
+        channel: 'lark',
+        larkOpenId: 'ou_123',
+      }),
+    } as any;
+
+    const svc = new ScheduledWorkflowService({
+      prisma,
+      engine,
+      channelAdapter: {} as any,
+      channelIdentityRepo,
+      logger: noopLogger,
+      clock: fakeClock as any,
+      pollIntervalMs: 1_000,
+    });
+
+    await (svc as any).executeWorkflow('wf-1', new Date('2026-05-15T16:45:00.000Z'));
+
+    assert.ok(capturedInput, 'engine.run should be called');
+    assert.equal(capturedInput.runContext.chatId, 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50');
+    assert.equal(capturedInput.runContext.deliveryMode, 'current_chat_only');
+    assert.equal(capturedInput.conversation.chatId, 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50');
+    assert.match(capturedInput.incoming.text, /runtime_locked_current_chat/);
+    assert.match(capturedInput.incoming.text, /Do NOT call larkMessaging/i);
+  });
+});

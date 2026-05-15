@@ -12,6 +12,7 @@ import type { ToolActionGroup } from '../../src/domain/permissions/tool-action-g
 import type { Logger } from '../../src/shared/logger.ts';
 import { asToolId, asCompanyId, asUserId } from '../../src/shared/ids.ts';
 import { asCompanyRoleSlug } from '../../src/domain/permissions/company-role.ts';
+import type { RunContext } from '../../src/domain/orchestration/run-context.ts';
 
 export const noopLogger: Logger = {
   info:  () => {},
@@ -38,13 +39,18 @@ export function makeDeniedPerm(): PermissionResult {
   };
 }
 
-export function makeCtx(toolId?: string, actions?: ToolActionGroup[]): ToolExecutionContext {
+export function makeCtx(
+  toolId?: string,
+  actions?: ToolActionGroup[],
+  runContextOverrides: Partial<RunContext> = {},
+): ToolExecutionContext {
   return {
     runContext: {
       companyId:   asCompanyId('co-test'),
       userId:      asUserId('user-test'),
       companyRole: asCompanyRoleSlug('MEMBER'),
       channel:     'lark' as const,
+      ...runContextOverrides,
     },
     perm:          toolId && actions ? makeAllowedPerm(toolId, actions) : makeDeniedPerm(),
     correlationId: 'test-corr',

@@ -44,6 +44,12 @@ const inferAction = (op: LarkMsgArgs['op']): ToolActionGroup => {
   return 'read';
 };
 
+function lockedCurrentChatId(ctx: ToolExecutionContext): string | null {
+  if (ctx.runContext.deliveryMode !== 'current_chat_only') return null;
+  if (ctx.runContext.channel !== 'lark') return null;
+  return ctx.runContext.chatId ?? null;
+}
+
 export const createLarkMessagingTool = (deps: {
   client: LarkMessagingClientPort;
   peopleResolver: PeopleResolverPort;
@@ -76,14 +82,31 @@ export const createLarkMessagingTool = (deps: {
 
   async execute(args: LarkMsgArgs, ctx: ToolExecutionContext): Promise<Result<LarkMsgResult, ToolError>> {
     try {
+      const lockedChatId = lockedCurrentChatId(ctx);
       switch (args.op) {
         case 'send': {
-          if (!args.chatId || !args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for send' }));
+          if (!args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'text required for send' }));
+          if (lockedChatId && args.chatId && args.chatId !== lockedChatId) {
+            return err(new ToolError({
+              toolId: 'larkMessaging',
+              reason: 'bad_args',
+              message: 'This run is locked to the current chat and cannot send to another chat.',
+            }));
+          }
+          const chatId = args.chatId ?? lockedChatId;
+          if (!chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for send' }));
           ctx.onProgress?.('Sending message…');
-          const r = await deps.client.sendMessage(args.chatId, args.text);
+          const r = await deps.client.sendMessage(chatId, args.text);
           return ok({ success: true, messageId: r.messageId, message: 'Message sent' });
         }
         case 'reply': {
+          if (lockedChatId) {
+            return err(new ToolError({
+              toolId: 'larkMessaging',
+              reason: 'bad_args',
+              message: 'This run is locked to the current chat and cannot send replies by message ID.',
+            }));
+          }
           if (!args.messageId || !args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'messageId and text required for reply' }));
           ctx.onProgress?.('Sending reply…');
           const r = await deps.client.replyMessage(args.messageId, args.text);
@@ -101,6 +124,13 @@ export const createLarkMessagingTool = (deps: {
           return ok({ success: true, data: msg });
         }
         case 'send_dm': {
+          if (lockedChatId) {
+            return err(new ToolError({
+              toolId: 'larkMessaging',
+              reason: 'bad_args',
+              message: 'This run is locked to the current chat and cannot send a separate DM.',
+            }));
+          }
           if (!args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'text required for send_dm' }));
           ctx.onProgress?.('Sending direct message…');
           let openId: string;
@@ -139,8 +169,17 @@ export const createLarkMessagingTool = (deps: {
           return ok({ success: true, data: msgs, message: `Found ${msgs.length} messages` });
         }
         case 'mention': {
-          if (!args.chatId || !args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for mention' }));
+          if (!args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for mention' }));
           if (!args.mentionNames?.length) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'mentionNames required for mention' }));
+          if (lockedChatId && args.chatId && args.chatId !== lockedChatId) {
+            return err(new ToolError({
+              toolId: 'larkMessaging',
+              reason: 'bad_args',
+              message: 'This run is locked to the current chat and cannot mention people in another chat.',
+            }));
+          }
+          const chatId = args.chatId ?? lockedChatId;
+          if (!chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for mention' }));
           ctx.onProgress?.('Sending mention…');
           const companyId = String(ctx.runContext.companyId);
           const requesterOpenId = ctx.runContext.userExternalId ?? '';
@@ -153,7 +192,7 @@ export const createLarkMessagingTool = (deps: {
           if (resolved.notFound.length > 0) {
             return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: `Could not find: ${resolved.notFound.join(', ')}` }));
           }
-          const r = await deps.client.mentionMessage(args.chatId, args.text, mentionOpenIds);
+          const r = await deps.client.mentionMessage(chatId, args.text, mentionOpenIds);
           return ok({ success: true, messageId: r.messageId, message: `Message sent with ${mentionOpenIds.length} mention(s)` });
         }
       }
