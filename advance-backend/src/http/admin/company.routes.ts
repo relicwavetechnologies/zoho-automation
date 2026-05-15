@@ -571,8 +571,11 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       send('status', { phase: 'fetched', message: `Found ${users.length} users`, total: users.length });
 
       let synced = 0;
+      let usersCreated = 0;
       for (const user of users) {
         if (!user.openId) continue;
+
+        // 1. Upsert ChannelIdentity (matched by openId)
         await prisma.channelIdentity.upsert({
           where: {
             channel_externalUserId_companyId: {
@@ -602,9 +605,62 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
             updatedAt: new Date(),
           },
         });
+
+        // 2. Auto-create User + AdminMembership if email present and no User exists
+        if (user.email) {
+          const email = user.email.trim().toLowerCase();
+          let existingUser = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+
+          // If no User with this email, check if there's a User linked via a previous
+          // ChannelIdentity with the same openId (email may have changed in Lark)
+          if (!existingUser) {
+            const linkedIdentity = await prisma.channelIdentity.findFirst({
+              where: { companyId, channel: 'lark', larkOpenId: user.openId, email: { not: email } },
+              select: { email: true },
+            });
+            if (linkedIdentity?.email) {
+              const oldUser = await prisma.user.findUnique({
+                where: { email: linkedIdentity.email.trim().toLowerCase() },
+                select: { id: true },
+              });
+              if (oldUser) {
+                // Update the existing User's email to match Lark
+                await prisma.user.update({
+                  where: { id: oldUser.id },
+                  data: { email, name: user.displayName ?? undefined },
+                }).catch(() => {});
+                existingUser = oldUser;
+              }
+            }
+          }
+
+          if (!existingUser) {
+            const newUser = await prisma.user.create({
+              data: {
+                email,
+                name: user.displayName,
+                password: randomBytes(32).toString('hex'),
+              },
+            });
+            await prisma.adminMembership.create({
+              data: { userId: newUser.id, companyId, role: 'MEMBER', isActive: true },
+            });
+            usersCreated++;
+          } else if (user.displayName) {
+            await prisma.user.update({
+              where: { id: existingUser.id },
+              data: { name: user.displayName },
+            }).catch(() => {});
+          }
+        }
+
         synced++;
         if (synced % 5 === 0 || synced === users.length) {
-          send('progress', { synced, total: users.length, pct: Math.round((synced / users.length) * 100) });
+          send('progress', {
+            synced, total: users.length,
+            pct: Math.round((synced / users.length) * 100),
+            usersCreated,
+          });
         }
       }
 
@@ -613,8 +669,8 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
         data: { status: 'succeeded', syncedCount: synced, memberCount: synced, finishedAt: new Date() },
       });
 
-      deps.logger.info('directory_sync.completed', { companyId, synced });
-      send('done', { synced, message: `Synced ${synced} users from Lark` });
+      deps.logger.info('directory_sync.completed', { companyId, synced, usersCreated });
+      send('done', { synced, usersCreated, message: `Synced ${synced} users from Lark${usersCreated > 0 ? ` (${usersCreated} new accounts created)` : ''}` });
       res.end();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
