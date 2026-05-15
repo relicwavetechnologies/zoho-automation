@@ -144,17 +144,16 @@ export function createAnalyticsRoutes(deps: AnalyticsRoutesDeps): Router {
         ORDER BY week ASC
       `,
 
-      // Integration connection status
-      prisma.$queryRaw<Array<{ provider: string; connected: boolean }>>`
-        SELECT 'zoho' AS provider,
-               EXISTS(SELECT 1 FROM "ZohoConnection" WHERE "companyId" = ${companyId} AND "status" = 'CONNECTED') AS connected
-        UNION ALL
-        SELECT 'lark',
-               EXISTS(SELECT 1 FROM "LarkTenantBinding" WHERE "companyId" = ${companyId} AND "isActive" = true)
-        UNION ALL
-        SELECT 'google',
-               EXISTS(SELECT 1 FROM "GoogleWorkspaceAuth" WHERE "companyId" = ${companyId})
-      `,
+      // Integration connection status (use Prisma count to avoid raw table name issues)
+      Promise.all([
+        prisma.zohoConnection.count({ where: { companyId, status: 'CONNECTED' } }),
+        prisma.larkTenantBinding.count({ where: { companyId, isActive: true } }),
+        prisma.companyGoogleAuthLink.count({ where: { companyId } }),
+      ]).then(([zoho, lark, google]) => [
+        { provider: 'zoho', connected: zoho > 0 },
+        { provider: 'lark', connected: lark > 0 },
+        { provider: 'google', connected: google > 0 },
+      ] as Array<{ provider: string; connected: boolean }>),
 
       // Token usage by model
       prisma.aiTokenUsage.groupBy({
