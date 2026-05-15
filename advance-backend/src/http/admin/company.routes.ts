@@ -530,23 +530,45 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     }, 'Tool permissions loaded');
   }));
 
-  // ── Sync Lark directory ─────────────────────────────────────────────────────
-  router.post('/sync-directory', asyncRoute(async (req, res) => {
-    const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
-    if (!deps.larkContactsClient) throw routeError(503, 'Lark contacts client not configured');
+  // ── Sync Lark directory (SSE streaming) ─────────────────────────────────────
+  router.post('/sync-directory', async (req, res) => {
+    let companyId: string;
+    try {
+      companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+    } catch (e) {
+      const err = e as RouteError;
+      res.status(err.status ?? 400).json({ success: false, message: err.message });
+      return;
+    }
+    if (!deps.larkContactsClient) { res.status(503).json({ success: false, message: 'Lark contacts client not configured' }); return; }
 
     const binding = await prisma.larkTenantBinding.findFirst({
       where: { companyId, isActive: true },
       select: { larkTenantKey: true },
     });
-    if (!binding) throw routeError(400, 'No active Lark tenant binding for this company');
+    if (!binding) { res.status(400).json({ success: false, message: 'No active Lark tenant binding' }); return; }
+
+    // SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const send = (event: string, data: Record<string, unknown>) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    send('status', { phase: 'starting', message: 'Starting Lark directory sync...' });
 
     const syncRun = await prisma.larkDirectorySyncRun.create({
       data: { companyId, trigger: 'manual', status: 'running', startedAt: new Date() },
     });
 
     try {
+      send('status', { phase: 'fetching', message: 'Fetching users from Lark...' });
       const users = await deps.larkContactsClient.listDepartmentMembers('0', 50);
+      send('status', { phase: 'fetched', message: `Found ${users.length} users`, total: users.length });
 
       let synced = 0;
       for (const user of users) {
@@ -581,6 +603,9 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
           },
         });
         synced++;
+        if (synced % 5 === 0 || synced === users.length) {
+          send('progress', { synced, total: users.length, pct: Math.round((synced / users.length) * 100) });
+        }
       }
 
       await prisma.larkDirectorySyncRun.update({
@@ -589,7 +614,8 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       });
 
       deps.logger.info('directory_sync.completed', { companyId, synced });
-      success(res, { synced, runId: syncRun.id }, `Synced ${synced} users from Lark`);
+      send('done', { synced, message: `Synced ${synced} users from Lark` });
+      res.end();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       await prisma.larkDirectorySyncRun.update({
@@ -597,9 +623,10 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
         data: { status: 'failed', errorMessage: msg, finishedAt: new Date() },
       }).catch(() => {});
       deps.logger.error('directory_sync.failed', { companyId, error: msg });
-      throw routeError(500, `Directory sync failed: ${msg}`);
+      send('error', { message: msg });
+      res.end();
     }
-  }));
+  });
 
   return router;
 }
