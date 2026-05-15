@@ -339,13 +339,14 @@ const singleDateValue = (input: string): string => parseDateFilter(input).to;
 async function executeScriptMode(
   args: Args,
   ctx: ToolExecutionContext,
-  scriptDeps: { booksClient: ZohoBooksPaginatedClient; cloudinary: CloudinaryAdapter; csvLinkTtl?: number | undefined },
+  scriptDeps: { booksClient: ZohoBooksPaginatedClient; cloudinary: CloudinaryAdapter; csvLinkTtl?: number | undefined; scopeFilter?: Record<string, unknown> },
 ): Promise<Result<Res, ToolError>> {
   const { companyId } = ctx.runContext;
   const moduleName = listOpToModule[args.op]! as ZohoBooksModule;
 
-  const rawFilters = dateParams(args) as Record<string, string>;
+  const rawFilters: Record<string, string> = { ...dateParams(args) } as Record<string, string>;
   if (args.searchQuery) rawFilters['search_text'] = args.searchQuery;
+  if (scriptDeps.scopeFilter) Object.assign(rawFilters, scriptDeps.scopeFilter);
 
   ctx.onProgress?.(`Fetching ${moduleName} from Zoho Books…`);
 
@@ -503,6 +504,13 @@ export const createZohoBooksTool = (deps: {
   async execute(args: Args, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     const { companyId, userId } = ctx.runContext;
 
+    const zohoReadScope = ctx.perm.department?.zohoReadScope ?? 'show_all';
+    const requesterEmail = ctx.runContext.requesterEmail?.trim().toLowerCase();
+    const isPersonalized = zohoReadScope === 'personalized' && !!requesterEmail;
+    if (isPersonalized) {
+      ctx.logger.info('zoho_books.scope.personalized', { requesterEmail, op: args.op });
+    }
+
     // ── Report operations (use financeOps — deep pagination + CSV) ──────────
     if (args.op === 'build_overdue_report') {
       ctx.onProgress?.('Building overdue invoice report…');
@@ -530,6 +538,8 @@ export const createZohoBooksTool = (deps: {
       }
     }
 
+    const scopeFilter: Record<string, unknown> = isPersonalized ? { email: requesterEmail } : {};
+
     // ── Script mode (auto-escalate list ops to exhaustive fetch + sandbox) ──
     if (args.script) {
       const moduleName = listOpToModule[args.op];
@@ -538,6 +548,7 @@ export const createZohoBooksTool = (deps: {
           booksClient: deps.booksClient,
           cloudinary:  deps.cloudinary,
           csvLinkTtl:  deps.csvLinkTtl,
+          ...(isPersonalized ? { scopeFilter } : {}),
         });
       }
       return err(new ToolError({
@@ -564,7 +575,7 @@ export const createZohoBooksTool = (deps: {
         companyId,
         moduleName,
         ...(args.organizationId ? { organizationId: args.organizationId } : {}),
-        ...(filters ? { filters } : {}),
+        filters: { ...scopeFilter, ...filters },
         ...(query ? { query } : {}),
         perPage: args.limit ?? 25,
       });
@@ -587,7 +598,7 @@ export const createZohoBooksTool = (deps: {
         moduleName,
         moduleLabel,
         ...(args.organizationId ? { organizationId: args.organizationId } : {}),
-        ...(options.filters ? { filters: options.filters } : {}),
+        filters: { ...scopeFilter, ...options.filters },
         ...(options.query ? { query: options.query } : {}),
         exportAll: args.exportAll === true,
         narrowFilter: isNarrowList,

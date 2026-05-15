@@ -1,10 +1,22 @@
 import { useEffect, useMemo, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { Search, UserPlus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { useAdminAuth } from "@/auth/AdminAuthProvider"
+import { api } from "@/lib/api"
+import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
+import { cn } from "@/lib/utils"
 import type { DepartmentCandidate, DepartmentMembership, DepartmentRole } from "@/lib/api"
+
+type MemberTokenUsage = {
+  userId: string
+  totalTokens: number
+  monthlyLimit: number
+  usagePct: number
+}
 
 type Props = {
   departmentId: string
@@ -15,13 +27,33 @@ type Props = {
   onRemoveMember: (departmentId: string, userId: string) => Promise<void>
 }
 
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`
+  return String(n)
+}
+
 export function MembersTab({ departmentId, memberships, roles, onSearchCandidates, onAddMember, onRemoveMember }: Props) {
+  const { token } = useAdminAuth()
+  const scope = getAdminQueryScope(token)
   const [roleDrafts, setRoleDrafts] = useState<Record<string, string>>({})
   const [candidateQuery, setCandidateQuery] = useState("")
   const [candidateRoleId, setCandidateRoleId] = useState("")
   const [candidates, setCandidates] = useState<DepartmentCandidate[]>([])
   const [searching, setSearching] = useState(false)
   const [busyKey, setBusyKey] = useState<string | null>(null)
+
+  const tokenUsageQuery = useQuery({
+    queryKey: adminQueryKeys.apiList(scope, "/api/admin/token-usage/members", "dept-members"),
+    enabled: Boolean(token),
+    queryFn: () => api.get<{ members: MemberTokenUsage[] }>("/api/admin/token-usage/members", token!),
+    staleTime: 60_000,
+  })
+  const tokenUsageMap = useMemo(() => {
+    const m = new Map<string, MemberTokenUsage>()
+    for (const u of tokenUsageQuery.data?.members ?? []) m.set(u.userId, u)
+    return m
+  }, [tokenUsageQuery.data])
 
   const defaultRoleId = useMemo(
     () => roles.find((role) => role.isDefault)?.id ?? roles[0]?.id ?? "",
@@ -36,6 +68,13 @@ export function MembersTab({ departmentId, memberships, roles, onSearchCandidate
     setCandidateRoleId((current) => current || defaultRoleId)
   }, [defaultRoleId])
 
+  const [didAutoSync, setDidAutoSync] = useState(false)
+  const [autoSyncing, setAutoSyncing] = useState(false)
+
+  useEffect(() => {
+    setDidAutoSync(false)
+  }, [candidateQuery])
+
   useEffect(() => {
     const query = candidateQuery.trim()
     if (query.length < 2) {
@@ -48,17 +87,33 @@ export function MembersTab({ departmentId, memberships, roles, onSearchCandidate
     setSearching(true)
     const timer = window.setTimeout(async () => {
       const result = await onSearchCandidates(departmentId, query)
-      if (active) {
+      if (!active) return
+
+      if (result.length === 0 && !didAutoSync && token) {
+        setAutoSyncing(true)
+        try {
+          await api.post("/api/admin/company/sync-directory", {}, token)
+          const retryResult = await onSearchCandidates(departmentId, query)
+          if (active) {
+            setCandidates(retryResult)
+            setDidAutoSync(true)
+          }
+        } catch {
+          if (active) setCandidates([])
+        } finally {
+          if (active) setAutoSyncing(false)
+        }
+      } else {
         setCandidates(result)
-        setSearching(false)
       }
+      if (active) setSearching(false)
     }, 250)
 
     return () => {
       active = false
       window.clearTimeout(timer)
     }
-  }, [candidateQuery, departmentId, onSearchCandidates])
+  }, [candidateQuery, departmentId, onSearchCandidates, didAutoSync, token])
 
   return (
     <div className="space-y-4">
@@ -94,9 +149,15 @@ export function MembersTab({ departmentId, memberships, roles, onSearchCandidate
         </div>
 
         <div className="mt-3 space-y-2">
-          {searching ? <p className="text-[11px] text-muted-foreground">Searching candidates…</p> : null}
-          {!searching && candidateQuery.trim().length >= 2 && candidates.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">No synced users matched this query.</p>
+          {searching || autoSyncing ? (
+            <p className="text-[11px] text-muted-foreground">
+              {autoSyncing ? "No local match — syncing latest users from Lark…" : "Searching candidates…"}
+            </p>
+          ) : null}
+          {!searching && !autoSyncing && candidateQuery.trim().length >= 2 && candidates.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">
+              {didAutoSync ? "No users found even after syncing from Lark." : "No synced users matched this query."}
+            </p>
           ) : null}
           {candidates.map((candidate) => {
             const alreadyAssigned = candidate.isAlreadyAssigned
@@ -169,12 +230,28 @@ export function MembersTab({ departmentId, memberships, roles, onSearchCandidate
           const dirty = roleId !== membership.roleId
           const busy = busyKey === membership.userId
 
+          const usage = tokenUsageMap.get(membership.userId)
           return (
             <div key={membership.id} className="flex flex-col gap-3 rounded-lg bg-card p-3 shadow-soft md:flex-row md:items-center">
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[13px] font-semibold">{membership.name || membership.email}</p>
                 <p className="truncate text-[11px] text-muted-foreground">{membership.email}</p>
               </div>
+
+              {usage ? (
+                <div className="flex items-center gap-2">
+                  <span className={cn("text-[12px] font-semibold", usage.usagePct > 90 ? "text-destructive" : "text-emerald-500")}>
+                    {fmtTokens(usage.totalTokens)}
+                  </span>
+                  <div className="h-1.5 w-16 overflow-hidden rounded-full bg-secondary">
+                    <div
+                      className={cn("h-full rounded-full", usage.usagePct > 90 ? "bg-destructive" : "bg-emerald-500")}
+                      style={{ width: `${Math.min(usage.usagePct, 100)}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] text-muted-foreground">{usage.usagePct}%</span>
+                </div>
+              ) : null}
 
               <Select
                 value={roleId}

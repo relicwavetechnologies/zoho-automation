@@ -4,7 +4,7 @@ import { EmailComposerService } from '../../src/application/email/email-composer
 import { DivoHtmlEmailTemplate } from '../../src/application/email/templates/divo-html-email-template.ts';
 
 describe('EmailComposerService', () => {
-  it('builds Divo HTML MIME by default with to, cc, bcc, and reply headers', () => {
+  it('builds plain-text MIME with all headers (HTML template disabled)', () => {
     const composer = new EmailComposerService();
     const result = composer.compose({
       from: { name: 'Divo Ops', email: 'ops@example.com' },
@@ -24,16 +24,14 @@ describe('EmailComposerService', () => {
     assert.match(result.raw, /Bcc: audit@example\.com/);
     assert.match(result.raw, /In-Reply-To: <msg-1@example\.com>/);
     assert.match(result.raw, /References: <msg-0@example\.com> <msg-1@example\.com>/);
-    assert.match(result.raw, /Content-Type: multipart\/alternative; boundary="divo_alt_/);
     assert.match(result.raw, /Content-Type: text\/plain; charset=UTF-8/);
-    assert.match(result.raw, /Content-Type: text\/html; charset=UTF-8/);
-    assert.match(result.raw, /<table role="presentation"/);
-    assert.match(result.raw, /Quarterly update/);
+    assert.doesNotMatch(result.raw, /Content-Type: text\/html/);
+    assert.match(result.raw, /Hello Alice/);
     assert.ok(result.encodedRaw.length > 0);
     assert.doesNotMatch(result.encodedRaw, /[+/=]/);
   });
 
-  it('builds multipart alternative when HTML is provided', () => {
+  it('strips HTML to plain text when raw HTML is provided (HTML disabled)', () => {
     const composer = new EmailComposerService();
     const result = composer.compose({
       to: [{ email: 'alice@example.com' }],
@@ -42,10 +40,9 @@ describe('EmailComposerService', () => {
       html: '<p>Premium HTML</p>',
     });
 
-    assert.match(result.raw, /Content-Type: multipart\/alternative; boundary="divo_alt_/);
     assert.match(result.raw, /Content-Type: text\/plain; charset=UTF-8/);
-    assert.match(result.raw, /Content-Type: text\/html; charset=UTF-8/);
-    assert.match(result.raw, /<p>Premium HTML<\/p>/);
+    assert.doesNotMatch(result.raw, /Content-Type: text\/html/);
+    assert.match(result.raw, /Plain fallback/);
   });
 
   it('passes attachments into MIME composition', () => {

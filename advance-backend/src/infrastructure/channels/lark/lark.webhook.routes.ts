@@ -380,6 +380,7 @@ async function processInBackground(
     userExternalId: incoming.userExternalId,   // Lark open_id — tools use this as default assignee
     chatId:         String(incoming.chatId),
     ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
+    ...(identity.email ? { requesterEmail: identity.email } : {}),
   };
 
   const conversation: ConversationHandle = {

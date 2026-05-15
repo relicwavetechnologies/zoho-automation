@@ -25,20 +25,13 @@ export class EmailComposerService {
   ) {}
 
   compose(input: ComposeEmailInput): BuiltMimeMessage {
+    // HTML template disabled — plain text is more reliable across email clients.
+    // The Divo HTML template renders data tables and structured content poorly
+    // (horizontal overflow, missing body text). Re-enable once the template is reworked.
     const rendered = input.template
       ? this.divoTemplate.render(input.template)
-      : input.html
-        ? null
-        : input.text
-          ? this.divoTemplate.render({
-            variant: 'standard',
-            title: input.subject,
-            intro: input.text,
-            footerNote: 'Sent with Divo.',
-          })
-          : null;
+      : null;
     const text = input.text ?? rendered?.text ?? stripHtml(input.html ?? '');
-    const html = input.html ?? rendered?.html;
 
     return this.mimeBuilder.build({
       to: input.to,
@@ -47,7 +40,6 @@ export class EmailComposerService {
       ...(input.from ? { from: input.from } : {}),
       subject: input.subject,
       text,
-      ...(html ? { html } : {}),
       ...(input.threadId ? { threadId: input.threadId } : {}),
       ...(input.inReplyTo ? { inReplyTo: input.inReplyTo } : {}),
       ...(input.references?.length ? { references: input.references } : {}),

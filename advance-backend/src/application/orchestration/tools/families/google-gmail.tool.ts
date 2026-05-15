@@ -255,9 +255,9 @@ export const createGoogleGmailTool = (deps: {
 - bcc: BCC recipient email addresses
 - Recipient safety: every to/cc/bcc value must be a real resolved email. Placeholder/test domains are rejected; resolve named people through context/Lark contacts or ask the user.
 - subject: Email subject
-- body/bodyText: Semantic email body text. By default the Gmail tool inserts this content into the Divo HTML template and sends a multipart HTML+text email. body is a legacy alias.
-- bodyHtml: HTML body. Always provide bodyText too unless templateId is used.
-- templateId/templateData: Divo branded HTML template selection and semantic data. Template IDs: divo-standard-v1, divo-executive-v1, divo-proposal-v1, divo-follow-up-v1, divo-report-v1, divo-finance-v1. Supported templateData slots: title, preheader, eyebrow, intro, metadata[{label,value}], sections[{heading,body,bullets}], links[{label,url}], cta{label,url}, ctaLabel+ctaUrl, signatureName, signatureTitle, footerNote. A title-only template is invalid; include bodyText or templateData.intro/sections/metadata/links/cta.
+- body/bodyText: The email body as well-structured plain text. All emails are sent as plain text (HTML templates are disabled). Write clear paragraphs with double-newline breaks, greet by name, sign off professionally. body is a legacy alias.
+- bodyHtml: DISABLED — ignored. Do not use.
+- templateId/templateData: DISABLED — ignored. Do not use. Write the full email in bodyText instead.
 - attachments: Optional files to attach for send/draft/reply/forward. Sources: file_asset{fileAssetId}, outbound_artifact{artifactId}, google_drive{fileId, exportMimeType?}, lark{messageId,fileKey,fileName?}, cloudinary{publicId, fileName?, resourceType?}. When a previous tool call returns csvPublicId (from Zoho/data-processor exports), use source=cloudinary with that publicId to attach the CSV. Limits: 10 files, 10 MB each, 18 MB total; executable/script/macro file extensions are blocked.
 - query: Gmail search query string for search/thread_list/list
 - labelIds/labelNames: Labels for label apply/remove flows
@@ -563,15 +563,13 @@ function requireComposedEmail(
   });
 }
 
-function buildEmailPresentation(args: GmailArgs, fallbackText?: string): {
+function buildEmailPresentation(_args: GmailArgs, _fallbackText?: string): {
   readonly bodyHtml?: string;
   readonly template?: DivoEmailTemplateData;
 } {
-  const explicitTemplate = buildTemplate(args, fallbackText);
-  if (explicitTemplate) return { template: explicitTemplate };
-  if (args.bodyHtml) return { bodyHtml: args.bodyHtml };
-  const defaultTemplate = buildDefaultTemplate(args, fallbackText);
-  return defaultTemplate ? { template: defaultTemplate } : {};
+  // HTML templates disabled — all emails are plain text via bodyText.
+  // Template/HTML building skipped; re-enable when the HTML template is reworked.
+  return {};
 }
 
 function buildTemplate(args: GmailArgs, fallbackText?: string): DivoEmailTemplateData | undefined {

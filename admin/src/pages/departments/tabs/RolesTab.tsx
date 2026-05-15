@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import type { DepartmentRole } from "@/lib/api"
 
 type Props = {
@@ -69,7 +69,7 @@ export function RolesTab({ departmentId, roles, onCreate, onUpdate, onDelete }: 
   return (
     <div className="space-y-4">
       <div className="rounded-lg bg-card p-3 shadow-soft">
-        <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_180px_auto] md:items-end">
+        <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_auto] md:items-end">
           <div className="space-y-1.5">
             <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Role name</Label>
             <Input value={newName} onChange={(event) => setNewName(event.target.value)} className="h-9 bg-card text-[13px]" placeholder="e.g. Analyst" />
@@ -77,18 +77,6 @@ export function RolesTab({ departmentId, roles, onCreate, onUpdate, onDelete }: 
           <div className="space-y-1.5">
             <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Role slug</Label>
             <Input value={newSlug} onChange={(event) => setNewSlug(event.target.value)} className="h-9 bg-card text-[13px]" placeholder="ANALYST" />
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Zoho scope</Label>
-            <Select value={newScope} onValueChange={(value) => setNewScope(value as "personalized" | "show_all")}>
-              <SelectTrigger className="h-9 bg-card text-[13px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="personalized">Personalized</SelectItem>
-                <SelectItem value="show_all">Show all</SelectItem>
-              </SelectContent>
-            </Select>
           </div>
           <Button
             type="button"
@@ -99,6 +87,13 @@ export function RolesTab({ departmentId, roles, onCreate, onUpdate, onDelete }: 
             Add role
           </Button>
         </div>
+        <label className="mt-3 flex items-center justify-between rounded-md border border-border/60 bg-mat p-2.5">
+          <div>
+            <p className="text-[12px] font-medium">Zoho data personalization</p>
+            <p className="text-[10px] text-muted-foreground">ON = members only see records matching their email</p>
+          </div>
+          <Switch checked={newScope === "personalized"} onCheckedChange={(checked) => setNewScope(checked ? "personalized" : "show_all")} />
+        </label>
       </div>
 
       <div className="space-y-2">
@@ -113,7 +108,7 @@ export function RolesTab({ departmentId, roles, onCreate, onUpdate, onDelete }: 
 
           return (
             <div key={role.id} className="rounded-lg bg-card p-3 shadow-soft">
-              <div className="grid gap-3 md:grid-cols-[1.2fr_170px_170px_auto] md:items-end">
+              <div className="grid gap-3 md:grid-cols-[1.2fr_auto_auto] md:items-end">
                 <div className="space-y-1.5">
                   <div className="flex flex-wrap items-center gap-2">
                     <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Role</Label>
@@ -126,24 +121,6 @@ export function RolesTab({ departmentId, roles, onCreate, onUpdate, onDelete }: 
                     onChange={(event) => setDrafts((prev) => ({ ...prev, [role.id]: { ...draft, name: event.target.value } }))}
                     className="h-9 bg-card text-[13px]"
                   />
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Zoho scope</Label>
-                  <Select
-                    value={draft.zohoReadScope}
-                    onValueChange={(value) =>
-                      setDrafts((prev) => ({ ...prev, [role.id]: { ...draft, zohoReadScope: value as "personalized" | "show_all" } }))
-                    }
-                  >
-                    <SelectTrigger className="h-9 bg-card text-[13px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="personalized">Personalized</SelectItem>
-                      <SelectItem value="show_all">Show all</SelectItem>
-                    </SelectContent>
-                  </Select>
                 </div>
 
                 <label className="flex h-9 items-center gap-2 rounded-md border border-border/60 bg-card px-3 text-[12px] text-foreground/80">
@@ -198,6 +175,23 @@ export function RolesTab({ departmentId, roles, onCreate, onUpdate, onDelete }: 
                   </Button>
                 </div>
               </div>
+
+              <label className={`mt-2.5 flex items-center justify-between rounded-md border p-2.5 ${draft.zohoReadScope === "personalized" ? "border-accent/30 bg-accent/5" : "border-border/60 bg-mat"}`}>
+                <div>
+                  <p className={`text-[12px] font-medium ${draft.zohoReadScope === "personalized" ? "text-accent" : ""}`}>Zoho data personalization</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {draft.zohoReadScope === "personalized"
+                      ? "ON — members with this role only see Zoho records matching their email"
+                      : "OFF — members see all Zoho records"}
+                  </p>
+                </div>
+                <Switch
+                  checked={draft.zohoReadScope === "personalized"}
+                  onCheckedChange={(checked) =>
+                    setDrafts((prev) => ({ ...prev, [role.id]: { ...draft, zohoReadScope: checked ? "personalized" : "show_all" } }))
+                  }
+                />
+              </label>
             </div>
           )
         })}

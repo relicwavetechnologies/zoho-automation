@@ -34,6 +34,7 @@ export interface CachedMembershipRow {
   roleId:               string;
   roleSlug:             string;
   roleName:             string;
+  zohoReadScope:        string;
   systemPrompt?:        string | null;
   skillsMarkdown?:      string | null;
   managerApprovalJson?: unknown;
@@ -152,6 +153,7 @@ export const serializePermissionResult = (r: PermissionResult): CachedPermission
       id: r.department.id,
       name: r.department.name,
       roleSlug: r.department.roleSlug,
+      zohoReadScope: r.department.zohoReadScope,
       ...(r.department.systemPrompt !== undefined ? { systemPrompt: r.department.systemPrompt } : {}),
       ...(r.department.skillsMarkdown !== undefined ? { skillsMarkdown: r.department.skillsMarkdown } : {}),
       ...(r.department.managerApprovalJson !== undefined ? { managerApprovalJson: r.department.managerApprovalJson } : {}),
@@ -173,6 +175,7 @@ export const deserializePermissionResult = (c: CachedPermissionResult): Permissi
         id: asDepartmentId(c.department.id) as DepartmentId,
         name: c.department.name,
         roleSlug: asDepartmentRoleSlug(c.department.roleSlug),
+        zohoReadScope: c.department.zohoReadScope === 'show_all' ? 'show_all' : 'personalized',
         ...(c.department.systemPrompt !== undefined ? { systemPrompt: c.department.systemPrompt } : {}),
         ...(c.department.skillsMarkdown !== undefined ? { skillsMarkdown: c.department.skillsMarkdown } : {}),
         ...(c.department.managerApprovalJson !== undefined ? { managerApprovalJson: c.department.managerApprovalJson } : {}),

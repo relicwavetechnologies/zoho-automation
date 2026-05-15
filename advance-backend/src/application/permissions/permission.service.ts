@@ -193,6 +193,7 @@ export class PermissionServiceImpl implements PermissionService {
       id: asDepartmentId(membership.departmentId) as DepartmentId,
       name: membership.departmentName,
       roleSlug: asDepartmentRoleSlug(membership.roleSlug),
+      zohoReadScope: membership.zohoReadScope === 'show_all' ? 'show_all' : 'personalized',
       ...(membership.systemPrompt ? { systemPrompt: membership.systemPrompt } : {}),
       ...(membership.skillsMarkdown ? { skillsMarkdown: membership.skillsMarkdown } : {}),
       ...(membership.managerApprovalJson !== null ? { managerApprovalJson: membership.managerApprovalJson } : {}),
