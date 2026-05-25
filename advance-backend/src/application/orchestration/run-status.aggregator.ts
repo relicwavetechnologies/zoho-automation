@@ -22,7 +22,8 @@ import {
 
 const RECENT_CAP   = 5;
 const LINE_MAX_CHARS = 80;
-const PLAN_STEP_THRESHOLD = 2;
+/** Show plan todo rail after the first tool call (layout A). */
+const PLAN_STEP_THRESHOLD = 1;
 
 export class RunStatusAggregator {
   private readonly recent: string[] = [];

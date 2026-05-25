@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Divo — Lark status card redesign pitch</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d26;
+      --surface-2: #232733;
+      --border: #2e3344;
+      --text: #e8eaef;
+      --muted: #8b92a8;
+      --accent: #4f8cff;
+      --accent-dim: #3a6fd4;
+      --green: #3dd68c;
+      --green-bg: rgba(61, 214, 140, 0.15);
+      --red: #f87171;
+      --orange: #fbbf24;
+      --ring-track: #2a2f3d;
+      --lark-chat: #14161c;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'DM Sans', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    .page {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 2.5rem 1.5rem 4rem;
+    }
+
+    header.page-head {
+      margin-bottom: 2.5rem;
+    }
+
+    header.page-head h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.5rem;
+    }
+
+    header.page-head p {
+      color: var(--muted);
+      max-width: 52rem;
+      font-size: 0.95rem;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+
+    .pill {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      background: var(--surface-2);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+
+    .pill.bad { color: var(--red); border-color: rgba(248,113,113,0.35); }
+    .pill.good { color: var(--green); border-color: rgba(61,214,140,0.35); }
+
+    section.option {
+      margin-bottom: 3rem;
+      scroll-margin-top: 1rem;
+    }
+
+    .option-label {
+      display: flex;
+      align-items: baseline;
+      gap: 0.75rem;
+      margin-bottom: 0.35rem;
+    }
+
+    .option-label h2 {
+      font-size: 1.15rem;
+      font-weight: 600;
+    }
+
+    .option-label .tag {
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .tag.current { background: rgba(248,113,113,0.2); color: var(--red); }
+    .tag.rec { background: var(--green-bg); color: var(--green); }
+    .tag.alt { background: rgba(79,140,255,0.15); color: var(--accent); }
+
+    .option-desc {
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-bottom: 1rem;
+      max-width: 40rem;
+    }
+
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+      align-items: start;
+    }
+
+    @media (max-width: 800px) {
+      .compare { grid-template-columns: 1fr; }
+    }
+
+    /* Lark chat frame */
+    .chat-frame {
+      background: var(--lark-chat);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      padding: 1rem 1rem 0.75rem;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+    }
+
+    .bot-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.65rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    .bot-meta strong { color: var(--text); }
+    .bot-badge {
+      font-size: 0.6rem;
+      background: #c9a227;
+      color: #1a1400;
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+      font-weight: 700;
+    }
+
+    /* Status card */
+    .card {
+      background: var(--surface);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      font-size: 0.875rem;
+    }
+
+    .card-header {
+      padding: 0.85rem 1rem 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .card-header .title {
+      font-weight: 700;
+      font-size: 1rem;
+    }
+
+    .dept-chip {
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 0.12rem 0.45rem;
+      border-radius: 4px;
+      background: var(--green-bg);
+      color: var(--green);
+    }
+
+    .card-body { padding: 0 1rem 0.75rem; }
+
+    .live-strip {
+      display: grid;
+      gap: 0.65rem;
+      align-items: center;
+      padding: 0.35rem 0 0.5rem;
+    }
+
+    .live-strip.cols-3 {
+      grid-template-columns: 72px 1fr auto;
+    }
+
+    .live-strip.cols-2 {
+      grid-template-columns: 72px 1fr;
+    }
+
+    .live-strip.stack {
+      grid-template-columns: 1fr;
+    }
+
+    .ring {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: conic-gradient(var(--accent) 0deg 90deg, var(--ring-track) 90deg 360deg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .ring::after {
+      content: '25%';
+      position: absolute;
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.65rem;
+      font-weight: 600;
+      color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .ring.sm { width: 48px; height: 48px; }
+    .ring.sm::after { width: 34px; height: 34px; font-size: 0.55rem; }
+
+    .phase-title {
+      font-weight: 700;
+      font-size: 1.05rem;
+      line-height: 1.2;
+    }
+
+    .phase-sub {
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-top: 0.15rem;
+    }
+
+    .side-rail {
+      text-align: right;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.68rem;
+      color: var(--muted);
+      line-height: 1.55;
+      min-width: 7.5rem;
+    }
+
+    .side-rail .active { color: var(--accent); }
+    .side-rail .done { color: var(--green); opacity: 0.85; }
+
+    /* Option B: stepper */
+    .stepper {
+      display: flex;
+      gap: 0.35rem;
+      margin-top: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .step-chip {
+      font-size: 0.65rem;
+      padding: 0.2rem 0.45rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      background: var(--surface-2);
+    }
+
+    .step-chip.run {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(79,140,255,0.12);
+    }
+
+    .step-chip.done {
+      border-color: transparent;
+      color: var(--green);
+      background: var(--green-bg);
+    }
+
+    /* Option C: single line bar */
+    .progress-bar {
+      height: 4px;
+      background: var(--ring-track);
+      border-radius: 2px;
+      margin: 0.5rem 0 0.35rem;
+      overflow: hidden;
+    }
+
+    .progress-bar span {
+      display: block;
+      height: 100%;
+      width: 25%;
+      background: var(--accent);
+      border-radius: 2px;
+    }
+
+    .one-liner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 0.8rem;
+    }
+
+    .one-liner strong { font-weight: 600; }
+
+    /* Option D: timeline list always visible */
+    .timeline-list {
+      margin-top: 0.5rem;
+      border-top: 1px solid var(--border);
+      padding-top: 0.5rem;
+    }
+
+    .tl-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      padding: 0.28rem 0;
+      font-size: 0.78rem;
+    }
+
+    .tl-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      margin-top: 0.35rem;
+      flex-shrink: 0;
+      background: var(--border);
+    }
+
+    .tl-dot.run { background: var(--accent); box-shadow: 0 0 0 3px rgba(79,140,255,0.25); }
+    .tl-dot.done { background: var(--green); }
+
+    .tl-text { flex: 1; }
+    .tl-text .fam {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--accent);
+      margin-right: 0.35rem;
+    }
+
+    .tl-meta { color: var(--muted); font-size: 0.7rem; }
+
+    .panel {
+      border-top: 1px solid var(--border);
+      margin: 0.5rem 0 0;
+      padding: 0.45rem 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--muted);
+      font-size: 0.78rem;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .panel.collapsed::after { content: '▾'; font-size: 0.7rem; }
+    .panel.expanded::after { content: '▴'; font-size: 0.7rem; }
+
+    .card-footer {
+      padding: 0.5rem 1rem 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .btn-stop {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      color: var(--red);
+      font-size: 0.8rem;
+      font-weight: 500;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .btn-stop .sq {
+      width: 10px;
+      height: 10px;
+      background: var(--accent);
+      border-radius: 1px;
+    }
+
+    .notes {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.85rem 1rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    .notes ul { margin: 0.4rem 0 0 1.1rem; }
+    .notes li { margin: 0.2rem 0; }
+    .notes strong { color: var(--text); }
+
+    nav.jump {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(15,17,23,0.92);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      padding: 0.65rem 0;
+      margin: 0 -1.5rem 2rem;
+      padding-left: 1.5rem;
+      padding-right: 1.5rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    nav.jump a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.8rem;
+      font-weight: 500;
+    }
+
+    nav.jump a:hover { text-decoration: underline; }
+
+    .rec-box {
+      margin-top: 2.5rem;
+      padding: 1.25rem 1.5rem;
+      background: linear-gradient(135deg, rgba(79,140,255,0.08), rgba(61,214,140,0.06));
+      border: 1px solid rgba(79,140,255,0.25);
+      border-radius: 12px;
+    }
+
+    .rec-box h3 {
+      font-size: 1rem;
+      margin-bottom: 0.5rem;
+      color: var(--green);
+    }
+
+    .rec-box p { color: var(--muted); font-size: 0.88rem; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="page-head">
+      <h1>Lark status card — layout pitch</h1>
+      <p>
+        Your screenshot shows the pain: <strong>Executing</strong> + <strong>Updating Lark…</strong> + a third
+        <strong>Updating Lark</strong> on the right, with a big dead zone. Below is what we ship today vs four
+        alternatives that use Lark Card 2.0 (ring, columns, collapsible, notation text).
+      </p>
+      <div class="pill-row">
+        <span class="pill bad">Today: triple label</span>
+        <span class="pill bad">Empty middle column</span>
+        <span class="pill good">Goal: one headline + rail</span>
+      </div>
+    </header>
+
+    <nav class="jump">
+      <a href="#current">Current</a>
+      <a href="#a">A — Compact rail</a>
+      <a href="#b">B — Step chips</a>
+      <a href="#c">C — Bar + one line</a>
+      <a href="#d">D — Open timeline</a>
+      <a href="#rec">Recommendation</a>
+    </nav>
+
+    <!-- CURRENT -->
+    <section class="option" id="current">
+      <div class="option-label">
+        <h2>What you see now</h2>
+        <span class="tag current">Production</span>
+      </div>
+      <p class="option-desc">
+        Phase bold + live label in center column; 2-word summary on the right when plan is empty.
+        Feels redundant because preset maps “Updating Lark…” → “Updating Lark”.
+      </p>
+      <div class="compare">
+        <div class="chat-frame">
+          <div class="bot-meta"><strong>Divo</strong> <span class="bot-badge">BOT</span> Zoho automation tool integrated into lark</div>
+          <div class="card">
+            <div class="card-header">
+              <span class="title">Divo AI</span>
+              <span class="dept-chip">Finance</span>
+            </div>
+            <div class="card-body">
+              <div class="live-strip cols-3">
+                <div class="ring"></div>
+                <div>
+                  <div class="phase-title">Executing</div>
+                  <div class="phase-sub">Updating Lark…</div>
+                </div>
+                <div class="side-rail">Updating Lark</div>
+              </div>
+              <div class="panel collapsed">Recent (1)</div>
+            </div>
+            <div class="card-footer">
+              <button type="button" class="btn-stop"><span class="sq"></span> Stop</button>
+            </div>
+          </div>
+        </div>
+        <div class="notes">
+          <strong>Why it feels off</strong>
+          <ul>
+            <li>Three ways to say the same thing</li>
+            <li>Right column only 2 words — huge gap</li>
+            <li>“Recent (1)” hidden; user can’t see the actual step</li>
+            <li>Header has no step context (2/5)</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- A -->
+    <section class="option" id="a">
+      <div class="option-label">
+        <h2>A — Single headline + todo rail (recommended)</h2>
+        <span class="tag rec">Best fit</span>
+      </div>
+      <p class="option-desc">
+        Drop center “Executing”. One live line under the ring area. Right column = mini todo list (● running, ○ next).
+        Header subtitle only when useful: <code>Step 2/5</code>.
+      </p>
+      <div class="chat-frame">
+        <div class="bot-meta"><strong>Divo</strong> <span class="bot-badge">BOT</span></div>
+        <div class="card">
+          <div class="card-header">
+            <span class="title">Divo AI</span>
+            <span class="dept-chip">Finance</span>
+            <span style="margin-left:auto;font-size:0.75rem;color:var(--muted)">Step 2/5</span>
+          </div>
+          <div class="card-body">
+            <div class="live-strip cols-3">
+              <div class="ring"></div>
+              <div>
+                <div class="phase-title" style="font-size:0.95rem">Updating Lark task</div>
+                <div class="phase-sub">Finance overview · Zoho next</div>
+              </div>
+              <div class="side-rail">
+                <div class="active">● LARK · Update task</div>
+                <div>○ ZOHO · List invoices</div>
+                <div>○ PLAN · Write reply</div>
+              </div>
+            </div>
+            <div class="panel collapsed">Trace (1) — tap to expand</div>
+          </div>
+          <div class="card-footer">
+            <button type="button" class="btn-stop"><span class="sq"></span> Stop</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- B -->
+    <section class="option" id="b">
+      <div class="option-label">
+        <h2>B — Horizontal step chips</h2>
+        <span class="tag alt">Alt</span>
+      </div>
+      <p class="option-desc">
+        Good when plan has 3–6 steps. Chips under a smaller ring row; no right column. Works well on narrow mobile Lark.
+      </p>
+      <div class="chat-frame">
+        <div class="card">
+          <div class="card-header">
+            <span class="title">Divo AI</span>
+            <span class="dept-chip">Finance</span>
+          </div>
+          <div class="card-body">
+            <div class="live-strip cols-2">
+              <div class="ring sm"></div>
+              <div>
+                <div class="phase-title" style="font-size:0.9rem">Updating Lark</div>
+                <div class="stepper">
+                  <span class="step-chip done">✓ Zoho</span>
+                  <span class="step-chip run">● Lark</span>
+                  <span class="step-chip">○ Reply</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card-footer">
+            <button type="button" class="btn-stop"><span class="sq"></span> Stop</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- C -->
+    <section class="option" id="c">
+      <div class="option-label">
+        <h2>C — Thin progress bar (minimal)</h2>
+        <span class="tag alt">Alt</span>
+      </div>
+      <p class="option-desc">
+        No ring — just a bar and one line. Lowest visual weight; best for fast/simple runs. Less “agentic” feel.
+      </p>
+      <div class="chat-frame">
+        <div class="card">
+          <div class="card-header">
+            <span class="title">Divo AI</span>
+            <span class="dept-chip">Finance</span>
+          </div>
+          <div class="card-body">
+            <div class="one-liner">
+              <strong>Updating Lark</strong>
+              <span style="color:var(--muted)">2/5 · 25%</span>
+            </div>
+            <div class="progress-bar"><span></span></div>
+            <div class="phase-sub">Next: Zoho Books · list overdue invoices</div>
+          </div>
+          <div class="card-footer">
+            <button type="button" class="btn-stop"><span class="sq"></span> Stop</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- D -->
+    <section class="option" id="d">
+      <div class="option-label">
+        <h2>D — Always-visible timeline (no collapse)</h2>
+        <span class="tag alt">Alt</span>
+      </div>
+      <p class="option-desc">
+        Replaces “Recent (1)” with 3–4 lines always shown. Highest clarity; taller card. Rename collapsible to “Full trace” for debug only.
+      </p>
+      <div class="chat-frame">
+        <div class="card">
+          <div class="card-header">
+            <span class="title">Divo AI</span>
+            <span class="dept-chip">Finance</span>
+          </div>
+          <div class="card-body">
+            <div class="live-strip cols-2">
+              <div class="ring sm"></div>
+              <div class="phase-title" style="font-size:0.9rem">Updating Lark</div>
+            </div>
+            <div class="timeline-list">
+              <div class="tl-row">
+                <span class="tl-dot done"></span>
+                <span class="tl-text"><span class="fam">ZOHO</span> Listed overdue invoices <span class="tl-meta">· 4.2s</span></span>
+              </div>
+              <div class="tl-row">
+                <span class="tl-dot run"></span>
+                <span class="tl-text"><span class="fam">LARK</span> Updating task from invoice <span class="tl-meta">· now</span></span>
+              </div>
+              <div class="tl-row">
+                <span class="tl-dot"></span>
+                <span class="tl-text"><span class="fam">PLAN</span> Prepare finance summary</span>
+              </div>
+            </div>
+          </div>
+          <div class="card-footer">
+            <button type="button" class="btn-stop"><span class="sq"></span> Stop</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="rec-box" id="rec">
+      <h3>Recommendation: ship A, keep D as “verbose” dept setting</h3>
+      <p>
+        <strong>A</strong> fixes your screenshot without a tall card: one primary label, todo rail fills the dead zone,
+        step count in header. Code change: stop emitting <code>**Executing**</code> when it duplicates live label;
+        always prefer plan rail over <code>twoWordActivitySummary</code> when <code>recent</code> has lines; map live label to
+        sentence case once. <strong>B</strong> if plan steps are always known upfront. <strong>C</strong> for lightweight mode.
+        <strong>D</strong> optional flag for power users / finance dept.
+      </p>
+    </div>
+  </div>
+</body>
+</html>

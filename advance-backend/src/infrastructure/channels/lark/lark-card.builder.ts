@@ -148,11 +148,16 @@ function circularProgressElement(pct: number): Record<string, unknown> {
   };
 }
 
-/** Header subtitle only when it adds step context (e.g. "Executing · 2/5"). */
+/** Header subtitle: step counter when the run has plan steps (e.g. "Step 2/5"). */
 function statusHeaderSubtitle(timeline?: ChannelTimeline): string | undefined {
-  const phase = timeline?.phase;
-  if (!phase?.includes('·')) return undefined;
-  return phase;
+  const total = timeline?.totalSteps;
+  if (!total || total <= 0) return undefined;
+  const completed = timeline.completedSteps ?? 0;
+  const hasRunning = timeline.plan?.some(s => s.status === 'running') ?? false;
+  const current = hasRunning
+    ? Math.min(completed + 1, total)
+    : Math.max(completed, 1);
+  return `Step ${current}/${total}`;
 }
 
 const SIDE_RAIL_MAX_CHARS = 24;
@@ -168,64 +173,87 @@ function shortStepLabel(step: ChannelPlanStep): string {
     : base;
 }
 
-/** ~2-word activity hint for the right column when there is no active todo rail. */
-function twoWordActivitySummary(timeline: ChannelTimeline): string | undefined {
-  const live = (timeline.liveLabel ?? '').replace(/…+$/u, '').trim();
-  if (!live) return undefined;
-
-  const presets: Array<[RegExp, string]> = [
-    [/preparing response/i, 'Writing reply'],
-    [/thinking/i,          'Thinking'],
-    [/zoho|invoice|books/i,'Reading Zoho'],
-    [/lark|task/i,          'Updating Lark'],
-    [/google|gmail|email/i, 'Email ops'],
-    [/plan|todo|schedul/i,  'Updating plan'],
-    [/context|search/i,     'Searching'],
-  ];
-  for (const [pattern, label] of presets) {
-    if (pattern.test(live)) return label;
-  }
-
-  const words = live.split(/\s+/).filter(Boolean).slice(0, 2);
-  return words.length ? words.join(' ') : undefined;
+function normalizeLiveText(value: string): string {
+  return value.replace(/…+$/u, '').trim().toLowerCase();
 }
 
-/** Compact todo rail or 2-word summary for the right side of the live strip. */
+/** Compact todo rail from plan steps (● running, ○ next). */
+function planToSideRail(plan: readonly ChannelPlanStep[]): string | undefined {
+  const running = plan.find(s => s.status === 'running');
+  const pending = plan.filter(s => s.status === 'pending').slice(0, 2);
+  const lines: string[] = [];
+  if (running) lines.push(`● ${shortStepLabel(running)}`);
+  for (const step of pending) lines.push(`○ ${shortStepLabel(step)}`);
+  const done = plan.filter(s => s.status === 'done').slice(-1);
+  if (!running && done.length && lines.length < 3) {
+    lines.unshift(`✓ ${shortStepLabel(done[0]!)}`);
+  }
+  return lines.length ? lines.join('\n') : undefined;
+}
+
+/** Fallback rail from recent trace lines when plan is not populated yet. */
+function recentToSideRail(recent: readonly string[]): string | undefined {
+  const lines: string[] = [];
+  for (const raw of recent.slice(-3)) {
+    const done = /^\[done\]/i.test(raw);
+    const text = raw.replace(/^\[(run|done)\]\s*/i, '').trim();
+    if (!text) continue;
+    const short = text.length > SIDE_RAIL_MAX_CHARS
+      ? `${text.slice(0, SIDE_RAIL_MAX_CHARS - 1)}…`
+      : text;
+    lines.push(done ? `✓ ${short}` : `● ${short}`);
+  }
+  return lines.length ? lines.join('\n') : undefined;
+}
+
+/** Right column: mini todo rail (never a duplicate of the center live line). */
 function buildSideRailMarkdown(timeline: ChannelTimeline): string | undefined {
   const plan = timeline.plan;
   if (plan?.length) {
-    const running = plan.find(s => s.status === 'running');
-    const pending = plan.filter(s => s.status === 'pending').slice(0, 2);
-    const lines: string[] = [];
-    if (running) lines.push(`● ${shortStepLabel(running)}`);
-    for (const step of pending) lines.push(`○ ${shortStepLabel(step)}`);
-    if (lines.length) return lines.join('\n');
+    const rail = planToSideRail(plan);
+    if (rail) return rail;
   }
 
-  return twoWordActivitySummary(timeline);
+  if (timeline.recent?.length) {
+    const rail = recentToSideRail(timeline.recent);
+    if (!rail) return undefined;
+    const live = normalizeLiveText(timeline.liveLabel ?? '');
+    const first = normalizeLiveText(rail.replace(/^[●○✓]\s*/, '').split('\n')[0] ?? '');
+    if (live && first === live && !rail.includes('\n')) return undefined;
+    return rail;
+  }
+
+  return undefined;
 }
 
-/** Beside the progress ring — avoid repeating the same word as header + body. */
+/** One primary line beside the ring (no separate "Executing" headline). */
 function liveStripMarkdown(timeline: ChannelTimeline): string {
-  let live  = timeline.liveLabel ?? 'Working…';
-  const phase = timeline.phase;
+  let live = timeline.liveLabel ?? 'Working…';
 
   if (
-    phase?.includes('·')
-    && timeline.totalSteps
+    timeline.totalSteps
     && timeline.completedSteps === timeline.totalSteps
+    && !timeline.plan?.some(s => s.status === 'running')
     && /working/i.test(live)
   ) {
     live = 'Preparing response…';
   }
 
-  if (!phase) return live;
-  if (phase.includes('·')) return `**${phase}**\n${live}`;
+  return live;
+}
 
-  const stripEllipsis = (s: string) => s.replace(/…+$/u, '').trim().toLowerCase();
-  if (stripEllipsis(phase) === stripEllipsis(live)) return live;
-
-  return `**${phase}**\n${live}`;
+/** Optional second line: what's queued after the active step. */
+function liveStripSubline(timeline: ChannelTimeline): string | undefined {
+  const plan = timeline.plan;
+  if (!plan?.length) return undefined;
+  const pending = plan.find(s => s.status === 'pending');
+  if (!pending) return undefined;
+  const fam = pending.toolFamily && pending.toolFamily !== 'other'
+    ? TOOL_FAMILY_LABEL[pending.toolFamily]
+    : '';
+  const hint = fam ? `${fam} next` : 'Next step';
+  const words = pending.title.split(/\s+/).filter(Boolean).slice(0, 4).join(' ');
+  return words ? `${hint} · ${words}` : hint;
 }
 
 function liveStatusColumnSet(timeline: ChannelTimeline): Record<string, unknown> {
@@ -245,11 +273,17 @@ function liveStatusColumnSet(timeline: ChannelTimeline): Record<string, unknown>
       width:           'weighted',
       weight:          mainWeight,
       vertical_align:  'center',
-      elements:        [{
-        tag:       'markdown',
-        content:   liveStripMarkdown(timeline),
-        text_size: 'normal',
-      }],
+      elements:        (() => {
+        const main = liveStripMarkdown(timeline);
+        const sub  = liveStripSubline(timeline);
+        const headline = main.replace(/…+$/u, '').trim() || main;
+        const content = sub ? `**${headline}**\n${sub}` : main;
+        return [{
+          tag:       'markdown',
+          content,
+          text_size: 'normal',
+        }];
+      })(),
     },
   ];
 
@@ -276,26 +310,6 @@ function liveStatusColumnSet(timeline: ChannelTimeline): Record<string, unknown>
     horizontal_spacing:  '8px',
     columns,
   };
-}
-
-function stepStatusMarker(status: ChannelPlanStep['status']): string {
-  switch (status) {
-    case 'done':    return '✓';
-    case 'running': return '●';
-    case 'failed':  return '✗';
-    case 'skipped': return '○';
-    default:        return '○';
-  }
-}
-
-function formatPlanMarkdown(plan: readonly ChannelPlanStep[]): string {
-  return plan.map(step => {
-    const badge = step.toolFamily && step.toolFamily !== 'other'
-      ? `**${TOOL_FAMILY_LABEL[step.toolFamily]}** `
-      : '';
-    const sub = step.subtitle ? `\n   ${step.subtitle}` : '';
-    return `${stepStatusMarker(step.status)} ${badge}${step.title}${sub}`;
-  }).join('\n');
 }
 
 function collapsiblePanel(
@@ -563,27 +577,17 @@ export function buildStatusCard(input: StatusCardInput): string {
     elements.push(mdElement('Working…'));
   }
 
-  if (timeline?.plan?.length) {
-    const maxPlanDisplay = 10;
-    const planItems = timeline.plan.length > maxPlanDisplay
-      ? timeline.plan.slice(-maxPlanDisplay)
-      : timeline.plan;
-    elements.push(hrElement('8px 0 0 0'));
-    elements.push(collapsiblePanel(
-      'plan_panel',
-      `Plan (${planItems.length})`,
-      formatPlanMarkdown(planItems),
-      false,
-    ));
-  }
-
   if (timeline?.recent?.length) {
     const recentBody = timeline.recent
       .map(line => line.replace(/^\[(run|done)\]\s*/i, ''))
       .join('\n');
+    const traceTitle = timeline.plan?.length
+      ? `Trace (${timeline.recent.length})`
+      : `Trace (${timeline.recent.length}) — tap to expand`;
+    elements.push(hrElement('8px 0 0 0'));
     elements.push(collapsiblePanel(
       'recent_panel',
-      `Recent (${timeline.recent.length})`,
+      traceTitle,
       recentBody,
       false,
     ));
