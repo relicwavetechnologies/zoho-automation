@@ -1,10 +1,13 @@
 import { Worker, type Job } from 'bullmq';
+import type { LanguageModel } from 'ai';
 import type { IngestionJobPayload } from './ingestion.queue';
 import { INGESTION_QUEUE_NAME } from './ingestion.queue';
 import type { IngestionService } from './ingestion.service';
 import type { LarkChannelAdapter } from '../../infrastructure/channels/lark/lark.adapter';
 import type { Logger } from '../../shared/logger';
 import type { TypedEnv } from '../../config/env';
+import type { LarkChatContextService } from '../chat-context/lark-chat-context.service';
+import type { GroupChatAttachmentContext } from '../../domain/conversation/group-context';
 
 export interface IngestionWorkerDeps {
   redisUrl:         string;
@@ -12,7 +15,9 @@ export interface IngestionWorkerDeps {
   larkAdapter:      LarkChannelAdapter;
   env:              TypedEnv;
   logger:           Logger;
+  chatContext?:     LarkChatContextService;
   concurrency?:     number;
+  summaryModel?:    LanguageModel;
 }
 
 export class IngestionWorker {
@@ -74,11 +79,34 @@ export class IngestionWorker {
         ...(payload.allowedRoles ? { allowedRoles: payload.allowedRoles } : {}),
       });
 
-      // Quote-reply to the original file message with success notification
+      await this.updateGroupAttachment(payload, {
+        kind: payload.jobType === 'lark_image' || payload.mimeType.startsWith('image/') ? 'image' : 'file',
+        fileName: payload.fileName,
+        mimeType: payload.mimeType,
+        ...(payload.larkFileKey ? { larkFileKey: payload.larkFileKey } : {}),
+        ...(payload.larkMessageId ? { larkMessageId: payload.larkMessageId } : {}),
+        fileAssetId: result.fileAssetId,
+        cloudinaryUrl: result.cloudinaryUrl,
+        ingestionStatus: 'indexed',
+        indexedChunkCount: result.chunkCount,
+        documentClass: result.documentClass,
+        retrievalHint: `For more detail beyond the inline excerpt, use contextSearch or documentRag with fileAssetId="${result.fileAssetId}" or filename "${payload.fileName}".`,
+      });
+
+      // Quote-reply to the original file message with summary
       if (payload.chatId && payload.replyToMessageId) {
+        let summaryCard: string;
+        if (this.deps.summaryModel && result.textPreview) {
+          const summary = await this.generateFileSummary(
+            payload.fileName, result.textPreview, result.chunkCount,
+          );
+          summaryCard = buildSummaryCard(payload.fileName, result.chunkCount, summary);
+        } else {
+          summaryCard = buildIndexedCard(payload.fileName, result.chunkCount);
+        }
         await this.deps.larkAdapter.sendToChatId(
           payload.chatId,
-          buildIndexedCard(payload.fileName, result.chunkCount),
+          summaryCard,
           payload.replyToMessageId,
         ).catch(() => { /* non-fatal */ });
       }
@@ -87,6 +115,15 @@ export class IngestionWorker {
       const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
       if (isLastAttempt && payload.chatId && payload.replyToMessageId) {
         const errMsg = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+        await this.updateGroupAttachment(payload, {
+          kind: payload.jobType === 'lark_image' || payload.mimeType.startsWith('image/') ? 'image' : 'file',
+          fileName: payload.fileName,
+          mimeType: payload.mimeType,
+          ...(payload.larkFileKey ? { larkFileKey: payload.larkFileKey } : {}),
+          ...(payload.larkMessageId ? { larkMessageId: payload.larkMessageId } : {}),
+          ingestionStatus: 'failed',
+          error: errMsg,
+        });
         await this.deps.larkAdapter.sendToChatId(
           payload.chatId,
           buildFailedCard(payload.fileName, errMsg),
@@ -107,6 +144,53 @@ export class IngestionWorker {
     }
     return client.downloadFile(payload.larkMessageId, payload.larkFileKey);
   }
+
+  private async generateFileSummary(
+    fileName: string,
+    textPreview: string,
+    chunkCount: number,
+  ): Promise<string> {
+    if (!this.deps.summaryModel) return '';
+    try {
+      const { generateText } = await import('ai');
+      const result = await generateText({
+        model: this.deps.summaryModel,
+        system: 'You summarize documents in exactly 6 concise bullet points. No preamble, no trailing text — just 6 lines starting with •.',
+        messages: [{
+          role: 'user',
+          content: `Summarize this document "${fileName}" (${chunkCount} sections) in exactly 6 bullet points:\n\n${textPreview.slice(0, 8000)}`,
+        }],
+        maxRetries: 1,
+        abortSignal: AbortSignal.timeout(15_000),
+      });
+      return result.text.trim();
+    } catch (e) {
+      this.log.warn('ingestion.worker.summary.failed', { fileName, error: String(e) });
+      return '';
+    }
+  }
+
+  private async updateGroupAttachment(
+    payload: IngestionJobPayload,
+    attachment: GroupChatAttachmentContext,
+  ): Promise<void> {
+    if (!this.deps.chatContext || !payload.chatId || !payload.groupContextMessageId) return;
+
+    const result = await this.deps.chatContext.updateMessageAttachments({
+      companyId: payload.companyId,
+      chatId: payload.chatId,
+      messageId: payload.groupContextMessageId,
+      attachments: [attachment],
+    });
+
+    if (!result.ok) {
+      this.log.warn('ingestion.worker.group_context_update_failed', {
+        fileName: payload.fileName,
+        messageId: payload.groupContextMessageId,
+        error: result.error.message,
+      });
+    }
+  }
 }
 
 function buildIndexedCard(fileName: string, chunkCount: number): string {
@@ -120,6 +204,35 @@ function buildIndexedCard(fileName: string, chunkCount: number): string {
           content: `✅ **Indexed** ${fileName} — ${chunkCount} section${chunkCount !== 1 ? 's' : ''}. Ask me anything about it.`,
         },
       }],
+    }),
+  });
+}
+
+function buildSummaryCard(fileName: string, chunkCount: number, summary: string): string {
+  const summaryBlock = summary || 'Summary not available — ask me anything about this file.';
+  return JSON.stringify({
+    msg_type: 'interactive',
+    card: JSON.stringify({
+      header: {
+        template: 'green',
+        title: { tag: 'plain_text', content: `📄 Read: ${fileName}` },
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            tag: 'lark_md',
+            content: summaryBlock,
+          },
+        },
+        {
+          tag: 'note',
+          elements: [{
+            tag: 'plain_text',
+            content: `${chunkCount} section${chunkCount !== 1 ? 's' : ''} indexed — ask me anything about this file.`,
+          }],
+        },
+      ],
     }),
   });
 }

@@ -178,6 +178,7 @@ const getCapabilities = (role: AdminRole) => {
     { id: 'people', label: 'People', path: '/people', roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'] },
     { id: 'departments', label: 'Departments', path: '/departments', roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'] },
     { id: 'ai-ops', label: 'AI Ops', path: '/ai-ops', roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'] },
+    { id: 'memories', label: 'Memories', path: '/memories', roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'] },
     { id: 'settings', label: 'Settings', path: '/settings', roles: ['SUPER_ADMIN', 'COMPANY_ADMIN'] },
   ];
 

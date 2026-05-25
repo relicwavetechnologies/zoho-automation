@@ -68,6 +68,57 @@ export class ZohoBooksClient implements ZohoBooksClientPort {
     return { invoiceId };
   }
 
+  async sendInvoice(invoiceId: string, email?: string): Promise<{ invoiceId: string }> {
+    await this.call<Record<string, unknown>>(`/invoices/${encodeURIComponent(invoiceId)}/email`, {
+      method: 'POST',
+      body:   JSON.stringify(email ? { to_mail_ids: [email] } : {}),
+    });
+    return { invoiceId };
+  }
+
+  async recordPayment(fields: Record<string, unknown>): Promise<{ paymentId: string }> {
+    const data = await this.call<Record<string, unknown>>('/customerpayments', {
+      method: 'POST',
+      body:   JSON.stringify(fields),
+    });
+    const payment = asRec(data['payment']);
+    const customerPayment = asRec(data['customerpayment']);
+    const paymentId = typeof payment['payment_id'] === 'string'
+      ? payment['payment_id']
+      : typeof customerPayment['payment_id'] === 'string' ? customerPayment['payment_id'] : '';
+    if (!paymentId) throw new Error('Zoho Books recordPayment: no payment_id in response');
+    return { paymentId };
+  }
+
+  async createExpense(fields: Record<string, unknown>): Promise<{ expenseId: string }> {
+    const data = await this.call<Record<string, unknown>>('/expenses', {
+      method: 'POST',
+      body:   JSON.stringify(fields),
+    });
+    const expense = asRec(data['expense']);
+    const expenseId = typeof expense['expense_id'] === 'string' ? expense['expense_id'] : '';
+    if (!expenseId) throw new Error('Zoho Books createExpense: no expense_id in response');
+    return { expenseId };
+  }
+
+  async createBill(fields: Record<string, unknown>): Promise<{ billId: string }> {
+    const data = await this.call<Record<string, unknown>>('/bills', {
+      method: 'POST',
+      body:   JSON.stringify(fields),
+    });
+    const bill = asRec(data['bill']);
+    const billId = typeof bill['bill_id'] === 'string' ? bill['bill_id'] : '';
+    if (!billId) throw new Error('Zoho Books createBill: no bill_id in response');
+    return { billId };
+  }
+
+  async voidInvoice(invoiceId: string): Promise<{ invoiceId: string }> {
+    await this.call<Record<string, unknown>>(`/invoices/${encodeURIComponent(invoiceId)}/status/void`, {
+      method: 'POST',
+    });
+    return { invoiceId };
+  }
+
   async listContacts(limit = 25): Promise<unknown[]> {
     const params = new URLSearchParams({ per_page: String(Math.min(limit, 200)) });
     const data = await this.call<Record<string, unknown>>(`/contacts?${params}`);

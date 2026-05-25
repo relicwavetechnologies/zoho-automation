@@ -2,6 +2,8 @@ import { Annotation } from '@langchain/langgraph';
 import type { Tool as AppTool } from '../tools/tool.contract';
 import type { PermissionResult } from '../../permissions/permission.types';
 import type { RunContext } from '../../../domain/orchestration/run-context';
+import type { ApprovalGateService } from '../../approval/approval-gate.service';
+import type { GroupContextContentPart } from '../../../domain/conversation/group-context';
 
 export interface SupervisorGraphMessage {
   readonly role: 'user' | 'assistant';
@@ -31,6 +33,22 @@ export const SupervisorGraphState = Annotation.Root({
     reducer: (_prev, next) => next,
     default: () => null,
   }),
+  memoryContext: Annotation<string>({
+    reducer: (_prev, next) => next,
+    default: () => '',
+  }),
+  groupContext: Annotation<string>({
+    reducer: (_prev, next) => next,
+    default: () => '',
+  }),
+  groupContextParts: Annotation<readonly GroupContextContentPart[]>({
+    reducer: (_prev, next) => next,
+    default: () => [],
+  }),
+  approvalGate: Annotation<ApprovalGateService | undefined>({
+    reducer: (_prev, next) => next,
+    default: () => undefined,
+  }),
   supervisorResult: Annotation<string | null>({
     reducer: (_prev, next) => next,
     default: () => null,
@@ -42,6 +60,10 @@ export const SupervisorGraphState = Annotation.Root({
   agentDelegations: Annotation<SupervisorGraphDelegation[]>({
     default: () => [],
     reducer: (prev, next) => [...prev, ...next],
+  }),
+  toolResults: Annotation<Array<{ toolName: string; output: string }>>({
+    default: () => [],
+    reducer: (_prev, next) => next,
   }),
   status: Annotation<'thinking' | 'done' | 'error'>({
     reducer: (_prev, next) => next,

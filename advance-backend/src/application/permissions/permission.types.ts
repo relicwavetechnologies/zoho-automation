@@ -24,6 +24,7 @@ export interface DepartmentMeta {
   readonly id: DepartmentId;
   readonly name: string;
   readonly roleSlug: DepartmentRoleSlug;
+  readonly zohoReadScope: 'personalized' | 'show_all';
   readonly systemPrompt?: string;
   readonly skillsMarkdown?: string;
   readonly managerApprovalJson?: unknown;
@@ -49,7 +50,10 @@ export interface CachedPermissionResult {
     id: string;
     name: string;
     roleSlug: string;
+    zohoReadScope: 'personalized' | 'show_all';
     systemPrompt?: string;
     skillsMarkdown?: string;
+    managerApprovalJson?: unknown;
+    zohoRateLimitJson?: unknown;
   };
 }

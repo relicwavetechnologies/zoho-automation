@@ -3,6 +3,15 @@ import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 import type { Turn } from '../../domain/conversation/turn';
+import type { CachePort } from '../../shared/cache';
+
+const HISTORY_CACHE_TTL = 300; // 5 min; invalidated on every appendTurn
+const HISTORY_CACHE_WINDOW = 60;
+const historyCacheKey = (chatId: string) => `history:v2:${chatId}`;
+
+function latestTurns(turns: readonly Turn[], limit: number): Turn[] {
+  return turns.slice(Math.max(0, turns.length - limit));
+}
 
 export interface ConversationRepoPort {
   getHistory(chatId: string, limit?: number): Promise<Result<Turn[], InfraError>>;
@@ -11,21 +20,34 @@ export interface ConversationRepoPort {
 }
 
 export class ConversationRepository implements ConversationRepoPort {
-  constructor(private readonly db: PrismaClient) {}
+  constructor(
+    private readonly db: PrismaClient,
+    private readonly cache?: CachePort,
+  ) {}
 
   async getHistory(chatId: string, limit = 40): Promise<Result<Turn[], InfraError>> {
+    // Cache read — cache stores the full window; apply limit in memory.
+    if (this.cache) {
+      const cached = await this.cache.get<Turn[]>(historyCacheKey(chatId));
+      if (cached.ok && cached.value !== null) {
+        return ok(latestTurns(cached.value, limit));
+      }
+    }
+
     try {
+      const dbLimit = Math.max(limit, HISTORY_CACHE_WINDOW);
       const conv = await this.db.runtimeConversation.findFirst({
         where: { channelConversationKey: chatId },
         include: {
           messages: {
-            orderBy: { sequence: 'asc' },
-            take: limit,
+            orderBy: { sequence: 'desc' },
+            take: dbLimit,
           },
         },
       });
       if (!conv) return ok([]);
-      const turns: Turn[] = conv.messages.map(r => {
+      const messages = [...conv.messages].reverse();
+      const turns: Turn[] = messages.map(r => {
         const base: Turn = {
           id: r.id,
           role: r.role as Turn['role'],
@@ -41,7 +63,11 @@ export class ConversationRepository implements ConversationRepoPort {
         }
         return base;
       });
-      return ok(turns);
+      // Populate cache — fire-and-forget; don't block the caller.
+      if (this.cache && turns.length > 0) {
+        void this.cache.set(historyCacheKey(chatId), turns, HISTORY_CACHE_TTL);
+      }
+      return ok(latestTurns(turns, limit));
     } catch (e) {
       return err(wrapInfra('prisma', 'getConversationHistory', e));
     }
@@ -116,6 +142,10 @@ export class ConversationRepository implements ConversationRepoPort {
         if (typeof n === 'string') (appended as unknown as Record<string, unknown>)['toolName'] = n;
       }
       if (row.toolResultJson !== null) (appended as unknown as Record<string, unknown>)['toolOutcome'] = row.toolResultJson;
+      // Invalidate history cache so next getHistory() fetches fresh turns.
+      if (this.cache) {
+        void this.cache.del(historyCacheKey(chatId));
+      }
       return ok(appended);
     } catch (e) {
       return err(wrapInfra('prisma', 'appendConversationTurn', e));
@@ -129,6 +159,9 @@ export class ConversationRepository implements ConversationRepoPort {
       });
       if (conv) {
         await this.db.runtimeConversationMessage.deleteMany({ where: { conversationId: conv.id } });
+      }
+      if (this.cache) {
+        void this.cache.del(historyCacheKey(chatId));
       }
       return ok(undefined);
     } catch (e) {

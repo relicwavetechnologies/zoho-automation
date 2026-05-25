@@ -1,8 +1,13 @@
 import type { PrismaClient } from '../../generated/prisma';
+import { randomBytes } from 'node:crypto';
 import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 import type { LarkContactRecord } from '../../application/context-search/context-search.ports';
+import type { CachePort } from '../../shared/cache';
+
+const LARK_IDENTITY_TTL = 900; // 15 min — identity almost never changes; invalidated on OAuth success
+const identityCacheKey = (larkOpenId: string) => `lark:id:v1:${larkOpenId}`;
 
 export interface ChannelIdentityRow {
   id: string;
@@ -23,11 +28,36 @@ export interface ResolvedUserIdentity {
   activeDepartmentId?: string;
   /** Lark open_id (when resolved via Lark channel). */
   larkOpenId?: string;
+  /** Human-readable display name from the channel identity record. */
+  displayName?: string;
+  /** Email address from the channel identity record. */
+  email?: string;
 }
+
+export type PendingLarkLoginResolution =
+  | {
+      status: 'ready';
+      userId: string;
+      companyId: string;
+      aiRole: string;
+      larkOpenId: string;
+      displayName?: string;
+      email: string;
+      createdUser: boolean;
+    }
+  | {
+      status: 'missing_email';
+      companyId: string;
+      aiRole: string;
+      larkOpenId: string;
+      displayName?: string;
+    };
 
 export interface ChannelIdentityRepoPort {
   /** Resolves a user identity by Lark openId without requiring a known companyId (multi-tenant safe). */
   resolveByLarkOpenId(larkOpenId: string): Promise<Result<ResolvedUserIdentity | null, InfraError>>;
+  /** Prepares a one-time OAuth link for a known Lark identity that has no active auth link yet. */
+  prepareLarkLogin(larkOpenId: string): Promise<Result<PendingLarkLoginResolution | null, InfraError>>;
   /** Resolves a user identity by internal userId — used when only userId is known (e.g. approval resume). */
   resolveByUserId(userId: string): Promise<Result<ResolvedUserIdentity | null, InfraError>>;
 }
@@ -64,15 +94,26 @@ function scoreContactRow(
 }
 
 export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
-  constructor(private readonly db: PrismaClient) {}
+  constructor(
+    private readonly db: PrismaClient,
+    private readonly cache?: CachePort,
+  ) {}
 
   async resolveByLarkOpenId(
     larkOpenId: string,
   ): Promise<Result<ResolvedUserIdentity | null, InfraError>> {
+    // Cache read — only non-null identities are cached (null = user may register soon).
+    if (this.cache) {
+      const cached = await this.cache.get<ResolvedUserIdentity>(identityCacheKey(larkOpenId));
+      if (cached.ok && cached.value !== null) {
+        return ok(cached.value);
+      }
+    }
+
     try {
       const ci = await this.db.channelIdentity.findFirst({
         where: { channel: 'lark', larkOpenId },
-        select: { id: true, aiRole: true, channel: true, companyId: true },
+        select: { id: true, aiRole: true, channel: true, companyId: true, displayName: true, email: true },
       });
       if (!ci) return ok(null);
 
@@ -87,16 +128,102 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
         select: { activeDepartmentId: true },
       });
 
-      return ok({
+      const resolved: ResolvedUserIdentity = {
         userId: authLink.userId,
         companyId: ci.companyId,
         aiRole: ci.aiRole,
         channel: ci.channel,
         larkOpenId,
+        ...(ci.displayName ? { displayName: ci.displayName } : {}),
+        ...(ci.email ? { email: ci.email } : {}),
         ...(deptPref?.activeDepartmentId ? { activeDepartmentId: deptPref.activeDepartmentId } : {}),
-      });
+      };
+      // Populate cache — fire-and-forget.
+      if (this.cache) {
+        void this.cache.set(identityCacheKey(larkOpenId), resolved, LARK_IDENTITY_TTL);
+      }
+      return ok(resolved);
     } catch (e) {
       return err(wrapInfra('prisma', 'resolveByLarkOpenId', e));
+    }
+  }
+
+  /** Invalidate cached identity for a Lark user (call after OAuth link created/updated). */
+  async invalidateIdentityCache(larkOpenId: string): Promise<void> {
+    if (this.cache) {
+      void this.cache.del(identityCacheKey(larkOpenId));
+    }
+  }
+
+  async prepareLarkLogin(
+    larkOpenId: string,
+  ): Promise<Result<PendingLarkLoginResolution | null, InfraError>> {
+    try {
+      const ci = await this.db.channelIdentity.findFirst({
+        where: { channel: 'lark', larkOpenId },
+        select: {
+          aiRole:      true,
+          companyId:   true,
+          displayName: true,
+          email:       true,
+          larkOpenId:  true,
+        },
+      });
+      if (!ci?.larkOpenId) return ok(null);
+
+      const displayName = ci.displayName?.trim() || undefined;
+      const email = ci.email?.trim().toLowerCase();
+      if (!email) {
+        return ok({
+          status: 'missing_email',
+          companyId: ci.companyId,
+          aiRole: ci.aiRole,
+          larkOpenId: ci.larkOpenId,
+          ...(displayName ? { displayName } : {}),
+        });
+      }
+
+      const existingUser = await this.db.user.findUnique({
+        where:  { email },
+        select: { id: true },
+      });
+
+      if (existingUser) {
+        return ok({
+          status: 'ready',
+          userId: existingUser.id,
+          companyId: ci.companyId,
+          aiRole: ci.aiRole,
+          larkOpenId: ci.larkOpenId,
+          ...(displayName ? { displayName } : {}),
+          email,
+          createdUser: false,
+        });
+      }
+
+      const user = await this.db.user.create({
+        data: {
+          email,
+          // Lark-first users authenticate through OAuth. This random password is
+          // intentionally not user-facing and cannot be guessed for password login.
+          password: `lark-oauth-pending:${randomBytes(32).toString('hex')}`,
+          ...(displayName ? { name: displayName } : {}),
+        },
+        select: { id: true },
+      });
+
+      return ok({
+        status: 'ready',
+        userId: user.id,
+        companyId: ci.companyId,
+        aiRole: ci.aiRole,
+        larkOpenId: ci.larkOpenId,
+        ...(displayName ? { displayName } : {}),
+        email,
+        createdUser: true,
+      });
+    } catch (e) {
+      return err(wrapInfra('prisma', 'prepareLarkLogin', e));
     }
   }
 

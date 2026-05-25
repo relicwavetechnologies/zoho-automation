@@ -20,6 +20,7 @@ import type { Clock } from '../../../shared/clock';
 import type { PermissionResult } from '../../permissions/permission.types';
 import type { RunContext } from '../../../domain/orchestration/run-context';
 import type { ApprovalGateService } from '../../approval/approval-gate.service';
+import { formatAmount, formatDate } from '../../zoho/zoho-format.utils';
 
 export interface AdapterContext {
   runContext:    RunContext;
@@ -30,6 +31,8 @@ export interface AdapterContext {
   approvalGate?: ApprovalGateService;
   /** Lark chat_id — required for the approval gate idempotency key. */
   chatId?:       string;
+  /** Live progress callback — tool updates flow to the user's status bubble. */
+  onProgress?:   ((message: string) => void) | undefined;
 }
 
 export function toAISdkTool(
@@ -42,6 +45,7 @@ export function toAISdkTool(
     correlationId: t.id,
     logger:        adapterCtx.logger.child({ toolId: t.id }),
     clock:         adapterCtx.clock,
+    ...(adapterCtx.onProgress ? { onProgress: adapterCtx.onProgress } : {}),
   };
 
   const description = t.parameterDocs
@@ -132,9 +136,10 @@ export function toAISdkTools(
   ) as unknown as ToolSet;
 }
 
-function buildArgsSummary(toolId: string, action: string, args: unknown): string {
+export function buildArgsSummary(toolId: string, action: string, args: unknown): string {
   try {
     const a = args as Record<string, unknown>;
+    if (toolId === 'googleGmail') return buildGmailArgsSummary(action, a);
     const parts: string[] = [`${toolId}.${action}`];
     // Append the most human-readable fields if present
     for (const key of ['to', 'subject', 'title', 'name', 'query', 'module', 'chatId', 'calendarId']) {
@@ -143,8 +148,72 @@ function buildArgsSummary(toolId: string, action: string, args: unknown): string
         parts.push(`${key}=${val}`);
       }
     }
+    if (toolId === 'zohoBooks') {
+      const fields = a['fields'] && typeof a['fields'] === 'object' && !Array.isArray(a['fields'])
+        ? a['fields'] as Record<string, unknown>
+        : {};
+      const merged = { ...fields, ...a };
+      const currency = typeof merged['currency_code'] === 'string' ? merged['currency_code'] : 'USD';
+      for (const key of ['customer_name', 'vendor_name', 'invoice_id', 'bill_id', 'expense_id']) {
+        if (merged[key] !== undefined) parts.push(`${key}=${String(merged[key]).slice(0, 80)}`);
+      }
+      for (const key of ['amount', 'total', 'balance']) {
+        const raw = merged[key];
+        const amount = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+        if (Number.isFinite(amount)) parts.push(`${key}=${formatAmount(amount, currency)}`);
+      }
+      for (const key of ['date', 'due_date', 'payment_date']) {
+        if (typeof merged[key] === 'string') parts.push(`${key}=${formatDate(merged[key])}`);
+      }
+    }
     return parts.join(' | ');
   } catch {
     return `${toolId}.${action}`;
   }
+}
+
+function buildGmailArgsSummary(action: string, a: Record<string, unknown>): string {
+  const op = typeof a['op'] === 'string' ? a['op'] : action;
+  const parts: string[] = [`googleGmail.${op}`];
+  const to = stringArray(a['to']);
+  const cc = stringArray(a['cc']);
+  const bcc = stringArray(a['bcc']);
+  const subject = typeof a['subject'] === 'string' ? a['subject'] : undefined;
+  const body = typeof a['bodyText'] === 'string'
+    ? a['bodyText']
+    : typeof a['body'] === 'string'
+      ? a['body']
+      : '';
+  const messageCount = stringArray(a['messageIds']).length + (typeof a['messageId'] === 'string' ? 1 : 0);
+
+  if (to.length) parts.push(`to=${to.join(', ').slice(0, 120)}`);
+  if (cc.length) parts.push(`cc=${cc.length}`);
+  if (bcc.length) parts.push(`bcc=${bcc.length}`);
+  if (subject) parts.push(`subject=${subject.slice(0, 120)}`);
+  if (body) parts.push(`preview=${body.replace(/\s+/g, ' ').slice(0, 180)}`);
+  if (typeof a['bodyHtml'] === 'string') parts.push('html=yes');
+  if (typeof a['templateId'] === 'string') parts.push(`template=${a['templateId']}`);
+  if (typeof a['draftId'] === 'string') parts.push('draft=yes');
+  if (messageCount > 0) parts.push(`messages=${messageCount}`);
+  const attachments = Array.isArray(a['attachments']) ? a['attachments'] : [];
+  if (attachments.length) {
+    parts.push(`attachments=${attachments.length}`);
+    const sources = Array.from(new Set(
+      attachments
+        .map(attachment => attachment && typeof attachment === 'object' && !Array.isArray(attachment)
+          ? (attachment as Record<string, unknown>)['source']
+          : undefined)
+        .filter((source): source is string => typeof source === 'string' && source.length > 0),
+    ));
+    if (sources.length) parts.push(`sources=${sources.join(',')}`);
+  }
+
+  const labels = [...stringArray(a['labelNames']), ...stringArray(a['labelIds'])];
+  if (labels.length) parts.push(`labels=${labels.join(', ').slice(0, 120)}`);
+
+  return parts.join(' | ');
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }

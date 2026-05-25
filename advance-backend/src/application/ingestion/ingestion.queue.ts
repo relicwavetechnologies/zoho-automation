@@ -19,6 +19,8 @@ export interface IngestionJobPayload {
   chatId?:        string;
   /** Message ID of the original file message to quote-reply to when indexing finishes. */
   replyToMessageId?: string;
+  /** Group-context message ID to update after background indexing. */
+  groupContextMessageId?: string;
   allowedRoles?:  string[];
   visibility?:    'personal' | 'shared' | 'public';
 }
@@ -39,8 +41,9 @@ export class IngestionQueue {
   }
 
   async enqueue(payload: IngestionJobPayload): Promise<string> {
+    const rawId = `${payload.companyId}:${payload.uploaderUserId}:${Date.now()}:${payload.larkFileKey ?? payload.fileName}`;
     const job = await this.queue.add('ingest', payload as any, {
-      jobId: `${payload.companyId}:${payload.uploaderUserId}:${Date.now()}`,
+      jobId: rawId.replaceAll(':', '_'),
     });
     return job.id ?? '';
   }

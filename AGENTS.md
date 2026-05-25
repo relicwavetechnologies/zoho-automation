@@ -43,6 +43,25 @@ Divo
 | Divo — Updates (parent) | `UB95dbVBuotWHZx1VQYlZubRgT4` |
 | Dynamic Agent Platform / Plan | `Na3EddgpMohPKFxaZovlkxUygkg` |
 | Dynamic Agent Platform / Updates | `BfIdddnZwoqwzRxwIg8lt1JBgKh` |
+| OpenAI Codex Integration / Plan | `EGYOdu14PoEFJTxgu6DlnwchgWc` |
+| OpenAI Codex Integration / Progress | `EzokdcK6XoL3B4xmsyJlGKUggQg` |
+| OpenAI Codex Integration / Updates | `F2grdvPBWovgtBx5N7ulC3i4gjf` |
+| OpenAI Codex Integration / References | `Zi44dgZNPouB3BxUwTql1UWrg7b` |
+| Zoho Books Finance Tools / Plan | `A4X2d9LCboW8Gdxn8jNlQglJgug` |
+| Zoho Books Finance Tools / Progress | `NZ8PddLT7oJ5DcxttetltSs9gjh` |
+| Zoho Books Finance Tools / Updates | `ZUD8ddSi5oCntrxazbuliSZ2gjh` |
+| Zoho Books Finance Tools / References | `FhW2dP34coJhkix86qMlIq47g4e` |
+| Performance Optimizations / Plan | `FnjadCDq9oYPJ6xx6bQl4AxYgch` |
+| Performance Optimizations / Progress | `FEBEd8I57okKsFxjXhIl4uVBgGd` |
+| Performance Optimizations / Updates | `GwGbdEmPsoJ5xixjRNali7n5gle` |
+| Mailing UX & Attachment Pipeline / Plan | `ACt3dqCsQo5HC2x9eFflVYaRgHh` |
+| Mailing UX & Attachment Pipeline / Progress | `KQyKdfAVwoVYLzxiJ7jleK5cg7g` |
+| Mailing UX & Attachment Pipeline / Updates | `Rs4QdrZzNo9EUExFMhEl8YuhgZg` |
+| Mailing UX & Attachment Pipeline / References | `ZJRmdc7QLovOqMxAExQltaR7gfc` |
+| Live Progress UX / Plan | `VZIJdq9lnob79ExM3OklwaSbgHb` |
+| Live Progress UX / Progress | `Rvp0dCwoWoowqpxBWgala72YgSc` |
+| Live Progress UX / Updates | `LX18d9JZooBFoRxZOk2lRbljgOh` |
+| Live Progress UX / References | `JkIXdgO4eogLpJxx7yBlmHsYgJf` |
 
 **Wiki space ID:** `7635896570625396443` (Tech Hub)
 **Divo node token:** `XzW1wZDlJirIx1kPB0VlE2gfg7b`
@@ -117,6 +136,12 @@ Core runtime — supervisor-delegation pattern:
 | Feature | Status | Wiki Plan token | Wiki Updates token |
 |---|---|---|---|
 | Dynamic Agent Platform | in-progress | `Na3EddgpMohPKFxaZovlkxUygkg` | `BfIdddnZwoqwzRxwIg8lt1JBgKh` |
+| Mem0 Memory Layer | planning | `EmyKdQYBKovdv9xNUFqlDffSgKg` | `ZJffdD473ozRCNxk5VMlzs4zgag` |
+| OpenAI Codex Integration | planning | `EGYOdu14PoEFJTxgu6DlnwchgWc` | `F2grdvPBWovgtBx5N7ulC3i4gjf` |
+| Zoho Books Finance Tools | planning | `A4X2d9LCboW8Gdxn8jNlQglJgug` | `ZUD8ddSi5oCntrxazbuliSZ2gjh` |
+| Performance Optimizations | planning | `FnjadCDq9oYPJ6xx6bQl4AxYgch` | `GwGbdEmPsoJ5xixjRNali7n5gle` |
+| Mailing UX & Attachment Pipeline | planning | `ACt3dqCsQo5HC2x9eFflVYaRgHh` | `Rs4QdrZzNo9EUExFMhEl8YuhgZg` |
+| Live Progress UX for Dynamic Agents | planning | `VZIJdq9lnob79ExM3OklwaSbgHb` | `LX18d9JZooBFoRxZOk2lRbljgOh` |
 
 **Legacy local docs** in `docs/features/` are stale — wiki is authoritative. To add a new feature,
 create a folder under `Divo — Updates` in the wiki with Plan + Updates sub-pages.
@@ -125,14 +150,17 @@ create a folder under `Divo — Updates` in the wiki with Plan + Updates sub-pag
 
 ## Repository Structure
 
+> **⚠ `backend/` is DEPRECATED.** It is the legacy V0 codebase and is NOT in active use.
+> All current development happens in `advance-backend/`. Never reference `backend/` paths
+> in plans, tasks, or wiki pages. If an AI session produced plans referencing `backend/`,
+> those plans are wrong and must be corrected against `advance-backend/`.
+
 ```
-/backend            TypeScript + Express backend (main implementation)
+/advance-backend    TypeScript + Express + LangGraph backend (ACTIVE — all dev happens here)
+/backend            DEPRECATED legacy backend — do NOT use for new work
 /admin              React 18 + Vite admin dashboard
 /desktop            Electron desktop client
-/advance-backend    Experimental backend (Groq-based, not production)
-/docs               Architecture docs + feature docs (source of truth)
-/docs/features/     One file per feature — plan, current state, progress log
-/tasks              Legacy task files (being migrated to docs/features/)
+/docs               Architecture docs (local copies may be stale — wiki is authoritative)
 ```
 
 ---
@@ -153,25 +181,19 @@ create a folder under `Divo — Updates` in the wiki with Plan + Updates sub-pag
 
 ## Commands
 
-### Backend (`/backend`)
+### Backend (`/advance-backend`) — ACTIVE
 ```bash
-pnpm dev                          # start dev server
-pnpm build                        # compile TypeScript
+pnpm dev                          # start dev server (tsx watch)
+pnpm start                        # production start
+pnpm build                        # generate Prisma client
 pnpm typecheck                    # type check — run before every commit
-pnpm lint                         # lint
 pnpm prisma:generate              # regenerate Prisma client after schema changes
 pnpm prisma:push                  # push schema to DB (dev only)
 pnpm prisma:migrate               # run migrations (production path)
-pnpm seed:agents                  # seed agent registry
-pnpm seed:divo-prompt             # seed supervisor prompt
-```
-
-### Harness scripts (local orchestration testing)
-```bash
-pnpm harness:lark:routing
-pnpm harness:supervisor:structured
-pnpm harness:provider-retry
-pnpm harness:task-fsm
+pnpm test                         # run all tests (node:test runner)
+pnpm test:unit                    # unit tests only (tests/tools/**)
+pnpm test:integration             # integration tests only
+pnpm seed:dynamic-agents          # seed demo agents
 ```
 
 ### Admin (`/admin`)
@@ -183,37 +205,46 @@ pnpm typecheck
 
 ---
 
-## Architecture — Key Directories
+## Architecture — Key Directories (`advance-backend`)
 
 ```
-backend/src/company/
-├── agents/
-│   ├── base/             # BaseAgent contract
-│   ├── registry/         # AgentRegistry
-│   ├── implementations/  # zoho-read, lark-response, search-read, etc.
-│   └── dynamic/          # runtime-constructed agents
-├── orchestration/
-│   ├── engine/           # vercel-orchestration.engine.ts — main runtime loop
-│   ├── supervisor/       # planner.ts, executor.ts
-│   ├── vercel/           # tools.ts — Vercel AI SDK tool definitions
-│   └── intent/           # intent classification
-├── contracts/            # shared DTOs — import from here only
-├── channels/             # Lark channel adapter
-├── integrations/         # Zoho, Google adapters
-├── queue/                # BullMQ workers
-├── state/                # Redis checkpointing
-├── memory/               # RAG + routing memory
-├── departments/          # dept-aware prompt/skills/RBAC
-└── tools/                # tool permission system
+advance-backend/src/
+├── application/                    # Business logic layer
+│   ├── orchestration/
+│   │   ├── engine/                 # OrchestrationEngine (core.ts), StatusChannel
+│   │   ├── graphs/                 # LangGraph supervisor (dynamic-supervisor.graph.ts)
+│   │   │   └── nodes/              # Graph nodes (supervisor-think.ts, format-response.ts)
+│   │   ├── agents/                 # SupervisorAgent, agent-resolver, tool-labels
+│   │   ├── agent-runners/          # Dynamic, Lark, Google, Zoho, Context runners
+│   │   │   └── dynamic/            # Dynamic agent runner + hooks
+│   │   └── tools/                  # Tool framework (22 families), tool-registry, ai-sdk-adapter
+│   │       └── families/           # Lark, Google, Zoho, orchestration, web-search tools
+│   ├── observability/              # OrchestrationTracer, execution-query, token-usage, audit
+│   ├── agents/                     # Agent catalog, admin service
+│   ├── approval/                   # Approval gates, HITL workflows
+│   ├── email/                      # Email composer, attachment pipeline
+│   ├── memory/                     # Mem0 integration
+│   ├── permissions/                # RBAC, tool access control
+│   ├── retrieval/                  # RAG pipeline (query rewriter, reranker)
+│   └── ingestion/                  # Document processing, vector ingestion
+├── domain/                         # Domain types (channel, conversation, orchestration, permissions)
+├── infrastructure/                 # External integrations
+│   ├── channels/lark/              # Lark adapter, webhook, card builder, status coordinator
+│   ├── persistence/                # Prisma repositories (23 repos)
+│   ├── google/                     # Google OAuth + clients
+│   ├── zoho/                       # Zoho OAuth + clients
+│   └── ai/                         # Embedding, search, vector DB
+├── http/                           # Express routes (admin, executions, agents, files, auth)
+└── shared/                         # Logger, errors, Result<T,E>, IDs, circuit-breaker
 ```
 
 **Dependency direction (enforced — never break this):**
 ```
-channels → orchestration → agents → integrations
+http → application → domain ← infrastructure
 ```
-- `contracts/` is imported by all layers
-- Never import raw Lark payload types outside `channels/`
-- `queue/`, `state/`, `security/`, `observability/` are cross-cutting
+- `domain/` is imported by all layers
+- Never import Lark payload types outside `infrastructure/channels/lark/`
+- `shared/` is cross-cutting
 
 ---
 
@@ -255,7 +286,7 @@ channels → orchestration → agents → integrations
 
 ---
 
-## Environment Variables (`backend/.env`)
+## Environment Variables (`advance-backend/.env`)
 
 ```
 DATABASE_URL=
@@ -282,3 +313,13 @@ CLOUDINARY_URL=
 - Vercel AI SDK (`generateText`, `streamText`) for all LLM calls
 - Arrow functions for callbacks, named functions for top-level declarations
 - No default exports except Express router files
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- ALWAYS read graphify-out/GRAPH_REPORT.md before reading any source files, running grep/glob searches, or answering codebase questions. The graph is your primary map of the codebase.
+- IF graphify-out/wiki/index.md EXISTS, navigate it instead of reading raw files
+- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

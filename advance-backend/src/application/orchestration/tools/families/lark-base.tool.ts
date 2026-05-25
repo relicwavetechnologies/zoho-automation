@@ -42,18 +42,23 @@ export const createLarkBaseTool = (deps: { client: LarkBaseClientPort }): Tool<A
     const allowed = perm.allowedActionsByTool.get(asToolId('larkBase'))?.has(action) ?? false;
     return allowed ? ok(action) : err(new PermissionError({ toolId: 'larkBase', action, reason: 'not_allowed' }));
   },
-  async execute(args, _ctx): Promise<Result<Res, ToolError>> {
+  async execute(args, ctx): Promise<Result<Res, ToolError>> {
     const { appToken, tableId } = args;
     if (!appToken || !tableId) return err(new ToolError({ toolId: 'larkBase', reason: 'bad_args', message: 'appToken and tableId required' }));
     try {
       switch (args.op) {
-        case 'list_records': return ok({ success: true, data: await deps.client.listRecords(appToken, tableId, args.limit) });
+        case 'list_records': {
+          ctx.onProgress?.('Querying Lark Base…');
+          return ok({ success: true, data: await deps.client.listRecords(appToken, tableId, args.limit) });
+        }
         case 'get_record': {
           if (!args.recordId) return err(new ToolError({ toolId: 'larkBase', reason: 'bad_args', message: 'recordId required' }));
+          ctx.onProgress?.('Fetching record…');
           return ok({ success: true, data: await deps.client.getRecord(appToken, tableId, args.recordId) });
         }
         case 'create_record': {
           if (!args.fields) return err(new ToolError({ toolId: 'larkBase', reason: 'bad_args', message: 'fields required' }));
+          ctx.onProgress?.('Creating record…');
           const r = await deps.client.createRecord(appToken, tableId, args.fields as Record<string, unknown>);
           return ok({ success: true, recordId: r.recordId, message: 'Record created' });
         }
@@ -69,6 +74,7 @@ export const createLarkBaseTool = (deps: { client: LarkBaseClientPort }): Tool<A
         }
         case 'search_records': {
           if (!args.filter) return err(new ToolError({ toolId: 'larkBase', reason: 'bad_args', message: 'filter required' }));
+          ctx.onProgress?.('Searching Lark Base…');
           return ok({ success: true, data: await deps.client.searchRecords(appToken, tableId, args.filter, args.limit) });
         }
       }

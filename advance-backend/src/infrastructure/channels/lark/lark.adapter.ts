@@ -222,8 +222,9 @@ export class LarkChannelAdapter implements ChannelAdapter {
     try {
       const content = buildFinalCard({
         markdown: reply.text,
-        ...(reply.branding ? { branding: reply.branding } : {}),
-        ...(reply.actions  ? { actions:  reply.actions  } : {}),
+        ...(reply.branding        ? { branding:       reply.branding }        : {}),
+        ...(reply.actions         ? { actions:        reply.actions  }        : {}),
+        ...(reply.executionTrace  ? { executionTrace: reply.executionTrace }  : {}),
       });
 
       if (statusMessageId) {

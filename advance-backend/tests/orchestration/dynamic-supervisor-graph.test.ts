@@ -69,6 +69,10 @@ const runContext = {
   channel: 'test',
 } as any;
 
+const mem0 = {
+  rememberExplicit: async () => {},
+} as any;
+
 describe('dynamic supervisor graph', () => {
   it('builds dynamic child-agent tools and returns graph output', async () => {
     const root = makeAgent({
@@ -144,5 +148,161 @@ describe('dynamic supervisor graph', () => {
 
     assert.equal(output.status, 'error');
     assert.match(output.error ?? '', /No active root dynamic agent/);
+  });
+
+  it('injects memory context into the dynamic supervisor system prompt', async () => {
+    const root = makeAgent({
+      id: 'root',
+      slug: 'divo-supervisor',
+      isRootAgent: true,
+    });
+
+    let systemPrompt = '';
+    const graph = buildDynamicSupervisorGraph({
+      model: {} as any,
+      agentCatalogCache: {
+        getForCompany: async () => [root],
+      } as any,
+      todoRepo: {} as any,
+      prisma: {} as any,
+      logger: noopLogger,
+      clock,
+      executeText: async ({ system }) => {
+        systemPrompt = system;
+        return { text: 'graph done', toolCalls: [] };
+      },
+    });
+
+    await graph.invoke({
+      userMessage: 'format this report',
+      conversationHistory: [],
+      companyId: 'co-1',
+      perm,
+      runContext,
+      permittedTools: [],
+      chatId: 'chat-1',
+      memoryContext: 'User memory:\n- User prefers tables.',
+    });
+
+    assert.match(systemPrompt, /MEMORY CONTEXT/);
+    assert.match(systemPrompt, /User prefers tables/);
+  });
+
+  it('injects group context into the dynamic supervisor system prompt', async () => {
+    const root = makeAgent({
+      id: 'root',
+      slug: 'divo-supervisor',
+      isRootAgent: true,
+    });
+
+    let systemPrompt = '';
+    const graph = buildDynamicSupervisorGraph({
+      model: {} as any,
+      agentCatalogCache: {
+        getForCompany: async () => [root],
+      } as any,
+      todoRepo: {} as any,
+      prisma: {} as any,
+      logger: noopLogger,
+      clock,
+      executeText: async ({ system }) => {
+        systemPrompt = system;
+        return { text: 'graph done', toolCalls: [] };
+      },
+    });
+
+    await graph.invoke({
+      userMessage: 'what were we discussing?',
+      conversationHistory: [],
+      companyId: 'co-1',
+      perm,
+      runContext,
+      permittedTools: [],
+      chatId: 'chat-1',
+      groupContext: '── RECENT MESSAGES ──\nAlice: we need to fix the billing\nBob: agreed, invoices are wrong',
+    });
+
+    assert.match(systemPrompt, /RECENT MESSAGES/);
+    assert.match(systemPrompt, /fix the billing/);
+    assert.match(systemPrompt, /invoices are wrong/);
+  });
+
+  it('injects both group context and memory context in correct order', async () => {
+    const root = makeAgent({
+      id: 'root',
+      slug: 'divo-supervisor',
+      isRootAgent: true,
+    });
+
+    let systemPrompt = '';
+    const graph = buildDynamicSupervisorGraph({
+      model: {} as any,
+      agentCatalogCache: {
+        getForCompany: async () => [root],
+      } as any,
+      todoRepo: {} as any,
+      prisma: {} as any,
+      logger: noopLogger,
+      clock,
+      executeText: async ({ system }) => {
+        systemPrompt = system;
+        return { text: 'graph done', toolCalls: [] };
+      },
+    });
+
+    await graph.invoke({
+      userMessage: 'check the thing',
+      conversationHistory: [],
+      companyId: 'co-1',
+      perm,
+      runContext,
+      permittedTools: [],
+      chatId: 'chat-1',
+      groupContext: '── GROUP TRANSCRIPT ──\nAlice: deploy the hotfix',
+      memoryContext: 'User memory:\n- User is a senior engineer.',
+    });
+
+    assert.match(systemPrompt, /GROUP TRANSCRIPT/);
+    assert.match(systemPrompt, /MEMORY CONTEXT/);
+    const groupIdx = systemPrompt.indexOf('GROUP TRANSCRIPT');
+    const memoryIdx = systemPrompt.indexOf('MEMORY CONTEXT');
+    assert.ok(groupIdx < memoryIdx, 'group context should appear before memory context');
+  });
+
+  it('registers rememberFact when Mem0 is available', async () => {
+    const root = makeAgent({
+      id: 'root',
+      slug: 'divo-supervisor',
+      isRootAgent: true,
+    });
+
+    let toolNames: string[] = [];
+    const graph = buildDynamicSupervisorGraph({
+      model: {} as any,
+      agentCatalogCache: {
+        getForCompany: async () => [root],
+      } as any,
+      todoRepo: {} as any,
+      prisma: {} as any,
+      logger: noopLogger,
+      clock,
+      mem0,
+      executeText: async ({ tools }) => {
+        toolNames = Object.keys(tools);
+        return { text: 'graph done', toolCalls: [] };
+      },
+    });
+
+    await graph.invoke({
+      userMessage: 'remember Acme uses net-60',
+      conversationHistory: [],
+      companyId: 'co-1',
+      perm,
+      runContext,
+      permittedTools: [],
+      chatId: 'chat-1',
+    });
+
+    assert.ok(toolNames.includes('rememberFact'));
   });
 });

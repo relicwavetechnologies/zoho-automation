@@ -11,6 +11,7 @@ export interface DepartmentMembershipRow {
   roleName: string;
   departmentName: string;
   departmentCompanyId: string;
+  zohoReadScope: string;
   systemPrompt?: string | null;
   skillsMarkdown?: string | null;
   managerApprovalJson?: unknown;
@@ -57,6 +58,7 @@ export class DepartmentRepository implements DepartmentRepoPort {
         roleName: m.role.name,
         departmentName: m.department.name,
         departmentCompanyId: m.department.companyId,
+        zohoReadScope: m.role.zohoReadScope,
         systemPrompt: m.department.agentConfig?.systemPrompt ?? null,
         skillsMarkdown: m.department.agentConfig?.skillsMarkdown ?? null,
         managerApprovalJson: m.department.agentConfig?.managerApprovalJson ?? null,

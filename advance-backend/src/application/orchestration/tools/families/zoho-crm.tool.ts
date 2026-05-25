@@ -45,13 +45,18 @@ export const createZohoCrmTool = (deps: { getClient: (companyId: string, userId:
     if (!client) return err(new ToolError({ toolId: 'zohoCrm', reason: 'unrecoverable', message: 'Zoho CRM not connected' }));
     try {
       switch (args.op) {
-        case 'search': return ok({ success: true, data: await client.searchRecords(args.module ?? 'Leads', args.query ?? '', args.limit) });
+        case 'search': {
+          ctx.onProgress?.('Querying Zoho CRM…');
+          return ok({ success: true, data: await client.searchRecords(args.module ?? 'Leads', args.query ?? '', args.limit) });
+        }
         case 'get': {
           if (!args.recordId) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'recordId required' }));
+          ctx.onProgress?.('Fetching CRM record…');
           return ok({ success: true, data: await client.getRecord(args.module ?? 'Leads', args.recordId) });
         }
         case 'create': {
           if (!args.fields) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'fields required' }));
+          ctx.onProgress?.('Creating CRM record…');
           const r = await client.createRecord(args.module ?? 'Leads', args.fields as Record<string, unknown>);
           return ok({ success: true, recordId: r.recordId, message: 'Record created' });
         }

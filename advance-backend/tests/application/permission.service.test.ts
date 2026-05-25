@@ -33,6 +33,7 @@ function makeMemoryCache(): CachePort {
   return {
     get: async (k) => ok(store.has(k) ? (store.get(k) as any) : null),
     set: async (k, v) => { store.set(k, v); return ok(undefined); },
+    setNx: async (k, v) => { if (store.has(k)) return ok(false); store.set(k, v); return ok(true); },
     del: async (k) => { store.delete(k); return ok(undefined); },
     scanDel: async (pattern) => {
       const prefix = pattern.replace(/\*.*$/, '');

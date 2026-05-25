@@ -102,7 +102,37 @@ function toPerson(e: DirEntry): ResolvedPerson {
 // ── Resolver class ────────────────────────────────────────────────────────────
 
 export class LarkPeopleResolver {
+  private readonly cache = new Map<string, DirEntry[]>();
+
   constructor(private readonly prisma: PrismaClient) {}
+
+  invalidate(companyId: string): void {
+    this.cache.delete(companyId);
+  }
+
+  private async getDir(companyId: string): Promise<DirEntry[]> {
+    const cached = this.cache.get(companyId);
+    if (cached) return cached;
+
+    const rows = await this.prisma.channelIdentity.findMany({
+      where:  { companyId, channel: 'lark' },
+      select: { larkOpenId: true, externalUserId: true, displayName: true, email: true },
+    });
+
+    const dir: DirEntry[] = [];
+    for (const r of rows) {
+      const openId = r.larkOpenId ?? r.externalUserId;
+      if (!openId) continue;
+      const displayName = r.displayName ?? openId;
+      const normName    = normalize(displayName);
+      const entry: DirEntry = { openId, displayName, normName, tokens: tokenize(normName) };
+      if (r.email) entry.email = r.email;
+      dir.push(entry);
+    }
+
+    this.cache.set(companyId, dir);
+    return dir;
+  }
 
   /**
    * Resolve an array of name queries to Lark open_ids for a given company.
@@ -120,22 +150,7 @@ export class LarkPeopleResolver {
       return { resolved: [], ambiguous: [], notFound: [] };
     }
 
-    // Fetch all Lark channel identities for this company
-    const rows = await this.prisma.channelIdentity.findMany({
-      where:  { companyId, channel: 'lark' },
-      select: { larkOpenId: true, externalUserId: true, displayName: true, email: true },
-    });
-
-    const dir: DirEntry[] = [];
-    for (const r of rows) {
-      const openId = r.larkOpenId ?? r.externalUserId;
-      if (!openId) continue;
-      const displayName = r.displayName ?? openId;
-      const normName    = normalize(displayName);
-      const entry: DirEntry = { openId, displayName, normName, tokens: tokenize(normName) };
-      if (r.email) entry.email = r.email;
-      dir.push(entry);
-    }
+    const dir = await this.getDir(companyId);
 
     const selfAliases = new Set(['me', 'myself', 'i', 'self']);
 

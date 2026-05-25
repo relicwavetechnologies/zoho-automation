@@ -9,9 +9,17 @@ import {
   CircuitBreakerOpenError,
   GEMINI_CIRCUIT_OPTIONS,
 } from '../../../../shared/circuit-breaker';
+import { redModelSelection } from '../../../../shared/model-selection-log';
 import { getISTDateTime } from '../../agents/supervisor.prompt';
+import {
+  appendToolTrace,
+  emitSpecialistFinished,
+  emitSpecialistStarted,
+  emitSpecialistStepToolResults,
+} from '../tool-trace';
+import { debugAgentStart, debugAgentResult } from '../../../../shared/debug-run-log';
 
-const DYNAMIC_AGENT_TIMEOUT_MS = 60_000;
+const DYNAMIC_AGENT_TIMEOUT_MS = 300_000;
 
 export interface RunDynamicAgentInput {
   readonly task: string;
@@ -31,6 +39,7 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
   const path = input.path ?? [];
   const { agent, ctx } = input;
   const log = ctx.logger.child({ runner: 'dynamic', agentId: agent.id, agentSlug: agent.slug });
+  const runnerStartMs = Date.now();
 
   if (depth > 3) {
     return { status: 'failed', result: 'error: dynamic agent depth limit exceeded', error: 'depth_limit' };
@@ -63,6 +72,7 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       ctx.perm.allowedToolIds,
       ctx.allTools,
       adapterCtx,
+      ctx.toolById,
     );
     const tools = {
       ...directTools,
@@ -75,11 +85,45 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       agent.systemPrompt,
       agent.capabilityDescription ? `Capability: ${agent.capabilityDescription}` : '',
       pre.additionalSystemPrompt ?? '',
+      ctx.groupContext ?? '',
     ].filter(Boolean).join('\n\n');
 
     const task = pre.modifiedTask ?? input.task;
+    const selectedProvider = agent.provider ?? ctx.defaultModel?.provider ?? 'default';
+    const selectedModelId = agent.modelId ?? ctx.defaultModel?.modelId ?? 'default';
+    const modelSource = agent.provider && agent.modelId && ctx.resolveModel ? 'agent_override' : 'company_default';
+    log.warn('ai.model.selected', {
+      provider: selectedProvider,
+      modelId: selectedModelId,
+      source: modelSource,
+      selection: redModelSelection({
+        provider:  selectedProvider,
+        modelId:   selectedModelId,
+        source:    modelSource,
+        agentSlug: agent.slug,
+      }),
+    });
+
+    const model = agent.provider && agent.modelId && ctx.resolveModel
+      ? await ctx.resolveModel({
+        provider:  agent.provider,
+        modelId:   agent.modelId,
+        companyId: agent.companyId,
+        agentSlug: agent.slug,
+      })
+      : ctx.model;
 
     const toolNames = Object.keys(tools);
+    const agentStartMs = Date.now();
+    debugAgentStart({
+      agentSlug: agent.slug,
+      task,
+      toolCount: toolNames.length,
+      toolNames,
+      depth,
+      model: `${selectedProvider}/${selectedModelId}`,
+      systemPrompt: system,
+    });
     log.info('dynamic_agent.start', {
       task: task.slice(0, 200),
       toolCount: toolNames.length,
@@ -87,26 +131,44 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       maxSteps: agent.maxSteps,
       systemPromptLength: system.length,
       hookId: agent.hookId,
+      provider: agent.provider,
+      modelId: agent.modelId,
       depth,
     });
 
+    emitSpecialistStarted({
+      tracer: ctx.tracer,
+      actorKey: agent.slug,
+      toolName: agent.slug,
+      task,
+      toolCount: toolNames.length,
+      depth,
+    });
+
+    const circuitProvider = agent.provider ?? 'gemini';
     const genResult = await runWithCircuitBreaker(
-      'gemini',
+      circuitProvider,
       `dynamic-agent:${agent.slug}`,
       GEMINI_CIRCUIT_OPTIONS,
       () => generateText({
-        model:       ctx.model,
+        model,
         system,
         prompt:      task,
         tools,
         stopWhen:    [stepCountIs(agent.maxSteps)],
         temperature: agent.temperature,
+        maxRetries:  1,
         abortSignal: AbortSignal.timeout(DYNAMIC_AGENT_TIMEOUT_MS),
       }),
       log,
     );
 
     const { text, steps, finishReason } = genResult;
+    emitSpecialistStepToolResults({
+      tracer: ctx.tracer,
+      actorKey: agent.slug,
+      steps,
+    });
 
     log.info('dynamic_agent.generateText.done', {
       textLength: text?.length ?? 0,
@@ -121,15 +183,70 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
       hasText: (text?.trim().length ?? 0) > 0,
     });
 
-    const result = hook?.postExecute
-      ? await hook.postExecute(hookCtx, text || 'Done.')
-      : text || 'Done.';
+    // If the agent's LLM produced no text but tools returned data,
+    // run a presentation pass — a separate LLM call with NO tools that
+    // formats the full tool output for the user. This preserves all data.
+    let agentText = text || '';
+    if (!agentText.trim() && steps && steps.length > 0) {
+      const allToolOutputs = steps.flatMap(s =>
+        (s.toolResults ?? []).map(tr => `[${tr.toolName}]:\n${String(tr.output)}`)
+      );
+      if (allToolOutputs.length > 0) {
+        log.info('dynamic_agent.presentation_pass.start', { agentSlug: agent.slug, toolOutputCount: allToolOutputs.length });
+        try {
+          const presentation = await generateText({
+            model,
+            system: `You are presenting data returned by tools to the user. Rules:
+- Present ALL data completely — do NOT summarize, truncate, or omit any items.
+- Format clearly: use tables, bullet points, or structured lists for readability.
+- Include every record, every number, every detail from the tool output.
+- If there are many items, structure them but keep ALL of them.
+- Do not mention tools, agents, or internal processes.
+- Be direct — no filler phrases.`,
+            prompt: `Original request: ${task}\n\nTool results:\n\n${allToolOutputs.join('\n\n---\n\n')}`,
+            temperature: 0.2,
+            maxRetries: 1,
+            abortSignal: AbortSignal.timeout(60_000),
+          });
+          agentText = presentation.text || agentText;
+          log.info('dynamic_agent.presentation_pass.done', { agentSlug: agent.slug, textLength: agentText.length });
+        } catch (e) {
+          log.warn('dynamic_agent.presentation_pass.failed', { agentSlug: agent.slug, error: String(e) });
+        }
+      }
+    }
 
-    log.info('dynamic_agent.done', { replyLength: result.length, replyPreview: result.substring(0, 300) });
-    return { status: 'success', result };
+    const result = hook?.postExecute
+      ? await hook.postExecute(hookCtx, agentText || 'Done.')
+      : agentText || 'Done.';
+
+    const traced = appendToolTrace(result, steps);
+    debugAgentResult({
+      agentSlug: agent.slug,
+      status: 'success',
+      result: traced,
+      durationMs: Date.now() - agentStartMs,
+      steps: steps as any,
+    });
+    log.info('dynamic_agent.done', { replyLength: traced.length, replyPreview: traced.substring(0, 300) });
+    emitSpecialistFinished({
+      tracer: ctx.tracer,
+      actorKey: agent.slug,
+      toolName: agent.slug,
+      output: traced,
+      startMs: runnerStartMs,
+    });
+    return { status: 'success', result: traced };
   } catch (e) {
     if (e instanceof CircuitBreakerOpenError) {
       log.warn('dynamic_agent.circuit_open', { retryAt: e.retryAt });
+      emitSpecialistFinished({
+        tracer: ctx.tracer,
+        actorKey: agent.slug,
+        toolName: agent.slug,
+        output: 'error: AI service temporarily unavailable, please try again shortly.',
+        startMs: runnerStartMs,
+      });
       return {
         status: 'failed',
         result: 'error: AI service temporarily unavailable, please try again shortly.',
@@ -138,6 +255,13 @@ export async function runDynamicAgent(input: RunDynamicAgentInput): Promise<Dyna
     }
     const msg = e instanceof Error ? e.message : String(e);
     log.error('dynamic_agent.error', { error: msg });
+    emitSpecialistFinished({
+      tracer: ctx.tracer,
+      actorKey: agent.slug,
+      toolName: agent.slug,
+      output: `error: ${msg}`,
+      startMs: runnerStartMs,
+    });
     return { status: 'failed', result: `error: ${msg}`, error: msg };
   }
 }

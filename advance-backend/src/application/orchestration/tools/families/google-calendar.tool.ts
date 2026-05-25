@@ -49,13 +49,17 @@ export const createGoogleCalendarTool = (deps: { getClient: (companyId: string, 
     const calId = args.calendarId ?? 'primary';
     try {
       switch (args.op) {
-        case 'list': return ok({ success: true, data: await client.listEvents(calId, args.limit) });
+        case 'list': {
+          ctx.onProgress?.('Checking Google Calendar…');
+          return ok({ success: true, data: await client.listEvents(calId, args.limit) });
+        }
         case 'get': {
           if (!args.eventId) return err(new ToolError({ toolId: 'googleCalendar', reason: 'bad_args', message: 'eventId required' }));
           return ok({ success: true, data: await client.getEvent(calId, args.eventId) });
         }
         case 'create': {
           if (!args.title || !args.startTime || !args.endTime) return err(new ToolError({ toolId: 'googleCalendar', reason: 'bad_args', message: 'title, startTime, endTime required' }));
+          ctx.onProgress?.('Creating calendar event…');
           const r = await client.createEvent(calId, { title: args.title, startTime: args.startTime, endTime: args.endTime, attendeeEmails: args.attendeeEmails, description: args.description });
           return ok({ success: true, eventId: r.eventId, message: 'Event created' });
         }

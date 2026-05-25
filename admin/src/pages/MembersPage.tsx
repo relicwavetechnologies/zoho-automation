@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { api } from "@/lib/api"
+import { useLarkSync } from "@/lib/use-lark-sync"
 import type { JsonRecord } from "@/components/admin/types"
 
 type InviteRole = "MEMBER" | "COMPANY_ADMIN"
@@ -28,16 +29,21 @@ const withQuery = (path: string, params: Record<string, string | undefined>) => 
 
 export function MembersPage() {
   const { token, session } = useAdminAuth()
-  const [refreshKey, setRefreshKey] = useState(0)
   const [open, setOpen] = useState(false)
   const [email, setEmail] = useState("")
   const [roleId, setRoleId] = useState<InviteRole>("MEMBER")
   const [submitting, setSubmitting] = useState(false)
   const companyId = session?.role === "SUPER_ADMIN" ? session.companyId : undefined
-  const directoryPath = useMemo(() => withQuery("/api/admin/company/directory", { companyId, r: String(refreshKey) }), [companyId, refreshKey])
-  const invitesPath = useMemo(() => withQuery("/api/admin/company/invites", { companyId, r: String(refreshKey) }), [companyId, refreshKey])
+  const directoryPath = useMemo(() => withQuery("/api/admin/company/directory", { companyId }), [companyId])
+  const invitesPath = useMemo(() => withQuery("/api/admin/company/invites", { companyId }), [companyId])
   const directory = useApiList<JsonRecord>(directoryPath, token, ["items", "members"])
   const invites = useApiList<JsonRecord>(invitesPath, token, ["items", "invites"])
+
+  const refreshAll = async () => {
+    await Promise.all([directory.refresh(), invites.refresh()])
+  }
+
+  const larkSync = useLarkSync(() => void refreshAll())
 
   const createInvite = async (event: FormEvent) => {
     event.preventDefault()
@@ -49,7 +55,7 @@ export function MembersPage() {
       setEmail("")
       setRoleId("MEMBER")
       setOpen(false)
-      setRefreshKey((value) => value + 1)
+      await refreshAll()
     } finally {
       setSubmitting(false)
     }
@@ -63,8 +69,12 @@ export function MembersPage() {
         description="Review workspace identities and send onboarding invites from the live company admin API."
         actions={
           <>
-            <Button type="button" variant="outline" className="rounded-full" onClick={() => setRefreshKey((value) => value + 1)}>
-              <RefreshCw className="h-4 w-4" />
+            <Button type="button" variant="outline" className={`rounded-full ${larkSync.active ? "cursor-wait" : ""}`} onClick={() => void larkSync.sync()} disabled={larkSync.active}>
+              {larkSync.active ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {larkSync.active ? larkSync.message : "Sync from Lark"}
+            </Button>
+            <Button type="button" variant="outline" className="rounded-full" onClick={() => void refreshAll()} disabled={directory.refreshing || invites.refreshing}>
+              <RefreshCw className={directory.refreshing || invites.refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
               Refresh
             </Button>
             <Dialog open={open} onOpenChange={setOpen}>
@@ -108,6 +118,26 @@ export function MembersPage() {
           </>
         }
       />
+      {larkSync.active ? (
+        <div className="rounded-lg bg-card p-3 shadow-soft">
+          <div className="flex items-center justify-between text-[12px]">
+            <span className="font-medium">{larkSync.message}</span>
+            {larkSync.total > 0 ? <span className="text-muted-foreground">{larkSync.synced}/{larkSync.total}</span> : null}
+          </div>
+          {larkSync.total > 0 ? (
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+              <div
+                className="h-full rounded-full bg-accent transition-all duration-300"
+                style={{ width: `${larkSync.pct}%` }}
+              />
+            </div>
+          ) : (
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+              <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
+            </div>
+          )}
+        </div>
+      ) : null}
       <section className="grid gap-3 xl:grid-cols-[1.15fr_0.85fr]">
         <SectionCard title="Directory" description="Active known workspace identities.">
           <DataTable

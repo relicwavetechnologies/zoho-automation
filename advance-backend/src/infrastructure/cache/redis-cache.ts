@@ -33,6 +33,15 @@ export class RedisCache implements CachePort {
     }
   }
 
+  async setNx(key: string, value: unknown, ttlSeconds: number): Promise<Result<boolean, InfraError>> {
+    try {
+      const result = await this.redis.set(key, JSON.stringify(value), 'EX', ttlSeconds, 'NX');
+      return ok(result === 'OK');
+    } catch (e) {
+      return err(wrapInfra('redis', `setNx:${key}`, e));
+    }
+  }
+
   async del(key: string): Promise<Result<void, InfraError>> {
     try {
       await this.redis.del(key);

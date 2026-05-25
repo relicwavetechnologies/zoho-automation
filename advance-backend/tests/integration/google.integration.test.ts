@@ -82,10 +82,42 @@ describe('googleGmail — integration', { skip: missingGoogle ? 'GOOGLE_ACCESS_T
       to:      [GOOGLE_TEST_EMAIL!],
       subject: '[DIVO-INT-TEST] Integration test email — safe to delete',
       body:    'This email was sent by the advance-backend integration test suite. Safe to delete.',
+      bodyHtml: '<p>This email was sent by the <strong>advance-backend</strong> integration test suite. Safe to delete.</p>',
     }, ctx);
     assert.equal(r.ok, true, `send failed: ${!r.ok ? JSON.stringify((r as any).error) : ''}`);
     sentMessageId = (r as any).value.messageId as string;
     assert.ok(sentMessageId, 'send should return a messageId');
+  });
+
+  it('draft lifecycle: create/get/update/delete a Gmail draft', {
+    skip: !GOOGLE_TEST_EMAIL ? 'set GOOGLE_TEST_EMAIL to enable draft lifecycle test' : false,
+  }, async () => {
+    const created = await tool.execute({
+      op: 'draft_create',
+      to: [GOOGLE_TEST_EMAIL!],
+      subject: '[DIVO-INT-TEST] Draft lifecycle — safe to delete',
+      bodyText: 'Draft create body.',
+      templateId: 'divo-standard-v1',
+      templateData: { title: 'Draft lifecycle', intro: 'Draft create body.' },
+    }, ctx);
+    assert.equal(created.ok, true, `draft_create failed: ${!created.ok ? JSON.stringify((created as any).error) : ''}`);
+    const draftId = (created as any).value.draftId as string;
+    assert.ok(draftId, 'draft_create should return a draftId');
+
+    const got = await tool.execute({ op: 'draft_get', draftId }, ctx);
+    assert.equal(got.ok, true, `draft_get failed: ${!got.ok ? JSON.stringify((got as any).error) : ''}`);
+
+    const updated = await tool.execute({
+      op: 'draft_update',
+      draftId,
+      to: [GOOGLE_TEST_EMAIL!],
+      subject: '[DIVO-INT-TEST] Draft lifecycle — updated',
+      bodyText: 'Draft update body.',
+    }, ctx);
+    assert.equal(updated.ok, true, `draft_update failed: ${!updated.ok ? JSON.stringify((updated as any).error) : ''}`);
+
+    const deleted = await tool.execute({ op: 'draft_delete', draftId }, ctx);
+    assert.equal(deleted.ok, true, `draft_delete failed: ${!deleted.ok ? JSON.stringify((deleted as any).error) : ''}`);
   });
 
   it('reply: replies to the sent message', {
@@ -95,11 +127,27 @@ describe('googleGmail — integration', { skip: missingGoogle ? 'GOOGLE_ACCESS_T
     const msgDetail = await (await makeGmailClient()).getMessage(sentMessageId);
     const r = await tool.execute({
       op:       'reply',
-      threadId: msgDetail.threadId,
-      to:       [GOOGLE_TEST_EMAIL!],
+      messageId: sentMessageId,
       body:     '[DIVO-INT-TEST] Reply from integration test.',
     }, ctx);
     assert.equal(r.ok, true, `reply failed: ${!r.ok ? JSON.stringify((r as any).error) : ''}`);
+
+    const thread = await tool.execute({ op: 'thread_get', threadId: msgDetail.threadId }, ctx);
+    assert.equal(thread.ok, true, `thread_get failed: ${!thread.ok ? JSON.stringify((thread as any).error) : ''}`);
+  });
+
+  it('mailbox actions: label apply/remove, star/unstar, and mark read/unread on the sent message', {
+    skip: !sentMessageId ? 'send test did not run or produce a messageId' : false,
+  }, async (t) => {
+    if (!sentMessageId) { t.skip('sentMessageId not available'); return; }
+    const apply = await tool.execute({ op: 'label_apply', messageId: sentMessageId, labelIds: ['STARRED'] }, ctx);
+    assert.equal(apply.ok, true, `label_apply failed: ${!apply.ok ? JSON.stringify((apply as any).error) : ''}`);
+    const remove = await tool.execute({ op: 'label_remove', messageId: sentMessageId, labelIds: ['STARRED'] }, ctx);
+    assert.equal(remove.ok, true, `label_remove failed: ${!remove.ok ? JSON.stringify((remove as any).error) : ''}`);
+    for (const op of ['star', 'unstar', 'mark_unread', 'mark_read'] as const) {
+      const r = await tool.execute({ op, messageId: sentMessageId }, ctx);
+      assert.equal(r.ok, true, `${op} failed: ${!r.ok ? JSON.stringify((r as any).error) : ''}`);
+    }
   });
 });
 

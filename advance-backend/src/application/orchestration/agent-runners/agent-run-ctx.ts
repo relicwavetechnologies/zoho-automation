@@ -11,20 +11,41 @@ import type { Tool } from '../tools/tool.contract';
 import type { Logger } from '../../../shared/logger';
 import type { Clock } from '../../../shared/clock';
 import type { ApprovalGateService } from '../../approval/approval-gate.service';
+import type { OrchestrationTracer } from '../../observability/orchestration-tracer';
 
 export interface AgentRunCtx {
   /** The LLM used by all runners — same model as the supervisor. */
   model:       LanguageModel;
+  /** Human-readable default model metadata for logs. */
+  defaultModel?: {
+    provider: string;
+    modelId:  string;
+  };
+  /** Optional per-agent model resolver. Falls back to model when unset. */
+  resolveModel?: (input: {
+    provider: string;
+    modelId: string;
+    companyId: string;
+    agentSlug?: string;
+  }) => Promise<LanguageModel> | LanguageModel;
   /** All tools the current runtime is allowed to use (permission-filtered). */
   allTools:    ReadonlyArray<Tool<unknown, unknown>>;
+  /** Request-level lookup for allTools, reused while building dynamic capabilities. */
+  toolById?:   ReadonlyMap<string, Tool<unknown, unknown>>;
   perm:        PermissionResult;
   runContext:  RunContext;
   logger:      Logger;
   clock:       Clock;
+  /** Run-level structured event tracer for admin execution detail. */
+  tracer?:     OrchestrationTracer;
   /** HITL approval gate — when present, non-read tool actions are pre-approved. */
   approvalGate?: ApprovalGateService;
   /** Lark chat_id used by the approval gate for idempotency. */
   chatId?:       string;
+  /** Group-chat rolling summary and recent transcript. */
+  groupContext?: string;
   /** Gemini API key for faithfulness grading after documentRag calls. */
   geminiApiKey?: string;
+  /** Live progress callback — tool updates flow to the user's status bubble. */
+  onProgress?: ((message: string) => void) | undefined;
 }

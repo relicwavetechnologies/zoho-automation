@@ -36,7 +36,7 @@ describe('LarkTaskClient', () => {
       assert.equal(result.title, 'Fix bug');
     });
 
-    it('sends dueDate as unix timestamp in request body', async () => {
+    it('sends dueDate as millisecond timestamp in request body', async () => {
       const { fetch, calls } = buildMockFetch([
         TOKEN_HANDLER,
         {
@@ -53,7 +53,26 @@ describe('LarkTaskClient', () => {
       const body = apiCall?.body as Record<string, unknown>;
       assert.ok(body?.['due'], 'should include due field');
       const due = body['due'] as Record<string, unknown>;
+      assert.equal(due['timestamp'], String(new Date('2025-12-31T00:00:00.000Z').getTime()));
       assert.equal(typeof due['timestamp'], 'string', 'timestamp should be a string');
+    });
+
+    it('omits due when dueDate is invalid', async () => {
+      const { fetch, calls } = buildMockFetch([
+        TOKEN_HANDLER,
+        {
+          match: (url, m) => m === 'POST' && url.includes('/task/v2/tasks'),
+          response: { code: 0, data: { task: { guid: 'g1', summary: 'T' } } },
+        },
+      ]);
+      globalThis.fetch = fetch;
+
+      const client = new LarkTaskClient(DEPS);
+      await client.createTask({ title: 'T', dueDate: 'next Friday' });
+
+      const apiCall = calls.find(c => c.method === 'POST' && (c.url as string).includes('/task/v2/tasks'));
+      const body = apiCall?.body as Record<string, unknown>;
+      assert.equal('due' in body, false);
     });
 
     it('sends assigneeIds as members array', async () => {
@@ -124,6 +143,23 @@ describe('LarkTaskClient', () => {
       assert.ok('summary' in body, 'should have summary');
       assert.ok(!('description' in body), 'should NOT have description');
       assert.ok(!('due' in body), 'should NOT have due');
+    });
+
+    it('does not call update when only dueDate is invalid', async () => {
+      const { fetch, calls } = buildMockFetch([
+        TOKEN_HANDLER,
+        {
+          match: (url, m) => m === 'PATCH',
+          response: { code: 0, data: { task: { guid: 't1' } } },
+        },
+      ]);
+      globalThis.fetch = fetch;
+
+      const client = new LarkTaskClient(DEPS);
+      await client.updateTask('t1', { dueDate: 'not an iso date' });
+
+      const apiCall = calls.find(c => c.method === 'PATCH');
+      assert.equal(apiCall, undefined);
     });
   });
 
@@ -251,7 +287,7 @@ describe('LarkTaskClient', () => {
 
   describe('getTask', () => {
     it('GETs /task/v2/tasks/{id} and returns normalized task', async () => {
-      const dueTimestamp = Math.floor(new Date('2025-06-01').getTime() / 1000);
+      const dueTimestamp = new Date('2025-06-01').getTime();
       const { fetch } = buildMockFetch([
         TOKEN_HANDLER,
         {
@@ -278,6 +314,32 @@ describe('LarkTaskClient', () => {
       assert.equal(task.title, 'Big task');
       assert.equal(task.completed, false);
       assert.ok(task.dueDate?.startsWith('2025-06'), 'dueDate should be ISO string for June 2025');
+    });
+
+    it('returns no dueDate when due timestamp is invalid', async () => {
+      const { fetch } = buildMockFetch([
+        TOKEN_HANDLER,
+        {
+          match: (url, m) => m === 'GET' && url.includes('/task/v2/tasks/task-99'),
+          response: {
+            code: 0,
+            data: {
+              task: {
+                guid: 'task-99',
+                summary: 'Big task',
+                completed: false,
+                due: { timestamp: 'NaN', is_all_day: false },
+              },
+            },
+          },
+        },
+      ]);
+      globalThis.fetch = fetch;
+
+      const client = new LarkTaskClient(DEPS);
+      const task = await client.getTask('task-99');
+
+      assert.equal(task.dueDate, undefined);
     });
 
     it('returns no dueDate when due is absent', async () => {

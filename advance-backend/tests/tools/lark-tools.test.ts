@@ -180,10 +180,54 @@ describe('larkMessaging tool', () => {
       assert.equal((r as any).error.payload.reason, 'bad_args');
     });
 
+    it('send: defaults to locked current chat for scheduled delivery runs', async () => {
+      let capturedChatId: string | null = null;
+      const client = {
+        ...fakeClient,
+        sendMessage: async (chatId: string, _text: string) => {
+          capturedChatId = chatId;
+          return { messageId: 'msg-locked' };
+        },
+      };
+      const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
+        chatId: 'oc_locked_dm_chat',
+        deliveryMode: 'current_chat_only',
+      });
+      const tool = createLarkMessagingTool({ client });
+      const r = await tool.execute({ op: 'send', text: 'hi' }, lockedCtx);
+      assert.equal(r.ok, true);
+      assert.equal(capturedChatId, 'oc_locked_dm_chat');
+      assert.equal((r as any).value.messageId, 'msg-locked');
+    });
+
+    it('send: rejects explicit different chat when scheduled delivery is locked', async () => {
+      const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
+        chatId: 'oc_locked_dm_chat',
+        deliveryMode: 'current_chat_only',
+      });
+      const tool = createLarkMessagingTool({ client: fakeClient });
+      const r = await tool.execute({ op: 'send', chatId: 'oc_other_group', text: 'hi' }, lockedCtx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
+      assert.match((r as any).error.message, /locked to the current chat/i);
+    });
+
     it('reply: ok with messageId', async () => {
       const tool = createLarkMessagingTool({ client: fakeClient });
       const r = await tool.execute({ op: 'reply', messageId: 'msg-1', text: 'pong' }, ctx);
       assert.equal(r.ok, true);
+    });
+
+    it('send_dm: rejects when scheduled delivery is locked to current chat', async () => {
+      const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
+        chatId: 'oc_locked_dm_chat',
+        deliveryMode: 'current_chat_only',
+      });
+      const tool = createLarkMessagingTool({ client: fakeClient });
+      const r = await tool.execute({ op: 'send_dm', text: 'hello', recipientName: 'Abhishek' }, lockedCtx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
+      assert.match((r as any).error.message, /locked to the current chat/i);
     });
 
     it('list: ok with data array', async () => {

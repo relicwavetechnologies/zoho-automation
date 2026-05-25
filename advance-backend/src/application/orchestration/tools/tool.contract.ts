@@ -17,6 +17,8 @@ export interface ToolExecutionContext {
   readonly correlationId: string;
   readonly logger: Logger;
   readonly clock: Clock;
+  /** Optional callback to push live progress updates to the user's status bubble. */
+  readonly onProgress?: ((message: string) => void) | undefined;
 }
 
 // ─── The Tool contract ─────────────────────────────────────────────────────

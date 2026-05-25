@@ -49,6 +49,8 @@ const EnvSchema = z.object({
 
   // ── OpenAI ────────────────────────────────────────────────────────────────
   OPENAI_API_KEY:        z.string().min(1),
+  GATEWAY_BASE_URL:      z.string().default(''),
+  GATEWAY_ADMIN_API_KEY: z.string().optional(),
   OPENAI_ROUTER_MODEL:   z.string().default('gpt-4o-mini'),
   OPENAI_PLANNER_MODEL:  z.string().default('gpt-4o-mini'),
   OPENAI_SYNTHESIS_MODEL: z.string().default('gpt-4o-mini'),
@@ -90,6 +92,8 @@ const EnvSchema = z.object({
   LARK_TENANT_TOKEN_REFRESH_BUFFER_SECONDS: positiveInt(180),
   LARK_TENANT_TOKEN_FETCH_MAX_RETRIES:      positiveInt(3),
   LARK_TENANT_TOKEN_RETRY_BASE_DELAY_MS:    positiveInt(250),
+  // User OAuth — set LARK_OAUTH_REDIRECT_URI to <BACKEND_PUBLIC_URL>/api/lark/auth/callback
+  LARK_OAUTH_REDIRECT_URI: z.string().optional(),
 
   // ── Qdrant vector store ───────────────────────────────────────────────────
   QDRANT_URL:                  z.string().default('http://127.0.0.1:6333'),
@@ -127,6 +131,8 @@ const EnvSchema = z.object({
   ZOHO_BOOKS_CSV_INLINE_THRESHOLD: positiveInt(10),
   /** Signed-URL TTL for exported CSVs in seconds (default 24 h). */
   ZOHO_BOOKS_CSV_LINK_TTL_SECONDS: positiveInt(86_400),
+  /** How often to scan Cloudinary for expired temp exports. */
+  CLOUDINARY_TEMP_EXPORT_CLEANUP_INTERVAL_SECONDS: positiveInt(21_600),
 
   // ── Admin auth ────────────────────────────────────────────────────────────
   /** HS256 secret for signing admin JWTs. Required in production. */
@@ -172,6 +178,15 @@ const EnvSchema = z.object({
 
   // Set to 0 to disable supervisor timeout (useful for local dev with slow models)
   SUPERVISOR_TIMEOUT_MS: z.coerce.number().int().min(0).default(300_000),
+
+  // ── Scheduled workflow executor ──────────────────────────────────────────
+  SCHEDULED_WORKFLOW_POLL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(120_000),
+
+  // ── Mem0 persistent memory layer ─────────────────────────────────────────
+  MEM0_ENABLED:           booleanStr.default('false'),
+  MEM0_EXTRACTION_MODEL:  z.string().default('gpt-4o-mini'),
+  MEM0_QDRANT_COLLECTION: z.string().default('divo_memories'),
+  MEM0_MAX_RESULTS:       positiveInt(10),
 });
 
 export type TypedEnv = z.infer<typeof EnvSchema>;

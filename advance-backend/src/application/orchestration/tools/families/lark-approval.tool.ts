@@ -35,17 +35,22 @@ export const createLarkApprovalTool = (deps: { client: LarkApprovalClientPort })
     const allowed = perm.allowedActionsByTool.get(asToolId('larkApproval'))?.has(action) ?? false;
     return allowed ? ok(action) : err(new PermissionError({ toolId: 'larkApproval', action, reason: 'not_allowed' }));
   },
-  async execute(args, _ctx): Promise<Result<Res, ToolError>> {
+  async execute(args, ctx): Promise<Result<Res, ToolError>> {
     if (!args.approvalCode) return err(new ToolError({ toolId: 'larkApproval', reason: 'bad_args', message: 'approvalCode required' }));
     try {
       switch (args.op) {
-        case 'list': return ok({ success: true, data: await deps.client.listInstances(args.approvalCode, args.limit) });
+        case 'list': {
+          ctx.onProgress?.('Checking approvals…');
+          return ok({ success: true, data: await deps.client.listInstances(args.approvalCode, args.limit) });
+        }
         case 'get': {
           if (!args.instanceCode) return err(new ToolError({ toolId: 'larkApproval', reason: 'bad_args', message: 'instanceCode required' }));
+          ctx.onProgress?.('Fetching approval…');
           return ok({ success: true, data: await deps.client.getInstance(args.approvalCode, args.instanceCode) });
         }
         case 'create': {
           if (!args.formValues) return err(new ToolError({ toolId: 'larkApproval', reason: 'bad_args', message: 'formValues required' }));
+          ctx.onProgress?.('Creating approval…');
           const r = await deps.client.createInstance(args.approvalCode, args.formValues as Record<string, unknown>);
           return ok({ success: true, instanceCode: r.instanceCode, message: 'Approval created' });
         }

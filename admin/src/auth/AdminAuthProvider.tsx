@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
 import { api } from '../lib/api';
+import { queryClient } from '../lib/query-client';
 import type { AdminNavItem, AdminSession } from './types';
 
 type AdminAuthContextValue = {
@@ -28,6 +29,7 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
   const [loading, setLoading] = useState(true);
 
   const persistToken = (value: string | null) => {
+    queryClient.clear();
     if (value) {
       localStorage.setItem(TOKEN_KEY, value);
     } else {

@@ -34,6 +34,8 @@ class ZohoReadHook implements AgentHook {
         '- Respect resultLimit, sourceTypes, dateRange, and scope when present.',
         '- Do not invent CRM, Books, user, amount, date, or status fields that were not returned by tools.',
         '- For single-ID lookups, call get/read operations directly before explaining.',
+        '- For analysis/grouping/aggregation, add a script parameter to the zohoBooks list operation.',
+        '- For simple lookups, call zohoBooks without script.',
         `Original task: ${ctx.task}`,
       ].join('\n'),
     };

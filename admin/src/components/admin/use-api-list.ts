@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
 import type { ApiListState, JsonRecord } from "@/components/admin/types"
 
 const unwrapArray = <T extends JsonRecord>(value: unknown, keys: string[] = []): T[] => {
@@ -17,31 +18,24 @@ const unwrapArray = <T extends JsonRecord>(value: unknown, keys: string[] = []):
 }
 
 export function useApiList<T extends JsonRecord>(path: string | null, token: string | null, keys: string[] = []): ApiListState<T> {
-  const [state, setState] = useState<ApiListState<T>>({ data: [], loading: Boolean(path && token), error: null })
   const keySignature = keys.join(",")
+  const scope = getAdminQueryScope(token)
+  const query = useQuery({
+    queryKey: adminQueryKeys.apiList(scope, path, keySignature),
+    enabled: Boolean(path && token),
+    queryFn: async () => {
+      const value = await api.get<unknown>(path!, token!)
+      return unwrapArray<T>(value, keySignature ? keySignature.split(",") : [])
+    },
+  })
 
-  useEffect(() => {
-    let cancelled = false
-    if (!path || !token) {
-      setState({ data: [], loading: false, error: null })
-      return
-    }
-
-    setState((current) => ({ ...current, loading: true, error: null }))
-    api
-      .get<unknown>(path, token)
-      .then((value) => {
-        if (!cancelled) setState({ data: unwrapArray<T>(value, keySignature ? keySignature.split(",") : []), loading: false, error: null })
-      })
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : "Request failed"
-        if (!cancelled) setState({ data: [], loading: false, error: message })
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [keySignature, path, token])
-
-  return state
+  return {
+    data: query.data ?? [],
+    loading: query.isPending,
+    refreshing: query.isFetching && !query.isPending,
+    error: query.error instanceof Error ? query.error.message : null,
+    refresh: async () => {
+      await query.refetch()
+    },
+  }
 }

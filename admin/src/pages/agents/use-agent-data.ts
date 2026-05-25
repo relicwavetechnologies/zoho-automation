@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from "react"
+import { useMemo } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
-import { agentsApi, type CreateAgentInput, type UpdateAgentInput } from "@/lib/api"
-import type { AgentDef, AgentRole, ToolDef } from "./agent-platform-data"
+import { agentsApi, aiProvidersApi, type AiProviderStatus, type CreateAgentInput, type ModelCatalogEntry, type UpdateAgentInput } from "@/lib/api"
+import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
+import type { AgentDef, AgentModelProvider, AgentRole, ToolDef } from "./agent-platform-data"
 
 type BackendAgent = {
   id: string
@@ -74,6 +76,8 @@ function toAgentDef(agent: BackendAgent, allAgents: BackendAgent[]): AgentDef {
     role: parentAgent && deriveRole(parentAgent) !== "supervisor" ? "specialist" : role,
     parentId: agent.parentId,
     enabled: agent.isActive,
+    provider: isAgentModelProvider(agent.provider) ? agent.provider : null,
+    modelId: agent.modelId,
     capabilityDescription: agent.capabilityDescription ?? agent.description ?? "",
     toolIds: agent.toolIds,
     subAgentIds: children.map((c) => c.id),
@@ -89,15 +93,21 @@ function toAgentDef(agent: BackendAgent, allAgents: BackendAgent[]): AgentDef {
   }
 }
 
+function isAgentModelProvider(value: string | null): value is AgentModelProvider {
+  return value === "google" || value === "openai"
+}
+
 export type AgentDataState = {
   agents: AgentDef[]
   agentById: Record<string, AgentDef>
   tools: ToolDef[]
   toolById: Record<string, ToolDef>
+  modelCatalog: ModelCatalogEntry[]
+  providerStatus: AiProviderStatus | null
   loading: boolean
   error: string | null
   stats: { total: number; heads: number; specialists: number; enabled: number }
-  refresh: () => void
+  refresh: () => Promise<void>
   toggleAgent: (id: string) => Promise<void>
   updateAgent: (id: string, data: UpdateAgentInput) => Promise<void>
   createAgent: (data: CreateAgentInput) => Promise<void>
@@ -106,36 +116,48 @@ export type AgentDataState = {
 
 export function useAgentData(): AgentDataState {
   const { token } = useAdminAuth()
-  const [rawAgents, setRawAgents] = useState<BackendAgent[]>([])
-  const [rawTools, setRawTools] = useState<BackendTool[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const queryClient = useQueryClient()
+  const scope = getAdminQueryScope(token)
+  const agentsQuery = useQuery({
+    queryKey: adminQueryKeys.agents(scope),
+    enabled: Boolean(token),
+    queryFn: async () => {
+      const agentData = await agentsApi.list<BackendAgent>(token ?? undefined)
+      return Array.isArray(agentData) ? agentData : []
+    },
+  })
+  const toolsQuery = useQuery({
+    queryKey: adminQueryKeys.toolRegistry(scope),
+    enabled: Boolean(token),
+    queryFn: async () => {
+      const toolData = await agentsApi.toolRegistry<BackendTool>(token ?? undefined)
+      return Array.isArray(toolData) ? toolData : []
+    },
+  })
+  const modelCatalogQuery = useQuery({
+    queryKey: adminQueryKeys.agentModelCatalog(scope),
+    enabled: Boolean(token),
+    queryFn: async () => agentsApi.modelCatalog(token ?? undefined),
+  })
+  const providerStatusQuery = useQuery({
+    queryKey: adminQueryKeys.aiProviderStatus(scope),
+    enabled: Boolean(token),
+    queryFn: async () => aiProvidersApi.status(token ?? undefined),
+  })
 
-  const fetchAll = useCallback(async () => {
-    if (!token) return
-    setLoading(true)
-    setError(null)
-    try {
-      const [agentData, toolData] = await Promise.all([
-        agentsApi.list<BackendAgent>(token),
-        agentsApi.toolRegistry<BackendTool>(token),
-      ])
-      setRawAgents(Array.isArray(agentData) ? agentData : [])
-      setRawTools(Array.isArray(toolData) ? toolData : [])
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to load agents"
-      setError(msg)
-    } finally {
-      setLoading(false)
-    }
-  }, [token])
-
-  useEffect(() => { fetchAll() }, [fetchAll])
-
+  const rawAgents = agentsQuery.data ?? []
+  const rawTools = toolsQuery.data ?? []
+  const modelCatalog = modelCatalogQuery.data ?? []
+  const providerStatus = providerStatusQuery.data ?? null
   const agents = rawAgents.map((a) => toAgentDef(a, rawAgents))
   const agentById = Object.fromEntries(agents.map((a) => [a.id, a])) as Record<string, AgentDef>
   const tools = rawTools.map(toToolDef)
   const toolById = Object.fromEntries(tools.map((t) => [t.id, t])) as Record<string, ToolDef>
+  const loading = agentsQuery.isPending || toolsQuery.isPending || modelCatalogQuery.isPending || providerStatusQuery.isPending
+  const error = useMemo(() => {
+    const source = agentsQuery.error ?? toolsQuery.error ?? modelCatalogQuery.error ?? providerStatusQuery.error
+    return source instanceof Error ? source.message : null
+  }, [agentsQuery.error, toolsQuery.error, modelCatalogQuery.error, providerStatusQuery.error])
 
   const stats = {
     total: agents.length,
@@ -146,11 +168,17 @@ export function useAgentData(): AgentDataState {
 
   const toggleAgent = async (id: string) => {
     if (!token) return
+    const previousAgents = queryClient.getQueryData<BackendAgent[]>(adminQueryKeys.agents(scope)) ?? []
+    queryClient.setQueryData<BackendAgent[]>(adminQueryKeys.agents(scope), (current = []) =>
+      current.map((agent) => (agent.id === id ? { ...agent, isActive: !agent.isActive } : agent)),
+    )
     try {
       await agentsApi.toggle(id, token)
       toast.success("Agent toggled")
-      await fetchAll()
-    } catch { /* error toast handled by api.ts */ }
+      await queryClient.invalidateQueries({ queryKey: adminQueryKeys.agents(scope) })
+    } catch {
+      queryClient.setQueryData(adminQueryKeys.agents(scope), previousAgents)
+    }
   }
 
   const updateAgent = async (id: string, data: UpdateAgentInput) => {
@@ -158,7 +186,7 @@ export function useAgentData(): AgentDataState {
     try {
       await agentsApi.update(id, data, token)
       toast.success("Agent updated")
-      await fetchAll()
+      await queryClient.invalidateQueries({ queryKey: adminQueryKeys.agents(scope) })
     } catch { /* error toast handled by api.ts */ }
   }
 
@@ -167,7 +195,7 @@ export function useAgentData(): AgentDataState {
     try {
       await agentsApi.create(data, token)
       toast.success("Agent created")
-      await fetchAll()
+      await queryClient.invalidateQueries({ queryKey: adminQueryKeys.agents(scope) })
     } catch { /* error toast handled by api.ts */ }
   }
 
@@ -176,9 +204,24 @@ export function useAgentData(): AgentDataState {
     try {
       await agentsApi.delete(id, token)
       toast.success("Agent deleted")
-      await fetchAll()
+      await queryClient.invalidateQueries({ queryKey: adminQueryKeys.agents(scope) })
     } catch { /* error toast handled by api.ts */ }
   }
 
-  return { agents, agentById, tools, toolById, loading, error, stats, refresh: fetchAll, toggleAgent, updateAgent, createAgent, deleteAgent }
+  return {
+    agents,
+    agentById,
+    tools,
+    toolById,
+    modelCatalog,
+    providerStatus,
+    loading,
+    error,
+    stats,
+    refresh: () => Promise.all([agentsQuery.refetch(), toolsQuery.refetch()]).then(() => undefined),
+    toggleAgent,
+    updateAgent,
+    createAgent,
+    deleteAgent,
+  }
 }

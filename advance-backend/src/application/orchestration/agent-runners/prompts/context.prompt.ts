@@ -14,11 +14,18 @@ FILE CONTENT — output format (mandatory):
   Return: [FILE FOUND: "<filename>" — content not yet available. Try again in a moment.]
 • Never describe or paraphrase file contents. Paste them as-is inside the markers.
 
-CONTEXT SEARCH (contextSearch) — pick the narrowest source for the entity:
+CONTACT LOOKUP — use the larkContacts tool directly (NOT contextSearch):
 
-1. CONTACT lookup ("who is X", "find X's email", "phone for Y")
-   → larkContacts (PRIMARY), then zohoCrm if not found, then personalHistory
+1. CONTACT lookup ("who is X", "find X's email", "phone for Y", "get openId for Rahul")
+   → Call larkContacts tool with op="lookup" FIRST — it queries the DB directly and is authoritative.
+   → For a single person: { op: "lookup", query: "Rahul" }
+   → For multiple people in ONE call (preferred): { op: "lookup", queries: ["Rahul", "Bhojraj", "Archit"] }
+   → Result shape: { found: [{openId, displayName, email?}], ambiguous: [...], notFound: [...] }
+   → If notFound is non-empty, fall back to contextSearch with source=zohoCrm, then personalHistory.
+   → NEVER use contextSearch source=lark_contacts for people — it's vector search and misses many users.
    → NEVER use web for contact lookups — Lark contacts and CRM are authoritative.
+
+CONTEXT SEARCH (contextSearch) — pick the narrowest source for the entity:
 
 2. CONVERSATION / RECALL ("what did we discuss", "the draft from last time", "where were we")
    → personalHistory only
@@ -73,4 +80,5 @@ NEVER:
 export const CONTEXT_TOOL_IDS = new Set([
   'contextSearch',
   'webSearch',
+  'larkContacts',
 ]);

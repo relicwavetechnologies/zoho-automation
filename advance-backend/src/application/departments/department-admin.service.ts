@@ -838,6 +838,61 @@ export class DepartmentAdminService {
     }
   }
 
+  // ── Books module permissions ──────────────────────────────────────────────
+
+  async getBookModulePermissions(
+    departmentId: string,
+    companyId: string,
+  ): Promise<ServiceResult<Array<{ id: string; roleId: string; module: string; enabled: boolean }>>> {
+    const dept = await this.deps.prisma.department.findFirst({
+      where: { id: departmentId, companyId },
+    });
+    if (!dept) return fail({ kind: 'not_found', message: 'Department not found' });
+
+    const roles = await this.deps.prisma.departmentRole.findMany({
+      where: { departmentId },
+      select: { id: true },
+    });
+    const roleIds = roles.map(r => r.id);
+    if (roleIds.length === 0) return ok([]);
+
+    const rows = await this.deps.prisma.booksModulePermission.findMany({
+      where: { companyId, departmentRoleId: { in: roleIds } },
+      select: { id: true, departmentRoleId: true, module: true, enabled: true },
+    });
+
+    return ok(rows.map(r => ({
+      id: r.id,
+      roleId: r.departmentRoleId,
+      module: r.module,
+      enabled: r.enabled,
+    })));
+  }
+
+  async updateBookModulePermission(
+    departmentId: string,
+    companyId: string,
+    roleId: string,
+    module: string,
+    enabled: boolean,
+    actorId: string,
+  ): Promise<ServiceResult<{ roleId: string; module: string; enabled: boolean }>> {
+    const role = await this.deps.prisma.departmentRole.findFirst({
+      where: { id: roleId, departmentId },
+    });
+    if (!role) return fail({ kind: 'not_found', message: 'Role not found in this department' });
+
+    await this.deps.prisma.booksModulePermission.upsert({
+      where: {
+        companyId_departmentRoleId_module: { companyId, departmentRoleId: roleId, module },
+      },
+      create: { companyId, departmentRoleId: roleId, module, enabled, updatedBy: actorId },
+      update: { enabled, updatedBy: actorId },
+    });
+
+    return ok({ roleId, module, enabled });
+  }
+
   // ── Unused random UUID for invite token ───────────────────────────────────
   static generateToken(): string { return randomUUID(); }
 }
