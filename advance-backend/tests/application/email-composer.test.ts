@@ -4,7 +4,27 @@ import { EmailComposerService } from '../../src/application/email/email-composer
 import { DivoHtmlEmailTemplate } from '../../src/application/email/templates/divo-html-email-template.ts';
 
 describe('EmailComposerService', () => {
-  it('builds plain-text MIME with all headers (HTML template disabled)', () => {
+  it('builds multipart alternative MIME when template is provided', () => {
+    const composer = new EmailComposerService();
+    const result = composer.compose({
+      to: [{ email: 'alice@example.com' }],
+      subject: 'Research summary',
+      text: 'Plain fallback',
+      template: {
+        title: 'Jawa 42 Bobber',
+        intro: 'Hi Anish, here is the summary.',
+        sections: [{ heading: 'Pricing', body: 'From ₹1.95L', bullets: ['On-road ~₹2.33L'] }],
+      },
+    });
+
+    assert.match(result.raw, /multipart\/alternative/);
+    assert.match(result.raw, /text\/html; charset=UTF-8/);
+    assert.match(result.raw, /text\/plain; charset=UTF-8/);
+    assert.match(result.raw, /Jawa 42 Bobber/);
+    assert.match(result.raw, /4f8cff/i);
+  });
+
+  it('builds plain-text MIME with all headers when no template', () => {
     const composer = new EmailComposerService();
     const result = composer.compose({
       from: { name: 'Divo Ops', email: 'ops@example.com' },
@@ -31,7 +51,7 @@ describe('EmailComposerService', () => {
     assert.doesNotMatch(result.encodedRaw, /[+/=]/);
   });
 
-  it('strips HTML to plain text when raw HTML is provided (HTML disabled)', () => {
+  it('builds multipart when raw HTML is provided alongside plain text', () => {
     const composer = new EmailComposerService();
     const result = composer.compose({
       to: [{ email: 'alice@example.com' }],
@@ -40,9 +60,10 @@ describe('EmailComposerService', () => {
       html: '<p>Premium HTML</p>',
     });
 
-    assert.match(result.raw, /Content-Type: text\/plain; charset=UTF-8/);
-    assert.doesNotMatch(result.raw, /Content-Type: text\/html/);
+    assert.match(result.raw, /multipart\/alternative/);
+    assert.match(result.raw, /Content-Type: text\/html/);
     assert.match(result.raw, /Plain fallback/);
+    assert.match(result.raw, /Premium HTML/);
   });
 
   it('passes attachments into MIME composition', () => {
@@ -126,7 +147,9 @@ describe('EmailComposerService', () => {
     assert.match(rendered.html, /Bicycling guide/);
     assert.match(rendered.html, /Cycling Weekly picks/);
     assert.match(rendered.html, /https:\/\/www\.bicycling\.com\/bikes-gear\/a123\/best-bikes-2026/);
-    assert.match(rendered.html, />Open<\/a>/);
+    assert.match(rendered.html, /href="https:\/\/www\.bicycling\.com/);
+    assert.doesNotMatch(rendered.html, /#A91635/i);
+    assert.doesNotMatch(rendered.html, /border-radius:24px/i);
     assert.match(rendered.text, /Bicycling guide: https:\/\/www\.bicycling\.com\/bikes-gear\/a123\/best-bikes-2026/);
     assert.match(rendered.text, /Cycling Weekly picks: https:\/\/www\.cyclingweekly\.com\/group-tests\/best-road-bikes/);
   });

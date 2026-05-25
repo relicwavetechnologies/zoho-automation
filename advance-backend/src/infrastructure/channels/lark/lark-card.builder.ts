@@ -391,6 +391,10 @@ function tableElement(parsed: ParsedMarkdownTable, elementId: string): Record<st
   };
 }
 
+function softenHeadings(md: string): string {
+  return md.replace(/^#{1,3}\s+(.+)$/gm, '**$1**');
+}
+
 function bodyBlocksToElements(body: string): Record<string, unknown>[] {
   const normalized = normalizeMd(body);
   if (!normalized) return [mdElement('No content available.')];
@@ -407,7 +411,8 @@ function bodyBlocksToElements(body: string): Record<string, unknown>[] {
         continue;
       }
     }
-    const chunks = block.length <= MAX_ELEMENT_LEN ? [block] : splitMarkdown(block);
+    const softened = softenHeadings(block);
+    const chunks = softened.length <= MAX_ELEMENT_LEN ? [softened] : splitMarkdown(softened);
     for (const chunk of chunks) {
       elements.push(mdElement(chunk, elements.length > 0 ? { margin: '8px 0 0 0' } : undefined));
     }

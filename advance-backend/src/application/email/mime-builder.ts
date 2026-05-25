@@ -152,7 +152,10 @@ function quoteDisplayName(name: string): string {
 }
 
 function encodeHeaderValue(value: string): string {
-  return sanitizeHeaderValue(value.trim());
+  const trimmed = sanitizeHeaderValue(value.trim());
+  if (/^[\x20-\x7E]*$/.test(trimmed)) return trimmed;
+  const encoded = Buffer.from(trimmed, 'utf8').toString('base64');
+  return `=?UTF-8?B?${encoded}?=`;
 }
 
 function sanitizeHeaderValue(value: string): string {

@@ -53,8 +53,10 @@ import { ZohoCrmClient } from './infrastructure/zoho/zoho-crm.client';
 import { ZohoBooksClient } from './infrastructure/zoho/zoho-books.client';
 import { ZohoBooksPaginatedClient } from './infrastructure/zoho/zoho-books-paginated.client';
 import { ZohoBooksSearchAdapter } from './infrastructure/zoho/zoho-books-search.adapter';
+import { ZohoCrmPaginatedClient } from './infrastructure/zoho/zoho-crm-paginated.client';
 import { CloudinaryAdapter } from './infrastructure/cloudinary/cloudinary.adapter';
 import { ZohoFinanceOps } from './application/zoho/zoho-finance-ops';
+import { ZohoCrmOps } from './application/zoho/zoho-crm-ops';
 import type { CachePort } from './shared/cache';
 
 // Observability
@@ -685,6 +687,17 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   );
 
+  // ── Zoho CRM paginated client + CRM ops ──────────────────────────────────
+  const zohoPaginatedCrmClient = new ZohoCrmPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
+
+  const zohoCrmOps = new ZohoCrmOps(
+    zohoPaginatedCrmClient,
+    cloudinaryAdapter,
+    logger.child({ service: 'zoho-crm-ops' }),
+    env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
+    env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+  );
+
   // ── Zoho Books search adapter (context search broker port) ───────────────
   const zohoBooksSearchAdapter = new ZohoBooksSearchAdapter(zohoPaginatedBooksClient);
 
@@ -773,7 +786,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }));
   toolRegistry.register(createGoogleDriveTool({ getClient: getDriveClient }));
   toolRegistry.register(createGoogleCalendarTool({ getClient: getCalendarClient }));
-  toolRegistry.register(createZohoCrmTool({ getClient: getZohoCrmClient }));
+  toolRegistry.register(createZohoCrmTool({
+    getClient:   getZohoCrmClient,
+    crmClient:   zohoPaginatedCrmClient,
+    crmOps:      zohoCrmOps,
+    cloudinary:  cloudinaryAdapter,
+    csvLinkTtl:  env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+  }));
   toolRegistry.register(createZohoBooksTool({
     getClient:       getZohoBooksClient,
     booksClient:     zohoPaginatedBooksClient,
